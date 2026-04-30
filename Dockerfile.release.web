@@ -1,0 +1,7 @@
+FROM gcr.io/distroless/static:nonroot
+
+ARG TARGETARCH
+
+COPY linux/${TARGETARCH}/web /usr/local/bin/web
+
+ENTRYPOINT ["/usr/local/bin/web"]

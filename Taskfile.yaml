@@ -1,0 +1,64 @@
+version: "3"
+
+vars:
+  LDFLAGS: "-s -w"
+
+tasks:
+  default:
+    desc: List all tasks
+    cmds:
+      - task --list-all
+    silent: true
+
+  deps:
+    desc: Install required development tools
+    cmds:
+      - go install honnef.co/go/tools/cmd/staticcheck@latest
+      - go install mvdan.cc/gofumpt@latest
+      - go install golang.org/x/tools/cmd/goimports@latest
+      - go install github.com/go-task/task/v3/cmd/task@latest
+
+  lint:
+    desc: Run all linters (staticcheck, gofmt, gofumpt, goimports, go vet)
+    cmds:
+      - staticcheck ./...
+      - cmd: |
+          UNFORMATTED=$(gofmt -l .)
+          if [ -n "$UNFORMATTED" ]; then
+            echo "unformatted files (run: gofmt -w .):"
+            echo "$UNFORMATTED"
+            exit 1
+          fi
+      - cmd: |
+          UNFORMATTED=$(gofumpt -l .)
+          if [ -n "$UNFORMATTED" ]; then
+            echo "unformatted files (run: gofumpt -w .):"
+            echo "$UNFORMATTED"
+            exit 1
+          fi
+      - cmd: |
+          UNFORMATTED=$(goimports -l .)
+          if [ -n "$UNFORMATTED" ]; then
+            echo "unformatted files (run: goimports -w .):"
+            echo "$UNFORMATTED"
+            exit 1
+          fi
+      - go vet ./...
+
+  test:
+    desc: Run tests with race detector and coverage
+    cmds:
+      - GORACE=atexit_sleep_ms=0 go test -v -trimpath -failfast -race -cover -coverprofile=coverage.txt ./...
+
+  build:
+    desc: Build all binaries to bin/ (requires cmd/ directory with at least one main package)
+    cmds:
+      - cd web-vite && bun install && bun run build
+      - rm -rf ./internal/web/api/static && mkdir -p ./internal/web/api/static
+      - cp -r ./web-vite/dist/. ./internal/web/api/static/
+      - go build -trimpath -ldflags "{{.LDFLAGS}}" -o bin/ ./cmd/...
+
+  release-snapshot:
+    desc: Dry-run goreleaser release locally without pushing to GitHub or registries
+    cmds:
+      - goreleaser release --snapshot --clean
