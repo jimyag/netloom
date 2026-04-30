@@ -1,117 +1,188 @@
-# template-repository
+# netloom
 
-Go template repository with two runnable examples:
-- `template-repository`: the original hello-world CLI binary
-- `web`: a Go web server that embeds a React frontend into a single binary
+[![Go Report Card](https://goreportcard.com/badge/github.com/jimyag/netloom)](https://goreportcard.com/report/github.com/jimyag/netloom)
+[![codecov](https://codecov.io/gh/jimyag/netloom/branch/main/graph/badge.svg)](https://codecov.io/gh/jimyag/netloom)
+[![License](https://img.shields.io/github/license/jimyag/netloom)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/jimyag/netloom)](https://github.com/jimyag/netloom/releases)
 
-[![Go Report Card](https://goreportcard.com/badge/github.com/jimyag/template-repository)](https://goreportcard.com/report/github.com/jimyag/template-repository)
-[![codecov](https://codecov.io/gh/jimyag/template-repository/branch/main/graph/badge.svg)](https://codecov.io/gh/jimyag/template-repository)
-[![License](https://img.shields.io/github/license/jimyag/template-repository)](LICENSE)
-[![Release](https://img.shields.io/github/v/release/jimyag/template-repository)](https://github.com/jimyag/template-repository/releases)
+`netloom` 是一个使用 Go 编写的 SDN 软件项目。
 
-## Installation
+## netloom 是什么意思
 
-### From release
+`netloom` 由 `net` 和 `loom` 两部分组成。
 
-Download the latest binaries from [Releases](https://github.com/jimyag/template-repository/releases).
+- `net` 表示 network，也就是网络。
+- `loom` 表示织机，也有“编织”的意思。
 
-### From source
+所以 `netloom` 想表达的是：像织布一样去编排和组织网络，把原本分散的节点、链路、地址、路由和策略编织成一张可以统一描述、统一控制的虚拟网络。
 
-```bash
-go install github.com/jimyag/template-repository/cmd/template-repository@latest
-go install github.com/jimyag/template-repository/cmd/web@latest
+这个名字更偏控制面语义，而不是单纯强调某个转发协议或某一种数据面实现。它适合用来描述一个负责 VPC、子网、IPAM、路由、网关和策略集成的 SDN 系统。
+
+## 项目愿景
+
+`netloom` 面向云网络和基础设施网络场景，目标是提供一套可编排的虚拟网络控制面，而不是依赖每台机器上的手工网络配置。
+
+当前的方向包括：
+
+- VPC 与虚拟网络抽象
+- 子网与 IPAM 管理
+- 逻辑交换与逻辑路由
+- Gateway 与 NAT 编排
+- 与 eBPF 安全策略能力集成
+
+项目整体会保持简单、清晰、易维护：
+
+- 使用 Go 实现控制面
+- API 尽量小且行为明确
+- 优先使用易读、易调试、易扩展的组件划分
+
+## 架构方向
+
+当前的设计方向，接近 `OVN + eBPF` 的职责拆分。
+
+`netloom` 负责网络控制面的核心能力：
+
+- VPC 与子网建模
+- IPAM
+- 逻辑网络拓扑
+- 路由意图表达
+- Gateway 编排
+- VIP、负载均衡挂载等服务连接能力
+
+eBPF 负责安全与可观测性相关能力：
+
+- 类安全组的策略执行
+- 主机与工作负载级别的包过滤
+- 基于连接状态的策略控制
+- 流量观测与排障数据
+
+也就是说：
+
+- `netloom` 负责定义网络
+- eBPF 负责执行和观测安全策略
+
+这和“Kube-OVN/OVN 负责虚拟网络，Cilium/eBPF 负责策略与观测”的整体思路接近，但 `netloom` 会保持自己的控制面边界和实现方式。
+
+### 架构草图
+
+```mermaid
+flowchart TB
+    subgraph Control["控制面"]
+        API["netloom API / Controller"]
+        MODEL["VPC / Subnet / IPAM / Route Model"]
+        API --> MODEL
+    end
+
+    subgraph VirtualNet["虚拟网络层"]
+        OVN["OVN / 虚拟网络后端"]
+        TOPO["Logical Switch / Logical Router / Gateway / NAT / VIP"]
+        OVN --> TOPO
+    end
+
+    subgraph Policy["安全与观测层"]
+        EBPF["eBPF Policy Engine"]
+        OBS["Flow / Events / Observability"]
+        EBPF --> OBS
+    end
+
+    subgraph Nodes["节点与工作负载"]
+        NODE1["Node A"]
+        NODE2["Node B"]
+        POD1["Workload A"]
+        POD2["Workload B"]
+        NODE1 --> POD1
+        NODE2 --> POD2
+    end
+
+    API --> OVN
+    API --> EBPF
+    TOPO --> NODE1
+    TOPO --> NODE2
+    EBPF --> NODE1
+    EBPF --> NODE2
+
+    style API fill:#4a90d9,color:#fff
+    style OVN fill:#27ae60,color:#fff
+    style EBPF fill:#e67e22,color:#fff
 ```
 
-### Docker
+这张图表达的是：
 
-```bash
-docker pull ghcr.io/jimyag/template-repository:latest
-```
+- `netloom` 作为控制面，负责管理网络模型与编排逻辑。
+- OVN 风格的虚拟网络后端，负责实现逻辑交换、逻辑路由、Gateway、NAT 和 VIP。
+- eBPF 负责策略执行和流量观测，不负责定义 VPC、子网或 IPAM。
+- 工作负载同时受虚拟网络与 eBPF 策略影响，但两者的职责边界保持分离。
 
-## Usage
+## 为什么不把安全策略全部放进 OVN ACL
 
-### CLI example
+OVN ACL 本身很适合做分布式虚拟网络策略，但它不是唯一选择。
 
-```bash
-template-repository
-```
+这里更倾向于这样分工：
 
-### Web example
+- 虚拟网络、地址分配、VPC、路由等能力放在 SDN 控制面
+- 更复杂的安全组能力交给 eBPF
 
-Run the Go web server:
+这样做的好处是：
 
-```bash
-go run ./cmd/web
-```
+- 网络与安全职责边界更清晰
+- 更容易获得更强的策略能力和观测能力
+- 降低虚拟网络拓扑与安全实现细节之间的耦合
 
-The server listens on `:8080` by default. Override it with:
+但这并不意味着系统一定更简单。混合架构会增加控制面和排障复杂度，所以两侧的边界必须保持明确，避免出现多套策略系统同时生效、相互覆盖的问题。
 
-```bash
-WEB_LISTEN_ADDR=:3000 go run ./cmd/web
-```
+## 范围
 
-The embedded frontend includes these example routes:
+计划中的能力：
 
-- `/`: home page
-- `/dynamic`: list/detail/nested route example
-- `/state`: Zustand shared state example
-- `/api-demo`: axios request/loading/error/cancel example
-- `/form`: controlled form and validation example
+- 建模虚拟网络与子网
+- 分配并回收 IP 地址
+- 编排逻辑路由与 Gateway 行为
+- 与 eBPF 策略引擎集成
+- 提供清晰的面向运维和平台的接口
 
-API endpoints exposed by the Go server:
+早期阶段的非目标：
 
-- `GET /api/items`
-- `GET /api/items/:id`
+- 从零重写所有数据面能力
+- 在同一条路径上混用多套重叠策略系统
+- 用过重的抽象隐藏控制面行为
 
-## Development
+## 当前状态
 
-### Requirements
+`netloom` 目前仍处于早期阶段，整体架构还在持续收敛。
+
+当前仓库主要作为以下内容的基础：
+
+- 设计说明
+- 控制面实现
+- 围绕 SDN、OVN 风格网络和 eBPF 策略集成的实验
+
+## 开发
+
+### 依赖要求
 
 - Go `1.26+`
-- [bun](https://bun.sh/) `1.2.21+`
-- `task` for the convenience commands below
+- `task` 用于执行下面的便捷命令
 
-### Frontend development
-
-Start the Go API server:
+### 常用命令
 
 ```bash
-go run ./cmd/web
-```
-
-In another terminal, start the Vite dev server:
-
-```bash
-cd web-vite
-bun install
-bun run dev
-```
-
-Vite proxies `/api` to `http://localhost:8080`.
-
-### Build
-
-```bash
-# Install tools
+# 安装开发工具
 task deps
 
-# Install frontend dependencies
-cd web-vite && bun install
-
-# Run linters
+# 执行静态检查
 task lint
 
-# Run tests
+# 执行测试
 task test
 
-# Build frontend and both Go binaries
+# 构建二进制
 task build
 ```
 
-## Contributing
+## 参与贡献
 
-See [CONTRIBUTING.md](CONTRIBUTING.md).
+参见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
-## License
+## 许可证
 
 [Apache 2.0](LICENSE)

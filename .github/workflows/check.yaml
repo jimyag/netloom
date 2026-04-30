@@ -1,10 +1,13 @@
 name: Check
 
 on:
-  push:
-    branches: ["main"]
-  pull_request:
-    branches: ["main"]
+  workflow_dispatch:
+    # push:
+    #   branches:
+    #     - "main"
+    # pull_request:
+    #   branches:
+    #     - "main"
 
 jobs:
   staticcheck:
@@ -98,7 +101,8 @@ jobs:
         with:
           go-version: stable
           cache-dependency-path: go.sum
-      - run: GORACE=atexit_sleep_ms=0 go test -v -trimpath -failfast -race -cover -coverprofile=coverage.txt ./...
+      - run: GORACE=atexit_sleep_ms=0 go test -v -trimpath -failfast -race -cover
+          -coverprofile=coverage.txt ./...
       - uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
