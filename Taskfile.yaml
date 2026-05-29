@@ -51,14 +51,20 @@ tasks:
       - GORACE=atexit_sleep_ms=0 go test -v -trimpath -failfast -race -cover
         -coverprofile=coverage.txt ./...
 
-  build:
-    desc: Build all binaries to bin/ (requires cmd/ directory with at least one main
-      package)
+  test:integration:
+    desc: Run cross-package integration tests
     cmds:
-      - cd web-vite && bun install && bun run build
-      - rm -rf ./internal/web/api/static && mkdir -p ./internal/web/api/static
-      - cp -r ./web-vite/dist/. ./internal/web/api/static/
-      - go build -trimpath -ldflags "{{.LDFLAGS}}" -o bin/ ./cmd/...
+      - go test -v -trimpath ./tests/integration
+
+  test:e2e:
+    desc: Run docker-based multi-node e2e tests
+    cmds:
+      - NETLOOM_E2E=1 go test -v -trimpath ./tests/e2e
+
+  build:
+    desc: Build all binaries to bin/
+    cmds:
+      - CGO_ENABLED=0 go build -trimpath -ldflags "{{.LDFLAGS}}" -o bin/ ./cmd/...
 
   release-snapshot:
     desc: Dry-run goreleaser release locally without pushing to GitHub or registries

@@ -1,0 +1,205 @@
+package ovn
+
+import (
+	"context"
+	"fmt"
+	"net/netip"
+	"sort"
+	"strings"
+	"sync"
+
+	"github.com/jimyag/netloom/internal/model"
+)
+
+type Operation struct {
+	Command string
+	Args    []string
+}
+
+func (o Operation) String() string {
+	return o.Command + " " + strings.Join(o.Args, " ")
+}
+
+type Planner struct {
+	mu         sync.Mutex
+	ops        []Operation
+	vpcRouters map[string]string
+}
+
+func NewPlanner() *Planner {
+	return &Planner{vpcRouters: make(map[string]string)}
+}
+
+func (p *Planner) EnsureVPC(_ context.Context, vpc model.VPC) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	router := logicalRouter(vpc.Name)
+	p.vpcRouters[vpc.Name] = router
+	p.ops = append(p.ops, Operation{Command: "lr-add", Args: []string{router}})
+	return nil
+}
+
+func (p *Planner) EnsureSubnet(_ context.Context, subnet model.Subnet) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	router := p.routerForVPC(subnet.VPC)
+	switchName := logicalSwitch(subnet.Name)
+	routerPort := routerPortName(router, subnet.Name)
+	switchPort := switchRouterPortName(switchName, subnet.Name)
+	routerMAC := deterministicMAC(subnet.Gateway)
+	p.ops = append(p.ops,
+		Operation{Command: "ls-add", Args: []string{switchName}},
+		Operation{Command: "lrp-add", Args: []string{router, routerPort, routerMAC, subnet.Gateway.String() + "/" + fmt.Sprint(subnet.CIDR.Bits())}},
+		Operation{Command: "lsp-add", Args: []string{switchName, switchPort}},
+		Operation{Command: "lsp-set-type", Args: []string{switchPort, "router"}},
+		Operation{Command: "lsp-set-addresses", Args: []string{switchPort, routerMAC}},
+		Operation{Command: "lsp-set-options", Args: []string{switchPort, "router-port=" + routerPort}},
+	)
+	return nil
+}
+
+func (p *Planner) EnsureEndpoint(_ context.Context, endpoint model.Endpoint) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	port := logicalPort(endpoint.ID)
+	p.ops = append(p.ops,
+		Operation{Command: "lsp-add", Args: []string{logicalSwitch(endpoint.Subnet), port}},
+		Operation{Command: "lsp-set-addresses", Args: []string{port, "dynamic " + endpoint.IP.String()}},
+		Operation{Command: "set", Args: []string{"logical_switch_port", port, "external_ids:netloom_endpoint=" + endpoint.ID, "external_ids:netloom_node=" + endpoint.Node}},
+	)
+	return nil
+}
+
+func (p *Planner) EnsureRouteTable(_ context.Context, table model.RouteTable) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	router := p.routerForVPC(table.VPC)
+	for _, route := range table.Routes {
+		if route.Blackhole {
+			p.ops = append(p.ops, Operation{Command: "lr-route-add", Args: []string{router, route.Destination.String(), "discard"}})
+			continue
+		}
+		p.ops = append(p.ops, Operation{Command: "lr-route-add", Args: []string{router, route.Destination.String(), route.NextHop.String()}})
+	}
+	return nil
+}
+
+func (p *Planner) EnsurePolicyRoute(_ context.Context, route model.PolicyRoute) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	router := p.routerForVPC(route.VPC)
+	match := policyRouteMatch(route.Match)
+	action := route.Action.Type
+	if action == model.ActionReroute {
+		p.ops = append(p.ops, Operation{Command: "lr-policy-add", Args: []string{router, fmt.Sprint(route.Priority), match, "reroute", route.Action.NextHop.String()}})
+		return nil
+	}
+	p.ops = append(p.ops, Operation{Command: "lr-policy-add", Args: []string{router, fmt.Sprint(route.Priority), match, string(action)}})
+	return nil
+}
+
+func (p *Planner) EnsureGateway(_ context.Context, gateway model.Gateway) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	router := p.routerForVPC(gateway.VPC)
+	args := []string{router, "options:chassis=" + gateway.Node, "external_ids:netloom_gateway=" + gateway.Name}
+	if gateway.ExternalIF != "" {
+		args = append(args, "external_ids:netloom_external_if="+gateway.ExternalIF)
+	}
+	p.ops = append(p.ops, Operation{Command: "set", Args: append([]string{"logical_router", router}, args[1:]...)})
+	return nil
+}
+
+func (p *Planner) EnsureNATRule(_ context.Context, rule model.NATRule) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	router := p.routerForVPC(rule.VPC)
+	switch rule.Type {
+	case model.ActionSNAT:
+		p.ops = append(p.ops, Operation{Command: "lr-nat-add", Args: []string{router, "snat", rule.ExternalIP.String(), rule.MatchCIDR.String()}})
+	case model.ActionDNAT:
+		p.ops = append(p.ops, Operation{Command: "lr-nat-add", Args: []string{router, "dnat", rule.ExternalIP.String(), rule.TargetIP.String()}})
+	}
+	return nil
+}
+
+func (p *Planner) Operations() []Operation {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]Operation(nil), p.ops...)
+}
+
+func (p *Planner) routerForVPC(vpc string) string {
+	if router := p.vpcRouters[vpc]; router != "" {
+		return router
+	}
+	router := logicalRouter(vpc)
+	p.vpcRouters[vpc] = router
+	return router
+}
+
+func logicalRouter(vpc string) string {
+	return "nl_lr_" + sanitize(vpc)
+}
+
+func logicalSwitch(subnet string) string {
+	return "nl_ls_" + sanitize(subnet)
+}
+
+func logicalPort(endpoint string) string {
+	return "nl_lp_" + sanitize(endpoint)
+}
+
+func routerPortName(router, subnet string) string {
+	return router + "_to_" + sanitize(subnet)
+}
+
+func switchRouterPortName(switchName, subnet string) string {
+	return switchName + "_to_" + sanitize(subnet) + "_router"
+}
+
+func sanitize(value string) string {
+	replacer := strings.NewReplacer("/", "_", ":", "_", ".", "_")
+	return replacer.Replace(value)
+}
+
+func deterministicMAC(ip netip.Addr) string {
+	if ip.Is4() {
+		raw := ip.As4()
+		return fmt.Sprintf("0a:58:%02x:%02x:%02x:%02x", raw[0], raw[1], raw[2], raw[3])
+	}
+	raw := ip.As16()
+	return fmt.Sprintf("0a:58:%02x:%02x:%02x:%02x", raw[12], raw[13], raw[14], raw[15])
+}
+
+func policyRouteMatch(match model.RouteMatch) string {
+	parts := []string{}
+	if match.Source.IsValid() {
+		parts = append(parts, "ip4.src == "+match.Source.String())
+	}
+	if match.Destination.IsValid() {
+		parts = append(parts, "ip4.dst == "+match.Destination.String())
+	}
+	if match.Protocol != "" && match.Protocol != model.ProtocolAny {
+		parts = append(parts, string(match.Protocol))
+	}
+	for _, port := range match.DstPorts {
+		if port.From == port.To {
+			parts = append(parts, fmt.Sprintf("%s.dst == %d", match.Protocol, port.From))
+		} else {
+			parts = append(parts, fmt.Sprintf("%s.dst >= %d && %s.dst <= %d", match.Protocol, port.From, match.Protocol, port.To))
+		}
+	}
+	sort.Strings(parts)
+	if len(parts) == 0 {
+		return "1 == 1"
+	}
+	return strings.Join(parts, " && ")
+}

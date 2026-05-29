@@ -1,0 +1,338 @@
+package model
+
+import (
+	"errors"
+	"fmt"
+	"net/netip"
+	"slices"
+)
+
+type Action string
+
+const (
+	ActionAllow   Action = "allow"
+	ActionDrop    Action = "drop"
+	ActionReroute Action = "reroute"
+	ActionReject  Action = "reject"
+	ActionLog     Action = "log"
+	ActionSNAT    Action = "snat"
+	ActionDNAT    Action = "dnat"
+)
+
+type Direction string
+
+const (
+	DirectionIngress Direction = "ingress"
+	DirectionEgress  Direction = "egress"
+)
+
+type Protocol string
+
+const (
+	ProtocolAny  Protocol = "any"
+	ProtocolTCP  Protocol = "tcp"
+	ProtocolUDP  Protocol = "udp"
+	ProtocolICMP Protocol = "icmp"
+)
+
+type VPC struct {
+	Name string `json:"name"`
+}
+
+type Subnet struct {
+	Name    string       `json:"name"`
+	VPC     string       `json:"vpc"`
+	CIDR    netip.Prefix `json:"cidr"`
+	Gateway netip.Addr   `json:"gateway"`
+}
+
+type Endpoint struct {
+	ID             string     `json:"id"`
+	VPC            string     `json:"vpc"`
+	Subnet         string     `json:"subnet"`
+	IP             netip.Addr `json:"ip"`
+	Node           string     `json:"node"`
+	SecurityGroups []string   `json:"security_groups"`
+}
+
+type RouteTable struct {
+	Name   string  `json:"name"`
+	VPC    string  `json:"vpc"`
+	Routes []Route `json:"routes"`
+}
+
+type Route struct {
+	Destination netip.Prefix `json:"destination"`
+	NextHop     netip.Addr   `json:"next_hop"`
+	Blackhole   bool         `json:"blackhole"`
+}
+
+type PolicyRoute struct {
+	Name     string      `json:"name"`
+	VPC      string      `json:"vpc"`
+	Priority int         `json:"priority"`
+	Match    RouteMatch  `json:"match"`
+	Action   RouteAction `json:"action"`
+}
+
+type RouteMatch struct {
+	Source      netip.Prefix `json:"source"`
+	Destination netip.Prefix `json:"destination"`
+	Protocol    Protocol     `json:"protocol"`
+	DstPorts    []PortRange  `json:"dst_ports"`
+}
+
+type RouteAction struct {
+	Type    Action     `json:"type"`
+	NextHop netip.Addr `json:"next_hop"`
+}
+
+type Gateway struct {
+	Name        string     `json:"name"`
+	VPC         string     `json:"vpc"`
+	Node        string     `json:"node"`
+	ExternalIF  string     `json:"external_if"`
+	LANIP       netip.Addr `json:"lan_ip"`
+	Distributed bool       `json:"distributed"`
+}
+
+type NATRule struct {
+	Name       string       `json:"name"`
+	VPC        string       `json:"vpc"`
+	Type       Action       `json:"type"`
+	MatchCIDR  netip.Prefix `json:"match_cidr"`
+	ExternalIP netip.Addr   `json:"external_ip"`
+	TargetIP   netip.Addr   `json:"target_ip"`
+}
+
+type SecurityGroup struct {
+	Name  string              `json:"name"`
+	VPC   string              `json:"vpc"`
+	Rules []SecurityGroupRule `json:"rules"`
+}
+
+type SecurityGroupRule struct {
+	ID          string       `json:"id"`
+	Priority    int          `json:"priority"`
+	Direction   Direction    `json:"direction"`
+	Protocol    Protocol     `json:"protocol"`
+	RemoteCIDR  netip.Prefix `json:"remote_cidr"`
+	RemoteGroup string       `json:"remote_group"`
+	Ports       []PortRange  `json:"ports"`
+	Action      Action       `json:"action"`
+	Stateful    bool         `json:"stateful"`
+	Log         bool         `json:"log"`
+	Description string       `json:"description"`
+}
+
+type PortRange struct {
+	From uint16 `json:"from"`
+	To   uint16 `json:"to"`
+}
+
+func (v VPC) Validate() error {
+	if v.Name == "" {
+		return errors.New("vpc name is required")
+	}
+	return nil
+}
+
+func (s Subnet) Validate() error {
+	if s.Name == "" {
+		return errors.New("subnet name is required")
+	}
+	if s.VPC == "" {
+		return errors.New("subnet vpc is required")
+	}
+	if !s.CIDR.IsValid() {
+		return errors.New("subnet cidr is required")
+	}
+	if !s.Gateway.IsValid() {
+		return errors.New("subnet gateway is required")
+	}
+	if !s.CIDR.Contains(s.Gateway) {
+		return fmt.Errorf("subnet gateway %s is outside cidr %s", s.Gateway, s.CIDR)
+	}
+	return nil
+}
+
+func (e Endpoint) Validate() error {
+	if e.ID == "" {
+		return errors.New("endpoint id is required")
+	}
+	if e.VPC == "" {
+		return errors.New("endpoint vpc is required")
+	}
+	if e.Subnet == "" {
+		return errors.New("endpoint subnet is required")
+	}
+	if !e.IP.IsValid() {
+		return errors.New("endpoint ip is required")
+	}
+	if e.Node == "" {
+		return errors.New("endpoint node is required")
+	}
+	return nil
+}
+
+func (r RouteTable) Validate() error {
+	if r.Name == "" {
+		return errors.New("route table name is required")
+	}
+	if r.VPC == "" {
+		return errors.New("route table vpc is required")
+	}
+	for i, route := range r.Routes {
+		if err := route.Validate(); err != nil {
+			return fmt.Errorf("route %d: %w", i, err)
+		}
+	}
+	return nil
+}
+
+func (r Route) Validate() error {
+	if !r.Destination.IsValid() {
+		return errors.New("route destination is required")
+	}
+	if r.Blackhole {
+		return nil
+	}
+	if !r.NextHop.IsValid() {
+		return errors.New("route next hop is required when route is not blackhole")
+	}
+	return nil
+}
+
+func (r PolicyRoute) Validate() error {
+	if r.Name == "" {
+		return errors.New("policy route name is required")
+	}
+	if r.VPC == "" {
+		return errors.New("policy route vpc is required")
+	}
+	if r.Priority < 0 {
+		return errors.New("policy route priority must be non-negative")
+	}
+	if r.Action.Type == "" {
+		return errors.New("policy route action is required")
+	}
+	if !slices.Contains([]Action{ActionAllow, ActionDrop, ActionReroute}, r.Action.Type) {
+		return fmt.Errorf("unsupported policy route action %q", r.Action.Type)
+	}
+	if r.Action.Type == ActionReroute && !r.Action.NextHop.IsValid() {
+		return errors.New("policy route reroute action requires next hop")
+	}
+	if err := r.Match.Validate(); err != nil {
+		return fmt.Errorf("policy route match: %w", err)
+	}
+	return nil
+}
+
+func (m RouteMatch) Validate() error {
+	if m.Protocol == "" {
+		m.Protocol = ProtocolAny
+	}
+	if !validProtocol(m.Protocol) {
+		return fmt.Errorf("unsupported protocol %q", m.Protocol)
+	}
+	for i, p := range m.DstPorts {
+		if err := p.Validate(); err != nil {
+			return fmt.Errorf("dst port range %d: %w", i, err)
+		}
+	}
+	return nil
+}
+
+func (g Gateway) Validate() error {
+	if g.Name == "" {
+		return errors.New("gateway name is required")
+	}
+	if g.VPC == "" {
+		return errors.New("gateway vpc is required")
+	}
+	if g.Node == "" {
+		return errors.New("gateway node is required")
+	}
+	if !g.LANIP.IsValid() {
+		return errors.New("gateway lan ip is required")
+	}
+	return nil
+}
+
+func (n NATRule) Validate() error {
+	if n.Name == "" {
+		return errors.New("nat rule name is required")
+	}
+	if n.VPC == "" {
+		return errors.New("nat rule vpc is required")
+	}
+	if !slices.Contains([]Action{ActionSNAT, ActionDNAT}, n.Type) {
+		return fmt.Errorf("unsupported nat action %q", n.Type)
+	}
+	if !n.MatchCIDR.IsValid() {
+		return errors.New("nat match cidr is required")
+	}
+	if !n.ExternalIP.IsValid() {
+		return errors.New("nat external ip is required")
+	}
+	if n.Type == ActionDNAT && !n.TargetIP.IsValid() {
+		return errors.New("dnat target ip is required")
+	}
+	return nil
+}
+
+func (s SecurityGroup) Validate() error {
+	if s.Name == "" {
+		return errors.New("security group name is required")
+	}
+	if s.VPC == "" {
+		return errors.New("security group vpc is required")
+	}
+	for i, rule := range s.Rules {
+		if err := rule.Validate(); err != nil {
+			return fmt.Errorf("security group rule %d: %w", i, err)
+		}
+	}
+	return nil
+}
+
+func (r SecurityGroupRule) Validate() error {
+	if r.ID == "" {
+		return errors.New("rule id is required")
+	}
+	if r.Direction != DirectionIngress && r.Direction != DirectionEgress {
+		return fmt.Errorf("unsupported direction %q", r.Direction)
+	}
+	if r.Protocol == "" {
+		r.Protocol = ProtocolAny
+	}
+	if !validProtocol(r.Protocol) {
+		return fmt.Errorf("unsupported protocol %q", r.Protocol)
+	}
+	if !slices.Contains([]Action{ActionAllow, ActionDrop, ActionReject, ActionLog}, r.Action) {
+		return fmt.Errorf("unsupported security action %q", r.Action)
+	}
+	if r.RemoteCIDR.IsValid() && r.RemoteGroup != "" {
+		return errors.New("remote cidr and remote group are mutually exclusive")
+	}
+	for i, p := range r.Ports {
+		if err := p.Validate(); err != nil {
+			return fmt.Errorf("port range %d: %w", i, err)
+		}
+	}
+	return nil
+}
+
+func (p PortRange) Validate() error {
+	if p.From == 0 || p.To == 0 {
+		return errors.New("port range must be non-zero")
+	}
+	if p.From > p.To {
+		return fmt.Errorf("port range start %d exceeds end %d", p.From, p.To)
+	}
+	return nil
+}
+
+func validProtocol(p Protocol) bool {
+	return slices.Contains([]Protocol{ProtocolAny, ProtocolTCP, ProtocolUDP, ProtocolICMP}, p)
+}

@@ -1,0 +1,226 @@
+package linuxdatapath
+
+import (
+	"context"
+	"fmt"
+	"hash/fnv"
+	"net"
+	"net/netip"
+	"os/exec"
+	"strings"
+
+	"github.com/jimyag/netloom/internal/control"
+)
+
+type Operation struct {
+	Command string
+	Args    []string
+}
+
+type Executor interface {
+	Execute(ctx context.Context, op Operation) error
+}
+
+type Options struct {
+	Node           string
+	Mode           string
+	LocalDevice    string
+	UnderlayDevice string
+	NodeUnderlays  map[string]netip.Addr
+	NetNSPrefix    string
+	WorkloadIF     string
+	HostGateway    netip.Addr
+	CleanupStale   bool
+	Executor       Executor
+}
+
+type Result struct {
+	LocalAddresses int
+	RemoteRoutes   int
+	Device         string
+	Mode           string
+	CleanupPlanned bool
+}
+
+type CommandExecutor struct{}
+
+func (CommandExecutor) Execute(ctx context.Context, op Operation) error {
+	cmd := exec.CommandContext(ctx, op.Command, op.Args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s %s: %w: %s", op.Command, strings.Join(op.Args, " "), err, output)
+	}
+	return nil
+}
+
+func Apply(ctx context.Context, state control.DesiredState, options Options) (Result, error) {
+	ops, result, err := Plan(ctx, state, options)
+	if err != nil {
+		return Result{}, err
+	}
+	executor := options.Executor
+	if executor == nil {
+		executor = CommandExecutor{}
+	}
+	for _, op := range ops {
+		if err := executor.Execute(ctx, op); err != nil {
+			return Result{}, err
+		}
+	}
+	return result, nil
+}
+
+func Plan(ctx context.Context, state control.DesiredState, options Options) ([]Operation, Result, error) {
+	if options.Node == "" {
+		return nil, Result{}, fmt.Errorf("node name is required")
+	}
+	localDevice := options.LocalDevice
+	if localDevice == "" {
+		localDevice = "lo"
+	}
+	mode := options.Mode
+	if mode == "" {
+		mode = "local"
+	}
+	underlayDevice := options.UnderlayDevice
+	if underlayDevice == "" {
+		underlayDevice = "eth0"
+	}
+	workloadIF := options.WorkloadIF
+	if workloadIF == "" {
+		workloadIF = "eth0"
+	}
+	hostGateway := options.HostGateway
+	if !hostGateway.IsValid() {
+		hostGateway = netip.MustParseAddr("169.254.1.1")
+	}
+
+	result := Result{Device: localDevice, Mode: mode}
+	var ops []Operation
+	if mode == "local" {
+		ops = append(ops, Operation{Command: "ip", Args: []string{"link", "set", localDevice, "up"}})
+	}
+	if mode == "netns" {
+		result.Device = "netns"
+		result.CleanupPlanned = options.CleanupStale
+		ops = append(ops,
+			shellOperation("sysctl -w net.ipv4.ip_forward=1 >/dev/null"),
+			shellOperation("sysctl -w net.ipv4.conf.all.rp_filter=0 >/dev/null"),
+			shellOperation("sysctl -w net.ipv4.conf.default.rp_filter=0 >/dev/null"),
+		)
+		if options.CleanupStale {
+			ops = append(ops, planNetNSCleanup(state, options.Node, options.NetNSPrefix))
+		}
+	}
+	for _, endpoint := range state.Endpoints {
+		if endpoint.Node == options.Node {
+			if mode == "netns" {
+				ops = append(ops, planNetNSWorkload(endpoint.ID, endpoint.IP, workloadIF, hostGateway, options.NetNSPrefix)...)
+			} else {
+				ops = append(ops, Operation{
+					Command: "ip",
+					Args:    []string{"addr", "replace", endpoint.IP.String() + "/32", "dev", localDevice},
+				})
+			}
+			result.LocalAddresses++
+			continue
+		}
+		nextHop, err := resolveNode(ctx, endpoint.Node, options.NodeUnderlays)
+		if err != nil {
+			return nil, Result{}, fmt.Errorf("resolve underlay for node %s: %w", endpoint.Node, err)
+		}
+		ops = append(ops, Operation{
+			Command: "ip",
+			Args:    []string{"route", "replace", endpoint.IP.String() + "/32", "via", nextHop.String(), "dev", underlayDevice},
+		})
+		result.RemoteRoutes++
+	}
+	return ops, result, nil
+}
+
+func planNetNSCleanup(state control.DesiredState, node, prefix string) Operation {
+	var keep []string
+	for _, endpoint := range state.Endpoints {
+		if endpoint.Node == node {
+			keep = append(keep, netnsName(endpoint.ID, prefix))
+		}
+	}
+	return shellOperation("for ns in $(ip netns list | awk '{print $1}' | grep '^" + shellQuote(netnsName("", prefix)) + "' || true); do case '" + keepSet(keep) + "' in *\" $ns \"*) ;; *) ip netns del \"$ns\" ;; esac; done")
+}
+
+func keepSet(names []string) string {
+	if len(names) == 0 {
+		return " "
+	}
+	return " " + strings.Join(names, " ") + " "
+}
+
+func shellQuote(value string) string {
+	return strings.ReplaceAll(value, "'", "'\"'\"'")
+}
+
+func planNetNSWorkload(endpointID string, ip netip.Addr, workloadIF string, hostGateway netip.Addr, prefix string) []Operation {
+	ns := netnsName(endpointID, prefix)
+	hostVeth := HostVethName(endpointID)
+	peerVeth := peerVethName(endpointID)
+	return []Operation{
+		shellOperation("ip netns add " + ns + " 2>/dev/null || true"),
+		shellOperation("ip -n " + ns + " link show " + workloadIF + " >/dev/null 2>&1 || { ip link show " + hostVeth + " >/dev/null 2>&1 || ip link add " + hostVeth + " type veth peer name " + peerVeth + "; ip link set " + peerVeth + " netns " + ns + "; ip -n " + ns + " link set " + peerVeth + " name " + workloadIF + "; }"),
+		{Command: "ip", Args: []string{"addr", "replace", hostGateway.String() + "/32", "dev", hostVeth}},
+		{Command: "ip", Args: []string{"link", "set", hostVeth, "up"}},
+		{Command: "ip", Args: []string{"route", "replace", ip.String() + "/32", "dev", hostVeth}},
+		{Command: "ip", Args: []string{"netns", "exec", ns, "ip", "link", "set", "lo", "up"}},
+		{Command: "ip", Args: []string{"netns", "exec", ns, "ip", "addr", "replace", ip.String() + "/32", "dev", workloadIF}},
+		{Command: "ip", Args: []string{"netns", "exec", ns, "ip", "link", "set", workloadIF, "up"}},
+		{Command: "ip", Args: []string{"netns", "exec", ns, "ip", "route", "replace", "default", "via", hostGateway.String(), "dev", workloadIF, "onlink"}},
+	}
+}
+
+func shellOperation(script string) Operation {
+	return Operation{Command: "sh", Args: []string{"-c", script}}
+}
+
+func netnsName(endpointID, prefix string) string {
+	if prefix == "" {
+		prefix = "nl"
+	}
+	return prefix + "-" + sanitize(endpointID)
+}
+
+func HostVethName(endpointID string) string {
+	return shortName("nlh", endpointID)
+}
+
+func peerVethName(endpointID string) string {
+	return shortName("nlp", endpointID)
+}
+
+func shortName(prefix, value string) string {
+	hash := fnv.New32a()
+	_, _ = hash.Write([]byte(value))
+	return fmt.Sprintf("%s%x", prefix, hash.Sum32())
+}
+
+func sanitize(value string) string {
+	replacer := strings.NewReplacer("/", "_", ":", "_", ".", "_", " ", "_")
+	return replacer.Replace(value)
+}
+
+func resolveNode(ctx context.Context, node string, underlays map[string]netip.Addr) (netip.Addr, error) {
+	if node == "" {
+		return netip.Addr{}, fmt.Errorf("node name is required")
+	}
+	if addr := underlays[node]; addr.IsValid() {
+		return addr, nil
+	}
+	ips, err := net.DefaultResolver.LookupNetIP(ctx, "ip4", node)
+	if err != nil {
+		return netip.Addr{}, err
+	}
+	for _, ip := range ips {
+		if ip.Is4() {
+			return ip, nil
+		}
+	}
+	return netip.Addr{}, fmt.Errorf("node %s has no IPv4 address", node)
+}

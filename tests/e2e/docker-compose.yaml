@@ -1,0 +1,69 @@
+services:
+  ovn-central:
+    image: kubeovn/kube-ovn:v1.17.0
+    command:
+      - sh
+      - -c
+      - |
+        set -eu
+        mkdir -p /var/run/ovn /var/lib/ovn
+        if [ ! -f /var/lib/ovn/ovnnb_db.db ]; then
+          ovsdb-tool create /var/lib/ovn/ovnnb_db.db /usr/share/ovn/ovn-nb.ovsschema
+        fi
+        ovsdb-server --detach --pidfile=/var/run/ovn/ovnnb_db.pid \
+          --remote=punix:/var/run/ovn/ovnnb_db.sock \
+          /var/lib/ovn/ovnnb_db.db
+        ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock init
+        trap : TERM INT
+        sleep infinity & wait
+    volumes:
+      - ../../bin:/netloom/bin:ro
+    networks:
+      fabric:
+        ipv4_address: 172.30.0.10
+
+  node-a:
+    image: alpine:3.20
+    command: ["sh", "-c", "trap : TERM INT; sleep infinity & wait"]
+    volumes:
+      - ../../bin:/netloom/bin:ro
+    networks:
+      fabric:
+        ipv4_address: 172.30.0.11
+    cap_add:
+      - NET_ADMIN
+      - SYS_ADMIN
+    privileged: true
+
+  node-b:
+    image: alpine:3.20
+    command: ["sh", "-c", "trap : TERM INT; sleep infinity & wait"]
+    volumes:
+      - ../../bin:/netloom/bin:ro
+    networks:
+      fabric:
+        ipv4_address: 172.30.0.12
+    cap_add:
+      - NET_ADMIN
+      - SYS_ADMIN
+    privileged: true
+
+  node-c:
+    image: alpine:3.20
+    command: ["sh", "-c", "trap : TERM INT; sleep infinity & wait"]
+    volumes:
+      - ../../bin:/netloom/bin:ro
+    networks:
+      fabric:
+        ipv4_address: 172.30.0.13
+    cap_add:
+      - NET_ADMIN
+      - SYS_ADMIN
+    privileged: true
+
+networks:
+  fabric:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24

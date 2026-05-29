@@ -148,13 +148,22 @@ OVN ACL 本身很适合做分布式虚拟网络策略，但它不是唯一选择
 
 ## 当前状态
 
-`netloom` 目前仍处于早期阶段，整体架构还在持续收敛。
+`netloom` 目前仍处于早期阶段，整体架构还在持续收敛，但仓库里已经有一条可运行的端到端路径。
 
-当前仓库主要作为以下内容的基础：
+当前仓库已经包含：
 
-- 设计说明
-- 控制面实现
-- 围绕 SDN、OVN 风格网络和 eBPF 策略集成的实验
+- 控制面模型：VPC、Subnet、Endpoint、RouteTable、PolicyRoute、Gateway、NATRule、SecurityGroup。
+- OVN 风格拓扑后端：把逻辑交换、逻辑路由、策略路由、Gateway 和 NAT 转换为 `ovn-nbctl` 操作。
+- Linux 工作负载 datapath：支持本机 `/32` 地址路由和 `netns + veth` 多工作负载模式。
+- Cilium 风格策略编译：把安全组规则编译为 endpoint-scoped policy map entry。
+- eBPF/TCX ACL datapath：支持节点接口和工作负载 veth 上的 IPv4 L4 ACL attach。
+- 周期 reconcile：controller 和 agent 都能从 desired-state JSON 文件周期重读状态，agent 会持有并按需替换 TCX attachment。
+
+策略边界如下：
+
+- `PolicyRoute` 属于 SDN 拓扑意图，由 topology/OVN 路由层处理，支持 reroute/drop 等路由动作。
+- `SecurityGroupRule` 属于 ACL 意图，由 eBPF-style policy map 和 TCX ACL datapath 执行。
+- ACL 不放到 OVN ACL 里实现，避免和 eBPF 策略路径重叠。
 
 ## 开发
 
@@ -175,9 +184,17 @@ task lint
 # 执行测试
 task test
 
+# 执行跨模块集成测试
+task test:integration
+
+# 执行 Docker 多节点 e2e 测试，需要 Docker 和可用的 privileged 容器能力
+task test:e2e
+
 # 构建二进制
 task build
 ```
+
+`task test` 会运行所有 Go 包测试，包括 `tests/integration`；`task test:e2e` 会启动 Docker Compose lab，用多个容器模拟节点，验证 OVN Northbound、控制面 state-file、Linux netns 工作负载、跨节点连通性、策略路由输出、eBPF/TCX ACL drop/allow 和 stale namespace cleanup。
 
 ## 参与贡献
 
