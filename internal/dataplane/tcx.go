@@ -20,7 +20,7 @@ const (
 	TCXPass = int32(0)
 	TCXDrop = int32(2)
 
-	ipv4L4LookupPrefixLen = int32(64)
+	ipv4L4LookupPrefixLen = int32(80)
 )
 
 type TCXSelfTestResult struct {
@@ -66,17 +66,19 @@ func (a *TCXAttachment) Close() error {
 type IPv4L4Key struct {
 	PrefixLen uint32
 	Protocol  uint8
-	Pad       uint8
-	DestPort  uint16
+	Pad       [3]byte
 	PeerIP    [4]byte
+	DestPort  uint16
+	TailPad   [2]byte
 }
 
 type IPv4L4ACLRule struct {
-	Source     netip.Addr
-	SourceCIDR netip.Prefix
-	Protocol   uint8
-	DestPort   uint16
-	Action     int32
+	Source             netip.Addr
+	SourceCIDR         netip.Prefix
+	Protocol           uint8
+	DestPort           uint16
+	DestPortPrefixBits uint8
+	Action             int32
 }
 
 func NewConstantTCXProgram(action int32) (*ebpf.Program, error) {
@@ -218,7 +220,7 @@ func ipv4L4ACLMapSpec(ruleCount int) *ebpf.MapSpec {
 	return &ebpf.MapSpec{
 		Name:       "netloom_tcx_l4",
 		Type:       ebpf.LPMTrie,
-		KeySize:    12,
+		KeySize:    16,
 		ValueSize:  4,
 		MaxEntries: uint32(max(256, ruleCount)),
 		Flags:      unix.BPF_F_NO_PREALLOC,
@@ -233,14 +235,15 @@ func putIPv4L4ACLRule(aclMap *ebpf.Map, rule IPv4L4ACLRule) error {
 	if rule.Protocol == 0 {
 		return fmt.Errorf("protocol is required")
 	}
-	if rule.DestPort == 0 && rule.Protocol != 1 {
+	destPortPrefixBits := normalizedDestPortPrefixBits(rule)
+	if rule.DestPort == 0 && rule.Protocol != 1 && destPortPrefixBits != 0 {
 		return fmt.Errorf("destination port is required")
 	}
 	if rule.Action != TCXPass && rule.Action != TCXDrop {
 		return fmt.Errorf("unsupported tcx action %d", rule.Action)
 	}
 	key := IPv4L4Key{
-		PrefixLen: ipv4L4PrefixLen(sourceCIDR),
+		PrefixLen: ipv4L4PrefixLen(sourceCIDR, destPortPrefixBits),
 		Protocol:  rule.Protocol,
 		DestPort:  rule.DestPort,
 		PeerIP:    ipv4L4PeerKey(sourceCIDR.Addr()),
@@ -273,7 +276,7 @@ func IPv4L4ACLRulesFromProgramForDirection(program policy.Program, direction mod
 		return nil, err
 	}
 	if len(rules) == 0 {
-		return nil, fmt.Errorf("program %s has no exact IPv4 TCP/UDP L4 %s ACL rules for TCX", program.EndpointID, direction)
+		return nil, fmt.Errorf("program %s has no IPv4 L4 %s ACL rules for TCX", program.EndpointID, direction)
 	}
 	return rules, nil
 }
@@ -291,7 +294,7 @@ func IPv4L4ACLRulesFromProgramsForDirection(programs []policy.Program, direction
 		}
 	}
 	if len(rules) == 0 {
-		return nil, fmt.Errorf("programs have no exact IPv4 TCP/UDP L4 %s ACL rules for TCX", direction)
+		return nil, fmt.Errorf("programs have no IPv4 L4 %s ACL rules for TCX", direction)
 	}
 	return rules, nil
 }
@@ -335,22 +338,34 @@ func appendIPv4L4ACLRulesFromProgram(rules *[]IPv4L4ACLRule, seen map[IPv4L4Key]
 			return fmt.Errorf("rule %s: ICMP TCX ACL does not support destination ports", rule.ID)
 		}
 		if protocol == 1 && len(rule.Ports) == 0 {
-			key := IPv4L4Key{
-				PrefixLen: ipv4L4PrefixLen(sourceCIDR),
-				Protocol:  protocol,
-				DestPort:  0,
-				PeerIP:    ipv4L4PeerKey(sourceCIDR.Addr()),
-			}
+			key := ipv4L4RuleKey(sourceCIDR, protocol, 0, 0)
 			if _, ok := seen[key]; ok {
 				continue
 			}
 			seen[key] = struct{}{}
 			*rules = append(*rules, IPv4L4ACLRule{
-				Source:     sourceCIDR.Addr(),
-				SourceCIDR: sourceCIDR,
-				Protocol:   protocol,
-				DestPort:   0,
-				Action:     action,
+				Source:             sourceCIDR.Addr(),
+				SourceCIDR:         sourceCIDR,
+				Protocol:           protocol,
+				DestPort:           0,
+				DestPortPrefixBits: 0,
+				Action:             action,
+			})
+			continue
+		}
+		if len(rule.Ports) == 0 {
+			key := ipv4L4RuleKey(sourceCIDR, protocol, 0, 0)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			*rules = append(*rules, IPv4L4ACLRule{
+				Source:             sourceCIDR.Addr(),
+				SourceCIDR:         sourceCIDR,
+				Protocol:           protocol,
+				DestPort:           0,
+				DestPortPrefixBits: 0,
+				Action:             action,
 			})
 			continue
 		}
@@ -358,26 +373,21 @@ func appendIPv4L4ACLRulesFromProgram(rules *[]IPv4L4ACLRule, seen map[IPv4L4Key]
 			if err := port.Validate(); err != nil {
 				return fmt.Errorf("rule %s: %w", rule.ID, err)
 			}
-			if port.From != port.To || port.From == 0 {
-				continue
+			for _, block := range splitTCXPortRange(port.From, port.To) {
+				key := ipv4L4RuleKey(sourceCIDR, protocol, block.port, block.prefixBits)
+				if _, ok := seen[key]; ok {
+					continue
+				}
+				seen[key] = struct{}{}
+				*rules = append(*rules, IPv4L4ACLRule{
+					Source:             sourceCIDR.Addr(),
+					SourceCIDR:         sourceCIDR,
+					Protocol:           protocol,
+					DestPort:           block.port,
+					DestPortPrefixBits: block.prefixBits,
+					Action:             action,
+				})
 			}
-			key := IPv4L4Key{
-				PrefixLen: ipv4L4PrefixLen(sourceCIDR),
-				Protocol:  protocol,
-				DestPort:  port.From,
-				PeerIP:    ipv4L4PeerKey(sourceCIDR.Addr()),
-			}
-			if _, ok := seen[key]; ok {
-				continue
-			}
-			seen[key] = struct{}{}
-			*rules = append(*rules, IPv4L4ACLRule{
-				Source:     sourceCIDR.Addr(),
-				SourceCIDR: sourceCIDR,
-				Protocol:   protocol,
-				DestPort:   port.From,
-				Action:     action,
-			})
 		}
 	}
 	return nil
@@ -397,8 +407,27 @@ func validateIPv4L4ACLRuleSupport(rule policy.Rule) error {
 	return nil
 }
 
-func ipv4L4PrefixLen(prefix netip.Prefix) uint32 {
-	return uint32(32 + prefix.Bits())
+func ipv4L4RuleKey(sourceCIDR netip.Prefix, protocol uint8, destPort uint16, destPortPrefixBits uint8) IPv4L4Key {
+	return IPv4L4Key{
+		PrefixLen: ipv4L4PrefixLen(sourceCIDR, destPortPrefixBits),
+		Protocol:  protocol,
+		PeerIP:    ipv4L4PeerKey(sourceCIDR.Addr()),
+		DestPort:  destPort,
+	}
+}
+
+func ipv4L4PrefixLen(prefix netip.Prefix, destPortPrefixBits uint8) uint32 {
+	return uint32(32 + prefix.Bits() + int(destPortPrefixBits))
+}
+
+func normalizedDestPortPrefixBits(rule IPv4L4ACLRule) uint8 {
+	if rule.Protocol == 1 {
+		return 0
+	}
+	if rule.DestPortPrefixBits == 0 {
+		return 16
+	}
+	return rule.DestPortPrefixBits
 }
 
 func ipv4L4PeerKey(addr netip.Addr) [4]byte {
@@ -423,6 +452,40 @@ func tcxAction(action model.Action) (int32, bool) {
 	}
 }
 
+type tcxPortBlock struct {
+	port       uint16
+	prefixBits uint8
+}
+
+func splitTCXPortRange(from, to uint16) []tcxPortBlock {
+	var blocks []tcxPortBlock
+	for current := uint32(from); current <= uint32(to); {
+		size := current & -current
+		if size == 0 {
+			size = 1 << 16
+		}
+		remaining := uint32(to) - current + 1
+		for size > remaining {
+			size >>= 1
+		}
+		blocks = append(blocks, tcxPortBlock{
+			port:       uint16(current),
+			prefixBits: uint8(16 - log2TCXPortBlock(size)),
+		})
+		current += size
+	}
+	return blocks
+}
+
+func log2TCXPortBlock(value uint32) uint32 {
+	var out uint32
+	for value > 1 {
+		value >>= 1
+		out++
+	}
+	return out
+}
+
 func NewIPv4L4ACLTCXProgram(aclMap *ebpf.Map) (*ebpf.Program, error) {
 	return NewIPv4L4ACLTCXProgramForDirection(aclMap, model.DirectionIngress)
 }
@@ -439,18 +502,18 @@ func NewIPv4L4ACLTCXProgramForDirection(aclMap *ebpf.Map, direction model.Direct
 		Instructions: asm.Instructions{
 			asm.Mov.Reg(asm.R6, asm.R1),
 			asm.Mov.Imm(asm.R0, ipv4L4LookupPrefixLen),
-			asm.StoreMem(asm.RFP, -12, asm.R0, asm.Word),
+			asm.StoreMem(asm.RFP, -16, asm.R0, asm.Word),
 			asm.Mov.Imm(asm.R0, 0),
-			asm.StoreMem(asm.RFP, -7, asm.R0, asm.Byte),
-			asm.StoreMem(asm.RFP, -6, asm.R0, asm.Half),
+			asm.StoreMem(asm.RFP, -12, asm.R0, asm.Word),
+			asm.StoreMem(asm.RFP, -4, asm.R0, asm.Word),
 			asm.LoadAbs(12, asm.Half),
 			asm.JNE.Imm(asm.R0, 0x0800, "pass"),
 			asm.LoadAbs(23, asm.Byte),
-			asm.StoreMem(asm.RFP, -8, asm.R0, asm.Byte),
+			asm.StoreMem(asm.RFP, -12, asm.R0, asm.Byte),
 			asm.Mov.Reg(asm.R8, asm.R0),
 			asm.LoadAbs(peerOffset, asm.Word),
 			asm.HostTo(asm.BE, asm.R0, asm.Word),
-			asm.StoreMem(asm.RFP, -4, asm.R0, asm.Word),
+			asm.StoreMem(asm.RFP, -8, asm.R0, asm.Word),
 			asm.LoadAbs(20, asm.Half),
 			asm.And.Imm(asm.R0, 0x1fff),
 			asm.JNE.Imm(asm.R0, 0, "pass"),
@@ -460,10 +523,10 @@ func NewIPv4L4ACLTCXProgramForDirection(aclMap *ebpf.Map, direction model.Direct
 			asm.Mov.Reg(asm.R7, asm.R0),
 			asm.JEq.Imm(asm.R8, 1, "lookup"),
 			asm.LoadInd(asm.R0, asm.R7, 16, asm.Half),
-			asm.StoreMem(asm.RFP, -6, asm.R0, asm.Half),
+			asm.StoreMem(asm.RFP, -4, asm.R0, asm.Half),
 			asm.LoadMapPtr(asm.R1, aclMap.FD()).WithSymbol("lookup"),
 			asm.Mov.Reg(asm.R2, asm.RFP),
-			asm.Add.Imm(asm.R2, -12),
+			asm.Add.Imm(asm.R2, -16),
 			asm.FnMapLookupElem.Call(),
 			asm.JEq.Imm(asm.R0, 0, "pass"),
 			asm.LoadMem(asm.R0, asm.R0, 0, asm.Word),

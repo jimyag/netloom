@@ -122,6 +122,64 @@ func TestIPv4L4ACLRulesFromProgramProjectsExactEgressPolicy(t *testing.T) {
 	if rules[0].Source != netip.MustParseAddr("198.51.100.10") || rules[0].Protocol != 6 || rules[0].DestPort != 443 || rules[0].Action != TCXDrop {
 		t.Fatalf("unexpected rule: %+v", rules[0])
 	}
+	if rules[0].DestPortPrefixBits != 16 {
+		t.Fatalf("dest port prefix bits = %d, want exact port", rules[0].DestPortPrefixBits)
+	}
+}
+
+func TestIPv4L4ACLRulesFromProgramProjectsPortRangePolicy(t *testing.T) {
+	program := policy.Program{
+		EndpointID: "pod-a",
+		Rules: []policy.Rule{{
+			ID:         "drop-nodeports",
+			Direction:  model.DirectionIngress,
+			Protocol:   model.ProtocolTCP,
+			RemoteCIDR: netip.MustParsePrefix("172.30.0.0/24"),
+			Ports:      []model.PortRange{{From: 30000, To: 32767}},
+			Action:     model.ActionDrop,
+		}},
+	}
+	rules, err := IPv4L4ACLRulesFromProgram(program)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 5 {
+		t.Fatalf("rules = %d, want 5 CIDR+port-prefix TCX rules: %+v", len(rules), rules)
+	}
+	for _, rule := range rules {
+		if rule.SourceCIDR != netip.MustParsePrefix("172.30.0.0/24") || rule.Protocol != 6 || rule.Action != TCXDrop {
+			t.Fatalf("unexpected range rule: %+v", rule)
+		}
+		if rule.DestPortPrefixBits >= 16 {
+			t.Fatalf("range rule prefix bits = %d, want compressed port prefix", rule.DestPortPrefixBits)
+		}
+	}
+	if rules[0].DestPort != 30000 || rules[0].DestPortPrefixBits != 12 {
+		t.Fatalf("first range block = %d/%d, want 30000/12", rules[0].DestPort, rules[0].DestPortPrefixBits)
+	}
+}
+
+func TestIPv4L4ACLRulesFromProgramProjectsProtocolOnlyPolicy(t *testing.T) {
+	program := policy.Program{
+		EndpointID: "pod-a",
+		Rules: []policy.Rule{{
+			ID:         "drop-all-tcp",
+			Direction:  model.DirectionEgress,
+			Protocol:   model.ProtocolTCP,
+			RemoteCIDR: netip.MustParsePrefix("198.51.100.0/24"),
+			Action:     model.ActionDrop,
+		}},
+	}
+	rules, err := IPv4L4ACLRulesFromProgramForDirection(program, model.DirectionEgress)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 1 {
+		t.Fatalf("rules = %d, want one protocol-only TCX rule", len(rules))
+	}
+	if rules[0].DestPort != 0 || rules[0].DestPortPrefixBits != 0 {
+		t.Fatalf("dest port = %d/%d, want wildcard port", rules[0].DestPort, rules[0].DestPortPrefixBits)
+	}
 }
 
 func TestIPv4L4ACLRulesFromProgramProjectsICMPCIDRPolicy(t *testing.T) {
@@ -214,8 +272,8 @@ func TestIPv4L4ACLUsesLPMTrieMapSpec(t *testing.T) {
 	if spec.Type != ebpf.LPMTrie {
 		t.Fatalf("map type = %s, want LPMTrie", spec.Type)
 	}
-	if spec.KeySize != 12 {
-		t.Fatalf("key size = %d, want 12", spec.KeySize)
+	if spec.KeySize != 16 {
+		t.Fatalf("key size = %d, want 16", spec.KeySize)
 	}
 	if spec.Flags == 0 {
 		t.Fatal("LPM trie map should set no-prealloc flag")
@@ -240,14 +298,17 @@ func TestIPv4L4ACLRuleSourceCIDR(t *testing.T) {
 }
 
 func TestIPv4L4ACLKeyPrefixLenIncludesProtocolAndPort(t *testing.T) {
-	if got := ipv4L4PrefixLen(netip.MustParsePrefix("172.30.0.0/24")); got != 56 {
-		t.Fatalf("/24 prefix len = %d, want protocol+pad+port+cidr bits 56", got)
+	if got := ipv4L4PrefixLen(netip.MustParsePrefix("172.30.0.0/24"), 16); got != 72 {
+		t.Fatalf("/24 exact-port prefix len = %d, want protocol+pad+cidr+port bits 72", got)
 	}
-	if got := ipv4L4PrefixLen(netip.MustParsePrefix("172.30.0.11/32")); got != 64 {
-		t.Fatalf("/32 prefix len = %d, want protocol+pad+port+cidr bits 64", got)
+	if got := ipv4L4PrefixLen(netip.MustParsePrefix("172.30.0.11/32"), 16); got != 80 {
+		t.Fatalf("/32 exact-port prefix len = %d, want full key length 80", got)
 	}
-	if ipv4L4LookupPrefixLen != 64 {
-		t.Fatalf("lookup prefix len = %d, want full key length 64", ipv4L4LookupPrefixLen)
+	if got := ipv4L4PrefixLen(netip.MustParsePrefix("172.30.0.0/24"), 12); got != 68 {
+		t.Fatalf("/24 port-prefix len = %d, want protocol+pad+cidr+port-prefix bits 68", got)
+	}
+	if ipv4L4LookupPrefixLen != 80 {
+		t.Fatalf("lookup prefix len = %d, want full key length 80", ipv4L4LookupPrefixLen)
 	}
 }
 

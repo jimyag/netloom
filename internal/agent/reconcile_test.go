@@ -165,7 +165,7 @@ func TestReconcileNodeReportsUnchangedPolicyStats(t *testing.T) {
 	}
 }
 
-func TestReconcileNodeWithTCXInterfaceRequiresExactPortPolicy(t *testing.T) {
+func TestPrepareReconcileWithTCXInterfaceAcceptsPortRangePolicy(t *testing.T) {
 	state := control.DesiredState{
 		Endpoints: []model.Endpoint{{
 			ID:             "pod-a",
@@ -189,13 +189,23 @@ func TestReconcileNodeWithTCXInterfaceRequiresExactPortPolicy(t *testing.T) {
 			}},
 		}},
 	}
-	_, err := ReconcileNodeWithOptions(context.Background(), state, ReconcileOptions{
+	result, targets, _, err := prepareReconcile(context.Background(), state, ReconcileOptions{
 		Node:         "node-a",
 		Store:        dataplane.NewInMemoryPolicyStore(),
 		TCXInterface: "lo",
 	})
-	if err == nil {
-		t.Fatal("expected TCX attach to require exact port policy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.TCXEligible != 1 || len(targets) != 1 {
+		t.Fatalf("tcx eligible/targets = %d/%d, want range policy target", result.TCXEligible, len(targets))
+	}
+	rules, err := dataplane.IPv4L4ACLRulesFromProgramsForDirection(targets[0].programs, model.DirectionIngress)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 2 {
+		t.Fatalf("tcx range rules = %+v, want two port-prefix blocks", rules)
 	}
 }
 
@@ -509,12 +519,11 @@ func TestReconcilerClearsConntrackForNonTCXPolicyChange(t *testing.T) {
 			Name: "web",
 			VPC:  "prod",
 			Rules: []model.SecurityGroupRule{{
-				ID:         "allow-web-range",
+				ID:         "allow-any-cidr",
 				Priority:   100,
 				Direction:  model.DirectionIngress,
-				Protocol:   model.ProtocolTCP,
+				Protocol:   model.ProtocolAny,
 				RemoteCIDR: netip.MustParsePrefix("10.10.0.11/32"),
-				Ports:      []model.PortRange{{From: 443, To: 444}},
 				Action:     model.ActionAllow,
 				Stateful:   true,
 			}},
@@ -527,11 +536,10 @@ func TestReconcilerClearsConntrackForNonTCXPolicyChange(t *testing.T) {
 	if tcxEligibleProgramForDirection(policy.Program{
 		EndpointID: "pod-a",
 		Rules: []policy.Rule{{
-			ID:         "allow-web-range",
+			ID:         "allow-any-cidr",
 			Direction:  model.DirectionIngress,
-			Protocol:   model.ProtocolTCP,
+			Protocol:   model.ProtocolAny,
 			RemoteCIDR: netip.MustParsePrefix("10.10.0.11/32"),
-			Ports:      []model.PortRange{{From: 443, To: 444}},
 			Action:     model.ActionAllow,
 			Stateful:   true,
 		}},
