@@ -637,12 +637,41 @@ func indexCIDRGroups(vpc string, groups []model.CIDRGroup) (map[string][]netip.P
 		for _, cidr := range group.CIDRs {
 			cidrs = append(cidrs, cidr.Masked())
 		}
+		for _, entry := range group.Entries {
+			cidrs = append(cidrs, expandCIDRGroupEntry(entry)...)
+		}
 		sort.SliceStable(cidrs, func(i, j int) bool {
 			return cidrs[i].String() < cidrs[j].String()
 		})
-		out[group.Name] = cidrs
+		out[group.Name] = dedupeCIDRs(cidrs)
 	}
 	return out, nil
+}
+
+func expandCIDRGroupEntry(entry model.CIDRGroupEntry) []netip.Prefix {
+	cidrs := []netip.Prefix{entry.CIDR.Masked()}
+	for _, except := range entry.ExceptCIDRs {
+		except = except.Masked()
+		var next []netip.Prefix
+		for _, cidr := range cidrs {
+			next = append(next, subtractPrefix(cidr, except)...)
+		}
+		cidrs = next
+	}
+	return cidrs
+}
+
+func dedupeCIDRs(cidrs []netip.Prefix) []netip.Prefix {
+	seen := make(map[netip.Prefix]struct{}, len(cidrs))
+	out := make([]netip.Prefix, 0, len(cidrs))
+	for _, cidr := range cidrs {
+		if _, ok := seen[cidr]; ok {
+			continue
+		}
+		seen[cidr] = struct{}{}
+		out = append(out, cidr)
+	}
+	return out
 }
 
 func indexSubnetsByVPC(subnets []model.Subnet) (map[string][]netip.Prefix, error) {

@@ -96,7 +96,7 @@ func TestDesiredStateDrivesTopologyRoutesAndEBPFStyleACL(t *testing.T) {
 	if routeDecision.MatchedBy != "policy-route/https-via-fw" || routeDecision.NextHop.String() != "10.10.0.253" {
 		t.Fatalf("unexpected policy route decision: %+v", routeDecision)
 	}
-	if routeDecision.Translated.String() != "198.51.100.10" || routeDecision.Gateway != "gw-a" {
+	if routeDecision.Translated.String() != "198.51.100.10" || routeDecision.Gateway != "gw-b" {
 		t.Fatalf("expected gateway SNAT to be applied, got: %+v", routeDecision)
 	}
 	serviceDecision, err := topology.Resolve(memoryBackend.TopologyState(), topology.Packet{
@@ -196,6 +196,15 @@ func TestDesiredStateDrivesTopologyRoutesAndEBPFStyleACL(t *testing.T) {
 	})
 	if cidrGroupAllow.Verdict != dataplane.VerdictAllow {
 		t.Fatalf("expected egress tcp/8443 to cidr-group-derived ip to allow, got %+v", cidrGroupAllow)
+	}
+	cidrGroupExceptDrop := dataplane.Evaluate(clientEntries, dataplane.Packet{
+		Direction: dataplane.DirectionEgress,
+		Protocol:  6,
+		RemoteIP:  mustAddr(t, "10.20.200.10"),
+		DestPort:  8443,
+	})
+	if cidrGroupExceptDrop.Verdict != dataplane.VerdictDrop {
+		t.Fatalf("expected egress tcp/8443 inside cidr-group except range to drop, got %+v", cidrGroupExceptDrop)
 	}
 	exceptAllow := dataplane.Evaluate(clientEntries, dataplane.Packet{
 		Direction: dataplane.DirectionEgress,
@@ -315,7 +324,7 @@ const integrationStateJSON = `{
       {"id": "allow-alt", "priority": 100, "direction": "ingress", "protocol": "tcp", "remote_cidr": "10.10.0.10/32", "ports": [{"from": 9090, "to": 9090}], "action": "allow"}
     ]}
   ],
-  "cidr_groups": [{"name": "corp", "vpc": "prod", "cidrs": ["10.20.0.0/16"]}],
+  "cidr_groups": [{"name": "corp", "vpc": "prod", "entries": [{"cidr": "10.20.0.0/16", "except_cidrs": ["10.20.128.0/17"]}]}],
   "dns_records": [
     {"name": "api.example.com", "ips": ["203.0.113.10"]},
     {"name": "api.example.com", "ips": ["203.0.113.20"], "ttl_seconds": 1, "observed_at": "2000-01-01T00:00:00Z"}

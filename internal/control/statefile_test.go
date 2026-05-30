@@ -16,7 +16,7 @@ func TestLoadDesiredStateJSONDecodesSnakeCaseState(t *testing.T) {
 		"nat_rules": [{"name": "egress", "vpc": "prod", "type": "snat", "match_cidr": "10.10.0.0/24", "external_ip": "198.51.100.10"}],
 		"load_balancers": [{"name": "web", "vpc": "prod", "vip": "10.96.0.10", "port": 80, "protocol": "tcp", "backends": [{"ip": "10.10.0.10", "port": 8080, "healthy": true}], "subnets": ["apps"], "health_check": {"enabled": true, "interval": 10, "timeout": 30, "success_count": 2, "failure_count": 4}}],
 		"security_groups": [{"name": "web", "vpc": "prod", "tier": 1, "rules": [{"id": "allow-web", "priority": 10, "direction": "ingress", "protocol": "tcp", "remote_cidr": "10.10.1.0/24", "except_cidrs": ["10.10.1.128/25"], "ports": [{"from": 443, "to": 443}], "action": "allow", "stateful": true}, {"id": "allow-api", "priority": 20, "direction": "egress", "protocol": "tcp", "remote_fqdns": [{"match_name": "api.example.com"}, {"match_pattern": "*.svc.example.com"}], "ports": [{"from": 443, "to": 443}], "action": "allow"}, {"id": "allow-corp", "priority": 30, "direction": "egress", "protocol": "tcp", "remote_cidr_group": "corp", "ports": [{"from": 8443, "to": 8443}], "action": "allow"}, {"id": "allow-icmp-echo", "priority": 40, "direction": "egress", "protocol": "icmp", "remote_cidr": "198.51.100.0/24", "icmp_type": 8, "icmp_code": 0, "action": "allow"}, {"id": "allow-named-http", "priority": 50, "direction": "ingress", "protocol": "tcp", "remote_cidr": "10.10.1.0/24", "named_ports": ["http"], "action": "allow"}, {"id": "allow-world", "priority": 60, "direction": "egress", "protocol": "tcp", "remote_entities": ["world"], "ports": [{"from": 443, "to": 443}], "action": "allow"}]}],
-		"cidr_groups": [{"name": "corp", "vpc": "prod", "cidrs": ["10.20.0.0/16", "2001:db8::/64"]}],
+		"cidr_groups": [{"name": "corp", "vpc": "prod", "cidrs": ["10.20.0.0/16", "2001:db8::/64"], "entries": [{"cidr": "198.51.100.0/24", "except_cidrs": ["198.51.100.128/25"]}]}],
 		"dns_records": [{"name": "api.example.com", "ips": ["203.0.113.10"], "ttl_seconds": 60, "observed_at": "2026-05-30T12:00:00Z"}]
 	}`))
 	if err != nil {
@@ -75,6 +75,9 @@ func TestLoadDesiredStateJSONDecodesSnakeCaseState(t *testing.T) {
 	}
 	if got := state.CIDRGroups[0].CIDRs[1].String(); got != "2001:db8::/64" {
 		t.Fatalf("cidr group cidr = %s, want 2001:db8::/64", got)
+	}
+	if got := state.CIDRGroups[0].Entries[0].ExceptCIDRs[0].String(); got != "198.51.100.128/25" {
+		t.Fatalf("cidr group except cidr = %s, want 198.51.100.128/25", got)
 	}
 	if got := state.DNSRecords[0].IPs[0].String(); got != "203.0.113.10" {
 		t.Fatalf("dns record ip = %s, want 203.0.113.10", got)

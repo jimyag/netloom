@@ -773,10 +773,15 @@ func TestCompileForEndpointWithContextExpandsRemoteCIDRGroup(t *testing.T) {
 		},
 	}, CompileContext{
 		CIDRGroups: []model.CIDRGroup{
-			{Name: "corp", VPC: "prod", CIDRs: []netip.Prefix{
-				netip.MustParsePrefix("10.20.1.1/16"),
-				netip.MustParsePrefix("2001:db8::/64"),
-			}},
+			{
+				Name:  "corp",
+				VPC:   "prod",
+				CIDRs: []netip.Prefix{netip.MustParsePrefix("2001:db8::/64")},
+				Entries: []model.CIDRGroupEntry{{
+					CIDR:        netip.MustParsePrefix("10.20.1.1/16"),
+					ExceptCIDRs: []netip.Prefix{netip.MustParsePrefix("10.20.128.0/17")},
+				}},
+			},
 			{Name: "corp", VPC: "other", CIDRs: []netip.Prefix{netip.MustParsePrefix("192.0.2.0/24")}},
 		},
 	})
@@ -788,7 +793,7 @@ func TestCompileForEndpointWithContextExpandsRemoteCIDRGroup(t *testing.T) {
 	}
 	gotCIDRs := []string{program.Rules[0].RemoteCIDR.String(), program.Rules[1].RemoteCIDR.String()}
 	sort.Strings(gotCIDRs)
-	wantCIDRs := []string{"10.20.0.0/16", "2001:db8::/64"}
+	wantCIDRs := []string{"10.20.0.0/17", "2001:db8::/64"}
 	for i := range wantCIDRs {
 		if gotCIDRs[i] != wantCIDRs[i] {
 			t.Fatalf("cidr group cidrs = %v, want %v", gotCIDRs, wantCIDRs)

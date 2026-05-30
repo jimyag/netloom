@@ -204,10 +204,12 @@ to same-VPC gateway LAN IPs whose gateway node differs from the protected
 endpoint's node. The expanded entries use the same CIDR fallback and TCX
 projection path as direct CIDR rules.
 
-CIDR groups follow Cilium's `CIDRGroupRef` idea for reusable external CIDR
-sets. Netloom models those sets as desired-state `cidr_groups`; a
+CIDR groups follow Cilium's `CIDRGroupRef` and `CIDRSet` idea for reusable
+external CIDR sets. Netloom models those sets as desired-state `cidr_groups`; a
 `SecurityGroupRule` can refer to one with `remote_cidr_group`, and the compiler
-expands the group into one CIDR-backed policy entry per prefix. The expanded
+expands the group into one CIDR-backed policy entry per prefix. A group may use
+the compact `cidrs` list or `entries` with per-CIDR `except_cidrs`; entry-level
+exceptions are subtracted before policy map entries are generated. The expanded
 entries share the same CIDR identity and CIDR fallback path as direct
 `remote_cidr` rules, so the userspace evaluator and TCX projection do not need
 a separate rule type.
@@ -216,9 +218,10 @@ Direct `remote_cidr` rules also support Cilium `CIDRRule.ExceptCIDRs` style
 exceptions through `except_cidrs`. Validation requires every exception prefix
 to be contained by the parent CIDR and to use the same IP family. The compiler
 subtracts exceptions from the parent prefix and emits the minimal remaining
-CIDR set as independent policy entries. As in Cilium's current validation path,
-exceptions are intentionally limited to direct CIDR rules and are rejected when
-combined with `remote_cidr_group`.
+CIDR set as independent policy entries. Rule-level exceptions are intentionally
+limited to direct CIDR rules and are rejected when combined with
+`remote_cidr_group`; reusable group-level exceptions belong on CIDRGroup
+`entries`.
 
 FQDN egress policy follows Cilium's `toFQDNs` split between DNS-derived state
 and endpoint policy. A `SecurityGroupRule` can use `remote_fqdns` selectors with

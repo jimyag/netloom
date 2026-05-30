@@ -693,6 +693,10 @@ func TestCIDRGroupValidation(t *testing.T) {
 		Name:  "corp",
 		VPC:   "prod",
 		CIDRs: []netip.Prefix{netip.MustParsePrefix("10.20.0.0/16"), netip.MustParsePrefix("2001:db8::/64")},
+		Entries: []CIDRGroupEntry{{
+			CIDR:        netip.MustParsePrefix("198.51.100.0/24"),
+			ExceptCIDRs: []netip.Prefix{netip.MustParsePrefix("198.51.100.128/25")},
+		}},
 	}
 	if err := group.Validate(); err != nil {
 		t.Fatal(err)
@@ -705,8 +709,11 @@ func TestCIDRGroupValidation(t *testing.T) {
 	}{
 		{name: "name required", group: CIDRGroup{VPC: "prod", CIDRs: group.CIDRs}, wantErr: "name is required"},
 		{name: "vpc required", group: CIDRGroup{Name: "corp", CIDRs: group.CIDRs}, wantErr: "vpc is required"},
-		{name: "cidrs required", group: CIDRGroup{Name: "corp", VPC: "prod"}, wantErr: "cidrs are required"},
+		{name: "cidrs or entries required", group: CIDRGroup{Name: "corp", VPC: "prod"}, wantErr: "cidrs or entries are required"},
 		{name: "duplicate cidr", group: CIDRGroup{Name: "corp", VPC: "prod", CIDRs: []netip.Prefix{netip.MustParsePrefix("10.20.0.1/16"), netip.MustParsePrefix("10.20.0.0/16")}}, wantErr: "duplicated"},
+		{name: "duplicate entry cidr", group: CIDRGroup{Name: "corp", VPC: "prod", CIDRs: []netip.Prefix{netip.MustParsePrefix("10.20.0.0/16")}, Entries: []CIDRGroupEntry{{CIDR: netip.MustParsePrefix("10.20.0.1/16")}}}, wantErr: "duplicated"},
+		{name: "entry except family mismatch", group: CIDRGroup{Name: "corp", VPC: "prod", Entries: []CIDRGroupEntry{{CIDR: netip.MustParsePrefix("10.20.0.0/16"), ExceptCIDRs: []netip.Prefix{netip.MustParsePrefix("2001:db8::/64")}}}}, wantErr: "family must match"},
+		{name: "entry except outside cidr", group: CIDRGroup{Name: "corp", VPC: "prod", Entries: []CIDRGroupEntry{{CIDR: netip.MustParsePrefix("10.20.0.0/16"), ExceptCIDRs: []netip.Prefix{netip.MustParsePrefix("10.30.0.0/16")}}}}, wantErr: "must be contained"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

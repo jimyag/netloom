@@ -169,9 +169,15 @@ type SecurityGroup struct {
 }
 
 type CIDRGroup struct {
-	Name  string         `json:"name"`
-	VPC   string         `json:"vpc"`
-	CIDRs []netip.Prefix `json:"cidrs"`
+	Name    string           `json:"name"`
+	VPC     string           `json:"vpc"`
+	CIDRs   []netip.Prefix   `json:"cidrs"`
+	Entries []CIDRGroupEntry `json:"entries"`
+}
+
+type CIDRGroupEntry struct {
+	CIDR        netip.Prefix   `json:"cidr"`
+	ExceptCIDRs []netip.Prefix `json:"except_cidrs"`
 }
 
 type SecurityGroupRule struct {
@@ -757,8 +763,8 @@ func (g CIDRGroup) Validate() error {
 	if g.VPC == "" {
 		return errors.New("cidr group vpc is required")
 	}
-	if len(g.CIDRs) == 0 {
-		return errors.New("cidr group cidrs are required")
+	if len(g.CIDRs) == 0 && len(g.Entries) == 0 {
+		return errors.New("cidr group cidrs or entries are required")
 	}
 	seen := make(map[netip.Prefix]struct{}, len(g.CIDRs))
 	for i, cidr := range g.CIDRs {
@@ -770,6 +776,41 @@ func (g CIDRGroup) Validate() error {
 			return fmt.Errorf("cidr group cidr %s is duplicated", cidr)
 		}
 		seen[cidr] = struct{}{}
+	}
+	for i, entry := range g.Entries {
+		if err := entry.Validate(); err != nil {
+			return fmt.Errorf("cidr group entry %d: %w", i, err)
+		}
+		cidr := entry.CIDR.Masked()
+		if _, ok := seen[cidr]; ok {
+			return fmt.Errorf("cidr group cidr %s is duplicated", cidr)
+		}
+		seen[cidr] = struct{}{}
+	}
+	return nil
+}
+
+func (e CIDRGroupEntry) Validate() error {
+	if !e.CIDR.IsValid() {
+		return errors.New("cidr is invalid")
+	}
+	cidr := e.CIDR.Masked()
+	seen := make(map[netip.Prefix]struct{}, len(e.ExceptCIDRs))
+	for i, except := range e.ExceptCIDRs {
+		if !except.IsValid() {
+			return fmt.Errorf("except cidr %d is invalid", i)
+		}
+		except = except.Masked()
+		if except.Addr().Is4() != cidr.Addr().Is4() {
+			return fmt.Errorf("except cidr %s family must match cidr", except)
+		}
+		if !prefixContainsPrefix(cidr, except) {
+			return fmt.Errorf("except cidr %s must be contained within cidr %s", except, cidr)
+		}
+		if _, ok := seen[except]; ok {
+			return fmt.Errorf("except cidr %s is duplicated", except)
+		}
+		seen[except] = struct{}{}
 	}
 	return nil
 }

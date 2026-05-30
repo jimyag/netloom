@@ -888,7 +888,11 @@ func TestReconcileNodeCompilesCIDRGroupRules(t *testing.T) {
 		CIDRGroups: []model.CIDRGroup{{
 			Name:  "corp",
 			VPC:   "prod",
-			CIDRs: []netip.Prefix{netip.MustParsePrefix("10.20.0.0/16"), netip.MustParsePrefix("10.30.0.0/16")},
+			CIDRs: []netip.Prefix{netip.MustParsePrefix("10.30.0.0/16")},
+			Entries: []model.CIDRGroupEntry{{
+				CIDR:        netip.MustParsePrefix("10.20.0.0/16"),
+				ExceptCIDRs: []netip.Prefix{netip.MustParsePrefix("10.20.128.0/17")},
+			}},
 		}},
 	}
 	store := dataplane.NewInMemoryPolicyStore()
@@ -908,6 +912,15 @@ func TestReconcileNodeCompilesCIDRGroupRules(t *testing.T) {
 	})
 	if decision.Verdict != dataplane.VerdictAllow {
 		t.Fatalf("expected cidr-group-derived egress allow, got %+v", decision)
+	}
+	excluded := dataplane.Evaluate(entries, dataplane.Packet{
+		Direction: dataplane.DirectionEgress,
+		Protocol:  6,
+		RemoteIP:  netip.MustParseAddr("10.20.200.10"),
+		DestPort:  443,
+	})
+	if excluded.Verdict != dataplane.VerdictDrop {
+		t.Fatalf("expected cidr-group except range to drop, got %+v", excluded)
 	}
 }
 

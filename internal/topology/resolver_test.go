@@ -497,6 +497,53 @@ func TestResolvePolicyRouteBeatsStaticRoute(t *testing.T) {
 	}
 }
 
+func TestResolvePolicyRouteSNATUsesNextHopGateway(t *testing.T) {
+	state := State{
+		PolicyRoutes: []model.PolicyRoute{{
+			Name:     "private-via-fw",
+			VPC:      "prod",
+			Priority: 100,
+			Match: model.RouteMatch{
+				Source:      netip.MustParsePrefix("10.10.0.0/24"),
+				Destination: netip.MustParsePrefix("172.16.0.0/16"),
+			},
+			Action: model.RouteAction{
+				Type:    model.ActionReroute,
+				NextHop: netip.MustParseAddr("10.10.0.253"),
+			},
+		}},
+		Gateways: map[string]model.Gateway{
+			"gw-a": {Name: "gw-a", VPC: "prod", Node: "node-a", LANIP: netip.MustParseAddr("10.10.0.254")},
+			"gw-b": {Name: "gw-b", VPC: "prod", Node: "node-b", LANIP: netip.MustParseAddr("10.10.0.253")},
+		},
+		NATRules: map[string]model.NATRule{
+			"egress": {
+				Name:       "egress",
+				VPC:        "prod",
+				Type:       model.ActionSNAT,
+				MatchCIDR:  netip.MustParsePrefix("10.10.0.0/24"),
+				ExternalIP: netip.MustParseAddr("198.51.100.10"),
+			},
+		},
+	}
+	for i := 0; i < 20; i++ {
+		decision, err := Resolve(state, Packet{
+			VPC:    "prod",
+			Source: netip.MustParseAddr("10.10.0.10"),
+			Dest:   netip.MustParseAddr("172.16.1.10"),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if decision.Gateway != "gw-b" {
+			t.Fatalf("gateway = %s, want next-hop gateway gw-b", decision.Gateway)
+		}
+		if decision.Translated != netip.MustParseAddr("198.51.100.10") {
+			t.Fatalf("translated = %s, want SNAT external ip", decision.Translated)
+		}
+	}
+}
+
 func TestResolveECMPPolicyRouteReturnsNextHops(t *testing.T) {
 	state := State{
 		PolicyRoutes: []model.PolicyRoute{{

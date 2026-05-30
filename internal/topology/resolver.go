@@ -337,18 +337,54 @@ func applyNATAndGateway(state State, packet Packet, decision Decision) Decision 
 	if decision.Action == "" {
 		decision.Action = model.ActionAllow
 	}
-	for _, rule := range state.NATRules {
+	for _, rule := range sortedNATRules(state.NATRules) {
 		if rule.VPC != packet.VPC || rule.Type != model.ActionSNAT || !rule.MatchCIDR.Contains(packet.Source) {
 			continue
 		}
 		decision.Translated = rule.ExternalIP
 		break
 	}
-	for _, gateway := range state.Gateways {
+	for _, gateway := range sortedGateways(state.Gateways) {
+		if gateway.VPC != packet.VPC {
+			continue
+		}
+		if decision.NextHop.IsValid() && gateway.LANIP != decision.NextHop {
+			continue
+		}
+		decision.Gateway = gateway.Name
+		return decision
+	}
+	for _, gateway := range sortedGateways(state.Gateways) {
 		if gateway.VPC == packet.VPC {
 			decision.Gateway = gateway.Name
-			break
+			return decision
 		}
 	}
 	return decision
+}
+
+func sortedNATRules(rules map[string]model.NATRule) []model.NATRule {
+	names := make([]string, 0, len(rules))
+	for name := range rules {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]model.NATRule, 0, len(names))
+	for _, name := range names {
+		out = append(out, rules[name])
+	}
+	return out
+}
+
+func sortedGateways(gateways map[string]model.Gateway) []model.Gateway {
+	names := make([]string, 0, len(gateways))
+	for name := range gateways {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]model.Gateway, 0, len(names))
+	for _, name := range names {
+		out = append(out, gateways[name])
+	}
+	return out
 }
