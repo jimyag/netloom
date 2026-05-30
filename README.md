@@ -214,7 +214,8 @@ task build
 `task test` 会运行所有 Go 包测试，包括 `tests/integration`；`task test:e2e` 会启动 Docker Compose lab，用多个容器模拟节点，验证 OVN Northbound、控制面 state-file、OVN desired-state 删除、基于 netlink 的 Linux netns 工作负载、跨节点连通性、策略路由输出、运行时 DNS 观测刷新 FQDN 安全组策略、remote-group 安全组策略、eBPF/TCX ACL drop/allow 和 stale namespace cleanup。
 
 agent 以 `NETLOOM_STATE_FILE` 运行时可额外设置 `NETLOOM_DNS_OBSERVATIONS_FILE=/path/dns.json`，让每轮 reconcile 合并运行时 DNS 观测记录并刷新 `remote_fqdns` 派生策略；文件可以是 `{"dns_records":[...]}` 文档或 `DNSRecord` 数组，字段与 desired-state `dns_records` 相同。
-仓库内的 `internal/dnsobserver` 包可把 DNS wire response 中的 `A`/`AAAA`/`CNAME` answer 解析成同一组 `DNSRecord`，用于后续接入 DNS proxy 或 eBPF/sidecar 捕获路径。
+`netloom-dns-observer` 可作为 DNS proxy/sidecar 前置观测入口使用：它从 `base64-lines`、`hex-lines` 或单个 `raw` DNS wire response 输入中解析 `A`/`AAAA`/`CNAME` answer，并原子合并写入同一个 observations 文件，例如 `netloom-dns-observer -observations /tmp/netloom-dns.json < responses.b64`。
+仓库内的 `internal/dnsobserver` 包提供同一解析能力，便于后续把数据源替换成 eBPF、NFQUEUE 或真实 DNS proxy 捕获路径，而不改变 agent 的策略编译接口。
 
 controller 以 `NETLOOM_STATE_FILE` 运行时可额外设置 `NETLOOM_LB_HEALTH_PROBE=1`，对开启 `health_check.enabled` 的 TCP LoadBalancer backend 做主动 TCP 探测，并在本轮 reconcile 前把失败 backend 标记为 unhealthy；显式 `healthy=false` 的 backend 视为人工摘除，不会被探测恢复。
 
