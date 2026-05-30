@@ -444,6 +444,10 @@ func TestDNSRecordValidation(t *testing.T) {
 	if err := record.Validate(); err != nil {
 		t.Fatal(err)
 	}
+	underscoreRecord := DNSRecord{Name: "_api.example.com", IPs: []netip.Addr{netip.MustParseAddr("203.0.113.11")}}
+	if err := underscoreRecord.Validate(); err != nil {
+		t.Fatal(err)
+	}
 	ttlRecord := DNSRecord{
 		Name:       "api.example.com",
 		IPs:        []netip.Addr{netip.MustParseAddr("203.0.113.10")},

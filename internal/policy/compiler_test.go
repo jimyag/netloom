@@ -317,6 +317,7 @@ func TestCompileForEndpointWithContextExpandsRemoteFQDNsToCIDRs(t *testing.T) {
 		DNSRecords: []model.DNSRecord{
 			{Name: "api.example.com", IPs: []netip.Addr{netip.MustParseAddr("203.0.113.10")}},
 			{Name: "payments.svc.example.com", IPs: []netip.Addr{netip.MustParseAddr("2001:db8::10")}},
+			{Name: "deep.payments.svc.example.com", IPs: []netip.Addr{netip.MustParseAddr("203.0.113.30")}},
 			{Name: "other.example.com", IPs: []netip.Addr{netip.MustParseAddr("203.0.113.20")}},
 		},
 	})
@@ -343,6 +344,60 @@ func TestCompileForEndpointWithContextExpandsRemoteFQDNsToCIDRs(t *testing.T) {
 		}
 		if entry.Key.RemoteIdentity == 0 {
 			t.Fatalf("fqdn-derived map entry should use cidr identity: %+v", entry)
+		}
+	}
+}
+
+func TestCompileForEndpointWithContextFQDNPatternUsesCiliumLabelWildcards(t *testing.T) {
+	endpoint := model.Endpoint{
+		ID:             "pod-a",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"client"},
+	}
+	program, err := CompileForEndpointWithContext(endpoint, map[string]model.SecurityGroup{
+		"client": {
+			Name: "client",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:        "allow-svc",
+				Priority:  100,
+				Direction: model.DirectionEgress,
+				Protocol:  model.ProtocolTCP,
+				RemoteFQDNs: []model.FQDNSelector{
+					{MatchPattern: "*.svc.example.com"},
+					{MatchPattern: "**.deep.example.com"},
+				},
+				Ports:  []model.PortRange{{From: 443, To: 443}},
+				Action: model.ActionAllow,
+			}},
+		},
+	}, CompileContext{
+		DNSRecords: []model.DNSRecord{
+			{Name: "api.svc.example.com", IPs: []netip.Addr{netip.MustParseAddr("203.0.113.10")}},
+			{Name: "a.b.svc.example.com", IPs: []netip.Addr{netip.MustParseAddr("203.0.113.20")}},
+			{Name: "one.deep.example.com", IPs: []netip.Addr{netip.MustParseAddr("203.0.113.30")}},
+			{Name: "one.two.deep.example.com", IPs: []netip.Addr{netip.MustParseAddr("203.0.113.40")}},
+			{Name: "deep.example.com", IPs: []netip.Addr{netip.MustParseAddr("203.0.113.50")}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotCIDRs := make([]string, 0, len(program.Rules))
+	for _, rule := range program.Rules {
+		gotCIDRs = append(gotCIDRs, rule.RemoteCIDR.String())
+	}
+	sort.Strings(gotCIDRs)
+	wantCIDRs := []string{"203.0.113.10/32", "203.0.113.30/32", "203.0.113.40/32"}
+	if len(gotCIDRs) != len(wantCIDRs) {
+		t.Fatalf("fqdn cidrs = %v, want %v", gotCIDRs, wantCIDRs)
+	}
+	for i := range wantCIDRs {
+		if gotCIDRs[i] != wantCIDRs[i] {
+			t.Fatalf("fqdn cidrs = %v, want %v", gotCIDRs, wantCIDRs)
 		}
 	}
 }

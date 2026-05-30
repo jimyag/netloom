@@ -753,7 +753,7 @@ func validateDNSName(name string, allowWildcard bool) error {
 		case r >= 'a' && r <= 'z':
 		case r >= 'A' && r <= 'Z':
 		case r >= '0' && r <= '9':
-		case r == '-' || r == '.':
+		case r == '-' || r == '.' || r == '_':
 		case allowWildcard && r == '*':
 		default:
 			return fmt.Errorf("dns name %q contains unsupported character %q", name, r)

@@ -5,7 +5,7 @@ import (
 	"hash/fnv"
 	"math"
 	"net/netip"
-	"path"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -330,7 +330,7 @@ func fqdnSelectorsMatch(selectors []model.FQDNSelector, name string) (bool, erro
 			return true, nil
 		}
 		if selector.MatchPattern != "" {
-			matched, err := path.Match(normalizeDNSName(selector.MatchPattern), name)
+			matched, err := fqdnPatternMatches(selector.MatchPattern, name)
 			if err != nil {
 				return false, fmt.Errorf("invalid fqdn pattern %q: %w", selector.MatchPattern, err)
 			}
@@ -341,6 +341,40 @@ func fqdnSelectorsMatch(selectors []model.FQDNSelector, name string) (bool, erro
 	}
 	return false, nil
 }
+
+func fqdnPatternMatches(pattern, name string) (bool, error) {
+	pattern = strings.TrimSpace(pattern)
+	if dnsWildcardPattern(pattern) {
+		return normalizeDNSName(name) != "", nil
+	}
+	pattern = normalizeDNSName(pattern)
+	name = normalizeDNSName(name)
+	regexPattern := fqdnPatternRegexp(pattern)
+	matcher, err := regexp.Compile("^" + regexPattern + "$")
+	if err != nil {
+		return false, err
+	}
+	return matcher.MatchString(name), nil
+}
+
+func fqdnPatternRegexp(pattern string) string {
+	if strings.HasPrefix(pattern, "**.") {
+		return `([-a-z0-9_]+\.)+` + fqdnPatternRegexp(strings.TrimPrefix(pattern, "**."))
+	}
+	regexPattern := strings.ReplaceAll(pattern, ".", `\.`)
+	regexPattern = wildcardPattern.ReplaceAllString(regexPattern, `[-a-z0-9_]*`)
+	return regexPattern
+}
+
+func dnsWildcardPattern(pattern string) bool {
+	pattern = strings.TrimSpace(pattern)
+	if strings.HasSuffix(pattern, ".") {
+		pattern = strings.TrimSuffix(pattern, ".")
+	}
+	return pattern != "" && strings.Trim(pattern, "*") == ""
+}
+
+var wildcardPattern = regexp.MustCompile(`\*+`)
 
 func indexRemoteGroupMembers(vpc string, groups map[string]model.SecurityGroup, endpoints []model.Endpoint) (map[string][]model.Endpoint, error) {
 	if endpoints == nil {
