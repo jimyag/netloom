@@ -147,6 +147,9 @@ func expandRule(endpoint model.Endpoint, securityGroup string, rule model.Securi
 	if rule.RemoteCIDRGroup != "" {
 		return expandCIDRGroupRule(base, cidrGroups)
 	}
+	if rule.RemoteCIDR.IsValid() && len(rule.ExceptCIDRs) > 0 {
+		return expandCIDRExceptRule(base, rule.ExceptCIDRs), nil
+	}
 	if rule.RemoteGroup == "" || membersByGroup == nil {
 		return []Rule{base}, nil
 	}
@@ -185,6 +188,94 @@ func expandCIDRGroupRule(base Rule, groups map[string][]netip.Prefix) ([]Rule, e
 		out = append(out, expanded)
 	}
 	return out, nil
+}
+
+func expandCIDRExceptRule(base Rule, exceptCIDRs []netip.Prefix) []Rule {
+	cidrs := []netip.Prefix{base.RemoteCIDR.Masked()}
+	for _, except := range exceptCIDRs {
+		except = except.Masked()
+		var next []netip.Prefix
+		for _, cidr := range cidrs {
+			next = append(next, subtractPrefix(cidr, except)...)
+		}
+		cidrs = next
+	}
+	sort.SliceStable(cidrs, func(i, j int) bool {
+		return cidrs[i].String() < cidrs[j].String()
+	})
+	out := make([]Rule, 0, len(cidrs))
+	for _, cidr := range cidrs {
+		expanded := base
+		expanded.RemoteCIDR = cidr
+		out = append(out, expanded)
+	}
+	return out
+}
+
+func subtractPrefix(base, except netip.Prefix) []netip.Prefix {
+	base = base.Masked()
+	except = except.Masked()
+	if !prefixContainsPrefix(base, except) {
+		return []netip.Prefix{base}
+	}
+	if base == except {
+		return nil
+	}
+	left, right := splitPrefix(base)
+	out := subtractPrefix(left, except)
+	out = append(out, subtractPrefix(right, except)...)
+	return out
+}
+
+func splitPrefix(prefix netip.Prefix) (netip.Prefix, netip.Prefix) {
+	bits := prefix.Bits()
+	nextBits := bits + 1
+	left := netip.PrefixFrom(prefix.Addr(), nextBits).Masked()
+	rightAddr := setPrefixBit(prefix.Addr(), bits)
+	right := netip.PrefixFrom(rightAddr, nextBits).Masked()
+	return left, right
+}
+
+func setPrefixBit(addr netip.Addr, bit int) netip.Addr {
+	if addr.Is4() {
+		raw := addr.As4()
+		raw[bit/8] |= 1 << (7 - uint(bit%8))
+		return netip.AddrFrom4(raw)
+	}
+	raw := addr.As16()
+	raw[bit/8] |= 1 << (7 - uint(bit%8))
+	return netip.AddrFrom16(raw)
+}
+
+func prefixContainsPrefix(parent, child netip.Prefix) bool {
+	return parent.IsValid() && child.IsValid() &&
+		parent.Addr().Is4() == child.Addr().Is4() &&
+		parent.Bits() <= child.Bits() &&
+		parent.Contains(child.Addr()) &&
+		parent.Contains(prefixLastAddr(child))
+}
+
+func prefixLastAddr(prefix netip.Prefix) netip.Addr {
+	addr := prefix.Addr()
+	bits := 128
+	bytes := addr.As16()
+	if addr.Is4() {
+		bits = 32
+		raw := addr.As4()
+		bytes = [16]byte{}
+		copy(bytes[12:], raw[:])
+	}
+	for bit := prefix.Bits(); bit < bits; bit++ {
+		byteIndex := bit / 8
+		if addr.Is4() {
+			byteIndex += 12
+		}
+		bytes[byteIndex] |= 1 << (7 - uint(bit%8))
+	}
+	if addr.Is4() {
+		return netip.AddrFrom4([4]byte{bytes[12], bytes[13], bytes[14], bytes[15]})
+	}
+	return netip.AddrFrom16(bytes)
 }
 
 func expandFQDNRule(base Rule, selectors []model.FQDNSelector, records map[string][]netip.Addr) ([]Rule, error) {

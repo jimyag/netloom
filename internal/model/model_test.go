@@ -504,6 +504,75 @@ func TestSecurityGroupRuleValidatesRemoteCIDRGroupExclusivity(t *testing.T) {
 	}
 }
 
+func TestSecurityGroupRuleValidatesExceptCIDRs(t *testing.T) {
+	rule := SecurityGroupRule{
+		ID:          "allow-corp",
+		Direction:   DirectionEgress,
+		Protocol:    ProtocolTCP,
+		RemoteCIDR:  netip.MustParsePrefix("10.20.0.0/16"),
+		ExceptCIDRs: []netip.Prefix{netip.MustParsePrefix("10.20.10.0/24")},
+		Ports:       []PortRange{{From: 443, To: 443}},
+		Action:      ActionAllow,
+	}
+	if err := rule.Validate(); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name    string
+		rule    SecurityGroupRule
+		wantErr string
+	}{
+		{
+			name: "requires remote cidr",
+			rule: SecurityGroupRule{
+				ID:              "bad-cidr-group-except",
+				Direction:       DirectionEgress,
+				Protocol:        ProtocolTCP,
+				RemoteCIDRGroup: "corp",
+				ExceptCIDRs:     []netip.Prefix{netip.MustParsePrefix("10.20.10.0/24")},
+				Action:          ActionAllow,
+			},
+			wantErr: "require remote cidr",
+		},
+		{
+			name: "family mismatch",
+			rule: SecurityGroupRule{
+				ID:          "bad-family",
+				Direction:   DirectionEgress,
+				Protocol:    ProtocolTCP,
+				RemoteCIDR:  netip.MustParsePrefix("10.20.0.0/16"),
+				ExceptCIDRs: []netip.Prefix{netip.MustParsePrefix("2001:db8::/64")},
+				Action:      ActionAllow,
+			},
+			wantErr: "family must match",
+		},
+		{
+			name: "outside remote cidr",
+			rule: SecurityGroupRule{
+				ID:          "bad-outside",
+				Direction:   DirectionEgress,
+				Protocol:    ProtocolTCP,
+				RemoteCIDR:  netip.MustParsePrefix("10.20.0.0/16"),
+				ExceptCIDRs: []netip.Prefix{netip.MustParsePrefix("10.30.0.0/16")},
+				Action:      ActionAllow,
+			},
+			wantErr: "must be contained",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.rule.Validate()
+			if err == nil {
+				t.Fatal("expected validation to fail")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error %q does not contain %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestNATRuleValidateKubeOVNStyleNAT(t *testing.T) {
 	tests := []struct {
 		name    string

@@ -460,3 +460,125 @@ func TestCompileForEndpointWithContextRejectsUnknownRemoteCIDRGroup(t *testing.T
 		t.Fatal("expected unknown remote cidr group to fail")
 	}
 }
+
+func TestCompileForEndpointExpandsRemoteCIDRExceptCIDRs(t *testing.T) {
+	endpoint := model.Endpoint{
+		ID:             "pod-a",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"client"},
+	}
+	program, err := CompileForEndpoint(endpoint, map[string]model.SecurityGroup{
+		"client": {
+			Name: "client",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:          "allow-corp-minus-db",
+				Priority:    100,
+				Direction:   model.DirectionEgress,
+				Protocol:    model.ProtocolTCP,
+				RemoteCIDR:  netip.MustParsePrefix("10.20.0.0/24"),
+				ExceptCIDRs: []netip.Prefix{netip.MustParsePrefix("10.20.0.128/25")},
+				Ports:       []model.PortRange{{From: 443, To: 443}},
+				Action:      model.ActionAllow,
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(program.Rules) != 1 {
+		t.Fatalf("rules = %d, want 1 remaining CIDR", len(program.Rules))
+	}
+	if program.Rules[0].RemoteCIDR != netip.MustParsePrefix("10.20.0.0/25") {
+		t.Fatalf("remote cidr = %s, want 10.20.0.0/25", program.Rules[0].RemoteCIDR)
+	}
+	if len(program.MapEntries) != 1 || program.MapEntries[0].RemoteCIDR != netip.MustParsePrefix("10.20.0.0/25") {
+		t.Fatalf("map entries = %+v, want one /25 entry", program.MapEntries)
+	}
+}
+
+func TestCompileForEndpointExpandsRemoteCIDRMultipleExceptCIDRs(t *testing.T) {
+	endpoint := model.Endpoint{
+		ID:             "pod-a",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"client"},
+	}
+	program, err := CompileForEndpoint(endpoint, map[string]model.SecurityGroup{
+		"client": {
+			Name: "client",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:          "allow-corp-minus-two-hosts",
+				Priority:    100,
+				Direction:   model.DirectionEgress,
+				Protocol:    model.ProtocolTCP,
+				RemoteCIDR:  netip.MustParsePrefix("192.0.2.0/30"),
+				ExceptCIDRs: []netip.Prefix{netip.MustParsePrefix("192.0.2.1/32"), netip.MustParsePrefix("192.0.2.2/32")},
+				Ports:       []model.PortRange{{From: 443, To: 443}},
+				Action:      model.ActionAllow,
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotCIDRs := make([]string, 0, len(program.Rules))
+	for _, rule := range program.Rules {
+		gotCIDRs = append(gotCIDRs, rule.RemoteCIDR.String())
+	}
+	sort.Strings(gotCIDRs)
+	wantCIDRs := []string{"192.0.2.0/32", "192.0.2.3/32"}
+	if len(gotCIDRs) != len(wantCIDRs) {
+		t.Fatalf("cidrs = %v, want %v", gotCIDRs, wantCIDRs)
+	}
+	for i := range wantCIDRs {
+		if gotCIDRs[i] != wantCIDRs[i] {
+			t.Fatalf("cidrs = %v, want %v", gotCIDRs, wantCIDRs)
+		}
+	}
+}
+
+func TestCompileForEndpointExpandsIPv6RemoteCIDRExceptCIDRs(t *testing.T) {
+	endpoint := model.Endpoint{
+		ID:             "pod-a",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("fd00:10::10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"client"},
+	}
+	program, err := CompileForEndpoint(endpoint, map[string]model.SecurityGroup{
+		"client": {
+			Name: "client",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:          "allow-v6-minus-half",
+				Priority:    100,
+				Direction:   model.DirectionEgress,
+				Protocol:    model.ProtocolTCP,
+				RemoteCIDR:  netip.MustParsePrefix("2001:db8:10::/64"),
+				ExceptCIDRs: []netip.Prefix{netip.MustParsePrefix("2001:db8:10::8000:0:0:0/65")},
+				Ports:       []model.PortRange{{From: 443, To: 443}},
+				Action:      model.ActionAllow,
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(program.Rules) != 1 {
+		t.Fatalf("rules = %d, want 1 remaining CIDR", len(program.Rules))
+	}
+	if program.Rules[0].RemoteCIDR != netip.MustParsePrefix("2001:db8:10::/65") {
+		t.Fatalf("remote cidr = %s, want 2001:db8:10::/65", program.Rules[0].RemoteCIDR)
+	}
+	if len(program.MapEntries) != 1 || program.MapEntries[0].RemoteCIDR != netip.MustParsePrefix("2001:db8:10::/65") {
+		t.Fatalf("map entries = %+v, want one IPv6 /65 entry", program.MapEntries)
+	}
+}

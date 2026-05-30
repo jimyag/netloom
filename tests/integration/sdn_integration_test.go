@@ -51,7 +51,7 @@ func TestDesiredStateDrivesTopologyRoutesAndEBPFStyleACL(t *testing.T) {
 		t.Fatalf("security group rules for pod-b were not compiled, got: %+v", memoryBackend.PolicyProgram)
 	}
 	clientProgram, ok := memoryBackend.PolicyProgram["pod-a"]
-	if !ok || len(clientProgram.Rules) != 2 {
+	if !ok || len(clientProgram.Rules) != 3 {
 		t.Fatalf("egress rules for pod-a were not compiled, got: %+v", memoryBackend.PolicyProgram)
 	}
 	if !hasOVNCommand(ovnRecorder.Operations(), "lr-policy-add") {
@@ -193,6 +193,24 @@ func TestDesiredStateDrivesTopologyRoutesAndEBPFStyleACL(t *testing.T) {
 	if cidrGroupAllow.Verdict != dataplane.VerdictAllow {
 		t.Fatalf("expected egress tcp/8443 to cidr-group-derived ip to allow, got %+v", cidrGroupAllow)
 	}
+	exceptAllow := dataplane.Evaluate(clientEntries, dataplane.Packet{
+		Direction: dataplane.DirectionEgress,
+		Protocol:  6,
+		RemoteIP:  mustAddr(t, "192.0.2.10"),
+		DestPort:  9443,
+	})
+	if exceptAllow.Verdict != dataplane.VerdictAllow {
+		t.Fatalf("expected egress tcp/9443 outside except cidr to allow, got %+v", exceptAllow)
+	}
+	exceptDrop := dataplane.Evaluate(clientEntries, dataplane.Packet{
+		Direction: dataplane.DirectionEgress,
+		Protocol:  6,
+		RemoteIP:  mustAddr(t, "192.0.2.200"),
+		DestPort:  9443,
+	})
+	if exceptDrop.Verdict != dataplane.VerdictDrop {
+		t.Fatalf("expected egress tcp/9443 inside except cidr to drop, got %+v", exceptDrop)
+	}
 }
 
 func hasOVNCommand(ops []ovn.Operation, command string) bool {
@@ -240,7 +258,8 @@ const integrationStateJSON = `{
   "security_groups": [
     {"name": "client", "vpc": "prod", "rules": [
       {"id": "client-egress-api", "priority": 100, "direction": "egress", "protocol": "tcp", "remote_fqdns": [{"match_name": "api.example.com"}], "ports": [{"from": 443, "to": 443}], "action": "allow"},
-      {"id": "client-egress-corp", "priority": 90, "direction": "egress", "protocol": "tcp", "remote_cidr_group": "corp", "ports": [{"from": 8443, "to": 8443}], "action": "allow"}
+      {"id": "client-egress-corp", "priority": 90, "direction": "egress", "protocol": "tcp", "remote_cidr_group": "corp", "ports": [{"from": 8443, "to": 8443}], "action": "allow"},
+      {"id": "client-egress-docs", "priority": 80, "direction": "egress", "protocol": "tcp", "remote_cidr": "192.0.2.0/24", "except_cidrs": ["192.0.2.128/25"], "ports": [{"from": 9443, "to": 9443}], "action": "allow"}
     ]},
     {"name": "server", "vpc": "prod", "rules": [
       {"id": "drop-web", "priority": 200, "direction": "ingress", "protocol": "tcp", "remote_cidr": "10.10.0.10/32", "ports": [{"from": 8080, "to": 8080}], "action": "drop"},

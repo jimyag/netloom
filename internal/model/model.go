@@ -165,6 +165,7 @@ type SecurityGroupRule struct {
 	Direction       Direction      `json:"direction"`
 	Protocol        Protocol       `json:"protocol"`
 	RemoteCIDR      netip.Prefix   `json:"remote_cidr"`
+	ExceptCIDRs     []netip.Prefix `json:"except_cidrs"`
 	RemoteGroup     string         `json:"remote_group"`
 	RemoteCIDRGroup string         `json:"remote_cidr_group"`
 	RemoteFQDNs     []FQDNSelector `json:"remote_fqdns"`
@@ -630,6 +631,21 @@ func (r SecurityGroupRule) Validate() error {
 	if remoteSelectors > 1 {
 		return errors.New("remote cidr, remote group, remote cidr group and remote fqdns are mutually exclusive")
 	}
+	if len(r.ExceptCIDRs) > 0 && !r.RemoteCIDR.IsValid() {
+		return errors.New("except cidrs require remote cidr")
+	}
+	for i, except := range r.ExceptCIDRs {
+		if !except.IsValid() {
+			return fmt.Errorf("except cidr %d is invalid", i)
+		}
+		except = except.Masked()
+		if except.Addr().Is4() != r.RemoteCIDR.Addr().Is4() {
+			return fmt.Errorf("except cidr %s family must match remote cidr", except)
+		}
+		if !prefixContainsPrefix(r.RemoteCIDR.Masked(), except) {
+			return fmt.Errorf("except cidr %s must be contained within remote cidr %s", except, r.RemoteCIDR.Masked())
+		}
+	}
 	if len(r.RemoteFQDNs) > 0 && r.Direction != DirectionEgress {
 		return errors.New("remote fqdns are only supported for egress rules")
 	}
@@ -644,6 +660,37 @@ func (r SecurityGroupRule) Validate() error {
 		}
 	}
 	return nil
+}
+
+func prefixContainsPrefix(parent, child netip.Prefix) bool {
+	return parent.IsValid() && child.IsValid() &&
+		parent.Addr().Is4() == child.Addr().Is4() &&
+		parent.Bits() <= child.Bits() &&
+		parent.Contains(child.Addr()) &&
+		parent.Contains(prefixLastAddr(child))
+}
+
+func prefixLastAddr(prefix netip.Prefix) netip.Addr {
+	addr := prefix.Addr()
+	bits := 128
+	bytes := addr.As16()
+	if addr.Is4() {
+		bits = 32
+		raw := addr.As4()
+		bytes = [16]byte{}
+		copy(bytes[12:], raw[:])
+	}
+	for bit := prefix.Bits(); bit < bits; bit++ {
+		byteIndex := bit / 8
+		if addr.Is4() {
+			byteIndex += 12
+		}
+		bytes[byteIndex] |= 1 << (7 - uint(bit%8))
+	}
+	if addr.Is4() {
+		return netip.AddrFrom4([4]byte{bytes[12], bytes[13], bytes[14], bytes[15]})
+	}
+	return netip.AddrFrom16(bytes)
 }
 
 func (s FQDNSelector) Validate() error {
