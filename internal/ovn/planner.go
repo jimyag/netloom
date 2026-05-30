@@ -28,10 +28,14 @@ type Planner struct {
 	mu         sync.Mutex
 	ops        []Operation
 	vpcRouters map[string]string
+	subnets    map[string]model.Subnet
 }
 
 func NewPlanner() *Planner {
-	return &Planner{vpcRouters: make(map[string]string)}
+	return &Planner{
+		vpcRouters: make(map[string]string),
+		subnets:    make(map[string]model.Subnet),
+	}
 }
 
 func (p *Planner) EnsureVPC(_ context.Context, vpc model.VPC) error {
@@ -52,6 +56,7 @@ func (p *Planner) EnsureSubnet(_ context.Context, subnet model.Subnet) error {
 	defer p.mu.Unlock()
 
 	router := p.routerForVPC(subnet.VPC)
+	p.subnets[subnet.Name] = subnet
 	switchName := logicalSwitch(subnet.Name)
 	routerPort := routerPortName(router, subnet.Name)
 	switchPort := switchRouterPortName(switchName, subnet.Name)
@@ -90,6 +95,13 @@ func (p *Planner) EnsureEndpoint(_ context.Context, endpoint model.Endpoint) err
 		Operation{Command: "lsp-set-addresses", Args: []string{port, "dynamic " + endpoint.IP.String()}},
 		setOperation("logical_switch_port", port, "external_ids:netloom_owner=netloom", "external_ids:netloom_endpoint="+endpoint.ID, "external_ids:netloom_node="+endpoint.Node, "external_ids:netloom_vpc="+endpoint.VPC, "external_ids:netloom_subnet="+endpoint.Subnet),
 	)
+	if subnet, ok := p.subnets[endpoint.Subnet]; ok && subnet.DHCP.Enabled && endpoint.IP.Is4() {
+		dhcpID := namedUUID("nl_dhcp_" + sanitize(endpoint.ID))
+		p.ops = append(p.ops,
+			Operation{Command: "create", Flags: []string{"--id=" + dhcpID}, Args: dhcpOptionsArgs(subnet, endpoint)},
+			Operation{Command: "set", Args: []string{"logical_switch_port", port, "dhcpv4_options=" + dhcpID}},
+		)
+	}
 	return nil
 }
 
@@ -216,6 +228,11 @@ func loadBalancerName(name string) string {
 	return "nl_lb_" + sanitize(name)
 }
 
+func namedUUID(name string) string {
+	replacer := strings.NewReplacer("-", "_")
+	return "@" + replacer.Replace(name)
+}
+
 func routerPortName(router, subnet string) string {
 	return router + "_to_" + sanitize(subnet)
 }
@@ -240,6 +257,28 @@ func deterministicMAC(ip netip.Addr) string {
 	}
 	raw := ip.As16()
 	return fmt.Sprintf("0a:58:%02x:%02x:%02x:%02x", raw[12], raw[13], raw[14], raw[15])
+}
+
+func dhcpOptionsArgs(subnet model.Subnet, endpoint model.Endpoint) []string {
+	leaseTime := subnet.DHCP.LeaseTime
+	if leaseTime == 0 {
+		leaseTime = 3600
+	}
+	args := []string{
+		"DHCP_Options",
+		"cidr=" + subnet.CIDR.String(),
+		"options:server_id=" + subnet.Gateway.String(),
+		"options:server_mac=" + deterministicMAC(subnet.Gateway),
+		"options:router=" + subnet.Gateway.String(),
+		fmt.Sprintf("options:lease_time=%d", leaseTime),
+		"external_ids:netloom_owner=netloom",
+		"external_ids:netloom_subnet=" + subnet.Name,
+		"external_ids:netloom_endpoint=" + endpoint.ID,
+	}
+	if subnet.DHCP.MTU != 0 {
+		args = append(args, fmt.Sprintf("options:mtu=%d", subnet.DHCP.MTU))
+	}
+	return args
 }
 
 func loadBalancerVIP(lb model.LoadBalancer) string {

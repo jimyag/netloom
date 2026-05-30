@@ -47,6 +47,13 @@ type Subnet struct {
 	Gateway         netip.Addr   `json:"gateway"`
 	ProviderNetwork string       `json:"provider_network"`
 	VLAN            uint16       `json:"vlan"`
+	DHCP            DHCPOptions  `json:"dhcp"`
+}
+
+type DHCPOptions struct {
+	Enabled   bool   `json:"enabled"`
+	LeaseTime uint32 `json:"lease_time"`
+	MTU       uint16 `json:"mtu"`
 }
 
 type Endpoint struct {
@@ -179,6 +186,22 @@ func (s Subnet) Validate() error {
 	}
 	if s.VLAN != 0 && s.ProviderNetwork == "" {
 		return errors.New("subnet vlan requires provider network")
+	}
+	if err := s.DHCP.Validate(); err != nil {
+		return fmt.Errorf("subnet dhcp: %w", err)
+	}
+	return nil
+}
+
+func (d DHCPOptions) Validate() error {
+	if !d.Enabled {
+		if d.LeaseTime != 0 || d.MTU != 0 {
+			return errors.New("disabled dhcp must not set lease time or mtu")
+		}
+		return nil
+	}
+	if d.LeaseTime != 0 && d.LeaseTime < 60 {
+		return errors.New("dhcp lease time must be at least 60 seconds")
 	}
 	return nil
 }

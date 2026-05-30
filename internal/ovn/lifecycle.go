@@ -73,6 +73,9 @@ func snapshotDesired(state topology.State) desiredSnapshot {
 func cleanupOperations(old, next desiredSnapshot) []Operation {
 	var ops []Operation
 	for _, key := range staleKeys(old.Endpoints, next.Endpoints) {
+		if subnet, ok := old.Subnets[old.Endpoints[key].Subnet]; ok && subnet.DHCP.Enabled {
+			ops = append(ops, Operation{Command: "destroy", Flags: []string{"--if-exists"}, Args: []string{"DHCP_Options", logicalPort(key)}})
+		}
 		ops = append(ops, Operation{Command: "lsp-del", Flags: []string{"--if-exists"}, Args: []string{logicalPort(key)}})
 	}
 	for _, key := range staleKeys(old.Subnets, next.Subnets) {

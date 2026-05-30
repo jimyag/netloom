@@ -73,6 +73,7 @@ func TestBackendCleanupEmitsDeletesForStaleDesiredObjects(t *testing.T) {
 
 	joined := stringifyOVNOps(recorder.Operations())
 	for _, expected := range []string{
+		"--if-exists destroy DHCP_Options nl_lp_pod-a",
 		"--if-exists lsp-del nl_lp_pod-a",
 		"--if-exists lr-nat-del nl_lr_prod snat 10.10.0.0/24",
 		"--if-exists lr-lb-del nl_lr_prod nl_lb_web",
@@ -168,6 +169,7 @@ func controlStateWithEndpoint(endpointID string) control.DesiredState {
 			Gateway:         netip.MustParseAddr("10.10.0.1"),
 			ProviderNetwork: "physnet-a",
 			VLAN:            100,
+			DHCP:            model.DHCPOptions{Enabled: true, LeaseTime: 7200, MTU: 1400},
 		}},
 		Endpoints: []model.Endpoint{{
 			ID:     endpointID,

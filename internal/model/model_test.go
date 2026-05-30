@@ -33,6 +33,7 @@ func TestCoreNetworkResourcesValidateRequiredFields(t *testing.T) {
 					Gateway:         netip.MustParseAddr("10.10.0.1"),
 					ProviderNetwork: "physnet-a",
 					VLAN:            100,
+					DHCP:            DHCPOptions{Enabled: true, LeaseTime: 3600, MTU: 1450},
 				}.Validate()
 			},
 			invalid: func() error {
@@ -131,6 +132,32 @@ func TestSubnetProviderNetworkVLANValidation(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "between 1 and 4094") {
 		t.Fatalf("error %q does not mention vlan range", err)
+	}
+}
+
+func TestSubnetDHCPValidation(t *testing.T) {
+	subnet := Subnet{
+		Name:    "apps",
+		VPC:     "prod",
+		CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+		Gateway: netip.MustParseAddr("10.10.0.1"),
+		DHCP:    DHCPOptions{LeaseTime: 3600},
+	}
+	err := subnet.Validate()
+	if err == nil {
+		t.Fatal("expected disabled dhcp with lease time to fail")
+	}
+	if !strings.Contains(err.Error(), "disabled dhcp") {
+		t.Fatalf("error %q does not mention disabled dhcp", err)
+	}
+
+	subnet.DHCP = DHCPOptions{Enabled: true, LeaseTime: 30}
+	err = subnet.Validate()
+	if err == nil {
+		t.Fatal("expected short lease time to fail")
+	}
+	if !strings.Contains(err.Error(), "at least 60") {
+		t.Fatalf("error %q does not mention lease time", err)
 	}
 }
 
