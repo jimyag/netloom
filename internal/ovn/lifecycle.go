@@ -122,6 +122,20 @@ func cleanupOperations(old, next desiredSnapshot) []Operation {
 		}
 		ops = append(ops, Operation{Command: "lb-del", Flags: []string{"--if-exists"}, Args: []string{name}})
 	}
+	for _, key := range commonKeys(old.LoadBalancers, next.LoadBalancers) {
+		oldLB := old.LoadBalancers[key]
+		nextLB := next.LoadBalancers[key]
+		name := loadBalancerName(oldLB.Name)
+		if oldLB.VPC != nextLB.VPC {
+			ops = append(ops, Operation{Command: "lr-lb-del", Flags: []string{"--if-exists"}, Args: []string{logicalRouter(oldLB.VPC), name}})
+		}
+		if loadBalancerVIP(oldLB) != loadBalancerVIP(nextLB) {
+			ops = append(ops, Operation{Command: "lb-del", Flags: []string{"--if-exists"}, Args: []string{name, loadBalancerVIP(oldLB)}})
+		}
+		for _, subnet := range removedStrings(oldLB.Subnets, nextLB.Subnets) {
+			ops = append(ops, Operation{Command: "ls-lb-del", Flags: []string{"--if-exists"}, Args: []string{logicalSwitch(subnet), name}})
+		}
+	}
 	for _, key := range staleKeys(old.Gateways, next.Gateways) {
 		gateway := old.Gateways[key]
 		router := logicalRouter(gateway.VPC)
@@ -139,6 +153,17 @@ func cleanupOperations(old, next desiredSnapshot) []Operation {
 	return ops
 }
 
+func commonKeys[T any](old, next map[string]T) []string {
+	keys := make([]string, 0)
+	for key := range old {
+		if _, ok := next[key]; ok {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 func staleKeys[T any](old, next map[string]T) []string {
 	keys := make([]string, 0)
 	for key := range old {
@@ -148,6 +173,21 @@ func staleKeys[T any](old, next map[string]T) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+func removedStrings(old, next []string) []string {
+	nextSet := make(map[string]struct{}, len(next))
+	for _, value := range next {
+		nextSet[value] = struct{}{}
+	}
+	var removed []string
+	for _, value := range old {
+		if _, ok := nextSet[value]; !ok {
+			removed = append(removed, value)
+		}
+	}
+	sort.Strings(removed)
+	return removed
 }
 
 func routeKey(vpc string, route model.Route) string {

@@ -188,6 +188,7 @@ func (p *Planner) EnsureLoadBalancer(_ context.Context, lb model.LoadBalancer) e
 	name := loadBalancerName(lb.Name)
 	router := p.routerForVPC(lb.VPC)
 	p.ops = append(p.ops,
+		Operation{Command: "lb-del", Flags: []string{"--if-exists"}, Args: []string{name, loadBalancerVIP(lb)}},
 		Operation{Command: "lb-add", Flags: []string{"--may-exist"}, Args: []string{name, loadBalancerVIP(lb), loadBalancerBackends(lb), string(loadBalancerProtocol(lb))}},
 		setOperation("load_balancer", name, "external_ids:netloom_owner=netloom", "external_ids:netloom_load_balancer="+lb.Name, "external_ids:netloom_vpc="+lb.VPC),
 		Operation{Command: "lr-lb-add", Flags: []string{"--may-exist"}, Args: []string{router, name}},

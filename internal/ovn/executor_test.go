@@ -86,6 +86,46 @@ func TestBackendCleanupEmitsDeletesForStaleDesiredObjects(t *testing.T) {
 	}
 }
 
+func TestBackendCleanupConvergesChangedLoadBalancerBindings(t *testing.T) {
+	recorder := ovn.NewRecorderExecutor()
+	backend := ovn.NewBackend(recorder)
+	first := controlStateWithEndpoint("pod-a")
+	first.Subnets = append(first.Subnets, model.Subnet{
+		Name:    "dmz",
+		VPC:     "prod",
+		CIDR:    netip.MustParsePrefix("10.20.0.0/24"),
+		Gateway: netip.MustParseAddr("10.20.0.1"),
+	})
+	first.LoadBalancers[0].Subnets = []string{"apps", "dmz"}
+	controller := control.NewController(backend, control.NewMemoryBackend())
+	if err := controller.Reconcile(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+
+	second := first
+	second.LoadBalancers[0].VIP = netip.MustParseAddr("10.96.0.20")
+	second.LoadBalancers[0].Backends = []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.12"), Port: 8080}}
+	second.LoadBalancers[0].Subnets = []string{"apps"}
+	if err := controller.Reconcile(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+
+	joined := stringifyOVNOps(recorder.Operations())
+	for _, expected := range []string{
+		"--if-exists lb-del nl_lb_web 10.96.0.20:80",
+		"--may-exist lb-add nl_lb_web 10.96.0.20:80 10.10.0.12:8080 tcp",
+		"--if-exists lb-del nl_lb_web 10.96.0.10:80",
+		"--if-exists ls-lb-del nl_ls_dmz nl_lb_web",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("load balancer convergence operation missing %q:\n%s", expected, joined)
+		}
+	}
+	if strings.Contains(joined, "--if-exists lb-del nl_lb_web\n") {
+		t.Fatalf("changed load balancer must not delete the whole LB object:\n%s", joined)
+	}
+}
+
 func TestBackendCleanupRemovesGatewayMetadata(t *testing.T) {
 	recorder := ovn.NewRecorderExecutor()
 	backend := ovn.NewBackend(recorder)

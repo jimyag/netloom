@@ -210,6 +210,7 @@ func TestPlannerBuildsLoadBalancerOperations(t *testing.T) {
 
 	joined := stringify(planner.Operations())
 	for _, expected := range []string{
+		"--if-exists lb-del nl_lb_web 10.96.0.10:80",
 		"--may-exist lb-add nl_lb_web 10.96.0.10:80 10.10.0.10:8080,10.10.0.11:8080 tcp",
 		"external_ids:netloom_load_balancer=web",
 		"--may-exist lr-lb-add nl_lr_prod nl_lb_web",
