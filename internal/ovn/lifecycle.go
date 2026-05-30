@@ -148,6 +148,8 @@ func natType(action model.Action) string {
 		return "snat"
 	case model.ActionDNAT:
 		return "dnat"
+	case model.ActionDNATSNAT:
+		return "dnat_and_snat"
 	default:
 		return string(action)
 	}

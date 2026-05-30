@@ -71,7 +71,7 @@ func TestDockerMultiNodeLab(t *testing.T) {
 	}
 	liveStateScript := "cat >/tmp/netloom-state.json <<'EOF'\n" + desiredStateJSON() + "\nEOF\nNETLOOM_STATE_FILE=/tmp/netloom-state.json NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller"
 	liveStateOutput := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", liveStateScript)
-	for _, expected := range []string{"reconciled desired state", "policy_routes=1", "nat_rules=1", "security_groups=1"} {
+	for _, expected := range []string{"reconciled desired state", "policy_routes=1", "nat_rules=4", "security_groups=1"} {
 		if !strings.Contains(liveStateOutput, expected) {
 			t.Fatalf("live state-file controller output missing %q:\n%s", expected, liveStateOutput)
 		}
@@ -80,6 +80,12 @@ func TestDockerMultiNodeLab(t *testing.T) {
 	for _, expected := range []string{"nl_lr_default", "nl_ls_apps", "nl_lr_file", "nl_ls_fileapps"} {
 		if !strings.Contains(nbState, expected) {
 			t.Fatalf("OVN NB state missing %q:\n%s", expected, nbState)
+		}
+	}
+	natState := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "lr-nat-list", "nl_lr_file")
+	for _, expected := range []string{"snat", "198.51.100.20", "dnat", "198.51.100.21", "dnat_and_snat", "198.51.100.22", "2222"} {
+		if !strings.Contains(natState, expected) {
+			t.Fatalf("OVN NAT state missing %q:\n%s", expected, natState)
 		}
 	}
 	controllerWatchPath := "/tmp/netloom-controller-watch-state.json"
@@ -260,7 +266,12 @@ func desiredStateJSON() string {
   "route_tables": [{"name": "main", "vpc": "file", "routes": [{"destination": "0.0.0.0/0", "next_hop": "10.245.0.254"}]}],
   "policy_routes": [{"name": "https-via-fw", "vpc": "file", "priority": 100, "match": {"source": "10.245.0.0/24", "destination": "172.16.0.0/16", "protocol": "tcp", "dst_ports": [{"from": 443, "to": 443}]}, "action": {"type": "reroute", "next_hop": "10.245.0.253"}}],
   "gateways": [{"name": "gw-file", "vpc": "file", "node": "node-a", "external_if": "eth0", "lan_ip": "10.245.0.254"}],
-  "nat_rules": [{"name": "egress", "vpc": "file", "type": "snat", "match_cidr": "10.245.0.0/24", "external_ip": "198.51.100.20"}],
+  "nat_rules": [
+    {"name": "egress", "vpc": "file", "type": "snat", "match_cidr": "10.245.0.0/24", "external_ip": "198.51.100.20"},
+    {"name": "web-dnat", "vpc": "file", "type": "dnat", "external_ip": "198.51.100.21", "target_ip": "10.245.0.10"},
+    {"name": "web-fip", "vpc": "file", "type": "dnat_and_snat", "external_ip": "198.51.100.22", "target_ip": "10.245.0.10"},
+    {"name": "ssh-port", "vpc": "file", "type": "dnat", "external_ip": "198.51.100.23", "target_ip": "10.245.0.10", "protocol": "tcp", "external_port": 2222, "target_port": 2222}
+  ],
   "security_groups": [{"name": "web", "vpc": "file", "rules": [{"id": "allow-web", "priority": 100, "direction": "ingress", "protocol": "tcp", "remote_cidr": "172.30.0.11/32", "ports": [{"from": 8080, "to": 8080}], "action": "allow", "stateful": true}]}]
 }`
 }

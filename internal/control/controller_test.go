@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"net/netip"
+	"strings"
 	"testing"
 
 	"github.com/jimyag/netloom/internal/model"
@@ -101,6 +102,75 @@ func TestControllerReconcileSeparatesTopologyFromPolicy(t *testing.T) {
 	}
 	if got := backend.PolicyRoutes[0].Name; got != "force-private" {
 		t.Fatalf("first policy route = %s, want force-private", got)
+	}
+}
+
+func TestControllerRejectsConflictingNATRules(t *testing.T) {
+	baseState := DesiredState{
+		VPCs: []model.VPC{{Name: "prod"}},
+		Subnets: []model.Subnet{{
+			Name:    "apps",
+			VPC:     "prod",
+			CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway: netip.MustParseAddr("10.10.0.1"),
+		}},
+	}
+	tests := []struct {
+		name    string
+		rules   []model.NATRule
+		wantErr string
+	}{
+		{
+			name: "duplicate snat cidr",
+			rules: []model.NATRule{
+				{Name: "egress-a", VPC: "prod", Type: model.ActionSNAT, MatchCIDR: netip.MustParsePrefix("10.10.0.0/24"), ExternalIP: netip.MustParseAddr("198.51.100.10")},
+				{Name: "egress-b", VPC: "prod", Type: model.ActionSNAT, MatchCIDR: netip.MustParsePrefix("10.10.0.0/24"), ExternalIP: netip.MustParseAddr("198.51.100.11")},
+			},
+			wantErr: "conflicts",
+		},
+		{
+			name: "floating ip owns whole external ip",
+			rules: []model.NATRule{
+				{Name: "fip", VPC: "prod", Type: model.ActionDNATSNAT, ExternalIP: netip.MustParseAddr("198.51.100.20"), TargetIP: netip.MustParseAddr("10.10.0.10")},
+				{Name: "ssh", VPC: "prod", Type: model.ActionDNAT, ExternalIP: netip.MustParseAddr("198.51.100.20"), TargetIP: netip.MustParseAddr("10.10.0.11"), Protocol: model.ProtocolTCP, ExternalPort: 2222, TargetPort: 2222},
+			},
+			wantErr: "external ip",
+		},
+		{
+			name: "same external protocol port",
+			rules: []model.NATRule{
+				{Name: "ssh-a", VPC: "prod", Type: model.ActionDNAT, ExternalIP: netip.MustParseAddr("198.51.100.30"), TargetIP: netip.MustParseAddr("10.10.0.10"), Protocol: model.ProtocolTCP, ExternalPort: 2222, TargetPort: 2222},
+				{Name: "ssh-b", VPC: "prod", Type: model.ActionDNAT, ExternalIP: netip.MustParseAddr("198.51.100.30"), TargetIP: netip.MustParseAddr("10.10.0.11"), Protocol: model.ProtocolTCP, ExternalPort: 2222, TargetPort: 2222},
+			},
+			wantErr: "conflicts",
+		},
+		{
+			name: "same external port conflicts across protocol",
+			rules: []model.NATRule{
+				{Name: "tcp", VPC: "prod", Type: model.ActionDNAT, ExternalIP: netip.MustParseAddr("198.51.100.40"), TargetIP: netip.MustParseAddr("10.10.0.10"), Protocol: model.ProtocolTCP, ExternalPort: 8443, TargetPort: 8443},
+				{Name: "udp", VPC: "prod", Type: model.ActionDNAT, ExternalIP: netip.MustParseAddr("198.51.100.40"), TargetIP: netip.MustParseAddr("10.10.0.11"), Protocol: model.ProtocolUDP, ExternalPort: 8443, TargetPort: 8443},
+			},
+			wantErr: "conflicts",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state := baseState
+			state.NATRules = tt.rules
+			err := NewController(NewMemoryBackend(), NewMemoryBackend()).Reconcile(context.Background(), state)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("expected reconcile to fail")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error %q does not contain %q", err, tt.wantErr)
+			}
+		})
 	}
 }
 

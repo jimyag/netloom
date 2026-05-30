@@ -124,6 +124,81 @@ func TestPlannerBuildsPolicyRouteOperation(t *testing.T) {
 	}
 }
 
+func TestPlannerBuildsKubeOVNStyleNATOperations(t *testing.T) {
+	planner := ovn.NewPlanner()
+	for _, rule := range []model.NATRule{
+		{
+			Name:       "web",
+			VPC:        "prod",
+			Type:       model.ActionDNAT,
+			ExternalIP: netip.MustParseAddr("198.51.100.20"),
+			TargetIP:   netip.MustParseAddr("10.10.0.10"),
+		},
+		{
+			Name:       "fip",
+			VPC:        "prod",
+			Type:       model.ActionDNATSNAT,
+			ExternalIP: netip.MustParseAddr("198.51.100.30"),
+			TargetIP:   netip.MustParseAddr("10.10.0.11"),
+		},
+		{
+			Name:         "ssh",
+			VPC:          "prod",
+			Type:         model.ActionDNAT,
+			ExternalIP:   netip.MustParseAddr("198.51.100.40"),
+			TargetIP:     netip.MustParseAddr("10.10.0.12"),
+			Protocol:     model.ProtocolTCP,
+			ExternalPort: 2222,
+			TargetPort:   2222,
+		},
+	} {
+		if err := planner.EnsureNATRule(context.Background(), rule); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	joined := stringify(planner.Operations())
+	for _, expected := range []string{
+		"lr-nat-add nl_lr_prod dnat 198.51.100.20 10.10.0.10",
+		"lr-nat-add nl_lr_prod dnat_and_snat 198.51.100.30 10.10.0.11",
+		"--portrange --may-exist lr-nat-add nl_lr_prod dnat 198.51.100.40 10.10.0.12 2222",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("OVN operations missing %q:\n%s", expected, joined)
+		}
+	}
+}
+
+func TestPlannerCleanupDeletesDNATSNATRule(t *testing.T) {
+	recorder := ovn.NewRecorderExecutor()
+	backend := ovn.NewBackend(recorder)
+	controller := control.NewController(backend, control.NewMemoryBackend())
+	first := control.DesiredState{
+		VPCs: []model.VPC{{Name: "prod"}},
+		NATRules: []model.NATRule{{
+			Name:       "fip",
+			VPC:        "prod",
+			Type:       model.ActionDNATSNAT,
+			ExternalIP: netip.MustParseAddr("198.51.100.30"),
+			TargetIP:   netip.MustParseAddr("10.10.0.11"),
+		}},
+	}
+	if err := controller.Reconcile(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+	second := first
+	second.NATRules = nil
+	if err := controller.Reconcile(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+
+	joined := stringify(recorder.Operations())
+	expected := "--if-exists lr-nat-del nl_lr_prod dnat_and_snat 198.51.100.30"
+	if !strings.Contains(joined, expected) {
+		t.Fatalf("cleanup operations missing %q:\n%s", expected, joined)
+	}
+}
+
 func stringify(ops []ovn.Operation) string {
 	lines := make([]string, 0, len(ops))
 	for _, op := range ops {

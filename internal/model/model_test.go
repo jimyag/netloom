@@ -140,3 +140,109 @@ func TestSecurityGroupRuleDoesNotAcceptRouteActions(t *testing.T) {
 		t.Fatal("expected security group rule to reject reroute action")
 	}
 }
+
+func TestNATRuleValidateKubeOVNStyleNAT(t *testing.T) {
+	tests := []struct {
+		name    string
+		rule    NATRule
+		wantErr string
+	}{
+		{
+			name: "snat",
+			rule: NATRule{
+				Name:       "egress",
+				VPC:        "prod",
+				Type:       ActionSNAT,
+				MatchCIDR:  netip.MustParsePrefix("10.10.0.0/24"),
+				ExternalIP: netip.MustParseAddr("198.51.100.10"),
+			},
+		},
+		{
+			name: "dnat",
+			rule: NATRule{
+				Name:       "web",
+				VPC:        "prod",
+				Type:       ActionDNAT,
+				ExternalIP: netip.MustParseAddr("198.51.100.20"),
+				TargetIP:   netip.MustParseAddr("10.10.0.10"),
+			},
+		},
+		{
+			name: "floating ip",
+			rule: NATRule{
+				Name:       "fip",
+				VPC:        "prod",
+				Type:       ActionDNATSNAT,
+				ExternalIP: netip.MustParseAddr("198.51.100.30"),
+				TargetIP:   netip.MustParseAddr("10.10.0.11"),
+			},
+		},
+		{
+			name: "port dnat",
+			rule: NATRule{
+				Name:         "ssh",
+				VPC:          "prod",
+				Type:         ActionDNAT,
+				ExternalIP:   netip.MustParseAddr("198.51.100.40"),
+				TargetIP:     netip.MustParseAddr("10.10.0.12"),
+				Protocol:     ProtocolTCP,
+				ExternalPort: 2222,
+				TargetPort:   2222,
+			},
+		},
+		{
+			name: "dnat target required",
+			rule: NATRule{
+				Name:       "broken",
+				VPC:        "prod",
+				Type:       ActionDNAT,
+				ExternalIP: netip.MustParseAddr("198.51.100.50"),
+			},
+			wantErr: "dnat target ip is required",
+		},
+		{
+			name: "port dnat protocol required",
+			rule: NATRule{
+				Name:         "broken-port",
+				VPC:          "prod",
+				Type:         ActionDNAT,
+				ExternalIP:   netip.MustParseAddr("198.51.100.60"),
+				TargetIP:     netip.MustParseAddr("10.10.0.13"),
+				ExternalPort: 8443,
+				TargetPort:   8443,
+			},
+			wantErr: "requires tcp or udp protocol",
+		},
+		{
+			name: "port translation unsupported",
+			rule: NATRule{
+				Name:         "broken-translation",
+				VPC:          "prod",
+				Type:         ActionDNAT,
+				ExternalIP:   netip.MustParseAddr("198.51.100.70"),
+				TargetIP:     netip.MustParseAddr("10.10.0.14"),
+				Protocol:     ProtocolTCP,
+				ExternalPort: 8443,
+				TargetPort:   443,
+			},
+			wantErr: "port translation is not supported",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.rule.Validate()
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("expected validation to fail")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error %q does not contain %q", err, tt.wantErr)
+			}
+		})
+	}
+}

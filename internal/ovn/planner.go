@@ -135,7 +135,14 @@ func (p *Planner) EnsureNATRule(_ context.Context, rule model.NATRule) error {
 	case model.ActionSNAT:
 		p.ops = append(p.ops, Operation{Command: "lr-nat-add", Flags: []string{"--may-exist"}, Args: []string{router, "snat", rule.ExternalIP.String(), rule.MatchCIDR.String()}})
 	case model.ActionDNAT:
-		p.ops = append(p.ops, Operation{Command: "lr-nat-add", Flags: []string{"--may-exist"}, Args: []string{router, "dnat", rule.ExternalIP.String(), rule.TargetIP.String()}})
+		op := Operation{Command: "lr-nat-add", Flags: []string{"--may-exist"}, Args: []string{router, "dnat", rule.ExternalIP.String(), rule.TargetIP.String()}}
+		if rule.ExternalPort != 0 {
+			op.Flags = append([]string{"--portrange"}, op.Flags...)
+			op.Args = append(op.Args, fmt.Sprint(rule.ExternalPort))
+		}
+		p.ops = append(p.ops, op)
+	case model.ActionDNATSNAT:
+		p.ops = append(p.ops, Operation{Command: "lr-nat-add", Flags: []string{"--may-exist"}, Args: []string{router, "dnat_and_snat", rule.ExternalIP.String(), rule.TargetIP.String()}})
 	}
 	return nil
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/jimyag/netloom/internal/model"
 	"github.com/jimyag/netloom/internal/policy"
@@ -148,6 +149,9 @@ func (c *Controller) Reconcile(ctx context.Context, state DesiredState) error {
 		}
 		groups[group.Name] = group
 	}
+	if err := validateNATRules(state.NATRules); err != nil {
+		return err
+	}
 	topologyState := desiredTopologyState(state)
 	if lifecycle, ok := c.topology.(TopologyLifecycleBackend); ok {
 		if err := lifecycle.BeginTopologyReconcile(ctx, topologyState); err != nil {
@@ -200,9 +204,6 @@ func (c *Controller) Reconcile(ctx context.Context, state DesiredState) error {
 		}
 	}
 	for _, rule := range state.NATRules {
-		if err := rule.Validate(); err != nil {
-			return err
-		}
 		if err := c.topology.EnsureNATRule(ctx, rule); err != nil {
 			return fmt.Errorf("ensure nat rule %s: %w", rule.Name, err)
 		}
@@ -233,6 +234,61 @@ func (c *Controller) Reconcile(ctx context.Context, state DesiredState) error {
 		}
 	}
 	return nil
+}
+
+func validateNATRules(rules []model.NATRule) error {
+	names := make(map[string]struct{}, len(rules))
+	snatKeys := make(map[string]string)
+	inboundAllPorts := make(map[string]string)
+	inboundPortKeys := make(map[string]string)
+	for _, rule := range rules {
+		if err := rule.Validate(); err != nil {
+			return err
+		}
+		if _, ok := names[rule.Name]; ok {
+			return fmt.Errorf("duplicate nat rule name %q", rule.Name)
+		}
+		names[rule.Name] = struct{}{}
+
+		if rule.Type == model.ActionSNAT {
+			key := rule.VPC + "|" + rule.MatchCIDR.String()
+			if prev := snatKeys[key]; prev != "" {
+				return fmt.Errorf("snat rule %q conflicts with %q on %s", rule.Name, prev, rule.MatchCIDR)
+			}
+			snatKeys[key] = rule.Name
+			continue
+		}
+
+		baseKey := rule.VPC + "|" + rule.ExternalIP.String()
+		if rule.ExternalPort == 0 {
+			if prev := inboundAllPorts[baseKey]; prev != "" {
+				return fmt.Errorf("nat rule %q conflicts with %q on external ip %s", rule.Name, prev, rule.ExternalIP)
+			}
+			if prev := inboundPortKeysPrefix(inboundPortKeys, baseKey); prev != "" {
+				return fmt.Errorf("nat rule %q conflicts with %q on external ip %s", rule.Name, prev, rule.ExternalIP)
+			}
+			inboundAllPorts[baseKey] = rule.Name
+			continue
+		}
+		if prev := inboundAllPorts[baseKey]; prev != "" {
+			return fmt.Errorf("nat rule %q conflicts with %q on external ip %s", rule.Name, prev, rule.ExternalIP)
+		}
+		portKey := fmt.Sprintf("%s|%d", baseKey, rule.ExternalPort)
+		if prev := inboundPortKeys[portKey]; prev != "" {
+			return fmt.Errorf("nat rule %q conflicts with %q on %s/%s:%d", rule.Name, prev, rule.ExternalIP, rule.Protocol, rule.ExternalPort)
+		}
+		inboundPortKeys[portKey] = rule.Name
+	}
+	return nil
+}
+
+func inboundPortKeysPrefix(keys map[string]string, prefix string) string {
+	for key, name := range keys {
+		if strings.HasPrefix(key, prefix+"|") {
+			return name
+		}
+	}
+	return ""
 }
 
 func desiredTopologyState(state DesiredState) topology.State {

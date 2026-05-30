@@ -10,13 +10,14 @@ import (
 type Action string
 
 const (
-	ActionAllow   Action = "allow"
-	ActionDrop    Action = "drop"
-	ActionReroute Action = "reroute"
-	ActionReject  Action = "reject"
-	ActionLog     Action = "log"
-	ActionSNAT    Action = "snat"
-	ActionDNAT    Action = "dnat"
+	ActionAllow    Action = "allow"
+	ActionDrop     Action = "drop"
+	ActionReroute  Action = "reroute"
+	ActionReject   Action = "reject"
+	ActionLog      Action = "log"
+	ActionSNAT     Action = "snat"
+	ActionDNAT     Action = "dnat"
+	ActionDNATSNAT Action = "dnat_and_snat"
 )
 
 type Direction string
@@ -97,12 +98,15 @@ type Gateway struct {
 }
 
 type NATRule struct {
-	Name       string       `json:"name"`
-	VPC        string       `json:"vpc"`
-	Type       Action       `json:"type"`
-	MatchCIDR  netip.Prefix `json:"match_cidr"`
-	ExternalIP netip.Addr   `json:"external_ip"`
-	TargetIP   netip.Addr   `json:"target_ip"`
+	Name         string       `json:"name"`
+	VPC          string       `json:"vpc"`
+	Type         Action       `json:"type"`
+	MatchCIDR    netip.Prefix `json:"match_cidr"`
+	ExternalIP   netip.Addr   `json:"external_ip"`
+	TargetIP     netip.Addr   `json:"target_ip"`
+	Protocol     Protocol     `json:"protocol"`
+	ExternalPort uint16       `json:"external_port"`
+	TargetPort   uint16       `json:"target_port"`
 }
 
 type SecurityGroup struct {
@@ -266,17 +270,58 @@ func (n NATRule) Validate() error {
 	if n.VPC == "" {
 		return errors.New("nat rule vpc is required")
 	}
-	if !slices.Contains([]Action{ActionSNAT, ActionDNAT}, n.Type) {
+	if !slices.Contains([]Action{ActionSNAT, ActionDNAT, ActionDNATSNAT}, n.Type) {
 		return fmt.Errorf("unsupported nat action %q", n.Type)
-	}
-	if !n.MatchCIDR.IsValid() {
-		return errors.New("nat match cidr is required")
 	}
 	if !n.ExternalIP.IsValid() {
 		return errors.New("nat external ip is required")
 	}
-	if n.Type == ActionDNAT && !n.TargetIP.IsValid() {
-		return errors.New("dnat target ip is required")
+	if n.Protocol == "" {
+		n.Protocol = ProtocolAny
+	}
+	if !validProtocol(n.Protocol) {
+		return fmt.Errorf("unsupported nat protocol %q", n.Protocol)
+	}
+	hasPortMapping := n.ExternalPort != 0 || n.TargetPort != 0
+	switch n.Type {
+	case ActionSNAT:
+		if !n.MatchCIDR.IsValid() {
+			return errors.New("snat match cidr is required")
+		}
+		if n.TargetIP.IsValid() {
+			return errors.New("snat target ip must be empty")
+		}
+		if hasPortMapping {
+			return errors.New("snat port mapping is not supported")
+		}
+		if n.Protocol != ProtocolAny {
+			return errors.New("snat protocol must be any")
+		}
+	case ActionDNAT:
+		if !n.TargetIP.IsValid() {
+			return errors.New("dnat target ip is required")
+		}
+		if hasPortMapping {
+			if n.ExternalPort == 0 || n.TargetPort == 0 {
+				return errors.New("dnat port mapping requires both external and target ports")
+			}
+			if n.ExternalPort != n.TargetPort {
+				return errors.New("dnat port translation is not supported")
+			}
+			if n.Protocol != ProtocolTCP && n.Protocol != ProtocolUDP {
+				return errors.New("dnat port mapping requires tcp or udp protocol")
+			}
+		}
+	case ActionDNATSNAT:
+		if !n.TargetIP.IsValid() {
+			return errors.New("dnat_and_snat target ip is required")
+		}
+		if hasPortMapping {
+			return errors.New("dnat_and_snat port mapping is not supported")
+		}
+		if n.Protocol != ProtocolAny {
+			return errors.New("dnat_and_snat protocol must be any")
+		}
 	}
 	return nil
 }
