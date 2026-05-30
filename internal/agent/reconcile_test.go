@@ -963,3 +963,73 @@ func TestReconcileNodeCompilesHostEntityFromGateways(t *testing.T) {
 		t.Fatalf("expected host entity egress allow, got %+v", decision)
 	}
 }
+
+func TestReconcileNodeCompilesRemoteNodeEntityFromGateways(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:             "pod-a",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"client"},
+		}},
+		Gateways: []model.Gateway{
+			{
+				Name:  "gw-local",
+				VPC:   "prod",
+				Node:  "node-a",
+				LANIP: netip.MustParseAddr("10.10.0.254"),
+			},
+			{
+				Name:  "gw-remote",
+				VPC:   "prod",
+				Node:  "node-b",
+				LANIP: netip.MustParseAddr("10.10.0.253"),
+			},
+		},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "client",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:             "allow-remote-node",
+				Priority:       100,
+				Direction:      model.DirectionEgress,
+				Protocol:       model.ProtocolTCP,
+				RemoteEntities: []string{"remote-node"},
+				Ports:          []model.PortRange{{From: 4240, To: 4240}},
+				Action:         model.ActionAllow,
+			}},
+		}},
+	}
+	store := dataplane.NewInMemoryPolicyStore()
+	result, err := ReconcileNode(context.Background(), state, "node-a", store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Entries != 1 || result.TCXEligible != 1 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	entries := store.Entries("pod-a")
+	if len(entries) != 1 || entries[0].RemoteCIDR.String() != "10.10.0.253/32" {
+		t.Fatalf("entries = %+v, want remote node gateway /32", entries)
+	}
+	remoteDecision := dataplane.Evaluate(entries, dataplane.Packet{
+		Direction: dataplane.DirectionEgress,
+		Protocol:  6,
+		RemoteIP:  netip.MustParseAddr("10.10.0.253"),
+		DestPort:  4240,
+	})
+	if remoteDecision.Verdict != dataplane.VerdictAllow {
+		t.Fatalf("expected remote-node entity egress allow, got %+v", remoteDecision)
+	}
+	localDecision := dataplane.Evaluate(entries, dataplane.Packet{
+		Direction: dataplane.DirectionEgress,
+		Protocol:  6,
+		RemoteIP:  netip.MustParseAddr("10.10.0.254"),
+		DestPort:  4240,
+	})
+	if localDecision.Verdict != dataplane.VerdictDrop {
+		t.Fatalf("expected local gateway to stay outside remote-node entity, got %+v", localDecision)
+	}
+}

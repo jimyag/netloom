@@ -194,13 +194,15 @@ named ports instead of guessing a destination port source.
 
 Remote entities follow the Cilium `toEntities` and `fromEntities` shape for
 common destination classes that should not be repeated as hand-written CIDRs.
-`remote_entities` currently supports `all`, `world`, `cluster`, `private`, and
-`host`. `all` expands to IPv4 and IPv6 default CIDRs, `world` expands to those
-default CIDRs after subtracting the current VPC's subnet CIDRs, `cluster`
-expands to the current VPC's subnet CIDRs from desired state, `private` expands
-to RFC1918 plus ULA ranges, and `host` expands to the current VPC gateway LAN
-IPs as `/32` or `/128` CIDRs. The expanded entries use the same CIDR fallback
-and TCX projection path as direct CIDR rules.
+`remote_entities` currently supports `all`, `world`, `cluster`, `private`,
+`host`, and `remote-node`. `all` expands to IPv4 and IPv6 default CIDRs,
+`world` expands to those default CIDRs after subtracting the current VPC's
+subnet CIDRs, `cluster` expands to the current VPC's subnet CIDRs from desired
+state, `private` expands to RFC1918 plus ULA ranges, `host` expands to the
+current VPC gateway LAN IPs as `/32` or `/128` CIDRs, and `remote-node` expands
+to same-VPC gateway LAN IPs whose gateway node differs from the protected
+endpoint's node. The expanded entries use the same CIDR fallback and TCX
+projection path as direct CIDR rules.
 
 CIDR groups follow Cilium's `CIDRGroupRef` idea for reusable external CIDR
 sets. Netloom models those sets as desired-state `cidr_groups`; a

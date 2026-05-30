@@ -840,7 +840,7 @@ func (r SecurityGroupRule) Validate() error {
 	seenEntities := make(map[string]struct{}, len(r.RemoteEntities))
 	for i, entity := range r.RemoteEntities {
 		switch entity {
-		case "all", "world", "cluster", "private", "host":
+		case "all", "world", "cluster", "private", "host", "remote-node":
 		default:
 			return fmt.Errorf("remote entity %d: unsupported remote entity %q", i, entity)
 		}

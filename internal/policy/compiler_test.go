@@ -896,6 +896,95 @@ func TestCompileForEndpointWithContextRejectsHostEntityWithoutGateway(t *testing
 	}
 }
 
+func TestCompileForEndpointWithContextExpandsRemoteNodeEntity(t *testing.T) {
+	endpoint := model.Endpoint{
+		ID:             "pod-a",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"client"},
+	}
+	program, err := CompileForEndpointWithContext(endpoint, map[string]model.SecurityGroup{
+		"client": {
+			Name: "client",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:             "allow-remote-node",
+				Priority:       100,
+				Direction:      model.DirectionEgress,
+				Protocol:       model.ProtocolTCP,
+				RemoteEntities: []string{"remote-node"},
+				Ports:          []model.PortRange{{From: 4240, To: 4240}},
+				Action:         model.ActionAllow,
+			}},
+		},
+	}, CompileContext{
+		Gateways: []model.Gateway{
+			{Name: "gw-local", VPC: "prod", Node: "node-a", LANIP: netip.MustParseAddr("10.10.0.254")},
+			{Name: "gw-remote", VPC: "prod", Node: "node-b", LANIP: netip.MustParseAddr("10.10.0.253")},
+			{Name: "gw-remote-v6", VPC: "prod", Node: "node-c", LANIP: netip.MustParseAddr("fd00:10::fe")},
+			{Name: "gw-other", VPC: "dev", Node: "node-d", LANIP: netip.MustParseAddr("192.0.2.254")},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotCIDRs := make([]string, 0, len(program.Rules))
+	for _, rule := range program.Rules {
+		gotCIDRs = append(gotCIDRs, rule.RemoteCIDR.String())
+		if rule.RemoteEntity != "remote-node" {
+			t.Fatalf("remote entity = %q, want remote-node", rule.RemoteEntity)
+		}
+	}
+	sort.Strings(gotCIDRs)
+	wantCIDRs := []string{"10.10.0.253/32", "fd00:10::fe/128"}
+	if len(gotCIDRs) != len(wantCIDRs) {
+		t.Fatalf("remote-node cidrs = %v, want %v", gotCIDRs, wantCIDRs)
+	}
+	for i := range wantCIDRs {
+		if gotCIDRs[i] != wantCIDRs[i] {
+			t.Fatalf("remote-node cidrs = %v, want %v", gotCIDRs, wantCIDRs)
+		}
+	}
+	if len(program.MapEntries) != len(wantCIDRs) {
+		t.Fatalf("map entries = %d, want %d", len(program.MapEntries), len(wantCIDRs))
+	}
+}
+
+func TestCompileForEndpointWithContextRejectsRemoteNodeEntityWithoutRemoteGateway(t *testing.T) {
+	endpoint := model.Endpoint{
+		ID:             "pod-a",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"client"},
+	}
+	_, err := CompileForEndpointWithContext(endpoint, map[string]model.SecurityGroup{
+		"client": {
+			Name: "client",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:             "allow-remote-node",
+				Priority:       100,
+				Direction:      model.DirectionEgress,
+				Protocol:       model.ProtocolTCP,
+				RemoteEntities: []string{"remote-node"},
+				Ports:          []model.PortRange{{From: 4240, To: 4240}},
+				Action:         model.ActionAllow,
+			}},
+		},
+	}, CompileContext{
+		Gateways: []model.Gateway{
+			{Name: "gw-local", VPC: "prod", Node: "node-a", LANIP: netip.MustParseAddr("10.10.0.254")},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "remote-node requires at least one gateway on a different node") {
+		t.Fatalf("error = %v, want missing remote-node gateway validation", err)
+	}
+}
+
 func TestCompileForEndpointWithContextExpandsWorldEntityOutsideCluster(t *testing.T) {
 	endpoint := model.Endpoint{
 		ID:             "pod-a",

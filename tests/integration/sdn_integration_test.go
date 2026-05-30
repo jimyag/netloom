@@ -53,7 +53,7 @@ func TestDesiredStateDrivesTopologyRoutesAndEBPFStyleACL(t *testing.T) {
 		t.Fatalf("security group rules for pod-b were not compiled, got: %+v", memoryBackend.PolicyProgram)
 	}
 	clientProgram, ok := memoryBackend.PolicyProgram["pod-a"]
-	if !ok || len(clientProgram.Rules) != 6 {
+	if !ok || len(clientProgram.Rules) != 8 {
 		t.Fatalf("egress rules for pod-a were not compiled, got: %+v", memoryBackend.PolicyProgram)
 	}
 	if !hasOVNCommand(ovnRecorder.Operations(), "lr-policy-add") {
@@ -233,6 +233,24 @@ func TestDesiredStateDrivesTopologyRoutesAndEBPFStyleACL(t *testing.T) {
 	if hostAllow.Verdict != dataplane.VerdictAllow {
 		t.Fatalf("expected egress tcp/9444 to host gateway entity to allow, got %+v", hostAllow)
 	}
+	remoteNodeAllow := dataplane.Evaluate(clientEntries, dataplane.Packet{
+		Direction: dataplane.DirectionEgress,
+		Protocol:  6,
+		RemoteIP:  mustAddr(t, "10.10.0.253"),
+		DestPort:  4240,
+	})
+	if remoteNodeAllow.Verdict != dataplane.VerdictAllow {
+		t.Fatalf("expected egress tcp/4240 to remote-node gateway entity to allow, got %+v", remoteNodeAllow)
+	}
+	remoteNodeLocalDrop := dataplane.Evaluate(clientEntries, dataplane.Packet{
+		Direction: dataplane.DirectionEgress,
+		Protocol:  6,
+		RemoteIP:  mustAddr(t, "10.10.0.254"),
+		DestPort:  4240,
+	})
+	if remoteNodeLocalDrop.Verdict != dataplane.VerdictDrop {
+		t.Fatalf("expected local gateway to stay outside remote-node entity, got %+v", remoteNodeLocalDrop)
+	}
 }
 
 func hasOVNCommand(ops []ovn.Operation, command string) bool {
@@ -270,7 +288,10 @@ const integrationStateJSON = `{
   ],
   "route_tables": [{"name": "main", "vpc": "prod", "routes": [{"destination": "0.0.0.0/0", "next_hops": ["10.10.0.253", "10.10.0.254"]}]}],
   "policy_routes": [{"name": "https-via-fw", "vpc": "prod", "priority": 100, "match": {"source": "10.10.0.0/24", "destination": "172.16.0.0/16", "protocol": "tcp", "dst_ports": [{"from": 443, "to": 443}]}, "action": {"type": "reroute", "next_hop": "10.10.0.253"}}],
-  "gateways": [{"name": "gw-a", "vpc": "prod", "node": "node-a", "external_if": "eth0", "lan_ip": "10.10.0.254"}],
+  "gateways": [
+    {"name": "gw-a", "vpc": "prod", "node": "node-a", "external_if": "eth0", "lan_ip": "10.10.0.254"},
+    {"name": "gw-b", "vpc": "prod", "node": "node-b", "external_if": "eth0", "lan_ip": "10.10.0.253"}
+  ],
   "nat_rules": [
     {"name": "egress", "vpc": "prod", "type": "snat", "match_cidr": "10.10.0.0/24", "external_ip": "198.51.100.10"},
     {"name": "web-dnat", "vpc": "prod", "type": "dnat", "external_ip": "198.51.100.20", "target_ip": "10.10.0.11"},
@@ -286,6 +307,7 @@ const integrationStateJSON = `{
       {"id": "client-egress-corp", "priority": 90, "direction": "egress", "protocol": "tcp", "remote_cidr_group": "corp", "ports": [{"from": 8443, "to": 8443}], "action": "allow"},
       {"id": "client-egress-docs", "priority": 80, "direction": "egress", "protocol": "tcp", "remote_cidr": "192.0.2.0/24", "except_cidrs": ["192.0.2.128/25"], "ports": [{"from": 9443, "to": 9443}], "action": "allow"},
       {"id": "client-egress-host", "priority": 70, "direction": "egress", "protocol": "tcp", "remote_entities": ["host"], "ports": [{"from": 9444, "to": 9444}], "action": "allow"},
+      {"id": "client-egress-remote-node", "priority": 60, "direction": "egress", "protocol": "tcp", "remote_entities": ["remote-node"], "ports": [{"from": 4240, "to": 4240}], "action": "allow"},
       {"id": "client-drop-platform-dns", "priority": 1000, "direction": "egress", "protocol": "tcp", "remote_cidr": "198.51.100.0/24", "ports": [{"from": 9553, "to": 9553}], "action": "drop"}
     ]},
     {"name": "server", "vpc": "prod", "rules": [
