@@ -112,6 +112,7 @@ func (p *Planner) EnsureRouteTable(_ context.Context, table model.RouteTable) er
 
 	router := p.routerForVPC(table.VPC)
 	for _, route := range table.Routes {
+		p.ops = append(p.ops, Operation{Command: "lr-route-del", Flags: []string{"--if-exists"}, Args: []string{router, route.Destination.String()}})
 		if route.Blackhole {
 			p.ops = append(p.ops, Operation{Command: "lr-route-add", Flags: []string{"--may-exist"}, Args: []string{router, route.Destination.String(), "discard"}})
 			continue

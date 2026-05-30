@@ -97,6 +97,14 @@ func cleanupOperations(old, next desiredSnapshot) []Operation {
 		}
 		ops = append(ops, Operation{Command: "lr-route-del", Flags: []string{"--if-exists"}, Args: args})
 	}
+	for _, key := range commonKeys(old.Routes, next.Routes) {
+		oldRecord := old.Routes[key]
+		nextRecord := next.Routes[key]
+		if routeSignature(oldRecord) == routeSignature(nextRecord) {
+			continue
+		}
+		ops = append(ops, Operation{Command: "lr-route-del", Flags: []string{"--if-exists"}, Args: []string{logicalRouter(oldRecord.VPC), oldRecord.Route.Destination.String()}})
+	}
 	for _, key := range staleKeys(old.PolicyRoutes, next.PolicyRoutes) {
 		record := old.PolicyRoutes[key]
 		ops = append(ops, Operation{Command: "lr-policy-del", Flags: []string{"--if-exists"}, Args: []string{
@@ -223,6 +231,10 @@ func routeKey(vpc string, route model.Route) string {
 		nextHop = route.NextHop.String()
 	}
 	return vpc + "|" + route.Destination.String() + "|" + nextHop
+}
+
+func routeSignature(record routeRecord) string {
+	return routeKey(record.VPC, record.Route)
 }
 
 func policyRouteKey(vpc string, priority int, match string) string {

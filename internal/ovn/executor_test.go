@@ -197,6 +197,43 @@ func TestBackendCleanupConvergesChangedPolicyRoute(t *testing.T) {
 	}
 }
 
+func TestBackendCleanupConvergesChangedStaticRoute(t *testing.T) {
+	recorder := ovn.NewRecorderExecutor()
+	backend := ovn.NewBackend(recorder)
+	first := controlStateWithEndpoint("pod-a")
+	first.RouteTables = []model.RouteTable{{
+		Name: "main",
+		VPC:  "prod",
+		Routes: []model.Route{{
+			Destination: netip.MustParsePrefix("0.0.0.0/0"),
+			NextHop:     netip.MustParseAddr("10.10.0.254"),
+		}},
+	}}
+	controller := control.NewController(backend, control.NewMemoryBackend())
+	if err := controller.Reconcile(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+
+	second := first
+	second.RouteTables[0].Routes[0].NextHop = netip.MustParseAddr("10.10.0.253")
+	if err := controller.Reconcile(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+
+	joined := stringifyOVNOps(recorder.Operations())
+	for _, expected := range []string{
+		"--if-exists lr-route-del nl_lr_prod 0.0.0.0/0",
+		"--may-exist lr-route-add nl_lr_prod 0.0.0.0/0 10.10.0.253",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("static route convergence operation missing %q:\n%s", expected, joined)
+		}
+	}
+	if strings.Count(joined, "--if-exists lr-route-del nl_lr_prod 0.0.0.0/0") < 2 {
+		t.Fatalf("changed static route should clear the managed destination before each add:\n%s", joined)
+	}
+}
+
 func TestBackendCleanupRemovesGatewayMetadata(t *testing.T) {
 	recorder := ovn.NewRecorderExecutor()
 	backend := ovn.NewBackend(recorder)

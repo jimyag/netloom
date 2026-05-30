@@ -110,6 +110,7 @@ func TestPlannerMapsNetloomObjectsToOVNOperations(t *testing.T) {
 		"set logical_switch_port nl_lp_pod-a dhcpv4_options=@nl_dhcp_pod_a",
 		"external_ids:netloom_owner=netloom",
 		"external_ids:netloom_vpc=prod",
+		"--if-exists lr-route-del nl_lr_prod 0.0.0.0/0",
 		"lr-route-add nl_lr_prod 0.0.0.0/0 10.10.0.254",
 		"lr-policy-add nl_lr_prod 100",
 		"external_ids:netloom_gateway=gw-a",
