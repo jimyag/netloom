@@ -189,6 +189,59 @@ func TestPolicyBackendHonorsSecurityGroupTierPrecedence(t *testing.T) {
 	}
 }
 
+func TestPolicyBackendHonorsLowerSecurityGroupRulePriority(t *testing.T) {
+	endpoint := model.Endpoint{
+		ID:             "pod-a",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"web"},
+	}
+	program, err := policy.CompileForEndpoint(endpoint, map[string]model.SecurityGroup{
+		"web": {
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{
+				{
+					ID:         "allow-fallback",
+					Priority:   1000,
+					Direction:  model.DirectionEgress,
+					Protocol:   model.ProtocolTCP,
+					RemoteCIDR: netip.MustParsePrefix("192.0.2.0/24"),
+					Ports:      []model.PortRange{{From: 443, To: 443}},
+					Action:     model.ActionAllow,
+				},
+				{
+					ID:         "allow-primary",
+					Priority:   1,
+					Direction:  model.DirectionEgress,
+					Protocol:   model.ProtocolTCP,
+					RemoteCIDR: netip.MustParsePrefix("192.0.2.0/24"),
+					Ports:      []model.PortRange{{From: 443, To: 443}},
+					Action:     model.ActionAllow,
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := EncodeProgram(program)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision := Evaluate(entries, Packet{
+		RemoteIP:  netip.MustParseAddr("192.0.2.10"),
+		Direction: DirectionEgress,
+		Protocol:  6,
+		DestPort:  443,
+	})
+	if decision.Match == nil || decision.Match.Value.RuleCookie != stableCookie("allow-primary") {
+		t.Fatalf("decision = %+v, want lower numeric priority allow-primary", decision)
+	}
+}
+
 func TestPolicyBackendPreservesRejectAction(t *testing.T) {
 	endpoint := model.Endpoint{
 		ID:             "pod-a",

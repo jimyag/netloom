@@ -128,10 +128,10 @@ func CompileForEndpointWithContext(endpoint model.Endpoint, groups map[string]mo
 		}
 	}
 	sort.SliceStable(program.Rules, func(i, j int) bool {
-		if program.Rules[i].Tier != program.Rules[j].Tier {
-			return program.Rules[i].Tier < program.Rules[j].Tier
+		if left, right := precedence(program.Rules[i]), precedence(program.Rules[j]); left != right {
+			return left > right
 		}
-		return program.Rules[i].Priority > program.Rules[j].Priority
+		return program.Rules[i].ID < program.Rules[j].ID
 	})
 	sort.SliceStable(program.MapEntries, func(i, j int) bool {
 		if program.MapEntries[i].Value.Precedence != program.MapEntries[j].Value.Precedence {
@@ -815,9 +815,13 @@ func precedence(rule Rule) uint32 {
 	if priority > model.SecurityGroupPriorityMax {
 		priority = model.SecurityGroupPriorityMax
 	}
+	priorityScore := 0
+	if priority != 0 {
+		priorityScore = model.SecurityGroupPriorityMax - priority + 1
+	}
 	precedence := uint32(1-tier) << 31
 	if rule.Action == model.ActionDrop || rule.Action == model.ActionReject {
 		precedence |= 1 << 30
 	}
-	return precedence | uint32(priority)
+	return precedence | uint32(priorityScore)
 }

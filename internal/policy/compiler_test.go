@@ -51,11 +51,11 @@ func TestCompileForEndpointSortsRulesAndPreservesACLShape(t *testing.T) {
 	if len(program.Rules) != 2 {
 		t.Fatalf("compiled rules = %d, want 2", len(program.Rules))
 	}
-	if program.Rules[0].ID != "allow-https" {
-		t.Fatalf("first rule = %s, want allow-https", program.Rules[0].ID)
+	if program.Rules[0].ID != "default-deny" {
+		t.Fatalf("first rule = %s, want default-deny", program.Rules[0].ID)
 	}
-	if program.Rules[0].Action != model.ActionAllow {
-		t.Fatalf("first rule action = %s, want allow", program.Rules[0].Action)
+	if program.Rules[0].Action != model.ActionDrop {
+		t.Fatalf("first rule action = %s, want drop", program.Rules[0].Action)
 	}
 	if len(program.MapEntries) != 2 {
 		t.Fatalf("compiled map entries = %d, want 2", len(program.MapEntries))
@@ -71,6 +71,53 @@ func TestCompileForEndpointSortsRulesAndPreservesACLShape(t *testing.T) {
 	}
 	if program.MapEntries[1].RemoteCIDR != netip.MustParsePrefix("10.20.0.0/16") {
 		t.Fatalf("https remote cidr = %s, want 10.20.0.0/16", program.MapEntries[1].RemoteCIDR)
+	}
+}
+
+func TestCompileForEndpointUsesKubeOVNStyleLowerRulePriorityFirst(t *testing.T) {
+	endpoint := model.Endpoint{
+		ID:             "pod-a",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"web"},
+	}
+	groups := map[string]model.SecurityGroup{
+		"web": {
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{
+				{
+					ID:         "allow-fallback",
+					Priority:   100,
+					Direction:  model.DirectionEgress,
+					Protocol:   model.ProtocolTCP,
+					RemoteCIDR: netip.MustParsePrefix("192.0.2.0/24"),
+					Ports:      []model.PortRange{{From: 443, To: 443}},
+					Action:     model.ActionAllow,
+				},
+				{
+					ID:         "allow-primary",
+					Priority:   1,
+					Direction:  model.DirectionEgress,
+					Protocol:   model.ProtocolTCP,
+					RemoteCIDR: netip.MustParsePrefix("192.0.2.0/24"),
+					Ports:      []model.PortRange{{From: 443, To: 443}},
+					Action:     model.ActionAllow,
+				},
+			},
+		},
+	}
+	program, err := CompileForEndpoint(endpoint, groups)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if program.Rules[0].ID != "allow-primary" {
+		t.Fatalf("first rule = %s, want lower numeric priority allow-primary", program.Rules[0].ID)
+	}
+	if program.MapEntries[0].RuleID != "allow-primary" {
+		t.Fatalf("highest precedence entry = %s, want allow-primary", program.MapEntries[0].RuleID)
 	}
 }
 
