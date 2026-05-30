@@ -189,6 +189,36 @@ func TestPolicyRouteRequiresNextHopForReroute(t *testing.T) {
 	}
 }
 
+func TestPolicyRouteRejectsMixedIPFamilies(t *testing.T) {
+	route := PolicyRoute{
+		Name:     "mixed",
+		VPC:      "prod",
+		Priority: 100,
+		Match: RouteMatch{
+			Source:      netip.MustParsePrefix("10.10.0.0/24"),
+			Destination: netip.MustParsePrefix("fd00:20::/64"),
+		},
+		Action: RouteAction{Type: ActionDrop},
+	}
+	err := route.Validate()
+	if err == nil {
+		t.Fatal("expected mixed source and destination families to fail")
+	}
+	if !strings.Contains(err.Error(), "same IP family") {
+		t.Fatalf("error %q does not mention IP family", err)
+	}
+
+	route.Match.Source = netip.Prefix{}
+	route.Action = RouteAction{Type: ActionReroute, NextHop: netip.MustParseAddr("10.10.0.254")}
+	err = route.Validate()
+	if err == nil {
+		t.Fatal("expected IPv4 next hop for IPv6 destination to fail")
+	}
+	if !strings.Contains(err.Error(), "next hop family") {
+		t.Fatalf("error %q does not mention next hop family", err)
+	}
+}
+
 func TestSecurityGroupRuleDoesNotAcceptRouteActions(t *testing.T) {
 	rule := SecurityGroupRule{
 		ID:        "route-action",

@@ -147,7 +147,7 @@ func Plan(ctx context.Context, state control.DesiredState, options Options) ([]O
 			} else {
 				ops = append(ops, Operation{
 					Command: "ip",
-					Args:    []string{"addr", "replace", endpoint.IP.String() + "/32", "dev", localDevice},
+					Args:    []string{"addr", "replace", endpoint.IP.String() + "/" + strconv.Itoa(addrPrefixBits(endpoint.IP)), "dev", localDevice},
 				})
 			}
 			result.LocalAddresses++
@@ -159,7 +159,7 @@ func Plan(ctx context.Context, state control.DesiredState, options Options) ([]O
 		}
 		ops = append(ops, Operation{
 			Command: "ip",
-			Args:    []string{"route", "replace", endpoint.IP.String() + "/32", "via", nextHop.String(), "dev", underlayDevice},
+			Args:    []string{"route", "replace", endpoint.IP.String() + "/" + strconv.Itoa(addrPrefixBits(endpoint.IP)), "via", nextHop.String(), "dev", underlayDevice},
 		})
 		result.RemoteRoutes++
 	}
@@ -240,6 +240,9 @@ func linuxPolicyRouteDestination(route model.PolicyRoute) netip.Prefix {
 	if route.Match.Destination.IsValid() {
 		return route.Match.Destination
 	}
+	if route.Match.Source.IsValid() && route.Match.Source.Addr().Is6() {
+		return netip.MustParsePrefix("::/0")
+	}
 	return netip.MustParsePrefix("0.0.0.0/0")
 }
 
@@ -270,7 +273,7 @@ func linuxPolicyRuleArgsForPort(route model.PolicyRoute, priority, table int, po
 	if route.Match.Destination.IsValid() {
 		args = append(args, "to", route.Match.Destination.String())
 	}
-	if protocol := linuxPolicyRuleProtocol(route.Match.Protocol); protocol != "" {
+	if protocol := linuxPolicyRuleProtocol(route.Match.Protocol, routeIPFamily(route)); protocol != "" {
 		args = append(args, "ipproto", protocol)
 	}
 	if port != nil {
@@ -280,7 +283,20 @@ func linuxPolicyRuleArgsForPort(route model.PolicyRoute, priority, table int, po
 	return strings.Join(args, " ")
 }
 
-func linuxPolicyRuleProtocol(protocol model.Protocol) string {
+func routeIPFamily(route model.PolicyRoute) int {
+	if route.Match.Source.IsValid() && route.Match.Source.Addr().Is6() {
+		return 6
+	}
+	if route.Match.Destination.IsValid() && route.Match.Destination.Addr().Is6() {
+		return 6
+	}
+	if route.Action.NextHop.IsValid() && route.Action.NextHop.Is6() {
+		return 6
+	}
+	return 4
+}
+
+func linuxPolicyRuleProtocol(protocol model.Protocol, family int) string {
 	switch protocol {
 	case "", model.ProtocolAny:
 		return ""
@@ -289,6 +305,9 @@ func linuxPolicyRuleProtocol(protocol model.Protocol) string {
 	case model.ProtocolUDP:
 		return "udp"
 	case model.ProtocolICMP:
+		if family == 6 {
+			return "ipv6-icmp"
+		}
 		return "icmp"
 	default:
 		return string(protocol)
@@ -330,14 +349,21 @@ func planNetNSWorkload(endpointID string, ip netip.Addr, workloadIF string, host
 	return []Operation{
 		shellOperation("ip netns add " + ns + " 2>/dev/null || true"),
 		shellOperation("ip -n " + ns + " link show " + workloadIF + " >/dev/null 2>&1 || { ip link show " + hostVeth + " >/dev/null 2>&1 || ip link add " + hostVeth + " type veth peer name " + peerVeth + "; ip link set " + peerVeth + " netns " + ns + "; ip -n " + ns + " link set " + peerVeth + " name " + workloadIF + "; }"),
-		{Command: "ip", Args: []string{"addr", "replace", hostGateway.String() + "/32", "dev", hostVeth}},
+		{Command: "ip", Args: []string{"addr", "replace", hostGateway.String() + "/" + strconv.Itoa(addrPrefixBits(hostGateway)), "dev", hostVeth}},
 		{Command: "ip", Args: []string{"link", "set", hostVeth, "up"}},
-		{Command: "ip", Args: []string{"route", "replace", ip.String() + "/32", "dev", hostVeth}},
+		{Command: "ip", Args: []string{"route", "replace", ip.String() + "/" + strconv.Itoa(addrPrefixBits(ip)), "dev", hostVeth}},
 		{Command: "ip", Args: []string{"netns", "exec", ns, "ip", "link", "set", "lo", "up"}},
-		{Command: "ip", Args: []string{"netns", "exec", ns, "ip", "addr", "replace", ip.String() + "/32", "dev", workloadIF}},
+		{Command: "ip", Args: []string{"netns", "exec", ns, "ip", "addr", "replace", ip.String() + "/" + strconv.Itoa(addrPrefixBits(ip)), "dev", workloadIF}},
 		{Command: "ip", Args: []string{"netns", "exec", ns, "ip", "link", "set", workloadIF, "up"}},
 		{Command: "ip", Args: []string{"netns", "exec", ns, "ip", "route", "replace", "default", "via", hostGateway.String(), "dev", workloadIF, "onlink"}},
 	}
+}
+
+func addrPrefixBits(addr netip.Addr) int {
+	if addr.Is6() {
+		return 128
+	}
+	return 32
 }
 
 func shellOperation(script string) Operation {

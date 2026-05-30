@@ -270,6 +270,34 @@ func TestPlannerBuildsPolicyRouteOperation(t *testing.T) {
 	}
 }
 
+func TestPlannerBuildsIPv6PolicyRouteOperation(t *testing.T) {
+	planner := ovn.NewPlanner()
+	err := planner.EnsurePolicyRoute(context.Background(), model.PolicyRoute{
+		Name:     "v6-fw",
+		VPC:      "prod",
+		Priority: 120,
+		Match: model.RouteMatch{
+			Source:      netip.MustParsePrefix("fd00:10::/64"),
+			Destination: netip.MustParsePrefix("fd00:20::/64"),
+			Protocol:    model.ProtocolUDP,
+			DstPorts:    []model.PortRange{{From: 53, To: 53}},
+		},
+		Action: model.RouteAction{Type: model.ActionReroute, NextHop: netip.MustParseAddr("fd00:10::fe")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	match := stringify(planner.Operations())
+	for _, expected := range []string{"ip6.src == fd00:10::/64", "ip6.dst == fd00:20::/64", "udp.dst == 53"} {
+		if !strings.Contains(match, expected) {
+			t.Fatalf("match %q missing %q", match, expected)
+		}
+	}
+	if strings.Contains(match, "ip4.src == fd00") || strings.Contains(match, "ip4.dst == fd00") {
+		t.Fatalf("IPv6 route must not use ip4 match fields:\n%s", match)
+	}
+}
+
 func TestPlannerBuildsKubeOVNStyleNATOperations(t *testing.T) {
 	planner := ovn.NewPlanner()
 	for _, rule := range []model.NATRule{

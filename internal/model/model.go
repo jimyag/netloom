@@ -275,6 +275,14 @@ func (r PolicyRoute) Validate() error {
 	if err := r.Match.Validate(); err != nil {
 		return fmt.Errorf("policy route match: %w", err)
 	}
+	if r.Action.Type == ActionReroute {
+		if r.Match.Destination.IsValid() && r.Action.NextHop.Is4() != r.Match.Destination.Addr().Is4() {
+			return errors.New("policy route reroute next hop family must match destination")
+		}
+		if !r.Match.Destination.IsValid() && r.Match.Source.IsValid() && r.Action.NextHop.Is4() != r.Match.Source.Addr().Is4() {
+			return errors.New("policy route reroute next hop family must match source")
+		}
+	}
 	return nil
 }
 
@@ -284,6 +292,9 @@ func (m RouteMatch) Validate() error {
 	}
 	if !validProtocol(m.Protocol) {
 		return fmt.Errorf("unsupported protocol %q", m.Protocol)
+	}
+	if m.Source.IsValid() && m.Destination.IsValid() && m.Source.Addr().Is4() != m.Destination.Addr().Is4() {
+		return errors.New("source and destination prefixes must use the same IP family")
 	}
 	if len(m.DstPorts) > 0 && m.Protocol != ProtocolTCP && m.Protocol != ProtocolUDP {
 		return errors.New("dst ports require tcp or udp protocol")

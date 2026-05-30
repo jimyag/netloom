@@ -53,7 +53,7 @@ func applyLocalNetlink(ctx context.Context, state control.DesiredState, options 
 			return Result{}, err
 		}
 		if endpoint.Node == options.Node {
-			if err := replaceAddr(root, localLink, endpoint.IP, 32); err != nil {
+			if err := replaceAddr(root, localLink, endpoint.IP, addrPrefixBits(endpoint.IP)); err != nil {
 				return Result{}, fmt.Errorf("assign %s to %s: %w", endpoint.IP, options.LocalDevice, err)
 			}
 			result.LocalAddresses++
@@ -67,7 +67,7 @@ func applyLocalNetlink(ctx context.Context, state control.DesiredState, options 
 		if err != nil {
 			return Result{}, fmt.Errorf("lookup underlay device %s: %w", options.UnderlayDevice, err)
 		}
-		if err := replaceRoute(root, endpoint.IP, 32, nextHop, underlay.Attrs().Index, 0); err != nil {
+		if err := replaceRoute(root, endpoint.IP, addrPrefixBits(endpoint.IP), nextHop, underlay.Attrs().Index, 0); err != nil {
 			return Result{}, fmt.Errorf("route %s via %s: %w", endpoint.IP, nextHop, err)
 		}
 		result.RemoteRoutes++
@@ -116,7 +116,7 @@ func applyNetNSNetlink(ctx context.Context, state control.DesiredState, options 
 		if err != nil {
 			return Result{}, fmt.Errorf("lookup underlay device %s: %w", options.UnderlayDevice, err)
 		}
-		if err := replaceRoute(root, endpoint.IP, 32, nextHop, underlay.Attrs().Index, 0); err != nil {
+		if err := replaceRoute(root, endpoint.IP, addrPrefixBits(endpoint.IP), nextHop, underlay.Attrs().Index, 0); err != nil {
 			return Result{}, fmt.Errorf("route %s via %s: %w", endpoint.IP, nextHop, err)
 		}
 		result.RemoteRoutes++
@@ -255,14 +255,16 @@ func managedPolicyTable(table int, options Options) bool {
 }
 
 func flushPolicyRouteTable(root *netlink.Handle, table int) error {
-	routes, err := root.RouteListFiltered(netlink.FAMILY_V4, &netlink.Route{Table: table}, netlink.RT_FILTER_TABLE)
-	if err != nil {
-		return err
-	}
-	for i := range routes {
-		route := routes[i]
-		if err := root.RouteDel(&route); err != nil && !errors.Is(err, os.ErrNotExist) {
+	for _, family := range []int{netlink.FAMILY_V4, netlink.FAMILY_V6} {
+		routes, err := root.RouteListFiltered(family, &netlink.Route{Table: table}, netlink.RT_FILTER_TABLE)
+		if err != nil {
 			return err
+		}
+		for i := range routes {
+			route := routes[i]
+			if err := root.RouteDel(&route); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
 		}
 	}
 	return nil
@@ -298,14 +300,14 @@ func netlinkPolicyRule(route model.PolicyRoute, priority, table int, port *model
 	rule := netlink.NewRule()
 	rule.Priority = priority
 	rule.Table = table
-	rule.Family = unix.AF_INET
+	rule.Family = policyRouteFamily(route)
 	if route.Match.Source.IsValid() {
 		rule.Src, _ = ipNetFromPrefix(route.Match.Source)
 	}
 	if route.Match.Destination.IsValid() {
 		rule.Dst, _ = ipNetFromPrefix(route.Match.Destination)
 	}
-	if proto := linuxPolicyRuleProtocolNumber(route.Match.Protocol); proto != 0 {
+	if proto := linuxPolicyRuleProtocolNumber(route.Match.Protocol, rule.Family); proto != 0 {
 		rule.IPProto = proto
 	}
 	if port != nil {
@@ -314,13 +316,36 @@ func netlinkPolicyRule(route model.PolicyRoute, priority, table int, port *model
 	return rule
 }
 
-func linuxPolicyRuleProtocolNumber(protocol model.Protocol) int {
+func policyRouteFamily(route model.PolicyRoute) int {
+	if route.Match.Source.IsValid() {
+		return ipRuleFamily(route.Match.Source.Addr())
+	}
+	if route.Match.Destination.IsValid() {
+		return ipRuleFamily(route.Match.Destination.Addr())
+	}
+	if route.Action.NextHop.IsValid() {
+		return ipRuleFamily(route.Action.NextHop)
+	}
+	return unix.AF_INET
+}
+
+func ipRuleFamily(addr netip.Addr) int {
+	if addr.Is6() {
+		return unix.AF_INET6
+	}
+	return unix.AF_INET
+}
+
+func linuxPolicyRuleProtocolNumber(protocol model.Protocol, family int) int {
 	switch protocol {
 	case model.ProtocolTCP:
 		return unix.IPPROTO_TCP
 	case model.ProtocolUDP:
 		return unix.IPPROTO_UDP
 	case model.ProtocolICMP:
+		if family == unix.AF_INET6 {
+			return unix.IPPROTO_ICMPV6
+		}
 		return unix.IPPROTO_ICMP
 	default:
 		return 0
@@ -378,13 +403,13 @@ func ensureNetNSWorkload(root *netlink.Handle, endpointID string, ip netip.Addr,
 	if err != nil {
 		return fmt.Errorf("lookup host veth %s: %w", hostVeth, err)
 	}
-	if err := replaceAddr(root, hostLink, hostGateway, 32); err != nil {
+	if err := replaceAddr(root, hostLink, hostGateway, addrPrefixBits(hostGateway)); err != nil {
 		return fmt.Errorf("assign host gateway %s: %w", hostGateway, err)
 	}
 	if err := root.LinkSetUp(hostLink); err != nil {
 		return fmt.Errorf("set host veth %s up: %w", hostVeth, err)
 	}
-	if err := replaceRoute(root, ip, 32, netip.Addr{}, hostLink.Attrs().Index, 0); err != nil {
+	if err := replaceRoute(root, ip, addrPrefixBits(ip), netip.Addr{}, hostLink.Attrs().Index, 0); err != nil {
 		return fmt.Errorf("route workload %s: %w", ip, err)
 	}
 
@@ -402,7 +427,7 @@ func ensureNetNSWorkload(root *netlink.Handle, endpointID string, ip netip.Addr,
 	if err != nil {
 		return fmt.Errorf("lookup workload iface %s in %s: %w", workloadIF, nsName, err)
 	}
-	if err := replaceAddr(ns, workload, ip, 32); err != nil {
+	if err := replaceAddr(ns, workload, ip, addrPrefixBits(ip)); err != nil {
 		return fmt.Errorf("assign workload ip %s: %w", ip, err)
 	}
 	if err := ns.LinkSetUp(workload); err != nil {

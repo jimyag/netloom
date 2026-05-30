@@ -323,10 +323,10 @@ func loadBalancerProtocol(lb model.LoadBalancer) model.Protocol {
 func policyRouteMatch(match model.RouteMatch) string {
 	parts := []string{}
 	if match.Source.IsValid() {
-		parts = append(parts, "ip4.src == "+match.Source.String())
+		parts = append(parts, ipFamily(match.Source)+".src == "+match.Source.String())
 	}
 	if match.Destination.IsValid() {
-		parts = append(parts, "ip4.dst == "+match.Destination.String())
+		parts = append(parts, ipFamily(match.Destination)+".dst == "+match.Destination.String())
 	}
 	if match.Protocol != "" && match.Protocol != model.ProtocolAny {
 		parts = append(parts, string(match.Protocol))
@@ -343,4 +343,11 @@ func policyRouteMatch(match model.RouteMatch) string {
 		return "1 == 1"
 	}
 	return strings.Join(parts, " && ")
+}
+
+func ipFamily(prefix netip.Prefix) string {
+	if prefix.Addr().Is6() {
+		return "ip6"
+	}
+	return "ip4"
 }

@@ -11,6 +11,7 @@ import (
 
 	"github.com/jimyag/netloom/internal/control"
 	"github.com/jimyag/netloom/internal/model"
+	"golang.org/x/sys/unix"
 )
 
 func TestPlanProgramsLocalAddressesAndRemoteRoutes(t *testing.T) {
@@ -176,6 +177,54 @@ func TestPlanProgramsLinuxPolicyRoutes(t *testing.T) {
 	}
 }
 
+func TestPlanProgramsIPv6LinuxPolicyRoute(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:     "pod-a",
+			VPC:    "prod",
+			Subnet: "apps-v6",
+			IP:     netip.MustParseAddr("fd00:10::10"),
+			Node:   "node-a",
+		}},
+		PolicyRoutes: []model.PolicyRoute{{
+			Name:     "v6-via-fw",
+			VPC:      "prod",
+			Priority: 200,
+			Match: model.RouteMatch{
+				Source:   netip.MustParsePrefix("fd00:10::/64"),
+				Protocol: model.ProtocolICMP,
+			},
+			Action: model.RouteAction{
+				Type:    model.ActionReroute,
+				NextHop: netip.MustParseAddr("fd00:10::fe"),
+			},
+		}},
+	}
+
+	ops, result, err := Plan(context.Background(), state, Options{
+		Node:            "node-a",
+		LocalDevice:     "nl0",
+		UnderlayDevice:  "eth9",
+		PolicyTableBase: 20000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.PolicyRoutes != 1 {
+		t.Fatalf("policy routes = %d, want 1", result.PolicyRoutes)
+	}
+	joined := stringifyOps(ops)
+	for _, expected := range []string{
+		"ip addr replace fd00:10::10/128 dev nl0",
+		"ip route replace ::/0 via fd00:10::fe dev eth9 table 20000",
+		"ip rule add priority 9800 from fd00:10::/64 ipproto ipv6-icmp table 20000",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("IPv6 policy route ops missing %q:\n%s", expected, joined)
+		}
+	}
+}
+
 func TestPlanCleansManagedPolicyRouteRulesWhenRequested(t *testing.T) {
 	state := control.DesiredState{
 		Endpoints: []model.Endpoint{{
@@ -297,6 +346,30 @@ func TestNetlinkPolicyRuleEncodesL4Match(t *testing.T) {
 	}
 	if rule.IPProto != 6 || rule.Dport == nil || rule.Dport.Start != 443 || rule.Dport.End != 443 {
 		t.Fatalf("unexpected L4 match: proto=%d dport=%+v", rule.IPProto, rule.Dport)
+	}
+}
+
+func TestNetlinkPolicyRuleEncodesIPv6Family(t *testing.T) {
+	route := model.PolicyRoute{
+		Name:     "v6-via-fw",
+		VPC:      "prod",
+		Priority: 200,
+		Match: model.RouteMatch{
+			Source:   netip.MustParsePrefix("fd00:10::/64"),
+			Protocol: model.ProtocolICMP,
+		},
+		Action: model.RouteAction{Type: model.ActionReroute, NextHop: netip.MustParseAddr("fd00:10::fe")},
+	}
+	rules := netlinkPolicyRules(route, linuxPolicyRulePriority(route.Priority), 20000)
+	if len(rules) != 1 {
+		t.Fatalf("rules = %d, want 1", len(rules))
+	}
+	rule := rules[0]
+	if rule.Family != unix.AF_INET6 || rule.Src.String() != "fd00:10::/64" {
+		t.Fatalf("unexpected IPv6 rule: %+v", rule)
+	}
+	if rule.IPProto != unix.IPPROTO_ICMPV6 {
+		t.Fatalf("ipproto = %d, want ICMPv6", rule.IPProto)
 	}
 }
 
