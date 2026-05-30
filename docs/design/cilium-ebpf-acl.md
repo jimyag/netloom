@@ -69,6 +69,9 @@ The TCX datapath currently supports:
   with protocol-only, type-only, or type+code keys, backed by an LPM trie.
   Ingress policy matches the packet source address; egress policy matches the
   packet destination address.
+- IPv6 TCP/UDP CIDR peer + destination port-prefix ACL map/program primitives,
+  and IPv6 ICMP CIDR ACL projection using ICMPv6 next-header 58 with the same
+  protocol-only, type-only, or type+code key shape.
 - policy-driven TCX L4 selftests where `SecurityGroupRule` is compiled into a
   `policy.Program` before being projected into the TCX map. The agent selftest
   accepts ICMP policy checks with `NETLOOM_TCX_PROTO=1` and no destination port,
@@ -82,10 +85,11 @@ type/code: protocol-only ICMP has no L4 prefix, type-only matches the first
 8 bits, and type+code matches all 16 bits. Workload TCX attach projects ingress
 rules to host-veth egress and egress rules to host-veth ingress, matching the
 direction split used by endpoint policy datapaths.
-In dual-stack endpoint policies, IPv6 CIDR entries remain in the policy
-map/evaluator path while IPv4 CIDR entries are still projected into the TCX
-fast path, so an IPv6 rule does not disable IPv4 acceleration for the same
-endpoint.
+In dual-stack endpoint policies, IPv4 and IPv6 CIDR entries can both be
+projected into LPM-backed TCX rule sets. The current workload attachment path
+still attaches the IPv4 TCX program; IPv6 entries remain in the policy
+map/evaluator path until the agent switches to the dual-family TCX attach path,
+so an IPv6 rule does not disable IPv4 acceleration for the same endpoint.
 
 The controller can reconcile either the built-in bootstrap state or a JSON
 desired-state file. Docker e2e tests exercise the JSON path against a live OVN

@@ -290,6 +290,117 @@ func TestIPv4L4ACLRulesFromProgramSkipsIPv6CIDR(t *testing.T) {
 	}
 }
 
+func TestIPv6L4ACLRulesFromProgramProjectsExactIngressPolicy(t *testing.T) {
+	program := policy.Program{
+		EndpointID: "pod-a",
+		Rules: []policy.Rule{
+			{
+				ID:         "drop-v6-web",
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("fd00:10::20/128"),
+				Ports:      []model.PortRange{{From: 8443, To: 8443}},
+				Action:     model.ActionDrop,
+			},
+			{
+				ID:         "skip-v4",
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("172.30.0.0/24"),
+				Ports:      []model.PortRange{{From: 8443, To: 8443}},
+				Action:     model.ActionDrop,
+			},
+		},
+	}
+	rules, err := IPv6L4ACLRulesFromProgram(program)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 1 {
+		t.Fatalf("rules = %d, want 1 IPv6 rule", len(rules))
+	}
+	if rules[0].Source != netip.MustParseAddr("fd00:10::20") || rules[0].SourceCIDR != netip.MustParsePrefix("fd00:10::20/128") || rules[0].Protocol != 6 || rules[0].DestPort != 8443 || rules[0].DestPortPrefixBits != 16 || rules[0].Action != TCXDrop {
+		t.Fatalf("unexpected IPv6 rule: %+v", rules[0])
+	}
+}
+
+func TestIPv6L4ACLRulesFromProgramProjectsPortRangePolicy(t *testing.T) {
+	program := policy.Program{
+		EndpointID: "pod-a",
+		Rules: []policy.Rule{{
+			ID:         "drop-v6-range",
+			Direction:  model.DirectionEgress,
+			Protocol:   model.ProtocolUDP,
+			RemoteCIDR: netip.MustParsePrefix("2001:db8:10::/64"),
+			Ports:      []model.PortRange{{From: 30000, To: 32767}},
+			Action:     model.ActionDrop,
+		}},
+	}
+	rules, err := IPv6L4ACLRulesFromProgramForDirection(program, model.DirectionEgress)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 5 {
+		t.Fatalf("rules = %d, want 5 IPv6 CIDR+port-prefix TCX rules: %+v", len(rules), rules)
+	}
+	for _, rule := range rules {
+		if rule.SourceCIDR != netip.MustParsePrefix("2001:db8:10::/64") || rule.Protocol != 17 || rule.Action != TCXDrop {
+			t.Fatalf("unexpected IPv6 range rule: %+v", rule)
+		}
+		if rule.DestPortPrefixBits >= 16 {
+			t.Fatalf("range rule prefix bits = %d, want compressed port prefix", rule.DestPortPrefixBits)
+		}
+	}
+}
+
+func TestIPv6L4ACLRulesFromProgramProjectsICMPv6TypeAndCode(t *testing.T) {
+	icmpType := uint8(128)
+	icmpCode := uint8(0)
+	program := policy.Program{
+		EndpointID: "pod-a",
+		Rules: []policy.Rule{{
+			ID:         "allow-v6-echo",
+			Direction:  model.DirectionIngress,
+			Protocol:   model.ProtocolICMP,
+			RemoteCIDR: netip.MustParsePrefix("fd00:10::/64"),
+			ICMPType:   &icmpType,
+			ICMPCode:   &icmpCode,
+			Action:     model.ActionAllow,
+		}},
+	}
+	rules, err := IPv6L4ACLRulesFromProgram(program)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 1 {
+		t.Fatalf("rules = %d, want 1", len(rules))
+	}
+	if rules[0].Protocol != 58 || rules[0].DestPort != 0x8000 || rules[0].DestPortPrefixBits != 16 || rules[0].Action != TCXPass {
+		t.Fatalf("unexpected ICMPv6 type/code rule: %+v", rules[0])
+	}
+}
+
+func TestIPv6L4ACLRulesFromProgramRejectsICMPv6Ports(t *testing.T) {
+	program := policy.Program{
+		EndpointID: "pod-a",
+		Rules: []policy.Rule{{
+			ID:         "invalid-v6-icmp-port",
+			Direction:  model.DirectionIngress,
+			Protocol:   model.ProtocolICMP,
+			RemoteCIDR: netip.MustParsePrefix("fd00:10::/64"),
+			Ports:      []model.PortRange{{From: 8, To: 8}},
+			Action:     model.ActionDrop,
+		}},
+	}
+	_, err := IPv6L4ACLRulesFromProgram(program)
+	if err == nil {
+		t.Fatal("expected ICMPv6 port TCX projection to fail")
+	}
+	if !strings.Contains(err.Error(), "ICMPv6 TCX ACL does not support destination ports") {
+		t.Fatalf("error %q does not mention ICMPv6 ports", err)
+	}
+}
+
 func TestIPv4L4ACLRulesFromProgramRejectsNoExactRules(t *testing.T) {
 	_, err := IPv4L4ACLRulesFromProgram(policy.Program{EndpointID: "pod-a"})
 	if err == nil {
@@ -304,6 +415,19 @@ func TestIPv4L4ACLUsesLPMTrieMapSpec(t *testing.T) {
 	}
 	if spec.KeySize != 16 {
 		t.Fatalf("key size = %d, want 16", spec.KeySize)
+	}
+	if spec.Flags == 0 {
+		t.Fatal("LPM trie map should set no-prealloc flag")
+	}
+}
+
+func TestIPv6L4ACLUsesLPMTrieMapSpec(t *testing.T) {
+	spec := ipv6L4ACLMapSpec(1)
+	if spec.Type != ebpf.LPMTrie {
+		t.Fatalf("map type = %s, want LPMTrie", spec.Type)
+	}
+	if spec.KeySize != 28 {
+		t.Fatalf("key size = %d, want 28", spec.KeySize)
 	}
 	if spec.Flags == 0 {
 		t.Fatal("LPM trie map should set no-prealloc flag")
@@ -327,6 +451,26 @@ func TestIPv4L4ACLRuleSourceCIDR(t *testing.T) {
 	}
 }
 
+func TestIPv6L4ACLRuleSourceCIDR(t *testing.T) {
+	cidr, err := ipv6RuleSourceCIDR(IPv6L4ACLRule{SourceCIDR: netip.MustParsePrefix("fd00:10::55/64")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cidr != netip.MustParsePrefix("fd00:10::/64") {
+		t.Fatalf("cidr = %s, want masked fd00:10::/64", cidr)
+	}
+	cidr, err = ipv6RuleSourceCIDR(IPv6L4ACLRule{Source: netip.MustParseAddr("fd00:10::11")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cidr != netip.MustParsePrefix("fd00:10::11/128") {
+		t.Fatalf("exact cidr = %s, want fd00:10::11/128", cidr)
+	}
+	if _, err := ipv6RuleSourceCIDR(IPv6L4ACLRule{SourceCIDR: netip.MustParsePrefix("172.30.0.0/24")}); err == nil {
+		t.Fatal("expected IPv4 CIDR to fail IPv6 rule validation")
+	}
+}
+
 func TestIPv4L4ACLKeyPrefixLenIncludesProtocolAndPort(t *testing.T) {
 	if got := ipv4L4PrefixLen(netip.MustParsePrefix("172.30.0.0/24"), 16); got != 72 {
 		t.Fatalf("/24 exact-port prefix len = %d, want protocol+pad+cidr+port bits 72", got)
@@ -342,9 +486,32 @@ func TestIPv4L4ACLKeyPrefixLenIncludesProtocolAndPort(t *testing.T) {
 	}
 }
 
+func TestIPv6L4ACLKeyPrefixLenIncludesProtocolAndPort(t *testing.T) {
+	if got := ipv6L4PrefixLen(netip.MustParsePrefix("fd00:10::/64"), 16); got != 112 {
+		t.Fatalf("/64 exact-port prefix len = %d, want protocol+pad+cidr+port bits 112", got)
+	}
+	if got := ipv6L4PrefixLen(netip.MustParsePrefix("fd00:10::11/128"), 16); got != 176 {
+		t.Fatalf("/128 exact-port prefix len = %d, want full key length 176", got)
+	}
+	if got := ipv6L4PrefixLen(netip.MustParsePrefix("fd00:10::/64"), 12); got != 108 {
+		t.Fatalf("/64 port-prefix len = %d, want protocol+pad+cidr+port-prefix bits 108", got)
+	}
+	if ipv6L4LookupPrefixLen != 176 {
+		t.Fatalf("lookup prefix len = %d, want full IPv6 key length 176", ipv6L4LookupPrefixLen)
+	}
+}
+
 func TestIPv4L4ACLKeyPeerIPUsesNetworkByteOrder(t *testing.T) {
 	got := ipv4L4PeerKey(netip.MustParseAddr("10.245.0.0"))
 	want := [4]byte{10, 245, 0, 0}
+	if got != want {
+		t.Fatalf("peer ip key bytes = %#v, want network-order %#v", got, want)
+	}
+}
+
+func TestIPv6L4ACLKeyPeerIPUsesNetworkByteOrder(t *testing.T) {
+	got := ipv6L4PeerKey(netip.MustParseAddr("fd00:10::1"))
+	want := [16]byte{0xfd, 0x00, 0x00, 0x10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}
 	if got != want {
 		t.Fatalf("peer ip key bytes = %#v, want network-order %#v", got, want)
 	}
@@ -365,6 +532,29 @@ func TestIPv4L4ACLRulesFromProgramsDeduplicatesRules(t *testing.T) {
 		},
 	}
 	rules, err := IPv4L4ACLRulesFromPrograms([]policy.Program{program, program})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 1 {
+		t.Fatalf("rules = %d, want 1", len(rules))
+	}
+}
+
+func TestIPv6L4ACLRulesFromProgramsDeduplicatesRules(t *testing.T) {
+	program := policy.Program{
+		EndpointID: "pod-a",
+		Rules: []policy.Rule{
+			{
+				ID:         "drop-v6-web-a",
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("fd00:10::11/128"),
+				Ports:      []model.PortRange{{From: 8080, To: 8080}},
+				Action:     model.ActionDrop,
+			},
+		},
+	}
+	rules, err := IPv6L4ACLRulesFromPrograms([]policy.Program{program, program})
 	if err != nil {
 		t.Fatal(err)
 	}
