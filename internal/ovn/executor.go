@@ -73,6 +73,17 @@ func (e *NBCTLExecutor) executeTransaction(ctx context.Context, ops []Operation)
 	if len(ops) == 0 {
 		return nil
 	}
+	for len(ops) > 0 {
+		batchEnd := nextTransactionBatchEnd(ops)
+		if err := e.executeTransactionBatch(ctx, ops[:batchEnd]); err != nil {
+			return err
+		}
+		ops = ops[batchEnd:]
+	}
+	return nil
+}
+
+func (e *NBCTLExecutor) executeTransactionBatch(ctx context.Context, ops []Operation) error {
 	args := append([]string(nil), e.BaseArgs...)
 	for i, op := range ops {
 		if err := validateOperation(op); err != nil {
@@ -92,6 +103,18 @@ func (e *NBCTLExecutor) executeTransaction(ctx context.Context, ops []Operation)
 		return fmt.Errorf("%s %v failed: %w: %s", e.Binary, args, err, stderr.String())
 	}
 	return nil
+}
+
+func nextTransactionBatchEnd(ops []Operation) int {
+	if len(ops) <= 1 {
+		return len(ops)
+	}
+	for i := 1; i < len(ops); i++ {
+		if ops[i].Command == "lr-nat-add" {
+			return i
+		}
+	}
+	return len(ops)
 }
 
 func validateOperation(op Operation) error {

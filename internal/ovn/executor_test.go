@@ -333,6 +333,46 @@ func TestNBCTLExecutorBatchesOperationsIntoTransaction(t *testing.T) {
 	}
 }
 
+func TestNBCTLExecutorSplitsNATAddAfterDelete(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args")
+	binary := filepath.Join(dir, "ovn-nbctl")
+	script := "#!/bin/sh\nprintf '%s\\n' '---' >> " + argsFile + "\nprintf '%s\\n' \"$@\" >> " + argsFile + "\n"
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	executor := ovn.NewNBCTLExecutor(binary, "--db=unix:/tmp/ovnnb.sock")
+	err := executor.Execute(context.Background(), []ovn.Operation{
+		{Command: "lr-nat-del", Flags: []string{"--if-exists"}, Args: []string{"nl_lr_prod", "snat", "10.10.0.0/24"}},
+		{Command: "lr-nat-add", Flags: []string{"--may-exist"}, Args: []string{"nl_lr_prod", "snat", "198.51.100.50", "10.10.0.0/24"}},
+		{Command: "set", Args: []string{"logical_router", "nl_lr_prod", "external_ids:netloom_owner=netloom"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := strings.Split(strings.TrimPrefix(strings.TrimSpace(string(raw)), "---\n"), "\n---\n")
+	if len(calls) != 2 {
+		t.Fatalf("calls = %d, want delete and add batches:\n%s", len(calls), raw)
+	}
+	if !strings.Contains(calls[0], "lr-nat-del\nnl_lr_prod\nsnat\n10.10.0.0/24") {
+		t.Fatalf("first call should delete NAT before add:\n%s", calls[0])
+	}
+	if strings.Contains(calls[0], "lr-nat-add") {
+		t.Fatalf("first transaction must not include lr-nat-add:\n%s", calls[0])
+	}
+	if !strings.Contains(calls[1], "lr-nat-add\nnl_lr_prod\nsnat\n198.51.100.50\n10.10.0.0/24") {
+		t.Fatalf("second call should add replacement NAT:\n%s", calls[1])
+	}
+	if !strings.Contains(calls[1], "--\nset\nlogical_router\nnl_lr_prod") {
+		t.Fatalf("second transaction should keep following operations batched:\n%s", calls[1])
+	}
+}
+
 type failingExecutor struct{}
 
 func (failingExecutor) Execute(context.Context, []ovn.Operation) error {

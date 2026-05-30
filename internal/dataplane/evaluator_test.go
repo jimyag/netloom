@@ -161,6 +161,63 @@ func TestEvaluateRemoteCIDRKeepsIdentityPrecedence(t *testing.T) {
 	}
 }
 
+func TestEvaluateRemoteCIDRChoosesLongestPrefix(t *testing.T) {
+	specificCookie := stableCookie("allow-specific-host")
+	entries := []PolicyMapEntry{
+		{
+			Key:        PolicyKey{PrefixLen: StaticPrefixBits + 24, RemoteIdentity: 200, Direction: DirectionIngress, Protocol: 6, DestPortBE: hostToNetwork16(443)},
+			RemoteCIDR: netip.MustParsePrefix("10.20.0.55/32"),
+			Value:      PolicyEntry{L4PrefixLen: 24, Precedence: 100, RuleCookie: specificCookie},
+		},
+		{
+			Key:        PolicyKey{PrefixLen: StaticPrefixBits + 24, RemoteIdentity: 100, Direction: DirectionIngress, Protocol: 6, DestPortBE: hostToNetwork16(443)},
+			RemoteCIDR: netip.MustParsePrefix("10.20.0.0/24"),
+			Value:      PolicyEntry{L4PrefixLen: 24, Precedence: 100, RuleCookie: stableCookie("allow-subnet")},
+		},
+	}
+	decision := Evaluate(entries, Packet{
+		RemoteIP:  netip.MustParseAddr("10.20.0.55"),
+		Direction: DirectionIngress,
+		Protocol:  6,
+		DestPort:  443,
+	})
+	if decision.Verdict != VerdictAllow || decision.Match == nil {
+		t.Fatalf("decision = %+v, want allow with matched rule", decision)
+	}
+	if decision.Match.Value.RuleCookie != specificCookie {
+		t.Fatalf("rule cookie = %d, want longest-prefix cookie %d", decision.Match.Value.RuleCookie, specificCookie)
+	}
+}
+
+func TestEvaluateRemoteCIDRDoesNotOverrideExactIdentity(t *testing.T) {
+	exactCookie := stableCookie("allow-identity")
+	entries := []PolicyMapEntry{
+		{
+			Key:        PolicyKey{PrefixLen: StaticPrefixBits + 24, RemoteIdentity: 100, Direction: DirectionIngress, Protocol: 6, DestPortBE: hostToNetwork16(443)},
+			Value:      PolicyEntry{L4PrefixLen: 24, Precedence: 100, RuleCookie: exactCookie},
+			RemoteCIDR: netip.MustParsePrefix("10.20.0.0/24"),
+		},
+		{
+			Key:        PolicyKey{PrefixLen: StaticPrefixBits + 24, RemoteIdentity: 200, Direction: DirectionIngress, Protocol: 6, DestPortBE: hostToNetwork16(443)},
+			RemoteCIDR: netip.MustParsePrefix("10.20.0.55/32"),
+			Value:      PolicyEntry{L4PrefixLen: 24, Precedence: 100, RuleCookie: stableCookie("allow-cidr-host")},
+		},
+	}
+	decision := Evaluate(entries, Packet{
+		RemoteIdentity: 100,
+		RemoteIP:       netip.MustParseAddr("10.20.0.55"),
+		Direction:      DirectionIngress,
+		Protocol:       6,
+		DestPort:       443,
+	})
+	if decision.Verdict != VerdictAllow || decision.Match == nil {
+		t.Fatalf("decision = %+v, want allow with matched rule", decision)
+	}
+	if decision.Match.Value.RuleCookie != exactCookie {
+		t.Fatalf("rule cookie = %d, want exact identity cookie %d", decision.Match.Value.RuleCookie, exactCookie)
+	}
+}
+
 func TestEvaluateStatefulAllowsReverseFlowFromConntrack(t *testing.T) {
 	entries := []PolicyMapEntry{{
 		Key: PolicyKey{

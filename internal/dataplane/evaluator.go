@@ -196,7 +196,7 @@ func evaluate(entries []PolicyMapEntry, packet Packet) Decision {
 		if !matches(*entry, packet) {
 			continue
 		}
-		if selected == nil || betterMatch(*entry, *selected) {
+		if selected == nil || betterMatch(*entry, *selected, packet) {
 			selected = entry
 		}
 	}
@@ -336,17 +336,29 @@ func remoteCIDRMatches(prefix netip.Prefix, remoteIP netip.Addr) bool {
 	return prefix.IsValid() && remoteIP.IsValid() && prefix.Contains(remoteIP)
 }
 
-func betterMatch(candidate, selected PolicyMapEntry) bool {
+func betterMatch(candidate, selected PolicyMapEntry, packet Packet) bool {
 	if candidate.Value.Precedence != selected.Value.Precedence {
 		return candidate.Value.Precedence > selected.Value.Precedence
 	}
 	if candidate.Value.L4PrefixLen != selected.Value.L4PrefixLen {
 		return candidate.Value.L4PrefixLen > selected.Value.L4PrefixLen
 	}
-	if candidate.Key.RemoteIdentity != selected.Key.RemoteIdentity {
-		return candidate.Key.RemoteIdentity != 0
+	candidateExact := candidate.Key.RemoteIdentity != 0 && candidate.Key.RemoteIdentity == packet.RemoteIdentity
+	selectedExact := selected.Key.RemoteIdentity != 0 && selected.Key.RemoteIdentity == packet.RemoteIdentity
+	if candidateExact != selectedExact {
+		return candidateExact
+	}
+	if candidateBits, selectedBits := remoteCIDRBits(candidate.RemoteCIDR), remoteCIDRBits(selected.RemoteCIDR); candidateBits != selectedBits {
+		return candidateBits > selectedBits
 	}
 	return false
+}
+
+func remoteCIDRBits(prefix netip.Prefix) int {
+	if !prefix.IsValid() {
+		return -1
+	}
+	return prefix.Bits()
 }
 
 func networkToHost16(value uint16) uint16 {
