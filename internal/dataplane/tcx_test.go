@@ -114,6 +114,30 @@ func TestIPv4L4ACLRulesFromProgramsDeduplicatesRules(t *testing.T) {
 	}
 }
 
+func TestIPv4L4ACLRulesFromProgramTreatsLogActionAsPass(t *testing.T) {
+	program := policy.Program{
+		EndpointID: "pod-a",
+		Rules: []policy.Rule{{
+			ID:         "log-web",
+			Direction:  model.DirectionIngress,
+			Protocol:   model.ProtocolTCP,
+			RemoteCIDR: netip.MustParsePrefix("172.30.0.11/32"),
+			Ports:      []model.PortRange{{From: 8080, To: 8080}},
+			Action:     model.ActionLog,
+		}},
+	}
+	rules, err := IPv4L4ACLRulesFromProgram(program)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 1 {
+		t.Fatalf("rules = %d, want 1", len(rules))
+	}
+	if rules[0].Action != TCXPass {
+		t.Fatalf("tcx action = %d, want pass", rules[0].Action)
+	}
+}
+
 func TestTCXSelfTestPrivileged(t *testing.T) {
 	if os.Getenv("NETLOOM_TCX_TEST") != "1" {
 		t.Skip("set NETLOOM_TCX_TEST=1 to load and attach a TCX program")

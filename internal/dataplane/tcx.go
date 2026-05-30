@@ -323,7 +323,7 @@ func exactIPv4PrefixAddr(prefix netip.Prefix) (netip.Addr, bool) {
 
 func tcxAction(action model.Action) (int32, bool) {
 	switch action {
-	case model.ActionAllow:
+	case model.ActionAllow, model.ActionLog:
 		return TCXPass, true
 	case model.ActionDrop, model.ActionReject:
 		return TCXDrop, true

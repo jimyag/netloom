@@ -158,7 +158,7 @@ OVN ACL 本身很适合做分布式虚拟网络策略，但它不是唯一选择
 - Cilium 风格策略编译：把安全组规则编译为 endpoint-scoped policy map entry，并把 `remote_group` 展开为 endpoint identity 与精确成员 CIDR。
 - Cilium 风格连接状态：stateful allow 规则会建立反向 conntrack 状态，策略变化或 endpoint 删除时清理旧状态。
 - Cilium 风格策略更新：policy map replace 会先计算 add/update/delete/unchanged diff，成功替换后递增 endpoint policy revision 并记录 audit event；内存 store 具备事务回滚语义。
-- Cilium 风格可观测性：policy evaluator 会记录 allow/drop/conntrack/log 统计，为策略拒绝或无匹配 drop 生成 drop event，并为带 `log` 的规则生成 allow/drop policy event。
+- Cilium 风格可观测性：policy evaluator 会记录 allow/drop/conntrack/log 统计，为策略拒绝或无匹配 drop 生成 drop event，并为带 `log` 的规则或 `action=log` 生成 allow/drop policy event。
 - eBPF/TCX ACL datapath：支持节点接口和工作负载 veth 上的 IPv4 L4 ACL attach。
 - 周期 reconcile：controller 和 agent 都能从 desired-state JSON 文件周期重读状态，controller 会清理从 desired state 删除的 OVN/内存对象，agent 会持有并按需替换 TCX attachment。
 

@@ -122,6 +122,45 @@ func TestCompileForEndpointDecomposesPortRangesIntoLPMEntries(t *testing.T) {
 	}
 }
 
+func TestCompileForEndpointTreatsLogActionAsAllowWithLog(t *testing.T) {
+	endpoint := model.Endpoint{
+		ID:             "pod-a",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"audit"},
+	}
+	program, err := CompileForEndpoint(endpoint, map[string]model.SecurityGroup{
+		"audit": {
+			Name: "audit",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "log-web",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("10.20.0.0/24"),
+				Ports:      []model.PortRange{{From: 8080, To: 8080}},
+				Action:     model.ActionLog,
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(program.MapEntries) != 1 {
+		t.Fatalf("map entries = %d, want 1", len(program.MapEntries))
+	}
+	entry := program.MapEntries[0]
+	if entry.Value.Deny {
+		t.Fatal("log action should allow traffic")
+	}
+	if !entry.Value.Log {
+		t.Fatal("log action should set log flag")
+	}
+}
+
 func TestCompileForEndpointWithStateExpandsRemoteGroupMembers(t *testing.T) {
 	target := model.Endpoint{
 		ID:             "pod-a",

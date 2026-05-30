@@ -2,7 +2,11 @@ package dataplane
 
 import (
 	"math"
+	"net/netip"
 	"testing"
+
+	"github.com/jimyag/netloom/internal/model"
+	"github.com/jimyag/netloom/internal/policy"
 )
 
 func TestEvaluateDefaultsToDrop(t *testing.T) {
@@ -277,6 +281,57 @@ func TestPolicyRecorderTracksLoggedPolicyEvents(t *testing.T) {
 	}
 	if events[1].Verdict != VerdictDrop || events[1].RuleCookie != 99 || events[1].DestPort != 8443 {
 		t.Fatalf("second event = %+v, want logged drop", events[1])
+	}
+}
+
+func TestActionLogCompilesToAllowPolicyEvent(t *testing.T) {
+	endpoint := model.Endpoint{
+		ID:             "pod-a",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"audit"},
+	}
+	program, err := policy.CompileForEndpoint(endpoint, map[string]model.SecurityGroup{
+		"audit": {
+			Name: "audit",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "log-web",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("10.20.0.0/24"),
+				Ports:      []model.PortRange{{From: 8080, To: 8080}},
+				Action:     model.ActionLog,
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := EncodeProgram(program)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := NewPolicyRecorder()
+	decision := EvaluateObserved("pod-a", entries, Packet{
+		RemoteIdentity: program.MapEntries[0].Key.RemoteIdentity,
+		Direction:      DirectionIngress,
+		Protocol:       6,
+		DestPort:       8080,
+	}, recorder)
+	if decision.Verdict != VerdictAllow {
+		t.Fatalf("verdict = %s, want allow", decision.Verdict)
+	}
+	metrics := recorder.Metrics("pod-a")
+	if metrics.Allowed != 1 || metrics.Logged != 1 || metrics.Dropped != 0 {
+		t.Fatalf("metrics = %+v, want one logged allow", metrics)
+	}
+	events := recorder.PolicyEvents()
+	if len(events) != 1 || events[0].Verdict != VerdictAllow || events[0].RuleCookie == 0 {
+		t.Fatalf("policy events = %+v, want one logged allow with cookie", events)
 	}
 }
 

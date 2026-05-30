@@ -195,7 +195,7 @@ func compileMapEntries(rule Rule) ([]MapEntry, error) {
 				Deny:       rule.Action == model.ActionDrop || rule.Action == model.ActionReject,
 				Precedence: precedence(rule),
 				Stateful:   rule.Stateful,
-				Log:        rule.Log,
+				Log:        rule.Log || rule.Action == model.ActionLog,
 			},
 			RuleID: rule.ID,
 		})
