@@ -19,6 +19,8 @@ type EBPFPolicyStore struct {
 	maps       map[string]*ebpf.Map
 	entries    map[string][]PolicyMapEntry
 	lastStats  map[string]PolicyUpdateStats
+	revisions  map[string]uint64
+	events     []PolicyUpdateEvent
 }
 
 func NewEBPFPolicyStore(maxEntries uint32) *EBPFPolicyStore {
@@ -30,6 +32,7 @@ func NewEBPFPolicyStore(maxEntries uint32) *EBPFPolicyStore {
 		maps:       make(map[string]*ebpf.Map),
 		entries:    make(map[string][]PolicyMapEntry),
 		lastStats:  make(map[string]PolicyUpdateStats),
+		revisions:  make(map[string]uint64),
 	}
 }
 
@@ -68,9 +71,18 @@ func (s *EBPFPolicyStore) ReplaceEndpoint(ctx context.Context, endpointID string
 	}
 
 	old := s.maps[endpointID]
+	revision := s.revisions[endpointID] + 1
+	stats := plan.Stats()
+	stats.Revision = revision
 	s.maps[endpointID] = next
 	s.entries[endpointID] = canonicalPolicyEntries(entries)
-	s.lastStats[endpointID] = plan.Stats()
+	s.revisions[endpointID] = revision
+	s.lastStats[endpointID] = stats
+	s.events = append(s.events, PolicyUpdateEvent{
+		EndpointID: endpointID,
+		Revision:   revision,
+		Stats:      stats,
+	})
 	if old != nil {
 		old.Close()
 	}
@@ -81,6 +93,18 @@ func (s *EBPFPolicyStore) LastStats(endpointID string) PolicyUpdateStats {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.lastStats[endpointID]
+}
+
+func (s *EBPFPolicyStore) Revision(endpointID string) uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.revisions[endpointID]
+}
+
+func (s *EBPFPolicyStore) Events() []PolicyUpdateEvent {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]PolicyUpdateEvent(nil), s.events...)
 }
 
 func (s *EBPFPolicyStore) Close() error {
@@ -95,6 +119,7 @@ func (s *EBPFPolicyStore) Close() error {
 		delete(s.maps, endpointID)
 		delete(s.entries, endpointID)
 		delete(s.lastStats, endpointID)
+		delete(s.revisions, endpointID)
 	}
 	return firstErr
 }

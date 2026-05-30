@@ -14,20 +14,28 @@ import (
 )
 
 type ReconcileResult struct {
-	Node         string
-	Endpoints    int
-	Programs     int
-	Entries      int
-	TCXEligible  int
-	TCX          string
-	Datapath     string
-	LocalIPs     int
-	RemoteRoutes int
-	Cleanup      bool
+	Node              string
+	Endpoints         int
+	Programs          int
+	Entries           int
+	PolicyAdded       int
+	PolicyUpdated     int
+	PolicyDeleted     int
+	PolicyRevisionMax uint64
+	TCXEligible       int
+	TCX               string
+	Datapath          string
+	LocalIPs          int
+	RemoteRoutes      int
+	Cleanup           bool
 }
 
 type PolicyStore interface {
 	ReplaceEndpoint(ctx context.Context, endpointID string, entries []dataplane.PolicyMapEntry) error
+}
+
+type PolicyStatsStore interface {
+	LastStats(endpointID string) dataplane.PolicyUpdateStats
 }
 
 type ReconcileOptions struct {
@@ -185,6 +193,15 @@ func prepareReconcile(ctx context.Context, state control.DesiredState, options R
 		}
 		if err := backend.ApplyEndpointProgram(ctx, program); err != nil {
 			return ReconcileResult{}, nil, nil, fmt.Errorf("apply policy program for endpoint %s: %w", endpoint.ID, err)
+		}
+		if statsStore, ok := options.Store.(PolicyStatsStore); ok {
+			stats := statsStore.LastStats(endpoint.ID)
+			result.PolicyAdded += stats.Added
+			result.PolicyUpdated += stats.Updated
+			result.PolicyDeleted += stats.Deleted
+			if stats.Revision > result.PolicyRevisionMax {
+				result.PolicyRevisionMax = stats.Revision
+			}
 		}
 		result.Endpoints++
 		result.Programs++

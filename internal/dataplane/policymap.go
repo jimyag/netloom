@@ -42,10 +42,17 @@ type PolicyMapEntry struct {
 }
 
 type PolicyUpdateStats struct {
+	Revision  uint64
 	Added     int
 	Updated   int
 	Deleted   int
 	Unchanged int
+}
+
+type PolicyUpdateEvent struct {
+	EndpointID string
+	Revision   uint64
+	Stats      PolicyUpdateStats
 }
 
 type PolicyUpdatePlan struct {
@@ -63,6 +70,8 @@ type InMemoryPolicyStore struct {
 	mu        sync.Mutex
 	endpoints map[string][]PolicyMapEntry
 	lastStats map[string]PolicyUpdateStats
+	revisions map[string]uint64
+	events    []PolicyUpdateEvent
 	failAfter int
 }
 
@@ -70,6 +79,7 @@ func NewInMemoryPolicyStore() *InMemoryPolicyStore {
 	return &InMemoryPolicyStore{
 		endpoints: make(map[string][]PolicyMapEntry),
 		lastStats: make(map[string]PolicyUpdateStats),
+		revisions: make(map[string]uint64),
 	}
 }
 
@@ -94,8 +104,17 @@ func (s *InMemoryPolicyStore) ReplaceEndpoint(_ context.Context, endpointID stri
 		next = upsertEntry(next, entry)
 		applied++
 	}
+	revision := s.revisions[endpointID] + 1
+	stats := plan.Stats()
+	stats.Revision = revision
 	s.endpoints[endpointID] = canonicalPolicyEntries(next)
-	s.lastStats[endpointID] = plan.Stats()
+	s.revisions[endpointID] = revision
+	s.lastStats[endpointID] = stats
+	s.events = append(s.events, PolicyUpdateEvent{
+		EndpointID: endpointID,
+		Revision:   revision,
+		Stats:      stats,
+	})
 	return nil
 }
 
@@ -110,6 +129,18 @@ func (s *InMemoryPolicyStore) LastStats(endpointID string) PolicyUpdateStats {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.lastStats[endpointID]
+}
+
+func (s *InMemoryPolicyStore) Revision(endpointID string) uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.revisions[endpointID]
+}
+
+func (s *InMemoryPolicyStore) Events() []PolicyUpdateEvent {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]PolicyUpdateEvent(nil), s.events...)
 }
 
 func (s *InMemoryPolicyStore) SetFailAfter(operations int) {

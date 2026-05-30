@@ -119,7 +119,7 @@ func TestPlanPolicyUpdateComputesIncrementalDiff(t *testing.T) {
 
 	plan := PlanPolicyUpdate([]PolicyMapEntry{keep, updateOld, deleted}, []PolicyMapEntry{keep, updateNew, added})
 	stats := plan.Stats()
-	if stats.Added != 1 || stats.Updated != 1 || stats.Deleted != 1 || stats.Unchanged != 1 {
+	if stats.Revision != 0 || stats.Added != 1 || stats.Updated != 1 || stats.Deleted != 1 || stats.Unchanged != 1 {
 		t.Fatalf("stats = %+v, want one add/update/delete/unchanged", stats)
 	}
 	if plan.Add[0] != added || plan.Update[0] != updateNew || plan.Delete[0] != deleted.Key || plan.Unchanged[0] != keep {
@@ -137,8 +137,11 @@ func TestInMemoryPolicyStoreAppliesIncrementalStats(t *testing.T) {
 		t.Fatal(err)
 	}
 	stats := store.LastStats("pod-a")
-	if stats.Added != 1 || stats.Updated != 0 || stats.Deleted != 0 {
+	if stats.Revision != 1 || stats.Added != 1 || stats.Updated != 0 || stats.Deleted != 0 {
 		t.Fatalf("first stats = %+v, want one add", stats)
+	}
+	if revision := store.Revision("pod-a"); revision != 1 {
+		t.Fatalf("first revision = %d, want 1", revision)
 	}
 
 	second := []PolicyMapEntry{{
@@ -149,12 +152,19 @@ func TestInMemoryPolicyStoreAppliesIncrementalStats(t *testing.T) {
 		t.Fatal(err)
 	}
 	stats = store.LastStats("pod-a")
-	if stats.Added != 0 || stats.Updated != 1 || stats.Deleted != 0 {
+	if stats.Revision != 2 || stats.Added != 0 || stats.Updated != 1 || stats.Deleted != 0 {
 		t.Fatalf("second stats = %+v, want one update", stats)
 	}
 	entries := store.Entries("pod-a")
 	if len(entries) != 1 || entries[0].Value.Precedence != 20 {
 		t.Fatalf("entries = %+v, want updated precedence", entries)
+	}
+	events := store.Events()
+	if len(events) != 2 {
+		t.Fatalf("events = %d, want 2", len(events))
+	}
+	if events[0].EndpointID != "pod-a" || events[0].Revision != 1 || events[1].Revision != 2 {
+		t.Fatalf("events = %+v, want pod-a revisions 1 and 2", events)
 	}
 }
 
@@ -176,6 +186,9 @@ func TestInMemoryPolicyStoreRollsBackOnFailure(t *testing.T) {
 	err := store.ReplaceEndpoint(context.Background(), "pod-a", newEntries)
 	if err == nil {
 		t.Fatal("expected injected update failure")
+	}
+	if revision := store.Revision("pod-a"); revision != 1 {
+		t.Fatalf("revision after failure = %d, want 1", revision)
 	}
 	entries := store.Entries("pod-a")
 	if len(entries) != 1 || entries[0] != oldEntries[0] {

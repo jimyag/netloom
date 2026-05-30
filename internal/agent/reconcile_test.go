@@ -54,6 +54,9 @@ func TestReconcileNodeAppliesOnlyLocalEndpointPolicies(t *testing.T) {
 	if result.Endpoints != 1 || result.Programs != 1 || result.Entries != 1 || result.TCXEligible != 1 {
 		t.Fatalf("unexpected result: %+v", result)
 	}
+	if result.PolicyAdded != 1 || result.PolicyUpdated != 0 || result.PolicyDeleted != 0 || result.PolicyRevisionMax != 1 {
+		t.Fatalf("policy update summary = %+v, want one add at revision 1", result)
+	}
 	if result.TCX != "not-requested" {
 		t.Fatalf("tcx = %s, want not-requested", result.TCX)
 	}
@@ -62,6 +65,52 @@ func TestReconcileNodeAppliesOnlyLocalEndpointPolicies(t *testing.T) {
 	}
 	if entries := store.Entries("pod-b"); len(entries) != 0 {
 		t.Fatalf("pod-b entries = %d, want 0", len(entries))
+	}
+}
+
+func TestReconcileNodeReportsPolicyDiffStatsAcrossRevisions(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:             "pod-a",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"web"},
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "web",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("172.30.0.11/32"),
+				Ports:      []model.PortRange{{From: 8080, To: 8080}},
+				Action:     model.ActionDrop,
+			}},
+		}},
+	}
+	store := dataplane.NewInMemoryPolicyStore()
+	if _, err := ReconcileNode(context.Background(), state, "node-a", store); err != nil {
+		t.Fatal(err)
+	}
+
+	state.SecurityGroups[0].Rules[0].Action = model.ActionAllow
+	result, err := ReconcileNode(context.Background(), state, "node-a", store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.PolicyAdded != 0 || result.PolicyUpdated != 1 || result.PolicyDeleted != 0 || result.PolicyRevisionMax != 2 {
+		t.Fatalf("policy update summary = %+v, want one update at revision 2", result)
+	}
+	events := store.Events()
+	if len(events) != 2 {
+		t.Fatalf("events = %d, want 2", len(events))
+	}
+	if events[1].EndpointID != "pod-a" || events[1].Stats.Updated != 1 || events[1].Stats.Revision != 2 {
+		t.Fatalf("second event = %+v, want pod-a update revision 2", events[1])
 	}
 }
 
