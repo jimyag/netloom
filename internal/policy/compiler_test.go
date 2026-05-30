@@ -121,3 +121,94 @@ func TestCompileForEndpointDecomposesPortRangesIntoLPMEntries(t *testing.T) {
 		}
 	}
 }
+
+func TestCompileForEndpointWithStateExpandsRemoteGroupMembers(t *testing.T) {
+	target := model.Endpoint{
+		ID:             "pod-a",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"web"},
+	}
+	peer := model.Endpoint{
+		ID:             "pod-b",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.11"),
+		Node:           "node-b",
+		SecurityGroups: []string{"clients"},
+	}
+	other := model.Endpoint{
+		ID:             "pod-c",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.12"),
+		Node:           "node-b",
+		SecurityGroups: []string{"other"},
+	}
+	program, err := CompileForEndpointWithState(target, map[string]model.SecurityGroup{
+		"web": {
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:          "allow-clients",
+				Priority:    100,
+				Direction:   model.DirectionIngress,
+				Protocol:    model.ProtocolTCP,
+				RemoteGroup: "clients",
+				Ports:       []model.PortRange{{From: 8080, To: 8080}},
+				Action:      model.ActionAllow,
+			}},
+		},
+		"clients": {Name: "clients", VPC: "prod"},
+		"other":   {Name: "other", VPC: "prod"},
+	}, []model.Endpoint{target, peer, other})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(program.Rules) != 1 {
+		t.Fatalf("rules = %d, want one expanded remote-group member", len(program.Rules))
+	}
+	rule := program.Rules[0]
+	if rule.RemoteEndpoint != "pod-b" {
+		t.Fatalf("remote endpoint = %s, want pod-b", rule.RemoteEndpoint)
+	}
+	if rule.RemoteCIDR != netip.MustParsePrefix("10.10.0.11/32") {
+		t.Fatalf("remote cidr = %s, want 10.10.0.11/32", rule.RemoteCIDR)
+	}
+	if len(program.MapEntries) != 1 {
+		t.Fatalf("map entries = %d, want 1", len(program.MapEntries))
+	}
+	if program.MapEntries[0].Key.RemoteIdentity != EndpointIdentity("pod-b") {
+		t.Fatalf("remote identity = %d, want endpoint identity", program.MapEntries[0].Key.RemoteIdentity)
+	}
+}
+
+func TestCompileForEndpointWithStateRejectsUnknownRemoteGroup(t *testing.T) {
+	endpoint := model.Endpoint{
+		ID:             "pod-a",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"web"},
+	}
+	_, err := CompileForEndpointWithState(endpoint, map[string]model.SecurityGroup{
+		"web": {
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:          "allow-missing",
+				Direction:   model.DirectionIngress,
+				Protocol:    model.ProtocolTCP,
+				RemoteGroup: "missing",
+				Ports:       []model.PortRange{{From: 8080, To: 8080}},
+				Action:      model.ActionAllow,
+			}},
+		},
+	}, []model.Endpoint{endpoint})
+	if err == nil {
+		t.Fatal("expected unknown remote group to fail")
+	}
+}

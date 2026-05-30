@@ -147,7 +147,7 @@ func prepareReconcile(ctx context.Context, state control.DesiredState, options R
 		if err := endpoint.Validate(); err != nil {
 			return ReconcileResult{}, nil, err
 		}
-		program, err := policy.CompileForEndpoint(endpoint, groups)
+		program, err := policy.CompileForEndpointWithState(endpoint, groups, state.Endpoints)
 		if err != nil {
 			return ReconcileResult{}, nil, err
 		}

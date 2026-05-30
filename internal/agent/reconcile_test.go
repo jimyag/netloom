@@ -288,3 +288,69 @@ func TestReconcileNodeRejectsUnknownSecurityGroup(t *testing.T) {
 		t.Fatal("expected unknown security group to fail")
 	}
 }
+
+func TestReconcileNodeExpandsRemoteGroupMembership(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{
+			{
+				ID:             "pod-a",
+				VPC:            "prod",
+				Subnet:         "apps",
+				IP:             netip.MustParseAddr("10.10.0.10"),
+				Node:           "node-a",
+				SecurityGroups: []string{"web"},
+			},
+			{
+				ID:             "pod-b",
+				VPC:            "prod",
+				Subnet:         "apps",
+				IP:             netip.MustParseAddr("10.10.0.11"),
+				Node:           "node-b",
+				SecurityGroups: []string{"clients"},
+			},
+		},
+		SecurityGroups: []model.SecurityGroup{
+			{
+				Name: "web",
+				VPC:  "prod",
+				Rules: []model.SecurityGroupRule{{
+					ID:          "drop-client-web",
+					Priority:    100,
+					Direction:   model.DirectionIngress,
+					Protocol:    model.ProtocolTCP,
+					RemoteGroup: "clients",
+					Ports:       []model.PortRange{{From: 8080, To: 8080}},
+					Action:      model.ActionDrop,
+				}},
+			},
+			{Name: "clients", VPC: "prod"},
+		},
+	}
+	store := dataplane.NewInMemoryPolicyStore()
+	result, err := ReconcileNode(context.Background(), state, "node-a", store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Entries != 1 || result.TCXEligible != 1 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	entries := store.Entries("pod-a")
+	if len(entries) != 1 {
+		t.Fatalf("entries = %d, want 1", len(entries))
+	}
+	if entries[0].Key.RemoteIdentity != policy.EndpointIdentity("pod-b") {
+		t.Fatalf("remote identity = %d, want pod-b identity", entries[0].Key.RemoteIdentity)
+	}
+
+	state.Endpoints = state.Endpoints[:1]
+	result, err = ReconcileNode(context.Background(), state, "node-a", store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Entries != 0 || result.TCXEligible != 0 {
+		t.Fatalf("expected empty remote group to remove entries, got %+v", result)
+	}
+	if entries := store.Entries("pod-a"); len(entries) != 0 {
+		t.Fatalf("entries after member removal = %d, want 0", len(entries))
+	}
+}

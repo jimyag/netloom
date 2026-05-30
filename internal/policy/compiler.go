@@ -17,17 +17,18 @@ type Program struct {
 }
 
 type Rule struct {
-	ID            string
-	Priority      int
-	Direction     model.Direction
-	Protocol      model.Protocol
-	RemoteCIDR    netip.Prefix
-	RemoteGroup   string
-	Ports         []model.PortRange
-	Action        model.Action
-	Stateful      bool
-	Log           bool
-	SecurityGroup string
+	ID             string
+	Priority       int
+	Direction      model.Direction
+	Protocol       model.Protocol
+	RemoteCIDR     netip.Prefix
+	RemoteGroup    string
+	RemoteEndpoint string
+	Ports          []model.PortRange
+	Action         model.Action
+	Stateful       bool
+	Log            bool
+	SecurityGroup  string
 }
 
 type MapEntry struct {
@@ -52,7 +53,15 @@ type MapValue struct {
 }
 
 func CompileForEndpoint(endpoint model.Endpoint, groups map[string]model.SecurityGroup) (Program, error) {
+	return CompileForEndpointWithState(endpoint, groups, nil)
+}
+
+func CompileForEndpointWithState(endpoint model.Endpoint, groups map[string]model.SecurityGroup, endpoints []model.Endpoint) (Program, error) {
 	if err := endpoint.Validate(); err != nil {
+		return Program{}, err
+	}
+	membersByGroup, err := indexRemoteGroupMembers(endpoint.VPC, groups, endpoints)
+	if err != nil {
 		return Program{}, err
 	}
 	program := Program{EndpointID: endpoint.ID}
@@ -68,25 +77,18 @@ func CompileForEndpoint(endpoint model.Endpoint, groups map[string]model.Securit
 			return Program{}, err
 		}
 		for _, rule := range group.Rules {
-			compiledRule := Rule{
-				ID:            rule.ID,
-				Priority:      rule.Priority,
-				Direction:     rule.Direction,
-				Protocol:      rule.Protocol,
-				RemoteCIDR:    rule.RemoteCIDR,
-				RemoteGroup:   rule.RemoteGroup,
-				Ports:         append([]model.PortRange(nil), rule.Ports...),
-				Action:        rule.Action,
-				Stateful:      rule.Stateful,
-				Log:           rule.Log,
-				SecurityGroup: group.Name,
-			}
-			program.Rules = append(program.Rules, compiledRule)
-			entries, err := compileMapEntries(compiledRule)
+			compiledRules, err := expandRule(endpoint, group.Name, rule, membersByGroup)
 			if err != nil {
 				return Program{}, err
 			}
-			program.MapEntries = append(program.MapEntries, entries...)
+			for _, compiledRule := range compiledRules {
+				program.Rules = append(program.Rules, compiledRule)
+				entries, err := compileMapEntries(compiledRule)
+				if err != nil {
+					return Program{}, err
+				}
+				program.MapEntries = append(program.MapEntries, entries...)
+			}
 		}
 	}
 	sort.SliceStable(program.Rules, func(i, j int) bool {
@@ -99,6 +101,78 @@ func CompileForEndpoint(endpoint model.Endpoint, groups map[string]model.Securit
 		return program.MapEntries[i].RuleID < program.MapEntries[j].RuleID
 	})
 	return program, nil
+}
+
+func expandRule(endpoint model.Endpoint, securityGroup string, rule model.SecurityGroupRule, membersByGroup map[string][]model.Endpoint) ([]Rule, error) {
+	base := Rule{
+		ID:            rule.ID,
+		Priority:      rule.Priority,
+		Direction:     rule.Direction,
+		Protocol:      rule.Protocol,
+		RemoteCIDR:    rule.RemoteCIDR,
+		RemoteGroup:   rule.RemoteGroup,
+		Ports:         append([]model.PortRange(nil), rule.Ports...),
+		Action:        rule.Action,
+		Stateful:      rule.Stateful,
+		Log:           rule.Log,
+		SecurityGroup: securityGroup,
+	}
+	if rule.RemoteGroup == "" || membersByGroup == nil {
+		return []Rule{base}, nil
+	}
+	members, ok := membersByGroup[rule.RemoteGroup]
+	if !ok {
+		return nil, fmt.Errorf("rule %s references unknown remote security group %s", rule.ID, rule.RemoteGroup)
+	}
+	out := make([]Rule, 0, len(members))
+	for _, member := range members {
+		if member.ID == endpoint.ID {
+			continue
+		}
+		expanded := base
+		expanded.RemoteEndpoint = member.ID
+		if member.IP.Is4() || member.IP.Is6() {
+			bits := 128
+			if member.IP.Is4() {
+				bits = 32
+			}
+			expanded.RemoteCIDR = netip.PrefixFrom(member.IP, bits)
+		}
+		out = append(out, expanded)
+	}
+	return out, nil
+}
+
+func indexRemoteGroupMembers(vpc string, groups map[string]model.SecurityGroup, endpoints []model.Endpoint) (map[string][]model.Endpoint, error) {
+	if endpoints == nil {
+		return nil, nil
+	}
+	out := make(map[string][]model.Endpoint, len(groups))
+	for name, group := range groups {
+		if group.VPC != vpc {
+			continue
+		}
+		out[name] = nil
+	}
+	for _, endpoint := range endpoints {
+		if endpoint.VPC != vpc {
+			continue
+		}
+		if err := endpoint.Validate(); err != nil {
+			return nil, err
+		}
+		for _, groupName := range endpoint.SecurityGroups {
+			if _, ok := out[groupName]; ok {
+				out[groupName] = append(out[groupName], endpoint)
+			}
+		}
+	}
+	for name := range out {
+		sort.SliceStable(out[name], func(i, j int) bool {
+			return out[name][i].ID < out[name][j].ID
+		})
+	}
+	return out, nil
 }
 
 func compileMapEntries(rule Rule) ([]MapEntry, error) {
@@ -197,6 +271,8 @@ func log2(value uint32) uint32 {
 
 func remoteIdentity(rule Rule) uint32 {
 	switch {
+	case rule.RemoteEndpoint != "":
+		return EndpointIdentity(rule.RemoteEndpoint)
 	case rule.RemoteCIDR.IsValid():
 		return stableIdentity("cidr:" + rule.RemoteCIDR.String())
 	case rule.RemoteGroup != "":
@@ -204,6 +280,10 @@ func remoteIdentity(rule Rule) uint32 {
 	default:
 		return 0
 	}
+}
+
+func EndpointIdentity(endpointID string) uint32 {
+	return stableIdentity("endpoint:" + endpointID)
 }
 
 func stableIdentity(value string) uint32 {

@@ -215,13 +215,14 @@ func desiredWorkloadPolicyDropStateJSON() string {
   "vpcs": [{"name": "file"}],
   "subnets": [{"name": "fileapps", "vpc": "file", "cidr": "10.245.0.0/24", "gateway": "10.245.0.1"}],
   "endpoints": [
-    {"id": "file-pod-a", "vpc": "file", "subnet": "fileapps", "ip": "10.245.0.10", "node": "node-a", "security_groups": ["allow-web"]},
+    {"id": "file-pod-a", "vpc": "file", "subnet": "fileapps", "ip": "10.245.0.10", "node": "node-a", "security_groups": ["allow-web", "clients"]},
     {"id": "file-pod-b", "vpc": "file", "subnet": "fileapps", "ip": "10.245.0.11", "node": "node-b", "security_groups": ["drop-web"]},
     {"id": "file-pod-c", "vpc": "file", "subnet": "fileapps", "ip": "10.245.0.12", "node": "node-b", "security_groups": ["drop-alt-web"]}
   ],
   "security_groups": [
     {"name": "allow-web", "vpc": "file", "rules": [{"id": "allow-web", "priority": 100, "direction": "ingress", "protocol": "tcp", "remote_cidr": "10.245.0.11/32", "ports": [{"from": 8080, "to": 8080}], "action": "allow"}]},
-    {"name": "drop-web", "vpc": "file", "rules": [{"id": "drop-web-from-pod-a", "priority": 100, "direction": "ingress", "protocol": "tcp", "remote_cidr": "10.245.0.10/32", "ports": [{"from": 8080, "to": 8080}], "action": "drop"}]},
+    {"name": "clients", "vpc": "file", "rules": []},
+    {"name": "drop-web", "vpc": "file", "rules": [{"id": "drop-web-from-clients", "priority": 100, "direction": "ingress", "protocol": "tcp", "remote_group": "clients", "ports": [{"from": 8080, "to": 8080}], "action": "drop"}]},
     {"name": "drop-alt-web", "vpc": "file", "rules": [{"id": "drop-alt-web-from-pod-a", "priority": 100, "direction": "ingress", "protocol": "tcp", "remote_cidr": "10.245.0.10/32", "ports": [{"from": 8081, "to": 8081}], "action": "drop"}]}
   ]
 }`

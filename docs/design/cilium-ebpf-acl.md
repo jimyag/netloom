@@ -108,6 +108,15 @@ the veth peer, so Docker e2e now validates both datapath connectivity and
 security-group drops at the workload boundary. Multiple local workloads can be
 attached in one reconcile pass and are held for the same lifecycle window.
 
+Remote security-group references follow the same shape as Cilium identity-based
+policy. During reconcile, the compiler receives the current endpoint set,
+expands `remote_group` members in the same VPC into stable endpoint identities,
+and also records each member's exact `/32` or `/128` CIDR. The endpoint identity
+drives policy-map evaluation, while the exact CIDR lets the current TCX IPv4 L4
+projection enforce remote-group rules for workload traffic. When membership
+changes, periodic agent reconcile recompiles the endpoint program and replaces
+the TCX attachment signature.
+
 The Linux datapath also has an explicit cleanup mode. When enabled, the agent
 removes netloom-owned network namespaces with the configured prefix that are no
 longer present as local endpoints in the desired state. Docker e2e validates

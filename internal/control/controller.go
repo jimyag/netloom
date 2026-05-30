@@ -214,7 +214,7 @@ func (c *Controller) Reconcile(ctx context.Context, state DesiredState) error {
 		if err := c.topology.EnsureEndpoint(ctx, endpoint); err != nil {
 			return fmt.Errorf("ensure endpoint %s: %w", endpoint.ID, err)
 		}
-		program, err := policy.CompileForEndpoint(endpoint, groups)
+		program, err := policy.CompileForEndpointWithState(endpoint, groups, state.Endpoints)
 		if err != nil {
 			return err
 		}
