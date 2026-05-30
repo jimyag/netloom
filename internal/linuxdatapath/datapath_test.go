@@ -116,6 +116,121 @@ func TestPlanNetNSProgramsVethAndNamespace(t *testing.T) {
 	}
 }
 
+func TestPlanProgramsLinuxPolicyRoutes(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:     "pod-a",
+			VPC:    "prod",
+			Subnet: "apps",
+			IP:     netip.MustParseAddr("10.10.0.10"),
+			Node:   "node-a",
+		}},
+		PolicyRoutes: []model.PolicyRoute{{
+			Name:     "https-via-fw",
+			VPC:      "prod",
+			Priority: 200,
+			Match: model.RouteMatch{
+				Source:      netip.MustParsePrefix("10.10.0.0/24"),
+				Destination: netip.MustParsePrefix("172.16.0.0/16"),
+				Protocol:    model.ProtocolTCP,
+				DstPorts:    []model.PortRange{{From: 443, To: 443}},
+			},
+			Action: model.RouteAction{
+				Type:    model.ActionReroute,
+				NextHop: netip.MustParseAddr("10.10.0.253"),
+			},
+		}, {
+			Name:     "drop-lab",
+			VPC:      "prod",
+			Priority: 100,
+			Match: model.RouteMatch{
+				Source:      netip.MustParsePrefix("10.10.0.0/24"),
+				Destination: netip.MustParsePrefix("198.51.100.0/24"),
+			},
+			Action: model.RouteAction{Type: model.ActionDrop},
+		}},
+	}
+
+	ops, result, err := Plan(context.Background(), state, Options{
+		Node:            "node-a",
+		LocalDevice:     "nl0",
+		UnderlayDevice:  "eth9",
+		PolicyTableBase: 20000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.PolicyRoutes != 2 {
+		t.Fatalf("policy routes = %d, want 2", result.PolicyRoutes)
+	}
+	joined := stringifyOps(ops)
+	for _, expected := range []string{
+		"ip route replace 172.16.0.0/16 via 10.10.0.253 dev eth9 table 20000",
+		"ip rule add priority 9800 from 10.10.0.0/24 to 172.16.0.0/16 ipproto tcp dport 443 table 20000",
+		"ip route replace blackhole 198.51.100.0/24 table 20001",
+		"ip rule add priority 9900 from 10.10.0.0/24 to 198.51.100.0/24 table 20001",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("policy route ops missing %q:\n%s", expected, joined)
+		}
+	}
+}
+
+func TestPlanSkipsPolicyRoutesWithoutLocalVPC(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:     "pod-a",
+			VPC:    "prod",
+			Subnet: "apps",
+			IP:     netip.MustParseAddr("10.10.0.10"),
+			Node:   "node-a",
+		}},
+		PolicyRoutes: []model.PolicyRoute{{
+			Name:     "other-vpc",
+			VPC:      "other",
+			Priority: 100,
+			Match:    model.RouteMatch{Destination: netip.MustParsePrefix("172.16.0.0/16")},
+			Action:   model.RouteAction{Type: model.ActionReroute, NextHop: netip.MustParseAddr("10.10.0.253")},
+		}},
+	}
+	ops, result, err := Plan(context.Background(), state, Options{Node: "node-a", UnderlayDevice: "eth9"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.PolicyRoutes != 0 {
+		t.Fatalf("policy routes = %d, want 0", result.PolicyRoutes)
+	}
+	if strings.Contains(stringifyOps(ops), "ip rule") {
+		t.Fatalf("unexpected policy route ops:\n%s", stringifyOps(ops))
+	}
+}
+
+func TestNetlinkPolicyRuleEncodesL4Match(t *testing.T) {
+	route := model.PolicyRoute{
+		Name:     "https-via-fw",
+		VPC:      "prod",
+		Priority: 200,
+		Match: model.RouteMatch{
+			Source:      netip.MustParsePrefix("10.10.0.0/24"),
+			Destination: netip.MustParsePrefix("172.16.0.0/16"),
+			Protocol:    model.ProtocolTCP,
+			DstPorts:    []model.PortRange{{From: 443, To: 443}},
+		},
+		Action: model.RouteAction{Type: model.ActionReroute, NextHop: netip.MustParseAddr("10.10.0.253")},
+	}
+	rules := netlinkPolicyRules(route, linuxPolicyRulePriority(route.Priority), 20000)
+	if len(rules) != 1 {
+		t.Fatalf("rules = %d, want 1", len(rules))
+	}
+	rule := rules[0]
+	if rule.Priority != 9800 || rule.Table != 20000 || rule.Src.String() != "10.10.0.0/24" || rule.Dst.String() != "172.16.0.0/16" {
+		t.Fatalf("unexpected rule: %+v", rule)
+	}
+	if rule.IPProto != 6 || rule.Dport == nil || rule.Dport.Start != 443 || rule.Dport.End != 443 {
+		t.Fatalf("unexpected L4 match: proto=%d dport=%+v", rule.IPProto, rule.Dport)
+	}
+}
+
 func TestPlanNetNSCleanupDeletesStaleNamespaces(t *testing.T) {
 	state := control.DesiredState{
 		Endpoints: []model.Endpoint{{
@@ -184,6 +299,9 @@ func TestNormalizeOptionsDefaultsNetlinkSettings(t *testing.T) {
 	}
 	if options.HostGateway != netip.MustParseAddr("169.254.1.1") {
 		t.Fatalf("host gateway = %s", options.HostGateway)
+	}
+	if options.PolicyTableBase != 10000 {
+		t.Fatalf("policy table base = %d, want 10000", options.PolicyTableBase)
 	}
 	if result.Device != "lo" || result.Mode != "local" {
 		t.Fatalf("unexpected result defaults: %+v", result)

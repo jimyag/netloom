@@ -7,9 +7,11 @@ import (
 	"net"
 	"net/netip"
 	"os/exec"
+	"strconv"
 	"strings"
 
 	"github.com/jimyag/netloom/internal/control"
+	"github.com/jimyag/netloom/internal/model"
 )
 
 type Operation struct {
@@ -22,22 +24,24 @@ type Executor interface {
 }
 
 type Options struct {
-	Node           string
-	Mode           string
-	Backend        string
-	LocalDevice    string
-	UnderlayDevice string
-	NodeUnderlays  map[string]netip.Addr
-	NetNSPrefix    string
-	WorkloadIF     string
-	HostGateway    netip.Addr
-	CleanupStale   bool
-	Executor       Executor
+	Node            string
+	Mode            string
+	Backend         string
+	LocalDevice     string
+	UnderlayDevice  string
+	NodeUnderlays   map[string]netip.Addr
+	NetNSPrefix     string
+	WorkloadIF      string
+	HostGateway     netip.Addr
+	PolicyTableBase int
+	CleanupStale    bool
+	Executor        Executor
 }
 
 type Result struct {
 	LocalAddresses int
 	RemoteRoutes   int
+	PolicyRoutes   int
 	Device         string
 	Mode           string
 	CleanupPlanned bool
@@ -98,6 +102,10 @@ func Plan(ctx context.Context, state control.DesiredState, options Options) ([]O
 	if !hostGateway.IsValid() {
 		hostGateway = netip.MustParseAddr("169.254.1.1")
 	}
+	policyTableBase := options.PolicyTableBase
+	if policyTableBase == 0 {
+		policyTableBase = 10000
+	}
 
 	result := Result{Device: localDevice, Mode: mode}
 	var ops []Operation
@@ -139,7 +147,131 @@ func Plan(ctx context.Context, state control.DesiredState, options Options) ([]O
 		})
 		result.RemoteRoutes++
 	}
+	policyOps, policyRoutes, err := planPolicyRoutes(state, options.Node, underlayDevice, policyTableBase)
+	if err != nil {
+		return nil, Result{}, err
+	}
+	ops = append(ops, policyOps...)
+	result.PolicyRoutes = policyRoutes
 	return ops, result, nil
+}
+
+func planPolicyRoutes(state control.DesiredState, node, device string, tableBase int) ([]Operation, int, error) {
+	if len(state.PolicyRoutes) == 0 {
+		return nil, 0, nil
+	}
+	localVPCs := localVPCSet(state.Endpoints, node)
+	routes := append([]model.PolicyRoute(nil), state.PolicyRoutes...)
+	sortPolicyRoutes(routes)
+
+	var ops []Operation
+	applied := 0
+	for _, route := range routes {
+		if _, ok := localVPCs[route.VPC]; !ok {
+			continue
+		}
+		if err := route.Validate(); err != nil {
+			return nil, 0, fmt.Errorf("policy route %s: %w", route.Name, err)
+		}
+		if route.Action.Type == model.ActionAllow {
+			continue
+		}
+		table := tableBase + applied
+		rulePriority := linuxPolicyRulePriority(route.Priority)
+		destination := linuxPolicyRouteDestination(route)
+		if route.Action.Type == model.ActionDrop {
+			ops = append(ops, Operation{
+				Command: "ip",
+				Args:    []string{"route", "replace", "blackhole", destination.String(), "table", strconv.Itoa(table)},
+			})
+		} else {
+			ops = append(ops, Operation{
+				Command: "ip",
+				Args:    []string{"route", "replace", destination.String(), "via", route.Action.NextHop.String(), "dev", device, "table", strconv.Itoa(table)},
+			})
+		}
+		for _, ruleArgs := range linuxPolicyRuleArgs(route, rulePriority, table) {
+			ops = append(ops, shellOperation("ip rule del "+ruleArgs+" 2>/dev/null || true; ip rule add "+ruleArgs))
+		}
+		applied++
+	}
+	return ops, applied, nil
+}
+
+func localVPCSet(endpoints []model.Endpoint, node string) map[string]struct{} {
+	out := make(map[string]struct{})
+	for _, endpoint := range endpoints {
+		if endpoint.Node == node {
+			out[endpoint.VPC] = struct{}{}
+		}
+	}
+	return out
+}
+
+func linuxPolicyRouteDestination(route model.PolicyRoute) netip.Prefix {
+	if route.Match.Destination.IsValid() {
+		return route.Match.Destination
+	}
+	return netip.MustParsePrefix("0.0.0.0/0")
+}
+
+func linuxPolicyRulePriority(priority int) int {
+	out := 10000 - priority
+	if out < 1 {
+		return 1
+	}
+	return out
+}
+
+func linuxPolicyRuleArgs(route model.PolicyRoute, priority, table int) []string {
+	if len(route.Match.DstPorts) == 0 {
+		return []string{linuxPolicyRuleArgsForPort(route, priority, table, nil)}
+	}
+	args := make([]string, 0, len(route.Match.DstPorts))
+	for i := range route.Match.DstPorts {
+		args = append(args, linuxPolicyRuleArgsForPort(route, priority, table, &route.Match.DstPorts[i]))
+	}
+	return args
+}
+
+func linuxPolicyRuleArgsForPort(route model.PolicyRoute, priority, table int, port *model.PortRange) string {
+	args := []string{"priority", strconv.Itoa(priority)}
+	if route.Match.Source.IsValid() {
+		args = append(args, "from", route.Match.Source.String())
+	}
+	if route.Match.Destination.IsValid() {
+		args = append(args, "to", route.Match.Destination.String())
+	}
+	if protocol := linuxPolicyRuleProtocol(route.Match.Protocol); protocol != "" {
+		args = append(args, "ipproto", protocol)
+	}
+	if port != nil {
+		args = append(args, "dport", linuxPolicyRulePort(*port))
+	}
+	args = append(args, "table", strconv.Itoa(table))
+	return strings.Join(args, " ")
+}
+
+func linuxPolicyRuleProtocol(protocol model.Protocol) string {
+	switch protocol {
+	case "", model.ProtocolAny:
+		return ""
+	case model.ProtocolTCP:
+		return "tcp"
+	case model.ProtocolUDP:
+		return "udp"
+	case model.ProtocolICMP:
+		return "icmp"
+	default:
+		return string(protocol)
+	}
+}
+
+func linuxPolicyRulePort(port model.PortRange) string {
+	if port.From == port.To {
+		return strconv.Itoa(int(port.From))
+	}
+	return strconv.Itoa(int(port.From)) + "-" + strconv.Itoa(int(port.To))
 }
 
 func planNetNSCleanup(state control.DesiredState, node, prefix string) Operation {

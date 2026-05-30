@@ -27,6 +27,7 @@ type ReconcileResult struct {
 	Datapath          string
 	LocalIPs          int
 	RemoteRoutes      int
+	PolicyRoutes      int
 	Cleanup           bool
 }
 
@@ -221,6 +222,7 @@ func prepareReconcile(ctx context.Context, state control.DesiredState, options R
 		result.Datapath = "linux:" + linuxResult.Device
 		result.LocalIPs = linuxResult.LocalAddresses
 		result.RemoteRoutes = linuxResult.RemoteRoutes
+		result.PolicyRoutes = linuxResult.PolicyRoutes
 		result.Cleanup = linuxResult.CleanupPlanned
 	}
 	var targets []tcxTarget

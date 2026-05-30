@@ -8,9 +8,11 @@ import (
 	"net/netip"
 	"os"
 	"runtime"
+	"sort"
 	"strings"
 
 	"github.com/jimyag/netloom/internal/control"
+	"github.com/jimyag/netloom/internal/model"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
 	"golang.org/x/sys/unix"
@@ -70,6 +72,11 @@ func applyLocalNetlink(ctx context.Context, state control.DesiredState, options 
 		}
 		result.RemoteRoutes++
 	}
+	policyRoutes, err := applyPolicyRoutesNetlink(root, state, options)
+	if err != nil {
+		return Result{}, err
+	}
+	result.PolicyRoutes = policyRoutes
 	return result, nil
 }
 
@@ -114,6 +121,11 @@ func applyNetNSNetlink(ctx context.Context, state control.DesiredState, options 
 		}
 		result.RemoteRoutes++
 	}
+	policyRoutes, err := applyPolicyRoutesNetlink(root, state, options)
+	if err != nil {
+		return Result{}, err
+	}
+	result.PolicyRoutes = policyRoutes
 	return result, nil
 }
 
@@ -136,6 +148,9 @@ func normalizeOptions(options Options) (Options, Result, error) {
 	if !options.HostGateway.IsValid() {
 		options.HostGateway = netip.MustParseAddr("169.254.1.1")
 	}
+	if options.PolicyTableBase == 0 {
+		options.PolicyTableBase = 10000
+	}
 	return options, Result{Device: options.LocalDevice, Mode: options.Mode}, nil
 }
 
@@ -151,6 +166,118 @@ func setIPv4Forwarding() error {
 		}
 	}
 	return nil
+}
+
+func applyPolicyRoutesNetlink(root *netlink.Handle, state control.DesiredState, options Options) (int, error) {
+	localVPCs := localVPCSet(state.Endpoints, options.Node)
+	routes := append([]model.PolicyRoute(nil), state.PolicyRoutes...)
+	sortPolicyRoutes(routes)
+
+	underlay, err := root.LinkByName(options.UnderlayDevice)
+	if err != nil && hasApplicablePolicyRoute(routes, localVPCs) {
+		return 0, fmt.Errorf("lookup policy route device %s: %w", options.UnderlayDevice, err)
+	}
+
+	applied := 0
+	for _, route := range routes {
+		if _, ok := localVPCs[route.VPC]; !ok {
+			continue
+		}
+		if err := route.Validate(); err != nil {
+			return 0, fmt.Errorf("policy route %s: %w", route.Name, err)
+		}
+		if route.Action.Type == model.ActionAllow {
+			continue
+		}
+		table := options.PolicyTableBase + applied
+		if err := replacePolicyRoute(root, route, table, underlay.Attrs().Index); err != nil {
+			return 0, fmt.Errorf("replace policy route %s table %d: %w", route.Name, table, err)
+		}
+		for _, rule := range netlinkPolicyRules(route, linuxPolicyRulePriority(route.Priority), table) {
+			_ = root.RuleDel(rule)
+			if err := root.RuleAdd(rule); err != nil {
+				return 0, fmt.Errorf("add policy rule %s: %w", route.Name, err)
+			}
+		}
+		applied++
+	}
+	return applied, nil
+}
+
+func sortPolicyRoutes(routes []model.PolicyRoute) {
+	sort.SliceStable(routes, func(i, j int) bool {
+		if routes[i].Priority != routes[j].Priority {
+			return routes[i].Priority > routes[j].Priority
+		}
+		return routes[i].Name < routes[j].Name
+	})
+}
+
+func hasApplicablePolicyRoute(routes []model.PolicyRoute, localVPCs map[string]struct{}) bool {
+	for _, route := range routes {
+		if _, ok := localVPCs[route.VPC]; ok && route.Action.Type != model.ActionAllow {
+			return true
+		}
+	}
+	return false
+}
+
+func replacePolicyRoute(root *netlink.Handle, route model.PolicyRoute, table, linkIndex int) error {
+	dst, err := ipNetFromPrefix(linuxPolicyRouteDestination(route))
+	if err != nil {
+		return err
+	}
+	nlRoute := &netlink.Route{Table: table, Dst: dst, LinkIndex: linkIndex}
+	if route.Action.Type == model.ActionDrop {
+		nlRoute.Type = unix.RTN_BLACKHOLE
+	} else {
+		nlRoute.Gw = addrIP(route.Action.NextHop)
+	}
+	return root.RouteReplace(nlRoute)
+}
+
+func netlinkPolicyRules(route model.PolicyRoute, priority, table int) []*netlink.Rule {
+	if len(route.Match.DstPorts) == 0 {
+		return []*netlink.Rule{netlinkPolicyRule(route, priority, table, nil)}
+	}
+	rules := make([]*netlink.Rule, 0, len(route.Match.DstPorts))
+	for i := range route.Match.DstPorts {
+		rules = append(rules, netlinkPolicyRule(route, priority, table, &route.Match.DstPorts[i]))
+	}
+	return rules
+}
+
+func netlinkPolicyRule(route model.PolicyRoute, priority, table int, port *model.PortRange) *netlink.Rule {
+	rule := netlink.NewRule()
+	rule.Priority = priority
+	rule.Table = table
+	rule.Family = unix.AF_INET
+	if route.Match.Source.IsValid() {
+		rule.Src, _ = ipNetFromPrefix(route.Match.Source)
+	}
+	if route.Match.Destination.IsValid() {
+		rule.Dst, _ = ipNetFromPrefix(route.Match.Destination)
+	}
+	if proto := linuxPolicyRuleProtocolNumber(route.Match.Protocol); proto != 0 {
+		rule.IPProto = proto
+	}
+	if port != nil {
+		rule.Dport = netlink.NewRulePortRange(port.From, port.To)
+	}
+	return rule
+}
+
+func linuxPolicyRuleProtocolNumber(protocol model.Protocol) int {
+	switch protocol {
+	case model.ProtocolTCP:
+		return unix.IPPROTO_TCP
+	case model.ProtocolUDP:
+		return unix.IPPROTO_UDP
+	case model.ProtocolICMP:
+		return unix.IPPROTO_ICMP
+	default:
+		return 0
+	}
 }
 
 func ensureNetNSWorkload(root *netlink.Handle, endpointID string, ip netip.Addr, workloadIF string, hostGateway netip.Addr, prefix string) error {
@@ -364,6 +491,13 @@ func ipNet(addr netip.Addr, bits int) (*net.IPNet, error) {
 		maxBits = 128
 	}
 	return &net.IPNet{IP: addrIP(addr), Mask: net.CIDRMask(bits, maxBits)}, nil
+}
+
+func ipNetFromPrefix(prefix netip.Prefix) (*net.IPNet, error) {
+	if !prefix.IsValid() {
+		return nil, fmt.Errorf("invalid ip prefix")
+	}
+	return ipNet(prefix.Addr(), prefix.Bits())
 }
 
 func addrIP(addr netip.Addr) net.IP {

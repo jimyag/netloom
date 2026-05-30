@@ -182,6 +182,11 @@ func TestPolicyRouteRequiresNextHopForReroute(t *testing.T) {
 	if err := route.Validate(); err != nil {
 		t.Fatal(err)
 	}
+
+	route.Match.Protocol = ProtocolAny
+	if err := route.Validate(); err == nil {
+		t.Fatal("expected dst ports without transport protocol to fail")
+	}
 }
 
 func TestSecurityGroupRuleDoesNotAcceptRouteActions(t *testing.T) {

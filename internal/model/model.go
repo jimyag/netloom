@@ -285,6 +285,9 @@ func (m RouteMatch) Validate() error {
 	if !validProtocol(m.Protocol) {
 		return fmt.Errorf("unsupported protocol %q", m.Protocol)
 	}
+	if len(m.DstPorts) > 0 && m.Protocol != ProtocolTCP && m.Protocol != ProtocolUDP {
+		return errors.New("dst ports require tcp or udp protocol")
+	}
 	for i, p := range m.DstPorts {
 		if err := p.Validate(); err != nil {
 			return fmt.Errorf("dst port range %d: %w", i, err)

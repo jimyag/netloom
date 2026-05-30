@@ -125,7 +125,7 @@ func reconcileStateFileOnce(ctx context.Context, path, node, storeName string, s
 }
 
 func printReconcileResult(result agent.ReconcileResult, storeName string) {
-	fmt.Printf("netloom-agent reconciled node policy node=%s store=%s endpoints=%d programs=%d entries=%d tcx_eligible=%d tcx=%s datapath=%s local_ips=%d remote_routes=%d cleanup=%t\n", result.Node, storeName, result.Endpoints, result.Programs, result.Entries, result.TCXEligible, result.TCX, result.Datapath, result.LocalIPs, result.RemoteRoutes, result.Cleanup)
+	fmt.Printf("netloom-agent reconciled node policy node=%s store=%s endpoints=%d programs=%d entries=%d tcx_eligible=%d tcx=%s datapath=%s local_ips=%d remote_routes=%d policy_routes=%d cleanup=%t\n", result.Node, storeName, result.Endpoints, result.Programs, result.Entries, result.TCXEligible, result.TCX, result.Datapath, result.LocalIPs, result.RemoteRoutes, result.PolicyRoutes, result.Cleanup)
 }
 
 func reconcileInterval() (time.Duration, error) {
@@ -170,14 +170,15 @@ func linuxDatapathOptions() *linuxdatapath.Options {
 		return nil
 	}
 	return &linuxdatapath.Options{
-		Mode:           getenvDefault("NETLOOM_LINUX_DATAPATH_MODE", "local"),
-		Backend:        getenvDefault("NETLOOM_LINUX_DATAPATH_BACKEND", "command"),
-		LocalDevice:    getenvDefault("NETLOOM_DATAPATH_DEV", "lo"),
-		UnderlayDevice: getenvDefault("NETLOOM_UNDERLAY_DEV", "eth0"),
-		NetNSPrefix:    getenvDefault("NETLOOM_NETNS_PREFIX", "nl"),
-		WorkloadIF:     getenvDefault("NETLOOM_WORKLOAD_IF", "eth0"),
-		NodeUnderlays:  parseNodeUnderlays(os.Getenv("NETLOOM_NODE_UNDERLAYS")),
-		CleanupStale:   os.Getenv("NETLOOM_LINUX_DATAPATH_CLEANUP") == "1",
+		Mode:            getenvDefault("NETLOOM_LINUX_DATAPATH_MODE", "local"),
+		Backend:         getenvDefault("NETLOOM_LINUX_DATAPATH_BACKEND", "command"),
+		LocalDevice:     getenvDefault("NETLOOM_DATAPATH_DEV", "lo"),
+		UnderlayDevice:  getenvDefault("NETLOOM_UNDERLAY_DEV", "eth0"),
+		NetNSPrefix:     getenvDefault("NETLOOM_NETNS_PREFIX", "nl"),
+		WorkloadIF:      getenvDefault("NETLOOM_WORKLOAD_IF", "eth0"),
+		NodeUnderlays:   parseNodeUnderlays(os.Getenv("NETLOOM_NODE_UNDERLAYS")),
+		PolicyTableBase: getenvIntDefault("NETLOOM_POLICY_ROUTE_TABLE_BASE", 10000),
+		CleanupStale:    os.Getenv("NETLOOM_LINUX_DATAPATH_CLEANUP") == "1",
 	}
 }
 
@@ -186,6 +187,18 @@ func getenvDefault(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func getenvIntDefault(key string, fallback int) int {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed <= 0 {
+		return fallback
+	}
+	return parsed
 }
 
 func parseNodeUnderlays(raw string) map[string]netip.Addr {

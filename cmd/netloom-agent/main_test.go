@@ -28,6 +28,7 @@ func TestLinuxDatapathOptionsParsesBackend(t *testing.T) {
 	t.Setenv("NETLOOM_LINUX_DATAPATH", "1")
 	t.Setenv("NETLOOM_LINUX_DATAPATH_MODE", "netns")
 	t.Setenv("NETLOOM_LINUX_DATAPATH_BACKEND", "netlink")
+	t.Setenv("NETLOOM_POLICY_ROUTE_TABLE_BASE", "22000")
 
 	options := linuxDatapathOptions()
 	if options == nil {
@@ -38,5 +39,8 @@ func TestLinuxDatapathOptionsParsesBackend(t *testing.T) {
 	}
 	if options.Backend != "netlink" {
 		t.Fatalf("backend = %s, want netlink", options.Backend)
+	}
+	if options.PolicyTableBase != 22000 {
+		t.Fatalf("policy table base = %d, want 22000", options.PolicyTableBase)
 	}
 }
