@@ -128,7 +128,41 @@ func TestReconcileNodeReportsPolicyDiffStatsAcrossRevisions(t *testing.T) {
 	}
 }
 
-func TestReconcileNodeWithTCXInterfaceRequiresEligiblePolicy(t *testing.T) {
+func TestReconcileNodeWithTCXInterfaceRequiresExactPortPolicy(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:             "pod-a",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"range-web"},
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "range-web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "drop-range",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("172.30.0.0/24"),
+				Ports:      []model.PortRange{{From: 8080, To: 8088}},
+				Action:     model.ActionDrop,
+			}},
+		}},
+	}
+	_, err := ReconcileNodeWithOptions(context.Background(), state, ReconcileOptions{
+		Node:         "node-a",
+		Store:        dataplane.NewInMemoryPolicyStore(),
+		TCXInterface: "lo",
+	})
+	if err == nil {
+		t.Fatal("expected TCX attach to require exact port policy")
+	}
+}
+
+func TestReconcileNodeWithTCXInterfaceAcceptsCIDRPolicy(t *testing.T) {
 	state := control.DesiredState{
 		Endpoints: []model.Endpoint{{
 			ID:             "pod-a",
@@ -152,13 +186,15 @@ func TestReconcileNodeWithTCXInterfaceRequiresEligiblePolicy(t *testing.T) {
 			}},
 		}},
 	}
-	_, err := ReconcileNodeWithOptions(context.Background(), state, ReconcileOptions{
-		Node:         "node-a",
-		Store:        dataplane.NewInMemoryPolicyStore(),
-		TCXInterface: "lo",
+	result, err := ReconcileNodeWithOptions(context.Background(), state, ReconcileOptions{
+		Node:  "node-a",
+		Store: dataplane.NewInMemoryPolicyStore(),
 	})
-	if err == nil {
-		t.Fatal("expected TCX attach to require exact eligible policy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.TCXEligible != 1 {
+		t.Fatalf("tcx eligible = %d, want 1 for CIDR policy", result.TCXEligible)
 	}
 }
 

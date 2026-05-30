@@ -13,6 +13,7 @@ import (
 	"github.com/cilium/ebpf/link"
 	"github.com/jimyag/netloom/internal/model"
 	"github.com/jimyag/netloom/internal/policy"
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -61,17 +62,19 @@ func (a *TCXAttachment) Close() error {
 }
 
 type IPv4L4Key struct {
-	SourceIP uint32
-	Protocol uint8
-	Pad      uint8
-	DestPort uint16
+	PrefixLen uint32
+	Protocol  uint8
+	Pad       uint8
+	DestPort  uint16
+	PeerIP    uint32
 }
 
 type IPv4L4ACLRule struct {
-	Source   netip.Addr
-	Protocol uint8
-	DestPort uint16
-	Action   int32
+	Source     netip.Addr
+	SourceCIDR netip.Prefix
+	Protocol   uint8
+	DestPort   uint16
+	Action     int32
 }
 
 func NewConstantTCXProgram(action int32) (*ebpf.Program, error) {
@@ -196,13 +199,7 @@ func NewIPv4L4ACLMapFromRules(rules []IPv4L4ACLRule) (*ebpf.Map, error) {
 	if len(rules) == 0 {
 		return nil, fmt.Errorf("at least one IPv4 L4 ACL rule is required")
 	}
-	aclMap, err := ebpf.NewMap(&ebpf.MapSpec{
-		Name:       "netloom_tcx_l4",
-		Type:       ebpf.Hash,
-		KeySize:    8,
-		ValueSize:  4,
-		MaxEntries: uint32(max(256, len(rules))),
-	})
+	aclMap, err := ebpf.NewMap(ipv4L4ACLMapSpec(len(rules)))
 	if err != nil {
 		return nil, err
 	}
@@ -215,10 +212,21 @@ func NewIPv4L4ACLMapFromRules(rules []IPv4L4ACLRule) (*ebpf.Map, error) {
 	return aclMap, nil
 }
 
+func ipv4L4ACLMapSpec(ruleCount int) *ebpf.MapSpec {
+	return &ebpf.MapSpec{
+		Name:       "netloom_tcx_l4",
+		Type:       ebpf.LPMTrie,
+		KeySize:    12,
+		ValueSize:  4,
+		MaxEntries: uint32(max(256, ruleCount)),
+		Flags:      unix.BPF_F_NO_PREALLOC,
+	}
+}
+
 func putIPv4L4ACLRule(aclMap *ebpf.Map, rule IPv4L4ACLRule) error {
-	source := rule.Source
-	if !source.Is4() {
-		return fmt.Errorf("source address must be IPv4")
+	sourceCIDR, err := ruleSourceCIDR(rule)
+	if err != nil {
+		return err
 	}
 	if rule.Protocol == 0 {
 		return fmt.Errorf("protocol is required")
@@ -230,12 +238,26 @@ func putIPv4L4ACLRule(aclMap *ebpf.Map, rule IPv4L4ACLRule) error {
 		return fmt.Errorf("unsupported tcx action %d", rule.Action)
 	}
 	key := IPv4L4Key{
-		SourceIP: binary.BigEndian.Uint32(source.AsSlice()),
-		Protocol: rule.Protocol,
-		DestPort: rule.DestPort,
+		PrefixLen: uint32(24 + sourceCIDR.Bits()),
+		Protocol:  rule.Protocol,
+		DestPort:  rule.DestPort,
+		PeerIP:    binary.BigEndian.Uint32(sourceCIDR.Addr().AsSlice()),
 	}
 	value := uint32(rule.Action)
 	return aclMap.Put(key, value)
+}
+
+func ruleSourceCIDR(rule IPv4L4ACLRule) (netip.Prefix, error) {
+	if rule.SourceCIDR.IsValid() {
+		if !rule.SourceCIDR.Addr().Is4() {
+			return netip.Prefix{}, fmt.Errorf("source cidr must be IPv4")
+		}
+		return rule.SourceCIDR.Masked(), nil
+	}
+	if !rule.Source.Is4() {
+		return netip.Prefix{}, fmt.Errorf("source address must be IPv4")
+	}
+	return netip.PrefixFrom(rule.Source, 32), nil
 }
 
 func IPv4L4ACLRulesFromProgram(program policy.Program) ([]IPv4L4ACLRule, error) {
@@ -287,7 +309,7 @@ func appendIPv4L4ACLRulesFromProgram(rules *[]IPv4L4ACLRule, seen map[IPv4L4Key]
 		if !rule.RemoteCIDR.IsValid() {
 			continue
 		}
-		source, ok := exactIPv4PrefixAddr(rule.RemoteCIDR)
+		sourceCIDR, ok := ipv4Prefix(rule.RemoteCIDR)
 		if !ok {
 			continue
 		}
@@ -303,30 +325,32 @@ func appendIPv4L4ACLRulesFromProgram(rules *[]IPv4L4ACLRule, seen map[IPv4L4Key]
 				continue
 			}
 			key := IPv4L4Key{
-				SourceIP: binary.BigEndian.Uint32(source.AsSlice()),
-				Protocol: protocol,
-				DestPort: port.From,
+				PrefixLen: uint32(24 + sourceCIDR.Bits()),
+				Protocol:  protocol,
+				DestPort:  port.From,
+				PeerIP:    binary.BigEndian.Uint32(sourceCIDR.Addr().AsSlice()),
 			}
 			if _, ok := seen[key]; ok {
 				continue
 			}
 			seen[key] = struct{}{}
 			*rules = append(*rules, IPv4L4ACLRule{
-				Source:   source,
-				Protocol: protocol,
-				DestPort: port.From,
-				Action:   action,
+				Source:     sourceCIDR.Addr(),
+				SourceCIDR: sourceCIDR,
+				Protocol:   protocol,
+				DestPort:   port.From,
+				Action:     action,
 			})
 		}
 	}
 	return nil
 }
 
-func exactIPv4PrefixAddr(prefix netip.Prefix) (netip.Addr, bool) {
-	if !prefix.IsValid() || !prefix.Addr().Is4() || prefix.Bits() != 32 {
-		return netip.Addr{}, false
+func ipv4Prefix(prefix netip.Prefix) (netip.Prefix, bool) {
+	if !prefix.IsValid() || !prefix.Addr().Is4() {
+		return netip.Prefix{}, false
 	}
-	return prefix.Addr(), true
+	return prefix.Masked(), true
 }
 
 func tcxAction(action model.Action) (int32, bool) {
@@ -355,12 +379,16 @@ func NewIPv4L4ACLTCXProgramForDirection(aclMap *ebpf.Map, direction model.Direct
 		License: "MIT",
 		Instructions: asm.Instructions{
 			asm.Mov.Reg(asm.R6, asm.R1),
+			asm.Mov.Imm(asm.R0, 56),
+			asm.StoreMem(asm.RFP, -12, asm.R0, asm.Word),
+			asm.Mov.Imm(asm.R0, 0),
+			asm.StoreMem(asm.RFP, -7, asm.R0, asm.Byte),
 			asm.LoadAbs(12, asm.Half),
 			asm.JNE.Imm(asm.R0, 0x0800, "pass"),
 			asm.LoadAbs(23, asm.Byte),
-			asm.StoreMem(asm.RFP, -4, asm.R0, asm.Byte),
+			asm.StoreMem(asm.RFP, -8, asm.R0, asm.Byte),
 			asm.LoadAbs(peerOffset, asm.Word),
-			asm.StoreMem(asm.RFP, -8, asm.R0, asm.Word),
+			asm.StoreMem(asm.RFP, -4, asm.R0, asm.Word),
 			asm.LoadAbs(20, asm.Half),
 			asm.And.Imm(asm.R0, 0x1fff),
 			asm.JNE.Imm(asm.R0, 0, "pass"),
@@ -369,10 +397,10 @@ func NewIPv4L4ACLTCXProgramForDirection(aclMap *ebpf.Map, direction model.Direct
 			asm.LSh.Imm(asm.R0, 2),
 			asm.Mov.Reg(asm.R7, asm.R0),
 			asm.LoadInd(asm.R0, asm.R7, 16, asm.Half),
-			asm.StoreMem(asm.RFP, -2, asm.R0, asm.Half),
+			asm.StoreMem(asm.RFP, -6, asm.R0, asm.Half),
 			asm.LoadMapPtr(asm.R1, aclMap.FD()),
 			asm.Mov.Reg(asm.R2, asm.RFP),
-			asm.Add.Imm(asm.R2, -8),
+			asm.Add.Imm(asm.R2, -12),
 			asm.FnMapLookupElem.Call(),
 			asm.JEq.Imm(asm.R0, 0, "pass"),
 			asm.LoadMem(asm.R0, asm.R0, 0, asm.Word),

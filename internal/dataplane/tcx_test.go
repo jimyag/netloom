@@ -55,7 +55,7 @@ func TestIPv4L4ACLRulesFromProgramProjectsExactIngressPolicy(t *testing.T) {
 				Action:     model.ActionDrop,
 			},
 			{
-				ID:         "skip-wide-cidr",
+				ID:         "drop-wide-cidr",
 				Direction:  model.DirectionIngress,
 				Protocol:   model.ProtocolTCP,
 				RemoteCIDR: netip.MustParsePrefix("172.30.0.0/24"),
@@ -76,11 +76,17 @@ func TestIPv4L4ACLRulesFromProgramProjectsExactIngressPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rules) != 1 {
-		t.Fatalf("rules = %d, want 1", len(rules))
+	if len(rules) != 2 {
+		t.Fatalf("rules = %d, want 2", len(rules))
 	}
 	if rules[0].Source != netip.MustParseAddr("172.30.0.11") || rules[0].Protocol != 6 || rules[0].DestPort != 8080 || rules[0].Action != TCXDrop {
 		t.Fatalf("unexpected rule: %+v", rules[0])
+	}
+	if rules[0].SourceCIDR != netip.MustParsePrefix("172.30.0.11/32") {
+		t.Fatalf("exact source cidr = %s, want 172.30.0.11/32", rules[0].SourceCIDR)
+	}
+	if rules[1].SourceCIDR != netip.MustParsePrefix("172.30.0.0/24") || rules[1].Protocol != 6 || rules[1].DestPort != 8080 || rules[1].Action != TCXDrop {
+		t.Fatalf("unexpected wide cidr rule: %+v", rules[1])
 	}
 }
 
@@ -121,7 +127,37 @@ func TestIPv4L4ACLRulesFromProgramProjectsExactEgressPolicy(t *testing.T) {
 func TestIPv4L4ACLRulesFromProgramRejectsNoExactRules(t *testing.T) {
 	_, err := IPv4L4ACLRulesFromProgram(policy.Program{EndpointID: "pod-a"})
 	if err == nil {
-		t.Fatal("expected empty exact TCX projection to fail")
+		t.Fatal("expected empty TCX projection to fail")
+	}
+}
+
+func TestIPv4L4ACLUsesLPMTrieMapSpec(t *testing.T) {
+	spec := ipv4L4ACLMapSpec(1)
+	if spec.Type != ebpf.LPMTrie {
+		t.Fatalf("map type = %s, want LPMTrie", spec.Type)
+	}
+	if spec.KeySize != 12 {
+		t.Fatalf("key size = %d, want 12", spec.KeySize)
+	}
+	if spec.Flags == 0 {
+		t.Fatal("LPM trie map should set no-prealloc flag")
+	}
+}
+
+func TestIPv4L4ACLRuleSourceCIDR(t *testing.T) {
+	cidr, err := ruleSourceCIDR(IPv4L4ACLRule{SourceCIDR: netip.MustParsePrefix("172.30.0.55/24")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cidr != netip.MustParsePrefix("172.30.0.0/24") {
+		t.Fatalf("cidr = %s, want masked 172.30.0.0/24", cidr)
+	}
+	cidr, err = ruleSourceCIDR(IPv4L4ACLRule{Source: netip.MustParseAddr("172.30.0.11")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cidr != netip.MustParsePrefix("172.30.0.11/32") {
+		t.Fatalf("exact cidr = %s, want 172.30.0.11/32", cidr)
 	}
 }
 
