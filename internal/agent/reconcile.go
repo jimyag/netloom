@@ -21,6 +21,8 @@ type ReconcileResult struct {
 	PolicyAdded       int
 	PolicyUpdated     int
 	PolicyDeleted     int
+	PolicyUnchanged   int
+	PolicyEvents      int
 	PolicyRevisionMax uint64
 	TCXEligible       int
 	TCX               string
@@ -201,6 +203,8 @@ func prepareReconcile(ctx context.Context, state control.DesiredState, options R
 			result.PolicyAdded += stats.Added
 			result.PolicyUpdated += stats.Updated
 			result.PolicyDeleted += stats.Deleted
+			result.PolicyUnchanged += stats.Unchanged
+			result.PolicyEvents++
 			if stats.Revision > result.PolicyRevisionMax {
 				result.PolicyRevisionMax = stats.Revision
 			}

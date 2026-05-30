@@ -164,27 +164,27 @@ func TestDockerMultiNodeLab(t *testing.T) {
 	}
 	agentStateScript := "cat >/tmp/netloom-state.json <<'EOF'\n" + desiredStateJSON() + "\nEOF\nNETLOOM_STATE_FILE=/tmp/netloom-state.json NETLOOM_NODE_NAME=node-a /netloom/bin/netloom-agent"
 	agentStateOutput := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-a", "sh", "-c", agentStateScript)
-	for _, expected := range []string{"reconciled node policy", "node=node-a", "endpoints=1", "programs=1", "entries=1", "tcx_eligible=1"} {
+	for _, expected := range []string{"reconciled node policy", "node=node-a", "endpoints=1", "programs=1", "entries=1", "policy_added=1", "policy_events=1", "policy_revision_max=1", "tcx_eligible=1"} {
 		if !strings.Contains(agentStateOutput, expected) {
 			t.Fatalf("state-file agent output missing %q:\n%s", expected, agentStateOutput)
 		}
 	}
 	agentOtherNodeScript := "cat >/tmp/netloom-state.json <<'EOF'\n" + desiredStateJSON() + "\nEOF\nNETLOOM_STATE_FILE=/tmp/netloom-state.json NETLOOM_NODE_NAME=node-b /netloom/bin/netloom-agent"
 	agentOtherNodeOutput := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "sh", "-c", agentOtherNodeScript)
-	for _, expected := range []string{"reconciled node policy", "node=node-b", "endpoints=0", "programs=0", "entries=0"} {
+	for _, expected := range []string{"reconciled node policy", "node=node-b", "endpoints=0", "programs=0", "entries=0", "policy_events=0", "policy_revision_max=0"} {
 		if !strings.Contains(agentOtherNodeOutput, expected) {
 			t.Fatalf("other-node state-file agent output missing %q:\n%s", expected, agentOtherNodeOutput)
 		}
 	}
 	workloadStateScript := "cat >/tmp/netloom-workload-state.json <<'EOF'\n" + desiredWorkloadStateJSON() + "\nEOF\nNETLOOM_STATE_FILE=/tmp/netloom-workload-state.json NETLOOM_LINUX_DATAPATH=1 NETLOOM_LINUX_DATAPATH_MODE=netns NETLOOM_NODE_UNDERLAYS=node-a=172.30.0.11,node-b=172.30.0.12 "
 	nodeAWorkloadOutput := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-a", "sh", "-c", workloadStateScript+"NETLOOM_NODE_NAME=node-a /netloom/bin/netloom-agent")
-	for _, expected := range []string{"datapath=linux:netns", "local_ips=1", "remote_routes=1"} {
+	for _, expected := range []string{"datapath=linux:netns", "local_ips=1", "remote_routes=1", "policy_added=1", "policy_events=1", "policy_revision_max=1"} {
 		if !strings.Contains(nodeAWorkloadOutput, expected) {
 			t.Fatalf("node-a workload datapath output missing %q:\n%s", expected, nodeAWorkloadOutput)
 		}
 	}
 	nodeBWorkloadOutput := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "sh", "-c", workloadStateScript+"NETLOOM_NODE_NAME=node-b /netloom/bin/netloom-agent")
-	for _, expected := range []string{"datapath=linux:netns", "local_ips=1", "remote_routes=1"} {
+	for _, expected := range []string{"datapath=linux:netns", "local_ips=1", "remote_routes=1", "policy_added=1", "policy_events=1", "policy_revision_max=1"} {
 		if !strings.Contains(nodeBWorkloadOutput, expected) {
 			t.Fatalf("node-b workload datapath output missing %q:\n%s", expected, nodeBWorkloadOutput)
 		}
@@ -200,7 +200,7 @@ func TestDockerMultiNodeLab(t *testing.T) {
 	updateWatchScript := "cat >" + watchStatePath + " <<'EOF'\n" + desiredWorkloadPolicyDropStateJSON() + "\nEOF"
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "sh", "-c", updateWatchScript)
 	nodeAWorkloadPolicyOutput := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-a", "sh", "-c", "cat >/tmp/netloom-workload-policy-state.json <<'EOF'\n"+desiredWorkloadPolicyDropStateJSON()+"\nEOF\n"+workloadStateScript+"NETLOOM_STATE_FILE=/tmp/netloom-workload-policy-state.json NETLOOM_NODE_NAME=node-a /netloom/bin/netloom-agent")
-	for _, expected := range []string{"datapath=linux:netns", "local_ips=1", "remote_routes=2"} {
+	for _, expected := range []string{"datapath=linux:netns", "local_ips=1", "remote_routes=2", "policy_added=1", "policy_events=1", "policy_revision_max=1"} {
 		if !strings.Contains(nodeAWorkloadPolicyOutput, expected) {
 			t.Fatalf("node-a workload policy datapath output missing %q:\n%s", expected, nodeAWorkloadPolicyOutput)
 		}
@@ -208,7 +208,7 @@ func TestDockerMultiNodeLab(t *testing.T) {
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-a", "ip", "netns", "exec", "nl-file-pod-a", "ping", "-c", "1", "-W", "1", "10.245.0.11")
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-a", "sh", "-c", "for i in $(seq 1 15); do ip netns exec nl-file-pod-a sh -c 'printf hi | nc -w 1 10.245.0.11 8080' >/tmp/netloom-workload-probe.log 2>&1 || exit 0; sleep 1; done; cat /tmp/netloom-workload-probe.log; exit 1")
 	workloadDropLog := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "cat", "/tmp/netloom-agent-watch.log")
-	for _, expected := range []string{"reconciled node policy", "node=node-b", "store=ebpf", "datapath=linux:netns", "local_ips=2", "tcx=attached-workloads:2:egress:policy-l4"} {
+	for _, expected := range []string{"reconciled node policy", "node=node-b", "store=ebpf", "datapath=linux:netns", "local_ips=2", "policy_added=3", "policy_deleted=1", "policy_events=2", "policy_revision_max=2", "tcx=attached-workloads:2:egress:policy-l4"} {
 		if !strings.Contains(workloadDropLog, expected) {
 			t.Fatalf("workload L4 drop agent output missing %q:\n%s", expected, workloadDropLog)
 		}

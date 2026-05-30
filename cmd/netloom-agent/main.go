@@ -125,7 +125,7 @@ func reconcileStateFileOnce(ctx context.Context, path, node, storeName string, s
 }
 
 func printReconcileResult(result agent.ReconcileResult, storeName string) {
-	fmt.Printf("netloom-agent reconciled node policy node=%s store=%s endpoints=%d programs=%d entries=%d tcx_eligible=%d tcx=%s datapath=%s local_ips=%d remote_routes=%d policy_routes=%d cleanup=%t\n", result.Node, storeName, result.Endpoints, result.Programs, result.Entries, result.TCXEligible, result.TCX, result.Datapath, result.LocalIPs, result.RemoteRoutes, result.PolicyRoutes, result.Cleanup)
+	fmt.Printf("netloom-agent reconciled node policy node=%s store=%s endpoints=%d programs=%d entries=%d policy_added=%d policy_updated=%d policy_deleted=%d policy_unchanged=%d policy_events=%d policy_revision_max=%d tcx_eligible=%d tcx=%s datapath=%s local_ips=%d remote_routes=%d policy_routes=%d cleanup=%t\n", result.Node, storeName, result.Endpoints, result.Programs, result.Entries, result.PolicyAdded, result.PolicyUpdated, result.PolicyDeleted, result.PolicyUnchanged, result.PolicyEvents, result.PolicyRevisionMax, result.TCXEligible, result.TCX, result.Datapath, result.LocalIPs, result.RemoteRoutes, result.PolicyRoutes, result.Cleanup)
 }
 
 func reconcileInterval() (time.Duration, error) {
