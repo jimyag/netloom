@@ -66,14 +66,16 @@ func TestPlannerMapsNetloomObjectsToOVNOperations(t *testing.T) {
 			ExternalIP: netip.MustParseAddr("198.51.100.10"),
 		}},
 		LoadBalancers: []model.LoadBalancer{{
-			Name:     "web",
-			VPC:      "prod",
-			VIP:      netip.MustParseAddr("10.96.0.10"),
-			Port:     80,
-			Protocol: model.ProtocolTCP,
-			Backends: []model.LoadBalancerBackend{{
-				IP:   netip.MustParseAddr("10.10.0.10"),
-				Port: 8080,
+			Name: "web",
+			VPC:  "prod",
+			VIP:  netip.MustParseAddr("10.96.0.10"),
+			Ports: []model.LoadBalancerPort{{
+				Port:     80,
+				Protocol: model.ProtocolTCP,
+				Backends: []model.LoadBalancerBackend{{
+					IP:   netip.MustParseAddr("10.10.0.10"),
+					Port: 8080,
+				}},
 			}},
 			Subnets: []string{"apps"},
 		}},
@@ -354,8 +356,6 @@ func TestPlannerBuildsLoadBalancerOperations(t *testing.T) {
 		Name:            "web",
 		VPC:             "prod",
 		VIP:             netip.MustParseAddr("10.96.0.10"),
-		Port:            80,
-		Protocol:        model.ProtocolTCP,
 		SessionAffinity: true,
 		AffinityTimeout: 7200,
 		HealthCheck: model.LoadBalancerHealthCheck{
@@ -365,11 +365,15 @@ func TestPlannerBuildsLoadBalancerOperations(t *testing.T) {
 			SuccessCount: 2,
 			FailureCount: 4,
 		},
-		Backends: []model.LoadBalancerBackend{
-			{IP: netip.MustParseAddr("10.10.0.11"), Port: 8080},
-			{IP: netip.MustParseAddr("10.10.0.12"), Port: 8080, Healthy: &unhealthy},
-			{IP: netip.MustParseAddr("10.10.0.10"), Port: 8080},
-		},
+		Ports: []model.LoadBalancerPort{{
+			Port:     80,
+			Protocol: model.ProtocolTCP,
+			Backends: []model.LoadBalancerBackend{
+				{IP: netip.MustParseAddr("10.10.0.11"), Port: 8080},
+				{IP: netip.MustParseAddr("10.10.0.12"), Port: 8080, Healthy: &unhealthy},
+				{IP: netip.MustParseAddr("10.10.0.10"), Port: 8080},
+			},
+		}},
 		Subnets: []string{"apps"},
 	})
 	if err != nil {
@@ -385,13 +389,13 @@ func TestPlannerBuildsLoadBalancerOperations(t *testing.T) {
 		"external_ids:netloom_session_affinity=true",
 		"options:affinity_timeout=7200",
 		"clear load_balancer nl_lb_web health_check",
-		"--id=@nl_lbhc_web create Load_Balancer_Health_Check vip=10.96.0.10:80",
+		"--id=@nl_lbhc_web_tcp_80 create Load_Balancer_Health_Check vip=10.96.0.10:80",
 		"options:interval=10",
 		"options:timeout=30",
 		"options:success_count=2",
 		"options:failure_count=4",
 		"external_ids:netloom_load_balancer=web",
-		"add load_balancer nl_lb_web health_check @nl_lbhc_web",
+		"add load_balancer nl_lb_web health_check @nl_lbhc_web_tcp_80",
 		"--may-exist lr-lb-add nl_lr_prod nl_lb_web",
 		"--may-exist ls-lb-add nl_ls_apps nl_lb_web",
 	} {
@@ -445,12 +449,14 @@ func TestPlannerBuildsMultiPortLoadBalancerOperations(t *testing.T) {
 func TestPlannerClearsLoadBalancerAffinityWhenDisabled(t *testing.T) {
 	planner := ovn.NewPlanner()
 	err := planner.EnsureLoadBalancer(context.Background(), model.LoadBalancer{
-		Name:     "web",
-		VPC:      "prod",
-		VIP:      netip.MustParseAddr("10.96.0.10"),
-		Port:     80,
-		Protocol: model.ProtocolTCP,
-		Backends: []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.10"), Port: 8080}},
+		Name: "web",
+		VPC:  "prod",
+		VIP:  netip.MustParseAddr("10.96.0.10"),
+		Ports: []model.LoadBalancerPort{{
+			Port:     80,
+			Protocol: model.ProtocolTCP,
+			Backends: []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.10"), Port: 8080}},
+		}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -475,10 +481,12 @@ func TestPlannerDefaultsLoadBalancerAffinityTimeout(t *testing.T) {
 		Name:            "web",
 		VPC:             "prod",
 		VIP:             netip.MustParseAddr("10.96.0.10"),
-		Port:            80,
-		Protocol:        model.ProtocolTCP,
 		SessionAffinity: true,
-		Backends:        []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.10"), Port: 8080}},
+		Ports: []model.LoadBalancerPort{{
+			Port:     80,
+			Protocol: model.ProtocolTCP,
+			Backends: []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.10"), Port: 8080}},
+		}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -498,10 +506,12 @@ func TestPlannerBuildsLoadBalancerSelectionFields(t *testing.T) {
 		Name:            "web",
 		VPC:             "prod",
 		VIP:             netip.MustParseAddr("10.96.0.10"),
-		Port:            80,
-		Protocol:        model.ProtocolTCP,
 		SelectionFields: []string{"tp_src", "ip_src"},
-		Backends:        []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.10"), Port: 8080}},
+		Ports: []model.LoadBalancerPort{{
+			Port:     80,
+			Protocol: model.ProtocolTCP,
+			Backends: []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.10"), Port: 8080}},
+		}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -518,10 +528,12 @@ func TestPlannerDefaultsLoadBalancerHealthCheckOptions(t *testing.T) {
 		Name:        "web",
 		VPC:         "prod",
 		VIP:         netip.MustParseAddr("10.96.0.10"),
-		Port:        80,
-		Protocol:    model.ProtocolTCP,
 		HealthCheck: model.LoadBalancerHealthCheck{Enabled: true},
-		Backends:    []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.10"), Port: 8080}},
+		Ports: []model.LoadBalancerPort{{
+			Port:     80,
+			Protocol: model.ProtocolTCP,
+			Backends: []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.10"), Port: 8080}},
+		}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -545,10 +557,12 @@ func TestPlannerDoesNotRecreateUnchangedLoadBalancerHealthCheck(t *testing.T) {
 		Name:        "web",
 		VPC:         "prod",
 		VIP:         netip.MustParseAddr("10.96.0.10"),
-		Port:        80,
-		Protocol:    model.ProtocolTCP,
 		HealthCheck: model.LoadBalancerHealthCheck{Enabled: true},
-		Backends:    []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.10"), Port: 8080}},
+		Ports: []model.LoadBalancerPort{{
+			Port:     80,
+			Protocol: model.ProtocolTCP,
+			Backends: []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.10"), Port: 8080}},
+		}},
 	}
 	if err := planner.EnsureLoadBalancer(context.Background(), lb); err != nil {
 		t.Fatal(err)

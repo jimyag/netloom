@@ -391,7 +391,11 @@ func dhcpv6OptionsArgs(subnet model.Subnet, endpoint model.Endpoint) []string {
 }
 
 func loadBalancerVIP(lb model.LoadBalancer) string {
-	return netip.AddrPortFrom(lb.VIP, lb.Port).String()
+	frontends := lb.Frontends()
+	if len(frontends) == 0 {
+		return ""
+	}
+	return loadBalancerFrontendVIP(frontends[0])
 }
 
 func loadBalancerVIPs(lb model.LoadBalancer) []string {
@@ -409,7 +413,11 @@ func loadBalancerFrontendVIP(frontend model.LoadBalancerFrontend) string {
 }
 
 func loadBalancerBackends(lb model.LoadBalancer) string {
-	return loadBalancerFrontendBackends(lb.Frontends()[0])
+	frontends := lb.Frontends()
+	if len(frontends) == 0 {
+		return ""
+	}
+	return loadBalancerFrontendBackends(frontends[0])
 }
 
 func loadBalancerFrontendBackends(frontend model.LoadBalancerFrontend) string {
@@ -425,10 +433,11 @@ func loadBalancerFrontendBackends(frontend model.LoadBalancerFrontend) string {
 }
 
 func loadBalancerProtocol(lb model.LoadBalancer) model.Protocol {
-	if lb.Protocol == "" {
+	frontends := lb.Frontends()
+	if len(frontends) == 0 || frontends[0].Protocol == "" {
 		return model.ProtocolTCP
 	}
-	return lb.Protocol
+	return frontends[0].Protocol
 }
 
 func natUsesLoadBalancer(rule model.NATRule) bool {
@@ -445,14 +454,16 @@ func natLoadBalancerName(ruleName string) string {
 
 func natLoadBalancer(rule model.NATRule) model.LoadBalancer {
 	return model.LoadBalancer{
-		Name:     rule.Name,
-		VPC:      rule.VPC,
-		VIP:      rule.ExternalIP,
-		Port:     rule.ExternalPort,
-		Protocol: rule.Protocol,
-		Backends: []model.LoadBalancerBackend{{
-			IP:   rule.TargetIP,
-			Port: rule.TargetPort,
+		Name: rule.Name,
+		VPC:  rule.VPC,
+		VIP:  rule.ExternalIP,
+		Ports: []model.LoadBalancerPort{{
+			Port:     rule.ExternalPort,
+			Protocol: rule.Protocol,
+			Backends: []model.LoadBalancerBackend{{
+				IP:   rule.TargetIP,
+				Port: rule.TargetPort,
+			}},
 		}},
 	}
 }
@@ -508,9 +519,6 @@ func loadBalancerHealthCheckSignature(lb model.LoadBalancer) string {
 }
 
 func loadBalancerHealthCheckUUID(lbName string, frontend model.LoadBalancerFrontend) string {
-	if frontend.Name == "" {
-		return namedUUID("nl_lbhc_" + sanitize(lbName))
-	}
 	return namedUUID(fmt.Sprintf("nl_lbhc_%s_%s_%d", sanitize(lbName), frontend.Protocol, frontend.Port))
 }
 

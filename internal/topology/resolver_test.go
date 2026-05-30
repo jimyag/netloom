@@ -8,6 +8,19 @@ import (
 	"github.com/jimyag/netloom/internal/model"
 )
 
+func testLoadBalancer(name string, vip string, port uint16, backends []model.LoadBalancerBackend) model.LoadBalancer {
+	return model.LoadBalancer{
+		Name: name,
+		VPC:  "prod",
+		VIP:  netip.MustParseAddr(vip),
+		Ports: []model.LoadBalancerPort{{
+			Port:     port,
+			Protocol: model.ProtocolTCP,
+			Backends: backends,
+		}},
+	}
+}
+
 func TestResolveDirectEndpoint(t *testing.T) {
 	state := State{
 		Endpoints: map[string]model.Endpoint{
@@ -34,19 +47,15 @@ func TestResolveLoadBalancerVIPToBackend(t *testing.T) {
 			"pod-a": {ID: "pod-a", VPC: "prod", Subnet: "apps", IP: netip.MustParseAddr("10.10.0.10")},
 		},
 		LoadBalancers: map[string]model.LoadBalancer{
-			"web": {
-				Name:     "web",
-				VPC:      "prod",
-				VIP:      netip.MustParseAddr("10.96.0.10"),
-				Port:     80,
-				Protocol: model.ProtocolTCP,
-				Backends: []model.LoadBalancerBackend{
+			"web": func() model.LoadBalancer {
+				lb := testLoadBalancer("web", "10.96.0.10", 80, []model.LoadBalancerBackend{
 					{IP: netip.MustParseAddr("10.10.0.10"), Port: 8080, Healthy: &unhealthy},
 					{IP: netip.MustParseAddr("10.10.0.30"), Port: 8080},
 					{IP: netip.MustParseAddr("10.10.0.20"), Port: 8080},
-				},
-				Subnets: []string{"apps"},
-			},
+				})
+				lb.Subnets = []string{"apps"}
+				return lb
+			}(),
 		},
 	}
 	decision, err := Resolve(state, Packet{
@@ -111,17 +120,10 @@ func TestResolveLoadBalancerSkipsUnhealthyBackends(t *testing.T) {
 	unhealthy := false
 	state := State{
 		LoadBalancers: map[string]model.LoadBalancer{
-			"web": {
-				Name:     "web",
-				VPC:      "prod",
-				VIP:      netip.MustParseAddr("10.96.0.10"),
-				Port:     80,
-				Protocol: model.ProtocolTCP,
-				Backends: []model.LoadBalancerBackend{
-					{IP: netip.MustParseAddr("10.10.0.20"), Port: 8080, Healthy: &unhealthy},
-					{IP: netip.MustParseAddr("10.10.0.30"), Port: 8080, Healthy: &healthy},
-				},
-			},
+			"web": testLoadBalancer("web", "10.96.0.10", 80, []model.LoadBalancerBackend{
+				{IP: netip.MustParseAddr("10.10.0.20"), Port: 8080, Healthy: &unhealthy},
+				{IP: netip.MustParseAddr("10.10.0.30"), Port: 8080, Healthy: &healthy},
+			}),
 		},
 	}
 	packet := Packet{
@@ -139,16 +141,9 @@ func TestResolveLoadBalancerSkipsUnhealthyBackends(t *testing.T) {
 		t.Fatalf("backend = %s:%d, want only healthy backend", decision.Translated, decision.TranslatedPort)
 	}
 
-	state.LoadBalancers["web"] = model.LoadBalancer{
-		Name:     "web",
-		VPC:      "prod",
-		VIP:      netip.MustParseAddr("10.96.0.10"),
-		Port:     80,
-		Protocol: model.ProtocolTCP,
-		Backends: []model.LoadBalancerBackend{
-			{IP: netip.MustParseAddr("10.10.0.20"), Port: 8080, Healthy: &unhealthy},
-		},
-	}
+	state.LoadBalancers["web"] = testLoadBalancer("web", "10.96.0.10", 80, []model.LoadBalancerBackend{
+		{IP: netip.MustParseAddr("10.10.0.20"), Port: 8080, Healthy: &unhealthy},
+	})
 	decision, err = Resolve(state, packet)
 	if err != nil {
 		t.Fatal(err)
@@ -161,18 +156,11 @@ func TestResolveLoadBalancerSkipsUnhealthyBackends(t *testing.T) {
 func TestResolveLoadBalancerBackendSelectionIsStablePerFlow(t *testing.T) {
 	state := State{
 		LoadBalancers: map[string]model.LoadBalancer{
-			"web": {
-				Name:     "web",
-				VPC:      "prod",
-				VIP:      netip.MustParseAddr("10.96.0.10"),
-				Port:     80,
-				Protocol: model.ProtocolTCP,
-				Backends: []model.LoadBalancerBackend{
-					{IP: netip.MustParseAddr("10.10.0.20"), Port: 8080},
-					{IP: netip.MustParseAddr("10.10.0.30"), Port: 8080},
-					{IP: netip.MustParseAddr("10.10.0.40"), Port: 8080},
-				},
-			},
+			"web": testLoadBalancer("web", "10.96.0.10", 80, []model.LoadBalancerBackend{
+				{IP: netip.MustParseAddr("10.10.0.20"), Port: 8080},
+				{IP: netip.MustParseAddr("10.10.0.30"), Port: 8080},
+				{IP: netip.MustParseAddr("10.10.0.40"), Port: 8080},
+			}),
 		},
 	}
 
@@ -216,14 +204,16 @@ func TestResolveLoadBalancerSessionAffinityIgnoresSourcePort(t *testing.T) {
 		Name:            "web",
 		VPC:             "prod",
 		VIP:             netip.MustParseAddr("10.96.0.10"),
-		Port:            80,
-		Protocol:        model.ProtocolTCP,
 		SessionAffinity: true,
-		Backends: []model.LoadBalancerBackend{
-			{IP: netip.MustParseAddr("10.10.0.20"), Port: 8080},
-			{IP: netip.MustParseAddr("10.10.0.30"), Port: 8080},
-			{IP: netip.MustParseAddr("10.10.0.40"), Port: 8080},
-		},
+		Ports: []model.LoadBalancerPort{{
+			Port:     80,
+			Protocol: model.ProtocolTCP,
+			Backends: []model.LoadBalancerBackend{
+				{IP: netip.MustParseAddr("10.10.0.20"), Port: 8080},
+				{IP: netip.MustParseAddr("10.10.0.30"), Port: 8080},
+				{IP: netip.MustParseAddr("10.10.0.40"), Port: 8080},
+			},
+		}},
 	}
 	affinityState := State{LoadBalancers: map[string]model.LoadBalancer{"web": lb}}
 	packet := Packet{
@@ -270,14 +260,16 @@ func TestResolveLoadBalancerSelectionFieldsDriveBackendChoice(t *testing.T) {
 		Name:            "web",
 		VPC:             "prod",
 		VIP:             netip.MustParseAddr("10.96.0.10"),
-		Port:            80,
-		Protocol:        model.ProtocolTCP,
 		SelectionFields: []string{"ip_src"},
-		Backends: []model.LoadBalancerBackend{
-			{IP: netip.MustParseAddr("10.10.0.20"), Port: 8080},
-			{IP: netip.MustParseAddr("10.10.0.30"), Port: 8080},
-			{IP: netip.MustParseAddr("10.10.0.40"), Port: 8080},
-		},
+		Ports: []model.LoadBalancerPort{{
+			Port:     80,
+			Protocol: model.ProtocolTCP,
+			Backends: []model.LoadBalancerBackend{
+				{IP: netip.MustParseAddr("10.10.0.20"), Port: 8080},
+				{IP: netip.MustParseAddr("10.10.0.30"), Port: 8080},
+				{IP: netip.MustParseAddr("10.10.0.40"), Port: 8080},
+			},
+		}},
 	}
 	state := State{LoadBalancers: map[string]model.LoadBalancer{"web": lb}}
 	packet := Packet{
@@ -325,15 +317,11 @@ func TestResolveLoadBalancerRequiresBoundSourceSubnet(t *testing.T) {
 			"pod-a": {ID: "pod-a", VPC: "prod", Subnet: "clients", IP: netip.MustParseAddr("10.10.1.10")},
 		},
 		LoadBalancers: map[string]model.LoadBalancer{
-			"web": {
-				Name:     "web",
-				VPC:      "prod",
-				VIP:      netip.MustParseAddr("10.96.0.10"),
-				Port:     80,
-				Protocol: model.ProtocolTCP,
-				Backends: []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.20"), Port: 8080}},
-				Subnets:  []string{"apps"},
-			},
+			"web": func() model.LoadBalancer {
+				lb := testLoadBalancer("web", "10.96.0.10", 80, []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.20"), Port: 8080}})
+				lb.Subnets = []string{"apps"}
+				return lb
+			}(),
 		},
 	}
 	decision, err := Resolve(state, Packet{

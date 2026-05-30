@@ -123,12 +123,11 @@ Subnet desired state supports `exclude_cidrs` as the CIDR form of Kube-OVN's
 subnet CIDR and use the same address family. The control plane rejects endpoint
 IPs that land in an excluded prefix, and the IPAM allocator can be constructed
 with the same excluded prefixes so automatic allocation skips reserved ranges.
-`LoadBalancer` backends
-are rendered into the OVN VIP backend set and the userspace topology resolver
-uses the same stable hashing inputs for flow affinity. The desired state keeps
-the legacy single `port`/`backends` service shape and also supports a `ports`
-array for Kube-OVN/Kubernetes style multi-port Services; each frontend can have
-its own protocol and target backend ports while sharing the same Service VIP.
+`LoadBalancer` frontends are declared with a required `ports` array. Each
+frontend owns its protocol and backend target ports while sharing the same
+Service VIP; those backends are rendered into the OVN VIP backend set and the
+userspace topology resolver uses the same stable hashing inputs for flow
+affinity.
 The desired state can set OVN load-balancer `selection_fields`; when session
 affinity is enabled without explicit fields, netloom uses `ip_src` for IPv4
 VIPs and `ipv6_src` for IPv6 VIPs so the OVN Northbound row and local resolver

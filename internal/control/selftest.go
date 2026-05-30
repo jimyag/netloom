@@ -98,14 +98,16 @@ func runSelfTest(ctx context.Context, executor ovn.Executor) (SelfTestResult, er
 			TargetIP:   netip.MustParseAddr("10.244.0.10"),
 		}},
 		LoadBalancers: []model.LoadBalancer{{
-			Name:     "web",
-			VPC:      "default",
-			VIP:      netip.MustParseAddr("10.96.0.10"),
-			Port:     80,
-			Protocol: model.ProtocolTCP,
-			Backends: []model.LoadBalancerBackend{{
-				IP:   netip.MustParseAddr("10.244.0.10"),
-				Port: 8080,
+			Name: "web",
+			VPC:  "default",
+			VIP:  netip.MustParseAddr("10.96.0.10"),
+			Ports: []model.LoadBalancerPort{{
+				Port:     80,
+				Protocol: model.ProtocolTCP,
+				Backends: []model.LoadBalancerBackend{{
+					IP:   netip.MustParseAddr("10.244.0.10"),
+					Port: 8080,
+				}},
 			}},
 			Subnets: []string{"apps"},
 		}},

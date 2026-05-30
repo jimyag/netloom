@@ -14,7 +14,7 @@ func TestLoadDesiredStateJSONDecodesSnakeCaseState(t *testing.T) {
 		"policy_routes": [{"name": "fw", "vpc": "prod", "priority": 100, "match": {"source": "10.10.0.0/24", "destination": "172.16.0.0/16", "protocol": "tcp", "dst_ports": [{"from": 443, "to": 443}]}, "action": {"type": "reroute", "next_hop": "10.10.0.253"}}],
 		"gateways": [{"name": "gw-a", "vpc": "prod", "node": "node-a", "external_if": "eth0", "lan_ip": "10.10.0.254"}],
 		"nat_rules": [{"name": "egress", "vpc": "prod", "type": "snat", "match_cidr": "10.10.0.0/24", "external_ip": "198.51.100.10"}],
-		"load_balancers": [{"name": "web", "vpc": "prod", "vip": "10.96.0.10", "port": 80, "protocol": "tcp", "backends": [{"ip": "10.10.0.10", "port": 8080, "healthy": true}], "ports": [{"name": "http", "port": 80, "protocol": "tcp", "backends": [{"ip": "10.10.0.10", "port": 8080, "healthy": true}]}, {"name": "metrics", "port": 9090, "protocol": "tcp", "backends": [{"ip": "10.10.0.10", "port": 9091}]}], "subnets": ["apps"], "health_check": {"enabled": true, "interval": 10, "timeout": 30, "success_count": 2, "failure_count": 4}}],
+		"load_balancers": [{"name": "web", "vpc": "prod", "vip": "10.96.0.10", "ports": [{"name": "http", "port": 80, "protocol": "tcp", "backends": [{"ip": "10.10.0.10", "port": 8080, "healthy": true}]}, {"name": "metrics", "port": 9090, "protocol": "tcp", "backends": [{"ip": "10.10.0.10", "port": 9091}]}], "subnets": ["apps"], "health_check": {"enabled": true, "interval": 10, "timeout": 30, "success_count": 2, "failure_count": 4}}],
 		"security_groups": [{"name": "web", "vpc": "prod", "tier": 1, "rules": [{"id": "allow-web", "priority": 10, "direction": "ingress", "protocol": "tcp", "remote_cidr": "10.10.1.0/24", "except_cidrs": ["10.10.1.128/25"], "ports": [{"from": 443, "to": 443}], "action": "allow", "stateful": true}, {"id": "allow-api", "priority": 20, "direction": "egress", "protocol": "tcp", "remote_fqdns": [{"match_name": "api.example.com"}, {"match_pattern": "*.svc.example.com"}], "ports": [{"from": 443, "to": 443}], "action": "allow"}, {"id": "allow-corp", "priority": 30, "direction": "egress", "protocol": "tcp", "remote_cidr_group": "corp", "ports": [{"from": 8443, "to": 8443}], "action": "allow"}, {"id": "allow-icmp-echo", "priority": 40, "direction": "egress", "protocol": "icmp", "remote_cidr": "198.51.100.0/24", "icmp_type": 8, "icmp_code": 0, "action": "allow"}, {"id": "allow-named-http", "priority": 50, "direction": "ingress", "protocol": "tcp", "remote_cidr": "10.10.1.0/24", "named_ports": ["http"], "action": "allow"}, {"id": "allow-world", "priority": 60, "direction": "egress", "protocol": "tcp", "remote_entities": ["world"], "ports": [{"from": 443, "to": 443}], "action": "allow"}, {"id": "allow-selector", "priority": 70, "direction": "ingress", "protocol": "tcp", "remote_endpoint_selector": {"app": "client"}, "remote_endpoint_expressions": [{"key": "env", "operator": "In", "values": ["prod"]}], "ports": [{"from": 9443, "to": 9443}], "action": "allow"}, {"id": "allow-service", "priority": 80, "direction": "egress", "protocol": "any", "remote_service": "web", "action": "allow"}]}],
 		"cidr_groups": [{"name": "corp", "vpc": "prod", "cidrs": ["10.20.0.0/16", "2001:db8::/64"], "entries": [{"cidr": "198.51.100.0/24", "except_cidrs": ["198.51.100.128/25"]}]}],
 		"dns_records": [{"name": "api.example.com", "ips": ["203.0.113.10"], "ttl_seconds": 60, "observed_at": "2026-05-30T12:00:00Z"}]
@@ -43,14 +43,14 @@ func TestLoadDesiredStateJSONDecodesSnakeCaseState(t *testing.T) {
 	if got := state.RouteTables[0].Routes[0].NextHops[1].String(); got != "10.10.0.254" {
 		t.Fatalf("static route ecmp next hop = %s, want 10.10.0.254", got)
 	}
-	if got := state.LoadBalancers[0].Backends[0].Port; got != 8080 {
+	if got := state.LoadBalancers[0].Ports[0].Backends[0].Port; got != 8080 {
 		t.Fatalf("load balancer backend port = %d, want 8080", got)
 	}
 	if got := state.LoadBalancers[0].Ports[1].Backends[0].Port; got != 9091 {
 		t.Fatalf("load balancer multi-port backend port = %d, want 9091", got)
 	}
-	if state.LoadBalancers[0].Backends[0].Healthy == nil || !*state.LoadBalancers[0].Backends[0].Healthy {
-		t.Fatalf("load balancer backend healthy = %v, want true", state.LoadBalancers[0].Backends[0].Healthy)
+	if state.LoadBalancers[0].Ports[0].Backends[0].Healthy == nil || !*state.LoadBalancers[0].Ports[0].Backends[0].Healthy {
+		t.Fatalf("load balancer backend healthy = %v, want true", state.LoadBalancers[0].Ports[0].Backends[0].Healthy)
 	}
 	if got := state.LoadBalancers[0].HealthCheck.Interval; got != 10 {
 		t.Fatalf("load balancer health check interval = %d, want 10", got)

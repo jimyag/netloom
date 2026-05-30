@@ -29,28 +29,12 @@ func ApplyLoadBalancerHealthChecks(ctx context.Context, state DesiredState, prob
 		if !lb.HealthCheck.Enabled {
 			continue
 		}
-		if len(lb.Ports) == 0 {
-			if normalizedLoadBalancerProtocol(lb.Protocol) != model.ProtocolTCP {
-				continue
-			}
-			backends, healthyBackends := probeLoadBalancerBackends(ctx, lb.Backends, lb.HealthCheck, probe, &summary)
-			if healthyBackends == 0 {
-				return DesiredState{}, summary, fmt.Errorf("load balancer %q has no healthy probed backends", lb.Name)
-			}
-			lb.Backends = backends
-			next.LoadBalancers[i] = lb
-			continue
-		}
 		lb.Ports = append([]model.LoadBalancerPort(nil), lb.Ports...)
 		for j, port := range lb.Ports {
 			if normalizedLoadBalancerProtocol(port.Protocol) != model.ProtocolTCP {
 				continue
 			}
-			backends := port.Backends
-			if len(backends) == 0 {
-				backends = lb.Backends
-			}
-			backends, healthyBackends := probeLoadBalancerBackends(ctx, backends, lb.HealthCheck, probe, &summary)
+			backends, healthyBackends := probeLoadBalancerBackends(ctx, port.Backends, lb.HealthCheck, probe, &summary)
 			if healthyBackends == 0 {
 				return DesiredState{}, summary, fmt.Errorf("load balancer %q port %d has no healthy probed backends", lb.Name, port.Port)
 			}

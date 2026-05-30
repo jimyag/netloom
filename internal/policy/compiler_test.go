@@ -748,14 +748,16 @@ func TestCompileForEndpointWithContextExpandsRemoteService(t *testing.T) {
 			}},
 		},
 	}, CompileContext{Services: []model.LoadBalancer{{
-		Name:     "web",
-		VPC:      "prod",
-		VIP:      netip.MustParseAddr("10.96.0.10"),
-		Port:     80,
-		Protocol: model.ProtocolTCP,
-		Backends: []model.LoadBalancerBackend{{
-			IP:   netip.MustParseAddr("10.10.0.20"),
-			Port: 8080,
+		Name: "web",
+		VPC:  "prod",
+		VIP:  netip.MustParseAddr("10.96.0.10"),
+		Ports: []model.LoadBalancerPort{{
+			Port:     80,
+			Protocol: model.ProtocolTCP,
+			Backends: []model.LoadBalancerBackend{{
+				IP:   netip.MustParseAddr("10.10.0.20"),
+				Port: 8080,
+			}},
 		}},
 	}}})
 	if err != nil {

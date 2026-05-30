@@ -1122,15 +1122,18 @@ func TestNATRuleValidateKubeOVNStyleNAT(t *testing.T) {
 }
 
 func TestLoadBalancerValidateServiceVIP(t *testing.T) {
+	backends := []LoadBalancerBackend{{
+		IP:   netip.MustParseAddr("10.10.0.10"),
+		Port: 8080,
+	}}
 	valid := LoadBalancer{
-		Name:     "web",
-		VPC:      "prod",
-		VIP:      netip.MustParseAddr("10.96.0.10"),
-		Port:     80,
-		Protocol: ProtocolTCP,
-		Backends: []LoadBalancerBackend{{
-			IP:   netip.MustParseAddr("10.10.0.10"),
-			Port: 8080,
+		Name: "web",
+		VPC:  "prod",
+		VIP:  netip.MustParseAddr("10.96.0.10"),
+		Ports: []LoadBalancerPort{{
+			Port:     80,
+			Protocol: ProtocolTCP,
+			Backends: backends,
 		}},
 		Subnets: []string{"apps"},
 		HealthCheck: LoadBalancerHealthCheck{
@@ -1145,10 +1148,10 @@ func TestLoadBalancerValidateServiceVIP(t *testing.T) {
 		t.Fatal(err)
 	}
 	unhealthy := false
-	if valid.Backends[0].Healthy != nil || !valid.Backends[0].IsHealthy() {
+	if backends[0].Healthy != nil || !backends[0].IsHealthy() {
 		t.Fatal("backend without explicit health should default to healthy")
 	}
-	if (LoadBalancerBackend{IP: valid.Backends[0].IP, Port: valid.Backends[0].Port, Healthy: &unhealthy}).IsHealthy() {
+	if (LoadBalancerBackend{IP: backends[0].IP, Port: backends[0].Port, Healthy: &unhealthy}).IsHealthy() {
 		t.Fatal("backend with healthy=false should be unhealthy")
 	}
 
@@ -1160,10 +1163,12 @@ func TestLoadBalancerValidateServiceVIP(t *testing.T) {
 		{
 			name: "vip required",
 			lb: LoadBalancer{
-				Name:     "web",
-				VPC:      "prod",
-				Port:     80,
-				Backends: valid.Backends,
+				Name: "web",
+				VPC:  "prod",
+				Ports: []LoadBalancerPort{{
+					Port:     80,
+					Backends: backends,
+				}},
 			},
 			wantErr: "vip is required",
 		},
@@ -1173,19 +1178,23 @@ func TestLoadBalancerValidateServiceVIP(t *testing.T) {
 				Name: "web",
 				VPC:  "prod",
 				VIP:  netip.MustParseAddr("10.96.0.10"),
-				Port: 80,
+				Ports: []LoadBalancerPort{{
+					Port: 80,
+				}},
 			},
 			wantErr: "backends are required",
 		},
 		{
 			name: "unsupported protocol",
 			lb: LoadBalancer{
-				Name:     "web",
-				VPC:      "prod",
-				VIP:      netip.MustParseAddr("10.96.0.10"),
-				Port:     80,
-				Protocol: ProtocolICMP,
-				Backends: valid.Backends,
+				Name: "web",
+				VPC:  "prod",
+				VIP:  netip.MustParseAddr("10.96.0.10"),
+				Ports: []LoadBalancerPort{{
+					Port:     80,
+					Protocol: ProtocolICMP,
+					Backends: backends,
+				}},
 			},
 			wantErr: "unsupported load balancer protocol",
 		},
@@ -1195,9 +1204,11 @@ func TestLoadBalancerValidateServiceVIP(t *testing.T) {
 				Name: "web",
 				VPC:  "prod",
 				VIP:  netip.MustParseAddr("10.96.0.10"),
-				Port: 80,
-				Backends: []LoadBalancerBackend{{
-					IP: netip.MustParseAddr("10.10.0.10"),
+				Ports: []LoadBalancerPort{{
+					Port: 80,
+					Backends: []LoadBalancerBackend{{
+						IP: netip.MustParseAddr("10.10.0.10"),
+					}},
 				}},
 			},
 			wantErr: "backend port is required",
@@ -1208,9 +1219,11 @@ func TestLoadBalancerValidateServiceVIP(t *testing.T) {
 				Name:            "web",
 				VPC:             "prod",
 				VIP:             netip.MustParseAddr("10.96.0.10"),
-				Port:            80,
-				Backends:        valid.Backends,
 				AffinityTimeout: 10800,
+				Ports: []LoadBalancerPort{{
+					Port:     80,
+					Backends: backends,
+				}},
 			},
 			wantErr: "affinity timeout requires session affinity",
 		},
@@ -1220,10 +1233,12 @@ func TestLoadBalancerValidateServiceVIP(t *testing.T) {
 				Name:            "web",
 				VPC:             "prod",
 				VIP:             netip.MustParseAddr("10.96.0.10"),
-				Port:            80,
-				Backends:        valid.Backends,
 				SessionAffinity: true,
 				AffinityTimeout: 86401,
+				Ports: []LoadBalancerPort{{
+					Port:     80,
+					Backends: backends,
+				}},
 			},
 			wantErr: "at most 86400",
 		},
@@ -1233,9 +1248,11 @@ func TestLoadBalancerValidateServiceVIP(t *testing.T) {
 				Name:            "web",
 				VPC:             "prod",
 				VIP:             netip.MustParseAddr("10.96.0.10"),
-				Port:            80,
-				Backends:        valid.Backends,
 				SelectionFields: []string{"ip_src", "ip_src"},
+				Ports: []LoadBalancerPort{{
+					Port:     80,
+					Backends: backends,
+				}},
 			},
 			wantErr: "selection field \"ip_src\" is duplicated",
 		},
@@ -1245,9 +1262,11 @@ func TestLoadBalancerValidateServiceVIP(t *testing.T) {
 				Name:            "web",
 				VPC:             "prod",
 				VIP:             netip.MustParseAddr("10.96.0.10"),
-				Port:            80,
-				Backends:        valid.Backends,
 				SelectionFields: []string{"ipv6_src"},
+				Ports: []LoadBalancerPort{{
+					Port:     80,
+					Backends: backends,
+				}},
 			},
 			wantErr: "requires IPv6 VIP",
 		},
@@ -1257,9 +1276,11 @@ func TestLoadBalancerValidateServiceVIP(t *testing.T) {
 				Name:            "web",
 				VPC:             "prod",
 				VIP:             netip.MustParseAddr("10.96.0.10"),
-				Port:            80,
-				Backends:        valid.Backends,
 				SelectionFields: []string{"eth_src"},
+				Ports: []LoadBalancerPort{{
+					Port:     80,
+					Backends: backends,
+				}},
 			},
 			wantErr: "unsupported load balancer selection field",
 		},
@@ -1269,10 +1290,12 @@ func TestLoadBalancerValidateServiceVIP(t *testing.T) {
 				Name: "web",
 				VPC:  "prod",
 				VIP:  netip.MustParseAddr("10.96.0.10"),
-				Port: 80,
-				Backends: []LoadBalancerBackend{{
-					IP:   netip.MustParseAddr("fd00:10::10"),
-					Port: 8080,
+				Ports: []LoadBalancerPort{{
+					Port: 80,
+					Backends: []LoadBalancerBackend{{
+						IP:   netip.MustParseAddr("fd00:10::10"),
+						Port: 8080,
+					}},
 				}},
 			},
 			wantErr: "ip family must match vip",
@@ -1283,11 +1306,13 @@ func TestLoadBalancerValidateServiceVIP(t *testing.T) {
 				Name: "web",
 				VPC:  "prod",
 				VIP:  netip.MustParseAddr("10.96.0.10"),
-				Port: 80,
-				Backends: []LoadBalancerBackend{{
-					IP:      netip.MustParseAddr("10.10.0.10"),
-					Port:    8080,
-					Healthy: &unhealthy,
+				Ports: []LoadBalancerPort{{
+					Port: 80,
+					Backends: []LoadBalancerBackend{{
+						IP:      netip.MustParseAddr("10.10.0.10"),
+						Port:    8080,
+						Healthy: &unhealthy,
+					}},
 				}},
 			},
 			wantErr: "at least one healthy backend",
@@ -1295,11 +1320,13 @@ func TestLoadBalancerValidateServiceVIP(t *testing.T) {
 		{
 			name: "disabled health check with options",
 			lb: LoadBalancer{
-				Name:        "web",
-				VPC:         "prod",
-				VIP:         netip.MustParseAddr("10.96.0.10"),
-				Port:        80,
-				Backends:    valid.Backends,
+				Name: "web",
+				VPC:  "prod",
+				VIP:  netip.MustParseAddr("10.96.0.10"),
+				Ports: []LoadBalancerPort{{
+					Port:     80,
+					Backends: backends,
+				}},
 				HealthCheck: LoadBalancerHealthCheck{Interval: 5},
 			},
 			wantErr: "disabled health check",
@@ -1307,11 +1334,13 @@ func TestLoadBalancerValidateServiceVIP(t *testing.T) {
 		{
 			name: "health check interval too large",
 			lb: LoadBalancer{
-				Name:     "web",
-				VPC:      "prod",
-				VIP:      netip.MustParseAddr("10.96.0.10"),
-				Port:     80,
-				Backends: valid.Backends,
+				Name: "web",
+				VPC:  "prod",
+				VIP:  netip.MustParseAddr("10.96.0.10"),
+				Ports: []LoadBalancerPort{{
+					Port:     80,
+					Backends: backends,
+				}},
 				HealthCheck: LoadBalancerHealthCheck{
 					Enabled:  true,
 					Interval: 86401,
@@ -1322,11 +1351,13 @@ func TestLoadBalancerValidateServiceVIP(t *testing.T) {
 		{
 			name: "health check success count too large",
 			lb: LoadBalancer{
-				Name:     "web",
-				VPC:      "prod",
-				VIP:      netip.MustParseAddr("10.96.0.10"),
-				Port:     80,
-				Backends: valid.Backends,
+				Name: "web",
+				VPC:  "prod",
+				VIP:  netip.MustParseAddr("10.96.0.10"),
+				Ports: []LoadBalancerPort{{
+					Port:     80,
+					Backends: backends,
+				}},
 				HealthCheck: LoadBalancerHealthCheck{
 					Enabled:      true,
 					SuccessCount: 256,

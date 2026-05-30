@@ -394,7 +394,7 @@ func desiredStateJSON() string {
     {"name": "web-fip", "vpc": "file", "type": "dnat_and_snat", "external_ip": "198.51.100.22", "target_ip": "10.245.0.10"},
     {"name": "ssh-port", "vpc": "file", "type": "dnat", "external_ip": "198.51.100.23", "target_ip": "10.245.0.10", "protocol": "tcp", "external_port": 2222, "target_port": 2222}
   ],
-  "load_balancers": [{"name": "file-web", "vpc": "file", "vip": "10.96.0.10", "port": 80, "protocol": "tcp", "backends": [{"ip": "10.245.0.10", "port": 8080}], "subnets": ["fileapps"]}],
+  "load_balancers": [{"name": "file-web", "vpc": "file", "vip": "10.96.0.10", "ports": [{"name": "http", "port": 80, "protocol": "tcp", "backends": [{"ip": "10.245.0.10", "port": 8080}]}], "subnets": ["fileapps"]}],
   "security_groups": [{"name": "web", "vpc": "file", "rules": [{"id": "allow-web", "priority": 100, "direction": "ingress", "protocol": "tcp", "remote_cidr": "172.30.0.11/32", "ports": [{"from": 8080, "to": 8080}], "action": "allow", "stateful": true}]}]
 }`
 }
@@ -413,7 +413,7 @@ func desiredStateWithoutDHCPJSON() string {
     {"name": "web-fip", "vpc": "file", "type": "dnat_and_snat", "external_ip": "198.51.100.22", "target_ip": "10.245.0.10"},
     {"name": "ssh-port", "vpc": "file", "type": "dnat", "external_ip": "198.51.100.23", "target_ip": "10.245.0.10", "protocol": "tcp", "external_port": 2222, "target_port": 2222}
   ],
-  "load_balancers": [{"name": "file-web", "vpc": "file", "vip": "10.96.0.10", "port": 80, "protocol": "tcp", "backends": [{"ip": "10.245.0.10", "port": 8080}], "subnets": ["fileapps"]}],
+  "load_balancers": [{"name": "file-web", "vpc": "file", "vip": "10.96.0.10", "ports": [{"name": "http", "port": 80, "protocol": "tcp", "backends": [{"ip": "10.245.0.10", "port": 8080}]}], "subnets": ["fileapps"]}],
   "security_groups": [{"name": "web", "vpc": "file", "rules": [{"id": "allow-web", "priority": 100, "direction": "ingress", "protocol": "tcp", "remote_cidr": "172.30.0.11/32", "ports": [{"from": 8080, "to": 8080}], "action": "allow", "stateful": true}]}]
 }`
 }
@@ -432,7 +432,7 @@ func desiredStateWithUpdatedLoadBalancerJSON() string {
     {"name": "web-fip", "vpc": "file", "type": "dnat_and_snat", "external_ip": "198.51.100.22", "target_ip": "10.245.0.10"},
     {"name": "ssh-port", "vpc": "file", "type": "dnat", "external_ip": "198.51.100.23", "target_ip": "10.245.0.10", "protocol": "tcp", "external_port": 2222, "target_port": 2222}
   ],
-  "load_balancers": [{"name": "file-web", "vpc": "file", "vip": "10.96.0.20", "port": 80, "protocol": "tcp", "backends": [{"ip": "10.245.0.11", "port": 8080}], "subnets": ["fileapps"]}],
+  "load_balancers": [{"name": "file-web", "vpc": "file", "vip": "10.96.0.20", "ports": [{"name": "http", "port": 80, "protocol": "tcp", "backends": [{"ip": "10.245.0.11", "port": 8080}]}], "subnets": ["fileapps"]}],
   "security_groups": [{"name": "web", "vpc": "file", "rules": [{"id": "allow-web", "priority": 100, "direction": "ingress", "protocol": "tcp", "remote_cidr": "172.30.0.11/32", "ports": [{"from": 8080, "to": 8080}], "action": "allow", "stateful": true}]}]
 }`
 }
@@ -451,7 +451,7 @@ func desiredStateWithUpdatedNATJSON() string {
     {"name": "web-fip", "vpc": "file", "type": "dnat_and_snat", "external_ip": "198.51.100.22", "target_ip": "10.245.0.10"},
     {"name": "ssh-port", "vpc": "file", "type": "dnat", "external_ip": "198.51.100.23", "target_ip": "10.245.0.10", "protocol": "tcp", "external_port": 2222, "target_port": 2222}
   ],
-  "load_balancers": [{"name": "file-web", "vpc": "file", "vip": "10.96.0.20", "port": 80, "protocol": "tcp", "backends": [{"ip": "10.245.0.11", "port": 8080}], "subnets": ["fileapps"]}],
+  "load_balancers": [{"name": "file-web", "vpc": "file", "vip": "10.96.0.20", "ports": [{"name": "http", "port": 80, "protocol": "tcp", "backends": [{"ip": "10.245.0.11", "port": 8080}]}], "subnets": ["fileapps"]}],
   "security_groups": [{"name": "web", "vpc": "file", "rules": [{"id": "allow-web", "priority": 100, "direction": "ingress", "protocol": "tcp", "remote_cidr": "172.30.0.11/32", "ports": [{"from": 8080, "to": 8080}], "action": "allow", "stateful": true}]}]
 }`
 }
@@ -470,7 +470,7 @@ func desiredStateWithUpdatedPolicyRouteJSON() string {
     {"name": "web-fip", "vpc": "file", "type": "dnat_and_snat", "external_ip": "198.51.100.22", "target_ip": "10.245.0.10"},
     {"name": "ssh-port", "vpc": "file", "type": "dnat", "external_ip": "198.51.100.23", "target_ip": "10.245.0.10", "protocol": "tcp", "external_port": 2222, "target_port": 2222}
   ],
-  "load_balancers": [{"name": "file-web", "vpc": "file", "vip": "10.96.0.20", "port": 80, "protocol": "tcp", "backends": [{"ip": "10.245.0.11", "port": 8080}], "subnets": ["fileapps"]}],
+  "load_balancers": [{"name": "file-web", "vpc": "file", "vip": "10.96.0.20", "ports": [{"name": "http", "port": 80, "protocol": "tcp", "backends": [{"ip": "10.245.0.11", "port": 8080}]}], "subnets": ["fileapps"]}],
   "security_groups": [{"name": "web", "vpc": "file", "rules": [{"id": "allow-web", "priority": 100, "direction": "ingress", "protocol": "tcp", "remote_cidr": "172.30.0.11/32", "ports": [{"from": 8080, "to": 8080}], "action": "allow", "stateful": true}]}]
 }`
 }
@@ -489,7 +489,7 @@ func desiredStateWithUpdatedStaticRouteJSON() string {
     {"name": "web-fip", "vpc": "file", "type": "dnat_and_snat", "external_ip": "198.51.100.22", "target_ip": "10.245.0.10"},
     {"name": "ssh-port", "vpc": "file", "type": "dnat", "external_ip": "198.51.100.23", "target_ip": "10.245.0.10", "protocol": "tcp", "external_port": 2222, "target_port": 2222}
   ],
-  "load_balancers": [{"name": "file-web", "vpc": "file", "vip": "10.96.0.20", "port": 80, "protocol": "tcp", "backends": [{"ip": "10.245.0.11", "port": 8080}], "subnets": ["fileapps"]}],
+  "load_balancers": [{"name": "file-web", "vpc": "file", "vip": "10.96.0.20", "ports": [{"name": "http", "port": 80, "protocol": "tcp", "backends": [{"ip": "10.245.0.11", "port": 8080}]}], "subnets": ["fileapps"]}],
   "security_groups": [{"name": "web", "vpc": "file", "rules": [{"id": "allow-web", "priority": 100, "direction": "ingress", "protocol": "tcp", "remote_cidr": "172.30.0.11/32", "ports": [{"from": 8080, "to": 8080}], "action": "allow", "stateful": true}]}]
 }`
 }
@@ -508,7 +508,7 @@ func desiredStateWithoutProviderNetworkJSON() string {
     {"name": "web-fip", "vpc": "file", "type": "dnat_and_snat", "external_ip": "198.51.100.22", "target_ip": "10.245.0.10"},
     {"name": "ssh-port", "vpc": "file", "type": "dnat", "external_ip": "198.51.100.23", "target_ip": "10.245.0.10", "protocol": "tcp", "external_port": 2222, "target_port": 2222}
   ],
-  "load_balancers": [{"name": "file-web", "vpc": "file", "vip": "10.96.0.20", "port": 80, "protocol": "tcp", "backends": [{"ip": "10.245.0.11", "port": 8080}], "subnets": ["fileapps"]}],
+  "load_balancers": [{"name": "file-web", "vpc": "file", "vip": "10.96.0.20", "ports": [{"name": "http", "port": 80, "protocol": "tcp", "backends": [{"ip": "10.245.0.11", "port": 8080}]}], "subnets": ["fileapps"]}],
   "security_groups": [{"name": "web", "vpc": "file", "rules": [{"id": "allow-web", "priority": 100, "direction": "ingress", "protocol": "tcp", "remote_cidr": "172.30.0.11/32", "ports": [{"from": 8080, "to": 8080}], "action": "allow", "stateful": true}]}]
 }`
 }

@@ -104,7 +104,7 @@ func TestBackendCleanupConvergesChangedLoadBalancerBindings(t *testing.T) {
 
 	second := first
 	second.LoadBalancers[0].VIP = netip.MustParseAddr("10.96.0.20")
-	second.LoadBalancers[0].Backends = []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.12"), Port: 8080}}
+	second.LoadBalancers[0].Ports[0].Backends = []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.12"), Port: 8080}}
 	second.LoadBalancers[0].Subnets = []string{"apps"}
 	if err := controller.Reconcile(context.Background(), second); err != nil {
 		t.Fatal(err)
@@ -490,14 +490,16 @@ func controlStateWithEndpoint(endpointID string) control.DesiredState {
 			LANIP:      netip.MustParseAddr("10.10.0.254"),
 		}},
 		LoadBalancers: []model.LoadBalancer{{
-			Name:     "web",
-			VPC:      "prod",
-			VIP:      netip.MustParseAddr("10.96.0.10"),
-			Port:     80,
-			Protocol: model.ProtocolTCP,
-			Backends: []model.LoadBalancerBackend{{
-				IP:   netip.MustParseAddr("10.10.0.10"),
-				Port: 8080,
+			Name: "web",
+			VPC:  "prod",
+			VIP:  netip.MustParseAddr("10.96.0.10"),
+			Ports: []model.LoadBalancerPort{{
+				Port:     80,
+				Protocol: model.ProtocolTCP,
+				Backends: []model.LoadBalancerBackend{{
+					IP:   netip.MustParseAddr("10.10.0.10"),
+					Port: 8080,
+				}},
 			}},
 			Subnets: []string{"apps"},
 		}},

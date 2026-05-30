@@ -34,15 +34,17 @@ func TestApplyLoadBalancerHealthChecksDisabledByDefault(t *testing.T) {
 		Name:        "web",
 		VPC:         "prod",
 		VIP:         netip.MustParseAddr("10.96.0.10"),
-		Port:        80,
 		HealthCheck: model.LoadBalancerHealthCheck{Enabled: true},
-		Backends:    []model.LoadBalancerBackend{{IP: netip.MustParseAddr("127.0.0.1"), Port: 1}},
+		Ports: []model.LoadBalancerPort{{
+			Port:     80,
+			Backends: []model.LoadBalancerBackend{{IP: netip.MustParseAddr("127.0.0.1"), Port: 1}},
+		}},
 	}}}
 	summary, err := applyLoadBalancerHealthChecks(context.Background(), &state)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if summary.Checked != 0 || state.LoadBalancers[0].Backends[0].Healthy != nil {
-		t.Fatalf("summary/state = %+v/%+v, want no active probe by default", summary, state.LoadBalancers[0].Backends[0])
+	if summary.Checked != 0 || state.LoadBalancers[0].Ports[0].Backends[0].Healthy != nil {
+		t.Fatalf("summary/state = %+v/%+v, want no active probe by default", summary, state.LoadBalancers[0].Ports[0].Backends[0])
 	}
 }

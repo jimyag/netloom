@@ -72,10 +72,12 @@ func TestControllerReconcileSeparatesTopologyFromPolicy(t *testing.T) {
 			Name: "web-vip",
 			VPC:  "prod",
 			VIP:  netip.MustParseAddr("10.96.0.10"),
-			Port: 80,
-			Backends: []model.LoadBalancerBackend{{
-				IP:   netip.MustParseAddr("10.10.0.10"),
-				Port: 8080,
+			Ports: []model.LoadBalancerPort{{
+				Port: 80,
+				Backends: []model.LoadBalancerBackend{{
+					IP:   netip.MustParseAddr("10.10.0.10"),
+					Port: 8080,
+				}},
 			}},
 			Subnets: []string{"apps"},
 		}},
@@ -203,20 +205,24 @@ func TestControllerRejectsConflictingLoadBalancers(t *testing.T) {
 					Name: "web-a",
 					VPC:  "prod",
 					VIP:  netip.MustParseAddr("10.96.0.10"),
-					Port: 80,
-					Backends: []model.LoadBalancerBackend{{
-						IP:   netip.MustParseAddr("10.10.0.10"),
-						Port: 8080,
+					Ports: []model.LoadBalancerPort{{
+						Port: 80,
+						Backends: []model.LoadBalancerBackend{{
+							IP:   netip.MustParseAddr("10.10.0.10"),
+							Port: 8080,
+						}},
 					}},
 				},
 				{
 					Name: "web-b",
 					VPC:  "prod",
 					VIP:  netip.MustParseAddr("10.96.0.10"),
-					Port: 80,
-					Backends: []model.LoadBalancerBackend{{
-						IP:   netip.MustParseAddr("10.10.0.11"),
-						Port: 8080,
+					Ports: []model.LoadBalancerPort{{
+						Port: 80,
+						Backends: []model.LoadBalancerBackend{{
+							IP:   netip.MustParseAddr("10.10.0.11"),
+							Port: 8080,
+						}},
 					}},
 				},
 			},
@@ -238,10 +244,12 @@ func TestControllerRejectsConflictingLoadBalancers(t *testing.T) {
 					Name: "web-b",
 					VPC:  "prod",
 					VIP:  netip.MustParseAddr("10.96.0.10"),
-					Port: 9090,
-					Backends: []model.LoadBalancerBackend{{
-						IP:   netip.MustParseAddr("10.10.0.11"),
-						Port: 9091,
+					Ports: []model.LoadBalancerPort{{
+						Port: 9090,
+						Backends: []model.LoadBalancerBackend{{
+							IP:   netip.MustParseAddr("10.10.0.11"),
+							Port: 9091,
+						}},
 					}},
 				},
 			},
@@ -280,12 +288,20 @@ func TestControllerRejectsNATAndLoadBalancerVIPConflicts(t *testing.T) {
 		{
 			name: "port dnat owns load balancer vip port",
 			nat:  model.NATRule{Name: "web-nat", VPC: "prod", Type: model.ActionDNAT, ExternalIP: netip.MustParseAddr("198.51.100.80"), TargetIP: netip.MustParseAddr("10.10.0.10"), Protocol: model.ProtocolTCP, ExternalPort: 8443, TargetPort: 443},
-			lb:   model.LoadBalancer{Name: "web-lb", VPC: "prod", VIP: netip.MustParseAddr("198.51.100.80"), Port: 8443, Protocol: model.ProtocolTCP, Backends: []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.11"), Port: 8080}}},
+			lb: model.LoadBalancer{Name: "web-lb", VPC: "prod", VIP: netip.MustParseAddr("198.51.100.80"), Ports: []model.LoadBalancerPort{{
+				Port:     8443,
+				Protocol: model.ProtocolTCP,
+				Backends: []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.11"), Port: 8080}},
+			}}},
 		},
 		{
 			name: "floating ip owns all load balancer ports",
 			nat:  model.NATRule{Name: "web-fip", VPC: "prod", Type: model.ActionDNATSNAT, ExternalIP: netip.MustParseAddr("198.51.100.81"), TargetIP: netip.MustParseAddr("10.10.0.10")},
-			lb:   model.LoadBalancer{Name: "web-lb", VPC: "prod", VIP: netip.MustParseAddr("198.51.100.81"), Port: 8443, Protocol: model.ProtocolTCP, Backends: []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.11"), Port: 8080}}},
+			lb: model.LoadBalancer{Name: "web-lb", VPC: "prod", VIP: netip.MustParseAddr("198.51.100.81"), Ports: []model.LoadBalancerPort{{
+				Port:     8443,
+				Protocol: model.ProtocolTCP,
+				Backends: []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.11"), Port: 8080}},
+			}}},
 		},
 	}
 	for _, tt := range tests {
@@ -779,13 +795,15 @@ func validObjectGraphState() DesiredState {
 			LANIP: netip.MustParseAddr("10.10.0.254"),
 		}},
 		LoadBalancers: []model.LoadBalancer{{
-			Name:     "web",
-			VPC:      "prod",
-			VIP:      netip.MustParseAddr("10.96.0.10"),
-			Port:     80,
-			Protocol: model.ProtocolTCP,
-			Backends: []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.10"), Port: 8080}},
-			Subnets:  []string{"apps"},
+			Name: "web",
+			VPC:  "prod",
+			VIP:  netip.MustParseAddr("10.96.0.10"),
+			Ports: []model.LoadBalancerPort{{
+				Port:     80,
+				Protocol: model.ProtocolTCP,
+				Backends: []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.10"), Port: 8080}},
+			}},
+			Subnets: []string{"apps"},
 		}},
 		SecurityGroups: []model.SecurityGroup{{
 			Name: "web",
