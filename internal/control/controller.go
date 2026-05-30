@@ -7,6 +7,7 @@ import (
 
 	"github.com/jimyag/netloom/internal/model"
 	"github.com/jimyag/netloom/internal/policy"
+	"github.com/jimyag/netloom/internal/topology"
 )
 
 type TopologyBackend interface {
@@ -19,7 +20,34 @@ type TopologyBackend interface {
 	EnsureNATRule(context.Context, model.NATRule) error
 }
 
+type TopologyLifecycleBackend interface {
+	BeginTopologyReconcile(context.Context, topology.State) error
+	CleanupTopology(context.Context, topology.State) error
+}
+
 type MultiTopologyBackend []TopologyBackend
+
+func (m MultiTopologyBackend) BeginTopologyReconcile(ctx context.Context, state topology.State) error {
+	for _, backend := range m {
+		if lifecycle, ok := backend.(TopologyLifecycleBackend); ok {
+			if err := lifecycle.BeginTopologyReconcile(ctx, state); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (m MultiTopologyBackend) CleanupTopology(ctx context.Context, state topology.State) error {
+	for _, backend := range m {
+		if lifecycle, ok := backend.(TopologyLifecycleBackend); ok {
+			if err := lifecycle.CleanupTopology(ctx, state); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
 
 func (m MultiTopologyBackend) EnsureVPC(ctx context.Context, vpc model.VPC) error {
 	for _, backend := range m {
@@ -88,6 +116,10 @@ type PolicyBackend interface {
 	ApplyEndpointProgram(context.Context, policy.Program) error
 }
 
+type PolicyLifecycleBackend interface {
+	CleanupPolicy(context.Context, DesiredState) error
+}
+
 type DesiredState struct {
 	VPCs           []model.VPC           `json:"vpcs"`
 	Subnets        []model.Subnet        `json:"subnets"`
@@ -115,6 +147,12 @@ func (c *Controller) Reconcile(ctx context.Context, state DesiredState) error {
 			return err
 		}
 		groups[group.Name] = group
+	}
+	topologyState := desiredTopologyState(state)
+	if lifecycle, ok := c.topology.(TopologyLifecycleBackend); ok {
+		if err := lifecycle.BeginTopologyReconcile(ctx, topologyState); err != nil {
+			return fmt.Errorf("begin topology reconcile: %w", err)
+		}
 	}
 
 	for _, vpc := range state.VPCs {
@@ -184,5 +222,51 @@ func (c *Controller) Reconcile(ctx context.Context, state DesiredState) error {
 			return fmt.Errorf("apply policy program for endpoint %s: %w", endpoint.ID, err)
 		}
 	}
+	if lifecycle, ok := c.topology.(TopologyLifecycleBackend); ok {
+		if err := lifecycle.CleanupTopology(ctx, topologyState); err != nil {
+			return fmt.Errorf("cleanup topology: %w", err)
+		}
+	}
+	if lifecycle, ok := c.policy.(PolicyLifecycleBackend); ok {
+		if err := lifecycle.CleanupPolicy(ctx, state); err != nil {
+			return fmt.Errorf("cleanup policy: %w", err)
+		}
+	}
 	return nil
+}
+
+func desiredTopologyState(state DesiredState) topology.State {
+	vpcs := make(map[string]model.VPC, len(state.VPCs))
+	for _, vpc := range state.VPCs {
+		vpcs[vpc.Name] = vpc
+	}
+	subnets := make(map[string]model.Subnet, len(state.Subnets))
+	for _, subnet := range state.Subnets {
+		subnets[subnet.Name] = subnet
+	}
+	endpoints := make(map[string]model.Endpoint, len(state.Endpoints))
+	for _, endpoint := range state.Endpoints {
+		endpoints[endpoint.ID] = endpoint
+	}
+	routeTables := make(map[string]model.RouteTable, len(state.RouteTables))
+	for _, table := range state.RouteTables {
+		routeTables[table.Name] = table
+	}
+	gateways := make(map[string]model.Gateway, len(state.Gateways))
+	for _, gateway := range state.Gateways {
+		gateways[gateway.Name] = gateway
+	}
+	natRules := make(map[string]model.NATRule, len(state.NATRules))
+	for _, rule := range state.NATRules {
+		natRules[rule.Name] = rule
+	}
+	return topology.State{
+		VPCs:         vpcs,
+		Subnets:      subnets,
+		Endpoints:    endpoints,
+		RouteTables:  routeTables,
+		PolicyRoutes: append([]model.PolicyRoute(nil), state.PolicyRoutes...),
+		Gateways:     gateways,
+		NATRules:     natRules,
+	}
 }

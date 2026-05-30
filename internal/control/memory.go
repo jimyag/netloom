@@ -82,10 +82,46 @@ func (m *MemoryBackend) EnsureNATRule(_ context.Context, rule model.NATRule) err
 	return nil
 }
 
+func (m *MemoryBackend) BeginTopologyReconcile(context.Context, topology.State) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.PolicyRoutes = nil
+	return nil
+}
+
+func (m *MemoryBackend) CleanupTopology(_ context.Context, state topology.State) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.VPCs = cloneMap(state.VPCs)
+	m.Subnets = cloneMap(state.Subnets)
+	m.Endpoints = cloneMap(state.Endpoints)
+	m.RouteTables = cloneMap(state.RouteTables)
+	m.Gateways = cloneMap(state.Gateways)
+	m.NATRules = cloneMap(state.NATRules)
+	return nil
+}
+
 func (m *MemoryBackend) ApplyEndpointProgram(_ context.Context, program policy.Program) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.PolicyProgram[program.EndpointID] = program
+	return nil
+}
+
+func (m *MemoryBackend) CleanupPolicy(_ context.Context, state DesiredState) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	keep := make(map[string]struct{}, len(state.Endpoints))
+	for _, endpoint := range state.Endpoints {
+		keep[endpoint.ID] = struct{}{}
+	}
+	for endpointID := range m.PolicyProgram {
+		if _, ok := keep[endpointID]; !ok {
+			delete(m.PolicyProgram, endpointID)
+		}
+	}
 	return nil
 }
 

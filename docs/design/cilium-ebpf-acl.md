@@ -75,6 +75,12 @@ Northbound database and verify TCX ACL behavior in privileged node containers.
 OVN programming is emitted as idempotent `ovn-nbctl` operations with
 `external_ids:netloom_owner=netloom` metadata, and the live executor batches a
 reconcile step into one `ovn-nbctl` transaction.
+In periodic state-file mode the controller keeps a persistent topology backend,
+compares the previous desired snapshot with the current one, and emits
+`--if-exists` delete operations for netloom-owned logical ports, NAT rules,
+routes, policies, switches, router ports, and routers that are no longer
+desired. Docker e2e verifies endpoint and SNAT deletion against the live OVN
+Northbound database.
 
 The agent can also realize a minimal Linux L3 workload datapath from the same
 desired-state file. It has two modes:

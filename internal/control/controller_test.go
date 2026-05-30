@@ -103,3 +103,58 @@ func TestControllerReconcileSeparatesTopologyFromPolicy(t *testing.T) {
 		t.Fatalf("first policy route = %s, want force-private", got)
 	}
 }
+
+func TestControllerReconcileRemovesStaleMemoryState(t *testing.T) {
+	backend := NewMemoryBackend()
+	controller := NewController(backend, backend)
+	first := DesiredState{
+		VPCs: []model.VPC{{Name: "prod"}},
+		Subnets: []model.Subnet{{
+			Name:    "apps",
+			VPC:     "prod",
+			CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway: netip.MustParseAddr("10.10.0.1"),
+		}},
+		Endpoints: []model.Endpoint{{
+			ID:             "pod-a",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"web"},
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:        "allow-ingress",
+				Priority:  100,
+				Direction: model.DirectionIngress,
+				Protocol:  model.ProtocolTCP,
+				Ports:     []model.PortRange{{From: 443, To: 443}},
+				Action:    model.ActionAllow,
+			}},
+		}},
+	}
+	if err := controller.Reconcile(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+	if len(backend.Endpoints) != 1 || len(backend.PolicyProgram) != 1 {
+		t.Fatalf("expected first reconcile to create endpoint and policy: %+v", backend)
+	}
+
+	second := first
+	second.Endpoints = nil
+	if err := controller.Reconcile(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+	if len(backend.Endpoints) != 0 {
+		t.Fatalf("stale endpoints were not removed: %+v", backend.Endpoints)
+	}
+	if len(backend.PolicyProgram) != 0 {
+		t.Fatalf("stale policy programs were not removed: %+v", backend.PolicyProgram)
+	}
+	if len(backend.Subnets) != 1 {
+		t.Fatalf("desired subnet should remain: %+v", backend.Subnets)
+	}
+}

@@ -146,6 +146,12 @@ func (p *Planner) Operations() []Operation {
 	return append([]Operation(nil), p.ops...)
 }
 
+func (p *Planner) Append(ops ...Operation) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.ops = append(p.ops, cloneOperations(ops)...)
+}
+
 func setOperation(table, record string, pairs ...string) Operation {
 	args := append([]string{table, record}, pairs...)
 	return Operation{Command: "set", Args: args}

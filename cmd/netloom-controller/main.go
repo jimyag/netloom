@@ -36,8 +36,9 @@ func runStateFile(ctx context.Context, path string) error {
 	if err != nil {
 		return err
 	}
+	reconciler := newStateFileReconciler()
 	reconcile := func() error {
-		return reconcileStateFileOnce(ctx, path)
+		return reconciler.reconcile(ctx, path)
 	}
 	if interval == 0 {
 		return reconcile()
@@ -56,7 +57,29 @@ func runStateFile(ctx context.Context, path string) error {
 	}
 }
 
-func reconcileStateFileOnce(ctx context.Context, path string) error {
+type stateFileReconciler struct {
+	memory     *control.MemoryBackend
+	executor   ovn.Executor
+	ovnBackend *ovn.Backend
+	controller *control.Controller
+}
+
+func newStateFileReconciler() *stateFileReconciler {
+	memory := control.NewMemoryBackend()
+	var executor ovn.Executor = ovn.NewRecorderExecutor()
+	if db := os.Getenv("NETLOOM_OVN_NBCTL_DB"); db != "" {
+		executor = ovn.NewNBCTLExecutor("ovn-nbctl", "--db="+db)
+	}
+	ovnBackend := ovn.NewBackend(executor)
+	return &stateFileReconciler{
+		memory:     memory,
+		executor:   executor,
+		ovnBackend: ovnBackend,
+		controller: control.NewController(control.MultiTopologyBackend{memory, ovnBackend}, memory),
+	}
+}
+
+func (r *stateFileReconciler) reconcile(ctx context.Context, path string) error {
 	file, err := os.Open(path)
 	if err != nil {
 		return err
@@ -68,21 +91,14 @@ func reconcileStateFileOnce(ctx context.Context, path string) error {
 		return err
 	}
 
-	memory := control.NewMemoryBackend()
-	var executor ovn.Executor = ovn.NewRecorderExecutor()
-	if db := os.Getenv("NETLOOM_OVN_NBCTL_DB"); db != "" {
-		executor = ovn.NewNBCTLExecutor("ovn-nbctl", "--db="+db)
-	}
-	ovnBackend := ovn.NewBackend(executor)
-	controller := control.NewController(control.MultiTopologyBackend{memory, ovnBackend}, memory)
-	if err := controller.Reconcile(ctx, state); err != nil {
+	opsBefore := len(r.ovnBackend.Operations())
+	executedBefore := r.executedOperations()
+	if err := r.controller.Reconcile(ctx, state); err != nil {
 		return err
 	}
 
-	executed := len(ovnBackend.Operations())
-	if recorder, ok := executor.(*ovn.RecorderExecutor); ok {
-		executed = len(recorder.Operations())
-	}
+	ovnOps := len(r.ovnBackend.Operations()) - opsBefore
+	executed := r.executedOperations() - executedBefore
 	fmt.Printf(
 		"netloom-controller reconciled desired state vpcs=%d subnets=%d endpoints=%d route_tables=%d policy_routes=%d gateways=%d nat_rules=%d security_groups=%d policy_entries=%d ovn_ops=%d ovn_executed=%d\n",
 		len(state.VPCs),
@@ -93,11 +109,18 @@ func reconcileStateFileOnce(ctx context.Context, path string) error {
 		len(state.Gateways),
 		len(state.NATRules),
 		len(state.SecurityGroups),
-		countPolicyEntries(memory),
-		len(ovnBackend.Operations()),
+		countPolicyEntries(r.memory),
+		ovnOps,
 		executed,
 	)
 	return nil
+}
+
+func (r *stateFileReconciler) executedOperations() int {
+	if recorder, ok := r.executor.(*ovn.RecorderExecutor); ok {
+		return len(recorder.Operations())
+	}
+	return len(r.ovnBackend.Operations())
 }
 
 func reconcileInterval() (time.Duration, error) {

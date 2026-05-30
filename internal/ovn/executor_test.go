@@ -3,11 +3,13 @@ package ovn_test
 import (
 	"context"
 	"errors"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/jimyag/netloom/internal/control"
 	"github.com/jimyag/netloom/internal/model"
 	"github.com/jimyag/netloom/internal/ovn"
 )
@@ -49,6 +51,33 @@ func TestBackendPropagatesExecutorFailure(t *testing.T) {
 	err := backend.EnsureVPC(context.Background(), model.VPC{Name: "prod"})
 	if err == nil {
 		t.Fatal("expected executor failure")
+	}
+}
+
+func TestBackendCleanupEmitsDeletesForStaleDesiredObjects(t *testing.T) {
+	recorder := ovn.NewRecorderExecutor()
+	backend := ovn.NewBackend(recorder)
+	first := controlStateWithEndpoint("pod-a")
+	controller := control.NewController(backend, control.NewMemoryBackend())
+	if err := controller.Reconcile(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+
+	second := first
+	second.Endpoints = nil
+	second.NATRules = nil
+	if err := controller.Reconcile(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+
+	joined := stringifyOVNOps(recorder.Operations())
+	for _, expected := range []string{
+		"--if-exists lsp-del nl_lp_pod-a",
+		"--if-exists lr-nat-del nl_lr_prod snat 10.10.0.0/24",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("cleanup operations missing %q:\n%s", expected, joined)
+		}
 	}
 }
 
@@ -94,4 +123,38 @@ type failingExecutor struct{}
 
 func (failingExecutor) Execute(context.Context, []ovn.Operation) error {
 	return errors.New("boom")
+}
+
+func controlStateWithEndpoint(endpointID string) control.DesiredState {
+	return control.DesiredState{
+		VPCs: []model.VPC{{Name: "prod"}},
+		Subnets: []model.Subnet{{
+			Name:    "apps",
+			VPC:     "prod",
+			CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway: netip.MustParseAddr("10.10.0.1"),
+		}},
+		Endpoints: []model.Endpoint{{
+			ID:     endpointID,
+			VPC:    "prod",
+			Subnet: "apps",
+			IP:     netip.MustParseAddr("10.10.0.10"),
+			Node:   "node-a",
+		}},
+		NATRules: []model.NATRule{{
+			Name:       "egress",
+			VPC:        "prod",
+			Type:       model.ActionSNAT,
+			MatchCIDR:  netip.MustParsePrefix("10.10.0.0/24"),
+			ExternalIP: netip.MustParseAddr("198.51.100.10"),
+		}},
+	}
+}
+
+func stringifyOVNOps(ops []ovn.Operation) string {
+	lines := make([]string, 0, len(ops))
+	for _, op := range ops {
+		lines = append(lines, op.String())
+	}
+	return strings.Join(lines, "\n")
 }

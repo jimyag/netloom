@@ -2,13 +2,17 @@ package ovn
 
 import (
 	"context"
+	"sync"
 
 	"github.com/jimyag/netloom/internal/model"
+	"github.com/jimyag/netloom/internal/topology"
 )
 
 type Backend struct {
 	planner  *Planner
 	executor Executor
+	mu       sync.Mutex
+	last     desiredSnapshot
 }
 
 func NewBackend(executor Executor) *Backend {
@@ -41,6 +45,27 @@ func (b *Backend) EnsureGateway(ctx context.Context, gateway model.Gateway) erro
 
 func (b *Backend) EnsureNATRule(ctx context.Context, rule model.NATRule) error {
 	return b.apply(ctx, func() error { return b.planner.EnsureNATRule(ctx, rule) })
+}
+
+func (b *Backend) BeginTopologyReconcile(context.Context, topology.State) error {
+	return nil
+}
+
+func (b *Backend) CleanupTopology(ctx context.Context, state topology.State) error {
+	next := snapshotDesired(state)
+	b.mu.Lock()
+	ops := cleanupOperations(b.last, next)
+	b.last = next
+	b.mu.Unlock()
+
+	if len(ops) == 0 {
+		return nil
+	}
+	b.planner.Append(ops...)
+	if b.executor == nil {
+		return nil
+	}
+	return b.executor.Execute(ctx, ops)
 }
 
 func (b *Backend) Operations() []Operation {
