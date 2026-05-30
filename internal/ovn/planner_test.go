@@ -106,6 +106,7 @@ func TestPlannerMapsNetloomObjectsToOVNOperations(t *testing.T) {
 		"options:server_mac=0a:58:0a:0a:00:01",
 		"options:lease_time=7200",
 		"options:mtu=1400",
+		"lsp-set-dhcpv4-options nl_lp_pod-a",
 		"set logical_switch_port nl_lp_pod-a dhcpv4_options=@nl_dhcp_pod_a",
 		"external_ids:netloom_owner=netloom",
 		"external_ids:netloom_vpc=prod",
@@ -127,6 +128,35 @@ func TestPlannerMapsNetloomObjectsToOVNOperations(t *testing.T) {
 	}
 	if strings.Contains(joined, "acl") {
 		t.Fatalf("OVN planner must not generate ACL operations; got:\n%s", joined)
+	}
+}
+
+func TestPlannerClearsEndpointDHCPWhenSubnetDHCPDisabled(t *testing.T) {
+	planner := ovn.NewPlanner()
+	if err := planner.EnsureSubnet(context.Background(), model.Subnet{
+		Name:    "apps",
+		VPC:     "prod",
+		CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+		Gateway: netip.MustParseAddr("10.10.0.1"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := planner.EnsureEndpoint(context.Background(), model.Endpoint{
+		ID:     "pod-a",
+		VPC:    "prod",
+		Subnet: "apps",
+		IP:     netip.MustParseAddr("10.10.0.10"),
+		Node:   "node-a",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	joined := stringify(planner.Operations())
+	if !strings.Contains(joined, "lsp-set-dhcpv4-options nl_lp_pod-a") {
+		t.Fatalf("endpoint DHCP clear operation missing:\n%s", joined)
+	}
+	if strings.Contains(joined, "create DHCP_Options") || strings.Contains(joined, "dhcpv4_options=@") {
+		t.Fatalf("disabled DHCP should not create or bind DHCP options:\n%s", joined)
 	}
 }
 

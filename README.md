@@ -173,7 +173,7 @@ OVN ACL 本身很适合做分布式虚拟网络策略，但它不是唯一选择
 - `LoadBalancer` 使用 OVN `lb-add`/`lr-lb-add`/`ls-lb-add` 表达 Kube-OVN 风格的 VPC Service VIP，控制面会拒绝同 VPC 内重复的 VIP+协议+端口。
 - 控制面 resolver 会按 VPC、VIP、协议、端口和绑定子网解析 Service VIP，并基于 flow 与 backend 做稳定选择，用于在单元测试和 selftest 中验证负载均衡语义。
 - `Subnet` 可以声明 `provider_network` 和 `vlan`，OVN 后端会创建 `localnet` 逻辑端口，用于对接 Kube-OVN 常见的 underlay/provider network 场景。
-- `Subnet` 可以开启 DHCP，OVN 后端会为 endpoint logical switch port 生成并绑定 DHCPv4 options，覆盖 router/server/lease/MTU 等常见 Kube-OVN 子网 DHCP 语义。
+- `Subnet` 可以开启 DHCP，OVN 后端会为 endpoint logical switch port 生成并绑定 DHCPv4 options，覆盖 router/server/lease/MTU 等常见 Kube-OVN 子网 DHCP 语义；当 DHCP 关闭时会清空端口 DHCP 绑定，保持 desired state 收敛。
 
 ## 开发
 

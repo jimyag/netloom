@@ -94,6 +94,7 @@ func (p *Planner) EnsureEndpoint(_ context.Context, endpoint model.Endpoint) err
 		Operation{Command: "lsp-add", Flags: []string{"--may-exist"}, Args: []string{logicalSwitch(endpoint.Subnet), port}},
 		Operation{Command: "lsp-set-addresses", Args: []string{port, "dynamic " + endpoint.IP.String()}},
 		setOperation("logical_switch_port", port, "external_ids:netloom_owner=netloom", "external_ids:netloom_endpoint="+endpoint.ID, "external_ids:netloom_node="+endpoint.Node, "external_ids:netloom_vpc="+endpoint.VPC, "external_ids:netloom_subnet="+endpoint.Subnet),
+		Operation{Command: "lsp-set-dhcpv4-options", Args: []string{port}},
 	)
 	if subnet, ok := p.subnets[endpoint.Subnet]; ok && subnet.DHCP.Enabled && endpoint.IP.Is4() {
 		dhcpID := namedUUID("nl_dhcp_" + sanitize(endpoint.ID))
