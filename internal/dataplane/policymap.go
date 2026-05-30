@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"net/netip"
 	"slices"
 	"sync"
 
@@ -37,8 +38,9 @@ type PolicyEntry struct {
 }
 
 type PolicyMapEntry struct {
-	Key   PolicyKey
-	Value PolicyEntry
+	Key        PolicyKey
+	Value      PolicyEntry
+	RemoteCIDR netip.Prefix
 }
 
 type PolicyUpdateStats struct {
@@ -195,6 +197,7 @@ func EncodeEntry(entry policy.MapEntry) (PolicyMapEntry, error) {
 			Protocol:       proto,
 			DestPortBE:     hostToNetwork16(entry.Key.DestPort),
 		},
+		RemoteCIDR: entry.RemoteCIDR,
 		Value: PolicyEntry{
 			Deny:        boolByte(entry.Value.Deny),
 			L4PrefixLen: entry.Key.L4PrefixBits,
@@ -264,7 +267,7 @@ func PlanPolicyUpdate(oldEntries, newEntries []PolicyMapEntry) PolicyUpdatePlan 
 			plan.Delete = append(plan.Delete, key)
 			continue
 		}
-		if oldEntry.Value == newEntry.Value {
+		if oldEntry.Value == newEntry.Value && oldEntry.RemoteCIDR == newEntry.RemoteCIDR {
 			plan.Unchanged = append(plan.Unchanged, newEntry)
 		} else {
 			plan.Update = append(plan.Update, newEntry)

@@ -25,7 +25,8 @@ func TestEncodeEntryUsesCiliumStylePolicyKeyShape(t *testing.T) {
 			Stateful:   true,
 			Log:        true,
 		},
-		RuleID: "allow-https",
+		RemoteCIDR: netip.MustParsePrefix("10.20.0.0/16"),
+		RuleID:     "allow-https",
 	}
 
 	encoded, err := EncodeEntry(entry)
@@ -43,6 +44,9 @@ func TestEncodeEntryUsesCiliumStylePolicyKeyShape(t *testing.T) {
 	}
 	if encoded.Value.Stateful != 1 || encoded.Value.Log != 1 {
 		t.Fatalf("stateful/log flags = %d/%d, want 1/1", encoded.Value.Stateful, encoded.Value.Log)
+	}
+	if encoded.RemoteCIDR != netip.MustParsePrefix("10.20.0.0/16") {
+		t.Fatalf("remote cidr = %s, want 10.20.0.0/16", encoded.RemoteCIDR)
 	}
 	if encoded.Value.RuleCookie == 0 {
 		t.Fatal("rule cookie should be stable and non-zero")
@@ -89,6 +93,9 @@ func TestPolicyBackendReplacesEndpointEntries(t *testing.T) {
 	if entries[0].Key.RemoteIdentity == 0 {
 		t.Fatal("cidr rule should compile to a non-wildcard remote identity")
 	}
+	if entries[0].RemoteCIDR != netip.MustParsePrefix("192.0.2.0/24") {
+		t.Fatalf("remote cidr = %s, want 192.0.2.0/24", entries[0].RemoteCIDR)
+	}
 	if entries[0].Value.Precedence != math.MaxUint32 {
 		t.Fatalf("deny precedence = %d, want max uint32", entries[0].Value.Precedence)
 	}
@@ -124,6 +131,21 @@ func TestPlanPolicyUpdateComputesIncrementalDiff(t *testing.T) {
 	}
 	if plan.Add[0] != added || plan.Update[0] != updateNew || plan.Delete[0] != deleted.Key || plan.Unchanged[0] != keep {
 		t.Fatalf("unexpected plan: %+v", plan)
+	}
+}
+
+func TestPlanPolicyUpdateDetectsRemoteCIDRMetadataChange(t *testing.T) {
+	oldEntry := PolicyMapEntry{
+		Key:        PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: policy.EndpointIdentity("pod-b"), Direction: DirectionIngress},
+		Value:      PolicyEntry{Precedence: 10},
+		RemoteCIDR: netip.MustParsePrefix("10.10.0.11/32"),
+	}
+	newEntry := oldEntry
+	newEntry.RemoteCIDR = netip.MustParsePrefix("10.10.0.12/32")
+
+	plan := PlanPolicyUpdate([]PolicyMapEntry{oldEntry}, []PolicyMapEntry{newEntry})
+	if len(plan.Update) != 1 || plan.Update[0] != newEntry || len(plan.Unchanged) != 0 {
+		t.Fatalf("plan = %+v, want remote CIDR metadata update", plan)
 	}
 }
 

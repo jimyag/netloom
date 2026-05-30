@@ -67,6 +67,9 @@ func TestCompileForEndpointSortsRulesAndPreservesACLShape(t *testing.T) {
 	if program.MapEntries[1].Key.L4PrefixBits != 24 {
 		t.Fatalf("https l4 prefix bits = %d, want 24", program.MapEntries[1].Key.L4PrefixBits)
 	}
+	if program.MapEntries[1].RemoteCIDR != netip.MustParsePrefix("10.20.0.0/16") {
+		t.Fatalf("https remote cidr = %s, want 10.20.0.0/16", program.MapEntries[1].RemoteCIDR)
+	}
 }
 
 func TestCompileForEndpointRejectsCrossVPCSecurityGroup(t *testing.T) {
@@ -221,6 +224,9 @@ func TestCompileForEndpointWithStateExpandsRemoteGroupMembers(t *testing.T) {
 	}
 	if program.MapEntries[0].Key.RemoteIdentity != EndpointIdentity("pod-b") {
 		t.Fatalf("remote identity = %d, want endpoint identity", program.MapEntries[0].Key.RemoteIdentity)
+	}
+	if program.MapEntries[0].RemoteCIDR != netip.MustParsePrefix("10.10.0.11/32") {
+		t.Fatalf("map entry remote cidr = %s, want pod-b /32", program.MapEntries[0].RemoteCIDR)
 	}
 }
 

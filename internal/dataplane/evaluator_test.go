@@ -85,6 +85,82 @@ func TestEvaluateMatchesPortPrefix(t *testing.T) {
 	}
 }
 
+func TestEvaluateMatchesRemoteCIDRFromPacketIP(t *testing.T) {
+	endpoint := model.Endpoint{
+		ID:             "pod-a",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"web"},
+	}
+	program, err := policy.CompileForEndpoint(endpoint, map[string]model.SecurityGroup{
+		"web": {
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "allow-cidr",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("10.20.0.0/24"),
+				Ports:      []model.PortRange{{From: 8080, To: 8080}},
+				Action:     model.ActionAllow,
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := EncodeProgram(program)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	allowed := Evaluate(entries, Packet{
+		RemoteIP:  netip.MustParseAddr("10.20.0.55"),
+		Direction: DirectionIngress,
+		Protocol:  6,
+		DestPort:  8080,
+	})
+	if allowed.Verdict != VerdictAllow {
+		t.Fatalf("cidr decision = %+v, want allow", allowed)
+	}
+	dropped := Evaluate(entries, Packet{
+		RemoteIP:  netip.MustParseAddr("10.20.1.55"),
+		Direction: DirectionIngress,
+		Protocol:  6,
+		DestPort:  8080,
+	})
+	if dropped.Verdict != VerdictDrop {
+		t.Fatalf("outside cidr decision = %+v, want drop", dropped)
+	}
+}
+
+func TestEvaluateRemoteCIDRKeepsIdentityPrecedence(t *testing.T) {
+	entries := []PolicyMapEntry{
+		{
+			Key:        PolicyKey{PrefixLen: StaticPrefixBits + 24, RemoteIdentity: 100, Direction: DirectionIngress, Protocol: 6, DestPortBE: hostToNetwork16(443)},
+			RemoteCIDR: netip.MustParsePrefix("10.20.0.0/24"),
+			Value:      PolicyEntry{L4PrefixLen: 24, Precedence: 100},
+		},
+		{
+			Key:        PolicyKey{PrefixLen: StaticPrefixBits + 24, RemoteIdentity: 200, Direction: DirectionIngress, Protocol: 6, DestPortBE: hostToNetwork16(443)},
+			RemoteCIDR: netip.MustParsePrefix("10.20.0.55/32"),
+			Value:      PolicyEntry{Deny: 1, L4PrefixLen: 24, Precedence: 200},
+		},
+	}
+	decision := Evaluate(entries, Packet{
+		RemoteIP:  netip.MustParseAddr("10.20.0.55"),
+		Direction: DirectionIngress,
+		Protocol:  6,
+		DestPort:  443,
+	})
+	if decision.Verdict != VerdictDrop {
+		t.Fatalf("decision = %+v, want higher-precedence cidr deny", decision)
+	}
+}
+
 func TestEvaluateStatefulAllowsReverseFlowFromConntrack(t *testing.T) {
 	entries := []PolicyMapEntry{{
 		Key: PolicyKey{

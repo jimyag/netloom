@@ -32,9 +32,10 @@ type Rule struct {
 }
 
 type MapEntry struct {
-	Key    MapKey
-	Value  MapValue
-	RuleID string
+	Key        MapKey
+	Value      MapValue
+	RemoteCIDR netip.Prefix
+	RuleID     string
 }
 
 type MapKey struct {
@@ -197,7 +198,8 @@ func compileMapEntries(rule Rule) ([]MapEntry, error) {
 				Stateful:   rule.Stateful,
 				Log:        rule.Log || rule.Action == model.ActionLog,
 			},
-			RuleID: rule.ID,
+			RemoteCIDR: rule.RemoteCIDR,
+			RuleID:     rule.ID,
 		})
 	}
 	return entries, nil

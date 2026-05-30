@@ -2,12 +2,14 @@ package dataplane
 
 import (
 	"encoding/binary"
+	"net/netip"
 	"sync"
 )
 
 type Packet struct {
 	SourcePort     uint16
 	RemoteIdentity uint32
+	RemoteIP       netip.Addr
 	Direction      uint8
 	Protocol       uint8
 	DestPort       uint16
@@ -191,7 +193,7 @@ func evaluate(entries []PolicyMapEntry, packet Packet) Decision {
 	var selected *PolicyMapEntry
 	for i := range entries {
 		entry := &entries[i]
-		if !matches(entry.Key, packet) {
+		if !matches(*entry, packet) {
 			continue
 		}
 		if selected == nil || betterMatch(*entry, *selected) {
@@ -210,6 +212,7 @@ func evaluate(entries []PolicyMapEntry, packet Packet) Decision {
 type ConntrackKey struct {
 	EndpointID     string
 	RemoteIdentity uint32
+	RemoteIP       netip.Addr
 	Direction      uint8
 	Protocol       uint8
 	DestPort       uint16
@@ -302,12 +305,15 @@ func EvaluateStatefulObserved(endpointID string, entries []PolicyMapEntry, packe
 	return decision
 }
 
-func matches(key PolicyKey, packet Packet) bool {
+func matches(entry PolicyMapEntry, packet Packet) bool {
+	key := entry.Key
 	if key.Direction != packet.Direction {
 		return false
 	}
-	if key.RemoteIdentity != 0 && key.RemoteIdentity != packet.RemoteIdentity {
-		return false
+	if key.RemoteIdentity != 0 {
+		if key.RemoteIdentity != packet.RemoteIdentity && !remoteCIDRMatches(entry.RemoteCIDR, packet.RemoteIP) {
+			return false
+		}
 	}
 
 	l4PrefixLen := uint8(key.PrefixLen - StaticPrefixBits)
@@ -324,6 +330,10 @@ func matches(key PolicyKey, packet Packet) bool {
 	portPrefixLen := l4PrefixLen - 8
 	mask := uint16(0xffff << (16 - portPrefixLen))
 	return networkToHost16(key.DestPortBE)&mask == packet.DestPort&mask
+}
+
+func remoteCIDRMatches(prefix netip.Prefix, remoteIP netip.Addr) bool {
+	return prefix.IsValid() && remoteIP.IsValid() && prefix.Contains(remoteIP)
 }
 
 func betterMatch(candidate, selected PolicyMapEntry) bool {
@@ -349,6 +359,7 @@ func conntrackKey(endpointID string, packet Packet) ConntrackKey {
 	return ConntrackKey{
 		EndpointID:     endpointID,
 		RemoteIdentity: packet.RemoteIdentity,
+		RemoteIP:       packet.RemoteIP,
 		Direction:      packet.Direction,
 		Protocol:       packet.Protocol,
 		DestPort:       packet.DestPort,
@@ -363,6 +374,7 @@ func reverseConntrackKey(endpointID string, packet Packet) ConntrackKey {
 	return ConntrackKey{
 		EndpointID:     endpointID,
 		RemoteIdentity: packet.RemoteIdentity,
+		RemoteIP:       packet.RemoteIP,
 		Direction:      reverseDirection(packet.Direction),
 		Protocol:       packet.Protocol,
 		DestPort:       port,
