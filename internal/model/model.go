@@ -93,8 +93,9 @@ type RouteMatch struct {
 }
 
 type RouteAction struct {
-	Type    Action     `json:"type"`
-	NextHop netip.Addr `json:"next_hop"`
+	Type     Action       `json:"type"`
+	NextHop  netip.Addr   `json:"next_hop"`
+	NextHops []netip.Addr `json:"next_hops"`
 }
 
 type Gateway struct {
@@ -274,21 +275,45 @@ func (r PolicyRoute) Validate() error {
 	if !slices.Contains([]Action{ActionAllow, ActionDrop, ActionReroute}, r.Action.Type) {
 		return fmt.Errorf("unsupported policy route action %q", r.Action.Type)
 	}
-	if r.Action.Type == ActionReroute && !r.Action.NextHop.IsValid() {
+	nextHops := r.Action.RerouteNextHops()
+	if r.Action.Type == ActionReroute && len(nextHops) == 0 {
 		return errors.New("policy route reroute action requires next hop")
 	}
 	if err := r.Match.Validate(); err != nil {
 		return fmt.Errorf("policy route match: %w", err)
 	}
 	if r.Action.Type == ActionReroute {
-		if r.Match.Destination.IsValid() && r.Action.NextHop.Is4() != r.Match.Destination.Addr().Is4() {
-			return errors.New("policy route reroute next hop family must match destination")
-		}
-		if !r.Match.Destination.IsValid() && r.Match.Source.IsValid() && r.Action.NextHop.Is4() != r.Match.Source.Addr().Is4() {
-			return errors.New("policy route reroute next hop family must match source")
+		seen := make(map[netip.Addr]struct{}, len(nextHops))
+		familyIs4 := nextHops[0].Is4()
+		for i, nextHop := range nextHops {
+			if !nextHop.IsValid() {
+				return fmt.Errorf("policy route reroute next hop %d is invalid", i)
+			}
+			if nextHop.Is4() != familyIs4 {
+				return errors.New("policy route reroute next hops must use the same IP family")
+			}
+			if _, ok := seen[nextHop]; ok {
+				return fmt.Errorf("policy route reroute next hop %s is duplicated", nextHop)
+			}
+			seen[nextHop] = struct{}{}
+			if r.Match.Destination.IsValid() && nextHop.Is4() != r.Match.Destination.Addr().Is4() {
+				return errors.New("policy route reroute next hop family must match destination")
+			}
+			if !r.Match.Destination.IsValid() && r.Match.Source.IsValid() && nextHop.Is4() != r.Match.Source.Addr().Is4() {
+				return errors.New("policy route reroute next hop family must match source")
+			}
 		}
 	}
 	return nil
+}
+
+func (a RouteAction) RerouteNextHops() []netip.Addr {
+	nextHops := make([]netip.Addr, 0, 1+len(a.NextHops))
+	if a.NextHop.IsValid() {
+		nextHops = append(nextHops, a.NextHop)
+	}
+	nextHops = append(nextHops, a.NextHops...)
+	return nextHops
 }
 
 func (m RouteMatch) Validate() error {

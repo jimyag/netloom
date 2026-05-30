@@ -134,7 +134,16 @@ func (p *Planner) EnsurePolicyRoute(_ context.Context, route model.PolicyRoute) 
 	action := route.Action.Type
 	p.ops = append(p.ops, Operation{Command: "lr-policy-del", Flags: []string{"--if-exists"}, Args: []string{router, fmt.Sprint(route.Priority), match}})
 	if action == model.ActionReroute {
-		p.ops = append(p.ops, Operation{Command: "lr-policy-add", Flags: []string{"--may-exist"}, Args: []string{router, fmt.Sprint(route.Priority), match, "reroute", route.Action.NextHop.String()}})
+		nextHops := route.Action.RerouteNextHops()
+		if len(nextHops) == 1 {
+			p.ops = append(p.ops, Operation{Command: "lr-policy-add", Flags: []string{"--may-exist"}, Args: []string{router, fmt.Sprint(route.Priority), match, "reroute", nextHops[0].String()}})
+			return nil
+		}
+		uuid := namedUUID("nl_lrp_" + sanitize(route.Name))
+		p.ops = append(p.ops,
+			Operation{Command: "create", Flags: []string{"--id=" + uuid}, Args: logicalRouterPolicyArgs(route, match, nextHops)},
+			Operation{Command: "add", Args: []string{"logical_router", router, "policies", uuid}},
+		)
 		return nil
 	}
 	p.ops = append(p.ops, Operation{Command: "lr-policy-add", Flags: []string{"--may-exist"}, Args: []string{router, fmt.Sprint(route.Priority), match, string(action)}})
@@ -341,6 +350,33 @@ func loadBalancerOptions(lb model.LoadBalancer) []string {
 		return options
 	}
 	return append(options, "external_ids:netloom_session_affinity=false")
+}
+
+func logicalRouterPolicyArgs(route model.PolicyRoute, match string, nextHops []netip.Addr) []string {
+	args := []string{
+		"Logical_Router_Policy",
+		fmt.Sprintf("priority=%d", route.Priority),
+		"match=" + match,
+		"action=reroute",
+		"nexthops=" + ovnStringSet(nextHops),
+		"external_ids:netloom_owner=netloom",
+		"external_ids:netloom_policy_route=" + route.Name,
+		"external_ids:netloom_vpc=" + route.VPC,
+	}
+	return args
+}
+
+func ovnStringSet(addrs []netip.Addr) string {
+	values := make([]string, 0, len(addrs))
+	for _, addr := range addrs {
+		values = append(values, addr.String())
+	}
+	sort.Strings(values)
+	quoted := make([]string, 0, len(values))
+	for _, value := range values {
+		quoted = append(quoted, `"`+value+`"`)
+	}
+	return "[" + strings.Join(quoted, ",") + "]"
 }
 
 func policyRouteMatch(match model.RouteMatch) string {

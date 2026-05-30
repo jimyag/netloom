@@ -32,6 +32,7 @@ type Packet struct {
 type Decision struct {
 	Action         model.Action
 	NextHop        netip.Addr
+	NextHops       []netip.Addr
 	Gateway        string
 	Translated     netip.Addr
 	TranslatedPort uint16
@@ -231,8 +232,11 @@ func resolvePolicyRoute(routes []model.PolicyRoute, packet Packet) (Decision, bo
 		}
 		decision := Decision{
 			Action:    route.Action.Type,
-			NextHop:   route.Action.NextHop,
+			NextHops:  route.Action.RerouteNextHops(),
 			MatchedBy: "policy-route/" + route.Name,
+		}
+		if len(decision.NextHops) > 0 {
+			decision.NextHop = decision.NextHops[0]
 		}
 		if route.Action.Type == model.ActionDrop {
 			return decision, true

@@ -3,6 +3,7 @@ package ovn
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/jimyag/netloom/internal/model"
 	"github.com/jimyag/netloom/internal/topology"
@@ -247,8 +248,18 @@ func policyRouteSignature(route model.PolicyRoute) string {
 		route.Priority,
 		policyRouteMatch(route.Match),
 		route.Action.Type,
-		route.Action.NextHop,
+		policyRouteNextHops(route.Action),
 	)
+}
+
+func policyRouteNextHops(action model.RouteAction) string {
+	nextHops := action.RerouteNextHops()
+	values := make([]string, 0, len(nextHops))
+	for _, nextHop := range nextHops {
+		values = append(values, nextHop.String())
+	}
+	sort.Strings(values)
+	return strings.Join(values, ",")
 }
 
 func natType(action model.Action) string {

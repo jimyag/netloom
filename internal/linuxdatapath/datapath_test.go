@@ -225,6 +225,55 @@ func TestPlanProgramsIPv6LinuxPolicyRoute(t *testing.T) {
 	}
 }
 
+func TestPlanProgramsECMPPolicyRoute(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:     "pod-a",
+			VPC:    "prod",
+			Subnet: "apps",
+			IP:     netip.MustParseAddr("10.10.0.10"),
+			Node:   "node-a",
+		}},
+		PolicyRoutes: []model.PolicyRoute{{
+			Name:     "centralized-egress",
+			VPC:      "prod",
+			Priority: 200,
+			Match: model.RouteMatch{
+				Source: netip.MustParsePrefix("10.10.0.0/24"),
+			},
+			Action: model.RouteAction{
+				Type: model.ActionReroute,
+				NextHops: []netip.Addr{
+					netip.MustParseAddr("10.10.0.253"),
+					netip.MustParseAddr("10.10.0.254"),
+				},
+			},
+		}},
+	}
+
+	ops, result, err := Plan(context.Background(), state, Options{
+		Node:            "node-a",
+		LocalDevice:     "nl0",
+		UnderlayDevice:  "eth9",
+		PolicyTableBase: 20000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.PolicyRoutes != 1 {
+		t.Fatalf("policy routes = %d, want 1", result.PolicyRoutes)
+	}
+	joined := stringifyOps(ops)
+	for _, expected := range []string{
+		"ip route replace 0.0.0.0/0 nexthop via 10.10.0.253 dev eth9 nexthop via 10.10.0.254 dev eth9 table 20000",
+		"ip rule add priority 9800 from 10.10.0.0/24 table 20000",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("ECMP policy route ops missing %q:\n%s", expected, joined)
+		}
+	}
+}
+
 func TestPlanCleansManagedPolicyRouteRulesWhenRequested(t *testing.T) {
 	state := control.DesiredState{
 		Endpoints: []model.Endpoint{{

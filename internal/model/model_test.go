@@ -183,6 +183,18 @@ func TestPolicyRouteRequiresNextHopForReroute(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	route.Action.NextHop = netip.Addr{}
+	route.Action.NextHops = []netip.Addr{
+		netip.MustParseAddr("10.10.0.253"),
+		netip.MustParseAddr("10.10.0.254"),
+	}
+	if err := route.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if got := route.Action.RerouteNextHops(); len(got) != 2 || got[0].String() != "10.10.0.253" || got[1].String() != "10.10.0.254" {
+		t.Fatalf("reroute next hops = %v", got)
+	}
+
 	route.Match.Protocol = ProtocolAny
 	if err := route.Validate(); err == nil {
 		t.Fatal("expected dst ports without transport protocol to fail")
@@ -201,6 +213,7 @@ func TestRouteRejectsMixedIPFamilies(t *testing.T) {
 	if !strings.Contains(err.Error(), "next hop family") {
 		t.Fatalf("error %q does not mention next hop family", err)
 	}
+
 }
 
 func TestPolicyRouteRejectsMixedIPFamilies(t *testing.T) {
@@ -230,6 +243,37 @@ func TestPolicyRouteRejectsMixedIPFamilies(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "next hop family") {
 		t.Fatalf("error %q does not mention next hop family", err)
+	}
+
+	route.Action = RouteAction{
+		Type: ActionReroute,
+		NextHops: []netip.Addr{
+			netip.MustParseAddr("fd00:10::fe"),
+			netip.MustParseAddr("10.10.0.254"),
+		},
+	}
+	err = route.Validate()
+	if err == nil {
+		t.Fatal("expected mixed ECMP next hop family to fail")
+	}
+	if !strings.Contains(err.Error(), "same IP family") {
+		t.Fatalf("error %q does not mention next hop IP family", err)
+	}
+
+	route.Match.Destination = netip.MustParsePrefix("10.20.0.0/16")
+	route.Action = RouteAction{
+		Type: ActionReroute,
+		NextHops: []netip.Addr{
+			netip.MustParseAddr("10.10.0.254"),
+			netip.MustParseAddr("10.10.0.254"),
+		},
+	}
+	err = route.Validate()
+	if err == nil {
+		t.Fatal("expected duplicate ECMP next hop to fail")
+	}
+	if !strings.Contains(err.Error(), "duplicated") {
+		t.Fatalf("error %q does not mention duplicate next hop", err)
 	}
 }
 

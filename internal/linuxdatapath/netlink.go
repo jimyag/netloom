@@ -279,8 +279,19 @@ func replacePolicyRoute(root *netlink.Handle, route model.PolicyRoute, table, li
 	if route.Action.Type == model.ActionDrop {
 		nlRoute.Type = unix.RTN_BLACKHOLE
 	} else {
-		nlRoute.LinkIndex = linkIndex
-		nlRoute.Gw = addrIP(route.Action.NextHop)
+		nextHops := route.Action.RerouteNextHops()
+		if len(nextHops) == 1 {
+			nlRoute.LinkIndex = linkIndex
+			nlRoute.Gw = addrIP(nextHops[0])
+		} else {
+			nlRoute.MultiPath = make([]*netlink.NexthopInfo, 0, len(nextHops))
+			for _, nextHop := range nextHops {
+				nlRoute.MultiPath = append(nlRoute.MultiPath, &netlink.NexthopInfo{
+					LinkIndex: linkIndex,
+					Gw:        addrIP(nextHop),
+				})
+			}
+		}
 	}
 	return root.RouteReplace(nlRoute)
 }
@@ -323,8 +334,10 @@ func policyRouteFamily(route model.PolicyRoute) int {
 	if route.Match.Destination.IsValid() {
 		return ipRuleFamily(route.Match.Destination.Addr())
 	}
-	if route.Action.NextHop.IsValid() {
-		return ipRuleFamily(route.Action.NextHop)
+	for _, nextHop := range route.Action.RerouteNextHops() {
+		if nextHop.IsValid() {
+			return ipRuleFamily(nextHop)
+		}
 	}
 	return unix.AF_INET
 }

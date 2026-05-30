@@ -350,6 +350,40 @@ func TestResolvePolicyRouteBeatsStaticRoute(t *testing.T) {
 	}
 }
 
+func TestResolveECMPPolicyRouteReturnsNextHops(t *testing.T) {
+	state := State{
+		PolicyRoutes: []model.PolicyRoute{{
+			Name:     "centralized-egress",
+			VPC:      "prod",
+			Priority: 100,
+			Match: model.RouteMatch{
+				Source: netip.MustParsePrefix("10.10.0.0/24"),
+			},
+			Action: model.RouteAction{
+				Type: model.ActionReroute,
+				NextHops: []netip.Addr{
+					netip.MustParseAddr("10.10.0.253"),
+					netip.MustParseAddr("10.10.0.254"),
+				},
+			},
+		}},
+	}
+	decision, err := Resolve(state, Packet{
+		VPC:    "prod",
+		Source: netip.MustParseAddr("10.10.0.10"),
+		Dest:   netip.MustParseAddr("203.0.113.10"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.NextHop != netip.MustParseAddr("10.10.0.253") {
+		t.Fatalf("next hop = %s, want first ECMP next hop", decision.NextHop)
+	}
+	if len(decision.NextHops) != 2 || decision.NextHops[1] != netip.MustParseAddr("10.10.0.254") {
+		t.Fatalf("next hops = %v, want ECMP next hops", decision.NextHops)
+	}
+}
+
 func TestResolveLongestPrefixStaticRouteAndSNATGateway(t *testing.T) {
 	state := State{
 		RouteTables: map[string]model.RouteTable{

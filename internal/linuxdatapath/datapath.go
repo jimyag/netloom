@@ -207,9 +207,19 @@ func planPolicyRoutes(state control.DesiredState, node, device string, tableBase
 				Args:    []string{"route", "replace", "blackhole", destination.String(), "table", strconv.Itoa(table)},
 			})
 		} else {
+			nextHops := route.Action.RerouteNextHops()
+			args := []string{"route", "replace", destination.String()}
+			if len(nextHops) == 1 {
+				args = append(args, "via", nextHops[0].String(), "dev", device)
+			} else {
+				for _, nextHop := range nextHops {
+					args = append(args, "nexthop", "via", nextHop.String(), "dev", device)
+				}
+			}
+			args = append(args, "table", strconv.Itoa(table))
 			ops = append(ops, Operation{
 				Command: "ip",
-				Args:    []string{"route", "replace", destination.String(), "via", route.Action.NextHop.String(), "dev", device, "table", strconv.Itoa(table)},
+				Args:    args,
 			})
 		}
 		for _, ruleArgs := range linuxPolicyRuleArgs(route, rulePriority, table) {
@@ -290,8 +300,10 @@ func routeIPFamily(route model.PolicyRoute) int {
 	if route.Match.Destination.IsValid() && route.Match.Destination.Addr().Is6() {
 		return 6
 	}
-	if route.Action.NextHop.IsValid() && route.Action.NextHop.Is6() {
-		return 6
+	for _, nextHop := range route.Action.RerouteNextHops() {
+		if nextHop.Is6() {
+			return 6
+		}
 	}
 	return 4
 }
