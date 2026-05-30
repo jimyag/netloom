@@ -153,6 +153,9 @@ func NewController(topology TopologyBackend, policy PolicyBackend) *Controller {
 }
 
 func (c *Controller) Reconcile(ctx context.Context, state DesiredState) error {
+	if err := validateObjectGraph(state); err != nil {
+		return err
+	}
 	groups := make(map[string]model.SecurityGroup, len(state.SecurityGroups))
 	for _, group := range state.SecurityGroups {
 		if err := group.Validate(); err != nil {
@@ -314,6 +317,157 @@ func inboundPortKeysPrefix(keys map[string]string, prefix string) string {
 		}
 	}
 	return ""
+}
+
+func validateObjectGraph(state DesiredState) error {
+	vpcs := make(map[string]struct{}, len(state.VPCs))
+	for _, vpc := range state.VPCs {
+		if err := vpc.Validate(); err != nil {
+			return err
+		}
+		if _, ok := vpcs[vpc.Name]; ok {
+			return fmt.Errorf("duplicate vpc name %q", vpc.Name)
+		}
+		vpcs[vpc.Name] = struct{}{}
+	}
+
+	subnets := make(map[string]model.Subnet, len(state.Subnets))
+	for _, subnet := range state.Subnets {
+		if err := subnet.Validate(); err != nil {
+			return err
+		}
+		if _, ok := subnets[subnet.Name]; ok {
+			return fmt.Errorf("duplicate subnet name %q", subnet.Name)
+		}
+		if _, ok := vpcs[subnet.VPC]; !ok {
+			return fmt.Errorf("subnet %q references unknown vpc %q", subnet.Name, subnet.VPC)
+		}
+		subnets[subnet.Name] = subnet
+	}
+
+	securityGroups := make(map[string]model.SecurityGroup, len(state.SecurityGroups))
+	for _, group := range state.SecurityGroups {
+		if err := group.Validate(); err != nil {
+			return err
+		}
+		if _, ok := securityGroups[group.Name]; ok {
+			return fmt.Errorf("duplicate security group name %q", group.Name)
+		}
+		if _, ok := vpcs[group.VPC]; !ok {
+			return fmt.Errorf("security group %q references unknown vpc %q", group.Name, group.VPC)
+		}
+		securityGroups[group.Name] = group
+	}
+	for _, group := range securityGroups {
+		for _, rule := range group.Rules {
+			if rule.RemoteGroup == "" {
+				continue
+			}
+			remote, ok := securityGroups[rule.RemoteGroup]
+			if !ok {
+				return fmt.Errorf("security group rule %q references unknown remote group %q", rule.ID, rule.RemoteGroup)
+			}
+			if remote.VPC != group.VPC {
+				return fmt.Errorf("security group rule %q references remote group %q in vpc %q, want %q", rule.ID, rule.RemoteGroup, remote.VPC, group.VPC)
+			}
+		}
+	}
+
+	endpoints := make(map[string]model.Endpoint, len(state.Endpoints))
+	endpointIPs := make(map[string]string, len(state.Endpoints))
+	for _, endpoint := range state.Endpoints {
+		if err := endpoint.Validate(); err != nil {
+			return err
+		}
+		if _, ok := endpoints[endpoint.ID]; ok {
+			return fmt.Errorf("duplicate endpoint id %q", endpoint.ID)
+		}
+		if _, ok := vpcs[endpoint.VPC]; !ok {
+			return fmt.Errorf("endpoint %q references unknown vpc %q", endpoint.ID, endpoint.VPC)
+		}
+		subnet, ok := subnets[endpoint.Subnet]
+		if !ok {
+			return fmt.Errorf("endpoint %q references unknown subnet %q", endpoint.ID, endpoint.Subnet)
+		}
+		if subnet.VPC != endpoint.VPC {
+			return fmt.Errorf("endpoint %q references subnet %q in vpc %q, want %q", endpoint.ID, endpoint.Subnet, subnet.VPC, endpoint.VPC)
+		}
+		if !subnet.CIDR.Contains(endpoint.IP) {
+			return fmt.Errorf("endpoint %q ip %s is outside subnet %q cidr %s", endpoint.ID, endpoint.IP, endpoint.Subnet, subnet.CIDR)
+		}
+		for _, groupName := range endpoint.SecurityGroups {
+			group, ok := securityGroups[groupName]
+			if !ok {
+				return fmt.Errorf("endpoint %q references unknown security group %q", endpoint.ID, groupName)
+			}
+			if group.VPC != endpoint.VPC {
+				return fmt.Errorf("endpoint %q references security group %q in vpc %q, want %q", endpoint.ID, groupName, group.VPC, endpoint.VPC)
+			}
+		}
+		ipKey := endpoint.VPC + "|" + endpoint.IP.String()
+		if previous := endpointIPs[ipKey]; previous != "" {
+			return fmt.Errorf("endpoint %q conflicts with %q on ip %s in vpc %s", endpoint.ID, previous, endpoint.IP, endpoint.VPC)
+		}
+		endpointIPs[ipKey] = endpoint.ID
+		endpoints[endpoint.ID] = endpoint
+	}
+
+	gateways := make(map[string]struct{}, len(state.Gateways))
+	for _, gateway := range state.Gateways {
+		if err := gateway.Validate(); err != nil {
+			return err
+		}
+		if _, ok := gateways[gateway.Name]; ok {
+			return fmt.Errorf("duplicate gateway name %q", gateway.Name)
+		}
+		if _, ok := vpcs[gateway.VPC]; !ok {
+			return fmt.Errorf("gateway %q references unknown vpc %q", gateway.Name, gateway.VPC)
+		}
+		gateways[gateway.Name] = struct{}{}
+	}
+
+	for _, table := range state.RouteTables {
+		if err := table.Validate(); err != nil {
+			return err
+		}
+		if _, ok := vpcs[table.VPC]; !ok {
+			return fmt.Errorf("route table %q references unknown vpc %q", table.Name, table.VPC)
+		}
+	}
+	for _, route := range state.PolicyRoutes {
+		if err := route.Validate(); err != nil {
+			return err
+		}
+		if _, ok := vpcs[route.VPC]; !ok {
+			return fmt.Errorf("policy route %q references unknown vpc %q", route.Name, route.VPC)
+		}
+	}
+	for _, rule := range state.NATRules {
+		if err := rule.Validate(); err != nil {
+			return err
+		}
+		if _, ok := vpcs[rule.VPC]; !ok {
+			return fmt.Errorf("nat rule %q references unknown vpc %q", rule.Name, rule.VPC)
+		}
+	}
+	for _, lb := range state.LoadBalancers {
+		if err := lb.Validate(); err != nil {
+			return err
+		}
+		if _, ok := vpcs[lb.VPC]; !ok {
+			return fmt.Errorf("load balancer %q references unknown vpc %q", lb.Name, lb.VPC)
+		}
+		for _, subnetName := range lb.Subnets {
+			subnet, ok := subnets[subnetName]
+			if !ok {
+				return fmt.Errorf("load balancer %q references unknown subnet %q", lb.Name, subnetName)
+			}
+			if subnet.VPC != lb.VPC {
+				return fmt.Errorf("load balancer %q references subnet %q in vpc %q, want %q", lb.Name, subnetName, subnet.VPC, lb.VPC)
+			}
+		}
+	}
+	return nil
 }
 
 func validateLoadBalancers(loadBalancers []model.LoadBalancer) error {

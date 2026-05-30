@@ -224,6 +224,197 @@ func TestControllerRejectsConflictingLoadBalancers(t *testing.T) {
 	}
 }
 
+func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*DesiredState)
+		wantErr string
+	}{
+		{
+			name: "duplicate vpc",
+			mutate: func(state *DesiredState) {
+				state.VPCs = append(state.VPCs, model.VPC{Name: "prod"})
+			},
+			wantErr: "duplicate vpc name",
+		},
+		{
+			name: "duplicate subnet",
+			mutate: func(state *DesiredState) {
+				state.Subnets = append(state.Subnets, state.Subnets[0])
+			},
+			wantErr: "duplicate subnet name",
+		},
+		{
+			name: "subnet unknown vpc",
+			mutate: func(state *DesiredState) {
+				state.Subnets[0].VPC = "missing"
+			},
+			wantErr: "subnet \"apps\" references unknown vpc",
+		},
+		{
+			name: "duplicate security group",
+			mutate: func(state *DesiredState) {
+				state.SecurityGroups = append(state.SecurityGroups, state.SecurityGroups[0])
+			},
+			wantErr: "duplicate security group name",
+		},
+		{
+			name: "remote group unknown",
+			mutate: func(state *DesiredState) {
+				state.SecurityGroups[0].Rules[0].RemoteCIDR = netip.Prefix{}
+				state.SecurityGroups[0].Rules[0].RemoteGroup = "missing"
+			},
+			wantErr: "references unknown remote group",
+		},
+		{
+			name: "duplicate endpoint",
+			mutate: func(state *DesiredState) {
+				state.Endpoints = append(state.Endpoints, state.Endpoints[0])
+			},
+			wantErr: "duplicate endpoint id",
+		},
+		{
+			name: "endpoint unknown subnet",
+			mutate: func(state *DesiredState) {
+				state.Endpoints[0].Subnet = "missing"
+			},
+			wantErr: "references unknown subnet",
+		},
+		{
+			name: "endpoint subnet vpc mismatch",
+			mutate: func(state *DesiredState) {
+				state.VPCs = append(state.VPCs, model.VPC{Name: "other"})
+				state.Subnets = append(state.Subnets, model.Subnet{
+					Name:    "other-apps",
+					VPC:     "other",
+					CIDR:    netip.MustParsePrefix("10.20.0.0/24"),
+					Gateway: netip.MustParseAddr("10.20.0.1"),
+				})
+				state.Endpoints[0].Subnet = "other-apps"
+			},
+			wantErr: "references subnet \"other-apps\" in vpc \"other\"",
+		},
+		{
+			name: "endpoint outside subnet",
+			mutate: func(state *DesiredState) {
+				state.Endpoints[0].IP = netip.MustParseAddr("10.20.0.10")
+			},
+			wantErr: "outside subnet",
+		},
+		{
+			name: "endpoint unknown security group",
+			mutate: func(state *DesiredState) {
+				state.Endpoints[0].SecurityGroups = []string{"missing"}
+			},
+			wantErr: "references unknown security group",
+		},
+		{
+			name: "endpoint ip conflict",
+			mutate: func(state *DesiredState) {
+				state.Endpoints = append(state.Endpoints, model.Endpoint{
+					ID:             "pod-b",
+					VPC:            "prod",
+					Subnet:         "apps",
+					IP:             netip.MustParseAddr("10.10.0.10"),
+					Node:           "node-b",
+					SecurityGroups: []string{"web"},
+				})
+			},
+			wantErr: "conflicts",
+		},
+		{
+			name: "duplicate gateway",
+			mutate: func(state *DesiredState) {
+				state.Gateways = append(state.Gateways, state.Gateways[0])
+			},
+			wantErr: "duplicate gateway name",
+		},
+		{
+			name: "load balancer unknown subnet",
+			mutate: func(state *DesiredState) {
+				state.LoadBalancers[0].Subnets = []string{"missing"}
+			},
+			wantErr: "load balancer \"web\" references unknown subnet",
+		},
+		{
+			name: "load balancer subnet vpc mismatch",
+			mutate: func(state *DesiredState) {
+				state.VPCs = append(state.VPCs, model.VPC{Name: "other"})
+				state.Subnets = append(state.Subnets, model.Subnet{
+					Name:    "other-apps",
+					VPC:     "other",
+					CIDR:    netip.MustParsePrefix("10.20.0.0/24"),
+					Gateway: netip.MustParseAddr("10.20.0.1"),
+				})
+				state.LoadBalancers[0].Subnets = []string{"other-apps"}
+			},
+			wantErr: "references subnet \"other-apps\" in vpc \"other\"",
+		},
+		{
+			name: "route table unknown vpc",
+			mutate: func(state *DesiredState) {
+				state.RouteTables = []model.RouteTable{{
+					Name: "main",
+					VPC:  "missing",
+					Routes: []model.Route{{
+						Destination: netip.MustParsePrefix("0.0.0.0/0"),
+						NextHop:     netip.MustParseAddr("10.10.0.254"),
+					}},
+				}}
+			},
+			wantErr: "route table \"main\" references unknown vpc",
+		},
+		{
+			name: "policy route unknown vpc",
+			mutate: func(state *DesiredState) {
+				state.PolicyRoutes = []model.PolicyRoute{{
+					Name:     "drop-lab",
+					VPC:      "missing",
+					Priority: 100,
+					Match:    model.RouteMatch{Destination: netip.MustParsePrefix("198.51.100.0/24")},
+					Action:   model.RouteAction{Type: model.ActionDrop},
+				}}
+			},
+			wantErr: "policy route \"drop-lab\" references unknown vpc",
+		},
+		{
+			name: "nat unknown vpc",
+			mutate: func(state *DesiredState) {
+				state.NATRules = []model.NATRule{{
+					Name:       "egress",
+					VPC:        "missing",
+					Type:       model.ActionSNAT,
+					MatchCIDR:  netip.MustParsePrefix("10.10.0.0/24"),
+					ExternalIP: netip.MustParseAddr("198.51.100.10"),
+				}}
+			},
+			wantErr: "nat rule \"egress\" references unknown vpc",
+		},
+		{
+			name: "load balancer unknown vpc",
+			mutate: func(state *DesiredState) {
+				state.LoadBalancers[0].VPC = "missing"
+				state.LoadBalancers[0].Subnets = nil
+			},
+			wantErr: "load balancer \"web\" references unknown vpc",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state := validObjectGraphState()
+			tt.mutate(&state)
+			err := NewController(NewMemoryBackend(), NewMemoryBackend()).Reconcile(context.Background(), state)
+			if err == nil {
+				t.Fatal("expected invalid object graph to fail")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error %q does not contain %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestControllerRejectsConflictingStaticRoutes(t *testing.T) {
 	state := DesiredState{
 		VPCs: []model.VPC{{Name: "prod"}},
@@ -392,5 +583,53 @@ func TestControllerReconcileRemovesStaleMemoryState(t *testing.T) {
 	}
 	if len(backend.Subnets) != 1 {
 		t.Fatalf("desired subnet should remain: %+v", backend.Subnets)
+	}
+}
+
+func validObjectGraphState() DesiredState {
+	return DesiredState{
+		VPCs: []model.VPC{{Name: "prod"}},
+		Subnets: []model.Subnet{{
+			Name:    "apps",
+			VPC:     "prod",
+			CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway: netip.MustParseAddr("10.10.0.1"),
+		}},
+		Endpoints: []model.Endpoint{{
+			ID:             "pod-a",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"web"},
+		}},
+		Gateways: []model.Gateway{{
+			Name:  "gw-a",
+			VPC:   "prod",
+			Node:  "node-a",
+			LANIP: netip.MustParseAddr("10.10.0.254"),
+		}},
+		LoadBalancers: []model.LoadBalancer{{
+			Name:     "web",
+			VPC:      "prod",
+			VIP:      netip.MustParseAddr("10.96.0.10"),
+			Port:     80,
+			Protocol: model.ProtocolTCP,
+			Backends: []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.10"), Port: 8080}},
+			Subnets:  []string{"apps"},
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "allow-client",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("10.10.0.0/24"),
+				Ports:      []model.PortRange{{From: 8080, To: 8080}},
+				Action:     model.ActionAllow,
+			}},
+		}},
 	}
 }
