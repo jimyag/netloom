@@ -75,12 +75,15 @@ func (p *Planner) EnsureSubnet(_ context.Context, subnet model.Subnet) error {
 	if subnet.ProviderNetwork != "" {
 		localnetPort := localnetPortName(switchName, subnet.Name)
 		p.ops = append(p.ops,
+			Operation{Command: "lsp-del", Flags: []string{"--if-exists"}, Args: []string{localnetPort}},
 			Operation{Command: "lsp-add-localnet-port", Flags: []string{"--may-exist"}, Args: []string{switchName, localnetPort, subnet.ProviderNetwork}},
 			setOperation("logical_switch_port", localnetPort, "external_ids:netloom_owner=netloom", "external_ids:netloom_subnet="+subnet.Name, "external_ids:netloom_provider_network="+subnet.ProviderNetwork),
 		)
 		if subnet.VLAN != 0 {
 			p.ops = append(p.ops, setOperation("logical_switch_port", localnetPort, fmt.Sprintf("tag=%d", subnet.VLAN)))
 		}
+	} else {
+		p.ops = append(p.ops, Operation{Command: "lsp-del", Flags: []string{"--if-exists"}, Args: []string{localnetPortName(switchName, subnet.Name)}})
 	}
 	return nil
 }

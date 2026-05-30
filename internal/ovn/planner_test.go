@@ -98,6 +98,7 @@ func TestPlannerMapsNetloomObjectsToOVNOperations(t *testing.T) {
 	for _, expected := range []string{
 		"--may-exist lr-add nl_lr_prod",
 		"--may-exist ls-add nl_ls_apps",
+		"--if-exists lsp-del nl_ls_apps_to_apps_localnet",
 		"lsp-add-localnet-port nl_ls_apps nl_ls_apps_to_apps_localnet physnet-a",
 		"external_ids:netloom_provider_network=physnet-a",
 		"set logical_switch_port nl_ls_apps_to_apps_localnet tag=100",
@@ -130,6 +131,26 @@ func TestPlannerMapsNetloomObjectsToOVNOperations(t *testing.T) {
 	}
 	if strings.Contains(joined, "acl") {
 		t.Fatalf("OVN planner must not generate ACL operations; got:\n%s", joined)
+	}
+}
+
+func TestPlannerDeletesLocalnetWhenProviderNetworkDisabled(t *testing.T) {
+	planner := ovn.NewPlanner()
+	if err := planner.EnsureSubnet(context.Background(), model.Subnet{
+		Name:    "apps",
+		VPC:     "prod",
+		CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+		Gateway: netip.MustParseAddr("10.10.0.1"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	joined := stringify(planner.Operations())
+	if !strings.Contains(joined, "--if-exists lsp-del nl_ls_apps_to_apps_localnet") {
+		t.Fatalf("provider network disable should delete localnet port:\n%s", joined)
+	}
+	if strings.Contains(joined, "lsp-add-localnet-port") {
+		t.Fatalf("provider network disable should not recreate localnet port:\n%s", joined)
 	}
 }
 
