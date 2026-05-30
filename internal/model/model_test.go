@@ -215,6 +215,32 @@ func TestSecurityGroupTierValidation(t *testing.T) {
 	}
 }
 
+func TestSecurityGroupRulePriorityValidation(t *testing.T) {
+	valid := SecurityGroupRule{
+		ID:        "allow-web",
+		Priority:  SecurityGroupPriorityMax,
+		Direction: DirectionIngress,
+		Protocol:  ProtocolTCP,
+		Ports:     []PortRange{{From: 443, To: 443}},
+		Action:    ActionAllow,
+	}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("valid rule priority failed: %v", err)
+	}
+	unspecified := valid
+	unspecified.Priority = 0
+	if err := unspecified.Validate(); err != nil {
+		t.Fatalf("unspecified rule priority failed: %v", err)
+	}
+	for _, priority := range []int{-1, SecurityGroupPriorityMax + 1} {
+		invalid := valid
+		invalid.Priority = priority
+		if err := invalid.Validate(); err == nil || !strings.Contains(err.Error(), "priority") {
+			t.Fatalf("priority %d error = %v, want priority validation", priority, err)
+		}
+	}
+}
+
 func TestPolicyRouteRequiresNextHopForReroute(t *testing.T) {
 	route := PolicyRoute{
 		Name:     "force-egress",

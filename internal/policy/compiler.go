@@ -812,9 +812,8 @@ func precedence(rule Rule) uint32 {
 	if priority < 0 {
 		priority = 0
 	}
-	const priorityMask = 1<<30 - 1
-	if priority > priorityMask {
-		priority = priorityMask
+	if priority > model.SecurityGroupPriorityMax {
+		priority = model.SecurityGroupPriorityMax
 	}
 	precedence := uint32(1-tier) << 31
 	if rule.Action == model.ActionDrop || rule.Action == model.ActionReject {
