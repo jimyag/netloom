@@ -129,27 +129,28 @@ func RunSelfTest(ctx context.Context) (SelfTestResult, error) {
 			if parseErr != nil {
 				return SelfTestResult{}, fmt.Errorf("invalid NETLOOM_TCX_SRC4: %w", parseErr)
 			}
-			if rawPort := os.Getenv("NETLOOM_TCX_DPORT"); rawPort != "" {
-				port, parseErr := strconv.Atoi(rawPort)
+			protocol, hasProtocol, parseErr := tcxSelfTestProtocol()
+			if parseErr != nil {
+				return SelfTestResult{}, parseErr
+			}
+			rawPort := os.Getenv("NETLOOM_TCX_DPORT")
+			if rawPort != "" || hasProtocol {
+				port, parseErr := tcxSelfTestPort(protocol, rawPort)
 				if parseErr != nil {
-					return SelfTestResult{}, fmt.Errorf("invalid NETLOOM_TCX_DPORT: %w", parseErr)
-				}
-				protocol := uint8(6)
-				if rawProtocol := os.Getenv("NETLOOM_TCX_PROTO"); rawProtocol != "" {
-					parsed, parseErr := strconv.Atoi(rawProtocol)
-					if parseErr != nil {
-						return SelfTestResult{}, fmt.Errorf("invalid NETLOOM_TCX_PROTO: %w", parseErr)
-					}
-					protocol = uint8(parsed)
+					return SelfTestResult{}, parseErr
 				}
 				if os.Getenv("NETLOOM_TCX_POLICY_SELFTEST") == "1" {
-					tcxProgram, compileErr := compileTCXPolicySelfTest(source, protocol, uint16(port), action)
+					tcxProgram, compileErr := compileTCXPolicySelfTest(source, protocol, port, action)
 					if compileErr != nil {
 						return SelfTestResult{}, compileErr
 					}
 					tcxResult, err = dataplane.RunTCXIPv4L4Policy(ctx, iface, tcxProgram, hold)
 				} else {
-					tcxResult, err = dataplane.RunTCXIPv4L4ACL(ctx, iface, source, protocol, uint16(port), action, hold)
+					destPort := uint16(0)
+					if port != nil {
+						destPort = *port
+					}
+					tcxResult, err = dataplane.RunTCXIPv4L4ACL(ctx, iface, source, protocol, destPort, action, hold)
 				}
 			} else {
 				tcxResult, err = dataplane.RunTCXIPv4SourceACL(ctx, iface, source, action, hold)
@@ -175,7 +176,37 @@ func RunSelfTest(ctx context.Context) (SelfTestResult, error) {
 	}, nil
 }
 
-func compileTCXPolicySelfTest(source netip.Addr, protocol uint8, port uint16, action int32) (policy.Program, error) {
+func tcxSelfTestProtocol() (uint8, bool, error) {
+	rawProtocol := os.Getenv("NETLOOM_TCX_PROTO")
+	if rawProtocol == "" {
+		return 6, false, nil
+	}
+	parsed, err := strconv.Atoi(rawProtocol)
+	if err != nil {
+		return 0, false, fmt.Errorf("invalid NETLOOM_TCX_PROTO: %w", err)
+	}
+	return uint8(parsed), true, nil
+}
+
+func tcxSelfTestPort(protocol uint8, rawPort string) (*uint16, error) {
+	if rawPort == "" {
+		if protocol == 1 {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("NETLOOM_TCX_DPORT is required for TCX protocol %d", protocol)
+	}
+	port, err := strconv.Atoi(rawPort)
+	if err != nil {
+		return nil, fmt.Errorf("invalid NETLOOM_TCX_DPORT: %w", err)
+	}
+	if port <= 0 || port > 65535 {
+		return nil, fmt.Errorf("invalid NETLOOM_TCX_DPORT: %d", port)
+	}
+	out := uint16(port)
+	return &out, nil
+}
+
+func compileTCXPolicySelfTest(source netip.Addr, protocol uint8, port *uint16, action int32) (policy.Program, error) {
 	modelProtocol, err := modelProtocolNumber(protocol)
 	if err != nil {
 		return policy.Program{}, err
@@ -192,6 +223,10 @@ func compileTCXPolicySelfTest(source netip.Addr, protocol uint8, port uint16, ac
 		Node:           "selftest-node",
 		SecurityGroups: []string{"tcx-policy"},
 	}
+	ports := []model.PortRange(nil)
+	if port != nil {
+		ports = []model.PortRange{{From: *port, To: *port}}
+	}
 	return policy.CompileForEndpoint(endpoint, map[string]model.SecurityGroup{
 		"tcx-policy": {
 			Name: "tcx-policy",
@@ -203,7 +238,7 @@ func compileTCXPolicySelfTest(source netip.Addr, protocol uint8, port uint16, ac
 					Direction:  model.DirectionIngress,
 					Protocol:   modelProtocol,
 					RemoteCIDR: netip.PrefixFrom(source, 32),
-					Ports:      []model.PortRange{{From: port, To: port}},
+					Ports:      ports,
 					Action:     modelAction,
 				},
 			},
@@ -217,6 +252,8 @@ func modelProtocolNumber(protocol uint8) (model.Protocol, error) {
 		return model.ProtocolTCP, nil
 	case 17:
 		return model.ProtocolUDP, nil
+	case 1:
+		return model.ProtocolICMP, nil
 	default:
 		return "", fmt.Errorf("unsupported TCX policy protocol %d", protocol)
 	}

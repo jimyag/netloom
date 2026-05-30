@@ -67,7 +67,9 @@ The TCX datapath currently supports:
   matches the packet source address; egress policy matches the packet
   destination address.
 - policy-driven TCX L4 selftests where `SecurityGroupRule` is compiled into a
-  `policy.Program` before being projected into the TCX map
+  `policy.Program` before being projected into the TCX map. The agent selftest
+  accepts ICMP policy checks with `NETLOOM_TCX_PROTO=1` and no destination port,
+  matching the ICMP zero-port key used by the runtime TCX map.
 
 Port ranges are already decomposed in the cilium-style policy compiler, but the
 TCX program intentionally starts with exact L4 port matches. Workload TCX attach

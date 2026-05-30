@@ -162,6 +162,10 @@ func TestDockerMultiNodeLab(t *testing.T) {
 			t.Fatalf("agent output missing %q:\n%s", expected, agentOutput)
 		}
 	}
+	agentICMPPolicyOutput := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "-e", "NETLOOM_TCX_SELFTEST_IFACE=lo", "-e", "NETLOOM_TCX_SRC4=127.0.0.1", "-e", "NETLOOM_TCX_PROTO=1", "-e", "NETLOOM_TCX_POLICY_SELFTEST=1", "node-b", "/netloom/bin/netloom-agent")
+	if !strings.Contains(agentICMPPolicyOutput, "tcx=attached:lo:ingress:policy-l4:pass") {
+		t.Fatalf("agent ICMP policy selftest output missing policy TCX status:\n%s", agentICMPPolicyOutput)
+	}
 	agentStateScript := "cat >/tmp/netloom-state.json <<'EOF'\n" + desiredStateJSON() + "\nEOF\nNETLOOM_STATE_FILE=/tmp/netloom-state.json NETLOOM_NODE_NAME=node-a /netloom/bin/netloom-agent"
 	agentStateOutput := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-a", "sh", "-c", agentStateScript)
 	for _, expected := range []string{"reconciled node policy", "node=node-a", "endpoints=1", "programs=1", "entries=1", "policy_added=1", "policy_events=1", "policy_revision_max=1", "tcx_eligible=1"} {

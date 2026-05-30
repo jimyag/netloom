@@ -40,7 +40,8 @@ func TestRunSelfTestCompilesAndEvaluatesPolicy(t *testing.T) {
 }
 
 func TestCompileTCXPolicySelfTestUsesPolicyCompiler(t *testing.T) {
-	program, err := compileTCXPolicySelfTest(netip.MustParseAddr("172.30.0.11"), 6, 8080, dataplane.TCXDrop)
+	port := uint16(8080)
+	program, err := compileTCXPolicySelfTest(netip.MustParseAddr("172.30.0.11"), 6, &port, dataplane.TCXDrop)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,5 +54,39 @@ func TestCompileTCXPolicySelfTestUsesPolicyCompiler(t *testing.T) {
 	}
 	if rules[0].Source != netip.MustParseAddr("172.30.0.11") || rules[0].Protocol != 6 || rules[0].DestPort != 8080 || rules[0].Action != dataplane.TCXDrop {
 		t.Fatalf("unexpected TCX rule: %+v", rules[0])
+	}
+}
+
+func TestCompileTCXPolicySelfTestSupportsICMPWithoutPort(t *testing.T) {
+	program, err := compileTCXPolicySelfTest(netip.MustParseAddr("172.30.0.11"), 1, nil, dataplane.TCXDrop)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules, err := dataplane.IPv4L4ACLRulesFromProgram(program)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 1 {
+		t.Fatalf("rules = %d, want 1", len(rules))
+	}
+	if rules[0].Source != netip.MustParseAddr("172.30.0.11") || rules[0].Protocol != 1 || rules[0].DestPort != 0 || rules[0].Action != dataplane.TCXDrop {
+		t.Fatalf("unexpected TCX ICMP rule: %+v", rules[0])
+	}
+}
+
+func TestTCXSelfTestPortRequiresDportForTCP(t *testing.T) {
+	_, err := tcxSelfTestPort(6, "")
+	if err == nil {
+		t.Fatal("expected missing TCP destination port to fail")
+	}
+}
+
+func TestTCXSelfTestPortAllowsICMPWithoutDport(t *testing.T) {
+	port, err := tcxSelfTestPort(1, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if port != nil {
+		t.Fatalf("port = %d, want nil", *port)
 	}
 }
