@@ -175,8 +175,10 @@ adds a runtime DNS observation cache to each state-file reconcile. The file can
 contain the same `dns_records` shape as desired state, allowing an external DNS
 observer or proxy to refresh FQDN-derived CIDR entries without rewriting the main
 topology document. This is the state update half of Cilium's DNS proxy model;
-packet interception and DNS response parsing can be layered on top of the same
-observation file contract.
+the `internal/dnsobserver` package parses DNS wire responses, including
+compressed names, `A`, `AAAA`, and `CNAME` answers, into that same observation
+record shape. Packet interception can be layered on top of this parser without
+changing policy compilation.
 
 Stateful rules now have a userspace conntrack model that mirrors the Cilium
 policy decision shape. `EvaluateStateful` first checks established reverse-flow
