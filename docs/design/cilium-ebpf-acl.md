@@ -66,9 +66,9 @@ The TCX datapath currently supports:
 - a map-backed verdict program for attach/detach verification
 - IPv4 source ACLs for ingress checks
 - IPv4 TCP/UDP CIDR peer + destination port-prefix ACLs, and IPv4 ICMP CIDR ACLs
-  with a wildcard destination-port key, backed by an LPM trie. Ingress policy
-  matches the packet source address; egress policy matches the packet
-  destination address.
+  with protocol-only, type-only, or type+code keys, backed by an LPM trie.
+  Ingress policy matches the packet source address; egress policy matches the
+  packet destination address.
 - policy-driven TCX L4 selftests where `SecurityGroupRule` is compiled into a
   `policy.Program` before being projected into the TCX map. The agent selftest
   accepts ICMP policy checks with `NETLOOM_TCX_PROTO=1` and no destination port,
@@ -77,7 +77,9 @@ The TCX datapath currently supports:
 Port ranges are decomposed into CIDR-like port prefixes and projected into the
 TCX LPM trie. The key is ordered as protocol, peer prefix, then destination
 port prefix, so the fast path can match both remote CIDR and L4 range without
-expanding every port into a hash entry. Workload TCX attach projects ingress
+expanding every port into a hash entry. ICMP uses the same 16-bit L4 field for
+type/code: protocol-only ICMP has no L4 prefix, type-only matches the first
+8 bits, and type+code matches all 16 bits. Workload TCX attach projects ingress
 rules to host-veth egress and egress rules to host-veth ingress, matching the
 direction split used by endpoint policy datapaths.
 In dual-stack endpoint policies, IPv6 CIDR entries remain in the policy

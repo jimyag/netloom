@@ -30,6 +30,8 @@ type Rule struct {
 	RemoteEndpoint  string
 	RemoteFQDN      string
 	Ports           []model.PortRange
+	ICMPType        *uint8
+	ICMPCode        *uint8
 	Action          model.Action
 	Stateful        bool
 	Log             bool
@@ -139,6 +141,8 @@ func expandRule(endpoint model.Endpoint, securityGroup string, rule model.Securi
 		RemoteGroup:     rule.RemoteGroup,
 		RemoteCIDRGroup: rule.RemoteCIDRGroup,
 		Ports:           append([]model.PortRange(nil), rule.Ports...),
+		ICMPType:        cloneUint8Ptr(rule.ICMPType),
+		ICMPCode:        cloneUint8Ptr(rule.ICMPCode),
 		Action:          rule.Action,
 		Stateful:        rule.Stateful,
 		Log:             rule.Log,
@@ -460,7 +464,7 @@ func indexCIDRGroups(vpc string, groups []model.CIDRGroup) (map[string][]netip.P
 }
 
 func compileMapEntries(rule Rule) ([]MapEntry, error) {
-	portPrefixes, err := l4PortPrefixes(rule.Protocol, rule.Ports)
+	portPrefixes, err := l4PortPrefixes(rule)
 	if err != nil {
 		return nil, fmt.Errorf("rule %s: %w", rule.ID, err)
 	}
@@ -494,9 +498,12 @@ type portPrefix struct {
 	l4PrefixBits uint8
 }
 
-func l4PortPrefixes(protocol model.Protocol, ports []model.PortRange) ([]portPrefix, error) {
-	protocol = normalizedProtocol(protocol)
-	if len(ports) == 0 {
+func l4PortPrefixes(rule Rule) ([]portPrefix, error) {
+	protocol := normalizedProtocol(rule.Protocol)
+	if protocol == model.ProtocolICMP {
+		return icmpPrefixes(rule), nil
+	}
+	if len(rule.Ports) == 0 {
 		if protocol == model.ProtocolAny {
 			return []portPrefix{{port: 0, l4PrefixBits: 0}}, nil
 		}
@@ -507,7 +514,7 @@ func l4PortPrefixes(protocol model.Protocol, ports []model.PortRange) ([]portPre
 	}
 
 	var out []portPrefix
-	for _, portRange := range ports {
+	for _, portRange := range rule.Ports {
 		if err := portRange.Validate(); err != nil {
 			return nil, err
 		}
@@ -519,6 +526,27 @@ func l4PortPrefixes(protocol model.Protocol, ports []model.PortRange) ([]portPre
 		}
 	}
 	return out, nil
+}
+
+func icmpPrefixes(rule Rule) []portPrefix {
+	if rule.ICMPType == nil {
+		return []portPrefix{{port: 0, l4PrefixBits: 8}}
+	}
+	value := uint16(*rule.ICMPType) << 8
+	prefixBits := uint8(16)
+	if rule.ICMPCode != nil {
+		value |= uint16(*rule.ICMPCode)
+		prefixBits = 24
+	}
+	return []portPrefix{{port: value, l4PrefixBits: prefixBits}}
+}
+
+func cloneUint8Ptr(value *uint8) *uint8 {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
 }
 
 type portBlock struct {

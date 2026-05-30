@@ -118,6 +118,50 @@ func TestCompileForEndpointRejectsPortsWithoutTransportProtocol(t *testing.T) {
 	}
 }
 
+func TestCompileForEndpointEncodesICMPTypeAndCode(t *testing.T) {
+	icmpType := uint8(8)
+	icmpCode := uint8(0)
+	endpoint := model.Endpoint{
+		ID:             "pod-a",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"icmp"},
+	}
+	groups := map[string]model.SecurityGroup{
+		"icmp": {
+			Name: "icmp",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "allow-echo",
+				Priority:   100,
+				Direction:  model.DirectionEgress,
+				Protocol:   model.ProtocolICMP,
+				RemoteCIDR: netip.MustParsePrefix("198.51.100.0/24"),
+				ICMPType:   &icmpType,
+				ICMPCode:   &icmpCode,
+				Action:     model.ActionAllow,
+			}},
+		},
+	}
+
+	program, err := CompileForEndpoint(endpoint, groups)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(program.Rules) != 1 || program.Rules[0].ICMPType == nil || *program.Rules[0].ICMPType != 8 {
+		t.Fatalf("compiled rule = %+v, want ICMP type preserved", program.Rules)
+	}
+	if len(program.MapEntries) != 1 {
+		t.Fatalf("map entries = %d, want 1", len(program.MapEntries))
+	}
+	entry := program.MapEntries[0]
+	if entry.Key.Protocol != model.ProtocolICMP || entry.Key.DestPort != 0x0800 || entry.Key.L4PrefixBits != 24 {
+		t.Fatalf("icmp map key = %+v, want protocol/type/code exact", entry.Key)
+	}
+}
+
 func TestCompileForEndpointDecomposesPortRangesIntoLPMEntries(t *testing.T) {
 	endpoint := model.Endpoint{
 		ID:             "pod-a",

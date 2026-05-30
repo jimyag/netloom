@@ -122,6 +122,56 @@ func TestEvaluateMatchesPortPrefix(t *testing.T) {
 	}
 }
 
+func TestEvaluateMatchesICMPTypeAndCode(t *testing.T) {
+	entries := []PolicyMapEntry{{
+		Key: PolicyKey{
+			PrefixLen:      StaticPrefixBits + 24,
+			RemoteIdentity: 0,
+			Direction:      DirectionEgress,
+			Protocol:       1,
+			DestPortBE:     hostToNetwork16(0x0800),
+		},
+		Value: PolicyEntry{
+			L4PrefixLen: 24,
+			Precedence:  10,
+		},
+	}}
+
+	allowed := Evaluate(entries, Packet{Direction: DirectionEgress, Protocol: 1, ICMPType: 8, ICMPCode: 0})
+	if allowed.Verdict != VerdictAllow {
+		t.Fatalf("verdict = %s, want allow", allowed.Verdict)
+	}
+	dropped := Evaluate(entries, Packet{Direction: DirectionEgress, Protocol: 1, ICMPType: 8, ICMPCode: 1})
+	if dropped.Verdict != VerdictDrop {
+		t.Fatalf("verdict = %s, want drop", dropped.Verdict)
+	}
+}
+
+func TestEvaluateMatchesICMPTypeOnly(t *testing.T) {
+	entries := []PolicyMapEntry{{
+		Key: PolicyKey{
+			PrefixLen:      StaticPrefixBits + 16,
+			RemoteIdentity: 0,
+			Direction:      DirectionIngress,
+			Protocol:       1,
+			DestPortBE:     hostToNetwork16(0x0300),
+		},
+		Value: PolicyEntry{
+			L4PrefixLen: 16,
+			Precedence:  10,
+		},
+	}}
+
+	allowed := Evaluate(entries, Packet{Direction: DirectionIngress, Protocol: 1, ICMPType: 3, ICMPCode: 1})
+	if allowed.Verdict != VerdictAllow {
+		t.Fatalf("verdict = %s, want allow", allowed.Verdict)
+	}
+	dropped := Evaluate(entries, Packet{Direction: DirectionIngress, Protocol: 1, ICMPType: 8, ICMPCode: 0})
+	if dropped.Verdict != VerdictDrop {
+		t.Fatalf("verdict = %s, want drop", dropped.Verdict)
+	}
+}
+
 func TestEvaluateMatchesRemoteCIDRFromPacketIP(t *testing.T) {
 	endpoint := model.Endpoint{
 		ID:             "pod-a",

@@ -13,6 +13,8 @@ type Packet struct {
 	Direction      uint8
 	Protocol       uint8
 	DestPort       uint16
+	ICMPType       uint8
+	ICMPCode       uint8
 }
 
 type Verdict string
@@ -335,6 +337,19 @@ func matches(entry PolicyMapEntry, packet Packet) bool {
 	}
 	if l4PrefixLen <= 8 {
 		return true
+	}
+
+	if packet.Protocol == 1 {
+		icmpPrefixLen := l4PrefixLen - 8
+		if icmpPrefixLen == 0 {
+			return true
+		}
+		packetICMP := uint16(packet.ICMPType) << 8
+		if icmpPrefixLen > 8 {
+			packetICMP |= uint16(packet.ICMPCode)
+		}
+		mask := uint16(0xffff << (16 - icmpPrefixLen))
+		return networkToHost16(key.DestPortBE)&mask == packetICMP&mask
 	}
 
 	portPrefixLen := l4PrefixLen - 8

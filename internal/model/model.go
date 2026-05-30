@@ -172,6 +172,8 @@ type SecurityGroupRule struct {
 	RemoteCIDRGroup string         `json:"remote_cidr_group"`
 	RemoteFQDNs     []FQDNSelector `json:"remote_fqdns"`
 	Ports           []PortRange    `json:"ports"`
+	ICMPType        *uint8         `json:"icmp_type,omitempty"`
+	ICMPCode        *uint8         `json:"icmp_code,omitempty"`
 	Action          Action         `json:"action"`
 	Stateful        bool           `json:"stateful"`
 	Log             bool           `json:"log"`
@@ -629,6 +631,15 @@ func (r SecurityGroupRule) Validate() error {
 	}
 	if len(r.Ports) > 0 && r.Protocol != ProtocolTCP && r.Protocol != ProtocolUDP {
 		return errors.New("ports require tcp or udp protocol")
+	}
+	if r.ICMPType != nil && r.Protocol != ProtocolICMP {
+		return errors.New("icmp_type requires icmp protocol")
+	}
+	if r.ICMPCode != nil && r.Protocol != ProtocolICMP {
+		return errors.New("icmp_code requires icmp protocol")
+	}
+	if r.ICMPCode != nil && r.ICMPType == nil {
+		return errors.New("icmp_code requires icmp_type")
 	}
 	remoteSelectors := 0
 	if r.RemoteCIDR.IsValid() {

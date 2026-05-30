@@ -203,6 +203,36 @@ func TestIPv4L4ACLRulesFromProgramProjectsICMPCIDRPolicy(t *testing.T) {
 	if rules[0].SourceCIDR != netip.MustParsePrefix("172.30.0.0/24") || rules[0].Protocol != 1 || rules[0].DestPort != 0 || rules[0].Action != TCXDrop {
 		t.Fatalf("unexpected ICMP rule: %+v", rules[0])
 	}
+	if rules[0].DestPortPrefixBits != 0 {
+		t.Fatalf("icmp prefix bits = %d, want protocol-only wildcard", rules[0].DestPortPrefixBits)
+	}
+}
+
+func TestIPv4L4ACLRulesFromProgramProjectsICMPTypeAndCode(t *testing.T) {
+	icmpType := uint8(8)
+	icmpCode := uint8(0)
+	program := policy.Program{
+		EndpointID: "pod-a",
+		Rules: []policy.Rule{{
+			ID:         "allow-echo",
+			Direction:  model.DirectionIngress,
+			Protocol:   model.ProtocolICMP,
+			RemoteCIDR: netip.MustParsePrefix("172.30.0.0/24"),
+			ICMPType:   &icmpType,
+			ICMPCode:   &icmpCode,
+			Action:     model.ActionAllow,
+		}},
+	}
+	rules, err := IPv4L4ACLRulesFromProgram(program)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 1 {
+		t.Fatalf("rules = %d, want 1", len(rules))
+	}
+	if rules[0].Protocol != 1 || rules[0].DestPort != 0x0800 || rules[0].DestPortPrefixBits != 16 || rules[0].Action != TCXPass {
+		t.Fatalf("unexpected ICMP type/code rule: %+v", rules[0])
+	}
 }
 
 func TestIPv4L4ACLRulesFromProgramRejectsICMPPorts(t *testing.T) {

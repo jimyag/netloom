@@ -359,6 +359,33 @@ func TestSecurityGroupRulePortsRequireTransportProtocol(t *testing.T) {
 	}
 }
 
+func TestSecurityGroupRuleValidatesICMPTypeAndCode(t *testing.T) {
+	icmpType := uint8(8)
+	icmpCode := uint8(0)
+	rule := SecurityGroupRule{
+		ID:        "icmp-echo",
+		Direction: DirectionEgress,
+		Protocol:  ProtocolICMP,
+		ICMPType:  &icmpType,
+		ICMPCode:  &icmpCode,
+		Action:    ActionAllow,
+	}
+	if err := rule.Validate(); err != nil {
+		t.Fatal(err)
+	}
+
+	rule.Protocol = ProtocolTCP
+	if err := rule.Validate(); err == nil || !strings.Contains(err.Error(), "icmp_type requires icmp protocol") {
+		t.Fatalf("error = %v, want icmp_type protocol validation", err)
+	}
+
+	rule.Protocol = ProtocolICMP
+	rule.ICMPType = nil
+	if err := rule.Validate(); err == nil || !strings.Contains(err.Error(), "icmp_code requires icmp_type") {
+		t.Fatalf("error = %v, want icmp_code requires icmp_type", err)
+	}
+}
+
 func TestSecurityGroupRuleValidatesRemoteFQDNSelectors(t *testing.T) {
 	valid := SecurityGroupRule{
 		ID:        "allow-api",

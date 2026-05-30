@@ -338,7 +338,8 @@ func appendIPv4L4ACLRulesFromProgram(rules *[]IPv4L4ACLRule, seen map[IPv4L4Key]
 			return fmt.Errorf("rule %s: ICMP TCX ACL does not support destination ports", rule.ID)
 		}
 		if protocol == 1 && len(rule.Ports) == 0 {
-			key := ipv4L4RuleKey(sourceCIDR, protocol, 0, 0)
+			icmpValue, icmpPrefixBits := icmpTCXMatch(rule)
+			key := ipv4L4RuleKey(sourceCIDR, protocol, icmpValue, icmpPrefixBits)
 			if _, ok := seen[key]; ok {
 				continue
 			}
@@ -347,8 +348,8 @@ func appendIPv4L4ACLRulesFromProgram(rules *[]IPv4L4ACLRule, seen map[IPv4L4Key]
 				Source:             sourceCIDR.Addr(),
 				SourceCIDR:         sourceCIDR,
 				Protocol:           protocol,
-				DestPort:           0,
-				DestPortPrefixBits: 0,
+				DestPort:           icmpValue,
+				DestPortPrefixBits: icmpPrefixBits,
 				Action:             action,
 			})
 			continue
@@ -407,6 +408,19 @@ func validateIPv4L4ACLRuleSupport(rule policy.Rule) error {
 	return nil
 }
 
+func icmpTCXMatch(rule policy.Rule) (uint16, uint8) {
+	if rule.ICMPType == nil {
+		return 0, 0
+	}
+	value := uint16(*rule.ICMPType) << 8
+	prefixBits := uint8(8)
+	if rule.ICMPCode != nil {
+		value |= uint16(*rule.ICMPCode)
+		prefixBits = 16
+	}
+	return value, prefixBits
+}
+
 func ipv4L4RuleKey(sourceCIDR netip.Prefix, protocol uint8, destPort uint16, destPortPrefixBits uint8) IPv4L4Key {
 	return IPv4L4Key{
 		PrefixLen: ipv4L4PrefixLen(sourceCIDR, destPortPrefixBits),
@@ -421,10 +435,7 @@ func ipv4L4PrefixLen(prefix netip.Prefix, destPortPrefixBits uint8) uint32 {
 }
 
 func normalizedDestPortPrefixBits(rule IPv4L4ACLRule) uint8 {
-	if rule.Protocol == 1 {
-		return 0
-	}
-	if rule.DestPortPrefixBits == 0 {
+	if rule.DestPortPrefixBits == 0 && rule.DestPort != 0 {
 		return 16
 	}
 	return rule.DestPortPrefixBits
@@ -521,7 +532,7 @@ func NewIPv4L4ACLTCXProgramForDirection(aclMap *ebpf.Map, direction model.Direct
 			asm.And.Imm(asm.R0, 0x0f),
 			asm.LSh.Imm(asm.R0, 2),
 			asm.Mov.Reg(asm.R7, asm.R0),
-			asm.JEq.Imm(asm.R8, 1, "lookup"),
+			asm.JEq.Imm(asm.R8, 1, "load_icmp"),
 			asm.LoadInd(asm.R0, asm.R7, 16, asm.Half),
 			asm.StoreMem(asm.RFP, -4, asm.R0, asm.Half),
 			asm.LoadMapPtr(asm.R1, aclMap.FD()).WithSymbol("lookup"),
@@ -531,6 +542,9 @@ func NewIPv4L4ACLTCXProgramForDirection(aclMap *ebpf.Map, direction model.Direct
 			asm.JEq.Imm(asm.R0, 0, "pass"),
 			asm.LoadMem(asm.R0, asm.R0, 0, asm.Word),
 			asm.Return(),
+			asm.LoadInd(asm.R0, asm.R7, 14, asm.Half).WithSymbol("load_icmp"),
+			asm.StoreMem(asm.RFP, -4, asm.R0, asm.Half),
+			asm.Ja.Label("lookup"),
 			asm.Mov.Imm(asm.R0, TCXPass).WithSymbol("pass"),
 			asm.Return(),
 		},
