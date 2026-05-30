@@ -113,6 +113,21 @@ func cleanupOperations(old, next desiredSnapshot) []Operation {
 			natDeleteMatch(rule),
 		}})
 	}
+	for _, key := range commonKeys(old.NATRules, next.NATRules) {
+		oldRule := old.NATRules[key]
+		nextRule := next.NATRules[key]
+		if natRuleSignature(oldRule) == natRuleSignature(nextRule) {
+			continue
+		}
+		if natDeleteKey(oldRule) == natDeleteKey(nextRule) {
+			continue
+		}
+		ops = append(ops, Operation{Command: "lr-nat-del", Flags: []string{"--if-exists"}, Args: []string{
+			logicalRouter(oldRule.VPC),
+			natType(oldRule.Type),
+			natDeleteMatch(oldRule),
+		}})
+	}
 	for _, key := range staleKeys(old.LoadBalancers, next.LoadBalancers) {
 		lb := old.LoadBalancers[key]
 		name := loadBalancerName(lb.Name)
@@ -220,4 +235,21 @@ func natDeleteMatch(rule model.NATRule) string {
 		return rule.MatchCIDR.String()
 	}
 	return rule.ExternalIP.String()
+}
+
+func natDeleteKey(rule model.NATRule) string {
+	return logicalRouter(rule.VPC) + "|" + natType(rule.Type) + "|" + natDeleteMatch(rule)
+}
+
+func natRuleSignature(rule model.NATRule) string {
+	return fmt.Sprintf("%s|%s|%s|%s|%s|%s|%d|%d",
+		rule.VPC,
+		rule.Type,
+		rule.MatchCIDR,
+		rule.ExternalIP,
+		rule.TargetIP,
+		rule.Protocol,
+		rule.ExternalPort,
+		rule.TargetPort,
+	)
 }

@@ -126,6 +126,35 @@ func TestBackendCleanupConvergesChangedLoadBalancerBindings(t *testing.T) {
 	}
 }
 
+func TestBackendCleanupConvergesChangedNATRule(t *testing.T) {
+	recorder := ovn.NewRecorderExecutor()
+	backend := ovn.NewBackend(recorder)
+	first := controlStateWithEndpoint("pod-a")
+	controller := control.NewController(backend, control.NewMemoryBackend())
+	if err := controller.Reconcile(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+
+	second := first
+	second.NATRules[0].ExternalIP = netip.MustParseAddr("198.51.100.50")
+	if err := controller.Reconcile(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+
+	joined := stringifyOVNOps(recorder.Operations())
+	for _, expected := range []string{
+		"--if-exists lr-nat-del nl_lr_prod snat 10.10.0.0/24",
+		"--may-exist lr-nat-add nl_lr_prod snat 198.51.100.50 10.10.0.0/24",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("nat convergence operation missing %q:\n%s", expected, joined)
+		}
+	}
+	if strings.Count(joined, "--if-exists lr-nat-del nl_lr_prod snat 10.10.0.0/24") < 2 {
+		t.Fatalf("changed nat rule should clear the managed key before each add:\n%s", joined)
+	}
+}
+
 func TestBackendCleanupRemovesGatewayMetadata(t *testing.T) {
 	recorder := ovn.NewRecorderExecutor()
 	backend := ovn.NewBackend(recorder)

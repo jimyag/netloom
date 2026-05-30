@@ -153,7 +153,7 @@ OVN ACL 本身很适合做分布式虚拟网络策略，但它不是唯一选择
 当前仓库已经包含：
 
 - 控制面模型：VPC、Subnet、Endpoint、RouteTable、PolicyRoute、Gateway、NATRule、SecurityGroup。
-- OVN 风格拓扑后端：把逻辑交换、逻辑路由、策略路由、Gateway、NAT、Service VIP 和 Provider Network 转换为带 `external_ids` 所有权标记的批量 `ovn-nbctl` 事务；Gateway 覆盖集中式 chassis pin 与分布式网关元数据；NAT 覆盖 SNAT、DNAT、Floating IP (`dnat_and_snat`) 和 OVN `--portrange` 端口 DNAT，并在控制面拒绝 EIP/端口冲突。
+- OVN 风格拓扑后端：把逻辑交换、逻辑路由、策略路由、Gateway、NAT、Service VIP 和 Provider Network 转换为带 `external_ids` 所有权标记的批量 `ovn-nbctl` 事务；Gateway 覆盖集中式 chassis pin 与分布式网关元数据；NAT 覆盖 SNAT、DNAT、Floating IP (`dnat_and_snat`) 和 OVN `--portrange` 端口 DNAT，同名规则变更会按 desired state 替换旧 NAT，并在控制面拒绝 EIP/端口冲突。
 - Linux 工作负载 datapath：支持本机 `/32` 地址路由、`netns + veth` 多工作负载模式，以及基于 RPDB table/rule 的策略路由下发；网卡/netns/策略路由操作可使用 `vishvananda/netlink`/`netns` 后端执行。
 - Cilium 风格策略编译：把安全组规则编译为 endpoint-scoped policy map entry，并把 `remote_cidr`/`remote_group` 保留为可按真实 remote IP 匹配的 CIDR 元数据；`remote_group` 会展开为 endpoint identity 与精确成员 CIDR。
 - Cilium 风格连接状态：stateful allow 规则会建立反向 conntrack 状态，策略变化或 endpoint 删除时清理旧状态。
