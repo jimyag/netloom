@@ -104,6 +104,58 @@ func TestPolicyBackendReplacesEndpointEntries(t *testing.T) {
 	}
 }
 
+func TestPolicyBackendPreservesRejectAction(t *testing.T) {
+	endpoint := model.Endpoint{
+		ID:             "pod-a",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"web"},
+	}
+	program, err := policy.CompileForEndpoint(endpoint, map[string]model.SecurityGroup{
+		"web": {
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "reject-cidr",
+				Priority:   10,
+				Direction:  model.DirectionEgress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("192.0.2.0/24"),
+				Ports:      []model.PortRange{{From: 443, To: 443}},
+				Action:     model.ActionReject,
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	store := NewInMemoryPolicyStore()
+	backend := NewPolicyBackend(store)
+	if err := backend.ApplyEndpointProgram(context.Background(), program); err != nil {
+		t.Fatal(err)
+	}
+
+	entries := store.Entries("pod-a")
+	if len(entries) != 1 {
+		t.Fatalf("entries = %d, want 1", len(entries))
+	}
+	if entries[0].Value.Deny != 1 || entries[0].Value.Reject != 1 {
+		t.Fatalf("deny/reject flags = %d/%d, want 1/1", entries[0].Value.Deny, entries[0].Value.Reject)
+	}
+	decision := Evaluate(entries, Packet{
+		RemoteIP:  netip.MustParseAddr("192.0.2.10"),
+		Direction: DirectionEgress,
+		Protocol:  6,
+		DestPort:  443,
+	})
+	if decision.Verdict != VerdictReject {
+		t.Fatalf("verdict = %s, want reject", decision.Verdict)
+	}
+}
+
 func TestPlanPolicyUpdateComputesIncrementalDiff(t *testing.T) {
 	keep := PolicyMapEntry{
 		Key:   PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 1, Direction: DirectionIngress},

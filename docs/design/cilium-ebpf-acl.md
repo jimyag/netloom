@@ -213,6 +213,10 @@ in tests and future agent output. Rules with `log` set, or with `action=log`,
 also emit a policy verdict event for both allow and drop decisions, matching
 the Cilium idea that policy verdict observability is not limited to denied
 traffic.
+`action=reject` is preserved separately from `drop` in the policy map and
+userspace evaluator: matching packets return a `reject` verdict and generate a
+`policy-reject` drop event. The current TCX fast path still maps reject to drop
+because it does not synthesize TCP reset or ICMP unreachable packets.
 
 The Linux datapath also has an explicit cleanup mode. When enabled, the agent
 removes netloom-owned network namespaces with the configured prefix that are no

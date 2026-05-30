@@ -35,6 +35,7 @@ type PolicyEntry struct {
 	Log         uint8
 	Precedence  uint32
 	RuleCookie  uint32
+	Reject      uint8
 }
 
 type PolicyMapEntry struct {
@@ -205,6 +206,7 @@ func EncodeEntry(entry policy.MapEntry) (PolicyMapEntry, error) {
 			Log:         boolByte(entry.Value.Log),
 			Precedence:  entry.Value.Precedence,
 			RuleCookie:  stableCookie(entry.RuleID),
+			Reject:      boolByte(entry.Value.Reject),
 		},
 	}, nil
 }

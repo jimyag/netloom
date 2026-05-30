@@ -18,8 +18,9 @@ type Packet struct {
 type Verdict string
 
 const (
-	VerdictAllow Verdict = "allow"
-	VerdictDrop  Verdict = "drop"
+	VerdictAllow  Verdict = "allow"
+	VerdictDrop   Verdict = "drop"
+	VerdictReject Verdict = "reject"
 )
 
 type Decision struct {
@@ -32,8 +33,9 @@ type Decision struct {
 type DropReason string
 
 const (
-	DropReasonPolicyDeny DropReason = "policy-deny"
-	DropReasonNoMatch    DropReason = "no-policy-match"
+	DropReasonPolicyDeny   DropReason = "policy-deny"
+	DropReasonPolicyReject DropReason = "policy-reject"
+	DropReasonNoMatch      DropReason = "no-policy-match"
 )
 
 type DropEvent struct {
@@ -65,6 +67,7 @@ type PolicyMetrics struct {
 	Established  uint64
 	NoMatchDrops uint64
 	DenyDrops    uint64
+	RejectDrops  uint64
 	Logged       uint64
 }
 
@@ -116,6 +119,10 @@ func (r *PolicyRecorder) Observe(endpointID string, packet Packet, decision Deci
 	if decision.Match == nil {
 		metrics.NoMatchDrops++
 		event.Reason = DropReasonNoMatch
+	} else if decision.Verdict == VerdictReject {
+		metrics.RejectDrops++
+		event.Reason = DropReasonPolicyReject
+		event.RuleCookie = decision.Match.Value.RuleCookie
 	} else {
 		metrics.DenyDrops++
 		event.Reason = DropReasonPolicyDeny
@@ -202,6 +209,9 @@ func evaluate(entries []PolicyMapEntry, packet Packet) Decision {
 	}
 	if selected == nil {
 		return Decision{Verdict: VerdictDrop}
+	}
+	if selected.Value.Reject != 0 {
+		return Decision{Verdict: VerdictReject, Match: selected}
 	}
 	if selected.Value.Deny != 0 {
 		return Decision{Verdict: VerdictDrop, Match: selected}

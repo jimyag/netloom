@@ -60,6 +60,43 @@ func TestEvaluateChoosesDenyPrecedenceOverAllow(t *testing.T) {
 	}
 }
 
+func TestEvaluatePreservesRejectVerdict(t *testing.T) {
+	entries := []PolicyMapEntry{{
+		Key: PolicyKey{
+			PrefixLen:      StaticPrefixBits + 24,
+			RemoteIdentity: 100,
+			Direction:      DirectionIngress,
+			Protocol:       6,
+			DestPortBE:     hostToNetwork16(443),
+		},
+		Value: PolicyEntry{
+			Deny:        1,
+			Reject:      1,
+			L4PrefixLen: 24,
+			Precedence:  100,
+			RuleCookie:  77,
+		},
+	}}
+	recorder := NewPolicyRecorder()
+	decision := EvaluateObserved("pod-a", entries, Packet{
+		RemoteIdentity: 100,
+		Direction:      DirectionIngress,
+		Protocol:       6,
+		DestPort:       443,
+	}, recorder)
+	if decision.Verdict != VerdictReject {
+		t.Fatalf("verdict = %s, want reject", decision.Verdict)
+	}
+	metrics := recorder.Metrics("pod-a")
+	if metrics.Dropped != 1 || metrics.RejectDrops != 1 || metrics.DenyDrops != 0 || metrics.NoMatchDrops != 0 {
+		t.Fatalf("metrics = %+v, want one policy reject drop", metrics)
+	}
+	events := recorder.DropEvents()
+	if len(events) != 1 || events[0].Reason != DropReasonPolicyReject || events[0].RuleCookie != 77 {
+		t.Fatalf("drop events = %+v, want policy reject with cookie", events)
+	}
+}
+
 func TestEvaluateMatchesPortPrefix(t *testing.T) {
 	entries := []PolicyMapEntry{{
 		Key: PolicyKey{

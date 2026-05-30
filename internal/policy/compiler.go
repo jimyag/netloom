@@ -53,6 +53,7 @@ type MapKey struct {
 
 type MapValue struct {
 	Deny       bool
+	Reject     bool
 	Precedence uint32
 	Stateful   bool
 	Log        bool
@@ -476,6 +477,7 @@ func compileMapEntries(rule Rule) ([]MapEntry, error) {
 			},
 			Value: MapValue{
 				Deny:       rule.Action == model.ActionDrop || rule.Action == model.ActionReject,
+				Reject:     rule.Action == model.ActionReject,
 				Precedence: precedence(rule),
 				Stateful:   rule.Stateful,
 				Log:        rule.Log || rule.Action == model.ActionLog,
