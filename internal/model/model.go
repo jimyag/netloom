@@ -44,13 +44,14 @@ type VPC struct {
 }
 
 type Subnet struct {
-	Name            string       `json:"name"`
-	VPC             string       `json:"vpc"`
-	CIDR            netip.Prefix `json:"cidr"`
-	Gateway         netip.Addr   `json:"gateway"`
-	ProviderNetwork string       `json:"provider_network"`
-	VLAN            uint16       `json:"vlan"`
-	DHCP            DHCPOptions  `json:"dhcp"`
+	Name            string         `json:"name"`
+	VPC             string         `json:"vpc"`
+	CIDR            netip.Prefix   `json:"cidr"`
+	Gateway         netip.Addr     `json:"gateway"`
+	ExcludeCIDRs    []netip.Prefix `json:"exclude_cidrs"`
+	ProviderNetwork string         `json:"provider_network"`
+	VLAN            uint16         `json:"vlan"`
+	DHCP            DHCPOptions    `json:"dhcp"`
 }
 
 type DHCPOptions struct {
@@ -234,6 +235,23 @@ func (s Subnet) Validate() error {
 	if !s.CIDR.Contains(s.Gateway) {
 		return fmt.Errorf("subnet gateway %s is outside cidr %s", s.Gateway, s.CIDR)
 	}
+	seenExcludeCIDRs := make(map[netip.Prefix]struct{}, len(s.ExcludeCIDRs))
+	for i, exclude := range s.ExcludeCIDRs {
+		if !exclude.IsValid() {
+			return fmt.Errorf("subnet exclude cidr %d is invalid", i)
+		}
+		exclude = exclude.Masked()
+		if exclude.Addr().Is4() != s.CIDR.Addr().Is4() {
+			return fmt.Errorf("subnet exclude cidr %s family must match cidr %s", exclude, s.CIDR)
+		}
+		if !s.CIDR.Contains(exclude.Addr()) || !s.CIDR.Contains(prefixLastAddr(exclude)) {
+			return fmt.Errorf("subnet exclude cidr %s is outside cidr %s", exclude, s.CIDR)
+		}
+		if _, ok := seenExcludeCIDRs[exclude]; ok {
+			return fmt.Errorf("subnet exclude cidr %s is duplicated", exclude)
+		}
+		seenExcludeCIDRs[exclude] = struct{}{}
+	}
 	if s.VLAN > 4094 {
 		return errors.New("subnet vlan must be between 1 and 4094")
 	}
@@ -244,6 +262,15 @@ func (s Subnet) Validate() error {
 		return fmt.Errorf("subnet dhcp: %w", err)
 	}
 	return nil
+}
+
+func (s Subnet) Excludes(ip netip.Addr) bool {
+	for _, exclude := range s.ExcludeCIDRs {
+		if exclude.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 func (d DHCPOptions) Validate() error {

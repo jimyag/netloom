@@ -118,6 +118,11 @@ static endpoint MAC equals the deterministic router-port gateway MAC. When a
 MAC is present, the OVN planner writes `MAC IP` to the logical switch port
 addresses and port-security fields; otherwise it keeps OVN dynamic addressing
 for the endpoint IP.
+Subnet desired state supports `exclude_cidrs` as the CIDR form of Kube-OVN's
+`excludeIps` reservation model. Excluded prefixes must be contained by the
+subnet CIDR and use the same address family. The control plane rejects endpoint
+IPs that land in an excluded prefix, and the IPAM allocator can be constructed
+with the same excluded prefixes so automatic allocation skips reserved ranges.
 `LoadBalancer` backends
 are rendered into the OVN VIP backend set and the userspace topology resolver
 uses the same stable hashing inputs for flow affinity. The desired state can

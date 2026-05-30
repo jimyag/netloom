@@ -154,6 +154,7 @@ OVN ACL 本身很适合做分布式虚拟网络策略，但它不是唯一选择
 
 - 控制面模型：VPC、Subnet、Endpoint、RouteTable、PolicyRoute、Gateway、NATRule、SecurityGroup、CIDRGroup。
 - 控制面一致性校验：拒绝重复的 VPC/Subnet/Endpoint/SecurityGroup/Gateway 等对象身份，拒绝 Endpoint IP 冲突，并在写入后端前校验 VPC、Subnet、安全组、remote-group 和 LoadBalancer 绑定子网等引用关系。
+- Subnet 支持 Kube-OVN `excludeIps` 类似的 `exclude_cidrs` 保留地址段，控制面会拒绝 endpoint 使用被排除的地址，IPAM allocator 也会跳过这些 CIDR。
 - OVN 风格拓扑后端：把逻辑交换、逻辑路由、静态 ECMP 路由、策略路由、Gateway、NAT、Service VIP 和 Provider Network 转换为带 `external_ids` 所有权标记的批量 `ovn-nbctl` 事务；Gateway 覆盖集中式 chassis pin 与分布式网关元数据；NAT 覆盖 SNAT、DNAT、Floating IP (`dnat_and_snat`)、分布式 Floating IP 的 `logical_port`/`external_mac` 投影和 OVN `--portrange` 端口 DNAT；当 DNAT external/target 端口不一致时，会用 OVN Load_Balancer VIP/backend 语义实现端口转换；同名规则变更会按 desired state 替换旧 NAT/LB 投影，并在控制面拒绝 EIP/端口冲突。
 - Endpoint 可声明 Kube-OVN 风格静态 `mac`，OVN 后端会把 MAC+IP 写入 logical switch port addresses 和 port security；控制面会拒绝同子网重复 MAC 以及与网关 router port MAC 冲突的静态 MAC。
 - Linux 工作负载 datapath：支持本机 `/32`/`/128` 地址路由、`netns + veth` 多工作负载模式，以及基于 RPDB table/rule 的 IPv4/IPv6 策略路由下发；网卡/netns/策略路由操作默认使用 `vishvananda/netlink`/`netns` 后端执行，保留 `NETLOOM_LINUX_DATAPATH_BACKEND=command` 作为 shell 回退路径。

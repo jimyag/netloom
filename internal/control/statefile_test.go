@@ -8,7 +8,7 @@ import (
 func TestLoadDesiredStateJSONDecodesSnakeCaseState(t *testing.T) {
 	state, err := LoadDesiredStateJSON(strings.NewReader(`{
 		"vpcs": [{"name": "prod"}],
-		"subnets": [{"name": "apps", "vpc": "prod", "cidr": "10.10.0.0/24", "gateway": "10.10.0.1"}],
+		"subnets": [{"name": "apps", "vpc": "prod", "cidr": "10.10.0.0/24", "gateway": "10.10.0.1", "exclude_cidrs": ["10.10.0.128/25"]}],
 		"endpoints": [{"id": "pod-a", "vpc": "prod", "subnet": "apps", "ip": "10.10.0.10", "node": "node-a", "security_groups": ["web"], "named_ports": [{"name": "http", "protocol": "tcp", "port": 8080}]}],
 		"route_tables": [{"name": "main", "vpc": "prod", "routes": [{"destination": "0.0.0.0/0", "next_hops": ["10.10.0.253", "10.10.0.254"]}]}],
 		"policy_routes": [{"name": "fw", "vpc": "prod", "priority": 100, "match": {"source": "10.10.0.0/24", "destination": "172.16.0.0/16", "protocol": "tcp", "dst_ports": [{"from": 443, "to": 443}]}, "action": {"type": "reroute", "next_hop": "10.10.0.253"}}],
@@ -30,6 +30,9 @@ func TestLoadDesiredStateJSONDecodesSnakeCaseState(t *testing.T) {
 	}
 	if got := state.Endpoints[0].NamedPorts[0].Name; got != "http" {
 		t.Fatalf("named port = %s, want http", got)
+	}
+	if got := state.Subnets[0].ExcludeCIDRs[0].String(); got != "10.10.0.128/25" {
+		t.Fatalf("exclude cidr = %s, want 10.10.0.128/25", got)
 	}
 	if got := state.PolicyRoutes[0].Action.NextHop.String(); got != "10.10.0.253" {
 		t.Fatalf("policy route next hop = %s", got)

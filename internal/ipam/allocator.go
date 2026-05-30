@@ -12,23 +12,45 @@ type Allocator struct {
 	mu        sync.Mutex
 	prefix    netip.Prefix
 	reserved  map[netip.Addr]struct{}
+	excluded  []netip.Prefix
 	allocated map[string]netip.Addr
 	owners    map[netip.Addr]string
 }
 
 func NewAllocator(prefix netip.Prefix, reserved ...netip.Addr) (*Allocator, error) {
+	return NewAllocatorWithExcludedPrefixes(prefix, nil, reserved...)
+}
+
+func NewAllocatorWithExcludedPrefixes(prefix netip.Prefix, excluded []netip.Prefix, reserved ...netip.Addr) (*Allocator, error) {
 	if !prefix.IsValid() {
 		return nil, errors.New("prefix is required")
 	}
 	a := &Allocator{
 		prefix:    prefix.Masked(),
 		reserved:  make(map[netip.Addr]struct{}),
+		excluded:  make([]netip.Prefix, 0, len(excluded)),
 		allocated: make(map[string]netip.Addr),
 		owners:    make(map[netip.Addr]string),
+	}
+	for _, exclude := range excluded {
+		exclude = exclude.Masked()
+		if !exclude.IsValid() {
+			return nil, errors.New("excluded prefix is invalid")
+		}
+		if exclude.Addr().Is4() != prefix.Addr().Is4() {
+			return nil, fmt.Errorf("excluded prefix %s family must match prefix %s", exclude, prefix)
+		}
+		if !prefix.Contains(exclude.Addr()) || !prefix.Contains(prefixLastAddr(exclude)) {
+			return nil, fmt.Errorf("excluded prefix %s is outside prefix %s", exclude, prefix)
+		}
+		a.excluded = append(a.excluded, exclude)
 	}
 	for _, ip := range reserved {
 		if !prefix.Contains(ip) {
 			return nil, fmt.Errorf("reserved ip %s is outside prefix %s", ip, prefix)
+		}
+		if prefixContainsAny(a.excluded, ip) {
+			return nil, fmt.Errorf("reserved ip %s is excluded", ip)
 		}
 		a.reserved[ip] = struct{}{}
 	}
@@ -69,6 +91,9 @@ func (a *Allocator) Reserve(owner string, ip netip.Addr) error {
 	if _, ok := a.reserved[ip]; ok {
 		return fmt.Errorf("ip %s is reserved", ip)
 	}
+	if prefixContainsAny(a.excluded, ip) {
+		return fmt.Errorf("ip %s is excluded", ip)
+	}
 	if existing, ok := a.owners[ip]; ok && existing != owner {
 		return fmt.Errorf("ip %s already allocated to %s", ip, existing)
 	}
@@ -96,10 +121,48 @@ func (a *Allocator) isUnavailable(ip netip.Addr) bool {
 	if _, ok := a.reserved[ip]; ok {
 		return true
 	}
+	if prefixContainsAny(a.excluded, ip) {
+		return true
+	}
 	if _, ok := a.owners[ip]; ok {
 		return true
 	}
 	return false
+}
+
+func prefixContainsAny(prefixes []netip.Prefix, ip netip.Addr) bool {
+	for _, prefix := range prefixes {
+		if prefix.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+func prefixLastAddr(prefix netip.Prefix) netip.Addr {
+	addr := prefix.Masked().Addr()
+	bits := prefix.Bits()
+	if addr.Is4() {
+		raw := addr.As4()
+		value := uint32(raw[0])<<24 | uint32(raw[1])<<16 | uint32(raw[2])<<8 | uint32(raw[3])
+		hostBits := 32 - bits
+		if hostBits > 0 {
+			value |= uint32(1<<hostBits) - 1
+		}
+		return netip.AddrFrom4([4]byte{byte(value >> 24), byte(value >> 16), byte(value >> 8), byte(value)})
+	}
+	raw := addr.As16()
+	hostBits := 128 - bits
+	for i := 15; i >= 0 && hostBits > 0; i-- {
+		if hostBits >= 8 {
+			raw[i] = 0xff
+			hostBits -= 8
+			continue
+		}
+		raw[i] |= byte((1 << hostBits) - 1)
+		hostBits = 0
+	}
+	return netip.AddrFrom16(raw)
 }
 
 func (a *Allocator) firstUsable() netip.Addr {

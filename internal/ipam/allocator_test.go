@@ -48,3 +48,42 @@ func TestAllocatorReserveAndRelease(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestAllocatorSkipsExcludedPrefixes(t *testing.T) {
+	allocator, err := NewAllocatorWithExcludedPrefixes(
+		netip.MustParsePrefix("10.0.2.0/29"),
+		[]netip.Prefix{netip.MustParsePrefix("10.0.2.2/31")},
+		netip.MustParseAddr("10.0.2.1"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ip, err := allocator.Allocate("endpoint-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := netip.MustParseAddr("10.0.2.4"); ip != want {
+		t.Fatalf("allocated ip = %s, want %s", ip, want)
+	}
+	if err := allocator.Reserve("endpoint-b", netip.MustParseAddr("10.0.2.2")); err == nil {
+		t.Fatal("expected excluded static reservation to fail")
+	}
+}
+
+func TestAllocatorRejectsInvalidExcludedPrefixes(t *testing.T) {
+	_, err := NewAllocatorWithExcludedPrefixes(
+		netip.MustParsePrefix("10.0.2.0/24"),
+		[]netip.Prefix{netip.MustParsePrefix("10.0.3.0/24")},
+	)
+	if err == nil {
+		t.Fatal("expected excluded prefix outside allocator prefix to fail")
+	}
+
+	_, err = NewAllocatorWithExcludedPrefixes(
+		netip.MustParsePrefix("10.0.2.0/24"),
+		[]netip.Prefix{netip.MustParsePrefix("fd00:10::/64")},
+	)
+	if err == nil {
+		t.Fatal("expected excluded prefix family mismatch to fail")
+	}
+}

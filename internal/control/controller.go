@@ -427,6 +427,9 @@ func validateObjectGraph(state DesiredState) error {
 		if !subnet.CIDR.Contains(endpoint.IP) {
 			return fmt.Errorf("endpoint %q ip %s is outside subnet %q cidr %s", endpoint.ID, endpoint.IP, endpoint.Subnet, subnet.CIDR)
 		}
+		if subnet.Excludes(endpoint.IP) {
+			return fmt.Errorf("endpoint %q ip %s is excluded by subnet %q", endpoint.ID, endpoint.IP, endpoint.Subnet)
+		}
 		if mac := endpoint.NormalizedMAC(); mac != "" {
 			gatewayMAC := model.GatewayMAC(subnet.Gateway)
 			if mac == gatewayMAC {

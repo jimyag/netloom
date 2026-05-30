@@ -37,6 +37,8 @@ func TestDesiredStateDrivesTopologyRoutesAndEBPFStyleACL(t *testing.T) {
 		t.Fatalf("subnet provider network was not reconciled, got: %+v", subnet)
 	} else if !subnet.DHCP.Enabled || subnet.DHCP.LeaseTime != 7200 {
 		t.Fatalf("subnet dhcp was not reconciled, got: %+v", subnet.DHCP)
+	} else if len(subnet.ExcludeCIDRs) != 1 || subnet.ExcludeCIDRs[0].String() != "10.10.0.128/25" {
+		t.Fatalf("subnet exclude cidrs were not reconciled, got: %+v", subnet.ExcludeCIDRs)
 	}
 	if gateway, ok := memoryBackend.Gateways["gw-a"]; !ok || gateway.Node != "node-a" || gateway.LANIP.String() != "10.10.0.254" {
 		t.Fatalf("gateway gw-a was not reconciled, got: %+v", memoryBackend.Gateways)
@@ -243,7 +245,7 @@ func mustAddr(t *testing.T, raw string) netip.Addr {
 
 const integrationStateJSON = `{
   "vpcs": [{"name": "prod"}],
-  "subnets": [{"name": "apps", "vpc": "prod", "cidr": "10.10.0.0/24", "gateway": "10.10.0.1", "provider_network": "physnet-a", "vlan": 100, "dhcp": {"enabled": true, "lease_time": 7200, "mtu": 1400}}],
+  "subnets": [{"name": "apps", "vpc": "prod", "cidr": "10.10.0.0/24", "gateway": "10.10.0.1", "exclude_cidrs": ["10.10.0.128/25"], "provider_network": "physnet-a", "vlan": 100, "dhcp": {"enabled": true, "lease_time": 7200, "mtu": 1400}}],
   "endpoints": [
     {"id": "pod-a", "vpc": "prod", "subnet": "apps", "ip": "10.10.0.10", "mac": "0A:58:0A:0A:00:0A", "node": "node-a", "security_groups": ["client"]},
     {"id": "pod-b", "vpc": "prod", "subnet": "apps", "ip": "10.10.0.11", "node": "node-b", "security_groups": ["server"]}

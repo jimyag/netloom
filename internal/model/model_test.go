@@ -163,6 +163,35 @@ func TestSubnetDHCPValidation(t *testing.T) {
 	}
 }
 
+func TestSubnetExcludeCIDRValidation(t *testing.T) {
+	subnet := Subnet{
+		Name:         "apps",
+		VPC:          "prod",
+		CIDR:         netip.MustParsePrefix("10.10.0.0/24"),
+		Gateway:      netip.MustParseAddr("10.10.0.1"),
+		ExcludeCIDRs: []netip.Prefix{netip.MustParsePrefix("10.10.0.128/25")},
+	}
+	if err := subnet.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if !subnet.Excludes(netip.MustParseAddr("10.10.0.200")) {
+		t.Fatal("expected exclude cidr to contain 10.10.0.200")
+	}
+	if subnet.Excludes(netip.MustParseAddr("10.10.0.20")) {
+		t.Fatal("did not expect exclude cidr to contain 10.10.0.20")
+	}
+
+	subnet.ExcludeCIDRs = []netip.Prefix{netip.MustParsePrefix("10.10.1.0/24")}
+	if err := subnet.Validate(); err == nil || !strings.Contains(err.Error(), "outside cidr") {
+		t.Fatalf("error = %v, want outside cidr validation", err)
+	}
+
+	subnet.ExcludeCIDRs = []netip.Prefix{netip.MustParsePrefix("fd00:10::/64")}
+	if err := subnet.Validate(); err == nil || !strings.Contains(err.Error(), "family must match") {
+		t.Fatalf("error = %v, want family validation", err)
+	}
+}
+
 func TestPolicyRouteRequiresNextHopForReroute(t *testing.T) {
 	route := PolicyRoute{
 		Name:     "force-egress",

@@ -376,6 +376,13 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 			wantErr: "outside subnet",
 		},
 		{
+			name: "endpoint excluded by subnet",
+			mutate: func(state *DesiredState) {
+				state.Subnets[0].ExcludeCIDRs = []netip.Prefix{netip.MustParsePrefix("10.10.0.8/29")}
+			},
+			wantErr: "excluded by subnet",
+		},
+		{
 			name: "endpoint unknown security group",
 			mutate: func(state *DesiredState) {
 				state.Endpoints[0].SecurityGroups = []string{"missing"}
