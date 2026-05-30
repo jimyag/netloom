@@ -81,6 +81,10 @@ ingress, matching the direction split used by endpoint policy datapaths. Wider
 IPv4 CIDR support uses a TCX LPM trie keyed by protocol, destination port, and
 peer prefix; future range support should use the compiled policy-map prefix
 shape instead of expanding large ranges into hash entries.
+In dual-stack endpoint policies, IPv6 CIDR entries remain in the policy
+map/evaluator path while IPv4 CIDR entries are still projected into the TCX
+fast path, so an IPv6 rule does not disable IPv4 acceleration for the same
+endpoint.
 
 The controller can reconcile either the built-in bootstrap state or a JSON
 desired-state file. Docker e2e tests exercise the JSON path against a live OVN

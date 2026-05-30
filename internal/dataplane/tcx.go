@@ -394,9 +394,6 @@ func validateIPv4L4ACLRuleSupport(rule policy.Rule) error {
 	if _, ok := tcxAction(rule.Action); !ok {
 		return nil
 	}
-	if rule.RemoteCIDR.IsValid() && !rule.RemoteCIDR.Addr().Is4() {
-		return fmt.Errorf("IPv6 TCX ACL is not supported by IPv4 TCX datapath")
-	}
 	return nil
 }
 

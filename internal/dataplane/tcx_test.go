@@ -168,27 +168,37 @@ func TestIPv4L4ACLRulesFromProgramRejectsICMPPorts(t *testing.T) {
 	}
 }
 
-func TestIPv4L4ACLRulesFromProgramRejectsIPv6CIDR(t *testing.T) {
+func TestIPv4L4ACLRulesFromProgramSkipsIPv6CIDR(t *testing.T) {
 	program := policy.Program{
 		EndpointID: "pod-a",
-		Rules: []policy.Rule{{
-			ID:         "drop-v6",
-			Direction:  model.DirectionIngress,
-			Protocol:   model.ProtocolTCP,
-			RemoteCIDR: netip.MustParsePrefix("fd00:10::/64"),
-			Ports:      []model.PortRange{{From: 8080, To: 8080}},
-			Action:     model.ActionDrop,
-		}},
+		Rules: []policy.Rule{
+			{
+				ID:         "drop-v6",
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("fd00:10::/64"),
+				Ports:      []model.PortRange{{From: 8080, To: 8080}},
+				Action:     model.ActionDrop,
+			},
+			{
+				ID:         "drop-v4",
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("172.30.0.0/24"),
+				Ports:      []model.PortRange{{From: 8080, To: 8080}},
+				Action:     model.ActionDrop,
+			},
+		},
 	}
-	_, err := IPv4L4ACLRulesFromProgram(program)
-	if err == nil {
-		t.Fatal("expected IPv6 TCX projection to fail")
+	rules, err := IPv4L4ACLRulesFromProgram(program)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(err.Error(), "IPv6 TCX ACL is not supported") {
-		t.Fatalf("error %q does not mention IPv6 TCX support", err)
+	if len(rules) != 1 || rules[0].SourceCIDR != netip.MustParsePrefix("172.30.0.0/24") {
+		t.Fatalf("rules = %+v, want only IPv4 rule", rules)
 	}
-	if err := ValidateIPv4L4ACLProgramSupport(program); err == nil {
-		t.Fatal("expected IPv6 TCX support validation to fail")
+	if err := ValidateIPv4L4ACLProgramSupport(program); err != nil {
+		t.Fatalf("IPv6 rules should remain in policy map without blocking IPv4 TCX projection: %v", err)
 	}
 }
 

@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"net/netip"
-	"strings"
 	"testing"
 
 	"github.com/cilium/ebpf"
@@ -236,40 +235,54 @@ func TestReconcileNodeWithTCXInterfaceAcceptsCIDRPolicy(t *testing.T) {
 	}
 }
 
-func TestReconcileNodeWithTCXInterfaceRejectsIPv6Policy(t *testing.T) {
+func TestPrepareReconcileWithTCXInterfaceKeepsIPv4SubsetForDualStackPolicy(t *testing.T) {
 	state := control.DesiredState{
 		Endpoints: []model.Endpoint{{
 			ID:             "pod-a",
 			VPC:            "prod",
-			Subnet:         "apps-v6",
-			IP:             netip.MustParseAddr("fd00:10::10"),
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
 			Node:           "node-a",
-			SecurityGroups: []string{"v6-web"},
+			SecurityGroups: []string{"dual-web"},
 		}},
 		SecurityGroups: []model.SecurityGroup{{
-			Name: "v6-web",
+			Name: "dual-web",
 			VPC:  "prod",
-			Rules: []model.SecurityGroupRule{{
-				ID:         "drop-v6",
-				Priority:   100,
-				Direction:  model.DirectionIngress,
-				Protocol:   model.ProtocolTCP,
-				RemoteCIDR: netip.MustParsePrefix("fd00:20::/64"),
-				Ports:      []model.PortRange{{From: 8080, To: 8080}},
-				Action:     model.ActionDrop,
-			}},
+			Rules: []model.SecurityGroupRule{
+				{
+					ID:         "drop-v6",
+					Priority:   200,
+					Direction:  model.DirectionIngress,
+					Protocol:   model.ProtocolTCP,
+					RemoteCIDR: netip.MustParsePrefix("fd00:20::/64"),
+					Ports:      []model.PortRange{{From: 8080, To: 8080}},
+					Action:     model.ActionDrop,
+				},
+				{
+					ID:         "drop-v4",
+					Priority:   100,
+					Direction:  model.DirectionIngress,
+					Protocol:   model.ProtocolTCP,
+					RemoteCIDR: netip.MustParsePrefix("172.30.0.0/24"),
+					Ports:      []model.PortRange{{From: 8080, To: 8080}},
+					Action:     model.ActionDrop,
+				},
+			},
 		}},
 	}
-	_, err := ReconcileNodeWithOptions(context.Background(), state, ReconcileOptions{
+	result, targets, _, err := prepareReconcile(context.Background(), state, ReconcileOptions{
 		Node:         "node-a",
 		Store:        dataplane.NewInMemoryPolicyStore(),
 		TCXInterface: "lo",
 	})
-	if err == nil {
-		t.Fatal("expected TCX attach to reject IPv6 policy")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(err.Error(), "IPv6 TCX ACL is not supported") {
-		t.Fatalf("error %q does not mention IPv6 TCX support", err)
+	if result.Entries != 2 || result.TCXEligible != 1 {
+		t.Fatalf("result = %+v, want both policy entries and one TCX-eligible program", result)
+	}
+	if len(targets) != 1 || targets[0].policyDirection != model.DirectionIngress {
+		t.Fatalf("targets = %+v, want ingress TCX target for IPv4 subset", targets)
 	}
 }
 
