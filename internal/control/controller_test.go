@@ -224,6 +224,122 @@ func TestControllerRejectsConflictingLoadBalancers(t *testing.T) {
 	}
 }
 
+func TestControllerRejectsConflictingStaticRoutes(t *testing.T) {
+	state := DesiredState{
+		VPCs: []model.VPC{{Name: "prod"}},
+		RouteTables: []model.RouteTable{
+			{
+				Name: "main",
+				VPC:  "prod",
+				Routes: []model.Route{{
+					Destination: netip.MustParsePrefix("0.0.0.0/0"),
+					NextHop:     netip.MustParseAddr("10.10.0.254"),
+				}},
+			},
+			{
+				Name: "egress",
+				VPC:  "prod",
+				Routes: []model.Route{{
+					Destination: netip.MustParsePrefix("0.0.0.0/0"),
+					NextHop:     netip.MustParseAddr("10.10.0.253"),
+				}},
+			},
+		},
+	}
+	err := NewController(NewMemoryBackend(), NewMemoryBackend()).Reconcile(context.Background(), state)
+	if err == nil {
+		t.Fatal("expected conflicting static routes to fail")
+	}
+	if !strings.Contains(err.Error(), "conflicts") || !strings.Contains(err.Error(), "0.0.0.0/0") {
+		t.Fatalf("error %q does not describe static route conflict", err)
+	}
+}
+
+func TestControllerRejectsDuplicateRouteTableNames(t *testing.T) {
+	state := DesiredState{
+		VPCs: []model.VPC{{Name: "prod"}},
+		RouteTables: []model.RouteTable{
+			{Name: "main", VPC: "prod"},
+			{Name: "main", VPC: "prod"},
+		},
+	}
+	err := NewController(NewMemoryBackend(), NewMemoryBackend()).Reconcile(context.Background(), state)
+	if err == nil {
+		t.Fatal("expected duplicate route table names to fail")
+	}
+	if !strings.Contains(err.Error(), "duplicate route table name") {
+		t.Fatalf("error %q does not mention duplicate route table name", err)
+	}
+}
+
+func TestControllerRejectsConflictingPolicyRoutes(t *testing.T) {
+	state := DesiredState{
+		VPCs: []model.VPC{{Name: "prod"}},
+		PolicyRoutes: []model.PolicyRoute{
+			{
+				Name:     "private-a",
+				VPC:      "prod",
+				Priority: 100,
+				Match: model.RouteMatch{
+					Source:      netip.MustParsePrefix("10.10.0.0/24"),
+					Destination: netip.MustParsePrefix("172.16.0.0/16"),
+					Protocol:    model.ProtocolTCP,
+					DstPorts:    []model.PortRange{{From: 443, To: 443}},
+				},
+				Action: model.RouteAction{Type: model.ActionReroute, NextHop: netip.MustParseAddr("10.10.0.253")},
+			},
+			{
+				Name:     "private-b",
+				VPC:      "prod",
+				Priority: 100,
+				Match: model.RouteMatch{
+					Source:      netip.MustParsePrefix("10.10.0.0/24"),
+					Destination: netip.MustParsePrefix("172.16.0.0/16"),
+					Protocol:    model.ProtocolTCP,
+					DstPorts:    []model.PortRange{{From: 443, To: 443}},
+				},
+				Action: model.RouteAction{Type: model.ActionDrop},
+			},
+		},
+	}
+	err := NewController(NewMemoryBackend(), NewMemoryBackend()).Reconcile(context.Background(), state)
+	if err == nil {
+		t.Fatal("expected conflicting policy routes to fail")
+	}
+	if !strings.Contains(err.Error(), "conflicts") || !strings.Contains(err.Error(), "priority 100") {
+		t.Fatalf("error %q does not describe policy route conflict", err)
+	}
+}
+
+func TestControllerRejectsDuplicatePolicyRouteNames(t *testing.T) {
+	state := DesiredState{
+		VPCs: []model.VPC{{Name: "prod"}},
+		PolicyRoutes: []model.PolicyRoute{
+			{
+				Name:     "private",
+				VPC:      "prod",
+				Priority: 100,
+				Match:    model.RouteMatch{Destination: netip.MustParsePrefix("172.16.0.0/16")},
+				Action:   model.RouteAction{Type: model.ActionDrop},
+			},
+			{
+				Name:     "private",
+				VPC:      "prod",
+				Priority: 90,
+				Match:    model.RouteMatch{Destination: netip.MustParsePrefix("198.51.100.0/24")},
+				Action:   model.RouteAction{Type: model.ActionDrop},
+			},
+		},
+	}
+	err := NewController(NewMemoryBackend(), NewMemoryBackend()).Reconcile(context.Background(), state)
+	if err == nil {
+		t.Fatal("expected duplicate policy route names to fail")
+	}
+	if !strings.Contains(err.Error(), "duplicate policy route name") {
+		t.Fatalf("error %q does not mention duplicate policy route name", err)
+	}
+}
+
 func TestControllerReconcileRemovesStaleMemoryState(t *testing.T) {
 	backend := NewMemoryBackend()
 	controller := NewController(backend, backend)

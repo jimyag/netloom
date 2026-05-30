@@ -166,6 +166,12 @@ func (c *Controller) Reconcile(ctx context.Context, state DesiredState) error {
 	if err := validateLoadBalancers(state.LoadBalancers); err != nil {
 		return err
 	}
+	if err := validateRouteTables(state.RouteTables); err != nil {
+		return err
+	}
+	if err := validatePolicyRoutes(state.PolicyRoutes); err != nil {
+		return err
+	}
 	topologyState := desiredTopologyState(state)
 	if lifecycle, ok := c.topology.(TopologyLifecycleBackend); ok {
 		if err := lifecycle.BeginTopologyReconcile(ctx, topologyState); err != nil {
@@ -333,6 +339,61 @@ func validateLoadBalancers(loadBalancers []model.LoadBalancer) error {
 		vips[key] = lb.Name
 	}
 	return nil
+}
+
+func validateRouteTables(tables []model.RouteTable) error {
+	names := make(map[string]struct{}, len(tables))
+	destinations := make(map[string]string)
+	for _, table := range tables {
+		if err := table.Validate(); err != nil {
+			return err
+		}
+		if _, ok := names[table.Name]; ok {
+			return fmt.Errorf("duplicate route table name %q", table.Name)
+		}
+		names[table.Name] = struct{}{}
+		for _, route := range table.Routes {
+			key := table.VPC + "|" + route.Destination.String()
+			if prev := destinations[key]; prev != "" {
+				return fmt.Errorf("route table %q conflicts with %q on %s in vpc %s", table.Name, prev, route.Destination, table.VPC)
+			}
+			destinations[key] = table.Name
+		}
+	}
+	return nil
+}
+
+func validatePolicyRoutes(routes []model.PolicyRoute) error {
+	names := make(map[string]struct{}, len(routes))
+	matches := make(map[string]string, len(routes))
+	for _, route := range routes {
+		if err := route.Validate(); err != nil {
+			return err
+		}
+		if _, ok := names[route.Name]; ok {
+			return fmt.Errorf("duplicate policy route name %q", route.Name)
+		}
+		names[route.Name] = struct{}{}
+		key := fmt.Sprintf("%s|%d|%s", route.VPC, route.Priority, routeMatchKey(route.Match))
+		if prev := matches[key]; prev != "" {
+			return fmt.Errorf("policy route %q conflicts with %q on priority %d match %s in vpc %s", route.Name, prev, route.Priority, routeMatchKey(route.Match), route.VPC)
+		}
+		matches[key] = route.Name
+	}
+	return nil
+}
+
+func routeMatchKey(match model.RouteMatch) string {
+	protocol := match.Protocol
+	if protocol == "" {
+		protocol = model.ProtocolAny
+	}
+	ports := make([]string, 0, len(match.DstPorts))
+	for _, port := range match.DstPorts {
+		ports = append(ports, fmt.Sprintf("%d-%d", port.From, port.To))
+	}
+	sort.Strings(ports)
+	return fmt.Sprintf("src=%s|dst=%s|proto=%s|dports=%s", match.Source, match.Destination, protocol, strings.Join(ports, ","))
 }
 
 func desiredTopologyState(state DesiredState) topology.State {
