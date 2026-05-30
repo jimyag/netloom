@@ -117,6 +117,14 @@ projection enforce remote-group rules for workload traffic. When membership
 changes, periodic agent reconcile recompiles the endpoint program and replaces
 the TCX attachment signature.
 
+Stateful rules now have a userspace conntrack model that mirrors the Cilium
+policy decision shape. `EvaluateStateful` first checks established reverse-flow
+state, then evaluates the endpoint policy map. A stateful allow creates a
+reverse key for the same endpoint and remote identity; deny rules never create
+state. The long-running agent reconciler owns the conntrack store and deletes
+entries when an endpoint disappears or its compiled policy signature changes,
+so stale state cannot survive a policy update.
+
 The Linux datapath also has an explicit cleanup mode. When enabled, the agent
 removes netloom-owned network namespaces with the configured prefix that are no
 longer present as local endpoints in the desired state. Docker e2e validates

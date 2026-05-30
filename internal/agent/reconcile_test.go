@@ -222,6 +222,70 @@ func TestReconcilerKeepsAndReplacesTCXAttachments(t *testing.T) {
 	}
 }
 
+func TestReconcilerClearsConntrackWhenPolicyChangesOrEndpointIsRemoved(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:             "pod-a",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"web"},
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "allow-web",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("10.10.0.11/32"),
+				Ports:      []model.PortRange{{From: 443, To: 443}},
+				Action:     model.ActionAllow,
+				Stateful:   true,
+			}},
+		}},
+	}
+	reconciler := NewReconciler(dataplane.NewInMemoryPolicyStore())
+	if _, err := reconciler.Reconcile(context.Background(), state, ReconcileOptions{Node: "node-a"}); err != nil {
+		t.Fatal(err)
+	}
+	reconciler.ConntrackStore().Add(dataplane.ConntrackKey{
+		EndpointID:     "pod-a",
+		RemoteIdentity: 100,
+		Direction:      dataplane.DirectionEgress,
+		Protocol:       6,
+		DestPort:       55000,
+	})
+	if reconciler.ConntrackStore().Len() != 1 {
+		t.Fatalf("conntrack entries = %d, want 1", reconciler.ConntrackStore().Len())
+	}
+
+	state.SecurityGroups[0].Rules[0].Action = model.ActionDrop
+	if _, err := reconciler.Reconcile(context.Background(), state, ReconcileOptions{Node: "node-a"}); err != nil {
+		t.Fatal(err)
+	}
+	if reconciler.ConntrackStore().Len() != 0 {
+		t.Fatalf("conntrack entries after policy change = %d, want 0", reconciler.ConntrackStore().Len())
+	}
+
+	reconciler.ConntrackStore().Add(dataplane.ConntrackKey{
+		EndpointID:     "pod-a",
+		RemoteIdentity: 100,
+		Direction:      dataplane.DirectionEgress,
+		Protocol:       6,
+		DestPort:       55000,
+	})
+	state.Endpoints = nil
+	if _, err := reconciler.Reconcile(context.Background(), state, ReconcileOptions{Node: "node-a"}); err != nil {
+		t.Fatal(err)
+	}
+	if reconciler.ConntrackStore().Len() != 0 {
+		t.Fatalf("conntrack entries after endpoint removal = %d, want 0", reconciler.ConntrackStore().Len())
+	}
+}
+
 func TestReconcileNodeAllowsMultipleEligibleWorkloadsWithoutTCXAttach(t *testing.T) {
 	state := control.DesiredState{
 		Endpoints: []model.Endpoint{

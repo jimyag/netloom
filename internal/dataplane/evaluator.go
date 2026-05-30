@@ -1,8 +1,12 @@
 package dataplane
 
-import "encoding/binary"
+import (
+	"encoding/binary"
+	"sync"
+)
 
 type Packet struct {
+	SourcePort     uint16
 	RemoteIdentity uint32
 	Direction      uint8
 	Protocol       uint8
@@ -17,8 +21,10 @@ const (
 )
 
 type Decision struct {
-	Verdict Verdict
-	Match   *PolicyMapEntry
+	Verdict     Verdict
+	Match       *PolicyMapEntry
+	Conntrack   bool
+	Established bool
 }
 
 func Evaluate(entries []PolicyMapEntry, packet Packet) Decision {
@@ -39,6 +45,87 @@ func Evaluate(entries []PolicyMapEntry, packet Packet) Decision {
 		return Decision{Verdict: VerdictDrop, Match: selected}
 	}
 	return Decision{Verdict: VerdictAllow, Match: selected}
+}
+
+type ConntrackKey struct {
+	EndpointID     string
+	RemoteIdentity uint32
+	Direction      uint8
+	Protocol       uint8
+	DestPort       uint16
+}
+
+type ConntrackStore interface {
+	Has(ConntrackKey) bool
+	Add(ConntrackKey)
+	DeleteEndpoint(endpointID string)
+	Len() int
+}
+
+type InMemoryConntrackStore struct {
+	mu      sync.Mutex
+	entries map[ConntrackKey]struct{}
+}
+
+func NewInMemoryConntrackStore() *InMemoryConntrackStore {
+	return &InMemoryConntrackStore{entries: make(map[ConntrackKey]struct{})}
+}
+
+func (s *InMemoryConntrackStore) Has(key ConntrackKey) bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.entries[key]
+	return ok
+}
+
+func (s *InMemoryConntrackStore) Add(key ConntrackKey) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.entries[key] = struct{}{}
+}
+
+func (s *InMemoryConntrackStore) DeleteEndpoint(endpointID string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for key := range s.entries {
+		if key.EndpointID == endpointID {
+			delete(s.entries, key)
+		}
+	}
+}
+
+func (s *InMemoryConntrackStore) Len() int {
+	if s == nil {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.entries)
+}
+
+func EvaluateStateful(endpointID string, entries []PolicyMapEntry, packet Packet, conntrack ConntrackStore) Decision {
+	if endpointID != "" && conntrack != nil && conntrack.Has(conntrackKey(endpointID, packet)) {
+		return Decision{Verdict: VerdictAllow, Conntrack: true}
+	}
+	decision := Evaluate(entries, packet)
+	if decision.Verdict != VerdictAllow || decision.Match == nil || decision.Match.Value.Stateful == 0 || conntrack == nil {
+		return decision
+	}
+	reverse := reverseConntrackKey(endpointID, packet)
+	if reverse.EndpointID != "" {
+		conntrack.Add(reverse)
+		decision.Established = true
+	}
+	return decision
 }
 
 func matches(key PolicyKey, packet Packet) bool {
@@ -82,4 +169,39 @@ func networkToHost16(value uint16) uint16 {
 	var b [2]byte
 	binary.NativeEndian.PutUint16(b[:], value)
 	return binary.BigEndian.Uint16(b[:])
+}
+
+func conntrackKey(endpointID string, packet Packet) ConntrackKey {
+	return ConntrackKey{
+		EndpointID:     endpointID,
+		RemoteIdentity: packet.RemoteIdentity,
+		Direction:      packet.Direction,
+		Protocol:       packet.Protocol,
+		DestPort:       packet.DestPort,
+	}
+}
+
+func reverseConntrackKey(endpointID string, packet Packet) ConntrackKey {
+	port := packet.SourcePort
+	if port == 0 {
+		port = packet.DestPort
+	}
+	return ConntrackKey{
+		EndpointID:     endpointID,
+		RemoteIdentity: packet.RemoteIdentity,
+		Direction:      reverseDirection(packet.Direction),
+		Protocol:       packet.Protocol,
+		DestPort:       port,
+	}
+}
+
+func reverseDirection(direction uint8) uint8 {
+	switch direction {
+	case DirectionIngress:
+		return DirectionEgress
+	case DirectionEgress:
+		return DirectionIngress
+	default:
+		return direction
+	}
 }

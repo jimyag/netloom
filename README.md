@@ -156,6 +156,7 @@ OVN ACL 本身很适合做分布式虚拟网络策略，但它不是唯一选择
 - OVN 风格拓扑后端：把逻辑交换、逻辑路由、策略路由、Gateway 和 NAT 转换为带 `external_ids` 所有权标记的批量 `ovn-nbctl` 事务。
 - Linux 工作负载 datapath：支持本机 `/32` 地址路由和 `netns + veth` 多工作负载模式，网卡/netns 操作可使用 `vishvananda/netlink`/`netns` 后端执行。
 - Cilium 风格策略编译：把安全组规则编译为 endpoint-scoped policy map entry，并把 `remote_group` 展开为 endpoint identity 与精确成员 CIDR。
+- Cilium 风格连接状态：stateful allow 规则会建立反向 conntrack 状态，策略变化或 endpoint 删除时清理旧状态。
 - eBPF/TCX ACL datapath：支持节点接口和工作负载 veth 上的 IPv4 L4 ACL attach。
 - 周期 reconcile：controller 和 agent 都能从 desired-state JSON 文件周期重读状态，controller 会清理从 desired state 删除的 OVN/内存对象，agent 会持有并按需替换 TCX attachment。
 

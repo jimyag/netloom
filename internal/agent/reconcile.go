@@ -54,16 +54,20 @@ type tcxAttachmentHandle struct {
 type tcxAttachFunc func(context.Context, tcxTarget) (tcxAttachmentHandle, error)
 
 type Reconciler struct {
-	store       PolicyStore
-	attachments map[string]tcxAttachmentHandle
-	attach      tcxAttachFunc
+	store               PolicyStore
+	attachments         map[string]tcxAttachmentHandle
+	attach              tcxAttachFunc
+	conntrack           *dataplane.InMemoryConntrackStore
+	conntrackSignatures map[string]string
 }
 
 func NewReconciler(store PolicyStore) *Reconciler {
 	return &Reconciler{
-		store:       store,
-		attachments: make(map[string]tcxAttachmentHandle),
-		attach:      attachTCXTarget,
+		store:               store,
+		attachments:         make(map[string]tcxAttachmentHandle),
+		attach:              attachTCXTarget,
+		conntrack:           dataplane.NewInMemoryConntrackStore(),
+		conntrackSignatures: make(map[string]string),
 	}
 }
 
@@ -72,7 +76,7 @@ func ReconcileNode(ctx context.Context, state control.DesiredState, node string,
 }
 
 func ReconcileNodeWithOptions(ctx context.Context, state control.DesiredState, options ReconcileOptions) (ReconcileResult, error) {
-	result, targets, err := prepareReconcile(ctx, state, options)
+	result, targets, _, err := prepareReconcile(ctx, state, options)
 	if err != nil {
 		return ReconcileResult{}, err
 	}
@@ -93,10 +97,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, state control.DesiredState, 
 	if options.Store == nil {
 		options.Store = r.store
 	}
-	result, targets, err := prepareReconcile(ctx, state, options)
+	result, targets, programs, err := prepareReconcile(ctx, state, options)
 	if err != nil {
 		return ReconcileResult{}, err
 	}
+	r.syncConntrackPrograms(programs)
 	if options.TCXInterface != "" || options.TCXWorkload {
 		tcxResult, err := r.syncTCXTargets(ctx, targets)
 		if err != nil {
@@ -121,18 +126,45 @@ func (r *Reconciler) Close() error {
 	return firstErr
 }
 
-func prepareReconcile(ctx context.Context, state control.DesiredState, options ReconcileOptions) (ReconcileResult, []tcxTarget, error) {
+func (r *Reconciler) ConntrackStore() *dataplane.InMemoryConntrackStore {
+	if r == nil {
+		return nil
+	}
+	return r.conntrack
+}
+
+func (r *Reconciler) syncConntrackPrograms(programs []policy.Program) {
+	if r == nil || r.conntrack == nil {
+		return
+	}
+	desired := make(map[string]string, len(programs))
+	for _, program := range programs {
+		desired[program.EndpointID] = fmt.Sprintf("%#v/%#v", program.Rules, program.MapEntries)
+	}
+	for endpointID, oldSignature := range r.conntrackSignatures {
+		signature, ok := desired[endpointID]
+		if !ok || signature != oldSignature {
+			r.conntrack.DeleteEndpoint(endpointID)
+			delete(r.conntrackSignatures, endpointID)
+		}
+	}
+	for endpointID, signature := range desired {
+		r.conntrackSignatures[endpointID] = signature
+	}
+}
+
+func prepareReconcile(ctx context.Context, state control.DesiredState, options ReconcileOptions) (ReconcileResult, []tcxTarget, []policy.Program, error) {
 	if options.Node == "" {
-		return ReconcileResult{}, nil, fmt.Errorf("node name is required")
+		return ReconcileResult{}, nil, nil, fmt.Errorf("node name is required")
 	}
 	if options.Store == nil {
-		return ReconcileResult{}, nil, fmt.Errorf("policy store is required")
+		return ReconcileResult{}, nil, nil, fmt.Errorf("policy store is required")
 	}
 
 	groups := make(map[string]model.SecurityGroup, len(state.SecurityGroups))
 	for _, group := range state.SecurityGroups {
 		if err := group.Validate(); err != nil {
-			return ReconcileResult{}, nil, err
+			return ReconcileResult{}, nil, nil, err
 		}
 		groups[group.Name] = group
 	}
@@ -145,14 +177,14 @@ func prepareReconcile(ctx context.Context, state control.DesiredState, options R
 			continue
 		}
 		if err := endpoint.Validate(); err != nil {
-			return ReconcileResult{}, nil, err
+			return ReconcileResult{}, nil, nil, err
 		}
 		program, err := policy.CompileForEndpointWithState(endpoint, groups, state.Endpoints)
 		if err != nil {
-			return ReconcileResult{}, nil, err
+			return ReconcileResult{}, nil, nil, err
 		}
 		if err := backend.ApplyEndpointProgram(ctx, program); err != nil {
-			return ReconcileResult{}, nil, fmt.Errorf("apply policy program for endpoint %s: %w", endpoint.ID, err)
+			return ReconcileResult{}, nil, nil, fmt.Errorf("apply policy program for endpoint %s: %w", endpoint.ID, err)
 		}
 		result.Endpoints++
 		result.Programs++
@@ -167,7 +199,7 @@ func prepareReconcile(ctx context.Context, state control.DesiredState, options R
 		linuxOptions.Node = options.Node
 		linuxResult, err := linuxdatapath.Apply(ctx, state, linuxOptions)
 		if err != nil {
-			return ReconcileResult{}, nil, fmt.Errorf("apply linux datapath for node %s: %w", options.Node, err)
+			return ReconcileResult{}, nil, nil, fmt.Errorf("apply linux datapath for node %s: %w", options.Node, err)
 		}
 		result.Datapath = "linux:" + linuxResult.Device
 		result.LocalIPs = linuxResult.LocalAddresses
@@ -178,7 +210,7 @@ func prepareReconcile(ctx context.Context, state control.DesiredState, options R
 	if options.TCXInterface != "" || options.TCXWorkload {
 		targets = tcxTargets(options, localPrograms)
 	}
-	return result, targets, nil
+	return result, targets, localPrograms, nil
 }
 
 func tcxTargets(options ReconcileOptions, programs []policy.Program) []tcxTarget {
