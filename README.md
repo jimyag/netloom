@@ -168,6 +168,7 @@ OVN ACL 本身很适合做分布式虚拟网络策略，但它不是唯一选择
 - `SecurityGroupRule` 属于 ACL 意图，由 eBPF-style policy map 和 TCX ACL datapath 执行。
 - ACL 不放到 OVN ACL 里实现，避免和 eBPF 策略路径重叠。
 - DNAT 端口映射会校验协议意图；当前 OVN NAT schema 只有 `external_port_range`，没有协议列，也不做端口号转换，因此 Netloom 只接受 external/target 端口相同的端口 DNAT，并把同一个 EIP+端口视为冲突。
+- 控制面 resolver 会解析 DNAT 和 Floating IP (`dnat_and_snat`) 入站目标，用于在单元测试和 selftest 中验证 Kube-OVN 风格 NAT 语义。
 - `LoadBalancer` 使用 OVN `lb-add`/`lr-lb-add`/`ls-lb-add` 表达 Kube-OVN 风格的 VPC Service VIP，控制面会拒绝同 VPC 内重复的 VIP+协议+端口。
 - 控制面 resolver 会按 VPC、VIP、协议、端口和绑定子网解析 Service VIP 到后端，用于在单元测试和 selftest 中验证负载均衡语义。
 - `Subnet` 可以声明 `provider_network` 和 `vlan`，OVN 后端会创建 `localnet` 逻辑端口，用于对接 Kube-OVN 常见的 underlay/provider network 场景。

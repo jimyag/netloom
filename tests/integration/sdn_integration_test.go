@@ -96,6 +96,28 @@ func TestDesiredStateDrivesTopologyRoutesAndEBPFStyleACL(t *testing.T) {
 	if serviceDecision.MatchedBy != "load-balancer/web" || serviceDecision.Translated.String() != "10.10.0.11" || serviceDecision.TranslatedPort != 8080 {
 		t.Fatalf("expected service VIP to resolve to backend, got: %+v", serviceDecision)
 	}
+	dnatDecision, err := topology.Resolve(memoryBackend.TopologyState(), topology.Packet{
+		VPC:    "prod",
+		Source: mustAddr(t, "203.0.113.10"),
+		Dest:   mustAddr(t, "198.51.100.20"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dnatDecision.MatchedBy != "nat/web-dnat" || dnatDecision.Destination != "pod-b" || dnatDecision.Translated.String() != "10.10.0.11" {
+		t.Fatalf("expected DNAT to resolve to pod-b, got: %+v", dnatDecision)
+	}
+	fipDecision, err := topology.Resolve(memoryBackend.TopologyState(), topology.Packet{
+		VPC:    "prod",
+		Source: mustAddr(t, "203.0.113.10"),
+		Dest:   mustAddr(t, "198.51.100.30"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fipDecision.MatchedBy != "nat/web-fip" || fipDecision.Destination != "pod-b" || fipDecision.Translated.String() != "10.10.0.11" {
+		t.Fatalf("expected floating IP to resolve to pod-b, got: %+v", fipDecision)
+	}
 
 	store := dataplane.NewInMemoryPolicyStore()
 	result, err := agent.ReconcileNode(ctx, state, "node-b", store)
@@ -166,7 +188,11 @@ const integrationStateJSON = `{
   "route_tables": [{"name": "main", "vpc": "prod", "routes": [{"destination": "0.0.0.0/0", "next_hop": "10.10.0.254"}]}],
   "policy_routes": [{"name": "https-via-fw", "vpc": "prod", "priority": 100, "match": {"source": "10.10.0.0/24", "destination": "172.16.0.0/16", "protocol": "tcp", "dst_ports": [{"from": 443, "to": 443}]}, "action": {"type": "reroute", "next_hop": "10.10.0.253"}}],
   "gateways": [{"name": "gw-a", "vpc": "prod", "node": "node-a", "external_if": "eth0", "lan_ip": "10.10.0.254"}],
-  "nat_rules": [{"name": "egress", "vpc": "prod", "type": "snat", "match_cidr": "10.10.0.0/24", "external_ip": "198.51.100.10"}],
+  "nat_rules": [
+    {"name": "egress", "vpc": "prod", "type": "snat", "match_cidr": "10.10.0.0/24", "external_ip": "198.51.100.10"},
+    {"name": "web-dnat", "vpc": "prod", "type": "dnat", "external_ip": "198.51.100.20", "target_ip": "10.10.0.11"},
+    {"name": "web-fip", "vpc": "prod", "type": "dnat_and_snat", "external_ip": "198.51.100.30", "target_ip": "10.10.0.11"}
+  ],
   "load_balancers": [{"name": "web", "vpc": "prod", "vip": "10.96.0.10", "port": 80, "protocol": "tcp", "backends": [{"ip": "10.10.0.11", "port": 8080}], "subnets": ["apps"]}],
   "security_groups": [
     {"name": "client", "vpc": "prod", "rules": [{"id": "client-egress", "priority": 100, "direction": "egress", "protocol": "any", "remote_cidr": "0.0.0.0/0", "action": "allow"}]},

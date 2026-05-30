@@ -23,6 +23,12 @@ func TestRunSelfTestReconcilesTopologyAndResolvesRouting(t *testing.T) {
 	if result.ServiceBackend != netip.MustParseAddr("10.244.0.10") || result.ServiceBackendPort != 8080 {
 		t.Fatalf("service backend = %s:%d, want 10.244.0.10:8080", result.ServiceBackend, result.ServiceBackendPort)
 	}
+	if result.DNATTarget != netip.MustParseAddr("10.244.0.10") {
+		t.Fatalf("dnat target = %s, want 10.244.0.10", result.DNATTarget)
+	}
+	if result.FloatingIPTarget != netip.MustParseAddr("10.244.0.10") {
+		t.Fatalf("floating ip target = %s, want 10.244.0.10", result.FloatingIPTarget)
+	}
 	if result.OVNOperations == 0 {
 		t.Fatal("expected OVN operations to be planned")
 	}

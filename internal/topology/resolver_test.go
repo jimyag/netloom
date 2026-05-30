@@ -96,6 +96,106 @@ func TestResolveLoadBalancerRequiresBoundSourceSubnet(t *testing.T) {
 	}
 }
 
+func TestResolveDNATToEndpoint(t *testing.T) {
+	state := State{
+		Endpoints: map[string]model.Endpoint{
+			"pod-a": {ID: "pod-a", VPC: "prod", IP: netip.MustParseAddr("10.10.0.10")},
+		},
+		NATRules: map[string]model.NATRule{
+			"web": {
+				Name:       "web",
+				VPC:        "prod",
+				Type:       model.ActionDNAT,
+				ExternalIP: netip.MustParseAddr("198.51.100.20"),
+				TargetIP:   netip.MustParseAddr("10.10.0.10"),
+			},
+		},
+	}
+	decision, err := Resolve(state, Packet{
+		VPC:    "prod",
+		Source: netip.MustParseAddr("203.0.113.10"),
+		Dest:   netip.MustParseAddr("198.51.100.20"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.MatchedBy != "nat/web" || decision.Destination != "pod-a" || decision.Translated != netip.MustParseAddr("10.10.0.10") {
+		t.Fatalf("decision = %+v, want DNAT to pod-a", decision)
+	}
+}
+
+func TestResolvePortDNATRequiresProtocolAndPort(t *testing.T) {
+	state := State{
+		NATRules: map[string]model.NATRule{
+			"ssh": {
+				Name:         "ssh",
+				VPC:          "prod",
+				Type:         model.ActionDNAT,
+				ExternalIP:   netip.MustParseAddr("198.51.100.23"),
+				TargetIP:     netip.MustParseAddr("10.10.0.10"),
+				Protocol:     model.ProtocolTCP,
+				ExternalPort: 2222,
+				TargetPort:   2222,
+			},
+		},
+	}
+	decision, err := Resolve(state, Packet{
+		VPC:      "prod",
+		Source:   netip.MustParseAddr("203.0.113.10"),
+		Dest:     netip.MustParseAddr("198.51.100.23"),
+		Protocol: model.ProtocolTCP,
+		DestPort: 2222,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.MatchedBy != "nat/ssh" || decision.Translated != netip.MustParseAddr("10.10.0.10") || decision.TranslatedPort != 2222 {
+		t.Fatalf("decision = %+v, want port DNAT", decision)
+	}
+
+	dropped, err := Resolve(state, Packet{
+		VPC:      "prod",
+		Source:   netip.MustParseAddr("203.0.113.10"),
+		Dest:     netip.MustParseAddr("198.51.100.23"),
+		Protocol: model.ProtocolUDP,
+		DestPort: 2222,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dropped.Action != model.ActionDrop || dropped.MatchedBy != "no-route" {
+		t.Fatalf("decision = %+v, want no-route drop", dropped)
+	}
+}
+
+func TestResolveFloatingIPToEndpoint(t *testing.T) {
+	state := State{
+		Endpoints: map[string]model.Endpoint{
+			"pod-a": {ID: "pod-a", VPC: "prod", IP: netip.MustParseAddr("10.10.0.10")},
+		},
+		NATRules: map[string]model.NATRule{
+			"fip": {
+				Name:       "fip",
+				VPC:        "prod",
+				Type:       model.ActionDNATSNAT,
+				ExternalIP: netip.MustParseAddr("198.51.100.30"),
+				TargetIP:   netip.MustParseAddr("10.10.0.10"),
+			},
+		},
+	}
+	decision, err := Resolve(state, Packet{
+		VPC:    "prod",
+		Source: netip.MustParseAddr("203.0.113.10"),
+		Dest:   netip.MustParseAddr("198.51.100.30"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.MatchedBy != "nat/fip" || decision.Destination != "pod-a" || decision.Translated != netip.MustParseAddr("10.10.0.10") {
+		t.Fatalf("decision = %+v, want floating IP to pod-a", decision)
+	}
+}
+
 func TestResolvePolicyRouteBeatsStaticRoute(t *testing.T) {
 	state := State{
 		RouteTables: map[string]model.RouteTable{

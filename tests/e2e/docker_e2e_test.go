@@ -51,7 +51,7 @@ func TestDockerMultiNodeLab(t *testing.T) {
 	if !strings.Contains(controllerOutput, "reconciled bootstrap state") {
 		t.Fatalf("controller output did not show reconcile success:\n%s", controllerOutput)
 	}
-	for _, expected := range []string{"policy_next_hop=10.244.0.253", "snat=198.51.100.10", "gateway=gw-a", "service_backend=10.244.0.10:8080", "ovn_ops=", "ovn_executed="} {
+	for _, expected := range []string{"policy_next_hop=10.244.0.253", "snat=198.51.100.10", "gateway=gw-a", "service_backend=10.244.0.10:8080", "dnat=10.244.0.10", "floating_ip=10.244.0.10", "ovn_ops=", "ovn_executed="} {
 		if !strings.Contains(controllerOutput, expected) {
 			t.Fatalf("controller output missing %q:\n%s", expected, controllerOutput)
 		}

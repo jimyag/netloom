@@ -56,6 +56,9 @@ func Resolve(state State, packet Packet) (Decision, error) {
 		}, nil
 	}
 
+	if decision, ok := resolveDNAT(state, packet); ok {
+		return decision, nil
+	}
 	if decision, ok := resolveLoadBalancer(state, packet); ok {
 		return decision, nil
 	}
@@ -66,6 +69,44 @@ func Resolve(state State, packet Packet) (Decision, error) {
 		return applyNATAndGateway(state, packet, decision), nil
 	}
 	return Decision{Action: model.ActionDrop, MatchedBy: "no-route"}, nil
+}
+
+func resolveDNAT(state State, packet Packet) (Decision, bool) {
+	for _, rule := range state.NATRules {
+		if rule.VPC != packet.VPC || (rule.Type != model.ActionDNAT && rule.Type != model.ActionDNATSNAT) || rule.ExternalIP != packet.Dest {
+			continue
+		}
+		if !dnatPortMatches(rule, packet) {
+			continue
+		}
+		translatedPort := uint16(0)
+		if rule.TargetPort != 0 {
+			translatedPort = rule.TargetPort
+		}
+		destination := rule.TargetIP.String()
+		if endpointID := findEndpoint(state, packet.VPC, rule.TargetIP); endpointID != "" {
+			destination = endpointID
+		}
+		return Decision{
+			Action:         model.ActionAllow,
+			Translated:     rule.TargetIP,
+			TranslatedPort: translatedPort,
+			MatchedBy:      "nat/" + rule.Name,
+			Destination:    destination,
+		}, true
+	}
+	return Decision{}, false
+}
+
+func dnatPortMatches(rule model.NATRule, packet Packet) bool {
+	if rule.ExternalPort == 0 {
+		return true
+	}
+	protocol := rule.Protocol
+	if protocol == "" {
+		protocol = model.ProtocolAny
+	}
+	return protocol == packet.Protocol && packet.DestPort == rule.ExternalPort
 }
 
 func resolveLoadBalancer(state State, packet Packet) (Decision, bool) {
