@@ -184,6 +184,7 @@ func prepareReconcile(ctx context.Context, state control.DesiredState, options R
 	backend := dataplane.NewPolicyBackend(options.Store)
 	result := ReconcileResult{Node: options.Node, TCX: "not-requested", Datapath: "not-requested"}
 	var localPrograms []policy.Program
+	var tcxPrograms []policy.Program
 	for _, endpoint := range state.Endpoints {
 		if endpoint.Node != options.Node {
 			continue
@@ -212,9 +213,10 @@ func prepareReconcile(ctx context.Context, state control.DesiredState, options R
 		result.Endpoints++
 		result.Programs++
 		result.Entries += len(program.MapEntries)
+		localPrograms = append(localPrograms, program)
 		if tcxEligibleProgram(program) {
 			result.TCXEligible++
-			localPrograms = append(localPrograms, program)
+			tcxPrograms = append(tcxPrograms, program)
 		}
 	}
 	if options.LinuxDatapath != nil {
@@ -232,7 +234,12 @@ func prepareReconcile(ctx context.Context, state control.DesiredState, options R
 	}
 	var targets []tcxTarget
 	if options.TCXInterface != "" || options.TCXWorkload {
-		targets = tcxTargets(options, localPrograms)
+		for _, program := range localPrograms {
+			if err := dataplane.ValidateIPv4L4ACLProgramSupport(program); err != nil {
+				return ReconcileResult{}, nil, nil, fmt.Errorf("tcx policy for endpoint %s: %w", program.EndpointID, err)
+			}
+		}
+		targets = tcxTargets(options, tcxPrograms)
 	}
 	return result, targets, localPrograms, nil
 }

@@ -296,6 +296,15 @@ func IPv4L4ACLRulesFromProgramsForDirection(programs []policy.Program, direction
 	return rules, nil
 }
 
+func ValidateIPv4L4ACLProgramSupport(program policy.Program) error {
+	for _, rule := range program.Rules {
+		if err := validateIPv4L4ACLRuleSupport(rule); err != nil {
+			return fmt.Errorf("rule %s: %w", rule.ID, err)
+		}
+	}
+	return nil
+}
+
 func appendIPv4L4ACLRulesFromProgram(rules *[]IPv4L4ACLRule, seen map[IPv4L4Key]struct{}, program policy.Program, direction model.Direction) error {
 	for _, rule := range program.Rules {
 		if rule.Direction != direction {
@@ -311,11 +320,14 @@ func appendIPv4L4ACLRulesFromProgram(rules *[]IPv4L4ACLRule, seen map[IPv4L4Key]
 		if !rule.RemoteCIDR.IsValid() {
 			continue
 		}
-		sourceCIDR, ok := ipv4Prefix(rule.RemoteCIDR)
+		action, ok := tcxAction(rule.Action)
 		if !ok {
 			continue
 		}
-		action, ok := tcxAction(rule.Action)
+		if err := validateIPv4L4ACLRuleSupport(rule); err != nil {
+			return fmt.Errorf("rule %s: %w", rule.ID, err)
+		}
+		sourceCIDR, ok := ipv4Prefix(rule.RemoteCIDR)
 		if !ok {
 			continue
 		}
@@ -367,6 +379,23 @@ func appendIPv4L4ACLRulesFromProgram(rules *[]IPv4L4ACLRule, seen map[IPv4L4Key]
 				Action:     action,
 			})
 		}
+	}
+	return nil
+}
+
+func validateIPv4L4ACLRuleSupport(rule policy.Rule) error {
+	protocol, err := protocolNumber(rule.Protocol)
+	if err != nil {
+		return err
+	}
+	if protocol != 1 && protocol != 6 && protocol != 17 {
+		return nil
+	}
+	if _, ok := tcxAction(rule.Action); !ok {
+		return nil
+	}
+	if rule.RemoteCIDR.IsValid() && !rule.RemoteCIDR.Addr().Is4() {
+		return fmt.Errorf("IPv6 TCX ACL is not supported by IPv4 TCX datapath")
 	}
 	return nil
 }

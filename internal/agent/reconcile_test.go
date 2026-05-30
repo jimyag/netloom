@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"net/netip"
+	"strings"
 	"testing"
 
 	"github.com/cilium/ebpf"
@@ -235,6 +236,43 @@ func TestReconcileNodeWithTCXInterfaceAcceptsCIDRPolicy(t *testing.T) {
 	}
 }
 
+func TestReconcileNodeWithTCXInterfaceRejectsIPv6Policy(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:             "pod-a",
+			VPC:            "prod",
+			Subnet:         "apps-v6",
+			IP:             netip.MustParseAddr("fd00:10::10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"v6-web"},
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "v6-web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "drop-v6",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("fd00:20::/64"),
+				Ports:      []model.PortRange{{From: 8080, To: 8080}},
+				Action:     model.ActionDrop,
+			}},
+		}},
+	}
+	_, err := ReconcileNodeWithOptions(context.Background(), state, ReconcileOptions{
+		Node:         "node-a",
+		Store:        dataplane.NewInMemoryPolicyStore(),
+		TCXInterface: "lo",
+	})
+	if err == nil {
+		t.Fatal("expected TCX attach to reject IPv6 policy")
+	}
+	if !strings.Contains(err.Error(), "IPv6 TCX ACL is not supported") {
+		t.Fatalf("error %q does not mention IPv6 TCX support", err)
+	}
+}
+
 func TestTCXTargetsBuildsOneEgressTargetPerWorkload(t *testing.T) {
 	targets := tcxTargets(ReconcileOptions{TCXWorkload: true}, []policy.Program{
 		tcxProgram("pod-a", model.DirectionIngress, "172.30.0.11/32", 8080),
@@ -441,6 +479,66 @@ func TestReconcilerClearsConntrackWhenPolicyChangesOrEndpointIsRemoved(t *testin
 	}
 	if reconciler.ConntrackStore().Len() != 0 {
 		t.Fatalf("conntrack entries after endpoint removal = %d, want 0", reconciler.ConntrackStore().Len())
+	}
+}
+
+func TestReconcilerClearsConntrackForNonTCXPolicyChange(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:             "pod-a",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"web"},
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "allow-web-range",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("10.10.0.11/32"),
+				Ports:      []model.PortRange{{From: 443, To: 444}},
+				Action:     model.ActionAllow,
+				Stateful:   true,
+			}},
+		}},
+	}
+	reconciler := NewReconciler(dataplane.NewInMemoryPolicyStore())
+	if _, err := reconciler.Reconcile(context.Background(), state, ReconcileOptions{Node: "node-a"}); err != nil {
+		t.Fatal(err)
+	}
+	if tcxEligibleProgramForDirection(policy.Program{
+		EndpointID: "pod-a",
+		Rules: []policy.Rule{{
+			ID:         "allow-web-range",
+			Direction:  model.DirectionIngress,
+			Protocol:   model.ProtocolTCP,
+			RemoteCIDR: netip.MustParsePrefix("10.10.0.11/32"),
+			Ports:      []model.PortRange{{From: 443, To: 444}},
+			Action:     model.ActionAllow,
+			Stateful:   true,
+		}},
+	}, model.DirectionIngress) {
+		t.Fatal("test policy should not be TCX eligible")
+	}
+
+	reconciler.ConntrackStore().Add(dataplane.ConntrackKey{
+		EndpointID:     "pod-a",
+		RemoteIdentity: 100,
+		Direction:      dataplane.DirectionEgress,
+		Protocol:       6,
+		DestPort:       55000,
+	})
+	state.SecurityGroups[0].Rules[0].Action = model.ActionDrop
+	if _, err := reconciler.Reconcile(context.Background(), state, ReconcileOptions{Node: "node-a"}); err != nil {
+		t.Fatal(err)
+	}
+	if reconciler.ConntrackStore().Len() != 0 {
+		t.Fatalf("conntrack entries after non-TCX policy change = %d, want 0", reconciler.ConntrackStore().Len())
 	}
 }
 
