@@ -194,6 +194,14 @@ endpoint set is then known; each remote member contributes its own resolved port
 and exact CIDR. CIDR, CIDR-group, entity, and FQDN egress rules reject named
 ports instead of guessing a destination port source.
 
+Service egress policy follows Cilium's `toServices` shape for VIP-based
+dependencies. A `SecurityGroupRule` can use `remote_service` to reference a
+same-VPC desired-state `LoadBalancer`; the compiler expands it to the service
+VIP as `/32` or `/128`. If the rule does not pin a concrete protocol or port,
+the expanded ACL inherits the LoadBalancer protocol and frontend port, so the
+eBPF policy map enforces the service-facing tuple while topology resolution can
+still translate the VIP to a healthy backend.
+
 Remote entities follow the Cilium `toEntities` and `fromEntities` shape for
 common destination classes that should not be repeated as hand-written CIDRs.
 `remote_entities` currently supports `all`, `world`, `cluster`, `private`,

@@ -341,6 +341,33 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 			wantErr: "references remote cidr group",
 		},
 		{
+			name: "remote service unknown",
+			mutate: func(state *DesiredState) {
+				state.SecurityGroups[0].Rules[0].RemoteCIDR = netip.Prefix{}
+				state.SecurityGroups[0].Rules[0].Direction = model.DirectionEgress
+				state.SecurityGroups[0].Rules[0].RemoteService = "missing"
+			},
+			wantErr: "references unknown remote service",
+		},
+		{
+			name: "remote service vpc mismatch",
+			mutate: func(state *DesiredState) {
+				state.VPCs = append(state.VPCs, model.VPC{Name: "other"})
+				state.Subnets = append(state.Subnets, model.Subnet{
+					Name:    "other-apps",
+					VPC:     "other",
+					CIDR:    netip.MustParsePrefix("10.20.0.0/24"),
+					Gateway: netip.MustParseAddr("10.20.0.1"),
+				})
+				state.LoadBalancers[0].VPC = "other"
+				state.LoadBalancers[0].Subnets = []string{"other-apps"}
+				state.SecurityGroups[0].Rules[0].RemoteCIDR = netip.Prefix{}
+				state.SecurityGroups[0].Rules[0].Direction = model.DirectionEgress
+				state.SecurityGroups[0].Rules[0].RemoteService = "web"
+			},
+			wantErr: "references remote service",
+		},
+		{
 			name: "duplicate endpoint",
 			mutate: func(state *DesiredState) {
 				state.Endpoints = append(state.Endpoints, state.Endpoints[0])

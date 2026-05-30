@@ -801,6 +801,30 @@ func TestSecurityGroupRuleValidatesRemoteEndpointSelector(t *testing.T) {
 	}
 }
 
+func TestSecurityGroupRuleValidatesRemoteService(t *testing.T) {
+	rule := SecurityGroupRule{
+		ID:            "allow-web-service",
+		Direction:     DirectionEgress,
+		Protocol:      ProtocolAny,
+		RemoteService: "web",
+		Action:        ActionAllow,
+	}
+	if err := rule.Validate(); err != nil {
+		t.Fatal(err)
+	}
+
+	rule.RemoteCIDR = netip.MustParsePrefix("10.20.0.0/16")
+	if err := rule.Validate(); err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("error = %v, want remote service exclusivity validation", err)
+	}
+
+	rule.RemoteCIDR = netip.Prefix{}
+	rule.Direction = DirectionIngress
+	if err := rule.Validate(); err == nil || !strings.Contains(err.Error(), "only supported for egress") {
+		t.Fatalf("error = %v, want remote service direction validation", err)
+	}
+}
+
 func TestSecurityGroupRuleValidatesExceptCIDRs(t *testing.T) {
 	rule := SecurityGroupRule{
 		ID:          "allow-corp",

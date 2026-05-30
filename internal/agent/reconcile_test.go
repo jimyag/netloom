@@ -863,6 +863,59 @@ func TestReconcileNodeExpandsRemoteEndpointSelector(t *testing.T) {
 	}
 }
 
+func TestReconcileNodeCompilesRemoteServiceRule(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:             "pod-client",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"client"},
+		}},
+		LoadBalancers: []model.LoadBalancer{{
+			Name:     "web",
+			VPC:      "prod",
+			VIP:      netip.MustParseAddr("10.96.0.10"),
+			Port:     80,
+			Protocol: model.ProtocolTCP,
+			Backends: []model.LoadBalancerBackend{{
+				IP:   netip.MustParseAddr("10.10.0.20"),
+				Port: 8080,
+			}},
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "client",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:            "allow-web-service",
+				Priority:      100,
+				Direction:     model.DirectionEgress,
+				Protocol:      model.ProtocolAny,
+				RemoteService: "web",
+				Action:        model.ActionAllow,
+			}},
+		}},
+	}
+	store := dataplane.NewInMemoryPolicyStore()
+	result, err := ReconcileNode(context.Background(), state, "node-a", store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Entries != 1 || result.TCXEligible != 1 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	decision := dataplane.Evaluate(store.Entries("pod-client"), dataplane.Packet{
+		Direction: dataplane.DirectionEgress,
+		Protocol:  6,
+		RemoteIP:  netip.MustParseAddr("10.96.0.10"),
+		DestPort:  80,
+	})
+	if decision.Verdict != dataplane.VerdictAllow {
+		t.Fatalf("expected egress tcp/80 to service VIP to allow, got %+v", decision)
+	}
+}
+
 func TestReconcileNodeCompilesFQDNRulesFromDNSRecords(t *testing.T) {
 	state := control.DesiredState{
 		Endpoints: []model.Endpoint{{

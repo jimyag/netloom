@@ -206,6 +206,7 @@ func prepareReconcile(ctx context.Context, state control.DesiredState, options R
 			Endpoints:  state.Endpoints,
 			Subnets:    state.Subnets,
 			Gateways:   state.Gateways,
+			Services:   state.LoadBalancers,
 			DNSRecords: state.DNSRecords,
 			CIDRGroups: state.CIDRGroups,
 		})

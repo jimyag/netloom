@@ -653,6 +653,86 @@ func TestCompileForEndpointWithContextAllowsUnmatchedRemoteEndpointSelector(t *t
 	}
 }
 
+func TestCompileForEndpointWithContextExpandsRemoteService(t *testing.T) {
+	endpoint := model.Endpoint{
+		ID:             "pod-client",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"client"},
+	}
+	program, err := CompileForEndpointWithContext(endpoint, map[string]model.SecurityGroup{
+		"client": {
+			Name: "client",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:            "egress-web-service",
+				Priority:      100,
+				Direction:     model.DirectionEgress,
+				Protocol:      model.ProtocolAny,
+				RemoteService: "web",
+				Action:        model.ActionAllow,
+			}},
+		},
+	}, CompileContext{Services: []model.LoadBalancer{{
+		Name:     "web",
+		VPC:      "prod",
+		VIP:      netip.MustParseAddr("10.96.0.10"),
+		Port:     80,
+		Protocol: model.ProtocolTCP,
+		Backends: []model.LoadBalancerBackend{{
+			IP:   netip.MustParseAddr("10.10.0.20"),
+			Port: 8080,
+		}},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(program.Rules) != 1 || len(program.MapEntries) != 1 {
+		t.Fatalf("program rules=%d entries=%d, want one service VIP rule", len(program.Rules), len(program.MapEntries))
+	}
+	rule := program.Rules[0]
+	if rule.RemoteCIDR.String() != "10.96.0.10/32" || rule.Protocol != model.ProtocolTCP {
+		t.Fatalf("service rule cidr=%s protocol=%s, want vip /32 tcp", rule.RemoteCIDR, rule.Protocol)
+	}
+	if len(rule.Ports) != 1 || rule.Ports[0].From != 80 || rule.Ports[0].To != 80 {
+		t.Fatalf("service rule ports=%+v, want vip port 80", rule.Ports)
+	}
+	entry := program.MapEntries[0]
+	if entry.RemoteCIDR.String() != "10.96.0.10/32" || entry.Key.DestPort != 80 || entry.Key.Protocol != model.ProtocolTCP {
+		t.Fatalf("service entry = %+v remote cidr %s, want tcp/80 vip", entry.Key, entry.RemoteCIDR)
+	}
+}
+
+func TestCompileForEndpointWithContextRejectsUnknownRemoteService(t *testing.T) {
+	endpoint := model.Endpoint{
+		ID:             "pod-client",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"client"},
+	}
+	_, err := CompileForEndpointWithContext(endpoint, map[string]model.SecurityGroup{
+		"client": {
+			Name: "client",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:            "egress-web-service",
+				Priority:      100,
+				Direction:     model.DirectionEgress,
+				Protocol:      model.ProtocolAny,
+				RemoteService: "web",
+				Action:        model.ActionAllow,
+			}},
+		},
+	}, CompileContext{})
+	if err == nil || !strings.Contains(err.Error(), "unknown remote service") {
+		t.Fatalf("error = %v, want unknown remote service", err)
+	}
+}
+
 func TestCompileForEndpointWithStateRejectsUnknownRemoteGroup(t *testing.T) {
 	endpoint := model.Endpoint{
 		ID:             "pod-a",

@@ -190,6 +190,7 @@ type SecurityGroupRule struct {
 	ExceptCIDRs            []netip.Prefix `json:"except_cidrs"`
 	RemoteGroup            string         `json:"remote_group"`
 	RemoteEndpointSelector Labels         `json:"remote_endpoint_selector"`
+	RemoteService          string         `json:"remote_service"`
 	RemoteCIDRGroup        string         `json:"remote_cidr_group"`
 	RemoteEntities         []string       `json:"remote_entities"`
 	RemoteFQDNs            []FQDNSelector `json:"remote_fqdns"`
@@ -903,6 +904,9 @@ func (r SecurityGroupRule) Validate() error {
 	if len(r.RemoteEndpointSelector) > 0 {
 		remoteSelectors++
 	}
+	if r.RemoteService != "" {
+		remoteSelectors++
+	}
 	if r.RemoteCIDRGroup != "" {
 		remoteSelectors++
 	}
@@ -913,7 +917,10 @@ func (r SecurityGroupRule) Validate() error {
 		remoteSelectors++
 	}
 	if remoteSelectors > 1 {
-		return errors.New("remote cidr, remote group, remote endpoint selector, remote cidr group, remote entities and remote fqdns are mutually exclusive")
+		return errors.New("remote cidr, remote group, remote endpoint selector, remote service, remote cidr group, remote entities and remote fqdns are mutually exclusive")
+	}
+	if r.RemoteService != "" && r.Direction != DirectionEgress {
+		return errors.New("remote service is only supported for egress rules")
 	}
 	if err := r.RemoteEndpointSelector.Validate(); err != nil {
 		return fmt.Errorf("remote endpoint selector: %w", err)

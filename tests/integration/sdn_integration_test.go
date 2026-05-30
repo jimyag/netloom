@@ -54,7 +54,7 @@ func TestDesiredStateDrivesTopologyRoutesAndEBPFStyleACL(t *testing.T) {
 		t.Fatalf("security group rules for pod-b were not compiled, got: %+v", memoryBackend.PolicyProgram)
 	}
 	clientProgram, ok := memoryBackend.PolicyProgram["pod-a"]
-	if !ok || len(clientProgram.Rules) != 9 {
+	if !ok || len(clientProgram.Rules) != 10 {
 		t.Fatalf("egress rules for pod-a were not compiled, got: %+v", memoryBackend.PolicyProgram)
 	}
 	if !hasOVNCommand(ovnRecorder.Operations(), "lr-policy-add") {
@@ -217,6 +217,15 @@ func TestDesiredStateDrivesTopologyRoutesAndEBPFStyleACL(t *testing.T) {
 	if selectorAllow.Verdict != dataplane.VerdictAllow {
 		t.Fatalf("expected egress tcp/9091 to selector-derived endpoint to allow, got %+v", selectorAllow)
 	}
+	servicePolicyAllow := dataplane.Evaluate(clientEntries, dataplane.Packet{
+		Direction: dataplane.DirectionEgress,
+		Protocol:  6,
+		RemoteIP:  mustAddr(t, "10.96.0.10"),
+		DestPort:  80,
+	})
+	if servicePolicyAllow.Verdict != dataplane.VerdictAllow {
+		t.Fatalf("expected egress tcp/80 to remote service VIP to allow, got %+v", servicePolicyAllow)
+	}
 	exceptAllow := dataplane.Evaluate(clientEntries, dataplane.Packet{
 		Direction: dataplane.DirectionEgress,
 		Protocol:  6,
@@ -329,6 +338,7 @@ const integrationStateJSON = `{
       {"id": "client-egress-host", "priority": 70, "direction": "egress", "protocol": "tcp", "remote_entities": ["host"], "ports": [{"from": 9444, "to": 9444}], "action": "allow"},
       {"id": "client-egress-remote-node", "priority": 60, "direction": "egress", "protocol": "tcp", "remote_entities": ["remote-node"], "ports": [{"from": 4240, "to": 4240}], "action": "allow"},
       {"id": "client-egress-server-selector", "priority": 50, "direction": "egress", "protocol": "tcp", "remote_endpoint_selector": {"app": "server", "env": "prod"}, "ports": [{"from": 9091, "to": 9091}], "action": "allow"},
+      {"id": "client-egress-web-service", "priority": 40, "direction": "egress", "protocol": "any", "remote_service": "web", "action": "allow"},
       {"id": "client-drop-platform-dns", "priority": 1000, "direction": "egress", "protocol": "tcp", "remote_cidr": "198.51.100.0/24", "ports": [{"from": 9553, "to": 9553}], "action": "drop"}
     ]},
     {"name": "server", "vpc": "prod", "rules": [

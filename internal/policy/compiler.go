@@ -27,6 +27,7 @@ type Rule struct {
 	Protocol        model.Protocol
 	RemoteCIDR      netip.Prefix
 	RemoteGroup     string
+	RemoteService   string
 	RemoteCIDRGroup string
 	RemoteEntity    string
 	RemoteEndpoint  string
@@ -68,6 +69,7 @@ type CompileContext struct {
 	Endpoints  []model.Endpoint
 	Subnets    []model.Subnet
 	Gateways   []model.Gateway
+	Services   []model.LoadBalancer
 	DNSRecords []model.DNSRecord
 	CIDRGroups []model.CIDRGroup
 	Now        time.Time
@@ -106,6 +108,10 @@ func CompileForEndpointWithContext(endpoint model.Endpoint, groups map[string]mo
 	if err != nil {
 		return Program{}, err
 	}
+	services, err := indexServices(endpoint.VPC, ctx.Services)
+	if err != nil {
+		return Program{}, err
+	}
 	subnetsByVPC, err := indexSubnetsByVPC(ctx.Subnets)
 	if err != nil {
 		return Program{}, err
@@ -127,7 +133,7 @@ func CompileForEndpointWithContext(endpoint model.Endpoint, groups map[string]mo
 			return Program{}, err
 		}
 		for _, rule := range group.Rules {
-			compiledRules, err := expandRule(endpoint, group, rule, membersByGroup, endpointsBySelector, dnsRecords, cidrGroups, subnetsByVPC, gatewayCIDRsByVPC)
+			compiledRules, err := expandRule(endpoint, group, rule, membersByGroup, endpointsBySelector, dnsRecords, cidrGroups, services, subnetsByVPC, gatewayCIDRsByVPC)
 			if err != nil {
 				return Program{}, err
 			}
@@ -156,7 +162,7 @@ func CompileForEndpointWithContext(endpoint model.Endpoint, groups map[string]mo
 	return program, nil
 }
 
-func expandRule(endpoint model.Endpoint, securityGroup model.SecurityGroup, rule model.SecurityGroupRule, membersByGroup map[string][]model.Endpoint, endpointsBySelector []model.Endpoint, dnsRecords map[string][]netip.Addr, cidrGroups map[string][]netip.Prefix, subnetsByVPC map[string][]netip.Prefix, gatewayCIDRsByVPC map[string][]gatewayCIDR) ([]Rule, error) {
+func expandRule(endpoint model.Endpoint, securityGroup model.SecurityGroup, rule model.SecurityGroupRule, membersByGroup map[string][]model.Endpoint, endpointsBySelector []model.Endpoint, dnsRecords map[string][]netip.Addr, cidrGroups map[string][]netip.Prefix, services map[string]model.LoadBalancer, subnetsByVPC map[string][]netip.Prefix, gatewayCIDRsByVPC map[string][]gatewayCIDR) ([]Rule, error) {
 	base := Rule{
 		ID:              rule.ID,
 		Tier:            securityGroup.Tier,
@@ -165,6 +171,7 @@ func expandRule(endpoint model.Endpoint, securityGroup model.SecurityGroup, rule
 		Protocol:        rule.Protocol,
 		RemoteCIDR:      rule.RemoteCIDR,
 		RemoteGroup:     rule.RemoteGroup,
+		RemoteService:   rule.RemoteService,
 		RemoteCIDRGroup: rule.RemoteCIDRGroup,
 		Ports:           append([]model.PortRange(nil), rule.Ports...),
 		NamedPorts:      append([]string(nil), rule.NamedPorts...),
@@ -190,6 +197,9 @@ func expandRule(endpoint model.Endpoint, securityGroup model.SecurityGroup, rule
 	}
 	if len(rule.RemoteEntities) > 0 {
 		return expandEntityRule(base, endpoint, rule.RemoteEntities, subnetsByVPC, gatewayCIDRsByVPC)
+	}
+	if rule.RemoteService != "" {
+		return expandServiceRule(base, services)
 	}
 	if rule.RemoteCIDRGroup != "" {
 		return expandCIDRGroupRule(base, cidrGroups)
@@ -401,6 +411,33 @@ func expandCIDRGroupRule(base Rule, groups map[string][]netip.Prefix) ([]Rule, e
 		out = append(out, expanded)
 	}
 	return out, nil
+}
+
+func expandServiceRule(base Rule, services map[string]model.LoadBalancer) ([]Rule, error) {
+	service, ok := services[base.RemoteService]
+	if !ok {
+		return nil, fmt.Errorf("rule %s references unknown remote service %s", base.ID, base.RemoteService)
+	}
+	expanded := base
+	bits := 128
+	if service.VIP.Is4() {
+		bits = 32
+	}
+	expanded.RemoteCIDR = netip.PrefixFrom(service.VIP, bits)
+	if expanded.Protocol == "" || expanded.Protocol == model.ProtocolAny {
+		expanded.Protocol = loadBalancerProtocol(service)
+	}
+	if len(expanded.Ports) == 0 {
+		expanded.Ports = []model.PortRange{{From: service.Port, To: service.Port}}
+	}
+	return []Rule{expanded}, nil
+}
+
+func loadBalancerProtocol(lb model.LoadBalancer) model.Protocol {
+	if lb.Protocol == "" {
+		return model.ProtocolTCP
+	}
+	return lb.Protocol
 }
 
 func expandCIDRExceptRule(base Rule, exceptCIDRs []netip.Prefix) []Rule {
@@ -692,6 +729,23 @@ func indexCIDRGroups(vpc string, groups []model.CIDRGroup) (map[string][]netip.P
 	return out, nil
 }
 
+func indexServices(vpc string, services []model.LoadBalancer) (map[string]model.LoadBalancer, error) {
+	if len(services) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]model.LoadBalancer, len(services))
+	for _, service := range services {
+		if err := service.Validate(); err != nil {
+			return nil, err
+		}
+		if service.VPC != vpc {
+			continue
+		}
+		out[service.Name] = service
+	}
+	return out, nil
+}
+
 func expandCIDRGroupEntry(entry model.CIDRGroupEntry) []netip.Prefix {
 	cidrs := []netip.Prefix{entry.CIDR.Masked()}
 	for _, except := range entry.ExceptCIDRs {
@@ -886,6 +940,8 @@ func remoteIdentity(rule Rule) uint32 {
 		return EndpointIdentity(rule.RemoteEndpoint)
 	case rule.RemoteEntity != "":
 		return stableIdentity("entity:" + rule.RemoteEntity + ":" + rule.RemoteCIDR.String())
+	case rule.RemoteService != "":
+		return stableIdentity("service:" + rule.RemoteService + ":" + rule.RemoteCIDR.String())
 	case rule.RemoteCIDR.IsValid():
 		return stableIdentity("cidr:" + rule.RemoteCIDR.String())
 	case rule.RemoteGroup != "":

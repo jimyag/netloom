@@ -252,6 +252,7 @@ func (c *Controller) Reconcile(ctx context.Context, state DesiredState) error {
 			Endpoints:  state.Endpoints,
 			Subnets:    state.Subnets,
 			Gateways:   state.Gateways,
+			Services:   state.LoadBalancers,
 			DNSRecords: state.DNSRecords,
 			CIDRGroups: state.CIDRGroups,
 		})
@@ -358,6 +359,28 @@ func validateObjectGraph(state DesiredState) error {
 
 	securityGroups := make(map[string]model.SecurityGroup, len(state.SecurityGroups))
 	cidrGroups := make(map[string]model.CIDRGroup, len(state.CIDRGroups))
+	loadBalancers := make(map[string]model.LoadBalancer, len(state.LoadBalancers))
+	for _, lb := range state.LoadBalancers {
+		if err := lb.Validate(); err != nil {
+			return err
+		}
+		if _, ok := loadBalancers[lb.Name]; ok {
+			return fmt.Errorf("duplicate load balancer name %q", lb.Name)
+		}
+		if _, ok := vpcs[lb.VPC]; !ok {
+			return fmt.Errorf("load balancer %q references unknown vpc %q", lb.Name, lb.VPC)
+		}
+		for _, subnetName := range lb.Subnets {
+			subnet, ok := subnets[subnetName]
+			if !ok {
+				return fmt.Errorf("load balancer %q references unknown subnet %q", lb.Name, subnetName)
+			}
+			if subnet.VPC != lb.VPC {
+				return fmt.Errorf("load balancer %q references subnet %q in vpc %q, want %q", lb.Name, subnetName, subnet.VPC, lb.VPC)
+			}
+		}
+		loadBalancers[lb.Name] = lb
+	}
 	for _, group := range state.CIDRGroups {
 		if err := group.Validate(); err != nil {
 			return err
@@ -400,6 +423,15 @@ func validateObjectGraph(state DesiredState) error {
 				}
 				if remote.VPC != group.VPC {
 					return fmt.Errorf("security group rule %q references remote cidr group %q in vpc %q, want %q", rule.ID, rule.RemoteCIDRGroup, remote.VPC, group.VPC)
+				}
+			}
+			if rule.RemoteService != "" {
+				service, ok := loadBalancers[rule.RemoteService]
+				if !ok {
+					return fmt.Errorf("security group rule %q references unknown remote service %q", rule.ID, rule.RemoteService)
+				}
+				if service.VPC != group.VPC {
+					return fmt.Errorf("security group rule %q references remote service %q in vpc %q, want %q", rule.ID, rule.RemoteService, service.VPC, group.VPC)
 				}
 			}
 		}
@@ -495,23 +527,6 @@ func validateObjectGraph(state DesiredState) error {
 		}
 		if _, ok := vpcs[rule.VPC]; !ok {
 			return fmt.Errorf("nat rule %q references unknown vpc %q", rule.Name, rule.VPC)
-		}
-	}
-	for _, lb := range state.LoadBalancers {
-		if err := lb.Validate(); err != nil {
-			return err
-		}
-		if _, ok := vpcs[lb.VPC]; !ok {
-			return fmt.Errorf("load balancer %q references unknown vpc %q", lb.Name, lb.VPC)
-		}
-		for _, subnetName := range lb.Subnets {
-			subnet, ok := subnets[subnetName]
-			if !ok {
-				return fmt.Errorf("load balancer %q references unknown subnet %q", lb.Name, subnetName)
-			}
-			if subnet.VPC != lb.VPC {
-				return fmt.Errorf("load balancer %q references subnet %q in vpc %q, want %q", lb.Name, subnetName, subnet.VPC, lb.VPC)
-			}
 		}
 	}
 	for _, record := range state.DNSRecords {
