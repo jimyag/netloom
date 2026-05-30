@@ -192,6 +192,29 @@ func TestSubnetExcludeCIDRValidation(t *testing.T) {
 	}
 }
 
+func TestSecurityGroupTierValidation(t *testing.T) {
+	valid := SecurityGroup{
+		Name: "web",
+		VPC:  "prod",
+		Tier: 1,
+		Rules: []SecurityGroupRule{{
+			ID:        "allow-web",
+			Direction: DirectionIngress,
+			Protocol:  ProtocolTCP,
+			Ports:     []PortRange{{From: 443, To: 443}},
+			Action:    ActionAllow,
+		}},
+	}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("valid security group tier failed: %v", err)
+	}
+	invalid := valid
+	invalid.Tier = 2
+	if err := invalid.Validate(); err == nil || !strings.Contains(err.Error(), "tier") {
+		t.Fatalf("error = %v, want tier validation", err)
+	}
+}
+
 func TestPolicyRouteRequiresNextHopForReroute(t *testing.T) {
 	route := PolicyRoute{
 		Name:     "force-egress",

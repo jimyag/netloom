@@ -21,6 +21,7 @@ type Program struct {
 
 type Rule struct {
 	ID              string
+	Tier            int
 	Priority        int
 	Direction       model.Direction
 	Protocol        model.Protocol
@@ -112,7 +113,7 @@ func CompileForEndpointWithContext(endpoint model.Endpoint, groups map[string]mo
 			return Program{}, err
 		}
 		for _, rule := range group.Rules {
-			compiledRules, err := expandRule(endpoint, group.Name, rule, membersByGroup, dnsRecords, cidrGroups, subnetsByVPC)
+			compiledRules, err := expandRule(endpoint, group, rule, membersByGroup, dnsRecords, cidrGroups, subnetsByVPC)
 			if err != nil {
 				return Program{}, err
 			}
@@ -127,6 +128,9 @@ func CompileForEndpointWithContext(endpoint model.Endpoint, groups map[string]mo
 		}
 	}
 	sort.SliceStable(program.Rules, func(i, j int) bool {
+		if program.Rules[i].Tier != program.Rules[j].Tier {
+			return program.Rules[i].Tier < program.Rules[j].Tier
+		}
 		return program.Rules[i].Priority > program.Rules[j].Priority
 	})
 	sort.SliceStable(program.MapEntries, func(i, j int) bool {
@@ -138,9 +142,10 @@ func CompileForEndpointWithContext(endpoint model.Endpoint, groups map[string]mo
 	return program, nil
 }
 
-func expandRule(endpoint model.Endpoint, securityGroup string, rule model.SecurityGroupRule, membersByGroup map[string][]model.Endpoint, dnsRecords map[string][]netip.Addr, cidrGroups map[string][]netip.Prefix, subnetsByVPC map[string][]netip.Prefix) ([]Rule, error) {
+func expandRule(endpoint model.Endpoint, securityGroup model.SecurityGroup, rule model.SecurityGroupRule, membersByGroup map[string][]model.Endpoint, dnsRecords map[string][]netip.Addr, cidrGroups map[string][]netip.Prefix, subnetsByVPC map[string][]netip.Prefix) ([]Rule, error) {
 	base := Rule{
 		ID:              rule.ID,
+		Tier:            securityGroup.Tier,
 		Priority:        rule.Priority,
 		Direction:       rule.Direction,
 		Protocol:        rule.Protocol,
@@ -154,7 +159,7 @@ func expandRule(endpoint model.Endpoint, securityGroup string, rule model.Securi
 		Action:          rule.Action,
 		Stateful:        rule.Stateful,
 		Log:             rule.Log,
-		SecurityGroup:   securityGroup,
+		SecurityGroup:   securityGroup.Name,
 	}
 	if len(rule.NamedPorts) > 0 && rule.Direction == model.DirectionIngress {
 		ports, err := resolveNamedPorts(rule.Ports, rule.NamedPorts, rule.Protocol, endpoint)
@@ -793,11 +798,27 @@ func l4PrefixBits(protocol model.Protocol, port uint16) uint8 {
 }
 
 func precedence(rule Rule) uint32 {
-	if rule.Action == model.ActionDrop || rule.Action == model.ActionReject {
+	if rule.Tier <= 0 && (rule.Action == model.ActionDrop || rule.Action == model.ActionReject) {
 		return math.MaxUint32
 	}
-	if rule.Priority < 0 {
-		return 0
+	tier := rule.Tier
+	if tier < 0 {
+		tier = 0
 	}
-	return uint32(rule.Priority)
+	if tier > 1 {
+		tier = 1
+	}
+	priority := rule.Priority
+	if priority < 0 {
+		priority = 0
+	}
+	const priorityMask = 1<<30 - 1
+	if priority > priorityMask {
+		priority = priorityMask
+	}
+	precedence := uint32(1-tier) << 31
+	if rule.Action == model.ActionDrop || rule.Action == model.ActionReject {
+		precedence |= 1 << 30
+	}
+	return precedence | uint32(priority)
 }

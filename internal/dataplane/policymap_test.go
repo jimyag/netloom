@@ -132,6 +132,63 @@ func TestPolicyBackendReplacesEndpointEntries(t *testing.T) {
 	}
 }
 
+func TestPolicyBackendHonorsSecurityGroupTierPrecedence(t *testing.T) {
+	endpoint := model.Endpoint{
+		ID:             "pod-a",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"platform", "tenant"},
+	}
+	program, err := policy.CompileForEndpoint(endpoint, map[string]model.SecurityGroup{
+		"platform": {
+			Name: "platform",
+			VPC:  "prod",
+			Tier: 0,
+			Rules: []model.SecurityGroupRule{{
+				ID:         "platform-allow-api",
+				Priority:   10,
+				Direction:  model.DirectionEgress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("192.0.2.0/24"),
+				Ports:      []model.PortRange{{From: 443, To: 443}},
+				Action:     model.ActionAllow,
+			}},
+		},
+		"tenant": {
+			Name: "tenant",
+			VPC:  "prod",
+			Tier: 1,
+			Rules: []model.SecurityGroupRule{{
+				ID:         "tenant-drop-api",
+				Priority:   1000,
+				Direction:  model.DirectionEgress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("192.0.2.0/24"),
+				Ports:      []model.PortRange{{From: 443, To: 443}},
+				Action:     model.ActionDrop,
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := EncodeProgram(program)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision := Evaluate(entries, Packet{
+		RemoteIP:  netip.MustParseAddr("192.0.2.10"),
+		Direction: DirectionEgress,
+		Protocol:  6,
+		DestPort:  443,
+	})
+	if decision.Verdict != VerdictAllow {
+		t.Fatalf("verdict = %s, want tier-0 allow to beat tier-1 drop", decision.Verdict)
+	}
+}
+
 func TestPolicyBackendPreservesRejectAction(t *testing.T) {
 	endpoint := model.Endpoint{
 		ID:             "pod-a",

@@ -174,6 +174,11 @@ drives policy-map evaluation, while the exact CIDR lets the TCX L4 projection
 enforce remote-group rules for workload traffic. When membership changes,
 periodic agent reconcile recompiles the endpoint program and replaces the TCX
 attachment signature.
+Security groups also carry a Kube-OVN-style `tier` field constrained to 0 or 1.
+The eBPF policy map encodes tier into rule precedence: tier 0 entries win over
+tier 1 entries, and within the same tier drop/reject entries continue to win
+over allow/log entries. This keeps platform guardrails deterministic without
+moving security-group enforcement back into OVN ACLs.
 
 Named ports follow Cilium's late-binding policy behavior. Endpoints can declare
 `named_ports` with a name, TCP or UDP protocol, and concrete port number.

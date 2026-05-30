@@ -53,7 +53,7 @@ func TestDesiredStateDrivesTopologyRoutesAndEBPFStyleACL(t *testing.T) {
 		t.Fatalf("security group rules for pod-b were not compiled, got: %+v", memoryBackend.PolicyProgram)
 	}
 	clientProgram, ok := memoryBackend.PolicyProgram["pod-a"]
-	if !ok || len(clientProgram.Rules) != 3 {
+	if !ok || len(clientProgram.Rules) != 5 {
 		t.Fatalf("egress rules for pod-a were not compiled, got: %+v", memoryBackend.PolicyProgram)
 	}
 	if !hasOVNCommand(ovnRecorder.Operations(), "lr-policy-add") {
@@ -215,6 +215,15 @@ func TestDesiredStateDrivesTopologyRoutesAndEBPFStyleACL(t *testing.T) {
 	if exceptDrop.Verdict != dataplane.VerdictDrop {
 		t.Fatalf("expected egress tcp/9443 inside except cidr to drop, got %+v", exceptDrop)
 	}
+	tierAllow := dataplane.Evaluate(clientEntries, dataplane.Packet{
+		Direction: dataplane.DirectionEgress,
+		Protocol:  6,
+		RemoteIP:  mustAddr(t, "198.51.100.10"),
+		DestPort:  9553,
+	})
+	if tierAllow.Verdict != dataplane.VerdictAllow {
+		t.Fatalf("expected tier-0 platform rule to beat tier-1 tenant drop, got %+v", tierAllow)
+	}
 }
 
 func hasOVNCommand(ops []ovn.Operation, command string) bool {
@@ -247,7 +256,7 @@ const integrationStateJSON = `{
   "vpcs": [{"name": "prod"}],
   "subnets": [{"name": "apps", "vpc": "prod", "cidr": "10.10.0.0/24", "gateway": "10.10.0.1", "exclude_cidrs": ["10.10.0.128/25"], "provider_network": "physnet-a", "vlan": 100, "dhcp": {"enabled": true, "lease_time": 7200, "mtu": 1400}}],
   "endpoints": [
-    {"id": "pod-a", "vpc": "prod", "subnet": "apps", "ip": "10.10.0.10", "mac": "0A:58:0A:0A:00:0A", "node": "node-a", "security_groups": ["client"]},
+    {"id": "pod-a", "vpc": "prod", "subnet": "apps", "ip": "10.10.0.10", "mac": "0A:58:0A:0A:00:0A", "node": "node-a", "security_groups": ["platform-client", "client"]},
     {"id": "pod-b", "vpc": "prod", "subnet": "apps", "ip": "10.10.0.11", "node": "node-b", "security_groups": ["server"]}
   ],
   "route_tables": [{"name": "main", "vpc": "prod", "routes": [{"destination": "0.0.0.0/0", "next_hops": ["10.10.0.253", "10.10.0.254"]}]}],
@@ -260,10 +269,14 @@ const integrationStateJSON = `{
   ],
   "load_balancers": [{"name": "web", "vpc": "prod", "vip": "10.96.0.10", "port": 80, "protocol": "tcp", "backends": [{"ip": "10.10.0.12", "port": 8080, "healthy": false}, {"ip": "10.10.0.11", "port": 8080}], "subnets": ["apps"]}],
   "security_groups": [
-    {"name": "client", "vpc": "prod", "rules": [
+    {"name": "platform-client", "vpc": "prod", "tier": 0, "rules": [
+      {"id": "platform-egress-dns", "priority": 10, "direction": "egress", "protocol": "tcp", "remote_cidr": "198.51.100.0/24", "ports": [{"from": 9553, "to": 9553}], "action": "allow"}
+    ]},
+    {"name": "client", "vpc": "prod", "tier": 1, "rules": [
       {"id": "client-egress-api", "priority": 100, "direction": "egress", "protocol": "tcp", "remote_fqdns": [{"match_name": "api.example.com"}], "ports": [{"from": 443, "to": 443}], "action": "allow"},
       {"id": "client-egress-corp", "priority": 90, "direction": "egress", "protocol": "tcp", "remote_cidr_group": "corp", "ports": [{"from": 8443, "to": 8443}], "action": "allow"},
-      {"id": "client-egress-docs", "priority": 80, "direction": "egress", "protocol": "tcp", "remote_cidr": "192.0.2.0/24", "except_cidrs": ["192.0.2.128/25"], "ports": [{"from": 9443, "to": 9443}], "action": "allow"}
+      {"id": "client-egress-docs", "priority": 80, "direction": "egress", "protocol": "tcp", "remote_cidr": "192.0.2.0/24", "except_cidrs": ["192.0.2.128/25"], "ports": [{"from": 9443, "to": 9443}], "action": "allow"},
+      {"id": "client-drop-platform-dns", "priority": 1000, "direction": "egress", "protocol": "tcp", "remote_cidr": "198.51.100.0/24", "ports": [{"from": 9553, "to": 9553}], "action": "drop"}
     ]},
     {"name": "server", "vpc": "prod", "rules": [
       {"id": "drop-web", "priority": 200, "direction": "ingress", "protocol": "tcp", "remote_cidr": "10.10.0.10/32", "ports": [{"from": 8080, "to": 8080}], "action": "drop"},

@@ -74,6 +74,58 @@ func TestCompileForEndpointSortsRulesAndPreservesACLShape(t *testing.T) {
 	}
 }
 
+func TestCompileForEndpointSortsSecurityGroupTierBeforeRulePriority(t *testing.T) {
+	endpoint := model.Endpoint{
+		ID:             "pod-a",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"platform", "tenant"},
+	}
+	groups := map[string]model.SecurityGroup{
+		"platform": {
+			Name: "platform",
+			VPC:  "prod",
+			Tier: 0,
+			Rules: []model.SecurityGroupRule{{
+				ID:        "platform-allow",
+				Priority:  10,
+				Direction: model.DirectionEgress,
+				Protocol:  model.ProtocolTCP,
+				Ports:     []model.PortRange{{From: 443, To: 443}},
+				Action:    model.ActionAllow,
+			}},
+		},
+		"tenant": {
+			Name: "tenant",
+			VPC:  "prod",
+			Tier: 1,
+			Rules: []model.SecurityGroupRule{{
+				ID:        "tenant-drop",
+				Priority:  1000,
+				Direction: model.DirectionEgress,
+				Protocol:  model.ProtocolTCP,
+				Ports:     []model.PortRange{{From: 443, To: 443}},
+				Action:    model.ActionDrop,
+			}},
+		},
+	}
+	program, err := CompileForEndpoint(endpoint, groups)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(program.Rules) != 2 {
+		t.Fatalf("rules = %d, want 2", len(program.Rules))
+	}
+	if program.Rules[0].ID != "platform-allow" || program.Rules[0].Tier != 0 {
+		t.Fatalf("first rule = %+v, want tier-0 platform allow", program.Rules[0])
+	}
+	if program.MapEntries[0].RuleID != "platform-allow" {
+		t.Fatalf("highest precedence entry = %s, want platform-allow", program.MapEntries[0].RuleID)
+	}
+}
+
 func TestCompileForEndpointRejectsCrossVPCSecurityGroup(t *testing.T) {
 	endpoint := model.Endpoint{
 		ID:             "pod-a",

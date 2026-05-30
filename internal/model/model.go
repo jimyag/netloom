@@ -159,6 +159,7 @@ type LoadBalancerHealthCheck struct {
 type SecurityGroup struct {
 	Name  string              `json:"name"`
 	VPC   string              `json:"vpc"`
+	Tier  int                 `json:"tier"`
 	Rules []SecurityGroupRule `json:"rules"`
 }
 
@@ -732,6 +733,9 @@ func (s SecurityGroup) Validate() error {
 	}
 	if s.VPC == "" {
 		return errors.New("security group vpc is required")
+	}
+	if s.Tier < 0 || s.Tier > 1 {
+		return errors.New("security group tier must be between 0 and 1")
 	}
 	for i, rule := range s.Rules {
 		if err := rule.Validate(); err != nil {
