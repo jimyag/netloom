@@ -208,6 +208,8 @@ func TestDockerMultiNodeLab(t *testing.T) {
 		}
 	}
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "ip", "netns", "exec", "nl-file-pod-c", "ip", "addr")
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "sh", "-c", "ip netns exec nl-file-pod-c sh -c 'while true; do printf ok | nc -l -p 8081 >/dev/null; done' >/tmp/netloom-ns-c-nc.log 2>&1 &")
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-a", "sh", "-c", "for i in $(seq 1 15); do ip netns exec nl-file-pod-a sh -c 'printf hi | nc -w 1 10.245.0.12 8081' >/tmp/netloom-workload-cidr-probe.log 2>&1 || exit 0; sleep 1; done; cat /tmp/netloom-workload-cidr-probe.log; exit 1")
 	updateWatchScript = "cat >" + watchStatePath + " <<'EOF'\n" + desiredWorkloadCleanupStateJSON() + "\nEOF"
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "sh", "-c", updateWatchScript)
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-a", "sh", "-c", "for i in $(seq 1 15); do ip netns exec nl-file-pod-a sh -c 'printf hi | nc -w 1 10.245.0.11 8080' >/tmp/netloom-workload-probe.log 2>&1 && exit 0; sleep 1; done; cat /tmp/netloom-workload-probe.log; exit 1")
@@ -285,7 +287,7 @@ func desiredWorkloadPolicyDropStateJSON() string {
     {"name": "allow-web", "vpc": "file", "rules": [{"id": "allow-web", "priority": 100, "direction": "ingress", "protocol": "tcp", "remote_cidr": "10.245.0.11/32", "ports": [{"from": 8080, "to": 8080}], "action": "allow"}]},
     {"name": "clients", "vpc": "file", "rules": []},
     {"name": "drop-web", "vpc": "file", "rules": [{"id": "drop-web-from-clients", "priority": 100, "direction": "ingress", "protocol": "tcp", "remote_group": "clients", "ports": [{"from": 8080, "to": 8080}], "action": "drop"}]},
-    {"name": "drop-alt-web", "vpc": "file", "rules": [{"id": "drop-alt-web-from-pod-a", "priority": 100, "direction": "ingress", "protocol": "tcp", "remote_cidr": "10.245.0.10/32", "ports": [{"from": 8081, "to": 8081}], "action": "drop"}]}
+    {"name": "drop-alt-web", "vpc": "file", "rules": [{"id": "drop-alt-web-from-local-subnet", "priority": 100, "direction": "ingress", "protocol": "tcp", "remote_cidr": "10.245.0.0/24", "ports": [{"from": 8081, "to": 8081}], "action": "drop"}]}
   ]
 }`
 }
