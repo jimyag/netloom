@@ -75,6 +75,7 @@ type RouteTable struct {
 type Route struct {
 	Destination netip.Prefix `json:"destination"`
 	NextHop     netip.Addr   `json:"next_hop"`
+	NextHops    []netip.Addr `json:"next_hops"`
 	Blackhole   bool         `json:"blackhole"`
 }
 
@@ -269,15 +270,38 @@ func (r Route) Validate() error {
 		return errors.New("route destination is required")
 	}
 	if r.Blackhole {
+		if r.NextHop.IsValid() || len(r.NextHops) > 0 {
+			return errors.New("blackhole route must not set next hop")
+		}
 		return nil
 	}
-	if !r.NextHop.IsValid() {
+	nextHops := r.RouteNextHops()
+	if len(nextHops) == 0 {
 		return errors.New("route next hop is required when route is not blackhole")
 	}
-	if r.NextHop.Is4() != r.Destination.Addr().Is4() {
-		return errors.New("route next hop family must match destination")
+	seen := make(map[netip.Addr]struct{}, len(nextHops))
+	for _, nextHop := range nextHops {
+		if !nextHop.IsValid() {
+			return errors.New("route next hop is invalid")
+		}
+		if nextHop.Is4() != r.Destination.Addr().Is4() {
+			return errors.New("route next hop family must match destination")
+		}
+		if _, ok := seen[nextHop]; ok {
+			return fmt.Errorf("route next hop %s is duplicated", nextHop)
+		}
+		seen[nextHop] = struct{}{}
 	}
 	return nil
+}
+
+func (r Route) RouteNextHops() []netip.Addr {
+	nextHops := make([]netip.Addr, 0, 1+len(r.NextHops))
+	if r.NextHop.IsValid() {
+		nextHops = append(nextHops, r.NextHop)
+	}
+	nextHops = append(nextHops, r.NextHops...)
+	return nextHops
 }
 
 func (r PolicyRoute) Validate() error {

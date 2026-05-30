@@ -10,7 +10,7 @@ func TestLoadDesiredStateJSONDecodesSnakeCaseState(t *testing.T) {
 		"vpcs": [{"name": "prod"}],
 		"subnets": [{"name": "apps", "vpc": "prod", "cidr": "10.10.0.0/24", "gateway": "10.10.0.1"}],
 		"endpoints": [{"id": "pod-a", "vpc": "prod", "subnet": "apps", "ip": "10.10.0.10", "node": "node-a", "security_groups": ["web"]}],
-		"route_tables": [{"name": "main", "vpc": "prod", "routes": [{"destination": "0.0.0.0/0", "next_hop": "10.10.0.254"}]}],
+		"route_tables": [{"name": "main", "vpc": "prod", "routes": [{"destination": "0.0.0.0/0", "next_hops": ["10.10.0.253", "10.10.0.254"]}]}],
 		"policy_routes": [{"name": "fw", "vpc": "prod", "priority": 100, "match": {"source": "10.10.0.0/24", "destination": "172.16.0.0/16", "protocol": "tcp", "dst_ports": [{"from": 443, "to": 443}]}, "action": {"type": "reroute", "next_hop": "10.10.0.253"}}],
 		"gateways": [{"name": "gw-a", "vpc": "prod", "node": "node-a", "external_if": "eth0", "lan_ip": "10.10.0.254"}],
 		"nat_rules": [{"name": "egress", "vpc": "prod", "type": "snat", "match_cidr": "10.10.0.0/24", "external_ip": "198.51.100.10"}],
@@ -29,6 +29,9 @@ func TestLoadDesiredStateJSONDecodesSnakeCaseState(t *testing.T) {
 	}
 	if got := state.PolicyRoutes[0].Action.NextHop.String(); got != "10.10.0.253" {
 		t.Fatalf("policy route next hop = %s", got)
+	}
+	if got := state.RouteTables[0].Routes[0].NextHops[1].String(); got != "10.10.0.254" {
+		t.Fatalf("static route ecmp next hop = %s, want 10.10.0.254", got)
 	}
 	if got := state.LoadBalancers[0].Backends[0].Port; got != 8080 {
 		t.Fatalf("load balancer backend port = %d, want 8080", got)

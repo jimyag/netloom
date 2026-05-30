@@ -216,6 +216,44 @@ func TestRouteRejectsMixedIPFamilies(t *testing.T) {
 
 }
 
+func TestRouteSupportsECMPNextHops(t *testing.T) {
+	route := Route{
+		Destination: netip.MustParsePrefix("0.0.0.0/0"),
+		NextHops: []netip.Addr{
+			netip.MustParseAddr("10.10.0.253"),
+			netip.MustParseAddr("10.10.0.254"),
+		},
+	}
+	if err := route.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if got := route.RouteNextHops(); len(got) != 2 || got[0] != netip.MustParseAddr("10.10.0.253") || got[1] != netip.MustParseAddr("10.10.0.254") {
+		t.Fatalf("route next hops = %v, want ECMP next hops", got)
+	}
+
+	route.NextHop = netip.MustParseAddr("10.10.0.253")
+	err := route.Validate()
+	if err == nil {
+		t.Fatal("expected duplicate next hop to fail")
+	}
+	if !strings.Contains(err.Error(), "duplicated") {
+		t.Fatalf("error %q does not mention duplicate next hop", err)
+	}
+
+	blackhole := Route{
+		Destination: netip.MustParsePrefix("0.0.0.0/0"),
+		NextHops:    []netip.Addr{netip.MustParseAddr("10.10.0.253")},
+		Blackhole:   true,
+	}
+	err = blackhole.Validate()
+	if err == nil {
+		t.Fatal("expected blackhole route with next hop to fail")
+	}
+	if !strings.Contains(err.Error(), "must not set next hop") {
+		t.Fatalf("error %q does not mention blackhole next hop", err)
+	}
+}
+
 func TestPolicyRouteRejectsMixedIPFamilies(t *testing.T) {
 	route := PolicyRoute{
 		Name:     "mixed",

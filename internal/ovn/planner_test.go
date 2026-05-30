@@ -134,6 +134,39 @@ func TestPlannerMapsNetloomObjectsToOVNOperations(t *testing.T) {
 	}
 }
 
+func TestPlannerBuildsECMPStaticRouteOperations(t *testing.T) {
+	planner := ovn.NewPlanner()
+	state := control.DesiredState{
+		VPCs: []model.VPC{{Name: "prod"}},
+		RouteTables: []model.RouteTable{{
+			Name: "main",
+			VPC:  "prod",
+			Routes: []model.Route{{
+				Destination: netip.MustParsePrefix("0.0.0.0/0"),
+				NextHops: []netip.Addr{
+					netip.MustParseAddr("10.10.0.253"),
+					netip.MustParseAddr("10.10.0.254"),
+				},
+			}},
+		}},
+	}
+	controller := control.NewController(planner, control.NewMemoryBackend())
+	if err := controller.Reconcile(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+
+	joined := stringify(planner.Operations())
+	for _, expected := range []string{
+		"--if-exists lr-route-del nl_lr_prod 0.0.0.0/0",
+		"--may-exist --ecmp lr-route-add nl_lr_prod 0.0.0.0/0 10.10.0.253",
+		"--may-exist --ecmp lr-route-add nl_lr_prod 0.0.0.0/0 10.10.0.254",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("ECMP static route operation missing %q:\n%s", expected, joined)
+		}
+	}
+}
+
 func TestPlannerDeletesLocalnetWhenProviderNetworkDisabled(t *testing.T) {
 	planner := ovn.NewPlanner()
 	if err := planner.EnsureSubnet(context.Background(), model.Subnet{

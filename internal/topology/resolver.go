@@ -294,11 +294,16 @@ func resolveRouteTables(tables map[string]model.RouteTable, packet Packet) (Deci
 	if selected.Blackhole {
 		return Decision{Action: model.ActionDrop, MatchedBy: "route-table/" + selectedName}, true
 	}
-	return Decision{
+	nextHops := selected.RouteNextHops()
+	decision := Decision{
 		Action:    model.ActionReroute,
-		NextHop:   selected.NextHop,
+		NextHops:  nextHops,
 		MatchedBy: "route-table/" + selectedName,
-	}, true
+	}
+	if len(nextHops) > 0 {
+		decision.NextHop = nextHops[0]
+	}
+	return decision, true
 }
 
 func applyNATAndGateway(state State, packet Packet, decision Decision) Decision {

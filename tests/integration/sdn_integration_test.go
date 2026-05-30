@@ -57,10 +57,18 @@ func TestDesiredStateDrivesTopologyRoutesAndEBPFStyleACL(t *testing.T) {
 	if !hasOVNCommand(ovnRecorder.Operations(), "lr-policy-add") {
 		t.Fatalf("expected OVN policy route operation, got: %+v", ovnRecorder.Operations())
 	}
+	ovnOps := stringifyOVNOps(ovnRecorder.Operations())
+	for _, expected := range []string{
+		"--ecmp lr-route-add nl_lr_prod 0.0.0.0/0 10.10.0.253",
+		"--ecmp lr-route-add nl_lr_prod 0.0.0.0/0 10.10.0.254",
+	} {
+		if !strings.Contains(ovnOps, expected) {
+			t.Fatalf("expected OVN ECMP static route operation %q:\n%s", expected, ovnOps)
+		}
+	}
 	if !hasOVNCommand(ovnRecorder.Operations(), "lb-add") {
 		t.Fatalf("expected OVN load balancer operation, got: %+v", ovnRecorder.Operations())
 	}
-	ovnOps := stringifyOVNOps(ovnRecorder.Operations())
 	for _, expected := range []string{
 		"external_ids:netloom_gateway_lan_ip=10.10.0.254",
 		"external_ids:netloom_gateway_distributed=false",
@@ -211,7 +219,7 @@ const integrationStateJSON = `{
     {"id": "pod-a", "vpc": "prod", "subnet": "apps", "ip": "10.10.0.10", "node": "node-a", "security_groups": ["client"]},
     {"id": "pod-b", "vpc": "prod", "subnet": "apps", "ip": "10.10.0.11", "node": "node-b", "security_groups": ["server"]}
   ],
-  "route_tables": [{"name": "main", "vpc": "prod", "routes": [{"destination": "0.0.0.0/0", "next_hop": "10.10.0.254"}]}],
+  "route_tables": [{"name": "main", "vpc": "prod", "routes": [{"destination": "0.0.0.0/0", "next_hops": ["10.10.0.253", "10.10.0.254"]}]}],
   "policy_routes": [{"name": "https-via-fw", "vpc": "prod", "priority": 100, "match": {"source": "10.10.0.0/24", "destination": "172.16.0.0/16", "protocol": "tcp", "dst_ports": [{"from": 443, "to": 443}]}, "action": {"type": "reroute", "next_hop": "10.10.0.253"}}],
   "gateways": [{"name": "gw-a", "vpc": "prod", "node": "node-a", "external_if": "eth0", "lan_ip": "10.10.0.254"}],
   "nat_rules": [

@@ -122,7 +122,14 @@ func (p *Planner) EnsureRouteTable(_ context.Context, table model.RouteTable) er
 			p.ops = append(p.ops, Operation{Command: "lr-route-add", Flags: []string{"--may-exist"}, Args: []string{router, route.Destination.String(), "discard"}})
 			continue
 		}
-		p.ops = append(p.ops, Operation{Command: "lr-route-add", Flags: []string{"--may-exist"}, Args: []string{router, route.Destination.String(), route.NextHop.String()}})
+		nextHops := route.RouteNextHops()
+		if len(nextHops) == 1 {
+			p.ops = append(p.ops, Operation{Command: "lr-route-add", Flags: []string{"--may-exist"}, Args: []string{router, route.Destination.String(), nextHops[0].String()}})
+			continue
+		}
+		for _, nextHop := range nextHops {
+			p.ops = append(p.ops, Operation{Command: "lr-route-add", Flags: []string{"--may-exist", "--ecmp"}, Args: []string{router, route.Destination.String(), nextHop.String()}})
+		}
 	}
 	return nil
 }

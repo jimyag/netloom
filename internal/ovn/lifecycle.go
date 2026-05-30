@@ -92,11 +92,7 @@ func cleanupOperations(old, next desiredSnapshot) []Operation {
 	}
 	for _, key := range staleKeys(old.Routes, next.Routes) {
 		record := old.Routes[key]
-		args := []string{logicalRouter(record.VPC), record.Route.Destination.String()}
-		if !record.Route.Blackhole {
-			args = append(args, record.Route.NextHop.String())
-		}
-		ops = append(ops, Operation{Command: "lr-route-del", Flags: []string{"--if-exists"}, Args: args})
+		ops = append(ops, Operation{Command: "lr-route-del", Flags: []string{"--if-exists"}, Args: []string{logicalRouter(record.VPC), record.Route.Destination.String()}})
 	}
 	for _, key := range commonKeys(old.Routes, next.Routes) {
 		oldRecord := old.Routes[key]
@@ -230,15 +226,21 @@ func removedStrings(old, next []string) []string {
 }
 
 func routeKey(vpc string, route model.Route) string {
-	nextHop := "discard"
-	if !route.Blackhole {
-		nextHop = route.NextHop.String()
-	}
-	return vpc + "|" + route.Destination.String() + "|" + nextHop
+	return vpc + "|" + route.Destination.String()
 }
 
 func routeSignature(record routeRecord) string {
-	return routeKey(record.VPC, record.Route)
+	route := record.Route
+	if route.Blackhole {
+		return routeKey(record.VPC, route) + "|discard"
+	}
+	nextHops := route.RouteNextHops()
+	values := make([]string, 0, len(nextHops))
+	for _, nextHop := range nextHops {
+		values = append(values, nextHop.String())
+	}
+	sort.Strings(values)
+	return routeKey(record.VPC, route) + "|" + strings.Join(values, ",")
 }
 
 func policyRouteKey(vpc string, priority int, match string) string {
