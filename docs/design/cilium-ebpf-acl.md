@@ -62,8 +62,9 @@ The TCX datapath currently supports:
 
 - a map-backed verdict program for attach/detach verification
 - IPv4 source ACLs for ingress checks
-- IPv4 TCP/UDP CIDR peer + exact destination port ACLs backed by an LPM trie.
-  Ingress policy matches the packet source address; egress policy matches the packet
+- IPv4 TCP/UDP CIDR peer + exact destination port ACLs, and IPv4 ICMP CIDR ACLs
+  with a zero destination-port key, backed by an LPM trie. Ingress policy
+  matches the packet source address; egress policy matches the packet
   destination address.
 - policy-driven TCX L4 selftests where `SecurityGroupRule` is compiled into a
   `policy.Program` before being projected into the TCX map

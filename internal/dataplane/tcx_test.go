@@ -124,6 +124,29 @@ func TestIPv4L4ACLRulesFromProgramProjectsExactEgressPolicy(t *testing.T) {
 	}
 }
 
+func TestIPv4L4ACLRulesFromProgramProjectsICMPCIDRPolicy(t *testing.T) {
+	program := policy.Program{
+		EndpointID: "pod-a",
+		Rules: []policy.Rule{{
+			ID:         "drop-icmp",
+			Direction:  model.DirectionIngress,
+			Protocol:   model.ProtocolICMP,
+			RemoteCIDR: netip.MustParsePrefix("172.30.0.0/24"),
+			Action:     model.ActionDrop,
+		}},
+	}
+	rules, err := IPv4L4ACLRulesFromProgram(program)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 1 {
+		t.Fatalf("rules = %d, want 1", len(rules))
+	}
+	if rules[0].SourceCIDR != netip.MustParsePrefix("172.30.0.0/24") || rules[0].Protocol != 1 || rules[0].DestPort != 0 || rules[0].Action != TCXDrop {
+		t.Fatalf("unexpected ICMP rule: %+v", rules[0])
+	}
+}
+
 func TestIPv4L4ACLRulesFromProgramRejectsNoExactRules(t *testing.T) {
 	_, err := IPv4L4ACLRulesFromProgram(policy.Program{EndpointID: "pod-a"})
 	if err == nil {

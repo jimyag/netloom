@@ -233,7 +233,7 @@ func putIPv4L4ACLRule(aclMap *ebpf.Map, rule IPv4L4ACLRule) error {
 	if rule.Protocol == 0 {
 		return fmt.Errorf("protocol is required")
 	}
-	if rule.DestPort == 0 {
+	if rule.DestPort == 0 && rule.Protocol != 1 {
 		return fmt.Errorf("destination port is required")
 	}
 	if rule.Action != TCXPass && rule.Action != TCXDrop {
@@ -305,7 +305,7 @@ func appendIPv4L4ACLRulesFromProgram(rules *[]IPv4L4ACLRule, seen map[IPv4L4Key]
 		if err != nil {
 			return fmt.Errorf("rule %s: %w", rule.ID, err)
 		}
-		if protocol != 6 && protocol != 17 {
+		if protocol != 1 && protocol != 6 && protocol != 17 {
 			continue
 		}
 		if !rule.RemoteCIDR.IsValid() {
@@ -317,6 +317,26 @@ func appendIPv4L4ACLRulesFromProgram(rules *[]IPv4L4ACLRule, seen map[IPv4L4Key]
 		}
 		action, ok := tcxAction(rule.Action)
 		if !ok {
+			continue
+		}
+		if protocol == 1 && len(rule.Ports) == 0 {
+			key := IPv4L4Key{
+				PrefixLen: ipv4L4PrefixLen(sourceCIDR),
+				Protocol:  protocol,
+				DestPort:  0,
+				PeerIP:    ipv4L4PeerKey(sourceCIDR.Addr()),
+			}
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			*rules = append(*rules, IPv4L4ACLRule{
+				Source:     sourceCIDR.Addr(),
+				SourceCIDR: sourceCIDR,
+				Protocol:   protocol,
+				DestPort:   0,
+				Action:     action,
+			})
 			continue
 		}
 		for _, port := range rule.Ports {
@@ -393,10 +413,12 @@ func NewIPv4L4ACLTCXProgramForDirection(aclMap *ebpf.Map, direction model.Direct
 			asm.StoreMem(asm.RFP, -12, asm.R0, asm.Word),
 			asm.Mov.Imm(asm.R0, 0),
 			asm.StoreMem(asm.RFP, -7, asm.R0, asm.Byte),
+			asm.StoreMem(asm.RFP, -6, asm.R0, asm.Half),
 			asm.LoadAbs(12, asm.Half),
 			asm.JNE.Imm(asm.R0, 0x0800, "pass"),
 			asm.LoadAbs(23, asm.Byte),
 			asm.StoreMem(asm.RFP, -8, asm.R0, asm.Byte),
+			asm.Mov.Reg(asm.R8, asm.R0),
 			asm.LoadAbs(peerOffset, asm.Word),
 			asm.HostTo(asm.BE, asm.R0, asm.Word),
 			asm.StoreMem(asm.RFP, -4, asm.R0, asm.Word),
@@ -407,9 +429,10 @@ func NewIPv4L4ACLTCXProgramForDirection(aclMap *ebpf.Map, direction model.Direct
 			asm.And.Imm(asm.R0, 0x0f),
 			asm.LSh.Imm(asm.R0, 2),
 			asm.Mov.Reg(asm.R7, asm.R0),
+			asm.JEq.Imm(asm.R8, 1, "lookup"),
 			asm.LoadInd(asm.R0, asm.R7, 16, asm.Half),
 			asm.StoreMem(asm.RFP, -6, asm.R0, asm.Half),
-			asm.LoadMapPtr(asm.R1, aclMap.FD()),
+			asm.LoadMapPtr(asm.R1, aclMap.FD()).WithSymbol("lookup"),
 			asm.Mov.Reg(asm.R2, asm.RFP),
 			asm.Add.Imm(asm.R2, -12),
 			asm.FnMapLookupElem.Call(),
