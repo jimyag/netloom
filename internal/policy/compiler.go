@@ -67,6 +67,7 @@ type MapValue struct {
 type CompileContext struct {
 	Endpoints  []model.Endpoint
 	Subnets    []model.Subnet
+	Gateways   []model.Gateway
 	DNSRecords []model.DNSRecord
 	CIDRGroups []model.CIDRGroup
 	Now        time.Time
@@ -100,6 +101,10 @@ func CompileForEndpointWithContext(endpoint model.Endpoint, groups map[string]mo
 	if err != nil {
 		return Program{}, err
 	}
+	hostCIDRsByVPC, err := indexHostCIDRsByVPC(ctx.Gateways)
+	if err != nil {
+		return Program{}, err
+	}
 	program := Program{EndpointID: endpoint.ID}
 	for _, groupName := range endpoint.SecurityGroups {
 		group, ok := groups[groupName]
@@ -113,7 +118,7 @@ func CompileForEndpointWithContext(endpoint model.Endpoint, groups map[string]mo
 			return Program{}, err
 		}
 		for _, rule := range group.Rules {
-			compiledRules, err := expandRule(endpoint, group, rule, membersByGroup, dnsRecords, cidrGroups, subnetsByVPC)
+			compiledRules, err := expandRule(endpoint, group, rule, membersByGroup, dnsRecords, cidrGroups, subnetsByVPC, hostCIDRsByVPC)
 			if err != nil {
 				return Program{}, err
 			}
@@ -142,7 +147,7 @@ func CompileForEndpointWithContext(endpoint model.Endpoint, groups map[string]mo
 	return program, nil
 }
 
-func expandRule(endpoint model.Endpoint, securityGroup model.SecurityGroup, rule model.SecurityGroupRule, membersByGroup map[string][]model.Endpoint, dnsRecords map[string][]netip.Addr, cidrGroups map[string][]netip.Prefix, subnetsByVPC map[string][]netip.Prefix) ([]Rule, error) {
+func expandRule(endpoint model.Endpoint, securityGroup model.SecurityGroup, rule model.SecurityGroupRule, membersByGroup map[string][]model.Endpoint, dnsRecords map[string][]netip.Addr, cidrGroups map[string][]netip.Prefix, subnetsByVPC map[string][]netip.Prefix, hostCIDRsByVPC map[string][]netip.Prefix) ([]Rule, error) {
 	base := Rule{
 		ID:              rule.ID,
 		Tier:            securityGroup.Tier,
@@ -175,7 +180,7 @@ func expandRule(endpoint model.Endpoint, securityGroup model.SecurityGroup, rule
 		return expandFQDNRule(base, rule.RemoteFQDNs, dnsRecords)
 	}
 	if len(rule.RemoteEntities) > 0 {
-		return expandEntityRule(base, endpoint, rule.RemoteEntities, subnetsByVPC)
+		return expandEntityRule(base, endpoint, rule.RemoteEntities, subnetsByVPC, hostCIDRsByVPC)
 	}
 	if rule.RemoteCIDRGroup != "" {
 		return expandCIDRGroupRule(base, cidrGroups)
@@ -216,11 +221,11 @@ func expandRule(endpoint model.Endpoint, securityGroup model.SecurityGroup, rule
 	return out, nil
 }
 
-func expandEntityRule(base Rule, endpoint model.Endpoint, entities []string, subnetsByVPC map[string][]netip.Prefix) ([]Rule, error) {
+func expandEntityRule(base Rule, endpoint model.Endpoint, entities []string, subnetsByVPC map[string][]netip.Prefix, hostCIDRsByVPC map[string][]netip.Prefix) ([]Rule, error) {
 	seen := make(map[string]struct{})
 	var out []Rule
 	for _, entity := range entities {
-		cidrs, err := entityCIDRs(entity, endpoint.VPC, subnetsByVPC)
+		cidrs, err := entityCIDRs(entity, endpoint.VPC, subnetsByVPC, hostCIDRsByVPC)
 		if err != nil {
 			return nil, fmt.Errorf("rule %s: %w", base.ID, err)
 		}
@@ -245,12 +250,19 @@ func expandEntityRule(base Rule, endpoint model.Endpoint, entities []string, sub
 	return out, nil
 }
 
-func entityCIDRs(entity, vpc string, subnetsByVPC map[string][]netip.Prefix) ([]netip.Prefix, error) {
+func entityCIDRs(entity, vpc string, subnetsByVPC map[string][]netip.Prefix, hostCIDRsByVPC map[string][]netip.Prefix) ([]netip.Prefix, error) {
 	switch entity {
 	case "all":
 		return allCIDRs(), nil
 	case "world":
 		return worldCIDRs(vpc, subnetsByVPC)
+	case "host":
+		cidrs := append([]netip.Prefix(nil), hostCIDRsByVPC[vpc]...)
+		if len(cidrs) == 0 {
+			return nil, fmt.Errorf("remote entity host requires at least one gateway in vpc %s", vpc)
+		}
+		sort.SliceStable(cidrs, func(i, j int) bool { return cidrs[i].String() < cidrs[j].String() })
+		return cidrs, nil
 	case "private":
 		return []netip.Prefix{
 			netip.MustParsePrefix("10.0.0.0/8"),
@@ -615,6 +627,26 @@ func indexSubnetsByVPC(subnets []model.Subnet) (map[string][]netip.Prefix, error
 			return nil, err
 		}
 		out[subnet.VPC] = append(out[subnet.VPC], subnet.CIDR.Masked())
+	}
+	for vpc := range out {
+		sort.SliceStable(out[vpc], func(i, j int) bool {
+			return out[vpc][i].String() < out[vpc][j].String()
+		})
+	}
+	return out, nil
+}
+
+func indexHostCIDRsByVPC(gateways []model.Gateway) (map[string][]netip.Prefix, error) {
+	out := make(map[string][]netip.Prefix)
+	for _, gateway := range gateways {
+		if err := gateway.Validate(); err != nil {
+			return nil, err
+		}
+		bits := 128
+		if gateway.LANIP.Is4() {
+			bits = 32
+		}
+		out[gateway.VPC] = append(out[gateway.VPC], netip.PrefixFrom(gateway.LANIP, bits))
 	}
 	for vpc := range out {
 		sort.SliceStable(out[vpc], func(i, j int) bool {

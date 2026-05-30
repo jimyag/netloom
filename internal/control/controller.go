@@ -251,6 +251,7 @@ func (c *Controller) Reconcile(ctx context.Context, state DesiredState) error {
 		program, err := policy.CompileForEndpointWithContext(endpoint, groups, policy.CompileContext{
 			Endpoints:  state.Endpoints,
 			Subnets:    state.Subnets,
+			Gateways:   state.Gateways,
 			DNSRecords: state.DNSRecords,
 			CIDRGroups: state.CIDRGroups,
 		})

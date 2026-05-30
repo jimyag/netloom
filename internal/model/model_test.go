@@ -620,7 +620,7 @@ func TestSecurityGroupRuleValidatesRemoteEntities(t *testing.T) {
 		ID:             "allow-world",
 		Direction:      DirectionEgress,
 		Protocol:       ProtocolTCP,
-		RemoteEntities: []string{"world"},
+		RemoteEntities: []string{"world", "host"},
 		Ports:          []PortRange{{From: 443, To: 443}},
 		Action:         ActionAllow,
 	}

@@ -910,3 +910,56 @@ func TestReconcileNodeCompilesCIDRGroupRules(t *testing.T) {
 		t.Fatalf("expected cidr-group-derived egress allow, got %+v", decision)
 	}
 }
+
+func TestReconcileNodeCompilesHostEntityFromGateways(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:             "pod-a",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"client"},
+		}},
+		Gateways: []model.Gateway{{
+			Name:  "gw-a",
+			VPC:   "prod",
+			Node:  "node-a",
+			LANIP: netip.MustParseAddr("10.10.0.254"),
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "client",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:             "allow-host",
+				Priority:       100,
+				Direction:      model.DirectionEgress,
+				Protocol:       model.ProtocolTCP,
+				RemoteEntities: []string{"host"},
+				Ports:          []model.PortRange{{From: 9444, To: 9444}},
+				Action:         model.ActionAllow,
+			}},
+		}},
+	}
+	store := dataplane.NewInMemoryPolicyStore()
+	result, err := ReconcileNode(context.Background(), state, "node-a", store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Entries != 1 || result.TCXEligible != 1 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	entries := store.Entries("pod-a")
+	if len(entries) != 1 || entries[0].RemoteCIDR.String() != "10.10.0.254/32" {
+		t.Fatalf("entries = %+v, want host gateway /32", entries)
+	}
+	decision := dataplane.Evaluate(entries, dataplane.Packet{
+		Direction: dataplane.DirectionEgress,
+		Protocol:  6,
+		RemoteIP:  netip.MustParseAddr("10.10.0.254"),
+		DestPort:  9444,
+	})
+	if decision.Verdict != dataplane.VerdictAllow {
+		t.Fatalf("expected host entity egress allow, got %+v", decision)
+	}
+}

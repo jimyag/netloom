@@ -53,7 +53,7 @@ func TestDesiredStateDrivesTopologyRoutesAndEBPFStyleACL(t *testing.T) {
 		t.Fatalf("security group rules for pod-b were not compiled, got: %+v", memoryBackend.PolicyProgram)
 	}
 	clientProgram, ok := memoryBackend.PolicyProgram["pod-a"]
-	if !ok || len(clientProgram.Rules) != 5 {
+	if !ok || len(clientProgram.Rules) != 6 {
 		t.Fatalf("egress rules for pod-a were not compiled, got: %+v", memoryBackend.PolicyProgram)
 	}
 	if !hasOVNCommand(ovnRecorder.Operations(), "lr-policy-add") {
@@ -224,6 +224,15 @@ func TestDesiredStateDrivesTopologyRoutesAndEBPFStyleACL(t *testing.T) {
 	if tierAllow.Verdict != dataplane.VerdictAllow {
 		t.Fatalf("expected tier-0 platform rule to beat tier-1 tenant drop, got %+v", tierAllow)
 	}
+	hostAllow := dataplane.Evaluate(clientEntries, dataplane.Packet{
+		Direction: dataplane.DirectionEgress,
+		Protocol:  6,
+		RemoteIP:  mustAddr(t, "10.10.0.254"),
+		DestPort:  9444,
+	})
+	if hostAllow.Verdict != dataplane.VerdictAllow {
+		t.Fatalf("expected egress tcp/9444 to host gateway entity to allow, got %+v", hostAllow)
+	}
 }
 
 func hasOVNCommand(ops []ovn.Operation, command string) bool {
@@ -276,6 +285,7 @@ const integrationStateJSON = `{
       {"id": "client-egress-api", "priority": 100, "direction": "egress", "protocol": "tcp", "remote_fqdns": [{"match_name": "api.example.com"}], "ports": [{"from": 443, "to": 443}], "action": "allow"},
       {"id": "client-egress-corp", "priority": 90, "direction": "egress", "protocol": "tcp", "remote_cidr_group": "corp", "ports": [{"from": 8443, "to": 8443}], "action": "allow"},
       {"id": "client-egress-docs", "priority": 80, "direction": "egress", "protocol": "tcp", "remote_cidr": "192.0.2.0/24", "except_cidrs": ["192.0.2.128/25"], "ports": [{"from": 9443, "to": 9443}], "action": "allow"},
+      {"id": "client-egress-host", "priority": 70, "direction": "egress", "protocol": "tcp", "remote_entities": ["host"], "ports": [{"from": 9444, "to": 9444}], "action": "allow"},
       {"id": "client-drop-platform-dns", "priority": 1000, "direction": "egress", "protocol": "tcp", "remote_cidr": "198.51.100.0/24", "ports": [{"from": 9553, "to": 9553}], "action": "drop"}
     ]},
     {"name": "server", "vpc": "prod", "rules": [

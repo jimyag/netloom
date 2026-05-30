@@ -205,6 +205,7 @@ func prepareReconcile(ctx context.Context, state control.DesiredState, options R
 		program, err := policy.CompileForEndpointWithContext(endpoint, groups, policy.CompileContext{
 			Endpoints:  state.Endpoints,
 			Subnets:    state.Subnets,
+			Gateways:   state.Gateways,
 			DNSRecords: state.DNSRecords,
 			CIDRGroups: state.CIDRGroups,
 		})

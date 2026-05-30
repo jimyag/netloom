@@ -3,6 +3,7 @@ package policy
 import (
 	"net/netip"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -816,7 +817,7 @@ func TestCompileForEndpointWithContextExpandsRemoteEntities(t *testing.T) {
 				Priority:       100,
 				Direction:      model.DirectionEgress,
 				Protocol:       model.ProtocolTCP,
-				RemoteEntities: []string{"cluster", "private"},
+				RemoteEntities: []string{"cluster", "host", "private"},
 				Ports:          []model.PortRange{{From: 443, To: 443}},
 				Action:         model.ActionAllow,
 			}},
@@ -826,6 +827,11 @@ func TestCompileForEndpointWithContextExpandsRemoteEntities(t *testing.T) {
 			{Name: "apps", VPC: "prod", CIDR: netip.MustParsePrefix("10.10.0.0/24"), Gateway: netip.MustParseAddr("10.10.0.1")},
 			{Name: "db", VPC: "prod", CIDR: netip.MustParsePrefix("fd00:10::/64"), Gateway: netip.MustParseAddr("fd00:10::1")},
 			{Name: "other", VPC: "dev", CIDR: netip.MustParsePrefix("192.0.2.0/24"), Gateway: netip.MustParseAddr("192.0.2.1")},
+		},
+		Gateways: []model.Gateway{
+			{Name: "gw-a", VPC: "prod", Node: "node-a", LANIP: netip.MustParseAddr("10.10.0.254")},
+			{Name: "gw-v6", VPC: "prod", Node: "node-b", LANIP: netip.MustParseAddr("fd00:10::fe")},
+			{Name: "gw-dev", VPC: "dev", Node: "node-c", LANIP: netip.MustParseAddr("192.0.2.254")},
 		},
 	})
 	if err != nil {
@@ -838,7 +844,7 @@ func TestCompileForEndpointWithContextExpandsRemoteEntities(t *testing.T) {
 		gotEntities[rule.RemoteEntity] = struct{}{}
 	}
 	sort.Strings(gotCIDRs)
-	wantCIDRs := []string{"10.0.0.0/8", "10.10.0.0/24", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7", "fd00:10::/64"}
+	wantCIDRs := []string{"10.0.0.0/8", "10.10.0.0/24", "10.10.0.254/32", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7", "fd00:10::/64", "fd00:10::fe/128"}
 	if len(gotCIDRs) != len(wantCIDRs) {
 		t.Fatalf("entity cidrs = %v, want %v", gotCIDRs, wantCIDRs)
 	}
@@ -850,11 +856,43 @@ func TestCompileForEndpointWithContextExpandsRemoteEntities(t *testing.T) {
 	if _, ok := gotEntities["cluster"]; !ok {
 		t.Fatalf("entities = %v, want cluster", gotEntities)
 	}
+	if _, ok := gotEntities["host"]; !ok {
+		t.Fatalf("entities = %v, want host", gotEntities)
+	}
 	if _, ok := gotEntities["private"]; !ok {
 		t.Fatalf("entities = %v, want private", gotEntities)
 	}
 	if len(program.MapEntries) != len(wantCIDRs) {
 		t.Fatalf("map entries = %d, want %d", len(program.MapEntries), len(wantCIDRs))
+	}
+}
+
+func TestCompileForEndpointWithContextRejectsHostEntityWithoutGateway(t *testing.T) {
+	endpoint := model.Endpoint{
+		ID:             "pod-a",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"client"},
+	}
+	_, err := CompileForEndpointWithContext(endpoint, map[string]model.SecurityGroup{
+		"client": {
+			Name: "client",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:             "allow-host",
+				Priority:       100,
+				Direction:      model.DirectionEgress,
+				Protocol:       model.ProtocolTCP,
+				RemoteEntities: []string{"host"},
+				Ports:          []model.PortRange{{From: 443, To: 443}},
+				Action:         model.ActionAllow,
+			}},
+		},
+	}, CompileContext{})
+	if err == nil || !strings.Contains(err.Error(), "host requires at least one gateway") {
+		t.Fatalf("error = %v, want missing host gateway validation", err)
 	}
 }
 
