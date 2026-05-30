@@ -14,6 +14,8 @@ type SelfTestResult struct {
 	PolicyRouteNextHop netip.Addr
 	SNATAddress        netip.Addr
 	Gateway            string
+	ServiceBackend     netip.Addr
+	ServiceBackendPort uint16
 	OVNOperations      int
 	OVNExecuted        int
 }
@@ -81,6 +83,18 @@ func runSelfTest(ctx context.Context, executor ovn.Executor) (SelfTestResult, er
 			MatchCIDR:  netip.MustParsePrefix("10.244.0.0/24"),
 			ExternalIP: netip.MustParseAddr("198.51.100.10"),
 		}},
+		LoadBalancers: []model.LoadBalancer{{
+			Name:     "web",
+			VPC:      "default",
+			VIP:      netip.MustParseAddr("10.96.0.10"),
+			Port:     80,
+			Protocol: model.ProtocolTCP,
+			Backends: []model.LoadBalancerBackend{{
+				IP:   netip.MustParseAddr("10.244.0.10"),
+				Port: 8080,
+			}},
+			Subnets: []string{"apps"},
+		}},
 	}
 	if err := controller.Reconcile(ctx, state); err != nil {
 		return SelfTestResult{}, err
@@ -112,6 +126,19 @@ func runSelfTest(ctx context.Context, executor ovn.Executor) (SelfTestResult, er
 	if egressDecision.Gateway != "gw-a" {
 		return SelfTestResult{}, fmt.Errorf("expected gateway gw-a, got %s", egressDecision.Gateway)
 	}
+	serviceDecision, err := topology.Resolve(backend.TopologyState(), topology.Packet{
+		VPC:      "default",
+		Source:   netip.MustParseAddr("10.244.0.10"),
+		Dest:     netip.MustParseAddr("10.96.0.10"),
+		Protocol: model.ProtocolTCP,
+		DestPort: 80,
+	})
+	if err != nil {
+		return SelfTestResult{}, err
+	}
+	if serviceDecision.Translated != netip.MustParseAddr("10.244.0.10") || serviceDecision.TranslatedPort != 8080 {
+		return SelfTestResult{}, fmt.Errorf("expected service backend 10.244.0.10:8080, got %s:%d", serviceDecision.Translated, serviceDecision.TranslatedPort)
+	}
 	if len(ovnBackend.Operations()) == 0 {
 		return SelfTestResult{}, fmt.Errorf("expected OVN topology operations to be planned")
 	}
@@ -126,6 +153,8 @@ func runSelfTest(ctx context.Context, executor ovn.Executor) (SelfTestResult, er
 		PolicyRouteNextHop: routeDecision.NextHop,
 		SNATAddress:        egressDecision.Translated,
 		Gateway:            egressDecision.Gateway,
+		ServiceBackend:     serviceDecision.Translated,
+		ServiceBackendPort: serviceDecision.TranslatedPort,
 		OVNOperations:      len(ovnBackend.Operations()),
 		OVNExecuted:        executed,
 	}, nil

@@ -26,6 +26,76 @@ func TestResolveDirectEndpoint(t *testing.T) {
 	}
 }
 
+func TestResolveLoadBalancerVIPToBackend(t *testing.T) {
+	state := State{
+		Endpoints: map[string]model.Endpoint{
+			"pod-a": {ID: "pod-a", VPC: "prod", Subnet: "apps", IP: netip.MustParseAddr("10.10.0.10")},
+		},
+		LoadBalancers: map[string]model.LoadBalancer{
+			"web": {
+				Name:     "web",
+				VPC:      "prod",
+				VIP:      netip.MustParseAddr("10.96.0.10"),
+				Port:     80,
+				Protocol: model.ProtocolTCP,
+				Backends: []model.LoadBalancerBackend{
+					{IP: netip.MustParseAddr("10.10.0.30"), Port: 8080},
+					{IP: netip.MustParseAddr("10.10.0.20"), Port: 8080},
+				},
+				Subnets: []string{"apps"},
+			},
+		},
+	}
+	decision, err := Resolve(state, Packet{
+		VPC:      "prod",
+		Source:   netip.MustParseAddr("10.10.0.10"),
+		Dest:     netip.MustParseAddr("10.96.0.10"),
+		Protocol: model.ProtocolTCP,
+		DestPort: 80,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Action != model.ActionAllow || decision.MatchedBy != "load-balancer/web" {
+		t.Fatalf("decision = %+v, want load balancer allow", decision)
+	}
+	if decision.Translated != netip.MustParseAddr("10.10.0.20") || decision.TranslatedPort != 8080 {
+		t.Fatalf("backend = %s:%d, want 10.10.0.20:8080", decision.Translated, decision.TranslatedPort)
+	}
+}
+
+func TestResolveLoadBalancerRequiresBoundSourceSubnet(t *testing.T) {
+	state := State{
+		Endpoints: map[string]model.Endpoint{
+			"pod-a": {ID: "pod-a", VPC: "prod", Subnet: "clients", IP: netip.MustParseAddr("10.10.1.10")},
+		},
+		LoadBalancers: map[string]model.LoadBalancer{
+			"web": {
+				Name:     "web",
+				VPC:      "prod",
+				VIP:      netip.MustParseAddr("10.96.0.10"),
+				Port:     80,
+				Protocol: model.ProtocolTCP,
+				Backends: []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.20"), Port: 8080}},
+				Subnets:  []string{"apps"},
+			},
+		},
+	}
+	decision, err := Resolve(state, Packet{
+		VPC:      "prod",
+		Source:   netip.MustParseAddr("10.10.1.10"),
+		Dest:     netip.MustParseAddr("10.96.0.10"),
+		Protocol: model.ProtocolTCP,
+		DestPort: 80,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Action != model.ActionDrop || decision.MatchedBy != "no-route" {
+		t.Fatalf("decision = %+v, want no-route drop", decision)
+	}
+}
+
 func TestResolvePolicyRouteBeatsStaticRoute(t *testing.T) {
 	state := State{
 		RouteTables: map[string]model.RouteTable{

@@ -20,6 +20,9 @@ func TestRunSelfTestReconcilesTopologyAndResolvesRouting(t *testing.T) {
 	if result.Gateway != "gw-a" {
 		t.Fatalf("gateway = %s", result.Gateway)
 	}
+	if result.ServiceBackend != netip.MustParseAddr("10.244.0.10") || result.ServiceBackendPort != 8080 {
+		t.Fatalf("service backend = %s:%d, want 10.244.0.10:8080", result.ServiceBackend, result.ServiceBackendPort)
+	}
 	if result.OVNOperations == 0 {
 		t.Fatal("expected OVN operations to be planned")
 	}

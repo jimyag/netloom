@@ -28,12 +28,13 @@ type Packet struct {
 }
 
 type Decision struct {
-	Action      model.Action
-	NextHop     netip.Addr
-	Gateway     string
-	Translated  netip.Addr
-	MatchedBy   string
-	Destination string
+	Action         model.Action
+	NextHop        netip.Addr
+	Gateway        string
+	Translated     netip.Addr
+	TranslatedPort uint16
+	MatchedBy      string
+	Destination    string
 }
 
 func Resolve(state State, packet Packet) (Decision, error) {
@@ -55,6 +56,9 @@ func Resolve(state State, packet Packet) (Decision, error) {
 		}, nil
 	}
 
+	if decision, ok := resolveLoadBalancer(state, packet); ok {
+		return decision, nil
+	}
 	if decision, ok := resolvePolicyRoute(state.PolicyRoutes, packet); ok {
 		return applyNATAndGateway(state, packet, decision), nil
 	}
@@ -62,6 +66,65 @@ func Resolve(state State, packet Packet) (Decision, error) {
 		return applyNATAndGateway(state, packet, decision), nil
 	}
 	return Decision{Action: model.ActionDrop, MatchedBy: "no-route"}, nil
+}
+
+func resolveLoadBalancer(state State, packet Packet) (Decision, bool) {
+	sourceEndpoint := findEndpointByIP(state, packet.VPC, packet.Source)
+	for _, lb := range state.LoadBalancers {
+		protocol := lb.Protocol
+		if protocol == "" {
+			protocol = model.ProtocolTCP
+		}
+		if lb.VPC != packet.VPC || lb.VIP != packet.Dest || lb.Port != packet.DestPort || protocol != packet.Protocol {
+			continue
+		}
+		if len(lb.Subnets) > 0 && !loadBalancerAllowsSourceSubnet(lb, sourceEndpoint) {
+			continue
+		}
+		if len(lb.Backends) == 0 {
+			continue
+		}
+		backend := firstLoadBalancerBackend(lb.Backends)
+		return Decision{
+			Action:         model.ActionAllow,
+			Translated:     backend.IP,
+			TranslatedPort: backend.Port,
+			MatchedBy:      "load-balancer/" + lb.Name,
+			Destination:    backend.IP.String(),
+		}, true
+	}
+	return Decision{}, false
+}
+
+func findEndpointByIP(state State, vpc string, ip netip.Addr) model.Endpoint {
+	for _, endpoint := range state.Endpoints {
+		if endpoint.VPC == vpc && endpoint.IP == ip {
+			return endpoint
+		}
+	}
+	return model.Endpoint{}
+}
+
+func loadBalancerAllowsSourceSubnet(lb model.LoadBalancer, endpoint model.Endpoint) bool {
+	if endpoint.ID == "" {
+		return false
+	}
+	for _, subnet := range lb.Subnets {
+		if endpoint.Subnet == subnet {
+			return true
+		}
+	}
+	return false
+}
+
+func firstLoadBalancerBackend(backends []model.LoadBalancerBackend) model.LoadBalancerBackend {
+	selected := backends[0]
+	for _, backend := range backends[1:] {
+		if backend.IP.Compare(selected.IP) < 0 || (backend.IP == selected.IP && backend.Port < selected.Port) {
+			selected = backend
+		}
+	}
+	return selected
 }
 
 func findEndpoint(state State, vpc string, dest netip.Addr) string {

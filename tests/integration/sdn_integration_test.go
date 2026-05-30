@@ -83,6 +83,19 @@ func TestDesiredStateDrivesTopologyRoutesAndEBPFStyleACL(t *testing.T) {
 	if routeDecision.Translated.String() != "198.51.100.10" || routeDecision.Gateway != "gw-a" {
 		t.Fatalf("expected gateway SNAT to be applied, got: %+v", routeDecision)
 	}
+	serviceDecision, err := topology.Resolve(memoryBackend.TopologyState(), topology.Packet{
+		VPC:      "prod",
+		Source:   state.Endpoints[0].IP,
+		Dest:     mustAddr(t, "10.96.0.10"),
+		Protocol: model.ProtocolTCP,
+		DestPort: 80,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if serviceDecision.MatchedBy != "load-balancer/web" || serviceDecision.Translated.String() != "10.10.0.11" || serviceDecision.TranslatedPort != 8080 {
+		t.Fatalf("expected service VIP to resolve to backend, got: %+v", serviceDecision)
+	}
 
 	store := dataplane.NewInMemoryPolicyStore()
 	result, err := agent.ReconcileNode(ctx, state, "node-b", store)
