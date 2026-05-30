@@ -161,6 +161,18 @@ func TestIPv4L4ACLRuleSourceCIDR(t *testing.T) {
 	}
 }
 
+func TestIPv4L4ACLKeyPrefixLenIncludesProtocolAndPort(t *testing.T) {
+	if got := ipv4L4PrefixLen(netip.MustParsePrefix("172.30.0.0/24")); got != 56 {
+		t.Fatalf("/24 prefix len = %d, want protocol+pad+port+cidr bits 56", got)
+	}
+	if got := ipv4L4PrefixLen(netip.MustParsePrefix("172.30.0.11/32")); got != 64 {
+		t.Fatalf("/32 prefix len = %d, want protocol+pad+port+cidr bits 64", got)
+	}
+	if ipv4L4LookupPrefixLen != 64 {
+		t.Fatalf("lookup prefix len = %d, want full key length 64", ipv4L4LookupPrefixLen)
+	}
+}
+
 func TestIPv4L4ACLRulesFromProgramsDeduplicatesRules(t *testing.T) {
 	program := policy.Program{
 		EndpointID: "pod-a",

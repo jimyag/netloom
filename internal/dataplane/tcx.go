@@ -19,6 +19,8 @@ import (
 const (
 	TCXPass = int32(0)
 	TCXDrop = int32(2)
+
+	ipv4L4LookupPrefixLen = int32(64)
 )
 
 type TCXSelfTestResult struct {
@@ -238,7 +240,7 @@ func putIPv4L4ACLRule(aclMap *ebpf.Map, rule IPv4L4ACLRule) error {
 		return fmt.Errorf("unsupported tcx action %d", rule.Action)
 	}
 	key := IPv4L4Key{
-		PrefixLen: uint32(24 + sourceCIDR.Bits()),
+		PrefixLen: ipv4L4PrefixLen(sourceCIDR),
 		Protocol:  rule.Protocol,
 		DestPort:  rule.DestPort,
 		PeerIP:    binary.BigEndian.Uint32(sourceCIDR.Addr().AsSlice()),
@@ -325,7 +327,7 @@ func appendIPv4L4ACLRulesFromProgram(rules *[]IPv4L4ACLRule, seen map[IPv4L4Key]
 				continue
 			}
 			key := IPv4L4Key{
-				PrefixLen: uint32(24 + sourceCIDR.Bits()),
+				PrefixLen: ipv4L4PrefixLen(sourceCIDR),
 				Protocol:  protocol,
 				DestPort:  port.From,
 				PeerIP:    binary.BigEndian.Uint32(sourceCIDR.Addr().AsSlice()),
@@ -344,6 +346,10 @@ func appendIPv4L4ACLRulesFromProgram(rules *[]IPv4L4ACLRule, seen map[IPv4L4Key]
 		}
 	}
 	return nil
+}
+
+func ipv4L4PrefixLen(prefix netip.Prefix) uint32 {
+	return uint32(32 + prefix.Bits())
 }
 
 func ipv4Prefix(prefix netip.Prefix) (netip.Prefix, bool) {
@@ -379,7 +385,7 @@ func NewIPv4L4ACLTCXProgramForDirection(aclMap *ebpf.Map, direction model.Direct
 		License: "MIT",
 		Instructions: asm.Instructions{
 			asm.Mov.Reg(asm.R6, asm.R1),
-			asm.Mov.Imm(asm.R0, 56),
+			asm.Mov.Imm(asm.R0, ipv4L4LookupPrefixLen),
 			asm.StoreMem(asm.RFP, -12, asm.R0, asm.Word),
 			asm.Mov.Imm(asm.R0, 0),
 			asm.StoreMem(asm.RFP, -7, asm.R0, asm.Byte),
