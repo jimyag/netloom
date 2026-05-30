@@ -24,6 +24,7 @@ type ReconcileResult struct {
 	PolicyUnchanged   int
 	PolicyEvents      int
 	PolicyRevisionMax uint64
+	ConntrackExpired  int
 	TCXEligible       int
 	TCX               string
 	Datapath          string
@@ -47,6 +48,7 @@ type ReconcileOptions struct {
 	TCXInterface  string
 	TCXWorkload   bool
 	TCXHold       time.Duration
+	ConntrackIdle time.Duration
 	LinuxDatapath *linuxdatapath.Options
 }
 
@@ -114,6 +116,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, state control.DesiredState, 
 		return ReconcileResult{}, err
 	}
 	r.syncConntrackPrograms(programs)
+	result.ConntrackExpired = r.conntrack.SweepIdle(conntrackIdleTimeout(options.ConntrackIdle))
 	if options.TCXInterface != "" || options.TCXWorkload {
 		tcxResult, err := r.syncTCXTargets(ctx, targets)
 		if err != nil {
@@ -143,6 +146,13 @@ func (r *Reconciler) ConntrackStore() *dataplane.InMemoryConntrackStore {
 		return nil
 	}
 	return r.conntrack
+}
+
+func conntrackIdleTimeout(timeout time.Duration) time.Duration {
+	if timeout > 0 {
+		return timeout
+	}
+	return dataplane.DefaultConntrackMaxIdle
 }
 
 func (r *Reconciler) syncConntrackPrograms(programs []policy.Program) {

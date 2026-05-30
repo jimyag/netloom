@@ -4,6 +4,7 @@ import (
 	"math"
 	"net/netip"
 	"testing"
+	"time"
 
 	"github.com/jimyag/netloom/internal/model"
 	"github.com/jimyag/netloom/internal/policy"
@@ -449,6 +450,38 @@ func TestConntrackDeleteEndpointRemovesState(t *testing.T) {
 	}
 	if conntrack.Has(ConntrackKey{EndpointID: "pod-a", RemoteIdentity: 100, Direction: DirectionEgress, Protocol: 6, DestPort: 55000}) {
 		t.Fatal("pod-a state should be deleted")
+	}
+}
+
+func TestConntrackExpiresIdleEntries(t *testing.T) {
+	now := time.Unix(100, 0)
+	conntrack := newInMemoryConntrackStoreWithClock(time.Second, func() time.Time { return now })
+	key := ConntrackKey{EndpointID: "pod-a", RemoteIdentity: 100, Direction: DirectionEgress, Protocol: 6, DestPort: 55000}
+	conntrack.Add(key)
+
+	now = now.Add(time.Second)
+	if !conntrack.Has(key) {
+		t.Fatal("conntrack entry should still be alive at max idle boundary")
+	}
+	now = now.Add(1500 * time.Millisecond)
+	if conntrack.Has(key) {
+		t.Fatal("conntrack entry should expire after idle timeout")
+	}
+	if conntrack.Len() != 0 {
+		t.Fatalf("conntrack entries = %d, want expired entry removed", conntrack.Len())
+	}
+}
+
+func TestConntrackSweepIdleEntries(t *testing.T) {
+	now := time.Unix(100, 0)
+	conntrack := newInMemoryConntrackStoreWithClock(0, func() time.Time { return now })
+	conntrack.Add(ConntrackKey{EndpointID: "pod-a", RemoteIdentity: 100, Direction: DirectionEgress, Protocol: 6, DestPort: 55000})
+	conntrack.Add(ConntrackKey{EndpointID: "pod-b", RemoteIdentity: 100, Direction: DirectionEgress, Protocol: 6, DestPort: 55000})
+
+	now = now.Add(2 * time.Second)
+	deleted := conntrack.SweepIdle(time.Second)
+	if deleted != 2 || conntrack.Len() != 0 {
+		t.Fatalf("deleted=%d remaining=%d, want both conntrack entries expired", deleted, conntrack.Len())
 	}
 }
 

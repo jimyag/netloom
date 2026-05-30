@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"net/netip"
 	"sync"
+	"time"
 )
 
 type Packet struct {
@@ -237,13 +238,36 @@ type ConntrackStore interface {
 	Len() int
 }
 
+const DefaultConntrackMaxIdle = 5 * time.Minute
+
+type ConntrackEntry struct {
+	LastSeen time.Time
+}
+
 type InMemoryConntrackStore struct {
 	mu      sync.Mutex
-	entries map[ConntrackKey]struct{}
+	entries map[ConntrackKey]ConntrackEntry
+	maxIdle time.Duration
+	now     func() time.Time
 }
 
 func NewInMemoryConntrackStore() *InMemoryConntrackStore {
-	return &InMemoryConntrackStore{entries: make(map[ConntrackKey]struct{})}
+	return NewInMemoryConntrackStoreWithIdleTimeout(DefaultConntrackMaxIdle)
+}
+
+func NewInMemoryConntrackStoreWithIdleTimeout(maxIdle time.Duration) *InMemoryConntrackStore {
+	return newInMemoryConntrackStoreWithClock(maxIdle, time.Now)
+}
+
+func newInMemoryConntrackStoreWithClock(maxIdle time.Duration, now func() time.Time) *InMemoryConntrackStore {
+	if now == nil {
+		now = time.Now
+	}
+	return &InMemoryConntrackStore{
+		entries: make(map[ConntrackKey]ConntrackEntry),
+		maxIdle: maxIdle,
+		now:     now,
+	}
 }
 
 func (s *InMemoryConntrackStore) Has(key ConntrackKey) bool {
@@ -252,8 +276,18 @@ func (s *InMemoryConntrackStore) Has(key ConntrackKey) bool {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, ok := s.entries[key]
-	return ok
+	entry, ok := s.entries[key]
+	if !ok {
+		return false
+	}
+	now := s.now()
+	if conntrackEntryExpired(entry, now, s.maxIdle) {
+		delete(s.entries, key)
+		return false
+	}
+	entry.LastSeen = now
+	s.entries[key] = entry
+	return true
 }
 
 func (s *InMemoryConntrackStore) Add(key ConntrackKey) {
@@ -262,7 +296,7 @@ func (s *InMemoryConntrackStore) Add(key ConntrackKey) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.entries[key] = struct{}{}
+	s.entries[key] = ConntrackEntry{LastSeen: s.now()}
 }
 
 func (s *InMemoryConntrackStore) DeleteEndpoint(endpointID string) {
@@ -285,6 +319,27 @@ func (s *InMemoryConntrackStore) Len() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.entries)
+}
+
+func (s *InMemoryConntrackStore) SweepIdle(maxIdle time.Duration) int {
+	if s == nil || maxIdle <= 0 {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.now()
+	deleted := 0
+	for key, entry := range s.entries {
+		if conntrackEntryExpired(entry, now, maxIdle) {
+			delete(s.entries, key)
+			deleted++
+		}
+	}
+	return deleted
+}
+
+func conntrackEntryExpired(entry ConntrackEntry, now time.Time, maxIdle time.Duration) bool {
+	return maxIdle > 0 && !entry.LastSeen.IsZero() && now.Sub(entry.LastSeen) > maxIdle
 }
 
 func EvaluateStateful(endpointID string, entries []PolicyMapEntry, packet Packet, conntrack ConntrackStore) Decision {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/netip"
 	"testing"
+	"time"
 
 	"github.com/cilium/ebpf"
 	"github.com/jimyag/netloom/internal/control"
@@ -621,6 +622,56 @@ func TestReconcilerClearsConntrackForNonTCXPolicyChange(t *testing.T) {
 	}
 	if reconciler.ConntrackStore().Len() != 0 {
 		t.Fatalf("conntrack entries after non-TCX policy change = %d, want 0", reconciler.ConntrackStore().Len())
+	}
+}
+
+func TestReconcilerExpiresIdleConntrack(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:             "pod-a",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"web"},
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "allow-web",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("10.10.0.11/32"),
+				Ports:      []model.PortRange{{From: 443, To: 443}},
+				Action:     model.ActionAllow,
+				Stateful:   true,
+			}},
+		}},
+	}
+	reconciler := NewReconciler(dataplane.NewInMemoryPolicyStore())
+	if _, err := reconciler.Reconcile(context.Background(), state, ReconcileOptions{Node: "node-a"}); err != nil {
+		t.Fatal(err)
+	}
+	reconciler.ConntrackStore().Add(dataplane.ConntrackKey{
+		EndpointID:     "pod-a",
+		RemoteIdentity: 100,
+		Direction:      dataplane.DirectionEgress,
+		Protocol:       6,
+		DestPort:       55000,
+	})
+	time.Sleep(time.Millisecond)
+
+	result, err := reconciler.Reconcile(context.Background(), state, ReconcileOptions{
+		Node:          "node-a",
+		ConntrackIdle: time.Nanosecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ConntrackExpired != 1 || reconciler.ConntrackStore().Len() != 0 {
+		t.Fatalf("conntrack expired=%d remaining=%d, want one idle entry expired", result.ConntrackExpired, reconciler.ConntrackStore().Len())
 	}
 }
 

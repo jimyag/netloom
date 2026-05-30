@@ -93,6 +93,7 @@ func reconcileStateFile(ctx context.Context, path, node, storeName string, recon
 		Node:          node,
 		TCXInterface:  os.Getenv("NETLOOM_TCX_IFACE"),
 		TCXWorkload:   os.Getenv("NETLOOM_TCX_WORKLOAD") == "1",
+		ConntrackIdle: conntrackIdleTimeout(),
 		LinuxDatapath: linuxDatapathOptions(),
 	})
 	if err != nil {
@@ -155,7 +156,7 @@ func withDNSObservations(state control.DesiredState) (control.DesiredState, erro
 }
 
 func printReconcileResult(result agent.ReconcileResult, storeName string) {
-	fmt.Printf("netloom-agent reconciled node policy node=%s store=%s endpoints=%d programs=%d entries=%d policy_added=%d policy_updated=%d policy_deleted=%d policy_unchanged=%d policy_events=%d policy_revision_max=%d tcx_eligible=%d tcx=%s datapath=%s local_ips=%d remote_routes=%d policy_routes=%d cleanup=%t\n", result.Node, storeName, result.Endpoints, result.Programs, result.Entries, result.PolicyAdded, result.PolicyUpdated, result.PolicyDeleted, result.PolicyUnchanged, result.PolicyEvents, result.PolicyRevisionMax, result.TCXEligible, result.TCX, result.Datapath, result.LocalIPs, result.RemoteRoutes, result.PolicyRoutes, result.Cleanup)
+	fmt.Printf("netloom-agent reconciled node policy node=%s store=%s endpoints=%d programs=%d entries=%d policy_added=%d policy_updated=%d policy_deleted=%d policy_unchanged=%d policy_events=%d policy_revision_max=%d conntrack_expired=%d tcx_eligible=%d tcx=%s datapath=%s local_ips=%d remote_routes=%d policy_routes=%d cleanup=%t\n", result.Node, storeName, result.Endpoints, result.Programs, result.Entries, result.PolicyAdded, result.PolicyUpdated, result.PolicyDeleted, result.PolicyUnchanged, result.PolicyEvents, result.PolicyRevisionMax, result.ConntrackExpired, result.TCXEligible, result.TCX, result.Datapath, result.LocalIPs, result.RemoteRoutes, result.PolicyRoutes, result.Cleanup)
 }
 
 func reconcileInterval() (time.Duration, error) {
@@ -193,6 +194,14 @@ func tcxHold() (time.Duration, error) {
 		return 0, fmt.Errorf("invalid NETLOOM_TCX_HOLD_MS: %w", err)
 	}
 	return time.Duration(ms) * time.Millisecond, nil
+}
+
+func conntrackIdleTimeout() time.Duration {
+	ms := getenvIntDefault("NETLOOM_CONNTRACK_MAX_IDLE_MS", 0)
+	if ms <= 0 {
+		return 0
+	}
+	return time.Duration(ms) * time.Millisecond
 }
 
 func linuxDatapathOptions() *linuxdatapath.Options {

@@ -227,9 +227,13 @@ Stateful rules now have a userspace conntrack model that mirrors the Cilium
 policy decision shape. `EvaluateStateful` first checks established reverse-flow
 state, then evaluates the endpoint policy map. A stateful allow creates a
 reverse key for the same endpoint and remote identity; deny rules never create
-state. The long-running agent reconciler owns the conntrack store and deletes
-entries when an endpoint disappears or its compiled policy signature changes,
-so stale state cannot survive a policy update.
+state. Reverse-flow hits refresh the entry's idle timestamp. The long-running
+agent reconciler owns the conntrack store and runs an idle sweep on each
+reconcile, defaulting to a five-minute maximum idle age and honoring
+`NETLOOM_CONNTRACK_MAX_IDLE_MS` for shorter lab validation or longer production
+grace periods. It also deletes entries when an endpoint disappears or its
+compiled policy signature changes, so stale state cannot survive a policy
+update.
 
 Policy updates now compute a Cilium-style incremental diff before replacing an
 endpoint map. The diff reports added, updated, deleted, and unchanged entries.

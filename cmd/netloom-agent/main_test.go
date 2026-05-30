@@ -33,6 +33,19 @@ func TestReconcileIntervalRejectsInvalidValue(t *testing.T) {
 	}
 }
 
+func TestConntrackIdleTimeoutParsesMilliseconds(t *testing.T) {
+	t.Setenv("NETLOOM_CONNTRACK_MAX_IDLE_MS", "1500")
+	if got := conntrackIdleTimeout(); got != 1500*time.Millisecond {
+		t.Fatalf("conntrack idle timeout = %s, want 1500ms", got)
+	}
+}
+
+func TestConntrackIdleTimeoutDefaultsToReconcilerDefault(t *testing.T) {
+	if got := conntrackIdleTimeout(); got != 0 {
+		t.Fatalf("conntrack idle timeout = %s, want zero for default", got)
+	}
+}
+
 func TestLinuxDatapathOptionsParsesBackend(t *testing.T) {
 	t.Setenv("NETLOOM_LINUX_DATAPATH", "1")
 	t.Setenv("NETLOOM_LINUX_DATAPATH_MODE", "netns")
