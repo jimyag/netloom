@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"slices"
 	"strings"
+	"time"
 )
 
 type Action string
@@ -182,8 +183,10 @@ type FQDNSelector struct {
 }
 
 type DNSRecord struct {
-	Name string       `json:"name"`
-	IPs  []netip.Addr `json:"ips"`
+	Name       string       `json:"name"`
+	IPs        []netip.Addr `json:"ips"`
+	TTLSeconds uint32       `json:"ttl_seconds"`
+	ObservedAt time.Time    `json:"observed_at"`
 }
 
 type PortRange struct {
@@ -715,12 +718,29 @@ func (r DNSRecord) Validate() error {
 	if len(r.IPs) == 0 {
 		return errors.New("dns record ips are required")
 	}
+	if r.TTLSeconds > 0 && r.ObservedAt.IsZero() {
+		return errors.New("dns record observed_at is required when ttl_seconds is set")
+	}
+	if r.TTLSeconds == 0 && !r.ObservedAt.IsZero() {
+		return errors.New("dns record observed_at requires ttl_seconds")
+	}
 	for i, ip := range r.IPs {
 		if !ip.IsValid() {
 			return fmt.Errorf("dns record ip %d is invalid", i)
 		}
 	}
 	return nil
+}
+
+func (r DNSRecord) IsExpired(now time.Time) bool {
+	if r.TTLSeconds == 0 {
+		return false
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	expiresAt := r.ObservedAt.Add(time.Duration(r.TTLSeconds) * time.Second)
+	return !now.Before(expiresAt)
 }
 
 func validateDNSName(name string, allowWildcard bool) error {

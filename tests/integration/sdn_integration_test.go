@@ -267,5 +267,8 @@ const integrationStateJSON = `{
     ]}
   ],
   "cidr_groups": [{"name": "corp", "vpc": "prod", "cidrs": ["10.20.0.0/16"]}],
-  "dns_records": [{"name": "api.example.com", "ips": ["203.0.113.10"]}]
+  "dns_records": [
+    {"name": "api.example.com", "ips": ["203.0.113.10"]},
+    {"name": "api.example.com", "ips": ["203.0.113.20"], "ttl_seconds": 1, "observed_at": "2000-01-01T00:00:00Z"}
+  ]
 }`

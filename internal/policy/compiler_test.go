@@ -4,6 +4,7 @@ import (
 	"net/netip"
 	"sort"
 	"testing"
+	"time"
 
 	"github.com/jimyag/netloom/internal/model"
 )
@@ -379,6 +380,58 @@ func TestCompileForEndpointWithContextUnresolvedRemoteFQDNProducesNoEntries(t *t
 	}
 	if len(program.Rules) != 0 || len(program.MapEntries) != 0 {
 		t.Fatalf("unresolved fqdn compiled to rules=%d entries=%d, want none", len(program.Rules), len(program.MapEntries))
+	}
+}
+
+func TestCompileForEndpointWithContextSkipsExpiredDNSRecords(t *testing.T) {
+	endpoint := model.Endpoint{
+		ID:             "pod-a",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"client"},
+	}
+	now := time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)
+	program, err := CompileForEndpointWithContext(endpoint, map[string]model.SecurityGroup{
+		"client": {
+			Name: "client",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:          "allow-api",
+				Priority:    100,
+				Direction:   model.DirectionEgress,
+				Protocol:    model.ProtocolTCP,
+				RemoteFQDNs: []model.FQDNSelector{{MatchName: "api.example.com"}},
+				Ports:       []model.PortRange{{From: 443, To: 443}},
+				Action:      model.ActionAllow,
+			}},
+		},
+	}, CompileContext{
+		Now: now,
+		DNSRecords: []model.DNSRecord{
+			{
+				Name:       "api.example.com",
+				IPs:        []netip.Addr{netip.MustParseAddr("203.0.113.10")},
+				TTLSeconds: 60,
+				ObservedAt: now.Add(-59 * time.Second),
+			},
+			{
+				Name:       "api.example.com",
+				IPs:        []netip.Addr{netip.MustParseAddr("203.0.113.20")},
+				TTLSeconds: 60,
+				ObservedAt: now.Add(-60 * time.Second),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(program.Rules) != 1 {
+		t.Fatalf("rules = %d, want only non-expired dns record", len(program.Rules))
+	}
+	if program.Rules[0].RemoteCIDR != netip.MustParsePrefix("203.0.113.10/32") {
+		t.Fatalf("remote cidr = %s, want active dns record only", program.Rules[0].RemoteCIDR)
 	}
 }
 

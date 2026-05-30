@@ -154,9 +154,11 @@ one CIDR-backed policy entry per resolved IP (`/32` for IPv4, `/128` for IPv6).
 Unresolved names compile to no entries, so they do not accidentally allow broad
 egress. This gives the eBPF ACL path the same CIDR fallback enforcement shape
 as `remote_cidr` while preserving the higher-level FQDN intent in the model.
-The current implementation is a static desired-state DNS cache, not a Cilium
-DNS proxy: runtime DNS observation, TTL expiry, and automatic re-resolution are
-explicitly future work.
+The desired-state DNS cache supports TTL expiry with `ttl_seconds` and
+`observed_at`; expired records are skipped during policy compilation so stale
+answers stop granting egress. The current implementation is still not a Cilium
+DNS proxy: runtime DNS observation and automatic re-resolution are explicitly
+future work.
 
 Stateful rules now have a userspace conntrack model that mirrors the Cilium
 policy decision shape. `EvaluateStateful` first checks established reverse-flow

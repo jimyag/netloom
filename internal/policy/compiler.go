@@ -8,6 +8,7 @@ import (
 	"path"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/jimyag/netloom/internal/model"
 )
@@ -61,6 +62,7 @@ type CompileContext struct {
 	Endpoints  []model.Endpoint
 	DNSRecords []model.DNSRecord
 	CIDRGroups []model.CIDRGroup
+	Now        time.Time
 }
 
 func CompileForEndpoint(endpoint model.Endpoint, groups map[string]model.SecurityGroup) (Program, error) {
@@ -79,7 +81,7 @@ func CompileForEndpointWithContext(endpoint model.Endpoint, groups map[string]mo
 	if err != nil {
 		return Program{}, err
 	}
-	dnsRecords, err := indexDNSRecords(ctx.DNSRecords)
+	dnsRecords, err := indexDNSRecords(ctx.DNSRecords, ctx.Now)
 	if err != nil {
 		return Program{}, err
 	}
@@ -372,14 +374,20 @@ func indexRemoteGroupMembers(vpc string, groups map[string]model.SecurityGroup, 
 	return out, nil
 }
 
-func indexDNSRecords(records []model.DNSRecord) (map[string][]netip.Addr, error) {
+func indexDNSRecords(records []model.DNSRecord, now time.Time) (map[string][]netip.Addr, error) {
 	if len(records) == 0 {
 		return nil, nil
+	}
+	if now.IsZero() {
+		now = time.Now()
 	}
 	out := make(map[string][]netip.Addr, len(records))
 	for _, record := range records {
 		if err := record.Validate(); err != nil {
 			return nil, err
+		}
+		if record.IsExpired(now) {
+			continue
 		}
 		name := normalizeDNSName(record.Name)
 		out[name] = append(out[name], record.IPs...)

@@ -4,6 +4,7 @@ import (
 	"net/netip"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestCoreNetworkResourcesValidateRequiredFields(t *testing.T) {
@@ -443,8 +444,37 @@ func TestDNSRecordValidation(t *testing.T) {
 	if err := record.Validate(); err != nil {
 		t.Fatal(err)
 	}
+	ttlRecord := DNSRecord{
+		Name:       "api.example.com",
+		IPs:        []netip.Addr{netip.MustParseAddr("203.0.113.10")},
+		TTLSeconds: 30,
+		ObservedAt: time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC),
+	}
+	if err := ttlRecord.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if ttlRecord.IsExpired(time.Date(2026, 5, 30, 12, 0, 29, 0, time.UTC)) {
+		t.Fatal("record should still be active before ttl expires")
+	}
+	if !ttlRecord.IsExpired(time.Date(2026, 5, 30, 12, 0, 30, 0, time.UTC)) {
+		t.Fatal("record should expire when ttl boundary is reached")
+	}
 	if err := (DNSRecord{Name: "api.example.com"}).Validate(); err == nil {
 		t.Fatal("expected dns record without ips to fail")
+	}
+	if err := (DNSRecord{
+		Name:       "api.example.com",
+		IPs:        []netip.Addr{netip.MustParseAddr("203.0.113.10")},
+		TTLSeconds: 30,
+	}).Validate(); err == nil {
+		t.Fatal("expected ttl record without observed_at to fail")
+	}
+	if err := (DNSRecord{
+		Name:       "api.example.com",
+		IPs:        []netip.Addr{netip.MustParseAddr("203.0.113.10")},
+		ObservedAt: time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC),
+	}).Validate(); err == nil {
+		t.Fatal("expected observed_at without ttl to fail")
 	}
 }
 
