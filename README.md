@@ -154,7 +154,7 @@ OVN ACL 本身很适合做分布式虚拟网络策略，但它不是唯一选择
 
 - 控制面模型：VPC、Subnet、Endpoint、RouteTable、PolicyRoute、Gateway、NATRule、SecurityGroup。
 - OVN 风格拓扑后端：把逻辑交换、逻辑路由、策略路由、Gateway、NAT、Service VIP 和 Provider Network 转换为带 `external_ids` 所有权标记的批量 `ovn-nbctl` 事务；Gateway 覆盖集中式 chassis pin 与分布式网关元数据；NAT 覆盖 SNAT、DNAT、Floating IP (`dnat_and_snat`) 和 OVN `--portrange` 端口 DNAT，同名规则变更会按 desired state 替换旧 NAT，并在控制面拒绝 EIP/端口冲突。
-- Linux 工作负载 datapath：支持本机 `/32` 地址路由、`netns + veth` 多工作负载模式，以及基于 RPDB table/rule 的策略路由下发；网卡/netns/策略路由操作可使用 `vishvananda/netlink`/`netns` 后端执行。
+- Linux 工作负载 datapath：支持本机 `/32` 地址路由、`netns + veth` 多工作负载模式，以及基于 RPDB table/rule 的策略路由下发；网卡/netns/策略路由操作默认使用 `vishvananda/netlink`/`netns` 后端执行，保留 `NETLOOM_LINUX_DATAPATH_BACKEND=command` 作为 shell 回退路径。
 - Cilium 风格策略编译：把安全组规则编译为 endpoint-scoped policy map entry，并把 `remote_cidr`/`remote_group` 保留为可按真实 remote IP 匹配的 CIDR 元数据；重叠 CIDR 会按最长前缀选择更具体规则，精确 identity 命中优先于 CIDR fallback；`remote_group` 会展开为 endpoint identity 与精确成员 CIDR。
 - Cilium 风格连接状态：stateful allow 规则会建立反向 conntrack 状态，策略变化或 endpoint 删除时清理旧状态。
 - Cilium 风格策略更新：policy map replace 会先计算 add/update/delete/unchanged diff，成功替换后递增 endpoint policy revision 并记录 audit event；内存 store 具备事务回滚语义。
@@ -166,7 +166,7 @@ OVN ACL 本身很适合做分布式虚拟网络策略，但它不是唯一选择
 
 - `PolicyRoute` 属于 SDN 拓扑意图，由 topology/OVN 路由层处理，支持 reroute/drop 等路由动作；OVN backend 会按 desired state 替换同 priority/match 的 policy，避免 next-hop 或 action 更新后旧策略残留。
 - `RouteTable` 的静态路由会按 destination 先清后写，默认路由、blackhole 和 next-hop 更新都会收敛到当前 desired state。
-- Linux datapath 会把本节点本 VPC 的 `PolicyRoute` 下发为独立 route table 和 `ip rule`/netlink rule，支持 source/destination、TCP/UDP `dport`、reroute 和 blackhole/drop；netlink 后端会按 desired state 清理托管表范围内的旧 rule 并刷新当前表，`NETLOOM_POLICY_ROUTE_TABLE_BASE`/`NETLOOM_POLICY_ROUTE_TABLE_SIZE` 可调整表 ID 范围。
+- Linux datapath 会把本节点本 VPC 的 `PolicyRoute` 下发为独立 route table 和 `ip rule`/netlink rule，支持 source/destination、TCP/UDP `dport`、reroute 和 blackhole/drop；默认 netlink 后端会按 desired state 清理托管表范围内的旧 rule 并刷新当前表，`NETLOOM_POLICY_ROUTE_TABLE_BASE`/`NETLOOM_POLICY_ROUTE_TABLE_SIZE` 可调整表 ID 范围。
 - `SecurityGroupRule` 属于 ACL 意图，由 eBPF-style policy map 和 TCX ACL datapath 执行。
 - ACL 不放到 OVN ACL 里实现，避免和 eBPF 策略路径重叠。
 - DNAT 端口映射会校验协议意图；当前 OVN NAT schema 只有 `external_port_range`，没有协议列，也不做端口号转换，因此 Netloom 只接受 external/target 端口相同的端口 DNAT，并把同一个 EIP+端口视为冲突。

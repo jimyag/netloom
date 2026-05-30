@@ -60,8 +60,12 @@ func (CommandExecutor) Execute(ctx context.Context, op Operation) error {
 }
 
 func Apply(ctx context.Context, state control.DesiredState, options Options) (Result, error) {
-	if options.Backend == "netlink" {
+	switch datapathBackend(options.Backend) {
+	case "netlink":
 		return ApplyNetlink(ctx, state, options)
+	case "command":
+	default:
+		return Result{}, fmt.Errorf("unsupported linux datapath backend %q", options.Backend)
 	}
 	ops, result, err := Plan(ctx, state, options)
 	if err != nil {
@@ -77,6 +81,13 @@ func Apply(ctx context.Context, state control.DesiredState, options Options) (Re
 		}
 	}
 	return result, nil
+}
+
+func datapathBackend(backend string) string {
+	if backend == "" {
+		return "netlink"
+	}
+	return backend
 }
 
 func Plan(ctx context.Context, state control.DesiredState, options Options) ([]Operation, Result, error) {

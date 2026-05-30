@@ -48,3 +48,15 @@ func TestLinuxDatapathOptionsParsesBackend(t *testing.T) {
 		t.Fatalf("policy table size = %d, want 64", options.PolicyTableSize)
 	}
 }
+
+func TestLinuxDatapathOptionsDefaultsToNetlinkBackend(t *testing.T) {
+	t.Setenv("NETLOOM_LINUX_DATAPATH", "1")
+
+	options := linuxDatapathOptions()
+	if options == nil {
+		t.Fatal("expected linux datapath options")
+	}
+	if options.Backend != "netlink" {
+		t.Fatalf("backend = %s, want netlink", options.Backend)
+	}
+}

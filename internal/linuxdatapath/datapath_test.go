@@ -377,6 +377,15 @@ func TestNormalizeOptionsDefaultsNetlinkSettings(t *testing.T) {
 	}
 }
 
+func TestDatapathBackendDefaultsToNetlink(t *testing.T) {
+	if got := datapathBackend(""); got != "netlink" {
+		t.Fatalf("default backend = %s, want netlink", got)
+	}
+	if got := datapathBackend("command"); got != "command" {
+		t.Fatalf("explicit backend = %s, want command", got)
+	}
+}
+
 func stringifyOps(ops []Operation) string {
 	lines := make([]string, 0, len(ops))
 	for _, op := range ops {
