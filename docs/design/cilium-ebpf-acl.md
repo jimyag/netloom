@@ -86,10 +86,10 @@ type/code: protocol-only ICMP has no L4 prefix, type-only matches the first
 rules to host-veth egress and egress rules to host-veth ingress, matching the
 direction split used by endpoint policy datapaths.
 In dual-stack endpoint policies, IPv4 and IPv6 CIDR entries can both be
-projected into LPM-backed TCX rule sets. The current workload attachment path
-still attaches the IPv4 TCX program; IPv6 entries remain in the policy
-map/evaluator path until the agent switches to the dual-family TCX attach path,
-so an IPv6 rule does not disable IPv4 acceleration for the same endpoint.
+projected into LPM-backed TCX rule sets. The agent uses a unified L4 TCX attach
+path: IPv4-only policies attach the IPv4 program, IPv6-only policies attach the
+IPv6 program, and mixed policies attach both programs to the same interface and
+direction using TCX multi-program anchors.
 
 The controller can reconcile either the built-in bootstrap state or a JSON
 desired-state file. Docker e2e tests exercise the JSON path against a live OVN
@@ -140,8 +140,8 @@ programming. This is still a small Linux bootstrap datapath; the command
 planner is isolated so the same reconcile path can later target OVN-backed
 ports without changing the policy compiler.
 
-For workload policy enforcement, the agent can attach the TCX IPv4 L4 ACL
-program to each eligible local endpoint's host-side veth in egress direction.
+For workload policy enforcement, the agent can attach the TCX L4 ACL program to
+each eligible local endpoint's host-side veth in egress direction.
 Packets entering the workload namespace are filtered immediately before crossing
 the veth peer, so Docker e2e now validates both datapath connectivity and
 security-group drops at the workload boundary. Multiple local workloads can be
@@ -151,10 +151,10 @@ Remote security-group references follow the same shape as Cilium identity-based
 policy. During reconcile, the compiler receives the current endpoint set,
 expands `remote_group` members in the same VPC into stable endpoint identities,
 and also records each member's exact `/32` or `/128` CIDR. The endpoint identity
-drives policy-map evaluation, while the exact CIDR lets the current TCX IPv4 L4
-projection enforce remote-group rules for workload traffic. When membership
-changes, periodic agent reconcile recompiles the endpoint program and replaces
-the TCX attachment signature.
+drives policy-map evaluation, while the exact CIDR lets the TCX L4 projection
+enforce remote-group rules for workload traffic. When membership changes,
+periodic agent reconcile recompiles the endpoint program and replaces the TCX
+attachment signature.
 
 Named ports follow Cilium's late-binding policy behavior. Endpoints can declare
 `named_ports` with a name, TCP or UDP protocol, and concrete port number.

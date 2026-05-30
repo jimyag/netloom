@@ -32,10 +32,13 @@ type TCXSelfTestResult struct {
 }
 
 type TCXAttachment struct {
-	Result  TCXSelfTestResult
-	aclMap  *ebpf.Map
-	program *ebpf.Program
-	link    link.Link
+	Result   TCXSelfTestResult
+	aclMap   *ebpf.Map
+	program  *ebpf.Program
+	link     link.Link
+	aclMaps  []*ebpf.Map
+	programs []*ebpf.Program
+	links    []link.Link
 }
 
 func (a *TCXAttachment) Close() error {
@@ -43,6 +46,33 @@ func (a *TCXAttachment) Close() error {
 		return nil
 	}
 	var firstErr error
+	for i := len(a.links) - 1; i >= 0; i-- {
+		if a.links[i] == nil {
+			continue
+		}
+		if err := a.links[i].Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		a.links[i] = nil
+	}
+	for i := len(a.programs) - 1; i >= 0; i-- {
+		if a.programs[i] == nil {
+			continue
+		}
+		if err := a.programs[i].Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		a.programs[i] = nil
+	}
+	for i := len(a.aclMaps) - 1; i >= 0; i-- {
+		if a.aclMaps[i] == nil {
+			continue
+		}
+		if err := a.aclMaps[i].Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		a.aclMaps[i] = nil
+	}
 	if a.link != nil {
 		if err := a.link.Close(); err != nil && firstErr == nil {
 			firstErr = err
@@ -434,6 +464,13 @@ func ValidateIPv6L4ACLProgramSupport(program policy.Program) error {
 		}
 	}
 	return nil
+}
+
+func ValidateL4ACLProgramSupport(program policy.Program) error {
+	if err := ValidateIPv4L4ACLProgramSupport(program); err != nil {
+		return err
+	}
+	return ValidateIPv6L4ACLProgramSupport(program)
 }
 
 func appendIPv4L4ACLRulesFromProgram(rules *[]IPv4L4ACLRule, seen map[IPv4L4Key]struct{}, program policy.Program, direction model.Direction) error {
@@ -873,6 +910,10 @@ func NewIPv6L4ACLTCXProgramForDirection(aclMap *ebpf.Map, direction model.Direct
 	})
 }
 
+func NewIPv6L4ACLTCXProgram(aclMap *ebpf.Map) (*ebpf.Program, error) {
+	return NewIPv6L4ACLTCXProgramForDirection(aclMap, model.DirectionIngress)
+}
+
 func ipv4PeerOffset(direction model.Direction) (int32, error) {
 	switch direction {
 	case model.DirectionIngress:
@@ -896,6 +937,10 @@ func ipv6PeerOffset(direction model.Direction) (int32, error) {
 }
 
 func AttachTCX(ctx context.Context, ifName string, program *ebpf.Program, attach ebpf.AttachType) (link.Link, error) {
+	return AttachTCXWithAnchor(ctx, ifName, program, attach, nil)
+}
+
+func AttachTCXWithAnchor(ctx context.Context, ifName string, program *ebpf.Program, attach ebpf.AttachType, anchor link.Anchor) (link.Link, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -907,6 +952,7 @@ func AttachTCX(ctx context.Context, ifName string, program *ebpf.Program, attach
 		Interface: iface.Index,
 		Program:   program,
 		Attach:    attach,
+		Anchor:    anchor,
 	})
 }
 
@@ -1080,6 +1126,21 @@ func AttachTCXIPv4L4Programs(ctx context.Context, ifName string, programs []poli
 	return AttachTCXIPv4L4ProgramsForDirection(ctx, ifName, programs, attach, model.DirectionIngress)
 }
 
+func AttachTCXL4ProgramsForDirection(ctx context.Context, ifName string, programs []policy.Program, attach ebpf.AttachType, direction model.Direction) (*TCXAttachment, error) {
+	v4Rules, v4Err := IPv4L4ACLRulesFromProgramsForDirection(programs, direction)
+	v6Rules, v6Err := IPv6L4ACLRulesFromProgramsForDirection(programs, direction)
+	switch {
+	case v4Err != nil && v6Err != nil:
+		return nil, fmt.Errorf("programs have no IPv4 or IPv6 L4 %s ACL rules for TCX", direction)
+	case v4Err == nil && v6Err != nil:
+		return AttachTCXIPv4L4RulesForDirection(ctx, ifName, v4Rules, attach, direction)
+	case v4Err != nil && v6Err == nil:
+		return AttachTCXIPv6L4RulesForDirection(ctx, ifName, v6Rules, attach, direction)
+	default:
+		return AttachTCXL4RulesForDirection(ctx, ifName, v4Rules, v6Rules, attach, direction)
+	}
+}
+
 func AttachTCXIPv4L4ProgramsForDirection(ctx context.Context, ifName string, programs []policy.Program, attach ebpf.AttachType, direction model.Direction) (*TCXAttachment, error) {
 	rules, err := IPv4L4ACLRulesFromProgramsForDirection(programs, direction)
 	if err != nil {
@@ -1093,6 +1154,69 @@ func AttachTCXIPv4L4Rules(ctx context.Context, ifName string, rules []IPv4L4ACLR
 }
 
 func AttachTCXIPv4L4RulesForDirection(ctx context.Context, ifName string, rules []IPv4L4ACLRule, attach ebpf.AttachType, direction model.Direction) (*TCXAttachment, error) {
+	attachment, err := attachTCXIPv4L4RulesForDirection(ctx, ifName, rules, attach, direction, nil)
+	if err != nil {
+		return nil, err
+	}
+	attachment.Result.Mode = "policy-l4"
+	return attachment, nil
+}
+
+func AttachTCXIPv6L4Programs(ctx context.Context, ifName string, programs []policy.Program, attach ebpf.AttachType) (*TCXAttachment, error) {
+	return AttachTCXIPv6L4ProgramsForDirection(ctx, ifName, programs, attach, model.DirectionIngress)
+}
+
+func AttachTCXIPv6L4ProgramsForDirection(ctx context.Context, ifName string, programs []policy.Program, attach ebpf.AttachType, direction model.Direction) (*TCXAttachment, error) {
+	rules, err := IPv6L4ACLRulesFromProgramsForDirection(programs, direction)
+	if err != nil {
+		return nil, err
+	}
+	return AttachTCXIPv6L4RulesForDirection(ctx, ifName, rules, attach, direction)
+}
+
+func AttachTCXIPv6L4Rules(ctx context.Context, ifName string, rules []IPv6L4ACLRule, attach ebpf.AttachType) (*TCXAttachment, error) {
+	return AttachTCXIPv6L4RulesForDirection(ctx, ifName, rules, attach, model.DirectionIngress)
+}
+
+func AttachTCXIPv6L4RulesForDirection(ctx context.Context, ifName string, rules []IPv6L4ACLRule, attach ebpf.AttachType, direction model.Direction) (*TCXAttachment, error) {
+	attachment, err := attachTCXIPv6L4RulesForDirection(ctx, ifName, rules, attach, direction, nil)
+	if err != nil {
+		return nil, err
+	}
+	attachment.Result.Mode = "policy-l4-v6"
+	return attachment, nil
+}
+
+func AttachTCXL4RulesForDirection(ctx context.Context, ifName string, v4Rules []IPv4L4ACLRule, v6Rules []IPv6L4ACLRule, attach ebpf.AttachType, direction model.Direction) (*TCXAttachment, error) {
+	if len(v4Rules) == 0 || len(v6Rules) == 0 {
+		return nil, fmt.Errorf("both IPv4 and IPv6 L4 ACL rules are required for dual-stack TCX attach")
+	}
+	v4Attachment, err := attachTCXIPv4L4RulesForDirection(ctx, ifName, v4Rules, attach, direction, nil)
+	if err != nil {
+		return nil, err
+	}
+	v6Attachment, err := attachTCXIPv6L4RulesForDirection(ctx, ifName, v6Rules, attach, direction, link.Tail())
+	if err != nil {
+		v4Attachment.Close()
+		return nil, err
+	}
+	attachment := &TCXAttachment{
+		Result: TCXSelfTestResult{
+			Interface: ifName,
+			Direction: tcxDirection(attach),
+			Action:    v4Rules[0].Action,
+			Mode:      "policy-l4-dual",
+		},
+		aclMaps:  []*ebpf.Map{v4Attachment.aclMap, v6Attachment.aclMap},
+		programs: []*ebpf.Program{v4Attachment.program, v6Attachment.program},
+		links:    []link.Link{v4Attachment.link, v6Attachment.link},
+	}
+	v4Attachment.aclMap, v4Attachment.program, v4Attachment.link = nil, nil, nil
+	v6Attachment.aclMap, v6Attachment.program, v6Attachment.link = nil, nil, nil
+	return attachment, nil
+}
+
+func attachTCXIPv4L4RulesForDirection(ctx context.Context, ifName string, rules []IPv4L4ACLRule, attach ebpf.AttachType, direction model.Direction, anchor link.Anchor) (*TCXAttachment, error) {
 	aclMap, err := NewIPv4L4ACLMapFromRules(rules)
 	if err != nil {
 		return nil, err
@@ -1104,7 +1228,7 @@ func AttachTCXIPv4L4RulesForDirection(ctx context.Context, ifName string, rules 
 		return nil, err
 	}
 
-	tcxLink, err := AttachTCX(ctx, ifName, tcxProgram, attach)
+	tcxLink, err := AttachTCXWithAnchor(ctx, ifName, tcxProgram, attach, anchor)
 	if err != nil {
 		tcxProgram.Close()
 		aclMap.Close()
@@ -1116,7 +1240,37 @@ func AttachTCXIPv4L4RulesForDirection(ctx context.Context, ifName string, rules 
 			Interface: ifName,
 			Direction: tcxDirection(attach),
 			Action:    rules[0].Action,
-			Mode:      "policy-l4",
+		},
+		aclMap:  aclMap,
+		program: tcxProgram,
+		link:    tcxLink,
+	}, nil
+}
+
+func attachTCXIPv6L4RulesForDirection(ctx context.Context, ifName string, rules []IPv6L4ACLRule, attach ebpf.AttachType, direction model.Direction, anchor link.Anchor) (*TCXAttachment, error) {
+	aclMap, err := NewIPv6L4ACLMapFromRules(rules)
+	if err != nil {
+		return nil, err
+	}
+
+	tcxProgram, err := NewIPv6L4ACLTCXProgramForDirection(aclMap, direction)
+	if err != nil {
+		aclMap.Close()
+		return nil, err
+	}
+
+	tcxLink, err := AttachTCXWithAnchor(ctx, ifName, tcxProgram, attach, anchor)
+	if err != nil {
+		tcxProgram.Close()
+		aclMap.Close()
+		return nil, err
+	}
+
+	return &TCXAttachment{
+		Result: TCXSelfTestResult{
+			Interface: ifName,
+			Direction: tcxDirection(attach),
+			Action:    rules[0].Action,
 		},
 		aclMap:  aclMap,
 		program: tcxProgram,

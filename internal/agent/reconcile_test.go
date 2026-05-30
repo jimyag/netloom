@@ -245,7 +245,7 @@ func TestReconcileNodeWithTCXInterfaceAcceptsCIDRPolicy(t *testing.T) {
 	}
 }
 
-func TestPrepareReconcileWithTCXInterfaceKeepsIPv4SubsetForDualStackPolicy(t *testing.T) {
+func TestPrepareReconcileWithTCXInterfaceBuildsDualStackTarget(t *testing.T) {
 	state := control.DesiredState{
 		Endpoints: []model.Endpoint{{
 			ID:             "pod-a",
@@ -292,7 +292,68 @@ func TestPrepareReconcileWithTCXInterfaceKeepsIPv4SubsetForDualStackPolicy(t *te
 		t.Fatalf("result = %+v, want both policy entries and one TCX-eligible program", result)
 	}
 	if len(targets) != 1 || targets[0].policyDirection != model.DirectionIngress {
-		t.Fatalf("targets = %+v, want ingress TCX target for IPv4 subset", targets)
+		t.Fatalf("targets = %+v, want ingress TCX target for dual-stack policy", targets)
+	}
+	v4Rules, err := dataplane.IPv4L4ACLRulesFromProgramsForDirection(targets[0].programs, model.DirectionIngress)
+	if err != nil {
+		t.Fatalf("IPv4 TCX rules: %v", err)
+	}
+	if len(v4Rules) != 1 || v4Rules[0].SourceCIDR != netip.MustParsePrefix("172.30.0.0/24") {
+		t.Fatalf("IPv4 TCX rules = %+v, want IPv4 CIDR rule", v4Rules)
+	}
+	v6Rules, err := dataplane.IPv6L4ACLRulesFromProgramsForDirection(targets[0].programs, model.DirectionIngress)
+	if err != nil {
+		t.Fatalf("IPv6 TCX rules: %v", err)
+	}
+	if len(v6Rules) != 1 || v6Rules[0].SourceCIDR != netip.MustParsePrefix("fd00:20::/64") {
+		t.Fatalf("IPv6 TCX rules = %+v, want IPv6 CIDR rule", v6Rules)
+	}
+}
+
+func TestPrepareReconcileWithTCXInterfaceAcceptsIPv6OnlyPolicy(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:             "pod-a",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("fd00:10::10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"v6-web"},
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "v6-web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "drop-v6",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("fd00:20::/64"),
+				Ports:      []model.PortRange{{From: 8080, To: 8080}},
+				Action:     model.ActionDrop,
+			}},
+		}},
+	}
+	result, targets, _, err := prepareReconcile(context.Background(), state, ReconcileOptions{
+		Node:         "node-a",
+		Store:        dataplane.NewInMemoryPolicyStore(),
+		TCXInterface: "lo",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Entries != 1 || result.TCXEligible != 1 {
+		t.Fatalf("result = %+v, want IPv6 policy entry and one TCX-eligible program", result)
+	}
+	if len(targets) != 1 || targets[0].policyDirection != model.DirectionIngress {
+		t.Fatalf("targets = %+v, want ingress TCX target for IPv6 policy", targets)
+	}
+	v6Rules, err := dataplane.IPv6L4ACLRulesFromProgramsForDirection(targets[0].programs, model.DirectionIngress)
+	if err != nil {
+		t.Fatalf("IPv6 TCX rules: %v", err)
+	}
+	if len(v6Rules) != 1 || v6Rules[0].SourceCIDR != netip.MustParsePrefix("fd00:20::/64") {
+		t.Fatalf("IPv6 TCX rules = %+v, want IPv6 CIDR rule", v6Rules)
 	}
 }
 

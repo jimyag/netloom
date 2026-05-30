@@ -240,7 +240,7 @@ func prepareReconcile(ctx context.Context, state control.DesiredState, options R
 	var targets []tcxTarget
 	if options.TCXInterface != "" || options.TCXWorkload {
 		for _, program := range localPrograms {
-			if err := dataplane.ValidateIPv4L4ACLProgramSupport(program); err != nil {
+			if err := dataplane.ValidateL4ACLProgramSupport(program); err != nil {
 				return ReconcileResult{}, nil, nil, fmt.Errorf("tcx policy for endpoint %s: %w", program.EndpointID, err)
 			}
 		}
@@ -289,7 +289,10 @@ func tcxEligibleProgram(program policy.Program) bool {
 }
 
 func tcxEligibleProgramForDirection(program policy.Program, direction model.Direction) bool {
-	_, err := dataplane.IPv4L4ACLRulesFromProgramForDirection(program, direction)
+	if _, err := dataplane.IPv4L4ACLRulesFromProgramForDirection(program, direction); err == nil {
+		return true
+	}
+	_, err := dataplane.IPv6L4ACLRulesFromProgramForDirection(program, direction)
 	return err == nil
 }
 
@@ -364,7 +367,7 @@ func (r *Reconciler) syncTCXTargets(ctx context.Context, targets []tcxTarget) (s
 }
 
 func attachTCXTarget(ctx context.Context, target tcxTarget) (tcxAttachmentHandle, error) {
-	attachment, err := dataplane.AttachTCXIPv4L4ProgramsForDirection(ctx, target.ifName, target.programs, target.attach, target.policyDirection)
+	attachment, err := dataplane.AttachTCXL4ProgramsForDirection(ctx, target.ifName, target.programs, target.attach, target.policyDirection)
 	if err != nil {
 		return tcxAttachmentHandle{}, err
 	}
