@@ -26,32 +26,60 @@ func ApplyLoadBalancerHealthChecks(ctx context.Context, state DesiredState, prob
 	next.LoadBalancers = append([]model.LoadBalancer(nil), state.LoadBalancers...)
 	var summary LoadBalancerHealthSummary
 	for i, lb := range next.LoadBalancers {
-		if !lb.HealthCheck.Enabled || normalizedLoadBalancerProtocol(lb.Protocol) != model.ProtocolTCP {
+		if !lb.HealthCheck.Enabled {
 			continue
 		}
-		lb.Backends = append([]model.LoadBalancerBackend(nil), lb.Backends...)
-		healthyBackends := 0
-		for j, backend := range lb.Backends {
-			if backend.Healthy != nil && !*backend.Healthy {
-				summary.Unhealthy++
+		if len(lb.Ports) == 0 {
+			if normalizedLoadBalancerProtocol(lb.Protocol) != model.ProtocolTCP {
 				continue
 			}
-			ok := probe(ctx, backend, loadBalancerHealthProbeTimeout(lb.HealthCheck)) == nil
-			lb.Backends[j].Healthy = boolPtr(ok)
-			summary.Checked++
-			if ok {
-				summary.Healthy++
-				healthyBackends++
-			} else {
-				summary.Unhealthy++
+			backends, healthyBackends := probeLoadBalancerBackends(ctx, lb.Backends, lb.HealthCheck, probe, &summary)
+			if healthyBackends == 0 {
+				return DesiredState{}, summary, fmt.Errorf("load balancer %q has no healthy probed backends", lb.Name)
 			}
+			lb.Backends = backends
+			next.LoadBalancers[i] = lb
+			continue
 		}
-		if healthyBackends == 0 {
-			return DesiredState{}, summary, fmt.Errorf("load balancer %q has no healthy probed backends", lb.Name)
+		lb.Ports = append([]model.LoadBalancerPort(nil), lb.Ports...)
+		for j, port := range lb.Ports {
+			if normalizedLoadBalancerProtocol(port.Protocol) != model.ProtocolTCP {
+				continue
+			}
+			backends := port.Backends
+			if len(backends) == 0 {
+				backends = lb.Backends
+			}
+			backends, healthyBackends := probeLoadBalancerBackends(ctx, backends, lb.HealthCheck, probe, &summary)
+			if healthyBackends == 0 {
+				return DesiredState{}, summary, fmt.Errorf("load balancer %q port %d has no healthy probed backends", lb.Name, port.Port)
+			}
+			lb.Ports[j].Backends = backends
 		}
 		next.LoadBalancers[i] = lb
 	}
 	return next, summary, nil
+}
+
+func probeLoadBalancerBackends(ctx context.Context, backends []model.LoadBalancerBackend, healthCheck model.LoadBalancerHealthCheck, probe LoadBalancerBackendProbe, summary *LoadBalancerHealthSummary) ([]model.LoadBalancerBackend, int) {
+	next := append([]model.LoadBalancerBackend(nil), backends...)
+	healthyBackends := 0
+	for j, backend := range next {
+		if backend.Healthy != nil && !*backend.Healthy {
+			summary.Unhealthy++
+			continue
+		}
+		ok := probe(ctx, backend, loadBalancerHealthProbeTimeout(healthCheck)) == nil
+		next[j].Healthy = boolPtr(ok)
+		summary.Checked++
+		if ok {
+			summary.Healthy++
+			healthyBackends++
+		} else {
+			summary.Unhealthy++
+		}
+	}
+	return next, healthyBackends
 }
 
 func TCPBackendProbe(ctx context.Context, backend model.LoadBalancerBackend, timeout time.Duration) error {

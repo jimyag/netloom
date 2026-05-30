@@ -192,35 +192,73 @@ func TestControllerRejectsConflictingLoadBalancers(t *testing.T) {
 	baseState := DesiredState{
 		VPCs: []model.VPC{{Name: "prod"}},
 	}
-	state := baseState
-	state.LoadBalancers = []model.LoadBalancer{
+	tests := []struct {
+		name          string
+		loadBalancers []model.LoadBalancer
+	}{
 		{
-			Name: "web-a",
-			VPC:  "prod",
-			VIP:  netip.MustParseAddr("10.96.0.10"),
-			Port: 80,
-			Backends: []model.LoadBalancerBackend{{
-				IP:   netip.MustParseAddr("10.10.0.10"),
-				Port: 8080,
-			}},
+			name: "single port",
+			loadBalancers: []model.LoadBalancer{
+				{
+					Name: "web-a",
+					VPC:  "prod",
+					VIP:  netip.MustParseAddr("10.96.0.10"),
+					Port: 80,
+					Backends: []model.LoadBalancerBackend{{
+						IP:   netip.MustParseAddr("10.10.0.10"),
+						Port: 8080,
+					}},
+				},
+				{
+					Name: "web-b",
+					VPC:  "prod",
+					VIP:  netip.MustParseAddr("10.96.0.10"),
+					Port: 80,
+					Backends: []model.LoadBalancerBackend{{
+						IP:   netip.MustParseAddr("10.10.0.11"),
+						Port: 8080,
+					}},
+				},
+			},
 		},
 		{
-			Name: "web-b",
-			VPC:  "prod",
-			VIP:  netip.MustParseAddr("10.96.0.10"),
-			Port: 80,
-			Backends: []model.LoadBalancerBackend{{
-				IP:   netip.MustParseAddr("10.10.0.11"),
-				Port: 8080,
-			}},
+			name: "multi port frontend",
+			loadBalancers: []model.LoadBalancer{
+				{
+					Name: "web-a",
+					VPC:  "prod",
+					VIP:  netip.MustParseAddr("10.96.0.10"),
+					Ports: []model.LoadBalancerPort{{
+						Port:     9090,
+						Protocol: model.ProtocolTCP,
+						Backends: []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.10"), Port: 9091}},
+					}},
+				},
+				{
+					Name: "web-b",
+					VPC:  "prod",
+					VIP:  netip.MustParseAddr("10.96.0.10"),
+					Port: 9090,
+					Backends: []model.LoadBalancerBackend{{
+						IP:   netip.MustParseAddr("10.10.0.11"),
+						Port: 9091,
+					}},
+				},
+			},
 		},
 	}
-	err := NewController(NewMemoryBackend(), NewMemoryBackend()).Reconcile(context.Background(), state)
-	if err == nil {
-		t.Fatal("expected conflicting load balancers to fail")
-	}
-	if !strings.Contains(err.Error(), "conflicts") {
-		t.Fatalf("error %q does not contain conflicts", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state := baseState
+			state.LoadBalancers = tt.loadBalancers
+			err := NewController(NewMemoryBackend(), NewMemoryBackend()).Reconcile(context.Background(), state)
+			if err == nil {
+				t.Fatal("expected conflicting load balancers to fail")
+			}
+			if !strings.Contains(err.Error(), "conflicts") {
+				t.Fatalf("error %q does not contain conflicts", err)
+			}
+		})
 	}
 }
 

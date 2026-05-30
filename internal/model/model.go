@@ -140,12 +140,28 @@ type LoadBalancer struct {
 	VIP             netip.Addr              `json:"vip"`
 	Port            uint16                  `json:"port"`
 	Protocol        Protocol                `json:"protocol"`
+	Ports           []LoadBalancerPort      `json:"ports"`
 	Backends        []LoadBalancerBackend   `json:"backends"`
 	Subnets         []string                `json:"subnets"`
 	SessionAffinity bool                    `json:"session_affinity"`
 	AffinityTimeout uint32                  `json:"affinity_timeout"`
 	SelectionFields []string                `json:"selection_fields"`
 	HealthCheck     LoadBalancerHealthCheck `json:"health_check"`
+}
+
+type LoadBalancerPort struct {
+	Name     string                `json:"name"`
+	Port     uint16                `json:"port"`
+	Protocol Protocol              `json:"protocol"`
+	Backends []LoadBalancerBackend `json:"backends"`
+}
+
+type LoadBalancerFrontend struct {
+	Name     string
+	VIP      netip.Addr
+	Port     uint16
+	Protocol Protocol
+	Backends []LoadBalancerBackend
 }
 
 type LoadBalancerBackend struct {
@@ -723,17 +739,9 @@ func (l LoadBalancer) Validate() error {
 	if !l.VIP.IsValid() {
 		return errors.New("load balancer vip is required")
 	}
-	if l.Port == 0 {
+	frontends := l.Frontends()
+	if len(frontends) == 0 {
 		return errors.New("load balancer port is required")
-	}
-	if l.Protocol == "" {
-		l.Protocol = ProtocolTCP
-	}
-	if l.Protocol != ProtocolTCP && l.Protocol != ProtocolUDP {
-		return fmt.Errorf("unsupported load balancer protocol %q", l.Protocol)
-	}
-	if len(l.Backends) == 0 {
-		return errors.New("load balancer backends are required")
 	}
 	if !l.SessionAffinity && l.AffinityTimeout != 0 {
 		return errors.New("load balancer affinity timeout requires session affinity")
@@ -747,20 +755,37 @@ func (l LoadBalancer) Validate() error {
 	if err := l.HealthCheck.Validate(); err != nil {
 		return fmt.Errorf("load balancer health check: %w", err)
 	}
-	healthyBackends := 0
-	for i, backend := range l.Backends {
-		if err := backend.Validate(); err != nil {
-			return fmt.Errorf("load balancer backend %d: %w", i, err)
+	seenFrontends := make(map[string]struct{}, len(frontends))
+	for i, frontend := range frontends {
+		if frontend.Port == 0 {
+			return fmt.Errorf("load balancer frontend %d port is required", i)
 		}
-		if backend.IP.Is4() != l.VIP.Is4() {
-			return fmt.Errorf("load balancer backend %d ip family must match vip", i)
+		if frontend.Protocol != ProtocolTCP && frontend.Protocol != ProtocolUDP {
+			return fmt.Errorf("unsupported load balancer protocol %q", frontend.Protocol)
 		}
-		if backend.IsHealthy() {
-			healthyBackends++
+		if len(frontend.Backends) == 0 {
+			return fmt.Errorf("load balancer frontend %d backends are required", i)
 		}
-	}
-	if healthyBackends == 0 {
-		return errors.New("load balancer must have at least one healthy backend")
+		key := string(frontend.Protocol) + "/" + frontend.VIP.String() + "/" + fmt.Sprint(frontend.Port)
+		if _, ok := seenFrontends[key]; ok {
+			return fmt.Errorf("load balancer frontend %s/%s:%d is duplicated", frontend.VIP, frontend.Protocol, frontend.Port)
+		}
+		seenFrontends[key] = struct{}{}
+		healthyBackends := 0
+		for j, backend := range frontend.Backends {
+			if err := backend.Validate(); err != nil {
+				return fmt.Errorf("load balancer frontend %d backend %d: %w", i, j, err)
+			}
+			if backend.IP.Is4() != l.VIP.Is4() {
+				return fmt.Errorf("load balancer frontend %d backend %d ip family must match vip", i, j)
+			}
+			if backend.IsHealthy() {
+				healthyBackends++
+			}
+		}
+		if healthyBackends == 0 {
+			return fmt.Errorf("load balancer frontend %d must have at least one healthy backend", i)
+		}
 	}
 	for i, subnet := range l.Subnets {
 		if subnet == "" {
@@ -768,6 +793,47 @@ func (l LoadBalancer) Validate() error {
 		}
 	}
 	return nil
+}
+
+func (l LoadBalancer) Frontends() []LoadBalancerFrontend {
+	if len(l.Ports) == 0 {
+		if l.Port == 0 {
+			return nil
+		}
+		protocol := l.Protocol
+		if protocol == "" {
+			protocol = ProtocolTCP
+		}
+		return []LoadBalancerFrontend{{
+			VIP:      l.VIP,
+			Port:     l.Port,
+			Protocol: protocol,
+			Backends: append([]LoadBalancerBackend(nil), l.Backends...),
+		}}
+	}
+	frontends := make([]LoadBalancerFrontend, 0, len(l.Ports))
+	for _, port := range l.Ports {
+		protocol := port.Protocol
+		if protocol == "" {
+			protocol = ProtocolTCP
+		}
+		backends := port.Backends
+		if len(backends) == 0 {
+			backends = l.Backends
+		}
+		name := port.Name
+		if name == "" {
+			name = fmt.Sprintf("%s-%d", protocol, port.Port)
+		}
+		frontends = append(frontends, LoadBalancerFrontend{
+			Name:     name,
+			VIP:      l.VIP,
+			Port:     port.Port,
+			Protocol: protocol,
+			Backends: append([]LoadBalancerBackend(nil), backends...),
+		})
+	}
+	return frontends
 }
 
 func (l LoadBalancer) validateSelectionFields() error {

@@ -125,19 +125,24 @@ IPs that land in an excluded prefix, and the IPAM allocator can be constructed
 with the same excluded prefixes so automatic allocation skips reserved ranges.
 `LoadBalancer` backends
 are rendered into the OVN VIP backend set and the userspace topology resolver
-uses the same stable hashing inputs for flow affinity. The desired state can
-set OVN load-balancer `selection_fields`; when session affinity is enabled
-without explicit fields, netloom uses `ip_src` for IPv4 VIPs and `ipv6_src` for
-IPv6 VIPs so the OVN Northbound row and local resolver agree on ClientIP
-affinity. Backends default to healthy; when a backend is marked
-`healthy=false`, the planner omits it from the OVN VIP backend list and the
-resolver excludes it from local service resolution. Validation requires at
-least one healthy backend so the OVN `lb-add` operation never receives an empty
-backend set. The state-file controller can additionally enable active TCP
-backend probes with `NETLOOM_LB_HEALTH_PROBE=1`; probe results are applied to
-TCP load balancers with health checks before the OVN plan is generated, while
-explicit `healthy=false` still acts as a manual drain. This lets tests cover
-the same fail-away behavior expected from OVN health-check state while keeping
+uses the same stable hashing inputs for flow affinity. The desired state keeps
+the legacy single `port`/`backends` service shape and also supports a `ports`
+array for Kube-OVN/Kubernetes style multi-port Services; each frontend can have
+its own protocol and target backend ports while sharing the same Service VIP.
+The desired state can set OVN load-balancer `selection_fields`; when session
+affinity is enabled without explicit fields, netloom uses `ip_src` for IPv4
+VIPs and `ipv6_src` for IPv6 VIPs so the OVN Northbound row and local resolver
+agree on ClientIP affinity. Backends default to healthy; when a backend is
+marked `healthy=false`, the planner omits it from that OVN VIP backend list and
+the resolver excludes it from local service resolution. Validation requires at
+least one healthy backend per frontend so the OVN `lb-add` operation never
+receives an empty backend set. Multi-port health checks create one OVN
+`Load_Balancer_Health_Check` row per frontend VIP. The state-file controller
+can additionally enable active TCP backend probes with
+`NETLOOM_LB_HEALTH_PROBE=1`; probe results are applied to TCP load balancers
+with health checks before the OVN plan is generated, while explicit
+`healthy=false` still acts as a manual drain. This lets tests cover the same
+fail-away behavior expected from OVN health-check state while keeping
 health-derived backend selection visible in the desired-state model.
 
 The agent can also realize a minimal Linux L3 workload datapath from the same

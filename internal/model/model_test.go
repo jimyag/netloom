@@ -1348,6 +1348,46 @@ func TestLoadBalancerValidateServiceVIP(t *testing.T) {
 	}
 }
 
+func TestLoadBalancerValidateMultiPortServiceVIP(t *testing.T) {
+	lb := LoadBalancer{
+		Name: "web",
+		VPC:  "prod",
+		VIP:  netip.MustParseAddr("10.96.0.10"),
+		Ports: []LoadBalancerPort{
+			{
+				Name:     "http",
+				Port:     80,
+				Protocol: ProtocolTCP,
+				Backends: []LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.10"), Port: 8080}},
+			},
+			{
+				Name:     "metrics",
+				Port:     9090,
+				Protocol: ProtocolTCP,
+				Backends: []LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.10"), Port: 9091}},
+			},
+		},
+	}
+	if err := lb.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	frontends := lb.Frontends()
+	if len(frontends) != 2 {
+		t.Fatalf("frontends = %d, want 2", len(frontends))
+	}
+	if frontends[0].Port != 80 || frontends[0].Backends[0].Port != 8080 {
+		t.Fatalf("http frontend = %+v, want service 80 to target 8080", frontends[0])
+	}
+	if frontends[1].Port != 9090 || frontends[1].Backends[0].Port != 9091 {
+		t.Fatalf("metrics frontend = %+v, want service 9090 to target 9091", frontends[1])
+	}
+
+	lb.Ports[1].Port = 80
+	if err := lb.Validate(); err == nil || !strings.Contains(err.Error(), "duplicated") {
+		t.Fatalf("error = %v, want duplicate frontend validation", err)
+	}
+}
+
 func TestLoadBalancerEffectiveSelectionFields(t *testing.T) {
 	tests := []struct {
 		name string

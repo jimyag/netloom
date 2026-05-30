@@ -90,6 +90,44 @@ func TestApplyLoadBalancerHealthChecksKeepsManualDrainAndSkipsUDP(t *testing.T) 
 	}
 }
 
+func TestApplyLoadBalancerHealthChecksMarksMultiPortBackends(t *testing.T) {
+	state := DesiredState{LoadBalancers: []model.LoadBalancer{{
+		Name:        "web",
+		VPC:         "prod",
+		VIP:         netip.MustParseAddr("10.96.0.10"),
+		HealthCheck: model.LoadBalancerHealthCheck{Enabled: true},
+		Ports: []model.LoadBalancerPort{
+			{
+				Name:     "http",
+				Port:     80,
+				Protocol: model.ProtocolTCP,
+				Backends: []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.10"), Port: 8080}},
+			},
+			{
+				Name:     "dns",
+				Port:     53,
+				Protocol: model.ProtocolUDP,
+				Backends: []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.53"), Port: 5353}},
+			},
+		},
+	}}}
+	next, summary, err := ApplyLoadBalancerHealthChecks(context.Background(), state, func(context.Context, model.LoadBalancerBackend, time.Duration) error {
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Checked != 1 || summary.Healthy != 1 || summary.Unhealthy != 0 {
+		t.Fatalf("summary = %+v, want only TCP frontend checked", summary)
+	}
+	if !next.LoadBalancers[0].Ports[0].Backends[0].IsHealthy() {
+		t.Fatalf("tcp frontend backend health = %+v, want healthy", next.LoadBalancers[0].Ports[0].Backends)
+	}
+	if next.LoadBalancers[0].Ports[1].Backends[0].Healthy != nil {
+		t.Fatal("UDP frontend should not be actively TCP-probed")
+	}
+}
+
 func TestApplyLoadBalancerHealthChecksRejectsAllFailedBackends(t *testing.T) {
 	state := DesiredState{LoadBalancers: []model.LoadBalancer{{
 		Name:        "web",

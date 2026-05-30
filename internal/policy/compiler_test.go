@@ -777,6 +777,50 @@ func TestCompileForEndpointWithContextExpandsRemoteService(t *testing.T) {
 	}
 }
 
+func TestCompileForEndpointWithContextExpandsMultiPortRemoteService(t *testing.T) {
+	endpoint := model.Endpoint{
+		ID:             "pod-client",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"client"},
+	}
+	program, err := CompileForEndpointWithContext(endpoint, map[string]model.SecurityGroup{
+		"client": {
+			Name: "client",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:            "egress-web-service",
+				Priority:      100,
+				Direction:     model.DirectionEgress,
+				Protocol:      model.ProtocolAny,
+				RemoteService: "web",
+				Action:        model.ActionAllow,
+			}},
+		},
+	}, CompileContext{Services: []model.LoadBalancer{{
+		Name: "web",
+		VPC:  "prod",
+		VIP:  netip.MustParseAddr("10.96.0.10"),
+		Ports: []model.LoadBalancerPort{
+			{Port: 80, Protocol: model.ProtocolTCP, Backends: []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.20"), Port: 8080}}},
+			{Port: 9090, Protocol: model.ProtocolTCP, Backends: []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.20"), Port: 9091}}},
+		},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(program.Rules) != 2 || len(program.MapEntries) != 2 {
+		t.Fatalf("program rules=%d entries=%d, want one rule per service frontend", len(program.Rules), len(program.MapEntries))
+	}
+	gotPorts := []uint16{program.MapEntries[0].Key.DestPort, program.MapEntries[1].Key.DestPort}
+	sort.Slice(gotPorts, func(i, j int) bool { return gotPorts[i] < gotPorts[j] })
+	if gotPorts[0] != 80 || gotPorts[1] != 9090 {
+		t.Fatalf("service ports = %v, want 80 and 9090", gotPorts)
+	}
+}
+
 func TestCompileForEndpointWithContextRejectsUnknownRemoteService(t *testing.T) {
 	endpoint := model.Endpoint{
 		ID:             "pod-client",

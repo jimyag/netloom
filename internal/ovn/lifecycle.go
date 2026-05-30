@@ -168,8 +168,8 @@ func cleanupOperations(old, next desiredSnapshot) []Operation {
 		if oldLB.VPC != nextLB.VPC {
 			ops = append(ops, Operation{Command: "lr-lb-del", Flags: []string{"--if-exists"}, Args: []string{logicalRouter(oldLB.VPC), name}})
 		}
-		if loadBalancerVIP(oldLB) != loadBalancerVIP(nextLB) {
-			ops = append(ops, Operation{Command: "lb-del", Flags: []string{"--if-exists"}, Args: []string{name, loadBalancerVIP(oldLB)}})
+		for _, vip := range removedStrings(loadBalancerVIPs(oldLB), loadBalancerVIPs(nextLB)) {
+			ops = append(ops, Operation{Command: "lb-del", Flags: []string{"--if-exists"}, Args: []string{name, vip}})
 		}
 		for _, subnet := range removedStrings(oldLB.Subnets, nextLB.Subnets) {
 			ops = append(ops, Operation{Command: "ls-lb-del", Flags: []string{"--if-exists"}, Args: []string{logicalSwitch(subnet), name}})

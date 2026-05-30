@@ -115,28 +115,29 @@ func dnatPortMatches(rule model.NATRule, packet Packet) bool {
 func resolveLoadBalancer(state State, packet Packet) (Decision, bool) {
 	sourceEndpoint := findEndpointByIP(state, packet.VPC, packet.Source)
 	for _, lb := range state.LoadBalancers {
-		protocol := lb.Protocol
-		if protocol == "" {
-			protocol = model.ProtocolTCP
-		}
-		if lb.VPC != packet.VPC || lb.VIP != packet.Dest || lb.Port != packet.DestPort || protocol != packet.Protocol {
+		if lb.VPC != packet.VPC {
 			continue
 		}
-		if len(lb.Subnets) > 0 && !loadBalancerAllowsSourceSubnet(lb, sourceEndpoint) {
-			continue
+		for _, frontend := range lb.Frontends() {
+			if frontend.VIP != packet.Dest || frontend.Port != packet.DestPort || frontend.Protocol != packet.Protocol {
+				continue
+			}
+			if len(lb.Subnets) > 0 && !loadBalancerAllowsSourceSubnet(lb, sourceEndpoint) {
+				continue
+			}
+			backends := healthyLoadBalancerBackends(frontend.Backends)
+			if len(backends) == 0 {
+				continue
+			}
+			backend := selectLoadBalancerBackend(lb, backends, packet)
+			return Decision{
+				Action:         model.ActionAllow,
+				Translated:     backend.IP,
+				TranslatedPort: backend.Port,
+				MatchedBy:      "load-balancer/" + lb.Name,
+				Destination:    backend.IP.String(),
+			}, true
 		}
-		backends := healthyLoadBalancerBackends(lb)
-		if len(backends) == 0 {
-			continue
-		}
-		backend := selectLoadBalancerBackend(lb, backends, packet)
-		return Decision{
-			Action:         model.ActionAllow,
-			Translated:     backend.IP,
-			TranslatedPort: backend.Port,
-			MatchedBy:      "load-balancer/" + lb.Name,
-			Destination:    backend.IP.String(),
-		}, true
 	}
 	return Decision{}, false
 }
@@ -162,9 +163,9 @@ func loadBalancerAllowsSourceSubnet(lb model.LoadBalancer, endpoint model.Endpoi
 	return false
 }
 
-func healthyLoadBalancerBackends(lb model.LoadBalancer) []model.LoadBalancerBackend {
-	backends := make([]model.LoadBalancerBackend, 0, len(lb.Backends))
-	for _, backend := range lb.Backends {
+func healthyLoadBalancerBackends(candidates []model.LoadBalancerBackend) []model.LoadBalancerBackend {
+	backends := make([]model.LoadBalancerBackend, 0, len(candidates))
+	for _, backend := range candidates {
 		if backend.IsHealthy() {
 			backends = append(backends, backend)
 		}

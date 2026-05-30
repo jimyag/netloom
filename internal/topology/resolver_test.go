@@ -67,6 +67,45 @@ func TestResolveLoadBalancerVIPToBackend(t *testing.T) {
 	}
 }
 
+func TestResolveLoadBalancerMultiPortVIPToBackend(t *testing.T) {
+	state := State{
+		LoadBalancers: map[string]model.LoadBalancer{
+			"web": {
+				Name: "web",
+				VPC:  "prod",
+				VIP:  netip.MustParseAddr("10.96.0.10"),
+				Ports: []model.LoadBalancerPort{
+					{
+						Name:     "http",
+						Port:     80,
+						Protocol: model.ProtocolTCP,
+						Backends: []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.20"), Port: 8080}},
+					},
+					{
+						Name:     "metrics",
+						Port:     9090,
+						Protocol: model.ProtocolTCP,
+						Backends: []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.20"), Port: 9091}},
+					},
+				},
+			},
+		},
+	}
+	decision, err := Resolve(state, Packet{
+		VPC:      "prod",
+		Source:   netip.MustParseAddr("10.10.1.10"),
+		Dest:     netip.MustParseAddr("10.96.0.10"),
+		Protocol: model.ProtocolTCP,
+		DestPort: 9090,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.MatchedBy != "load-balancer/web" || decision.Translated != netip.MustParseAddr("10.10.0.20") || decision.TranslatedPort != 9091 {
+		t.Fatalf("decision = %+v, want metrics frontend target 9091", decision)
+	}
+}
+
 func TestResolveLoadBalancerSkipsUnhealthyBackends(t *testing.T) {
 	healthy := true
 	unhealthy := false

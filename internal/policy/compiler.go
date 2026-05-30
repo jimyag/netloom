@@ -422,26 +422,37 @@ func expandServiceRule(base Rule, services map[string]model.LoadBalancer) ([]Rul
 	if !ok {
 		return nil, fmt.Errorf("rule %s references unknown remote service %s", base.ID, base.RemoteService)
 	}
-	expanded := base
-	bits := 128
-	if service.VIP.Is4() {
-		bits = 32
+	out := make([]Rule, 0, len(service.Frontends()))
+	seen := make(map[string]struct{})
+	for _, frontend := range service.Frontends() {
+		expanded := base
+		bits := 128
+		if frontend.VIP.Is4() {
+			bits = 32
+		}
+		expanded.RemoteCIDR = netip.PrefixFrom(frontend.VIP, bits)
+		if expanded.Protocol == "" || expanded.Protocol == model.ProtocolAny {
+			expanded.Protocol = frontend.Protocol
+		}
+		if len(expanded.Ports) == 0 {
+			expanded.Ports = []model.PortRange{{From: frontend.Port, To: frontend.Port}}
+		}
+		key := expanded.RemoteCIDR.String() + "|" + string(expanded.Protocol) + "|" + portRangesKey(expanded.Ports)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, expanded)
 	}
-	expanded.RemoteCIDR = netip.PrefixFrom(service.VIP, bits)
-	if expanded.Protocol == "" || expanded.Protocol == model.ProtocolAny {
-		expanded.Protocol = loadBalancerProtocol(service)
-	}
-	if len(expanded.Ports) == 0 {
-		expanded.Ports = []model.PortRange{{From: service.Port, To: service.Port}}
-	}
-	return []Rule{expanded}, nil
+	return out, nil
 }
 
-func loadBalancerProtocol(lb model.LoadBalancer) model.Protocol {
-	if lb.Protocol == "" {
-		return model.ProtocolTCP
+func portRangesKey(ports []model.PortRange) string {
+	parts := make([]string, 0, len(ports))
+	for _, port := range ports {
+		parts = append(parts, fmt.Sprintf("%d-%d", port.From, port.To))
 	}
-	return lb.Protocol
+	return strings.Join(parts, ",")
 }
 
 func expandCIDRExceptRule(base Rule, exceptCIDRs []netip.Prefix) []Rule {

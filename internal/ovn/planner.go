@@ -251,9 +251,13 @@ func (p *Planner) EnsureLoadBalancer(_ context.Context, lb model.LoadBalancer) e
 
 	name := loadBalancerName(lb.Name)
 	router := p.routerForVPC(lb.VPC)
+	for _, frontend := range lb.Frontends() {
+		p.ops = append(p.ops,
+			Operation{Command: "lb-del", Flags: []string{"--if-exists"}, Args: []string{name, loadBalancerFrontendVIP(frontend)}},
+			Operation{Command: "lb-add", Flags: []string{"--may-exist"}, Args: []string{name, loadBalancerFrontendVIP(frontend), loadBalancerFrontendBackends(frontend), string(frontend.Protocol)}},
+		)
+	}
 	p.ops = append(p.ops,
-		Operation{Command: "lb-del", Flags: []string{"--if-exists"}, Args: []string{name, loadBalancerVIP(lb)}},
-		Operation{Command: "lb-add", Flags: []string{"--may-exist"}, Args: []string{name, loadBalancerVIP(lb), loadBalancerBackends(lb), string(loadBalancerProtocol(lb))}},
 		setOperation("load_balancer", name, loadBalancerOptions(lb)...),
 		Operation{Command: "lr-lb-add", Flags: []string{"--may-exist"}, Args: []string{router, name}},
 	)
@@ -390,9 +394,27 @@ func loadBalancerVIP(lb model.LoadBalancer) string {
 	return netip.AddrPortFrom(lb.VIP, lb.Port).String()
 }
 
+func loadBalancerVIPs(lb model.LoadBalancer) []string {
+	frontends := lb.Frontends()
+	vips := make([]string, 0, len(frontends))
+	for _, frontend := range frontends {
+		vips = append(vips, loadBalancerFrontendVIP(frontend))
+	}
+	sort.Strings(vips)
+	return vips
+}
+
+func loadBalancerFrontendVIP(frontend model.LoadBalancerFrontend) string {
+	return netip.AddrPortFrom(frontend.VIP, frontend.Port).String()
+}
+
 func loadBalancerBackends(lb model.LoadBalancer) string {
-	backends := make([]string, 0, len(lb.Backends))
-	for _, backend := range lb.Backends {
+	return loadBalancerFrontendBackends(lb.Frontends()[0])
+}
+
+func loadBalancerFrontendBackends(frontend model.LoadBalancerFrontend) string {
+	backends := make([]string, 0, len(frontend.Backends))
+	for _, backend := range frontend.Backends {
 		if !backend.IsHealthy() {
 			continue
 		}
@@ -466,23 +488,33 @@ func (p *Planner) loadBalancerHealthCheckOperations(name string, lb model.LoadBa
 		return nil
 	}
 	p.loadBalancerHealthChecks[lb.Name] = signature
-	uuid := loadBalancerHealthCheckUUID(lb.Name)
-	return []Operation{
-		{Command: "clear", Args: []string{"load_balancer", name, "health_check"}},
-		{Command: "create", Flags: []string{"--id=" + uuid}, Args: loadBalancerHealthCheckArgs(lb)},
-		{Command: "add", Args: []string{"load_balancer", name, "health_check", uuid}},
+	ops := []Operation{{Command: "clear", Args: []string{"load_balancer", name, "health_check"}}}
+	for _, frontend := range lb.Frontends() {
+		uuid := loadBalancerHealthCheckUUID(lb.Name, frontend)
+		ops = append(ops,
+			Operation{Command: "create", Flags: []string{"--id=" + uuid}, Args: loadBalancerHealthCheckArgs(lb, frontend)},
+			Operation{Command: "add", Args: []string{"load_balancer", name, "health_check", uuid}},
+		)
 	}
+	return ops
 }
 
 func loadBalancerHealthCheckSignature(lb model.LoadBalancer) string {
-	return strings.Join(loadBalancerHealthCheckArgs(lb), "|")
+	var parts []string
+	for _, frontend := range lb.Frontends() {
+		parts = append(parts, strings.Join(loadBalancerHealthCheckArgs(lb, frontend), "|"))
+	}
+	return strings.Join(parts, "||")
 }
 
-func loadBalancerHealthCheckUUID(lbName string) string {
-	return namedUUID("nl_lbhc_" + sanitize(lbName))
+func loadBalancerHealthCheckUUID(lbName string, frontend model.LoadBalancerFrontend) string {
+	if frontend.Name == "" {
+		return namedUUID("nl_lbhc_" + sanitize(lbName))
+	}
+	return namedUUID(fmt.Sprintf("nl_lbhc_%s_%s_%d", sanitize(lbName), frontend.Protocol, frontend.Port))
 }
 
-func loadBalancerHealthCheckArgs(lb model.LoadBalancer) []string {
+func loadBalancerHealthCheckArgs(lb model.LoadBalancer, frontend model.LoadBalancerFrontend) []string {
 	hc := lb.HealthCheck
 	interval := hc.Interval
 	if interval == 0 {
@@ -502,7 +534,7 @@ func loadBalancerHealthCheckArgs(lb model.LoadBalancer) []string {
 	}
 	return []string{
 		"Load_Balancer_Health_Check",
-		"vip=" + loadBalancerVIP(lb),
+		"vip=" + loadBalancerFrontendVIP(frontend),
 		fmt.Sprintf("options:interval=%d", interval),
 		fmt.Sprintf("options:timeout=%d", timeout),
 		fmt.Sprintf("options:success_count=%d", successCount),

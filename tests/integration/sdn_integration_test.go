@@ -44,7 +44,7 @@ func TestDesiredStateDrivesTopologyRoutesAndEBPFStyleACL(t *testing.T) {
 	if gateway, ok := memoryBackend.Gateways["gw-a"]; !ok || gateway.Node != "node-a" || gateway.LANIP.String() != "10.10.0.254" {
 		t.Fatalf("gateway gw-a was not reconciled, got: %+v", memoryBackend.Gateways)
 	}
-	if lb, ok := memoryBackend.LoadBalancers["web"]; !ok || lb.VIP.String() != "10.96.0.10" || len(lb.Backends) != 2 {
+	if lb, ok := memoryBackend.LoadBalancers["web"]; !ok || lb.VIP.String() != "10.96.0.10" || len(lb.Frontends()) != 2 {
 		t.Fatalf("load balancer web was not reconciled, got: %+v", memoryBackend.LoadBalancers)
 	}
 	if len(memoryBackend.PolicyRoutes) != 1 {
@@ -54,7 +54,7 @@ func TestDesiredStateDrivesTopologyRoutesAndEBPFStyleACL(t *testing.T) {
 		t.Fatalf("security group rules for pod-b were not compiled, got: %+v", memoryBackend.PolicyProgram)
 	}
 	clientProgram, ok := memoryBackend.PolicyProgram["pod-a"]
-	if !ok || len(clientProgram.Rules) != 10 {
+	if !ok || len(clientProgram.Rules) != 11 {
 		t.Fatalf("egress rules for pod-a were not compiled, got: %+v", memoryBackend.PolicyProgram)
 	}
 	if !hasOVNCommand(ovnRecorder.Operations(), "lr-policy-add") {
@@ -112,6 +112,19 @@ func TestDesiredStateDrivesTopologyRoutesAndEBPFStyleACL(t *testing.T) {
 	}
 	if serviceDecision.MatchedBy != "load-balancer/web" || serviceDecision.Translated.String() != "10.10.0.11" || serviceDecision.TranslatedPort != 8080 {
 		t.Fatalf("expected service VIP to resolve to backend, got: %+v", serviceDecision)
+	}
+	metricsDecision, err := topology.Resolve(memoryBackend.TopologyState(), topology.Packet{
+		VPC:      "prod",
+		Source:   state.Endpoints[0].IP,
+		Dest:     mustAddr(t, "10.96.0.10"),
+		Protocol: model.ProtocolTCP,
+		DestPort: 9090,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metricsDecision.MatchedBy != "load-balancer/web" || metricsDecision.Translated.String() != "10.10.0.11" || metricsDecision.TranslatedPort != 9091 {
+		t.Fatalf("expected metrics service VIP to resolve to backend, got: %+v", metricsDecision)
 	}
 	dnatDecision, err := topology.Resolve(memoryBackend.TopologyState(), topology.Packet{
 		VPC:    "prod",
@@ -226,6 +239,15 @@ func TestDesiredStateDrivesTopologyRoutesAndEBPFStyleACL(t *testing.T) {
 	if servicePolicyAllow.Verdict != dataplane.VerdictAllow {
 		t.Fatalf("expected egress tcp/80 to remote service VIP to allow, got %+v", servicePolicyAllow)
 	}
+	metricsPolicyAllow := dataplane.Evaluate(clientEntries, dataplane.Packet{
+		Direction: dataplane.DirectionEgress,
+		Protocol:  6,
+		RemoteIP:  mustAddr(t, "10.96.0.10"),
+		DestPort:  9090,
+	})
+	if metricsPolicyAllow.Verdict != dataplane.VerdictAllow {
+		t.Fatalf("expected egress tcp/9090 to remote service VIP to allow, got %+v", metricsPolicyAllow)
+	}
 	exceptAllow := dataplane.Evaluate(clientEntries, dataplane.Packet{
 		Direction: dataplane.DirectionEgress,
 		Protocol:  6,
@@ -326,7 +348,7 @@ const integrationStateJSON = `{
     {"name": "web-dnat", "vpc": "prod", "type": "dnat", "external_ip": "198.51.100.20", "target_ip": "10.10.0.11"},
     {"name": "web-fip", "vpc": "prod", "type": "dnat_and_snat", "external_ip": "198.51.100.30", "target_ip": "10.10.0.11"}
   ],
-  "load_balancers": [{"name": "web", "vpc": "prod", "vip": "10.96.0.10", "port": 80, "protocol": "tcp", "backends": [{"ip": "10.10.0.12", "port": 8080, "healthy": false}, {"ip": "10.10.0.11", "port": 8080}], "subnets": ["apps"]}],
+  "load_balancers": [{"name": "web", "vpc": "prod", "vip": "10.96.0.10", "ports": [{"name": "http", "port": 80, "protocol": "tcp", "backends": [{"ip": "10.10.0.12", "port": 8080, "healthy": false}, {"ip": "10.10.0.11", "port": 8080}]}, {"name": "metrics", "port": 9090, "protocol": "tcp", "backends": [{"ip": "10.10.0.11", "port": 9091}]}], "subnets": ["apps"]}],
   "security_groups": [
     {"name": "platform-client", "vpc": "prod", "tier": 0, "rules": [
       {"id": "platform-egress-dns", "priority": 10, "direction": "egress", "protocol": "tcp", "remote_cidr": "198.51.100.0/24", "ports": [{"from": 9553, "to": 9553}], "action": "allow"}
