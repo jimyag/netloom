@@ -53,6 +53,34 @@ func TestEncodeEntryUsesCiliumStylePolicyKeyShape(t *testing.T) {
 	}
 }
 
+func TestEncodeEntryUsesICMPv6ProtocolForIPv6CIDR(t *testing.T) {
+	icmpType := uint16(128) << 8
+	entry := policy.MapEntry{
+		Key: policy.MapKey{
+			Direction:    model.DirectionIngress,
+			Protocol:     model.ProtocolICMP,
+			DestPort:     icmpType,
+			L4PrefixBits: 16,
+		},
+		Value: policy.MapValue{
+			Precedence: 100,
+		},
+		RemoteCIDR: netip.MustParsePrefix("fd00:20::/64"),
+		RuleID:     "allow-icmpv6",
+	}
+
+	encoded, err := EncodeEntry(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if encoded.Key.Protocol != 58 {
+		t.Fatalf("protocol = %d, want icmpv6/58 for IPv6 CIDR", encoded.Key.Protocol)
+	}
+	if encoded.Key.DestPortBE != hostToNetwork16(icmpType) {
+		t.Fatalf("icmp type key = %#x, want %#x", networkToHost16(encoded.Key.DestPortBE), icmpType)
+	}
+}
+
 func TestPolicyBackendReplacesEndpointEntries(t *testing.T) {
 	endpoint := model.Endpoint{
 		ID:             "pod-a",

@@ -339,7 +339,7 @@ func matches(entry PolicyMapEntry, packet Packet) bool {
 		return true
 	}
 
-	if packet.Protocol == 1 {
+	if packet.Protocol == 1 || packet.Protocol == 58 {
 		icmpPrefixLen := l4PrefixLen - 8
 		if icmpPrefixLen == 0 {
 			return true

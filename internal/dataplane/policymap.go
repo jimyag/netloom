@@ -181,7 +181,7 @@ func EncodeProgram(program policy.Program) ([]PolicyMapEntry, error) {
 }
 
 func EncodeEntry(entry policy.MapEntry) (PolicyMapEntry, error) {
-	proto, err := protocolNumber(entry.Key.Protocol)
+	proto, err := protocolNumberForEntry(entry)
 	if err != nil {
 		return PolicyMapEntry{}, err
 	}
@@ -209,6 +209,13 @@ func EncodeEntry(entry policy.MapEntry) (PolicyMapEntry, error) {
 			Reject:      boolByte(entry.Value.Reject),
 		},
 	}, nil
+}
+
+func protocolNumberForEntry(entry policy.MapEntry) (uint8, error) {
+	if entry.Key.Protocol == model.ProtocolICMP && entry.RemoteCIDR.IsValid() && entry.RemoteCIDR.Addr().Is6() && !entry.RemoteCIDR.Addr().Is4() {
+		return 58, nil
+	}
+	return protocolNumber(entry.Key.Protocol)
 }
 
 func protocolNumber(protocol model.Protocol) (uint8, error) {

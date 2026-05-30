@@ -172,6 +172,66 @@ func TestEvaluateMatchesICMPTypeOnly(t *testing.T) {
 	}
 }
 
+func TestEvaluateMatchesICMPv6TypeAndCode(t *testing.T) {
+	icmpType := uint8(128)
+	icmpCode := uint8(0)
+	endpoint := model.Endpoint{
+		ID:             "pod-a",
+		VPC:            "prod",
+		Subnet:         "apps-v6",
+		IP:             netip.MustParseAddr("fd00:10::10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"icmpv6"},
+	}
+	program, err := policy.CompileForEndpoint(endpoint, map[string]model.SecurityGroup{
+		"icmpv6": {
+			Name: "icmpv6",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "allow-icmpv6-echo",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolICMP,
+				RemoteCIDR: netip.MustParsePrefix("fd00:20::/64"),
+				ICMPType:   &icmpType,
+				ICMPCode:   &icmpCode,
+				Action:     model.ActionAllow,
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := EncodeProgram(program)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Key.Protocol != 58 {
+		t.Fatalf("encoded entries = %+v, want ICMPv6 protocol 58", entries)
+	}
+
+	allowed := Evaluate(entries, Packet{
+		RemoteIP:  netip.MustParseAddr("fd00:20::11"),
+		Direction: DirectionIngress,
+		Protocol:  58,
+		ICMPType:  128,
+		ICMPCode:  0,
+	})
+	if allowed.Verdict != VerdictAllow {
+		t.Fatalf("verdict = %s, want allow", allowed.Verdict)
+	}
+	dropped := Evaluate(entries, Packet{
+		RemoteIP:  netip.MustParseAddr("fd00:20::11"),
+		Direction: DirectionIngress,
+		Protocol:  58,
+		ICMPType:  128,
+		ICMPCode:  1,
+	})
+	if dropped.Verdict != VerdictDrop {
+		t.Fatalf("verdict = %s, want drop", dropped.Verdict)
+	}
+}
+
 func TestEvaluateMatchesRemoteCIDRFromPacketIP(t *testing.T) {
 	endpoint := model.Endpoint{
 		ID:             "pod-a",
