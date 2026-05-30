@@ -320,6 +320,96 @@ func TestSecurityGroupRulePortsRequireTransportProtocol(t *testing.T) {
 	}
 }
 
+func TestSecurityGroupRuleValidatesRemoteFQDNSelectors(t *testing.T) {
+	valid := SecurityGroupRule{
+		ID:        "allow-api",
+		Direction: DirectionEgress,
+		Protocol:  ProtocolTCP,
+		RemoteFQDNs: []FQDNSelector{
+			{MatchName: "api.example.com"},
+			{MatchPattern: "*.svc.example.com"},
+		},
+		Ports:  []PortRange{{From: 443, To: 443}},
+		Action: ActionAllow,
+	}
+	if err := valid.Validate(); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name    string
+		rule    SecurityGroupRule
+		wantErr string
+	}{
+		{
+			name: "ingress fqdn",
+			rule: SecurityGroupRule{
+				ID:          "bad-ingress",
+				Direction:   DirectionIngress,
+				Protocol:    ProtocolTCP,
+				RemoteFQDNs: []FQDNSelector{{MatchName: "api.example.com"}},
+				Action:      ActionAllow,
+			},
+			wantErr: "only supported for egress",
+		},
+		{
+			name: "mutually exclusive",
+			rule: SecurityGroupRule{
+				ID:          "bad-remote",
+				Direction:   DirectionEgress,
+				Protocol:    ProtocolTCP,
+				RemoteCIDR:  netip.MustParsePrefix("10.10.0.0/24"),
+				RemoteFQDNs: []FQDNSelector{{MatchName: "api.example.com"}},
+				Action:      ActionAllow,
+			},
+			wantErr: "mutually exclusive",
+		},
+		{
+			name: "empty selector",
+			rule: SecurityGroupRule{
+				ID:          "bad-empty",
+				Direction:   DirectionEgress,
+				Protocol:    ProtocolTCP,
+				RemoteFQDNs: []FQDNSelector{{}},
+				Action:      ActionAllow,
+			},
+			wantErr: "match name or match pattern is required",
+		},
+		{
+			name: "invalid character",
+			rule: SecurityGroupRule{
+				ID:          "bad-name",
+				Direction:   DirectionEgress,
+				Protocol:    ProtocolTCP,
+				RemoteFQDNs: []FQDNSelector{{MatchName: "api example.com"}},
+				Action:      ActionAllow,
+			},
+			wantErr: "unsupported character",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.rule.Validate()
+			if err == nil {
+				t.Fatal("expected validation to fail")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error %q does not contain %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestDNSRecordValidation(t *testing.T) {
+	record := DNSRecord{Name: "api.example.com", IPs: []netip.Addr{netip.MustParseAddr("203.0.113.10")}}
+	if err := record.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := (DNSRecord{Name: "api.example.com"}).Validate(); err == nil {
+		t.Fatal("expected dns record without ips to fail")
+	}
+}
+
 func TestNATRuleValidateKubeOVNStyleNAT(t *testing.T) {
 	tests := []struct {
 		name    string

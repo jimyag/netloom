@@ -141,6 +141,7 @@ type DesiredState struct {
 	NATRules       []model.NATRule       `json:"nat_rules"`
 	LoadBalancers  []model.LoadBalancer  `json:"load_balancers"`
 	SecurityGroups []model.SecurityGroup `json:"security_groups"`
+	DNSRecords     []model.DNSRecord     `json:"dns_records"`
 }
 
 type Controller struct {
@@ -243,7 +244,10 @@ func (c *Controller) Reconcile(ctx context.Context, state DesiredState) error {
 		if err := c.topology.EnsureEndpoint(ctx, endpoint); err != nil {
 			return fmt.Errorf("ensure endpoint %s: %w", endpoint.ID, err)
 		}
-		program, err := policy.CompileForEndpointWithState(endpoint, groups, state.Endpoints)
+		program, err := policy.CompileForEndpointWithContext(endpoint, groups, policy.CompileContext{
+			Endpoints:  state.Endpoints,
+			DNSRecords: state.DNSRecords,
+		})
 		if err != nil {
 			return err
 		}
@@ -465,6 +469,11 @@ func validateObjectGraph(state DesiredState) error {
 			if subnet.VPC != lb.VPC {
 				return fmt.Errorf("load balancer %q references subnet %q in vpc %q, want %q", lb.Name, subnetName, subnet.VPC, lb.VPC)
 			}
+		}
+	}
+	for _, record := range state.DNSRecords {
+		if err := record.Validate(); err != nil {
+			return err
 		}
 	}
 	return nil

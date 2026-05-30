@@ -5,7 +5,9 @@ import (
 	"hash/fnv"
 	"math"
 	"net/netip"
+	"path"
 	"sort"
+	"strings"
 
 	"github.com/jimyag/netloom/internal/model"
 )
@@ -24,6 +26,7 @@ type Rule struct {
 	RemoteCIDR     netip.Prefix
 	RemoteGroup    string
 	RemoteEndpoint string
+	RemoteFQDN     string
 	Ports          []model.PortRange
 	Action         model.Action
 	Stateful       bool
@@ -53,15 +56,28 @@ type MapValue struct {
 	Log        bool
 }
 
+type CompileContext struct {
+	Endpoints  []model.Endpoint
+	DNSRecords []model.DNSRecord
+}
+
 func CompileForEndpoint(endpoint model.Endpoint, groups map[string]model.SecurityGroup) (Program, error) {
-	return CompileForEndpointWithState(endpoint, groups, nil)
+	return CompileForEndpointWithContext(endpoint, groups, CompileContext{})
 }
 
 func CompileForEndpointWithState(endpoint model.Endpoint, groups map[string]model.SecurityGroup, endpoints []model.Endpoint) (Program, error) {
+	return CompileForEndpointWithContext(endpoint, groups, CompileContext{Endpoints: endpoints})
+}
+
+func CompileForEndpointWithContext(endpoint model.Endpoint, groups map[string]model.SecurityGroup, ctx CompileContext) (Program, error) {
 	if err := endpoint.Validate(); err != nil {
 		return Program{}, err
 	}
-	membersByGroup, err := indexRemoteGroupMembers(endpoint.VPC, groups, endpoints)
+	membersByGroup, err := indexRemoteGroupMembers(endpoint.VPC, groups, ctx.Endpoints)
+	if err != nil {
+		return Program{}, err
+	}
+	dnsRecords, err := indexDNSRecords(ctx.DNSRecords)
 	if err != nil {
 		return Program{}, err
 	}
@@ -78,7 +94,7 @@ func CompileForEndpointWithState(endpoint model.Endpoint, groups map[string]mode
 			return Program{}, err
 		}
 		for _, rule := range group.Rules {
-			compiledRules, err := expandRule(endpoint, group.Name, rule, membersByGroup)
+			compiledRules, err := expandRule(endpoint, group.Name, rule, membersByGroup, dnsRecords)
 			if err != nil {
 				return Program{}, err
 			}
@@ -104,7 +120,7 @@ func CompileForEndpointWithState(endpoint model.Endpoint, groups map[string]mode
 	return program, nil
 }
 
-func expandRule(endpoint model.Endpoint, securityGroup string, rule model.SecurityGroupRule, membersByGroup map[string][]model.Endpoint) ([]Rule, error) {
+func expandRule(endpoint model.Endpoint, securityGroup string, rule model.SecurityGroupRule, membersByGroup map[string][]model.Endpoint, dnsRecords map[string][]netip.Addr) ([]Rule, error) {
 	base := Rule{
 		ID:            rule.ID,
 		Priority:      rule.Priority,
@@ -117,6 +133,9 @@ func expandRule(endpoint model.Endpoint, securityGroup string, rule model.Securi
 		Stateful:      rule.Stateful,
 		Log:           rule.Log,
 		SecurityGroup: securityGroup,
+	}
+	if len(rule.RemoteFQDNs) > 0 {
+		return expandFQDNRule(base, rule.RemoteFQDNs, dnsRecords)
 	}
 	if rule.RemoteGroup == "" || membersByGroup == nil {
 		return []Rule{base}, nil
@@ -142,6 +161,68 @@ func expandRule(endpoint model.Endpoint, securityGroup string, rule model.Securi
 		out = append(out, expanded)
 	}
 	return out, nil
+}
+
+func expandFQDNRule(base Rule, selectors []model.FQDNSelector, records map[string][]netip.Addr) ([]Rule, error) {
+	if len(records) == 0 {
+		return nil, nil
+	}
+	type match struct {
+		name string
+		cidr netip.Prefix
+	}
+	seen := make(map[string]struct{})
+	var matches []match
+	for recordName, ips := range records {
+		ok, err := fqdnSelectorsMatch(selectors, recordName)
+		if err != nil {
+			return nil, fmt.Errorf("rule %s: %w", base.ID, err)
+		}
+		if !ok {
+			continue
+		}
+		for _, ip := range ips {
+			cidr := fqdnIPPrefix(ip)
+			key := recordName + "|" + cidr.String()
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			matches = append(matches, match{name: recordName, cidr: cidr})
+		}
+	}
+	sort.SliceStable(matches, func(i, j int) bool {
+		if matches[i].name != matches[j].name {
+			return matches[i].name < matches[j].name
+		}
+		return matches[i].cidr.String() < matches[j].cidr.String()
+	})
+	out := make([]Rule, 0, len(matches))
+	for _, match := range matches {
+		expanded := base
+		expanded.RemoteFQDN = match.name
+		expanded.RemoteCIDR = match.cidr
+		out = append(out, expanded)
+	}
+	return out, nil
+}
+
+func fqdnSelectorsMatch(selectors []model.FQDNSelector, name string) (bool, error) {
+	for _, selector := range selectors {
+		if selector.MatchName != "" && normalizeDNSName(selector.MatchName) == name {
+			return true, nil
+		}
+		if selector.MatchPattern != "" {
+			matched, err := path.Match(normalizeDNSName(selector.MatchPattern), name)
+			if err != nil {
+				return false, fmt.Errorf("invalid fqdn pattern %q: %w", selector.MatchPattern, err)
+			}
+			if matched {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
 }
 
 func indexRemoteGroupMembers(vpc string, groups map[string]model.SecurityGroup, endpoints []model.Endpoint) (map[string][]model.Endpoint, error) {
@@ -171,6 +252,26 @@ func indexRemoteGroupMembers(vpc string, groups map[string]model.SecurityGroup, 
 	for name := range out {
 		sort.SliceStable(out[name], func(i, j int) bool {
 			return out[name][i].ID < out[name][j].ID
+		})
+	}
+	return out, nil
+}
+
+func indexDNSRecords(records []model.DNSRecord) (map[string][]netip.Addr, error) {
+	if len(records) == 0 {
+		return nil, nil
+	}
+	out := make(map[string][]netip.Addr, len(records))
+	for _, record := range records {
+		if err := record.Validate(); err != nil {
+			return nil, err
+		}
+		name := normalizeDNSName(record.Name)
+		out[name] = append(out[name], record.IPs...)
+	}
+	for name := range out {
+		sort.SliceStable(out[name], func(i, j int) bool {
+			return out[name][i].String() < out[name][j].String()
 		})
 	}
 	return out, nil
@@ -282,6 +383,17 @@ func remoteIdentity(rule Rule) uint32 {
 	default:
 		return 0
 	}
+}
+
+func fqdnIPPrefix(ip netip.Addr) netip.Prefix {
+	if ip.Is4() {
+		return netip.PrefixFrom(ip, 32)
+	}
+	return netip.PrefixFrom(ip, 128)
+}
+
+func normalizeDNSName(name string) string {
+	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(name)), ".")
 }
 
 func EndpointIdentity(endpointID string) uint32 {

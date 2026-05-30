@@ -192,7 +192,10 @@ func prepareReconcile(ctx context.Context, state control.DesiredState, options R
 		if err := endpoint.Validate(); err != nil {
 			return ReconcileResult{}, nil, nil, err
 		}
-		program, err := policy.CompileForEndpointWithState(endpoint, groups, state.Endpoints)
+		program, err := policy.CompileForEndpointWithContext(endpoint, groups, policy.CompileContext{
+			Endpoints:  state.Endpoints,
+			DNSRecords: state.DNSRecords,
+		})
 		if err != nil {
 			return ReconcileResult{}, nil, nil, err
 		}

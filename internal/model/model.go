@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/netip"
 	"slices"
+	"strings"
 )
 
 type Action string
@@ -152,17 +153,28 @@ type SecurityGroup struct {
 }
 
 type SecurityGroupRule struct {
-	ID          string       `json:"id"`
-	Priority    int          `json:"priority"`
-	Direction   Direction    `json:"direction"`
-	Protocol    Protocol     `json:"protocol"`
-	RemoteCIDR  netip.Prefix `json:"remote_cidr"`
-	RemoteGroup string       `json:"remote_group"`
-	Ports       []PortRange  `json:"ports"`
-	Action      Action       `json:"action"`
-	Stateful    bool         `json:"stateful"`
-	Log         bool         `json:"log"`
-	Description string       `json:"description"`
+	ID          string         `json:"id"`
+	Priority    int            `json:"priority"`
+	Direction   Direction      `json:"direction"`
+	Protocol    Protocol       `json:"protocol"`
+	RemoteCIDR  netip.Prefix   `json:"remote_cidr"`
+	RemoteGroup string         `json:"remote_group"`
+	RemoteFQDNs []FQDNSelector `json:"remote_fqdns"`
+	Ports       []PortRange    `json:"ports"`
+	Action      Action         `json:"action"`
+	Stateful    bool           `json:"stateful"`
+	Log         bool           `json:"log"`
+	Description string         `json:"description"`
+}
+
+type FQDNSelector struct {
+	MatchName    string `json:"match_name"`
+	MatchPattern string `json:"match_pattern"`
+}
+
+type DNSRecord struct {
+	Name string       `json:"name"`
+	IPs  []netip.Addr `json:"ips"`
 }
 
 type PortRange struct {
@@ -547,12 +559,79 @@ func (r SecurityGroupRule) Validate() error {
 	if len(r.Ports) > 0 && r.Protocol != ProtocolTCP && r.Protocol != ProtocolUDP {
 		return errors.New("ports require tcp or udp protocol")
 	}
-	if r.RemoteCIDR.IsValid() && r.RemoteGroup != "" {
-		return errors.New("remote cidr and remote group are mutually exclusive")
+	remoteSelectors := 0
+	if r.RemoteCIDR.IsValid() {
+		remoteSelectors++
+	}
+	if r.RemoteGroup != "" {
+		remoteSelectors++
+	}
+	if len(r.RemoteFQDNs) > 0 {
+		remoteSelectors++
+	}
+	if remoteSelectors > 1 {
+		return errors.New("remote cidr, remote group and remote fqdns are mutually exclusive")
+	}
+	if len(r.RemoteFQDNs) > 0 && r.Direction != DirectionEgress {
+		return errors.New("remote fqdns are only supported for egress rules")
+	}
+	for i, selector := range r.RemoteFQDNs {
+		if err := selector.Validate(); err != nil {
+			return fmt.Errorf("remote fqdn %d: %w", i, err)
+		}
 	}
 	for i, p := range r.Ports {
 		if err := p.Validate(); err != nil {
 			return fmt.Errorf("port range %d: %w", i, err)
+		}
+	}
+	return nil
+}
+
+func (s FQDNSelector) Validate() error {
+	matchName := strings.TrimSpace(s.MatchName)
+	matchPattern := strings.TrimSpace(s.MatchPattern)
+	switch {
+	case matchName == "" && matchPattern == "":
+		return errors.New("match name or match pattern is required")
+	case matchName != "" && matchPattern != "":
+		return errors.New("match name and match pattern are mutually exclusive")
+	case matchName != "":
+		return validateDNSName(matchName, false)
+	default:
+		return validateDNSName(matchPattern, true)
+	}
+}
+
+func (r DNSRecord) Validate() error {
+	if err := validateDNSName(r.Name, false); err != nil {
+		return fmt.Errorf("dns record name: %w", err)
+	}
+	if len(r.IPs) == 0 {
+		return errors.New("dns record ips are required")
+	}
+	for i, ip := range r.IPs {
+		if !ip.IsValid() {
+			return fmt.Errorf("dns record ip %d is invalid", i)
+		}
+	}
+	return nil
+}
+
+func validateDNSName(name string, allowWildcard bool) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return errors.New("dns name is required")
+	}
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '-' || r == '.':
+		case allowWildcard && r == '*':
+		default:
+			return fmt.Errorf("dns name %q contains unsupported character %q", name, r)
 		}
 	}
 	return nil

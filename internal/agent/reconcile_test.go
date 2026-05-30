@@ -674,3 +674,57 @@ func TestReconcileNodeExpandsRemoteGroupMembership(t *testing.T) {
 		t.Fatalf("entries after member removal = %d, want 0", len(entries))
 	}
 }
+
+func TestReconcileNodeCompilesFQDNRulesFromDNSRecords(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:             "pod-a",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"client"},
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "client",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:          "allow-api",
+				Priority:    100,
+				Direction:   model.DirectionEgress,
+				Protocol:    model.ProtocolTCP,
+				RemoteFQDNs: []model.FQDNSelector{{MatchName: "api.example.com"}},
+				Ports:       []model.PortRange{{From: 443, To: 443}},
+				Action:      model.ActionAllow,
+			}},
+		}},
+		DNSRecords: []model.DNSRecord{{
+			Name: "api.example.com",
+			IPs:  []netip.Addr{netip.MustParseAddr("203.0.113.10")},
+		}},
+	}
+	store := dataplane.NewInMemoryPolicyStore()
+	result, err := ReconcileNode(context.Background(), state, "node-a", store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Entries != 1 || result.TCXEligible != 1 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	entries := store.Entries("pod-a")
+	if len(entries) != 1 {
+		t.Fatalf("entries = %d, want 1", len(entries))
+	}
+	if entries[0].RemoteCIDR.String() != "203.0.113.10/32" {
+		t.Fatalf("remote cidr = %s, want fqdn-derived /32", entries[0].RemoteCIDR)
+	}
+	decision := dataplane.Evaluate(entries, dataplane.Packet{
+		Direction: dataplane.DirectionEgress,
+		Protocol:  6,
+		RemoteIP:  netip.MustParseAddr("203.0.113.10"),
+		DestPort:  443,
+	})
+	if decision.Verdict != dataplane.VerdictAllow {
+		t.Fatalf("expected fqdn-derived egress allow, got %+v", decision)
+	}
+}

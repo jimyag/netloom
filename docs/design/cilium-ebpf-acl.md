@@ -15,6 +15,7 @@ Relevant Cilium files:
 - `pkg/maps/policymap/policymap.go`
 - `pkg/policy/mapstate.go`
 - `pkg/endpoint/policy.go`
+- `pkg/fqdn/doc.go`
 
 ## Decisions
 
@@ -126,6 +127,18 @@ drives policy-map evaluation, while the exact CIDR lets the current TCX IPv4 L4
 projection enforce remote-group rules for workload traffic. When membership
 changes, periodic agent reconcile recompiles the endpoint program and replaces
 the TCX attachment signature.
+
+FQDN egress policy follows Cilium's `toFQDNs` split between DNS-derived state
+and endpoint policy. A `SecurityGroupRule` can use `remote_fqdns` selectors with
+`match_name` or `match_pattern`; during controller or agent reconcile, the
+compiler matches those selectors against desired-state `dns_records` and emits
+one CIDR-backed policy entry per resolved IP (`/32` for IPv4, `/128` for IPv6).
+Unresolved names compile to no entries, so they do not accidentally allow broad
+egress. This gives the eBPF ACL path the same CIDR fallback enforcement shape
+as `remote_cidr` while preserving the higher-level FQDN intent in the model.
+The current implementation is a static desired-state DNS cache, not a Cilium
+DNS proxy: runtime DNS observation, TTL expiry, and automatic re-resolution are
+explicitly future work.
 
 Stateful rules now have a userspace conntrack model that mirrors the Cilium
 policy decision shape. `EvaluateStateful` first checks established reverse-flow

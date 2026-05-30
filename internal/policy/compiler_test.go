@@ -2,6 +2,7 @@ package policy
 
 import (
 	"net/netip"
+	"sort"
 	"testing"
 
 	"github.com/jimyag/netloom/internal/model"
@@ -282,5 +283,101 @@ func TestCompileForEndpointWithStateRejectsUnknownRemoteGroup(t *testing.T) {
 	}, []model.Endpoint{endpoint})
 	if err == nil {
 		t.Fatal("expected unknown remote group to fail")
+	}
+}
+
+func TestCompileForEndpointWithContextExpandsRemoteFQDNsToCIDRs(t *testing.T) {
+	endpoint := model.Endpoint{
+		ID:             "pod-a",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"client"},
+	}
+	program, err := CompileForEndpointWithContext(endpoint, map[string]model.SecurityGroup{
+		"client": {
+			Name: "client",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:        "allow-api",
+				Priority:  100,
+				Direction: model.DirectionEgress,
+				Protocol:  model.ProtocolTCP,
+				RemoteFQDNs: []model.FQDNSelector{
+					{MatchName: "API.EXAMPLE.COM."},
+					{MatchPattern: "*.svc.example.com"},
+				},
+				Ports:  []model.PortRange{{From: 443, To: 443}},
+				Action: model.ActionAllow,
+			}},
+		},
+	}, CompileContext{
+		DNSRecords: []model.DNSRecord{
+			{Name: "api.example.com", IPs: []netip.Addr{netip.MustParseAddr("203.0.113.10")}},
+			{Name: "payments.svc.example.com", IPs: []netip.Addr{netip.MustParseAddr("2001:db8::10")}},
+			{Name: "other.example.com", IPs: []netip.Addr{netip.MustParseAddr("203.0.113.20")}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(program.Rules) != 2 {
+		t.Fatalf("rules = %d, want 2 fqdn-derived cidrs", len(program.Rules))
+	}
+	gotCIDRs := []string{program.Rules[0].RemoteCIDR.String(), program.Rules[1].RemoteCIDR.String()}
+	sort.Strings(gotCIDRs)
+	wantCIDRs := []string{"2001:db8::10/128", "203.0.113.10/32"}
+	for i := range wantCIDRs {
+		if gotCIDRs[i] != wantCIDRs[i] {
+			t.Fatalf("fqdn cidrs = %v, want %v", gotCIDRs, wantCIDRs)
+		}
+	}
+	if len(program.MapEntries) != 2 {
+		t.Fatalf("map entries = %d, want 2", len(program.MapEntries))
+	}
+	for _, entry := range program.MapEntries {
+		if !entry.RemoteCIDR.IsValid() {
+			t.Fatalf("fqdn-derived map entry missing remote cidr: %+v", entry)
+		}
+		if entry.Key.RemoteIdentity == 0 {
+			t.Fatalf("fqdn-derived map entry should use cidr identity: %+v", entry)
+		}
+	}
+}
+
+func TestCompileForEndpointWithContextUnresolvedRemoteFQDNProducesNoEntries(t *testing.T) {
+	endpoint := model.Endpoint{
+		ID:             "pod-a",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"client"},
+	}
+	program, err := CompileForEndpointWithContext(endpoint, map[string]model.SecurityGroup{
+		"client": {
+			Name: "client",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:          "allow-api",
+				Priority:    100,
+				Direction:   model.DirectionEgress,
+				Protocol:    model.ProtocolTCP,
+				RemoteFQDNs: []model.FQDNSelector{{MatchName: "api.example.com"}},
+				Ports:       []model.PortRange{{From: 443, To: 443}},
+				Action:      model.ActionAllow,
+			}},
+		},
+	}, CompileContext{
+		DNSRecords: []model.DNSRecord{
+			{Name: "other.example.com", IPs: []netip.Addr{netip.MustParseAddr("203.0.113.20")}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(program.Rules) != 0 || len(program.MapEntries) != 0 {
+		t.Fatalf("unresolved fqdn compiled to rules=%d entries=%d, want none", len(program.Rules), len(program.MapEntries))
 	}
 }
