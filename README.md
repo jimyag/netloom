@@ -210,7 +210,7 @@ task test:e2e
 task build
 ```
 
-`task test` 会运行所有 Go 包测试，包括 `tests/integration`；`task test:e2e` 会启动 Docker Compose lab，用多个容器模拟节点，验证 OVN Northbound、控制面 state-file、OVN desired-state 删除、基于 netlink 的 Linux netns 工作负载、跨节点连通性、策略路由输出、remote-group 安全组策略、eBPF/TCX ACL drop/allow 和 stale namespace cleanup。
+`task test` 会运行所有 Go 包测试，包括 `tests/integration`；`task test:e2e` 会启动 Docker Compose lab，用多个容器模拟节点，验证 OVN Northbound、控制面 state-file、OVN desired-state 删除、基于 netlink 的 Linux netns 工作负载、跨节点连通性、策略路由输出、运行时 DNS 观测刷新 FQDN 安全组策略、remote-group 安全组策略、eBPF/TCX ACL drop/allow 和 stale namespace cleanup。
 
 agent 以 `NETLOOM_STATE_FILE` 运行时可额外设置 `NETLOOM_DNS_OBSERVATIONS_FILE=/path/dns.json`，让每轮 reconcile 合并运行时 DNS 观测记录并刷新 `remote_fqdns` 派生策略；文件可以是 `{"dns_records":[...]}` 文档或 `DNSRecord` 数组，字段与 desired-state `dns_records` 相同。
 仓库内的 `internal/dnsobserver` 包可把 DNS wire response 中的 `A`/`AAAA`/`CNAME` answer 解析成同一组 `DNSRecord`，用于后续接入 DNS proxy 或 eBPF/sidecar 捕获路径。

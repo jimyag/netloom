@@ -173,6 +173,13 @@ func TestDockerMultiNodeLab(t *testing.T) {
 			t.Fatalf("state-file agent output missing %q:\n%s", expected, agentStateOutput)
 		}
 	}
+	dnsObservationScript := "cat >/tmp/netloom-dns-state.json <<'EOF'\n" + desiredDNSObservationStateJSON() + "\nEOF\ncat >/tmp/netloom-dns-observations.json <<'EOF'\n" + dnsObservationJSON() + "\nEOF\nNETLOOM_STATE_FILE=/tmp/netloom-dns-state.json NETLOOM_DNS_OBSERVATIONS_FILE=/tmp/netloom-dns-observations.json NETLOOM_NODE_NAME=node-a /netloom/bin/netloom-agent"
+	dnsObservationOutput := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-a", "sh", "-c", dnsObservationScript)
+	for _, expected := range []string{"reconciled node policy", "node=node-a", "endpoints=1", "programs=1", "entries=1", "policy_added=1", "policy_events=1", "policy_revision_max=1", "tcx_eligible=1"} {
+		if !strings.Contains(dnsObservationOutput, expected) {
+			t.Fatalf("DNS observation state-file agent output missing %q:\n%s", expected, dnsObservationOutput)
+		}
+	}
 	agentOtherNodeScript := "cat >/tmp/netloom-state.json <<'EOF'\n" + desiredStateJSON() + "\nEOF\nNETLOOM_STATE_FILE=/tmp/netloom-state.json NETLOOM_NODE_NAME=node-b /netloom/bin/netloom-agent"
 	agentOtherNodeOutput := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "sh", "-c", agentOtherNodeScript)
 	for _, expected := range []string{"reconciled node policy", "node=node-b", "endpoints=0", "programs=0", "entries=0", "policy_events=0", "policy_revision_max=0"} {
@@ -290,6 +297,21 @@ func desiredPolicyDropStateJSON() string {
   "subnets": [{"name": "fileapps", "vpc": "file", "cidr": "10.245.0.0/24", "gateway": "10.245.0.1", "provider_network": "physnet-a", "vlan": 100, "dhcp": {"enabled": true, "lease_time": 7200, "mtu": 1400}}],
   "endpoints": [{"id": "file-pod-b", "vpc": "file", "subnet": "fileapps", "ip": "10.245.0.11", "node": "node-b", "security_groups": ["drop-web"]}],
   "security_groups": [{"name": "drop-web", "vpc": "file", "rules": [{"id": "drop-web-from-node-a", "priority": 100, "direction": "ingress", "protocol": "tcp", "remote_cidr": "172.30.0.11/32", "ports": [{"from": 8080, "to": 8080}], "action": "drop"}]}]
+}`
+}
+
+func desiredDNSObservationStateJSON() string {
+	return `{
+  "vpcs": [{"name": "file"}],
+  "subnets": [{"name": "fileapps", "vpc": "file", "cidr": "10.245.0.0/24", "gateway": "10.245.0.1"}],
+  "endpoints": [{"id": "file-pod-a", "vpc": "file", "subnet": "fileapps", "ip": "10.245.0.10", "node": "node-a", "security_groups": ["dns-client"]}],
+  "security_groups": [{"name": "dns-client", "vpc": "file", "rules": [{"id": "allow-observed-api", "priority": 100, "direction": "egress", "protocol": "tcp", "remote_fqdns": [{"match_name": "api.example.com"}], "ports": [{"from": 443, "to": 443}], "action": "allow"}]}]
+}`
+}
+
+func dnsObservationJSON() string {
+	return `{
+  "dns_records": [{"name": "api.example.com", "ips": ["203.0.113.10"]}]
 }`
 }
 
