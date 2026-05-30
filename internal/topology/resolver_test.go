@@ -226,6 +226,60 @@ func TestResolveLoadBalancerSessionAffinityIgnoresSourcePort(t *testing.T) {
 	}
 }
 
+func TestResolveLoadBalancerSelectionFieldsDriveBackendChoice(t *testing.T) {
+	lb := model.LoadBalancer{
+		Name:            "web",
+		VPC:             "prod",
+		VIP:             netip.MustParseAddr("10.96.0.10"),
+		Port:            80,
+		Protocol:        model.ProtocolTCP,
+		SelectionFields: []string{"ip_src"},
+		Backends: []model.LoadBalancerBackend{
+			{IP: netip.MustParseAddr("10.10.0.20"), Port: 8080},
+			{IP: netip.MustParseAddr("10.10.0.30"), Port: 8080},
+			{IP: netip.MustParseAddr("10.10.0.40"), Port: 8080},
+		},
+	}
+	state := State{LoadBalancers: map[string]model.LoadBalancer{"web": lb}}
+	packet := Packet{
+		VPC:        "prod",
+		Source:     netip.MustParseAddr("10.10.1.10"),
+		SourcePort: 30000,
+		Dest:       netip.MustParseAddr("10.96.0.10"),
+		Protocol:   model.ProtocolTCP,
+		DestPort:   80,
+	}
+	first, err := Resolve(state, packet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, sourcePort := range []uint16{30001, 30002, 40000, 50000} {
+		packet.SourcePort = sourcePort
+		decision, err := Resolve(state, packet)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if decision.Translated != first.Translated || decision.TranslatedPort != first.TranslatedPort {
+			t.Fatalf("ip_src selection changed backend from %s:%d to %s:%d", first.Translated, first.TranslatedPort, decision.Translated, decision.TranslatedPort)
+		}
+	}
+
+	lb.SelectionFields = []string{"ip_src", "tp_src"}
+	state.LoadBalancers["web"] = lb
+	seen := map[netip.Addr]bool{}
+	for sourcePort := uint16(30000); sourcePort < 30100; sourcePort++ {
+		packet.SourcePort = sourcePort
+		decision, err := Resolve(state, packet)
+		if err != nil {
+			t.Fatal(err)
+		}
+		seen[decision.Translated] = true
+	}
+	if len(seen) < 2 {
+		t.Fatalf("ip_src+tp_src selection selected %d backend(s), want source port to affect selection", len(seen))
+	}
+}
+
 func TestResolveLoadBalancerRequiresBoundSourceSubnet(t *testing.T) {
 	state := State{
 		Endpoints: map[string]model.Endpoint{

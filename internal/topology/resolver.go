@@ -174,9 +174,10 @@ func healthyLoadBalancerBackends(lb model.LoadBalancer) []model.LoadBalancerBack
 
 func selectLoadBalancerBackend(lb model.LoadBalancer, backends []model.LoadBalancerBackend, packet Packet) model.LoadBalancerBackend {
 	selected := backends[0]
-	selectedScore := loadBalancerBackendScore(selected, packet, lb.SessionAffinity)
+	selectionFields := lb.EffectiveSelectionFields()
+	selectedScore := loadBalancerBackendScore(selected, packet, selectionFields)
 	for _, backend := range backends[1:] {
-		score := loadBalancerBackendScore(backend, packet, lb.SessionAffinity)
+		score := loadBalancerBackendScore(backend, packet, selectionFields)
 		if score > selectedScore || (score == selectedScore && compareLoadBalancerBackend(backend, selected) < 0) {
 			selected = backend
 			selectedScore = score
@@ -185,15 +186,13 @@ func selectLoadBalancerBackend(lb model.LoadBalancer, backends []model.LoadBalan
 	return selected
 }
 
-func loadBalancerBackendScore(backend model.LoadBalancerBackend, packet Packet, sessionAffinity bool) uint32 {
+func loadBalancerBackendScore(backend model.LoadBalancerBackend, packet Packet, selectionFields []string) uint32 {
 	hash := fnv.New32a()
-	if sessionAffinity {
-		_, _ = fmt.Fprintf(hash, "%s|%s|%s|%d",
-			packet.VPC,
-			packet.Source,
-			backend.IP,
-			backend.Port,
-		)
+	if len(selectionFields) > 0 {
+		_, _ = fmt.Fprintf(hash, "%s|%s|%d", packet.VPC, backend.IP, backend.Port)
+		for _, field := range selectionFields {
+			_, _ = fmt.Fprintf(hash, "|%s=%s", field, loadBalancerSelectionValue(field, packet))
+		}
 		return hash.Sum32()
 	}
 	_, _ = fmt.Fprintf(hash, "%s|%s|%d|%s|%s|%d|%s|%d",
@@ -207,6 +206,21 @@ func loadBalancerBackendScore(backend model.LoadBalancerBackend, packet Packet, 
 		backend.Port,
 	)
 	return hash.Sum32()
+}
+
+func loadBalancerSelectionValue(field string, packet Packet) string {
+	switch field {
+	case "ip_src", "ipv6_src":
+		return packet.Source.String()
+	case "ip_dst", "ipv6_dst":
+		return packet.Dest.String()
+	case "tp_src":
+		return fmt.Sprint(packet.SourcePort)
+	case "tp_dst":
+		return fmt.Sprint(packet.DestPort)
+	default:
+		return ""
+	}
 }
 
 func compareLoadBalancerBackend(a, b model.LoadBalancerBackend) int {

@@ -357,6 +357,7 @@ func TestPlannerBuildsLoadBalancerOperations(t *testing.T) {
 		"--if-exists lb-del nl_lb_web 10.96.0.10:80",
 		"--may-exist lb-add nl_lb_web 10.96.0.10:80 10.10.0.10:8080,10.10.0.11:8080 tcp",
 		"external_ids:netloom_load_balancer=web",
+		"selection_fields=[\"ip_src\"]",
 		"external_ids:netloom_session_affinity=true",
 		"options:affinity_timeout=7200",
 		"clear load_balancer nl_lb_web health_check",
@@ -395,6 +396,7 @@ func TestPlannerClearsLoadBalancerAffinityWhenDisabled(t *testing.T) {
 
 	joined := stringify(planner.Operations())
 	for _, expected := range []string{
+		"selection_fields=[]",
 		"external_ids:netloom_session_affinity=false",
 		"remove load_balancer nl_lb_web options affinity_timeout",
 		"clear load_balancer nl_lb_web health_check",
@@ -422,6 +424,29 @@ func TestPlannerDefaultsLoadBalancerAffinityTimeout(t *testing.T) {
 	joined := stringify(planner.Operations())
 	if !strings.Contains(joined, "options:affinity_timeout=10800") {
 		t.Fatalf("OVN operations missing default affinity timeout:\n%s", joined)
+	}
+	if !strings.Contains(joined, "selection_fields=[\"ip_src\"]") {
+		t.Fatalf("OVN operations missing default affinity selection field:\n%s", joined)
+	}
+}
+
+func TestPlannerBuildsLoadBalancerSelectionFields(t *testing.T) {
+	planner := ovn.NewPlanner()
+	err := planner.EnsureLoadBalancer(context.Background(), model.LoadBalancer{
+		Name:            "web",
+		VPC:             "prod",
+		VIP:             netip.MustParseAddr("10.96.0.10"),
+		Port:            80,
+		Protocol:        model.ProtocolTCP,
+		SelectionFields: []string{"tp_src", "ip_src"},
+		Backends:        []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.10"), Port: 8080}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := stringify(planner.Operations())
+	if !strings.Contains(joined, "selection_fields=[\"ip_src\",\"tp_src\"]") {
+		t.Fatalf("OVN operations missing explicit selection fields:\n%s", joined)
 	}
 }
 

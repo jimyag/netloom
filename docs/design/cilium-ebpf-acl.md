@@ -114,7 +114,11 @@ differ while the control-plane object remains a NAT rule. Floating IP
 floating IP ARP replies and egress packets use the logical switch port's MAC.
 `LoadBalancer` backends
 are rendered into the OVN VIP backend set and the userspace topology resolver
-uses the same stable hashing inputs for flow affinity. Backends default to healthy; when a backend is marked
+uses the same stable hashing inputs for flow affinity. The desired state can
+set OVN load-balancer `selection_fields`; when session affinity is enabled
+without explicit fields, netloom uses `ip_src` for IPv4 VIPs and `ipv6_src` for
+IPv6 VIPs so the OVN Northbound row and local resolver agree on ClientIP
+affinity. Backends default to healthy; when a backend is marked
 `healthy=false`, the planner omits it from the OVN VIP backend list and the
 resolver excludes it from local service resolution. Validation requires at
 least one healthy backend so the OVN `lb-add` operation never receives an empty

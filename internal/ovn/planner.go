@@ -433,6 +433,7 @@ func loadBalancerOptions(lb model.LoadBalancer) []string {
 		"external_ids:netloom_owner=netloom",
 		"external_ids:netloom_load_balancer=" + lb.Name,
 		"external_ids:netloom_vpc=" + lb.VPC,
+		"selection_fields=" + ovnStringSetValues(lb.EffectiveSelectionFields()),
 	}
 	if lb.SessionAffinity {
 		timeout := lb.AffinityTimeout
@@ -524,6 +525,10 @@ func ovnStringSet(addrs []netip.Addr) string {
 	for _, addr := range addrs {
 		values = append(values, addr.String())
 	}
+	return ovnStringSetValues(values)
+}
+
+func ovnStringSetValues(values []string) string {
 	sort.Strings(values)
 	quoted := make([]string, 0, len(values))
 	for _, value := range values {

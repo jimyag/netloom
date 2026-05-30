@@ -2,6 +2,7 @@ package model
 
 import (
 	"net/netip"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1010,6 +1011,42 @@ func TestLoadBalancerValidateServiceVIP(t *testing.T) {
 			wantErr: "at most 86400",
 		},
 		{
+			name: "selection field duplicate",
+			lb: LoadBalancer{
+				Name:            "web",
+				VPC:             "prod",
+				VIP:             netip.MustParseAddr("10.96.0.10"),
+				Port:            80,
+				Backends:        valid.Backends,
+				SelectionFields: []string{"ip_src", "ip_src"},
+			},
+			wantErr: "selection field \"ip_src\" is duplicated",
+		},
+		{
+			name: "selection field family mismatch",
+			lb: LoadBalancer{
+				Name:            "web",
+				VPC:             "prod",
+				VIP:             netip.MustParseAddr("10.96.0.10"),
+				Port:            80,
+				Backends:        valid.Backends,
+				SelectionFields: []string{"ipv6_src"},
+			},
+			wantErr: "requires IPv6 VIP",
+		},
+		{
+			name: "selection field unsupported",
+			lb: LoadBalancer{
+				Name:            "web",
+				VPC:             "prod",
+				VIP:             netip.MustParseAddr("10.96.0.10"),
+				Port:            80,
+				Backends:        valid.Backends,
+				SelectionFields: []string{"eth_src"},
+			},
+			wantErr: "unsupported load balancer selection field",
+		},
+		{
 			name: "backend family mismatch",
 			lb: LoadBalancer{
 				Name: "web",
@@ -1089,6 +1126,55 @@ func TestLoadBalancerValidateServiceVIP(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tt.wantErr) {
 				t.Fatalf("error %q does not contain %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestLoadBalancerEffectiveSelectionFields(t *testing.T) {
+	tests := []struct {
+		name string
+		lb   LoadBalancer
+		want []string
+	}{
+		{
+			name: "explicit fields are normalized",
+			lb: LoadBalancer{
+				VIP:             netip.MustParseAddr("10.96.0.10"),
+				SessionAffinity: true,
+				SelectionFields: []string{" tp_src ", "ip_src"},
+			},
+			want: []string{"ip_src", "tp_src"},
+		},
+		{
+			name: "ipv4 session affinity defaults to source ip",
+			lb: LoadBalancer{
+				VIP:             netip.MustParseAddr("10.96.0.10"),
+				SessionAffinity: true,
+			},
+			want: []string{"ip_src"},
+		},
+		{
+			name: "ipv6 session affinity defaults to source ip",
+			lb: LoadBalancer{
+				VIP:             netip.MustParseAddr("fd00:96::10"),
+				SessionAffinity: true,
+			},
+			want: []string{"ipv6_src"},
+		},
+		{
+			name: "no affinity has no default fields",
+			lb: LoadBalancer{
+				VIP: netip.MustParseAddr("10.96.0.10"),
+			},
+			want: nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.lb.EffectiveSelectionFields()
+			if !slices.Equal(got, tt.want) {
+				t.Fatalf("fields = %v, want %v", got, tt.want)
 			}
 		})
 	}

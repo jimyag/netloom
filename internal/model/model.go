@@ -136,6 +136,7 @@ type LoadBalancer struct {
 	Subnets         []string                `json:"subnets"`
 	SessionAffinity bool                    `json:"session_affinity"`
 	AffinityTimeout uint32                  `json:"affinity_timeout"`
+	SelectionFields []string                `json:"selection_fields"`
 	HealthCheck     LoadBalancerHealthCheck `json:"health_check"`
 }
 
@@ -553,6 +554,9 @@ func (l LoadBalancer) Validate() error {
 	if l.AffinityTimeout > 86400 {
 		return errors.New("load balancer affinity timeout must be at most 86400 seconds")
 	}
+	if err := l.validateSelectionFields(); err != nil {
+		return err
+	}
 	if err := l.HealthCheck.Validate(); err != nil {
 		return fmt.Errorf("load balancer health check: %w", err)
 	}
@@ -577,6 +581,60 @@ func (l LoadBalancer) Validate() error {
 		}
 	}
 	return nil
+}
+
+func (l LoadBalancer) validateSelectionFields() error {
+	seen := make(map[string]struct{}, len(l.SelectionFields))
+	for i, field := range l.SelectionFields {
+		field = strings.TrimSpace(field)
+		if field == "" {
+			return fmt.Errorf("load balancer selection field %d is empty", i)
+		}
+		if _, ok := seen[field]; ok {
+			return fmt.Errorf("load balancer selection field %q is duplicated", field)
+		}
+		seen[field] = struct{}{}
+		switch field {
+		case "ip_src", "ip_dst":
+			if l.VIP.Is6() && !l.VIP.Is4() {
+				return fmt.Errorf("load balancer selection field %q requires IPv4 VIP", field)
+			}
+		case "ipv6_src", "ipv6_dst":
+			if l.VIP.Is4() {
+				return fmt.Errorf("load balancer selection field %q requires IPv6 VIP", field)
+			}
+		case "tp_src", "tp_dst":
+		default:
+			return fmt.Errorf("unsupported load balancer selection field %q", field)
+		}
+	}
+	return nil
+}
+
+func (l LoadBalancer) EffectiveSelectionFields() []string {
+	fields := normalizedLoadBalancerSelectionFields(l.SelectionFields)
+	if len(fields) > 0 {
+		return fields
+	}
+	if !l.SessionAffinity {
+		return nil
+	}
+	if l.VIP.Is6() && !l.VIP.Is4() {
+		return []string{"ipv6_src"}
+	}
+	return []string{"ip_src"}
+}
+
+func normalizedLoadBalancerSelectionFields(fields []string) []string {
+	normalized := make([]string, 0, len(fields))
+	for _, field := range fields {
+		field = strings.TrimSpace(field)
+		if field != "" {
+			normalized = append(normalized, field)
+		}
+	}
+	slices.Sort(normalized)
+	return normalized
 }
 
 func (h LoadBalancerHealthCheck) Validate() error {
