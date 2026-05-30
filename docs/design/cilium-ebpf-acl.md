@@ -184,13 +184,15 @@ is retained as the desired-state compatibility default and sorts below explicit
 priorities. This keeps platform guardrails deterministic without moving
 security-group enforcement back into OVN ACLs.
 
-Named ports follow Cilium's late-binding policy behavior. Endpoints can declare
-`named_ports` with a name, TCP or UDP protocol, and concrete port number.
-Ingress rules resolve `named_ports` against the protected endpoint before map
-encoding. Egress rules resolve named ports only with `remote_group`, because the
-destination endpoint set is then known; each remote member contributes its own
-resolved port and exact CIDR. CIDR, CIDR-group, and FQDN egress rules reject
-named ports instead of guessing a destination port source.
+Endpoint labels and named ports follow Cilium's late-binding policy behavior.
+Endpoints can declare `labels` and `named_ports` with a name, TCP or UDP
+protocol, and concrete port number. Rules can use `remote_endpoint_selector` to
+match same-VPC endpoints by label equality. Ingress rules resolve `named_ports`
+against the protected endpoint before map encoding. Egress rules resolve named
+ports with `remote_group` or `remote_endpoint_selector`, because the destination
+endpoint set is then known; each remote member contributes its own resolved port
+and exact CIDR. CIDR, CIDR-group, entity, and FQDN egress rules reject named
+ports instead of guessing a destination port source.
 
 Remote entities follow the Cilium `toEntities` and `fromEntities` shape for
 common destination classes that should not be repeated as hand-written CIDRs.

@@ -11,6 +11,7 @@ import (
 	"github.com/jimyag/netloom/internal/dataplane"
 	"github.com/jimyag/netloom/internal/model"
 	"github.com/jimyag/netloom/internal/ovn"
+	"github.com/jimyag/netloom/internal/policy"
 	"github.com/jimyag/netloom/internal/topology"
 )
 
@@ -53,7 +54,7 @@ func TestDesiredStateDrivesTopologyRoutesAndEBPFStyleACL(t *testing.T) {
 		t.Fatalf("security group rules for pod-b were not compiled, got: %+v", memoryBackend.PolicyProgram)
 	}
 	clientProgram, ok := memoryBackend.PolicyProgram["pod-a"]
-	if !ok || len(clientProgram.Rules) != 8 {
+	if !ok || len(clientProgram.Rules) != 9 {
 		t.Fatalf("egress rules for pod-a were not compiled, got: %+v", memoryBackend.PolicyProgram)
 	}
 	if !hasOVNCommand(ovnRecorder.Operations(), "lr-policy-add") {
@@ -206,6 +207,16 @@ func TestDesiredStateDrivesTopologyRoutesAndEBPFStyleACL(t *testing.T) {
 	if cidrGroupExceptDrop.Verdict != dataplane.VerdictDrop {
 		t.Fatalf("expected egress tcp/8443 inside cidr-group except range to drop, got %+v", cidrGroupExceptDrop)
 	}
+	selectorAllow := dataplane.Evaluate(clientEntries, dataplane.Packet{
+		RemoteIdentity: policy.EndpointIdentity("pod-b"),
+		Direction:      dataplane.DirectionEgress,
+		Protocol:       6,
+		RemoteIP:       mustAddr(t, "10.10.0.11"),
+		DestPort:       9091,
+	})
+	if selectorAllow.Verdict != dataplane.VerdictAllow {
+		t.Fatalf("expected egress tcp/9091 to selector-derived endpoint to allow, got %+v", selectorAllow)
+	}
 	exceptAllow := dataplane.Evaluate(clientEntries, dataplane.Packet{
 		Direction: dataplane.DirectionEgress,
 		Protocol:  6,
@@ -292,8 +303,8 @@ const integrationStateJSON = `{
   "vpcs": [{"name": "prod"}],
   "subnets": [{"name": "apps", "vpc": "prod", "cidr": "10.10.0.0/24", "gateway": "10.10.0.1", "exclude_cidrs": ["10.10.0.128/25"], "provider_network": "physnet-a", "vlan": 100, "dhcp": {"enabled": true, "lease_time": 7200, "mtu": 1400}}],
   "endpoints": [
-    {"id": "pod-a", "vpc": "prod", "subnet": "apps", "ip": "10.10.0.10", "mac": "0A:58:0A:0A:00:0A", "node": "node-a", "security_groups": ["platform-client", "client"]},
-    {"id": "pod-b", "vpc": "prod", "subnet": "apps", "ip": "10.10.0.11", "node": "node-b", "security_groups": ["server"]}
+    {"id": "pod-a", "vpc": "prod", "subnet": "apps", "ip": "10.10.0.10", "mac": "0A:58:0A:0A:00:0A", "node": "node-a", "security_groups": ["platform-client", "client"], "labels": {"app": "client", "env": "prod"}},
+    {"id": "pod-b", "vpc": "prod", "subnet": "apps", "ip": "10.10.0.11", "node": "node-b", "security_groups": ["server"], "labels": {"app": "server", "env": "prod"}}
   ],
   "route_tables": [{"name": "main", "vpc": "prod", "routes": [{"destination": "0.0.0.0/0", "next_hops": ["10.10.0.253", "10.10.0.254"]}]}],
   "policy_routes": [{"name": "https-via-fw", "vpc": "prod", "priority": 100, "match": {"source": "10.10.0.0/24", "destination": "172.16.0.0/16", "protocol": "tcp", "dst_ports": [{"from": 443, "to": 443}]}, "action": {"type": "reroute", "next_hop": "10.10.0.253"}}],
@@ -317,6 +328,7 @@ const integrationStateJSON = `{
       {"id": "client-egress-docs", "priority": 80, "direction": "egress", "protocol": "tcp", "remote_cidr": "192.0.2.0/24", "except_cidrs": ["192.0.2.128/25"], "ports": [{"from": 9443, "to": 9443}], "action": "allow"},
       {"id": "client-egress-host", "priority": 70, "direction": "egress", "protocol": "tcp", "remote_entities": ["host"], "ports": [{"from": 9444, "to": 9444}], "action": "allow"},
       {"id": "client-egress-remote-node", "priority": 60, "direction": "egress", "protocol": "tcp", "remote_entities": ["remote-node"], "ports": [{"from": 4240, "to": 4240}], "action": "allow"},
+      {"id": "client-egress-server-selector", "priority": 50, "direction": "egress", "protocol": "tcp", "remote_endpoint_selector": {"app": "server", "env": "prod"}, "ports": [{"from": 9091, "to": 9091}], "action": "allow"},
       {"id": "client-drop-platform-dns", "priority": 1000, "direction": "egress", "protocol": "tcp", "remote_cidr": "198.51.100.0/24", "ports": [{"from": 9553, "to": 9553}], "action": "drop"}
     ]},
     {"name": "server", "vpc": "prod", "rules": [

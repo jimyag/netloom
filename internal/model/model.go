@@ -74,6 +74,7 @@ type Endpoint struct {
 	Node           string      `json:"node"`
 	SecurityGroups []string    `json:"security_groups"`
 	NamedPorts     []NamedPort `json:"named_ports"`
+	Labels         Labels      `json:"labels"`
 }
 
 type RouteTable struct {
@@ -181,25 +182,28 @@ type CIDRGroupEntry struct {
 }
 
 type SecurityGroupRule struct {
-	ID              string         `json:"id"`
-	Priority        int            `json:"priority"`
-	Direction       Direction      `json:"direction"`
-	Protocol        Protocol       `json:"protocol"`
-	RemoteCIDR      netip.Prefix   `json:"remote_cidr"`
-	ExceptCIDRs     []netip.Prefix `json:"except_cidrs"`
-	RemoteGroup     string         `json:"remote_group"`
-	RemoteCIDRGroup string         `json:"remote_cidr_group"`
-	RemoteEntities  []string       `json:"remote_entities"`
-	RemoteFQDNs     []FQDNSelector `json:"remote_fqdns"`
-	Ports           []PortRange    `json:"ports"`
-	NamedPorts      []string       `json:"named_ports"`
-	ICMPType        *uint8         `json:"icmp_type,omitempty"`
-	ICMPCode        *uint8         `json:"icmp_code,omitempty"`
-	Action          Action         `json:"action"`
-	Stateful        bool           `json:"stateful"`
-	Log             bool           `json:"log"`
-	Description     string         `json:"description"`
+	ID                     string         `json:"id"`
+	Priority               int            `json:"priority"`
+	Direction              Direction      `json:"direction"`
+	Protocol               Protocol       `json:"protocol"`
+	RemoteCIDR             netip.Prefix   `json:"remote_cidr"`
+	ExceptCIDRs            []netip.Prefix `json:"except_cidrs"`
+	RemoteGroup            string         `json:"remote_group"`
+	RemoteEndpointSelector Labels         `json:"remote_endpoint_selector"`
+	RemoteCIDRGroup        string         `json:"remote_cidr_group"`
+	RemoteEntities         []string       `json:"remote_entities"`
+	RemoteFQDNs            []FQDNSelector `json:"remote_fqdns"`
+	Ports                  []PortRange    `json:"ports"`
+	NamedPorts             []string       `json:"named_ports"`
+	ICMPType               *uint8         `json:"icmp_type,omitempty"`
+	ICMPCode               *uint8         `json:"icmp_code,omitempty"`
+	Action                 Action         `json:"action"`
+	Stateful               bool           `json:"stateful"`
+	Log                    bool           `json:"log"`
+	Description            string         `json:"description"`
 }
+
+type Labels map[string]string
 
 type NamedPort struct {
 	Name     string   `json:"name"`
@@ -319,6 +323,9 @@ func (e Endpoint) Validate() error {
 	if e.Node == "" {
 		return errors.New("endpoint node is required")
 	}
+	if err := e.Labels.Validate(); err != nil {
+		return fmt.Errorf("endpoint labels: %w", err)
+	}
 	seenPorts := make(map[string]struct{}, len(e.NamedPorts))
 	for i, port := range e.NamedPorts {
 		if err := port.Validate(); err != nil {
@@ -331,6 +338,33 @@ func (e Endpoint) Validate() error {
 		seenPorts[key] = struct{}{}
 	}
 	return nil
+}
+
+func (l Labels) Validate() error {
+	for key, value := range l {
+		if strings.TrimSpace(key) == "" {
+			return errors.New("label key is required")
+		}
+		if strings.TrimSpace(value) == "" {
+			return fmt.Errorf("label %q value is required", key)
+		}
+		if strings.ContainsAny(key, " \t\r\n") {
+			return fmt.Errorf("label key %q must not contain whitespace", key)
+		}
+	}
+	return nil
+}
+
+func (l Labels) Matches(selector Labels) bool {
+	if len(selector) == 0 {
+		return false
+	}
+	for key, value := range selector {
+		if l[key] != value {
+			return false
+		}
+	}
+	return true
 }
 
 func (e Endpoint) NormalizedMAC() string {
@@ -866,6 +900,9 @@ func (r SecurityGroupRule) Validate() error {
 	if r.RemoteGroup != "" {
 		remoteSelectors++
 	}
+	if len(r.RemoteEndpointSelector) > 0 {
+		remoteSelectors++
+	}
 	if r.RemoteCIDRGroup != "" {
 		remoteSelectors++
 	}
@@ -876,7 +913,10 @@ func (r SecurityGroupRule) Validate() error {
 		remoteSelectors++
 	}
 	if remoteSelectors > 1 {
-		return errors.New("remote cidr, remote group, remote cidr group, remote entities and remote fqdns are mutually exclusive")
+		return errors.New("remote cidr, remote group, remote endpoint selector, remote cidr group, remote entities and remote fqdns are mutually exclusive")
+	}
+	if err := r.RemoteEndpointSelector.Validate(); err != nil {
+		return fmt.Errorf("remote endpoint selector: %w", err)
 	}
 	seenEntities := make(map[string]struct{}, len(r.RemoteEntities))
 	for i, entity := range r.RemoteEntities {

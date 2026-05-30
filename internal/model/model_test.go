@@ -751,6 +751,56 @@ func TestSecurityGroupRuleValidatesRemoteCIDRGroupExclusivity(t *testing.T) {
 	}
 }
 
+func TestEndpointValidatesLabels(t *testing.T) {
+	endpoint := Endpoint{
+		ID:     "pod-a",
+		VPC:    "prod",
+		Subnet: "apps",
+		IP:     netip.MustParseAddr("10.10.0.10"),
+		Node:   "node-a",
+		Labels: Labels{
+			"app": "web",
+			"env": "prod",
+		},
+	}
+	if err := endpoint.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	endpoint.Labels = Labels{"": "web"}
+	if err := endpoint.Validate(); err == nil || !strings.Contains(err.Error(), "label key is required") {
+		t.Fatalf("error = %v, want missing label key validation", err)
+	}
+	endpoint.Labels = Labels{"app": ""}
+	if err := endpoint.Validate(); err == nil || !strings.Contains(err.Error(), "value is required") {
+		t.Fatalf("error = %v, want missing label value validation", err)
+	}
+}
+
+func TestSecurityGroupRuleValidatesRemoteEndpointSelector(t *testing.T) {
+	rule := SecurityGroupRule{
+		ID:                     "allow-web",
+		Direction:              DirectionIngress,
+		Protocol:               ProtocolTCP,
+		RemoteEndpointSelector: Labels{"app": "client"},
+		Ports:                  []PortRange{{From: 8080, To: 8080}},
+		Action:                 ActionAllow,
+	}
+	if err := rule.Validate(); err != nil {
+		t.Fatal(err)
+	}
+
+	rule.RemoteCIDR = netip.MustParsePrefix("10.20.0.0/16")
+	if err := rule.Validate(); err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("error = %v, want remote selector exclusivity validation", err)
+	}
+
+	rule.RemoteCIDR = netip.Prefix{}
+	rule.RemoteEndpointSelector = Labels{"bad key": "client"}
+	if err := rule.Validate(); err == nil || !strings.Contains(err.Error(), "must not contain whitespace") {
+		t.Fatalf("error = %v, want selector label validation", err)
+	}
+}
+
 func TestSecurityGroupRuleValidatesExceptCIDRs(t *testing.T) {
 	rule := SecurityGroupRule{
 		ID:          "allow-corp",

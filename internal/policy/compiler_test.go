@@ -517,6 +517,142 @@ func TestCompileForEndpointWithStateExpandsRemoteGroupMembers(t *testing.T) {
 	}
 }
 
+func TestCompileForEndpointWithContextExpandsRemoteEndpointSelector(t *testing.T) {
+	target := model.Endpoint{
+		ID:             "pod-web",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.20"),
+		Node:           "node-a",
+		SecurityGroups: []string{"web"},
+		NamedPorts:     []model.NamedPort{{Name: "admin", Protocol: model.ProtocolTCP, Port: 9090}},
+		Labels:         model.Labels{"app": "web"},
+	}
+	client := model.Endpoint{
+		ID:         "pod-client",
+		VPC:        "prod",
+		Subnet:     "apps",
+		IP:         netip.MustParseAddr("10.10.0.10"),
+		Node:       "node-b",
+		NamedPorts: []model.NamedPort{{Name: "api", Protocol: model.ProtocolTCP, Port: 8443}},
+		Labels:     model.Labels{"app": "client", "env": "prod"},
+	}
+	other := model.Endpoint{
+		ID:     "pod-other",
+		VPC:    "prod",
+		Subnet: "apps",
+		IP:     netip.MustParseAddr("10.10.0.11"),
+		Node:   "node-c",
+		Labels: model.Labels{"app": "client", "env": "dev"},
+	}
+	program, err := CompileForEndpointWithContext(target, map[string]model.SecurityGroup{
+		"web": {
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:                     "allow-client",
+				Priority:               100,
+				Direction:              model.DirectionIngress,
+				Protocol:               model.ProtocolTCP,
+				RemoteEndpointSelector: model.Labels{"app": "client", "env": "prod"},
+				NamedPorts:             []string{"admin"},
+				Action:                 model.ActionAllow,
+			}},
+		},
+	}, CompileContext{Endpoints: []model.Endpoint{target, client, other}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(program.Rules) != 1 || len(program.MapEntries) != 1 {
+		t.Fatalf("program rules=%d entries=%d, want one selector match", len(program.Rules), len(program.MapEntries))
+	}
+	rule := program.Rules[0]
+	if rule.RemoteEndpoint != "pod-client" || rule.RemoteCIDR.String() != "10.10.0.10/32" {
+		t.Fatalf("selector remote = endpoint %s cidr %s, want pod-client /32", rule.RemoteEndpoint, rule.RemoteCIDR)
+	}
+	entry := program.MapEntries[0]
+	if entry.Key.RemoteIdentity != EndpointIdentity("pod-client") || entry.Key.DestPort != 9090 {
+		t.Fatalf("selector entry = %+v, want pod-client identity and named port 9090", entry.Key)
+	}
+}
+
+func TestCompileForEndpointWithContextResolvesEgressNamedPortFromRemoteEndpointSelector(t *testing.T) {
+	client := model.Endpoint{
+		ID:             "pod-client",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"client"},
+	}
+	api := model.Endpoint{
+		ID:         "pod-api",
+		VPC:        "prod",
+		Subnet:     "apps",
+		IP:         netip.MustParseAddr("10.10.0.20"),
+		Node:       "node-b",
+		NamedPorts: []model.NamedPort{{Name: "http", Protocol: model.ProtocolTCP, Port: 8080}},
+		Labels:     model.Labels{"app": "api", "env": "prod"},
+	}
+	program, err := CompileForEndpointWithContext(client, map[string]model.SecurityGroup{
+		"client": {
+			Name: "client",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:                     "egress-api",
+				Priority:               100,
+				Direction:              model.DirectionEgress,
+				Protocol:               model.ProtocolTCP,
+				RemoteEndpointSelector: model.Labels{"app": "api"},
+				NamedPorts:             []string{"http"},
+				Action:                 model.ActionAllow,
+			}},
+		},
+	}, CompileContext{Endpoints: []model.Endpoint{client, api}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(program.MapEntries) != 1 {
+		t.Fatalf("map entries = %d, want one selector named-port entry", len(program.MapEntries))
+	}
+	entry := program.MapEntries[0]
+	if entry.Key.RemoteIdentity != EndpointIdentity("pod-api") || entry.Key.DestPort != 8080 {
+		t.Fatalf("selector egress named port entry = %+v, want pod-api tcp/8080", entry.Key)
+	}
+}
+
+func TestCompileForEndpointWithContextAllowsUnmatchedRemoteEndpointSelector(t *testing.T) {
+	endpoint := model.Endpoint{
+		ID:             "pod-web",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.20"),
+		Node:           "node-a",
+		SecurityGroups: []string{"web"},
+	}
+	program, err := CompileForEndpointWithContext(endpoint, map[string]model.SecurityGroup{
+		"web": {
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:                     "allow-client",
+				Priority:               100,
+				Direction:              model.DirectionIngress,
+				Protocol:               model.ProtocolTCP,
+				RemoteEndpointSelector: model.Labels{"app": "client"},
+				Ports:                  []model.PortRange{{From: 8080, To: 8080}},
+				Action:                 model.ActionAllow,
+			}},
+		},
+	}, CompileContext{Endpoints: []model.Endpoint{endpoint}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(program.Rules) != 0 || len(program.MapEntries) != 0 {
+		t.Fatalf("program rules=%d entries=%d, want no selector matches", len(program.Rules), len(program.MapEntries))
+	}
+}
+
 func TestCompileForEndpointWithStateRejectsUnknownRemoteGroup(t *testing.T) {
 	endpoint := model.Endpoint{
 		ID:             "pod-a",

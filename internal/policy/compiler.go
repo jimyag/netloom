@@ -94,6 +94,10 @@ func CompileForEndpointWithContext(endpoint model.Endpoint, groups map[string]mo
 	if err != nil {
 		return Program{}, err
 	}
+	endpointsBySelector, err := indexEndpointSelectorMembers(endpoint.VPC, ctx.Endpoints)
+	if err != nil {
+		return Program{}, err
+	}
 	dnsRecords, err := indexDNSRecords(ctx.DNSRecords, ctx.Now)
 	if err != nil {
 		return Program{}, err
@@ -123,7 +127,7 @@ func CompileForEndpointWithContext(endpoint model.Endpoint, groups map[string]mo
 			return Program{}, err
 		}
 		for _, rule := range group.Rules {
-			compiledRules, err := expandRule(endpoint, group, rule, membersByGroup, dnsRecords, cidrGroups, subnetsByVPC, gatewayCIDRsByVPC)
+			compiledRules, err := expandRule(endpoint, group, rule, membersByGroup, endpointsBySelector, dnsRecords, cidrGroups, subnetsByVPC, gatewayCIDRsByVPC)
 			if err != nil {
 				return Program{}, err
 			}
@@ -152,7 +156,7 @@ func CompileForEndpointWithContext(endpoint model.Endpoint, groups map[string]mo
 	return program, nil
 }
 
-func expandRule(endpoint model.Endpoint, securityGroup model.SecurityGroup, rule model.SecurityGroupRule, membersByGroup map[string][]model.Endpoint, dnsRecords map[string][]netip.Addr, cidrGroups map[string][]netip.Prefix, subnetsByVPC map[string][]netip.Prefix, gatewayCIDRsByVPC map[string][]gatewayCIDR) ([]Rule, error) {
+func expandRule(endpoint model.Endpoint, securityGroup model.SecurityGroup, rule model.SecurityGroupRule, membersByGroup map[string][]model.Endpoint, endpointsBySelector []model.Endpoint, dnsRecords map[string][]netip.Addr, cidrGroups map[string][]netip.Prefix, subnetsByVPC map[string][]netip.Prefix, gatewayCIDRsByVPC map[string][]gatewayCIDR) ([]Rule, error) {
 	base := Rule{
 		ID:              rule.ID,
 		Tier:            securityGroup.Tier,
@@ -178,8 +182,8 @@ func expandRule(endpoint model.Endpoint, securityGroup model.SecurityGroup, rule
 		}
 		base.Ports = ports
 	}
-	if len(rule.NamedPorts) > 0 && rule.Direction == model.DirectionEgress && rule.RemoteGroup == "" {
-		return nil, fmt.Errorf("rule %s: named ports require remote_group for egress rules", rule.ID)
+	if len(rule.NamedPorts) > 0 && rule.Direction == model.DirectionEgress && rule.RemoteGroup == "" && len(rule.RemoteEndpointSelector) == 0 {
+		return nil, fmt.Errorf("rule %s: named ports require remote_group or remote_endpoint_selector for egress rules", rule.ID)
 	}
 	if len(rule.RemoteFQDNs) > 0 {
 		return expandFQDNRule(base, rule.RemoteFQDNs, dnsRecords)
@@ -193,6 +197,9 @@ func expandRule(endpoint model.Endpoint, securityGroup model.SecurityGroup, rule
 	if rule.RemoteCIDR.IsValid() && len(rule.ExceptCIDRs) > 0 {
 		return expandCIDRExceptRule(base, rule.ExceptCIDRs), nil
 	}
+	if len(rule.RemoteEndpointSelector) > 0 {
+		return expandEndpointSelectorRule(endpoint, base, rule, endpointsBySelector)
+	}
 	if rule.RemoteGroup == "" || membersByGroup == nil {
 		return []Rule{base}, nil
 	}
@@ -200,6 +207,23 @@ func expandRule(endpoint model.Endpoint, securityGroup model.SecurityGroup, rule
 	if !ok {
 		return nil, fmt.Errorf("rule %s references unknown remote security group %s", rule.ID, rule.RemoteGroup)
 	}
+	return expandEndpointMembers(endpoint, base, rule, members)
+}
+
+func expandEndpointSelectorRule(endpoint model.Endpoint, base Rule, rule model.SecurityGroupRule, endpoints []model.Endpoint) ([]Rule, error) {
+	if endpoints == nil {
+		return nil, fmt.Errorf("rule %s remote_endpoint_selector has no endpoint context", rule.ID)
+	}
+	members := make([]model.Endpoint, 0)
+	for _, candidate := range endpoints {
+		if candidate.Labels.Matches(rule.RemoteEndpointSelector) {
+			members = append(members, candidate)
+		}
+	}
+	return expandEndpointMembers(endpoint, base, rule, members)
+}
+
+func expandEndpointMembers(endpoint model.Endpoint, base Rule, rule model.SecurityGroupRule, members []model.Endpoint) ([]Rule, error) {
 	out := make([]Rule, 0, len(members))
 	for _, member := range members {
 		if member.ID == endpoint.ID {
@@ -592,6 +616,26 @@ func indexRemoteGroupMembers(vpc string, groups map[string]model.SecurityGroup, 
 			return out[name][i].ID < out[name][j].ID
 		})
 	}
+	return out, nil
+}
+
+func indexEndpointSelectorMembers(vpc string, endpoints []model.Endpoint) ([]model.Endpoint, error) {
+	if endpoints == nil {
+		return nil, nil
+	}
+	out := make([]model.Endpoint, 0, len(endpoints))
+	for _, endpoint := range endpoints {
+		if endpoint.VPC != vpc {
+			continue
+		}
+		if err := endpoint.Validate(); err != nil {
+			return nil, err
+		}
+		out = append(out, endpoint)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return out[i].ID < out[j].ID
+	})
 	return out, nil
 }
 
