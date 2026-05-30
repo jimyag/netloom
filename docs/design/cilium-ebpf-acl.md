@@ -72,6 +72,9 @@ expanding large ranges into hash entries.
 The controller can reconcile either the built-in bootstrap state or a JSON
 desired-state file. Docker e2e tests exercise the JSON path against a live OVN
 Northbound database and verify TCX ACL behavior in privileged node containers.
+OVN programming is emitted as idempotent `ovn-nbctl` operations with
+`external_ids:netloom_owner=netloom` metadata, and the live executor batches a
+reconcile step into one `ovn-nbctl` transaction.
 
 The agent can also realize a minimal Linux L3 workload datapath from the same
 desired-state file. It has two modes:
@@ -85,9 +88,12 @@ desired-state file. It has two modes:
 
 Docker e2e uses `netns` mode to verify workload-to-workload traffic with
 `ip netns exec`, so the test covers per-workload interfaces instead of only
-node-local loopback addresses. This is still a small Linux bootstrap datapath;
-the command planner is isolated so the same reconcile path can later target
-OVN-backed ports without changing the policy compiler.
+node-local loopback addresses. The Linux datapath can run through the legacy
+command planner or the `vishvananda/netlink` and `vishvananda/netns` backend;
+Docker e2e uses the netlink backend for namespace, veth, address, and route
+programming. This is still a small Linux bootstrap datapath; the command
+planner is isolated so the same reconcile path can later target OVN-backed
+ports without changing the policy compiler.
 
 For workload policy enforcement, the agent can attach the TCX IPv4 L4 ACL
 program to each eligible local endpoint's host-side veth in egress direction.

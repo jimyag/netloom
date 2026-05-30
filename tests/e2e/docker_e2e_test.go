@@ -105,7 +105,7 @@ func TestDockerMultiNodeLab(t *testing.T) {
 			t.Fatalf("other-node state-file agent output missing %q:\n%s", expected, agentOtherNodeOutput)
 		}
 	}
-	workloadStateScript := "cat >/tmp/netloom-workload-state.json <<'EOF'\n" + desiredWorkloadStateJSON() + "\nEOF\nNETLOOM_STATE_FILE=/tmp/netloom-workload-state.json NETLOOM_LINUX_DATAPATH=1 NETLOOM_LINUX_DATAPATH_MODE=netns NETLOOM_NODE_UNDERLAYS=node-a=172.30.0.11,node-b=172.30.0.12 "
+	workloadStateScript := "cat >/tmp/netloom-workload-state.json <<'EOF'\n" + desiredWorkloadStateJSON() + "\nEOF\nNETLOOM_STATE_FILE=/tmp/netloom-workload-state.json NETLOOM_LINUX_DATAPATH=1 NETLOOM_LINUX_DATAPATH_MODE=netns NETLOOM_LINUX_DATAPATH_BACKEND=netlink NETLOOM_NODE_UNDERLAYS=node-a=172.30.0.11,node-b=172.30.0.12 "
 	nodeAWorkloadOutput := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-a", "sh", "-c", workloadStateScript+"NETLOOM_NODE_NAME=node-a /netloom/bin/netloom-agent")
 	for _, expected := range []string{"datapath=linux:netns", "local_ips=1", "remote_routes=1"} {
 		if !strings.Contains(nodeAWorkloadOutput, expected) {
@@ -122,7 +122,7 @@ func TestDockerMultiNodeLab(t *testing.T) {
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "sh", "-c", "ip netns exec nl-file-pod-b sh -c 'while true; do printf ok | nc -l -p 8080 >/dev/null; done' >/tmp/netloom-ns-nc.log 2>&1 &")
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-a", "ip", "netns", "exec", "nl-file-pod-a", "sh", "-c", "printf hi | nc -w 1 10.245.0.11 8080")
 	watchStatePath := "/tmp/netloom-workload-watch-state.json"
-	startWatchScript := "cat >" + watchStatePath + " <<'EOF'\n" + desiredWorkloadStateJSON() + "\nEOF\nNETLOOM_STATE_FILE=" + watchStatePath + " NETLOOM_NODE_NAME=node-b NETLOOM_POLICY_STORE=ebpf NETLOOM_LINUX_DATAPATH=1 NETLOOM_LINUX_DATAPATH_MODE=netns NETLOOM_LINUX_DATAPATH_CLEANUP=1 NETLOOM_RECONCILE_INTERVAL_MS=500 NETLOOM_NODE_UNDERLAYS=node-a=172.30.0.11,node-b=172.30.0.12 NETLOOM_TCX_WORKLOAD=1 /netloom/bin/netloom-agent >/tmp/netloom-agent-watch.log 2>&1 &"
+	startWatchScript := "cat >" + watchStatePath + " <<'EOF'\n" + desiredWorkloadStateJSON() + "\nEOF\nNETLOOM_STATE_FILE=" + watchStatePath + " NETLOOM_NODE_NAME=node-b NETLOOM_POLICY_STORE=ebpf NETLOOM_LINUX_DATAPATH=1 NETLOOM_LINUX_DATAPATH_MODE=netns NETLOOM_LINUX_DATAPATH_BACKEND=netlink NETLOOM_LINUX_DATAPATH_CLEANUP=1 NETLOOM_RECONCILE_INTERVAL_MS=500 NETLOOM_NODE_UNDERLAYS=node-a=172.30.0.11,node-b=172.30.0.12 NETLOOM_TCX_WORKLOAD=1 /netloom/bin/netloom-agent >/tmp/netloom-agent-watch.log 2>&1 &"
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "sh", "-c", startWatchScript)
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "sh", "-c", "for i in $(seq 1 15); do grep -q 'tcx=attached' /tmp/netloom-agent-watch.log 2>/dev/null && exit 0; sleep 1; done; cat /tmp/netloom-agent-watch.log; exit 1")
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-a", "ip", "netns", "exec", "nl-file-pod-a", "sh", "-c", "printf hi | nc -w 1 10.245.0.11 8080")

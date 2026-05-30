@@ -13,11 +13,15 @@ import (
 
 type Operation struct {
 	Command string
+	Flags   []string
 	Args    []string
 }
 
 func (o Operation) String() string {
-	return o.Command + " " + strings.Join(o.Args, " ")
+	parts := append([]string(nil), o.Flags...)
+	parts = append(parts, o.Command)
+	parts = append(parts, o.Args...)
+	return strings.Join(parts, " ")
 }
 
 type Planner struct {
@@ -36,7 +40,10 @@ func (p *Planner) EnsureVPC(_ context.Context, vpc model.VPC) error {
 
 	router := logicalRouter(vpc.Name)
 	p.vpcRouters[vpc.Name] = router
-	p.ops = append(p.ops, Operation{Command: "lr-add", Args: []string{router}})
+	p.ops = append(p.ops,
+		Operation{Command: "lr-add", Flags: []string{"--may-exist"}, Args: []string{router}},
+		setOperation("logical_router", router, "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc="+vpc.Name),
+	)
 	return nil
 }
 
@@ -50,12 +57,15 @@ func (p *Planner) EnsureSubnet(_ context.Context, subnet model.Subnet) error {
 	switchPort := switchRouterPortName(switchName, subnet.Name)
 	routerMAC := deterministicMAC(subnet.Gateway)
 	p.ops = append(p.ops,
-		Operation{Command: "ls-add", Args: []string{switchName}},
-		Operation{Command: "lrp-add", Args: []string{router, routerPort, routerMAC, subnet.Gateway.String() + "/" + fmt.Sprint(subnet.CIDR.Bits())}},
-		Operation{Command: "lsp-add", Args: []string{switchName, switchPort}},
+		Operation{Command: "ls-add", Flags: []string{"--may-exist"}, Args: []string{switchName}},
+		setOperation("logical_switch", switchName, "external_ids:netloom_owner=netloom", "external_ids:netloom_subnet="+subnet.Name, "external_ids:netloom_vpc="+subnet.VPC),
+		Operation{Command: "lrp-add", Flags: []string{"--may-exist"}, Args: []string{router, routerPort, routerMAC, subnet.Gateway.String() + "/" + fmt.Sprint(subnet.CIDR.Bits())}},
+		setOperation("logical_router_port", routerPort, "external_ids:netloom_owner=netloom", "external_ids:netloom_subnet="+subnet.Name),
+		Operation{Command: "lsp-add", Flags: []string{"--may-exist"}, Args: []string{switchName, switchPort}},
 		Operation{Command: "lsp-set-type", Args: []string{switchPort, "router"}},
 		Operation{Command: "lsp-set-addresses", Args: []string{switchPort, routerMAC}},
 		Operation{Command: "lsp-set-options", Args: []string{switchPort, "router-port=" + routerPort}},
+		setOperation("logical_switch_port", switchPort, "external_ids:netloom_owner=netloom", "external_ids:netloom_subnet="+subnet.Name, "external_ids:netloom_role=router"),
 	)
 	return nil
 }
@@ -66,9 +76,9 @@ func (p *Planner) EnsureEndpoint(_ context.Context, endpoint model.Endpoint) err
 
 	port := logicalPort(endpoint.ID)
 	p.ops = append(p.ops,
-		Operation{Command: "lsp-add", Args: []string{logicalSwitch(endpoint.Subnet), port}},
+		Operation{Command: "lsp-add", Flags: []string{"--may-exist"}, Args: []string{logicalSwitch(endpoint.Subnet), port}},
 		Operation{Command: "lsp-set-addresses", Args: []string{port, "dynamic " + endpoint.IP.String()}},
-		Operation{Command: "set", Args: []string{"logical_switch_port", port, "external_ids:netloom_endpoint=" + endpoint.ID, "external_ids:netloom_node=" + endpoint.Node}},
+		setOperation("logical_switch_port", port, "external_ids:netloom_owner=netloom", "external_ids:netloom_endpoint="+endpoint.ID, "external_ids:netloom_node="+endpoint.Node, "external_ids:netloom_vpc="+endpoint.VPC, "external_ids:netloom_subnet="+endpoint.Subnet),
 	)
 	return nil
 }
@@ -80,10 +90,10 @@ func (p *Planner) EnsureRouteTable(_ context.Context, table model.RouteTable) er
 	router := p.routerForVPC(table.VPC)
 	for _, route := range table.Routes {
 		if route.Blackhole {
-			p.ops = append(p.ops, Operation{Command: "lr-route-add", Args: []string{router, route.Destination.String(), "discard"}})
+			p.ops = append(p.ops, Operation{Command: "lr-route-add", Flags: []string{"--may-exist"}, Args: []string{router, route.Destination.String(), "discard"}})
 			continue
 		}
-		p.ops = append(p.ops, Operation{Command: "lr-route-add", Args: []string{router, route.Destination.String(), route.NextHop.String()}})
+		p.ops = append(p.ops, Operation{Command: "lr-route-add", Flags: []string{"--may-exist"}, Args: []string{router, route.Destination.String(), route.NextHop.String()}})
 	}
 	return nil
 }
@@ -96,10 +106,10 @@ func (p *Planner) EnsurePolicyRoute(_ context.Context, route model.PolicyRoute) 
 	match := policyRouteMatch(route.Match)
 	action := route.Action.Type
 	if action == model.ActionReroute {
-		p.ops = append(p.ops, Operation{Command: "lr-policy-add", Args: []string{router, fmt.Sprint(route.Priority), match, "reroute", route.Action.NextHop.String()}})
+		p.ops = append(p.ops, Operation{Command: "lr-policy-add", Flags: []string{"--may-exist"}, Args: []string{router, fmt.Sprint(route.Priority), match, "reroute", route.Action.NextHop.String()}})
 		return nil
 	}
-	p.ops = append(p.ops, Operation{Command: "lr-policy-add", Args: []string{router, fmt.Sprint(route.Priority), match, string(action)}})
+	p.ops = append(p.ops, Operation{Command: "lr-policy-add", Flags: []string{"--may-exist"}, Args: []string{router, fmt.Sprint(route.Priority), match, string(action)}})
 	return nil
 }
 
@@ -112,7 +122,7 @@ func (p *Planner) EnsureGateway(_ context.Context, gateway model.Gateway) error 
 	if gateway.ExternalIF != "" {
 		args = append(args, "external_ids:netloom_external_if="+gateway.ExternalIF)
 	}
-	p.ops = append(p.ops, Operation{Command: "set", Args: append([]string{"logical_router", router}, args[1:]...)})
+	p.ops = append(p.ops, setOperation("logical_router", router, append(args[1:], "external_ids:netloom_owner=netloom")...))
 	return nil
 }
 
@@ -123,9 +133,9 @@ func (p *Planner) EnsureNATRule(_ context.Context, rule model.NATRule) error {
 	router := p.routerForVPC(rule.VPC)
 	switch rule.Type {
 	case model.ActionSNAT:
-		p.ops = append(p.ops, Operation{Command: "lr-nat-add", Args: []string{router, "snat", rule.ExternalIP.String(), rule.MatchCIDR.String()}})
+		p.ops = append(p.ops, Operation{Command: "lr-nat-add", Flags: []string{"--may-exist"}, Args: []string{router, "snat", rule.ExternalIP.String(), rule.MatchCIDR.String()}})
 	case model.ActionDNAT:
-		p.ops = append(p.ops, Operation{Command: "lr-nat-add", Args: []string{router, "dnat", rule.ExternalIP.String(), rule.TargetIP.String()}})
+		p.ops = append(p.ops, Operation{Command: "lr-nat-add", Flags: []string{"--may-exist"}, Args: []string{router, "dnat", rule.ExternalIP.String(), rule.TargetIP.String()}})
 	}
 	return nil
 }
@@ -134,6 +144,11 @@ func (p *Planner) Operations() []Operation {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return append([]Operation(nil), p.ops...)
+}
+
+func setOperation(table, record string, pairs ...string) Operation {
+	args := append([]string{table, record}, pairs...)
+	return Operation{Command: "set", Args: args}
 }
 
 func (p *Planner) routerForVPC(vpc string) string {

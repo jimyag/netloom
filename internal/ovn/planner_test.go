@@ -81,8 +81,10 @@ func TestPlannerMapsNetloomObjectsToOVNOperations(t *testing.T) {
 
 	joined := stringify(planner.Operations())
 	for _, expected := range []string{
-		"lr-add nl_lr_prod",
-		"ls-add nl_ls_apps",
+		"--may-exist lr-add nl_lr_prod",
+		"--may-exist ls-add nl_ls_apps",
+		"external_ids:netloom_owner=netloom",
+		"external_ids:netloom_vpc=prod",
 		"lr-route-add nl_lr_prod 0.0.0.0/0 10.10.0.254",
 		"lr-policy-add nl_lr_prod 100",
 		"lr-nat-add nl_lr_prod snat 198.51.100.10 10.10.0.0/24",

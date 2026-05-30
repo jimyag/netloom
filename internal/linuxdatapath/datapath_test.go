@@ -3,6 +3,8 @@ package linuxdatapath
 import (
 	"context"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -151,6 +153,40 @@ func TestHostVethNameIsStableAndShort(t *testing.T) {
 	}
 	if len(first) > 15 {
 		t.Fatalf("host veth name %q is longer than Linux ifname limit", first)
+	}
+}
+
+func TestListManagedNetNSFiltersByPrefix(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"nl-pod-a", "nl-pod-b", "other-pod", "nlx-pod"} {
+		if err := os.WriteFile(filepath.Join(dir, name), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	names, err := listManagedNetNSAt(dir, "nl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"nl-pod-a", "nl-pod-b"}
+	if !reflect.DeepEqual(names, want) {
+		t.Fatalf("names = %#v, want %#v", names, want)
+	}
+}
+
+func TestNormalizeOptionsDefaultsNetlinkSettings(t *testing.T) {
+	options, result, err := normalizeOptions(Options{Node: "node-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if options.Mode != "local" || options.LocalDevice != "lo" || options.UnderlayDevice != "eth0" || options.WorkloadIF != "eth0" {
+		t.Fatalf("unexpected defaults: %+v", options)
+	}
+	if options.HostGateway != netip.MustParseAddr("169.254.1.1") {
+		t.Fatalf("host gateway = %s", options.HostGateway)
+	}
+	if result.Device != "lo" || result.Mode != "local" {
+		t.Fatalf("unexpected result defaults: %+v", result)
 	}
 }
 

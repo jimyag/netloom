@@ -35,23 +35,29 @@ func (r *RecorderExecutor) Operations() []Operation {
 }
 
 type NBCTLExecutor struct {
-	Binary   string
-	BaseArgs []string
+	Binary      string
+	BaseArgs    []string
+	Transaction bool
 }
 
 func NewNBCTLExecutor(binary string, baseArgs ...string) *NBCTLExecutor {
 	if binary == "" {
 		binary = "ovn-nbctl"
 	}
-	return &NBCTLExecutor{Binary: binary, BaseArgs: append([]string(nil), baseArgs...)}
+	return &NBCTLExecutor{Binary: binary, BaseArgs: append([]string(nil), baseArgs...), Transaction: true}
 }
 
 func (e *NBCTLExecutor) Execute(ctx context.Context, ops []Operation) error {
+	if e.Transaction {
+		return e.executeTransaction(ctx, ops)
+	}
 	for _, op := range ops {
 		if err := validateOperation(op); err != nil {
 			return err
 		}
-		args := append(append([]string(nil), e.BaseArgs...), op.Command)
+		args := append([]string(nil), e.BaseArgs...)
+		args = append(args, op.Flags...)
+		args = append(args, op.Command)
 		args = append(args, op.Args...)
 		cmd := exec.CommandContext(ctx, e.Binary, args...)
 		var stderr bytes.Buffer
@@ -63,11 +69,39 @@ func (e *NBCTLExecutor) Execute(ctx context.Context, ops []Operation) error {
 	return nil
 }
 
+func (e *NBCTLExecutor) executeTransaction(ctx context.Context, ops []Operation) error {
+	if len(ops) == 0 {
+		return nil
+	}
+	args := append([]string(nil), e.BaseArgs...)
+	for i, op := range ops {
+		if err := validateOperation(op); err != nil {
+			return err
+		}
+		if i > 0 {
+			args = append(args, "--")
+		}
+		args = append(args, op.Flags...)
+		args = append(args, op.Command)
+		args = append(args, op.Args...)
+	}
+	cmd := exec.CommandContext(ctx, e.Binary, args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("%s %v failed: %w: %s", e.Binary, args, err, stderr.String())
+	}
+	return nil
+}
+
 func validateOperation(op Operation) error {
 	if op.Command == "" {
 		return fmt.Errorf("operation command is required")
 	}
-	for _, arg := range append([]string{op.Command}, op.Args...) {
+	fields := append([]string(nil), op.Flags...)
+	fields = append(fields, op.Command)
+	fields = append(fields, op.Args...)
+	for _, arg := range fields {
 		if arg == "" {
 			return fmt.Errorf("operation %q contains empty argument", op.Command)
 		}
@@ -80,6 +114,7 @@ func cloneOperations(ops []Operation) []Operation {
 	for _, op := range ops {
 		out = append(out, Operation{
 			Command: op.Command,
+			Flags:   append([]string(nil), op.Flags...),
 			Args:    append([]string(nil), op.Args...),
 		})
 	}

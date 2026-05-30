@@ -24,6 +24,7 @@ type Executor interface {
 type Options struct {
 	Node           string
 	Mode           string
+	Backend        string
 	LocalDevice    string
 	UnderlayDevice string
 	NodeUnderlays  map[string]netip.Addr
@@ -54,6 +55,9 @@ func (CommandExecutor) Execute(ctx context.Context, op Operation) error {
 }
 
 func Apply(ctx context.Context, state control.DesiredState, options Options) (Result, error) {
+	if options.Backend == "netlink" {
+		return ApplyNetlink(ctx, state, options)
+	}
 	ops, result, err := Plan(ctx, state, options)
 	if err != nil {
 		return Result{}, err

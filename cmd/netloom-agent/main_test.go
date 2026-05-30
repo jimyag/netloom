@@ -23,3 +23,20 @@ func TestReconcileIntervalRejectsInvalidValue(t *testing.T) {
 		t.Fatal("expected invalid interval to fail")
 	}
 }
+
+func TestLinuxDatapathOptionsParsesBackend(t *testing.T) {
+	t.Setenv("NETLOOM_LINUX_DATAPATH", "1")
+	t.Setenv("NETLOOM_LINUX_DATAPATH_MODE", "netns")
+	t.Setenv("NETLOOM_LINUX_DATAPATH_BACKEND", "netlink")
+
+	options := linuxDatapathOptions()
+	if options == nil {
+		t.Fatal("expected linux datapath options")
+	}
+	if options.Mode != "netns" {
+		t.Fatalf("mode = %s, want netns", options.Mode)
+	}
+	if options.Backend != "netlink" {
+		t.Fatalf("backend = %s, want netlink", options.Backend)
+	}
+}

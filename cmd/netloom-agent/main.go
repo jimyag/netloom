@@ -171,6 +171,7 @@ func linuxDatapathOptions() *linuxdatapath.Options {
 	}
 	return &linuxdatapath.Options{
 		Mode:           getenvDefault("NETLOOM_LINUX_DATAPATH_MODE", "local"),
+		Backend:        getenvDefault("NETLOOM_LINUX_DATAPATH_BACKEND", "command"),
 		LocalDevice:    getenvDefault("NETLOOM_DATAPATH_DEV", "lo"),
 		UnderlayDevice: getenvDefault("NETLOOM_UNDERLAY_DEV", "eth0"),
 		NetNSPrefix:    getenvDefault("NETLOOM_NETNS_PREFIX", "nl"),
