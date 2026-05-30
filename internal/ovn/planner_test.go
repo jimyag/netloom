@@ -16,10 +16,12 @@ func TestPlannerMapsNetloomObjectsToOVNOperations(t *testing.T) {
 	state := control.DesiredState{
 		VPCs: []model.VPC{{Name: "prod"}},
 		Subnets: []model.Subnet{{
-			Name:    "apps",
-			VPC:     "prod",
-			CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
-			Gateway: netip.MustParseAddr("10.10.0.1"),
+			Name:            "apps",
+			VPC:             "prod",
+			CIDR:            netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway:         netip.MustParseAddr("10.10.0.1"),
+			ProviderNetwork: "physnet-a",
+			VLAN:            100,
 		}},
 		Endpoints: []model.Endpoint{{
 			ID:     "pod-a",
@@ -95,6 +97,9 @@ func TestPlannerMapsNetloomObjectsToOVNOperations(t *testing.T) {
 	for _, expected := range []string{
 		"--may-exist lr-add nl_lr_prod",
 		"--may-exist ls-add nl_ls_apps",
+		"lsp-add-localnet-port nl_ls_apps nl_ls_apps_to_apps_localnet physnet-a",
+		"external_ids:netloom_provider_network=physnet-a",
+		"set logical_switch_port nl_ls_apps_to_apps_localnet tag=100",
 		"external_ids:netloom_owner=netloom",
 		"external_ids:netloom_vpc=prod",
 		"lr-route-add nl_lr_prod 0.0.0.0/0 10.10.0.254",

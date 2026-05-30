@@ -33,6 +33,8 @@ func TestDesiredStateDrivesTopologyRoutesAndEBPFStyleACL(t *testing.T) {
 	}
 	if subnet, ok := memoryBackend.Subnets["apps"]; !ok || subnet.Gateway.String() != "10.10.0.1" {
 		t.Fatalf("subnet apps was not reconciled with gateway, got: %+v", memoryBackend.Subnets)
+	} else if subnet.ProviderNetwork != "physnet-a" || subnet.VLAN != 100 {
+		t.Fatalf("subnet provider network was not reconciled, got: %+v", subnet)
 	}
 	if gateway, ok := memoryBackend.Gateways["gw-a"]; !ok || gateway.Node != "node-a" || gateway.LANIP.String() != "10.10.0.254" {
 		t.Fatalf("gateway gw-a was not reconciled, got: %+v", memoryBackend.Gateways)
@@ -123,7 +125,7 @@ func mustAddr(t *testing.T, raw string) netip.Addr {
 
 const integrationStateJSON = `{
   "vpcs": [{"name": "prod"}],
-  "subnets": [{"name": "apps", "vpc": "prod", "cidr": "10.10.0.0/24", "gateway": "10.10.0.1"}],
+  "subnets": [{"name": "apps", "vpc": "prod", "cidr": "10.10.0.0/24", "gateway": "10.10.0.1", "provider_network": "physnet-a", "vlan": 100}],
   "endpoints": [
     {"id": "pod-a", "vpc": "prod", "subnet": "apps", "ip": "10.10.0.10", "node": "node-a", "security_groups": ["client"]},
     {"id": "pod-b", "vpc": "prod", "subnet": "apps", "ip": "10.10.0.11", "node": "node-b", "security_groups": ["server"]}

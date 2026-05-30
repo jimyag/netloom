@@ -80,6 +80,7 @@ func cleanupOperations(old, next desiredSnapshot) []Operation {
 		router := logicalRouter(subnet.VPC)
 		switchName := logicalSwitch(subnet.Name)
 		ops = append(ops,
+			Operation{Command: "lsp-del", Flags: []string{"--if-exists"}, Args: []string{localnetPortName(switchName, subnet.Name)}},
 			Operation{Command: "lsp-del", Flags: []string{"--if-exists"}, Args: []string{switchRouterPortName(switchName, subnet.Name)}},
 			Operation{Command: "lrp-del", Flags: []string{"--if-exists"}, Args: []string{routerPortName(router, subnet.Name)}},
 			Operation{Command: "ls-del", Flags: []string{"--if-exists"}, Args: []string{switchName}},

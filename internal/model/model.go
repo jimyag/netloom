@@ -41,10 +41,12 @@ type VPC struct {
 }
 
 type Subnet struct {
-	Name    string       `json:"name"`
-	VPC     string       `json:"vpc"`
-	CIDR    netip.Prefix `json:"cidr"`
-	Gateway netip.Addr   `json:"gateway"`
+	Name            string       `json:"name"`
+	VPC             string       `json:"vpc"`
+	CIDR            netip.Prefix `json:"cidr"`
+	Gateway         netip.Addr   `json:"gateway"`
+	ProviderNetwork string       `json:"provider_network"`
+	VLAN            uint16       `json:"vlan"`
 }
 
 type Endpoint struct {
@@ -171,6 +173,12 @@ func (s Subnet) Validate() error {
 	}
 	if !s.CIDR.Contains(s.Gateway) {
 		return fmt.Errorf("subnet gateway %s is outside cidr %s", s.Gateway, s.CIDR)
+	}
+	if s.VLAN > 4094 {
+		return errors.New("subnet vlan must be between 1 and 4094")
+	}
+	if s.VLAN != 0 && s.ProviderNetwork == "" {
+		return errors.New("subnet vlan requires provider network")
 	}
 	return nil
 }

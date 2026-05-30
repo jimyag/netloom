@@ -85,6 +85,35 @@ func TestBackendCleanupEmitsDeletesForStaleDesiredObjects(t *testing.T) {
 	}
 }
 
+func TestBackendCleanupDeletesLocalnetPortWithSubnet(t *testing.T) {
+	recorder := ovn.NewRecorderExecutor()
+	backend := ovn.NewBackend(recorder)
+	first := controlStateWithEndpoint("pod-a")
+	controller := control.NewController(backend, control.NewMemoryBackend())
+	if err := controller.Reconcile(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+
+	second := first
+	second.Subnets = nil
+	second.Endpoints = nil
+	second.NATRules = nil
+	second.LoadBalancers = nil
+	if err := controller.Reconcile(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+
+	joined := stringifyOVNOps(recorder.Operations())
+	for _, expected := range []string{
+		"--if-exists lsp-del nl_ls_apps_to_apps_localnet",
+		"--if-exists ls-del nl_ls_apps",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("cleanup operations missing %q:\n%s", expected, joined)
+		}
+	}
+}
+
 func TestNBCTLExecutorBatchesOperationsIntoTransaction(t *testing.T) {
 	dir := t.TempDir()
 	argsFile := filepath.Join(dir, "args")
@@ -133,10 +162,12 @@ func controlStateWithEndpoint(endpointID string) control.DesiredState {
 	return control.DesiredState{
 		VPCs: []model.VPC{{Name: "prod"}},
 		Subnets: []model.Subnet{{
-			Name:    "apps",
-			VPC:     "prod",
-			CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
-			Gateway: netip.MustParseAddr("10.10.0.1"),
+			Name:            "apps",
+			VPC:             "prod",
+			CIDR:            netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway:         netip.MustParseAddr("10.10.0.1"),
+			ProviderNetwork: "physnet-a",
+			VLAN:            100,
 		}},
 		Endpoints: []model.Endpoint{{
 			ID:     endpointID,

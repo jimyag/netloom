@@ -67,6 +67,16 @@ func (p *Planner) EnsureSubnet(_ context.Context, subnet model.Subnet) error {
 		Operation{Command: "lsp-set-options", Args: []string{switchPort, "router-port=" + routerPort}},
 		setOperation("logical_switch_port", switchPort, "external_ids:netloom_owner=netloom", "external_ids:netloom_subnet="+subnet.Name, "external_ids:netloom_role=router"),
 	)
+	if subnet.ProviderNetwork != "" {
+		localnetPort := localnetPortName(switchName, subnet.Name)
+		p.ops = append(p.ops,
+			Operation{Command: "lsp-add-localnet-port", Flags: []string{"--may-exist"}, Args: []string{switchName, localnetPort, subnet.ProviderNetwork}},
+			setOperation("logical_switch_port", localnetPort, "external_ids:netloom_owner=netloom", "external_ids:netloom_subnet="+subnet.Name, "external_ids:netloom_provider_network="+subnet.ProviderNetwork),
+		)
+		if subnet.VLAN != 0 {
+			p.ops = append(p.ops, setOperation("logical_switch_port", localnetPort, fmt.Sprintf("tag=%d", subnet.VLAN)))
+		}
+	}
 	return nil
 }
 
@@ -212,6 +222,10 @@ func routerPortName(router, subnet string) string {
 
 func switchRouterPortName(switchName, subnet string) string {
 	return switchName + "_to_" + sanitize(subnet) + "_router"
+}
+
+func localnetPortName(switchName, subnet string) string {
+	return switchName + "_to_" + sanitize(subnet) + "_localnet"
 }
 
 func sanitize(value string) string {

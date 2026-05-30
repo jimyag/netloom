@@ -27,10 +27,12 @@ func TestCoreNetworkResourcesValidateRequiredFields(t *testing.T) {
 			name: "subnet",
 			valid: func() error {
 				return Subnet{
-					Name:    "apps",
-					VPC:     "prod",
-					CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
-					Gateway: netip.MustParseAddr("10.10.0.1"),
+					Name:            "apps",
+					VPC:             "prod",
+					CIDR:            netip.MustParsePrefix("10.10.0.0/24"),
+					Gateway:         netip.MustParseAddr("10.10.0.1"),
+					ProviderNetwork: "physnet-a",
+					VLAN:            100,
 				}.Validate()
 			},
 			invalid: func() error {
@@ -102,6 +104,33 @@ func TestCoreNetworkResourcesValidateRequiredFields(t *testing.T) {
 				t.Fatalf("error %q does not contain %q", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestSubnetProviderNetworkVLANValidation(t *testing.T) {
+	subnet := Subnet{
+		Name:    "apps",
+		VPC:     "prod",
+		CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+		Gateway: netip.MustParseAddr("10.10.0.1"),
+		VLAN:    100,
+	}
+	err := subnet.Validate()
+	if err == nil {
+		t.Fatal("expected vlan without provider network to fail")
+	}
+	if !strings.Contains(err.Error(), "requires provider network") {
+		t.Fatalf("error %q does not mention provider network", err)
+	}
+
+	subnet.ProviderNetwork = "physnet-a"
+	subnet.VLAN = 4095
+	err = subnet.Validate()
+	if err == nil {
+		t.Fatal("expected out-of-range vlan to fail")
+	}
+	if !strings.Contains(err.Error(), "between 1 and 4094") {
+		t.Fatalf("error %q does not mention vlan range", err)
 	}
 }
 

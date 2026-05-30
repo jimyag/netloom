@@ -82,6 +82,14 @@ func TestDockerMultiNodeLab(t *testing.T) {
 			t.Fatalf("OVN NB state missing %q:\n%s", expected, nbState)
 		}
 	}
+	localnetOptions := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "lsp-get-options", "nl_ls_fileapps_to_fileapps_localnet")
+	if !strings.Contains(localnetOptions, "network_name=physnet-a") {
+		t.Fatalf("OVN localnet options missing provider network:\n%s", localnetOptions)
+	}
+	localnetTag := strings.TrimSpace(run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "lsp-get-tag", "nl_ls_fileapps_to_fileapps_localnet"))
+	if localnetTag != "100" {
+		t.Fatalf("OVN localnet tag = %q, want 100", localnetTag)
+	}
 	natState := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "lr-nat-list", "nl_lr_file")
 	for _, expected := range []string{"snat", "198.51.100.20", "dnat", "198.51.100.21", "dnat_and_snat", "198.51.100.22", "2222"} {
 		if !strings.Contains(natState, expected) {
@@ -101,6 +109,7 @@ func TestDockerMultiNodeLab(t *testing.T) {
 	updateControllerWatch := "cat >" + controllerWatchPath + " <<'EOF'\n" + desiredStateWithoutEndpointNATJSON() + "\nEOF"
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", updateControllerWatch)
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "for i in $(seq 1 15); do ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock lsp-list nl_ls_fileapps | grep -q nl_lp_file-pod-a || exit 0; sleep 1; done; cat /tmp/netloom-controller-watch.log; ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock lsp-list nl_ls_fileapps; exit 1")
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock lsp-list nl_ls_fileapps | grep -q nl_ls_fileapps_to_fileapps_localnet || { cat /tmp/netloom-controller-watch.log; ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock lsp-list nl_ls_fileapps; exit 1; }")
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock lr-nat-list nl_lr_file | grep -q 198.51.100.20 && { cat /tmp/netloom-controller-watch.log; exit 1; } || exit 0")
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock lb-list | grep -q nl_lb_file-web && { cat /tmp/netloom-controller-watch.log; ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock lb-list; exit 1; } || exit 0")
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "pkill", "-f", "netloom-controller")
@@ -217,7 +226,7 @@ func TestDockerMultiNodeLab(t *testing.T) {
 func desiredPolicyDropStateJSON() string {
 	return `{
   "vpcs": [{"name": "file"}],
-  "subnets": [{"name": "fileapps", "vpc": "file", "cidr": "10.245.0.0/24", "gateway": "10.245.0.1"}],
+  "subnets": [{"name": "fileapps", "vpc": "file", "cidr": "10.245.0.0/24", "gateway": "10.245.0.1", "provider_network": "physnet-a", "vlan": 100}],
   "endpoints": [{"id": "file-pod-b", "vpc": "file", "subnet": "fileapps", "ip": "10.245.0.11", "node": "node-b", "security_groups": ["drop-web"]}],
   "security_groups": [{"name": "drop-web", "vpc": "file", "rules": [{"id": "drop-web-from-node-a", "priority": 100, "direction": "ingress", "protocol": "tcp", "remote_cidr": "172.30.0.11/32", "ports": [{"from": 8080, "to": 8080}], "action": "drop"}]}]
 }`
@@ -226,7 +235,7 @@ func desiredPolicyDropStateJSON() string {
 func desiredWorkloadPolicyDropStateJSON() string {
 	return `{
   "vpcs": [{"name": "file"}],
-  "subnets": [{"name": "fileapps", "vpc": "file", "cidr": "10.245.0.0/24", "gateway": "10.245.0.1"}],
+  "subnets": [{"name": "fileapps", "vpc": "file", "cidr": "10.245.0.0/24", "gateway": "10.245.0.1", "provider_network": "physnet-a", "vlan": 100}],
   "endpoints": [
     {"id": "file-pod-a", "vpc": "file", "subnet": "fileapps", "ip": "10.245.0.10", "node": "node-a", "security_groups": ["allow-web", "clients"]},
     {"id": "file-pod-b", "vpc": "file", "subnet": "fileapps", "ip": "10.245.0.11", "node": "node-b", "security_groups": ["drop-web"]},
@@ -268,7 +277,7 @@ func desiredWorkloadStateJSON() string {
 func desiredStateJSON() string {
 	return `{
   "vpcs": [{"name": "file"}],
-  "subnets": [{"name": "fileapps", "vpc": "file", "cidr": "10.245.0.0/24", "gateway": "10.245.0.1"}],
+  "subnets": [{"name": "fileapps", "vpc": "file", "cidr": "10.245.0.0/24", "gateway": "10.245.0.1", "provider_network": "physnet-a", "vlan": 100}],
   "endpoints": [{"id": "file-pod-a", "vpc": "file", "subnet": "fileapps", "ip": "10.245.0.10", "node": "node-a", "security_groups": ["web"]}],
   "route_tables": [{"name": "main", "vpc": "file", "routes": [{"destination": "0.0.0.0/0", "next_hop": "10.245.0.254"}]}],
   "policy_routes": [{"name": "https-via-fw", "vpc": "file", "priority": 100, "match": {"source": "10.245.0.0/24", "destination": "172.16.0.0/16", "protocol": "tcp", "dst_ports": [{"from": 443, "to": 443}]}, "action": {"type": "reroute", "next_hop": "10.245.0.253"}}],
@@ -287,7 +296,7 @@ func desiredStateJSON() string {
 func desiredStateWithoutEndpointNATJSON() string {
 	return `{
   "vpcs": [{"name": "file"}],
-  "subnets": [{"name": "fileapps", "vpc": "file", "cidr": "10.245.0.0/24", "gateway": "10.245.0.1"}],
+  "subnets": [{"name": "fileapps", "vpc": "file", "cidr": "10.245.0.0/24", "gateway": "10.245.0.1", "provider_network": "physnet-a", "vlan": 100}],
   "endpoints": [],
   "route_tables": [{"name": "main", "vpc": "file", "routes": [{"destination": "0.0.0.0/0", "next_hop": "10.245.0.254"}]}],
   "policy_routes": [{"name": "https-via-fw", "vpc": "file", "priority": 100, "match": {"source": "10.245.0.0/24", "destination": "172.16.0.0/16", "protocol": "tcp", "dst_ports": [{"from": 443, "to": 443}]}, "action": {"type": "reroute", "next_hop": "10.245.0.253"}}],
