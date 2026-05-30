@@ -699,6 +699,94 @@ func TestCompileForEndpointWithContextExpandsRemoteCIDRGroup(t *testing.T) {
 	}
 }
 
+func TestCompileForEndpointWithContextExpandsRemoteEntities(t *testing.T) {
+	endpoint := model.Endpoint{
+		ID:             "pod-a",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"client"},
+	}
+	program, err := CompileForEndpointWithContext(endpoint, map[string]model.SecurityGroup{
+		"client": {
+			Name: "client",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:             "allow-entities",
+				Priority:       100,
+				Direction:      model.DirectionEgress,
+				Protocol:       model.ProtocolTCP,
+				RemoteEntities: []string{"cluster", "private"},
+				Ports:          []model.PortRange{{From: 443, To: 443}},
+				Action:         model.ActionAllow,
+			}},
+		},
+	}, CompileContext{
+		Subnets: []model.Subnet{
+			{Name: "apps", VPC: "prod", CIDR: netip.MustParsePrefix("10.10.0.0/24"), Gateway: netip.MustParseAddr("10.10.0.1")},
+			{Name: "db", VPC: "prod", CIDR: netip.MustParsePrefix("fd00:10::/64"), Gateway: netip.MustParseAddr("fd00:10::1")},
+			{Name: "other", VPC: "dev", CIDR: netip.MustParsePrefix("192.0.2.0/24"), Gateway: netip.MustParseAddr("192.0.2.1")},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotCIDRs := make([]string, 0, len(program.Rules))
+	gotEntities := make(map[string]struct{})
+	for _, rule := range program.Rules {
+		gotCIDRs = append(gotCIDRs, rule.RemoteCIDR.String())
+		gotEntities[rule.RemoteEntity] = struct{}{}
+	}
+	sort.Strings(gotCIDRs)
+	wantCIDRs := []string{"10.0.0.0/8", "10.10.0.0/24", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7", "fd00:10::/64"}
+	if len(gotCIDRs) != len(wantCIDRs) {
+		t.Fatalf("entity cidrs = %v, want %v", gotCIDRs, wantCIDRs)
+	}
+	for i := range wantCIDRs {
+		if gotCIDRs[i] != wantCIDRs[i] {
+			t.Fatalf("entity cidrs = %v, want %v", gotCIDRs, wantCIDRs)
+		}
+	}
+	if _, ok := gotEntities["cluster"]; !ok {
+		t.Fatalf("entities = %v, want cluster", gotEntities)
+	}
+	if _, ok := gotEntities["private"]; !ok {
+		t.Fatalf("entities = %v, want private", gotEntities)
+	}
+	if len(program.MapEntries) != len(wantCIDRs) {
+		t.Fatalf("map entries = %d, want %d", len(program.MapEntries), len(wantCIDRs))
+	}
+}
+
+func TestCompileForEndpointWithContextRejectsClusterEntityWithoutSubnets(t *testing.T) {
+	endpoint := model.Endpoint{
+		ID:             "pod-a",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"client"},
+	}
+	_, err := CompileForEndpointWithContext(endpoint, map[string]model.SecurityGroup{
+		"client": {
+			Name: "client",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:             "allow-cluster",
+				Direction:      model.DirectionEgress,
+				Protocol:       model.ProtocolTCP,
+				RemoteEntities: []string{"cluster"},
+				Ports:          []model.PortRange{{From: 443, To: 443}},
+				Action:         model.ActionAllow,
+			}},
+		},
+	}, CompileContext{})
+	if err == nil {
+		t.Fatal("expected cluster entity without subnets to fail")
+	}
+}
+
 func TestCompileForEndpointWithContextRejectsUnknownRemoteCIDRGroup(t *testing.T) {
 	endpoint := model.Endpoint{
 		ID:             "pod-a",

@@ -171,6 +171,7 @@ type SecurityGroupRule struct {
 	ExceptCIDRs     []netip.Prefix `json:"except_cidrs"`
 	RemoteGroup     string         `json:"remote_group"`
 	RemoteCIDRGroup string         `json:"remote_cidr_group"`
+	RemoteEntities  []string       `json:"remote_entities"`
 	RemoteFQDNs     []FQDNSelector `json:"remote_fqdns"`
 	Ports           []PortRange    `json:"ports"`
 	NamedPorts      []string       `json:"named_ports"`
@@ -683,11 +684,26 @@ func (r SecurityGroupRule) Validate() error {
 	if r.RemoteCIDRGroup != "" {
 		remoteSelectors++
 	}
+	if len(r.RemoteEntities) > 0 {
+		remoteSelectors++
+	}
 	if len(r.RemoteFQDNs) > 0 {
 		remoteSelectors++
 	}
 	if remoteSelectors > 1 {
-		return errors.New("remote cidr, remote group, remote cidr group and remote fqdns are mutually exclusive")
+		return errors.New("remote cidr, remote group, remote cidr group, remote entities and remote fqdns are mutually exclusive")
+	}
+	seenEntities := make(map[string]struct{}, len(r.RemoteEntities))
+	for i, entity := range r.RemoteEntities {
+		switch entity {
+		case "all", "world", "cluster", "private":
+		default:
+			return fmt.Errorf("remote entity %d: unsupported remote entity %q", i, entity)
+		}
+		if _, ok := seenEntities[entity]; ok {
+			return fmt.Errorf("remote entity %q is duplicated", entity)
+		}
+		seenEntities[entity] = struct{}{}
 	}
 	if len(r.ExceptCIDRs) > 0 && !r.RemoteCIDR.IsValid() {
 		return errors.New("except cidrs require remote cidr")

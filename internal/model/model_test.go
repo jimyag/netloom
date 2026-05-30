@@ -517,6 +517,36 @@ func TestSecurityGroupRuleValidatesRemoteFQDNSelectors(t *testing.T) {
 	}
 }
 
+func TestSecurityGroupRuleValidatesRemoteEntities(t *testing.T) {
+	rule := SecurityGroupRule{
+		ID:             "allow-world",
+		Direction:      DirectionEgress,
+		Protocol:       ProtocolTCP,
+		RemoteEntities: []string{"world"},
+		Ports:          []PortRange{{From: 443, To: 443}},
+		Action:         ActionAllow,
+	}
+	if err := rule.Validate(); err != nil {
+		t.Fatal(err)
+	}
+
+	rule.RemoteEntities = []string{"world", "world"}
+	if err := rule.Validate(); err == nil || !strings.Contains(err.Error(), "duplicated") {
+		t.Fatalf("error = %v, want duplicate remote entity validation", err)
+	}
+
+	rule.RemoteEntities = []string{"internet"}
+	if err := rule.Validate(); err == nil || !strings.Contains(err.Error(), "unsupported remote entity") {
+		t.Fatalf("error = %v, want unsupported remote entity validation", err)
+	}
+
+	rule.RemoteEntities = []string{"world"}
+	rule.RemoteCIDR = netip.MustParsePrefix("0.0.0.0/0")
+	if err := rule.Validate(); err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("error = %v, want remote selector exclusivity validation", err)
+	}
+}
+
 func TestDNSRecordValidation(t *testing.T) {
 	record := DNSRecord{Name: "api.example.com", IPs: []netip.Addr{netip.MustParseAddr("203.0.113.10")}}
 	if err := record.Validate(); err != nil {
