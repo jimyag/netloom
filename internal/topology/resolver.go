@@ -21,11 +21,12 @@ type State struct {
 }
 
 type Packet struct {
-	VPC      string
-	Source   netip.Addr
-	Dest     netip.Addr
-	Protocol model.Protocol
-	DestPort uint16
+	SourcePort uint16
+	VPC        string
+	Source     netip.Addr
+	Dest       netip.Addr
+	Protocol   model.Protocol
+	DestPort   uint16
 }
 
 type Decision struct {
@@ -126,7 +127,7 @@ func resolveLoadBalancer(state State, packet Packet) (Decision, bool) {
 		if len(lb.Backends) == 0 {
 			continue
 		}
-		backend := selectLoadBalancerBackend(lb.Backends, packet)
+		backend := selectLoadBalancerBackend(lb, packet)
 		return Decision{
 			Action:         model.ActionAllow,
 			Translated:     backend.IP,
@@ -159,11 +160,12 @@ func loadBalancerAllowsSourceSubnet(lb model.LoadBalancer, endpoint model.Endpoi
 	return false
 }
 
-func selectLoadBalancerBackend(backends []model.LoadBalancerBackend, packet Packet) model.LoadBalancerBackend {
+func selectLoadBalancerBackend(lb model.LoadBalancer, packet Packet) model.LoadBalancerBackend {
+	backends := lb.Backends
 	selected := backends[0]
-	selectedScore := loadBalancerBackendScore(selected, packet)
+	selectedScore := loadBalancerBackendScore(selected, packet, lb.SessionAffinity)
 	for _, backend := range backends[1:] {
-		score := loadBalancerBackendScore(backend, packet)
+		score := loadBalancerBackendScore(backend, packet, lb.SessionAffinity)
 		if score > selectedScore || (score == selectedScore && compareLoadBalancerBackend(backend, selected) < 0) {
 			selected = backend
 			selectedScore = score
@@ -172,11 +174,21 @@ func selectLoadBalancerBackend(backends []model.LoadBalancerBackend, packet Pack
 	return selected
 }
 
-func loadBalancerBackendScore(backend model.LoadBalancerBackend, packet Packet) uint32 {
+func loadBalancerBackendScore(backend model.LoadBalancerBackend, packet Packet, sessionAffinity bool) uint32 {
 	hash := fnv.New32a()
-	_, _ = fmt.Fprintf(hash, "%s|%s|%s|%s|%d|%s|%d",
+	if sessionAffinity {
+		_, _ = fmt.Fprintf(hash, "%s|%s|%s|%d",
+			packet.VPC,
+			packet.Source,
+			backend.IP,
+			backend.Port,
+		)
+		return hash.Sum32()
+	}
+	_, _ = fmt.Fprintf(hash, "%s|%s|%d|%s|%s|%d|%s|%d",
 		packet.VPC,
 		packet.Source,
+		packet.SourcePort,
 		packet.Dest,
 		packet.Protocol,
 		packet.DestPort,

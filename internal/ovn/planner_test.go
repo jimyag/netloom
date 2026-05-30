@@ -216,11 +216,13 @@ func TestPlannerBuildsDistributedGatewayOperations(t *testing.T) {
 func TestPlannerBuildsLoadBalancerOperations(t *testing.T) {
 	planner := ovn.NewPlanner()
 	err := planner.EnsureLoadBalancer(context.Background(), model.LoadBalancer{
-		Name:     "web",
-		VPC:      "prod",
-		VIP:      netip.MustParseAddr("10.96.0.10"),
-		Port:     80,
-		Protocol: model.ProtocolTCP,
+		Name:            "web",
+		VPC:             "prod",
+		VIP:             netip.MustParseAddr("10.96.0.10"),
+		Port:            80,
+		Protocol:        model.ProtocolTCP,
+		SessionAffinity: true,
+		AffinityTimeout: 7200,
 		Backends: []model.LoadBalancerBackend{
 			{IP: netip.MustParseAddr("10.10.0.11"), Port: 8080},
 			{IP: netip.MustParseAddr("10.10.0.10"), Port: 8080},
@@ -236,12 +238,59 @@ func TestPlannerBuildsLoadBalancerOperations(t *testing.T) {
 		"--if-exists lb-del nl_lb_web 10.96.0.10:80",
 		"--may-exist lb-add nl_lb_web 10.96.0.10:80 10.10.0.10:8080,10.10.0.11:8080 tcp",
 		"external_ids:netloom_load_balancer=web",
+		"external_ids:netloom_session_affinity=true",
+		"options:affinity_timeout=7200",
 		"--may-exist lr-lb-add nl_lr_prod nl_lb_web",
 		"--may-exist ls-lb-add nl_ls_apps nl_lb_web",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("OVN operations missing %q:\n%s", expected, joined)
 		}
+	}
+}
+
+func TestPlannerClearsLoadBalancerAffinityWhenDisabled(t *testing.T) {
+	planner := ovn.NewPlanner()
+	err := planner.EnsureLoadBalancer(context.Background(), model.LoadBalancer{
+		Name:     "web",
+		VPC:      "prod",
+		VIP:      netip.MustParseAddr("10.96.0.10"),
+		Port:     80,
+		Protocol: model.ProtocolTCP,
+		Backends: []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.10"), Port: 8080}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	joined := stringify(planner.Operations())
+	for _, expected := range []string{
+		"external_ids:netloom_session_affinity=false",
+		"remove load_balancer nl_lb_web options affinity_timeout",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("OVN operations missing %q:\n%s", expected, joined)
+		}
+	}
+}
+
+func TestPlannerDefaultsLoadBalancerAffinityTimeout(t *testing.T) {
+	planner := ovn.NewPlanner()
+	err := planner.EnsureLoadBalancer(context.Background(), model.LoadBalancer{
+		Name:            "web",
+		VPC:             "prod",
+		VIP:             netip.MustParseAddr("10.96.0.10"),
+		Port:            80,
+		Protocol:        model.ProtocolTCP,
+		SessionAffinity: true,
+		Backends:        []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.10"), Port: 8080}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := stringify(planner.Operations())
+	if !strings.Contains(joined, "options:affinity_timeout=10800") {
+		t.Fatalf("OVN operations missing default affinity timeout:\n%s", joined)
 	}
 }
 

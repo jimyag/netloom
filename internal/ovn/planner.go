@@ -196,9 +196,12 @@ func (p *Planner) EnsureLoadBalancer(_ context.Context, lb model.LoadBalancer) e
 	p.ops = append(p.ops,
 		Operation{Command: "lb-del", Flags: []string{"--if-exists"}, Args: []string{name, loadBalancerVIP(lb)}},
 		Operation{Command: "lb-add", Flags: []string{"--may-exist"}, Args: []string{name, loadBalancerVIP(lb), loadBalancerBackends(lb), string(loadBalancerProtocol(lb))}},
-		setOperation("load_balancer", name, "external_ids:netloom_owner=netloom", "external_ids:netloom_load_balancer="+lb.Name, "external_ids:netloom_vpc="+lb.VPC),
+		setOperation("load_balancer", name, loadBalancerOptions(lb)...),
 		Operation{Command: "lr-lb-add", Flags: []string{"--may-exist"}, Args: []string{router, name}},
 	)
+	if !lb.SessionAffinity {
+		p.ops = append(p.ops, Operation{Command: "remove", Args: []string{"load_balancer", name, "options", "affinity_timeout"}})
+	}
 	for _, subnet := range lb.Subnets {
 		p.ops = append(p.ops, Operation{Command: "ls-lb-add", Flags: []string{"--may-exist"}, Args: []string{logicalSwitch(subnet), name}})
 	}
@@ -318,6 +321,26 @@ func loadBalancerProtocol(lb model.LoadBalancer) model.Protocol {
 		return model.ProtocolTCP
 	}
 	return lb.Protocol
+}
+
+func loadBalancerOptions(lb model.LoadBalancer) []string {
+	options := []string{
+		"external_ids:netloom_owner=netloom",
+		"external_ids:netloom_load_balancer=" + lb.Name,
+		"external_ids:netloom_vpc=" + lb.VPC,
+	}
+	if lb.SessionAffinity {
+		timeout := lb.AffinityTimeout
+		if timeout == 0 {
+			timeout = 10800
+		}
+		options = append(options,
+			"options:affinity_timeout="+fmt.Sprint(timeout),
+			"external_ids:netloom_session_affinity=true",
+		)
+		return options
+	}
+	return append(options, "external_ids:netloom_session_affinity=false")
 }
 
 func policyRouteMatch(match model.RouteMatch) string {

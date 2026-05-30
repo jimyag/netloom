@@ -119,13 +119,15 @@ type NATRule struct {
 }
 
 type LoadBalancer struct {
-	Name     string                `json:"name"`
-	VPC      string                `json:"vpc"`
-	VIP      netip.Addr            `json:"vip"`
-	Port     uint16                `json:"port"`
-	Protocol Protocol              `json:"protocol"`
-	Backends []LoadBalancerBackend `json:"backends"`
-	Subnets  []string              `json:"subnets"`
+	Name            string                `json:"name"`
+	VPC             string                `json:"vpc"`
+	VIP             netip.Addr            `json:"vip"`
+	Port            uint16                `json:"port"`
+	Protocol        Protocol              `json:"protocol"`
+	Backends        []LoadBalancerBackend `json:"backends"`
+	Subnets         []string              `json:"subnets"`
+	SessionAffinity bool                  `json:"session_affinity"`
+	AffinityTimeout uint32                `json:"affinity_timeout"`
 }
 
 type LoadBalancerBackend struct {
@@ -407,6 +409,12 @@ func (l LoadBalancer) Validate() error {
 	}
 	if len(l.Backends) == 0 {
 		return errors.New("load balancer backends are required")
+	}
+	if !l.SessionAffinity && l.AffinityTimeout != 0 {
+		return errors.New("load balancer affinity timeout requires session affinity")
+	}
+	if l.AffinityTimeout > 86400 {
+		return errors.New("load balancer affinity timeout must be at most 86400 seconds")
 	}
 	for i, backend := range l.Backends {
 		if err := backend.Validate(); err != nil {

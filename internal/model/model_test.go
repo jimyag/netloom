@@ -435,6 +435,31 @@ func TestLoadBalancerValidateServiceVIP(t *testing.T) {
 			},
 			wantErr: "backend port is required",
 		},
+		{
+			name: "affinity timeout requires session affinity",
+			lb: LoadBalancer{
+				Name:            "web",
+				VPC:             "prod",
+				VIP:             netip.MustParseAddr("10.96.0.10"),
+				Port:            80,
+				Backends:        valid.Backends,
+				AffinityTimeout: 10800,
+			},
+			wantErr: "affinity timeout requires session affinity",
+		},
+		{
+			name: "affinity timeout too large",
+			lb: LoadBalancer{
+				Name:            "web",
+				VPC:             "prod",
+				VIP:             netip.MustParseAddr("10.96.0.10"),
+				Port:            80,
+				Backends:        valid.Backends,
+				SessionAffinity: true,
+				AffinityTimeout: 86401,
+			},
+			wantErr: "at most 86400",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
