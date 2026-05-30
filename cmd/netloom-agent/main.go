@@ -85,6 +85,10 @@ func reconcileStateFile(ctx context.Context, path, node, storeName string, recon
 	if err != nil {
 		return err
 	}
+	state, err = withDNSObservations(state)
+	if err != nil {
+		return err
+	}
 	result, err := reconciler.Reconcile(ctx, state, agent.ReconcileOptions{
 		Node:          node,
 		TCXInterface:  os.Getenv("NETLOOM_TCX_IFACE"),
@@ -109,6 +113,10 @@ func reconcileStateFileOnce(ctx context.Context, path, node, storeName string, s
 	if err != nil {
 		return err
 	}
+	state, err = withDNSObservations(state)
+	if err != nil {
+		return err
+	}
 	result, err := agent.ReconcileNodeWithOptions(ctx, state, agent.ReconcileOptions{
 		Node:          node,
 		Store:         store,
@@ -122,6 +130,28 @@ func reconcileStateFileOnce(ctx context.Context, path, node, storeName string, s
 	}
 	printReconcileResult(result, storeName)
 	return nil
+}
+
+func withDNSObservations(state control.DesiredState) (control.DesiredState, error) {
+	path := os.Getenv("NETLOOM_DNS_OBSERVATIONS_FILE")
+	if path == "" {
+		return state, nil
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return control.DesiredState{}, err
+	}
+	defer file.Close()
+	records, err := control.LoadDNSObservationsJSON(file)
+	if err != nil {
+		return control.DesiredState{}, err
+	}
+	merged, err := control.MergeDNSRecords(state.DNSRecords, records)
+	if err != nil {
+		return control.DesiredState{}, err
+	}
+	state.DNSRecords = merged
+	return state, nil
 }
 
 func printReconcileResult(result agent.ReconcileResult, storeName string) {

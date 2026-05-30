@@ -72,3 +72,49 @@ func TestLoadDesiredStateJSONRejectsUnknownFields(t *testing.T) {
 		t.Fatal("expected unknown field to fail")
 	}
 }
+
+func TestLoadDNSObservationsJSONDecodesArrayAndDocument(t *testing.T) {
+	records, err := LoadDNSObservationsJSON(strings.NewReader(`[{"name": "api.example.com", "ips": ["203.0.113.10"]}]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].Name != "api.example.com" {
+		t.Fatalf("array records = %+v", records)
+	}
+
+	records, err = LoadDNSObservationsJSON(strings.NewReader(`{"dns_records": [{"name": "db.example.com", "ips": ["203.0.113.20"], "ttl_seconds": 60, "observed_at": "2026-05-30T12:00:00Z"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].Name != "db.example.com" || records[0].TTLSeconds != 60 {
+		t.Fatalf("document records = %+v", records)
+	}
+}
+
+func TestLoadDNSObservationsJSONRejectsInvalidRecord(t *testing.T) {
+	_, err := LoadDNSObservationsJSON(strings.NewReader(`[{"name": "api.example.com"}]`))
+	if err == nil {
+		t.Fatal("expected invalid DNS observation to fail")
+	}
+}
+
+func TestMergeDNSRecordsAppendsObservedRecordsDeterministically(t *testing.T) {
+	base, err := LoadDNSObservationsJSON(strings.NewReader(`[{"name": "static.example.com", "ips": ["203.0.113.10"]}]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	observed, err := LoadDNSObservationsJSON(strings.NewReader(`[{"name": "api.example.com", "ips": ["203.0.113.20"]}]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	merged, err := MergeDNSRecords(base, observed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(merged) != 2 {
+		t.Fatalf("merged records = %d, want 2", len(merged))
+	}
+	if merged[0].Name != "api.example.com" || merged[1].Name != "static.example.com" {
+		t.Fatalf("merged order = %+v", merged)
+	}
+}

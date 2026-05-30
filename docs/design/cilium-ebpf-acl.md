@@ -170,9 +170,13 @@ ACL path the same CIDR fallback enforcement shape as `remote_cidr` while
 preserving the higher-level FQDN intent in the model.
 The desired-state DNS cache supports TTL expiry with `ttl_seconds` and
 `observed_at`; expired records are skipped during policy compilation so stale
-answers stop granting egress. The current implementation is still not a Cilium
-DNS proxy: runtime DNS observation and automatic re-resolution are explicitly
-future work.
+answers stop granting egress. For agent-driven nodes, `NETLOOM_DNS_OBSERVATIONS_FILE`
+adds a runtime DNS observation cache to each state-file reconcile. The file can
+contain the same `dns_records` shape as desired state, allowing an external DNS
+observer or proxy to refresh FQDN-derived CIDR entries without rewriting the main
+topology document. This is the state update half of Cilium's DNS proxy model;
+packet interception and DNS response parsing can be layered on top of the same
+observation file contract.
 
 Stateful rules now have a userspace conntrack model that mirrors the Cilium
 policy decision shape. `EvaluateStateful` first checks established reverse-flow
