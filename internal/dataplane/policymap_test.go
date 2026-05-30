@@ -96,3 +96,89 @@ func TestPolicyBackendReplacesEndpointEntries(t *testing.T) {
 		t.Fatal("deny rule should encode deny flag")
 	}
 }
+
+func TestPlanPolicyUpdateComputesIncrementalDiff(t *testing.T) {
+	keep := PolicyMapEntry{
+		Key:   PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 1, Direction: DirectionIngress},
+		Value: PolicyEntry{Precedence: 10},
+	}
+	updateOld := PolicyMapEntry{
+		Key:   PolicyKey{PrefixLen: StaticPrefixBits + 24, RemoteIdentity: 2, Direction: DirectionIngress, Protocol: 6, DestPortBE: hostToNetwork16(80)},
+		Value: PolicyEntry{Precedence: 20},
+	}
+	updateNew := updateOld
+	updateNew.Value.Deny = 1
+	deleted := PolicyMapEntry{
+		Key:   PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 3, Direction: DirectionEgress},
+		Value: PolicyEntry{Precedence: 30},
+	}
+	added := PolicyMapEntry{
+		Key:   PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 4, Direction: DirectionEgress},
+		Value: PolicyEntry{Precedence: 40},
+	}
+
+	plan := PlanPolicyUpdate([]PolicyMapEntry{keep, updateOld, deleted}, []PolicyMapEntry{keep, updateNew, added})
+	stats := plan.Stats()
+	if stats.Added != 1 || stats.Updated != 1 || stats.Deleted != 1 || stats.Unchanged != 1 {
+		t.Fatalf("stats = %+v, want one add/update/delete/unchanged", stats)
+	}
+	if plan.Add[0] != added || plan.Update[0] != updateNew || plan.Delete[0] != deleted.Key || plan.Unchanged[0] != keep {
+		t.Fatalf("unexpected plan: %+v", plan)
+	}
+}
+
+func TestInMemoryPolicyStoreAppliesIncrementalStats(t *testing.T) {
+	store := NewInMemoryPolicyStore()
+	first := []PolicyMapEntry{{
+		Key:   PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 1, Direction: DirectionIngress},
+		Value: PolicyEntry{Precedence: 10},
+	}}
+	if err := store.ReplaceEndpoint(context.Background(), "pod-a", first); err != nil {
+		t.Fatal(err)
+	}
+	stats := store.LastStats("pod-a")
+	if stats.Added != 1 || stats.Updated != 0 || stats.Deleted != 0 {
+		t.Fatalf("first stats = %+v, want one add", stats)
+	}
+
+	second := []PolicyMapEntry{{
+		Key:   first[0].Key,
+		Value: PolicyEntry{Precedence: 20},
+	}}
+	if err := store.ReplaceEndpoint(context.Background(), "pod-a", second); err != nil {
+		t.Fatal(err)
+	}
+	stats = store.LastStats("pod-a")
+	if stats.Added != 0 || stats.Updated != 1 || stats.Deleted != 0 {
+		t.Fatalf("second stats = %+v, want one update", stats)
+	}
+	entries := store.Entries("pod-a")
+	if len(entries) != 1 || entries[0].Value.Precedence != 20 {
+		t.Fatalf("entries = %+v, want updated precedence", entries)
+	}
+}
+
+func TestInMemoryPolicyStoreRollsBackOnFailure(t *testing.T) {
+	store := NewInMemoryPolicyStore()
+	oldEntries := []PolicyMapEntry{{
+		Key:   PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 1, Direction: DirectionIngress},
+		Value: PolicyEntry{Precedence: 10},
+	}}
+	if err := store.ReplaceEndpoint(context.Background(), "pod-a", oldEntries); err != nil {
+		t.Fatal(err)
+	}
+	store.SetFailAfter(0)
+	store.SetFailAfter(1)
+	newEntries := []PolicyMapEntry{{
+		Key:   PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 2, Direction: DirectionIngress},
+		Value: PolicyEntry{Precedence: 20},
+	}}
+	err := store.ReplaceEndpoint(context.Background(), "pod-a", newEntries)
+	if err == nil {
+		t.Fatal("expected injected update failure")
+	}
+	entries := store.Entries("pod-a")
+	if len(entries) != 1 || entries[0] != oldEntries[0] {
+		t.Fatalf("entries after failure = %+v, want old entries", entries)
+	}
+}

@@ -17,6 +17,8 @@ type EBPFPolicyStore struct {
 	mu         sync.Mutex
 	maxEntries uint32
 	maps       map[string]*ebpf.Map
+	entries    map[string][]PolicyMapEntry
+	lastStats  map[string]PolicyUpdateStats
 }
 
 func NewEBPFPolicyStore(maxEntries uint32) *EBPFPolicyStore {
@@ -26,6 +28,8 @@ func NewEBPFPolicyStore(maxEntries uint32) *EBPFPolicyStore {
 	return &EBPFPolicyStore{
 		maxEntries: maxEntries,
 		maps:       make(map[string]*ebpf.Map),
+		entries:    make(map[string][]PolicyMapEntry),
+		lastStats:  make(map[string]PolicyUpdateStats),
 	}
 }
 
@@ -39,6 +43,7 @@ func (s *EBPFPolicyStore) ReplaceEndpoint(ctx context.Context, endpointID string
 	if endpointID == "" {
 		return fmt.Errorf("endpoint id is required")
 	}
+	plan := PlanPolicyUpdate(s.entries[endpointID], entries)
 
 	next, err := ebpf.NewMap(&ebpf.MapSpec{
 		Name:       mapName(endpointID),
@@ -64,10 +69,18 @@ func (s *EBPFPolicyStore) ReplaceEndpoint(ctx context.Context, endpointID string
 
 	old := s.maps[endpointID]
 	s.maps[endpointID] = next
+	s.entries[endpointID] = canonicalPolicyEntries(entries)
+	s.lastStats[endpointID] = plan.Stats()
 	if old != nil {
 		old.Close()
 	}
 	return nil
+}
+
+func (s *EBPFPolicyStore) LastStats(endpointID string) PolicyUpdateStats {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastStats[endpointID]
 }
 
 func (s *EBPFPolicyStore) Close() error {
@@ -80,6 +93,8 @@ func (s *EBPFPolicyStore) Close() error {
 			firstErr = fmt.Errorf("close eBPF policy map for endpoint %s: %w", endpointID, err)
 		}
 		delete(s.maps, endpointID)
+		delete(s.entries, endpointID)
+		delete(s.lastStats, endpointID)
 	}
 	return firstErr
 }

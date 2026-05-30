@@ -1,9 +1,11 @@
 package dataplane
 
 import (
+	"cmp"
 	"context"
 	"encoding/binary"
 	"fmt"
+	"slices"
 	"sync"
 
 	"github.com/jimyag/netloom/internal/model"
@@ -39,6 +41,20 @@ type PolicyMapEntry struct {
 	Value PolicyEntry
 }
 
+type PolicyUpdateStats struct {
+	Added     int
+	Updated   int
+	Deleted   int
+	Unchanged int
+}
+
+type PolicyUpdatePlan struct {
+	Add       []PolicyMapEntry
+	Update    []PolicyMapEntry
+	Delete    []PolicyKey
+	Unchanged []PolicyMapEntry
+}
+
 type PolicyStore interface {
 	ReplaceEndpoint(ctx context.Context, endpointID string, entries []PolicyMapEntry) error
 }
@@ -46,18 +62,40 @@ type PolicyStore interface {
 type InMemoryPolicyStore struct {
 	mu        sync.Mutex
 	endpoints map[string][]PolicyMapEntry
+	lastStats map[string]PolicyUpdateStats
+	failAfter int
 }
 
 func NewInMemoryPolicyStore() *InMemoryPolicyStore {
-	return &InMemoryPolicyStore{endpoints: make(map[string][]PolicyMapEntry)}
+	return &InMemoryPolicyStore{
+		endpoints: make(map[string][]PolicyMapEntry),
+		lastStats: make(map[string]PolicyUpdateStats),
+	}
 }
 
 func (s *InMemoryPolicyStore) ReplaceEndpoint(_ context.Context, endpointID string, entries []PolicyMapEntry) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	copied := append([]PolicyMapEntry(nil), entries...)
-	s.endpoints[endpointID] = copied
+	plan := PlanPolicyUpdate(s.endpoints[endpointID], entries)
+	next := append([]PolicyMapEntry(nil), s.endpoints[endpointID]...)
+	applied := 0
+	for _, key := range plan.Delete {
+		if s.failAfter > 0 && applied >= s.failAfter {
+			return fmt.Errorf("in-memory policy update failed after %d operations", applied)
+		}
+		next = deleteEntry(next, key)
+		applied++
+	}
+	for _, entry := range append(append([]PolicyMapEntry(nil), plan.Add...), plan.Update...) {
+		if s.failAfter > 0 && applied >= s.failAfter {
+			return fmt.Errorf("in-memory policy update failed after %d operations", applied)
+		}
+		next = upsertEntry(next, entry)
+		applied++
+	}
+	s.endpoints[endpointID] = canonicalPolicyEntries(next)
+	s.lastStats[endpointID] = plan.Stats()
 	return nil
 }
 
@@ -66,6 +104,18 @@ func (s *InMemoryPolicyStore) Entries(endpointID string) []PolicyMapEntry {
 	defer s.mu.Unlock()
 
 	return append([]PolicyMapEntry(nil), s.endpoints[endpointID]...)
+}
+
+func (s *InMemoryPolicyStore) LastStats(endpointID string) PolicyUpdateStats {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastStats[endpointID]
+}
+
+func (s *InMemoryPolicyStore) SetFailAfter(operations int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failAfter = operations
 }
 
 type PolicyBackend struct {
@@ -171,4 +221,104 @@ func stableCookie(value string) uint32 {
 		out *= 16777619
 	}
 	return out
+}
+
+func PlanPolicyUpdate(oldEntries, newEntries []PolicyMapEntry) PolicyUpdatePlan {
+	oldByKey := entryMap(oldEntries)
+	newByKey := entryMap(newEntries)
+	var plan PolicyUpdatePlan
+	for key, oldEntry := range oldByKey {
+		newEntry, ok := newByKey[key]
+		if !ok {
+			plan.Delete = append(plan.Delete, key)
+			continue
+		}
+		if oldEntry.Value == newEntry.Value {
+			plan.Unchanged = append(plan.Unchanged, newEntry)
+		} else {
+			plan.Update = append(plan.Update, newEntry)
+		}
+	}
+	for key, newEntry := range newByKey {
+		if _, ok := oldByKey[key]; !ok {
+			plan.Add = append(plan.Add, newEntry)
+		}
+	}
+	sortPlan(&plan)
+	return plan
+}
+
+func (p PolicyUpdatePlan) Stats() PolicyUpdateStats {
+	return PolicyUpdateStats{
+		Added:     len(p.Add),
+		Updated:   len(p.Update),
+		Deleted:   len(p.Delete),
+		Unchanged: len(p.Unchanged),
+	}
+}
+
+func entryMap(entries []PolicyMapEntry) map[PolicyKey]PolicyMapEntry {
+	out := make(map[PolicyKey]PolicyMapEntry, len(entries))
+	for _, entry := range entries {
+		out[entry.Key] = entry
+	}
+	return out
+}
+
+func sortPlan(plan *PolicyUpdatePlan) {
+	sortEntries(plan.Add)
+	sortEntries(plan.Update)
+	sortEntries(plan.Unchanged)
+	sortKeys(plan.Delete)
+}
+
+func canonicalPolicyEntries(entries []PolicyMapEntry) []PolicyMapEntry {
+	out := append([]PolicyMapEntry(nil), entries...)
+	sortEntries(out)
+	return out
+}
+
+func sortEntries(entries []PolicyMapEntry) {
+	slices.SortFunc(entries, func(a, b PolicyMapEntry) int {
+		return comparePolicyKey(a.Key, b.Key)
+	})
+}
+
+func sortKeys(keys []PolicyKey) {
+	slices.SortFunc(keys, comparePolicyKey)
+}
+
+func comparePolicyKey(a, b PolicyKey) int {
+	switch {
+	case a.PrefixLen != b.PrefixLen:
+		return cmp.Compare(a.PrefixLen, b.PrefixLen)
+	case a.RemoteIdentity != b.RemoteIdentity:
+		return cmp.Compare(a.RemoteIdentity, b.RemoteIdentity)
+	case a.Direction != b.Direction:
+		return cmp.Compare(a.Direction, b.Direction)
+	case a.Protocol != b.Protocol:
+		return cmp.Compare(a.Protocol, b.Protocol)
+	default:
+		return cmp.Compare(a.DestPortBE, b.DestPortBE)
+	}
+}
+
+func deleteEntry(entries []PolicyMapEntry, key PolicyKey) []PolicyMapEntry {
+	out := entries[:0]
+	for _, entry := range entries {
+		if entry.Key != key {
+			out = append(out, entry)
+		}
+	}
+	return out
+}
+
+func upsertEntry(entries []PolicyMapEntry, entry PolicyMapEntry) []PolicyMapEntry {
+	for i := range entries {
+		if entries[i].Key == entry.Key {
+			entries[i] = entry
+			return entries
+		}
+	}
+	return append(entries, entry)
 }

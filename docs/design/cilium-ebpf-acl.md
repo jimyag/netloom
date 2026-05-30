@@ -125,6 +125,14 @@ state. The long-running agent reconciler owns the conntrack store and deletes
 entries when an endpoint disappears or its compiled policy signature changes,
 so stale state cannot survive a policy update.
 
+Policy updates now compute a Cilium-style incremental diff before replacing an
+endpoint map. The diff reports added, updated, deleted, and unchanged entries.
+The in-memory store applies that plan transactionally, so an injected failure
+leaves the previous endpoint policy intact. The eBPF store still uses a
+create-populate-swap path for kernel-map safety, but records the same diff
+statistics so it can move to in-place map mutation without changing the control
+plane contract.
+
 The Linux datapath also has an explicit cleanup mode. When enabled, the agent
 removes netloom-owned network namespaces with the configured prefix that are no
 longer present as local endpoints in the desired state. Docker e2e validates
