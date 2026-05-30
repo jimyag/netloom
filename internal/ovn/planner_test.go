@@ -241,7 +241,7 @@ func TestPlannerBuildsPolicyRouteOperation(t *testing.T) {
 		t.Fatal(err)
 	}
 	match := stringify(planner.Operations())
-	for _, expected := range []string{"ip4.src == 10.10.0.0/24", "ip4.dst == 172.16.0.0/16", "tcp", "tcp.dst == 443"} {
+	for _, expected := range []string{"--if-exists lr-policy-del nl_lr_prod 100", "ip4.src == 10.10.0.0/24", "ip4.dst == 172.16.0.0/16", "tcp", "tcp.dst == 443"} {
 		if !strings.Contains(match, expected) {
 			t.Fatalf("match %q missing %q", match, expected)
 		}

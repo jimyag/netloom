@@ -155,6 +155,48 @@ func TestBackendCleanupConvergesChangedNATRule(t *testing.T) {
 	}
 }
 
+func TestBackendCleanupConvergesChangedPolicyRoute(t *testing.T) {
+	recorder := ovn.NewRecorderExecutor()
+	backend := ovn.NewBackend(recorder)
+	first := controlStateWithEndpoint("pod-a")
+	first.PolicyRoutes = []model.PolicyRoute{{
+		Name:     "https-via-fw",
+		VPC:      "prod",
+		Priority: 100,
+		Match: model.RouteMatch{
+			Source:      netip.MustParsePrefix("10.10.0.0/24"),
+			Destination: netip.MustParsePrefix("172.16.0.0/16"),
+			Protocol:    model.ProtocolTCP,
+			DstPorts:    []model.PortRange{{From: 443, To: 443}},
+		},
+		Action: model.RouteAction{Type: model.ActionReroute, NextHop: netip.MustParseAddr("10.10.0.253")},
+	}}
+	controller := control.NewController(backend, control.NewMemoryBackend())
+	if err := controller.Reconcile(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+
+	second := first
+	second.PolicyRoutes[0].Action.NextHop = netip.MustParseAddr("10.10.0.252")
+	if err := controller.Reconcile(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+
+	joined := stringifyOVNOps(recorder.Operations())
+	for _, expected := range []string{
+		"--if-exists lr-policy-del nl_lr_prod 100",
+		"--may-exist lr-policy-add nl_lr_prod 100",
+		"reroute 10.10.0.252",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("policy route convergence operation missing %q:\n%s", expected, joined)
+		}
+	}
+	if strings.Count(joined, "--if-exists lr-policy-del nl_lr_prod 100") < 2 {
+		t.Fatalf("changed policy route should clear the managed key before each add:\n%s", joined)
+	}
+}
+
 func TestBackendCleanupRemovesGatewayMetadata(t *testing.T) {
 	recorder := ovn.NewRecorderExecutor()
 	backend := ovn.NewBackend(recorder)

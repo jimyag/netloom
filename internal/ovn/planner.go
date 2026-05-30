@@ -128,6 +128,7 @@ func (p *Planner) EnsurePolicyRoute(_ context.Context, route model.PolicyRoute) 
 	router := p.routerForVPC(route.VPC)
 	match := policyRouteMatch(route.Match)
 	action := route.Action.Type
+	p.ops = append(p.ops, Operation{Command: "lr-policy-del", Flags: []string{"--if-exists"}, Args: []string{router, fmt.Sprint(route.Priority), match}})
 	if action == model.ActionReroute {
 		p.ops = append(p.ops, Operation{Command: "lr-policy-add", Flags: []string{"--may-exist"}, Args: []string{router, fmt.Sprint(route.Priority), match, "reroute", route.Action.NextHop.String()}})
 		return nil

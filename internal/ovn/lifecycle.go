@@ -105,6 +105,18 @@ func cleanupOperations(old, next desiredSnapshot) []Operation {
 			record.Match,
 		}})
 	}
+	for _, key := range commonKeys(old.PolicyRoutes, next.PolicyRoutes) {
+		oldRecord := old.PolicyRoutes[key]
+		nextRecord := next.PolicyRoutes[key]
+		if policyRouteSignature(oldRecord.Route) == policyRouteSignature(nextRecord.Route) {
+			continue
+		}
+		ops = append(ops, Operation{Command: "lr-policy-del", Flags: []string{"--if-exists"}, Args: []string{
+			logicalRouter(oldRecord.Route.VPC),
+			fmt.Sprint(oldRecord.Route.Priority),
+			oldRecord.Match,
+		}})
+	}
 	for _, key := range staleKeys(old.NATRules, next.NATRules) {
 		rule := old.NATRules[key]
 		ops = append(ops, Operation{Command: "lr-nat-del", Flags: []string{"--if-exists"}, Args: []string{
@@ -215,6 +227,16 @@ func routeKey(vpc string, route model.Route) string {
 
 func policyRouteKey(vpc string, priority int, match string) string {
 	return fmt.Sprintf("%s|%d|%s", vpc, priority, match)
+}
+
+func policyRouteSignature(route model.PolicyRoute) string {
+	return fmt.Sprintf("%s|%d|%s|%s|%s",
+		route.VPC,
+		route.Priority,
+		policyRouteMatch(route.Match),
+		route.Action.Type,
+		route.Action.NextHop,
+	)
 }
 
 func natType(action model.Action) string {
