@@ -173,6 +173,14 @@ func TestIPv4L4ACLKeyPrefixLenIncludesProtocolAndPort(t *testing.T) {
 	}
 }
 
+func TestIPv4L4ACLKeyPeerIPUsesNetworkByteOrder(t *testing.T) {
+	got := ipv4L4PeerKey(netip.MustParseAddr("10.245.0.0"))
+	want := [4]byte{10, 245, 0, 0}
+	if got != want {
+		t.Fatalf("peer ip key bytes = %#v, want network-order %#v", got, want)
+	}
+}
+
 func TestIPv4L4ACLRulesFromProgramsDeduplicatesRules(t *testing.T) {
 	program := policy.Program{
 		EndpointID: "pod-a",

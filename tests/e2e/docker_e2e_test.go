@@ -199,6 +199,12 @@ func TestDockerMultiNodeLab(t *testing.T) {
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-a", "ip", "netns", "exec", "nl-file-pod-a", "sh", "-c", "printf hi | nc -w 1 10.245.0.11 8080")
 	updateWatchScript := "cat >" + watchStatePath + " <<'EOF'\n" + desiredWorkloadPolicyDropStateJSON() + "\nEOF"
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "sh", "-c", updateWatchScript)
+	nodeAWorkloadPolicyOutput := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-a", "sh", "-c", "cat >/tmp/netloom-workload-policy-state.json <<'EOF'\n"+desiredWorkloadPolicyDropStateJSON()+"\nEOF\n"+workloadStateScript+"NETLOOM_STATE_FILE=/tmp/netloom-workload-policy-state.json NETLOOM_NODE_NAME=node-a /netloom/bin/netloom-agent")
+	for _, expected := range []string{"datapath=linux:netns", "local_ips=1", "remote_routes=2"} {
+		if !strings.Contains(nodeAWorkloadPolicyOutput, expected) {
+			t.Fatalf("node-a workload policy datapath output missing %q:\n%s", expected, nodeAWorkloadPolicyOutput)
+		}
+	}
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-a", "ip", "netns", "exec", "nl-file-pod-a", "ping", "-c", "1", "-W", "1", "10.245.0.11")
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-a", "sh", "-c", "for i in $(seq 1 15); do ip netns exec nl-file-pod-a sh -c 'printf hi | nc -w 1 10.245.0.11 8080' >/tmp/netloom-workload-probe.log 2>&1 || exit 0; sleep 1; done; cat /tmp/netloom-workload-probe.log; exit 1")
 	workloadDropLog := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "cat", "/tmp/netloom-agent-watch.log")
@@ -209,7 +215,8 @@ func TestDockerMultiNodeLab(t *testing.T) {
 	}
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "ip", "netns", "exec", "nl-file-pod-c", "ip", "addr")
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "sh", "-c", "ip netns exec nl-file-pod-c sh -c 'while true; do printf ok | nc -l -p 8081 >/dev/null; done' >/tmp/netloom-ns-c-nc.log 2>&1 &")
-	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-a", "sh", "-c", "for i in $(seq 1 15); do ip netns exec nl-file-pod-a sh -c 'printf hi | nc -w 1 10.245.0.12 8081' >/tmp/netloom-workload-cidr-probe.log 2>&1 || exit 0; sleep 1; done; cat /tmp/netloom-workload-cidr-probe.log; exit 1")
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-a", "sh", "-c", "for i in $(seq 1 15); do ip netns exec nl-file-pod-a sh -c 'printf hi | nc -w 1 10.245.0.12 8081' >/tmp/netloom-workload-cidr-allow-probe.log 2>&1 && exit 0; sleep 1; done; cat /tmp/netloom-workload-cidr-allow-probe.log; exit 1")
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "sh", "-c", "for i in $(seq 1 15); do ip netns exec nl-file-pod-b sh -c 'printf hi | nc -w 1 10.245.0.12 8081' >/tmp/netloom-workload-cidr-drop-probe.log 2>&1 || exit 0; sleep 1; done; cat /tmp/netloom-workload-cidr-drop-probe.log; exit 1")
 	updateWatchScript = "cat >" + watchStatePath + " <<'EOF'\n" + desiredWorkloadCleanupStateJSON() + "\nEOF"
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "sh", "-c", updateWatchScript)
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-a", "sh", "-c", "for i in $(seq 1 15); do ip netns exec nl-file-pod-a sh -c 'printf hi | nc -w 1 10.245.0.11 8080' >/tmp/netloom-workload-probe.log 2>&1 && exit 0; sleep 1; done; cat /tmp/netloom-workload-probe.log; exit 1")
@@ -287,7 +294,10 @@ func desiredWorkloadPolicyDropStateJSON() string {
     {"name": "allow-web", "vpc": "file", "rules": [{"id": "allow-web", "priority": 100, "direction": "ingress", "protocol": "tcp", "remote_cidr": "10.245.0.11/32", "ports": [{"from": 8080, "to": 8080}], "action": "allow"}]},
     {"name": "clients", "vpc": "file", "rules": []},
     {"name": "drop-web", "vpc": "file", "rules": [{"id": "drop-web-from-clients", "priority": 100, "direction": "ingress", "protocol": "tcp", "remote_group": "clients", "ports": [{"from": 8080, "to": 8080}], "action": "drop"}]},
-    {"name": "drop-alt-web", "vpc": "file", "rules": [{"id": "drop-alt-web-from-local-subnet", "priority": 100, "direction": "ingress", "protocol": "tcp", "remote_cidr": "10.245.0.0/24", "ports": [{"from": 8081, "to": 8081}], "action": "drop"}]}
+    {"name": "drop-alt-web", "vpc": "file", "rules": [
+      {"id": "allow-alt-web-from-pod-a", "priority": 200, "direction": "ingress", "protocol": "tcp", "remote_cidr": "10.245.0.10/32", "ports": [{"from": 8081, "to": 8081}], "action": "allow"},
+      {"id": "drop-alt-web-from-local-subnet", "priority": 100, "direction": "ingress", "protocol": "tcp", "remote_cidr": "10.245.0.0/24", "ports": [{"from": 8081, "to": 8081}], "action": "drop"}
+    ]}
   ]
 }`
 }

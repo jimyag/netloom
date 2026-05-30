@@ -68,7 +68,7 @@ type IPv4L4Key struct {
 	Protocol  uint8
 	Pad       uint8
 	DestPort  uint16
-	PeerIP    uint32
+	PeerIP    [4]byte
 }
 
 type IPv4L4ACLRule struct {
@@ -243,7 +243,7 @@ func putIPv4L4ACLRule(aclMap *ebpf.Map, rule IPv4L4ACLRule) error {
 		PrefixLen: ipv4L4PrefixLen(sourceCIDR),
 		Protocol:  rule.Protocol,
 		DestPort:  rule.DestPort,
-		PeerIP:    binary.BigEndian.Uint32(sourceCIDR.Addr().AsSlice()),
+		PeerIP:    ipv4L4PeerKey(sourceCIDR.Addr()),
 	}
 	value := uint32(rule.Action)
 	return aclMap.Put(key, value)
@@ -330,7 +330,7 @@ func appendIPv4L4ACLRulesFromProgram(rules *[]IPv4L4ACLRule, seen map[IPv4L4Key]
 				PrefixLen: ipv4L4PrefixLen(sourceCIDR),
 				Protocol:  protocol,
 				DestPort:  port.From,
-				PeerIP:    binary.BigEndian.Uint32(sourceCIDR.Addr().AsSlice()),
+				PeerIP:    ipv4L4PeerKey(sourceCIDR.Addr()),
 			}
 			if _, ok := seen[key]; ok {
 				continue
@@ -350,6 +350,10 @@ func appendIPv4L4ACLRulesFromProgram(rules *[]IPv4L4ACLRule, seen map[IPv4L4Key]
 
 func ipv4L4PrefixLen(prefix netip.Prefix) uint32 {
 	return uint32(32 + prefix.Bits())
+}
+
+func ipv4L4PeerKey(addr netip.Addr) [4]byte {
+	return addr.As4()
 }
 
 func ipv4Prefix(prefix netip.Prefix) (netip.Prefix, bool) {
@@ -394,6 +398,7 @@ func NewIPv4L4ACLTCXProgramForDirection(aclMap *ebpf.Map, direction model.Direct
 			asm.LoadAbs(23, asm.Byte),
 			asm.StoreMem(asm.RFP, -8, asm.R0, asm.Byte),
 			asm.LoadAbs(peerOffset, asm.Word),
+			asm.HostTo(asm.BE, asm.R0, asm.Word),
 			asm.StoreMem(asm.RFP, -4, asm.R0, asm.Word),
 			asm.LoadAbs(20, asm.Half),
 			asm.And.Imm(asm.R0, 0x1fff),
