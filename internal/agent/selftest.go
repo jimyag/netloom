@@ -14,13 +14,14 @@ import (
 )
 
 type SelfTestResult struct {
-	EndpointID  string
-	Entries     int
-	Allowed     dataplane.Verdict
-	Denied      dataplane.Verdict
-	PolicyStats dataplane.PolicyMetrics
-	DropEvents  int
-	TCX         string
+	EndpointID   string
+	Entries      int
+	Allowed      dataplane.Verdict
+	Denied       dataplane.Verdict
+	PolicyStats  dataplane.PolicyMetrics
+	DropEvents   int
+	PolicyEvents int
+	TCX          string
 }
 
 func RunSelfTest(ctx context.Context) (SelfTestResult, error) {
@@ -46,6 +47,7 @@ func RunSelfTest(ctx context.Context) (SelfTestResult, error) {
 					Ports:      []model.PortRange{{From: 443, To: 443}},
 					Action:     model.ActionAllow,
 					Stateful:   true,
+					Log:        true,
 				},
 				{
 					ID:         "deny-range",
@@ -162,13 +164,14 @@ func RunSelfTest(ctx context.Context) (SelfTestResult, error) {
 	}
 
 	return SelfTestResult{
-		EndpointID:  endpoint.ID,
-		Entries:     len(entries),
-		Allowed:     allowed.Verdict,
-		Denied:      denied.Verdict,
-		PolicyStats: recorder.Metrics(endpoint.ID),
-		DropEvents:  len(recorder.DropEvents()),
-		TCX:         tcxStatus,
+		EndpointID:   endpoint.ID,
+		Entries:      len(entries),
+		Allowed:      allowed.Verdict,
+		Denied:       denied.Verdict,
+		PolicyStats:  recorder.Metrics(endpoint.ID),
+		DropEvents:   len(recorder.DropEvents()),
+		PolicyEvents: len(recorder.PolicyEvents()),
+		TCX:          tcxStatus,
 	}, nil
 }
 

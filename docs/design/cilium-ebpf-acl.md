@@ -137,12 +137,14 @@ and diff statistics so it can move to in-place map mutation without changing the
 control plane contract.
 
 The userspace policy evaluator also exposes Cilium-style observability hooks.
-`PolicyRecorder` tracks per-endpoint allow, drop, conntrack, and established
-flow counters. Drop decisions emit a structured event with endpoint ID, remote
-identity, direction, protocol, destination port, reason, and rule cookie when a
-policy-deny rule matched. No-match drops are recorded separately, which makes it
-possible to distinguish default deny from explicit security-group deny in tests
-and future agent output.
+`PolicyRecorder` tracks per-endpoint allow, drop, conntrack, established, and
+logged flow counters. Drop decisions emit a structured event with endpoint ID,
+remote identity, direction, protocol, destination port, reason, and rule cookie
+when a policy-deny rule matched. No-match drops are recorded separately, which
+makes it possible to distinguish default deny from explicit security-group deny
+in tests and future agent output. Rules with `log` set also emit a policy
+verdict event for both allow and drop decisions, matching the Cilium idea that
+policy verdict observability is not limited to denied traffic.
 
 The Linux datapath also has an explicit cleanup mode. When enabled, the agent
 removes netloom-owned network namespaces with the configured prefix that are no

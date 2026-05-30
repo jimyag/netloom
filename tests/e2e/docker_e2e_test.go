@@ -129,7 +129,7 @@ func TestDockerMultiNodeLab(t *testing.T) {
 	if !strings.Contains(agentOutput, "ready for node policy") {
 		t.Fatalf("agent output did not show ready state:\n%s", agentOutput)
 	}
-	for _, expected := range []string{"endpoint=selftest-pod", "entries=", "allow=allow", "deny=drop", "policy_allowed=1", "policy_dropped=1", "drop_events=1", "tcx=attached:lo:ingress:verdict:pass"} {
+	for _, expected := range []string{"endpoint=selftest-pod", "entries=", "allow=allow", "deny=drop", "policy_allowed=1", "policy_dropped=1", "policy_logged=2", "drop_events=1", "policy_events=2", "tcx=attached:lo:ingress:verdict:pass"} {
 		if !strings.Contains(agentOutput, expected) {
 			t.Fatalf("agent output missing %q:\n%s", expected, agentOutput)
 		}

@@ -44,6 +44,18 @@ type DropEvent struct {
 	RuleCookie     uint32
 }
 
+type PolicyEvent struct {
+	EndpointID     string
+	Verdict        Verdict
+	RemoteIdentity uint32
+	Direction      uint8
+	Protocol       uint8
+	DestPort       uint16
+	RuleCookie     uint32
+	Conntrack      bool
+	Established    bool
+}
+
 type PolicyMetrics struct {
 	Allowed      uint64
 	Dropped      uint64
@@ -51,6 +63,7 @@ type PolicyMetrics struct {
 	Established  uint64
 	NoMatchDrops uint64
 	DenyDrops    uint64
+	Logged       uint64
 }
 
 type PolicyObserver interface {
@@ -61,6 +74,7 @@ type PolicyRecorder struct {
 	mu      sync.Mutex
 	metrics map[string]PolicyMetrics
 	drops   []DropEvent
+	events  []PolicyEvent
 }
 
 func NewPolicyRecorder() *PolicyRecorder {
@@ -82,6 +96,10 @@ func (r *PolicyRecorder) Observe(endpointID string, packet Packet, decision Deci
 		if decision.Established {
 			metrics.Established++
 		}
+		if shouldLogPolicy(decision) {
+			metrics.Logged++
+			r.events = append(r.events, policyEvent(endpointID, packet, decision))
+		}
 		r.metrics[endpointID] = metrics
 		return
 	}
@@ -100,6 +118,10 @@ func (r *PolicyRecorder) Observe(endpointID string, packet Packet, decision Deci
 		metrics.DenyDrops++
 		event.Reason = DropReasonPolicyDeny
 		event.RuleCookie = decision.Match.Value.RuleCookie
+	}
+	if shouldLogPolicy(decision) {
+		metrics.Logged++
+		r.events = append(r.events, policyEvent(endpointID, packet, decision))
 	}
 	r.metrics[endpointID] = metrics
 	r.drops = append(r.drops, event)
@@ -121,6 +143,36 @@ func (r *PolicyRecorder) DropEvents() []DropEvent {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]DropEvent(nil), r.drops...)
+}
+
+func (r *PolicyRecorder) PolicyEvents() []PolicyEvent {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]PolicyEvent(nil), r.events...)
+}
+
+func shouldLogPolicy(decision Decision) bool {
+	return decision.Match != nil && decision.Match.Value.Log != 0
+}
+
+func policyEvent(endpointID string, packet Packet, decision Decision) PolicyEvent {
+	event := PolicyEvent{
+		EndpointID:     endpointID,
+		Verdict:        decision.Verdict,
+		RemoteIdentity: packet.RemoteIdentity,
+		Direction:      packet.Direction,
+		Protocol:       packet.Protocol,
+		DestPort:       packet.DestPort,
+		Conntrack:      decision.Conntrack,
+		Established:    decision.Established,
+	}
+	if decision.Match != nil {
+		event.RuleCookie = decision.Match.Value.RuleCookie
+	}
+	return event
 }
 
 func Evaluate(entries []PolicyMapEntry, packet Packet) Decision {
