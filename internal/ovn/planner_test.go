@@ -108,6 +108,7 @@ func TestPlannerMapsNetloomObjectsToOVNOperations(t *testing.T) {
 		"options:lease_time=7200",
 		"options:mtu=1400",
 		"lsp-set-dhcpv4-options nl_lp_pod-a",
+		"lsp-set-dhcpv6-options nl_lp_pod-a",
 		"set logical_switch_port nl_lp_pod-a dhcpv4_options=@nl_dhcp_pod_a",
 		"external_ids:netloom_owner=netloom",
 		"external_ids:netloom_vpc=prod",
@@ -209,10 +210,86 @@ func TestPlannerClearsEndpointDHCPWhenSubnetDHCPDisabled(t *testing.T) {
 
 	joined := stringify(planner.Operations())
 	if !strings.Contains(joined, "lsp-set-dhcpv4-options nl_lp_pod-a") {
-		t.Fatalf("endpoint DHCP clear operation missing:\n%s", joined)
+		t.Fatalf("endpoint DHCPv4 clear operation missing:\n%s", joined)
 	}
-	if strings.Contains(joined, "create DHCP_Options") || strings.Contains(joined, "dhcpv4_options=@") {
+	if !strings.Contains(joined, "lsp-set-dhcpv6-options nl_lp_pod-a") {
+		t.Fatalf("endpoint DHCPv6 clear operation missing:\n%s", joined)
+	}
+	if strings.Contains(joined, "create DHCP_Options") || strings.Contains(joined, "dhcpv4_options=@") || strings.Contains(joined, "dhcpv6_options=@") {
 		t.Fatalf("disabled DHCP should not create or bind DHCP options:\n%s", joined)
+	}
+}
+
+func TestPlannerBuildsIPv6DHCPOptions(t *testing.T) {
+	planner := ovn.NewPlanner()
+	if err := planner.EnsureSubnet(context.Background(), model.Subnet{
+		Name:    "apps-v6",
+		VPC:     "prod",
+		CIDR:    netip.MustParsePrefix("fd00:10::/64"),
+		Gateway: netip.MustParseAddr("fd00:10::1"),
+		DHCP:    model.DHCPOptions{Enabled: true, LeaseTime: 7200, MTU: 1400},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := planner.EnsureEndpoint(context.Background(), model.Endpoint{
+		ID:     "pod-v6",
+		VPC:    "prod",
+		Subnet: "apps-v6",
+		IP:     netip.MustParseAddr("fd00:10::10"),
+		Node:   "node-a",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	joined := stringify(planner.Operations())
+	for _, expected := range []string{
+		"set logical_router_port nl_lr_prod_to_apps-v6 ipv6_ra_configs:address_mode=dhcpv6_stateful",
+		"lsp-set-dhcpv6-options nl_lp_pod-v6",
+		"--id=@nl_dhcp6_pod_v6 create DHCP_Options cidr=fd00:10::/64",
+		"options:server_id=0a:58:00:00:00:01",
+		"set logical_switch_port nl_lp_pod-v6 dhcpv6_options=@nl_dhcp6_pod_v6",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("IPv6 DHCP operation missing %q:\n%s", expected, joined)
+		}
+	}
+	if strings.Contains(joined, "dhcpv4_options=@") {
+		t.Fatalf("IPv6 endpoint should not bind DHCPv4 options:\n%s", joined)
+	}
+	if strings.Contains(joined, "options:router=") || strings.Contains(joined, "options:server_mac=") {
+		t.Fatalf("DHCPv6 options should not include DHCPv4-only options:\n%s", joined)
+	}
+}
+
+func TestPlannerClearsIPv6DHCPRAWhenSubnetDHCPDisabled(t *testing.T) {
+	planner := ovn.NewPlanner()
+	if err := planner.EnsureSubnet(context.Background(), model.Subnet{
+		Name:    "apps-v6",
+		VPC:     "prod",
+		CIDR:    netip.MustParsePrefix("fd00:10::/64"),
+		Gateway: netip.MustParseAddr("fd00:10::1"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := planner.EnsureEndpoint(context.Background(), model.Endpoint{
+		ID:     "pod-v6",
+		VPC:    "prod",
+		Subnet: "apps-v6",
+		IP:     netip.MustParseAddr("fd00:10::10"),
+		Node:   "node-a",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	joined := stringify(planner.Operations())
+	if !strings.Contains(joined, "remove logical_router_port nl_lr_prod_to_apps-v6 ipv6_ra_configs address_mode") {
+		t.Fatalf("disabled IPv6 DHCP should clear RA address mode:\n%s", joined)
+	}
+	if !strings.Contains(joined, "lsp-set-dhcpv6-options nl_lp_pod-v6") {
+		t.Fatalf("disabled IPv6 DHCP should clear endpoint DHCPv6 options:\n%s", joined)
+	}
+	if strings.Contains(joined, "dhcpv6_options=@") || strings.Contains(joined, "create DHCP_Options") {
+		t.Fatalf("disabled IPv6 DHCP should not create or bind DHCPv6 options:\n%s", joined)
 	}
 }
 

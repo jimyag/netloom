@@ -74,6 +74,11 @@ func (p *Planner) EnsureSubnet(_ context.Context, subnet model.Subnet) error {
 		Operation{Command: "lsp-set-options", Args: []string{switchPort, "router-port=" + routerPort}},
 		setOperation("logical_switch_port", switchPort, "external_ids:netloom_owner=netloom", "external_ids:netloom_subnet="+subnet.Name, "external_ids:netloom_role=router"),
 	)
+	if subnet.DHCP.Enabled && subnet.CIDR.Addr().Is6() {
+		p.ops = append(p.ops, setOperation("logical_router_port", routerPort, "ipv6_ra_configs:address_mode=dhcpv6_stateful"))
+	} else {
+		p.ops = append(p.ops, Operation{Command: "remove", Args: []string{"logical_router_port", routerPort, "ipv6_ra_configs", "address_mode"}})
+	}
 	if subnet.ProviderNetwork != "" {
 		localnetPort := localnetPortName(switchName, subnet.Name)
 		p.ops = append(p.ops,
@@ -100,12 +105,20 @@ func (p *Planner) EnsureEndpoint(_ context.Context, endpoint model.Endpoint) err
 		Operation{Command: "lsp-set-addresses", Args: []string{port, "dynamic " + endpoint.IP.String()}},
 		setOperation("logical_switch_port", port, "external_ids:netloom_owner=netloom", "external_ids:netloom_endpoint="+endpoint.ID, "external_ids:netloom_node="+endpoint.Node, "external_ids:netloom_vpc="+endpoint.VPC, "external_ids:netloom_subnet="+endpoint.Subnet),
 		Operation{Command: "lsp-set-dhcpv4-options", Args: []string{port}},
+		Operation{Command: "lsp-set-dhcpv6-options", Args: []string{port}},
 	)
 	if subnet, ok := p.subnets[endpoint.Subnet]; ok && subnet.DHCP.Enabled && endpoint.IP.Is4() {
-		dhcpID := namedUUID("nl_dhcp_" + sanitize(endpoint.ID))
+		dhcpID := dhcpOptionsUUID(endpoint, 4)
 		p.ops = append(p.ops,
-			Operation{Command: "create", Flags: []string{"--id=" + dhcpID}, Args: dhcpOptionsArgs(subnet, endpoint)},
+			Operation{Command: "create", Flags: []string{"--id=" + dhcpID}, Args: dhcpv4OptionsArgs(subnet, endpoint)},
 			Operation{Command: "set", Args: []string{"logical_switch_port", port, "dhcpv4_options=" + dhcpID}},
+		)
+	}
+	if subnet, ok := p.subnets[endpoint.Subnet]; ok && subnet.DHCP.Enabled && endpoint.IP.Is6() {
+		dhcpID := dhcpOptionsUUID(endpoint, 6)
+		p.ops = append(p.ops,
+			Operation{Command: "create", Flags: []string{"--id=" + dhcpID}, Args: dhcpv6OptionsArgs(subnet, endpoint)},
+			Operation{Command: "set", Args: []string{"logical_switch_port", port, "dhcpv6_options=" + dhcpID}},
 		)
 	}
 	return nil
@@ -310,7 +323,14 @@ func deterministicMAC(ip netip.Addr) string {
 	return fmt.Sprintf("0a:58:%02x:%02x:%02x:%02x", raw[12], raw[13], raw[14], raw[15])
 }
 
-func dhcpOptionsArgs(subnet model.Subnet, endpoint model.Endpoint) []string {
+func dhcpOptionsUUID(endpoint model.Endpoint, family int) string {
+	if family == 6 {
+		return namedUUID("nl_dhcp6_" + sanitize(endpoint.ID))
+	}
+	return namedUUID("nl_dhcp_" + sanitize(endpoint.ID))
+}
+
+func dhcpv4OptionsArgs(subnet model.Subnet, endpoint model.Endpoint) []string {
 	leaseTime := subnet.DHCP.LeaseTime
 	if leaseTime == 0 {
 		leaseTime = 3600
@@ -328,6 +348,18 @@ func dhcpOptionsArgs(subnet model.Subnet, endpoint model.Endpoint) []string {
 	}
 	if subnet.DHCP.MTU != 0 {
 		args = append(args, fmt.Sprintf("options:mtu=%d", subnet.DHCP.MTU))
+	}
+	return args
+}
+
+func dhcpv6OptionsArgs(subnet model.Subnet, endpoint model.Endpoint) []string {
+	args := []string{
+		"DHCP_Options",
+		"cidr=" + subnet.CIDR.String(),
+		"options:server_id=" + deterministicMAC(subnet.Gateway),
+		"external_ids:netloom_owner=netloom",
+		"external_ids:netloom_subnet=" + subnet.Name,
+		"external_ids:netloom_endpoint=" + endpoint.ID,
 	}
 	return args
 }
