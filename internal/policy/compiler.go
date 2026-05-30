@@ -242,8 +242,10 @@ func expandEntityRule(base Rule, endpoint model.Endpoint, entities []string, sub
 
 func entityCIDRs(entity, vpc string, subnetsByVPC map[string][]netip.Prefix) ([]netip.Prefix, error) {
 	switch entity {
-	case "all", "world":
-		return []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0"), netip.MustParsePrefix("::/0")}, nil
+	case "all":
+		return allCIDRs(), nil
+	case "world":
+		return worldCIDRs(vpc, subnetsByVPC)
 	case "private":
 		return []netip.Prefix{
 			netip.MustParsePrefix("10.0.0.0/8"),
@@ -261,6 +263,34 @@ func entityCIDRs(entity, vpc string, subnetsByVPC map[string][]netip.Prefix) ([]
 	default:
 		return nil, fmt.Errorf("unsupported remote entity %q", entity)
 	}
+}
+
+func allCIDRs() []netip.Prefix {
+	return []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0"), netip.MustParsePrefix("::/0")}
+}
+
+func worldCIDRs(vpc string, subnetsByVPC map[string][]netip.Prefix) ([]netip.Prefix, error) {
+	clusterCIDRs := append([]netip.Prefix(nil), subnetsByVPC[vpc]...)
+	if len(clusterCIDRs) == 0 {
+		return nil, fmt.Errorf("remote entity world requires at least one subnet in vpc %s", vpc)
+	}
+	cidrs := allCIDRs()
+	for _, clusterCIDR := range clusterCIDRs {
+		clusterCIDR = clusterCIDR.Masked()
+		var next []netip.Prefix
+		for _, cidr := range cidrs {
+			if cidr.Addr().Is4() != clusterCIDR.Addr().Is4() {
+				next = append(next, cidr)
+				continue
+			}
+			next = append(next, subtractPrefix(cidr, clusterCIDR)...)
+		}
+		cidrs = next
+	}
+	sort.SliceStable(cidrs, func(i, j int) bool {
+		return cidrs[i].String() < cidrs[j].String()
+	})
+	return cidrs, nil
 }
 
 func resolveNamedPorts(staticPorts []model.PortRange, names []string, protocol model.Protocol, endpoint model.Endpoint) ([]model.PortRange, error) {

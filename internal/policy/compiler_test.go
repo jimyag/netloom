@@ -759,6 +759,71 @@ func TestCompileForEndpointWithContextExpandsRemoteEntities(t *testing.T) {
 	}
 }
 
+func TestCompileForEndpointWithContextExpandsWorldEntityOutsideCluster(t *testing.T) {
+	endpoint := model.Endpoint{
+		ID:             "pod-a",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"client"},
+	}
+	program, err := CompileForEndpointWithContext(endpoint, map[string]model.SecurityGroup{
+		"client": {
+			Name: "client",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:             "allow-world",
+				Priority:       100,
+				Direction:      model.DirectionEgress,
+				Protocol:       model.ProtocolTCP,
+				RemoteEntities: []string{"world"},
+				Ports:          []model.PortRange{{From: 443, To: 443}},
+				Action:         model.ActionAllow,
+			}},
+		},
+	}, CompileContext{
+		Subnets: []model.Subnet{
+			{Name: "apps", VPC: "prod", CIDR: netip.MustParsePrefix("10.10.0.0/24"), Gateway: netip.MustParseAddr("10.10.0.1")},
+			{Name: "v6", VPC: "prod", CIDR: netip.MustParsePrefix("fd00:10::/64"), Gateway: netip.MustParseAddr("fd00:10::1")},
+			{Name: "other", VPC: "dev", CIDR: netip.MustParsePrefix("192.0.2.0/24"), Gateway: netip.MustParseAddr("192.0.2.1")},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(program.Rules) == 0 {
+		t.Fatal("expected world entity to produce CIDR rules")
+	}
+	if len(program.MapEntries) != len(program.Rules) {
+		t.Fatalf("map entries = %d, want %d", len(program.MapEntries), len(program.Rules))
+	}
+	assertEntityCIDRsMatchIP(t, program.Rules, "world", netip.MustParseAddr("203.0.113.10"), true)
+	assertEntityCIDRsMatchIP(t, program.Rules, "world", netip.MustParseAddr("2001:db8::10"), true)
+	assertEntityCIDRsMatchIP(t, program.Rules, "world", netip.MustParseAddr("10.10.0.42"), false)
+	assertEntityCIDRsMatchIP(t, program.Rules, "world", netip.MustParseAddr("fd00:10::42"), false)
+	for _, rule := range program.Rules {
+		if rule.RemoteCIDR == netip.MustParsePrefix("0.0.0.0/0") || rule.RemoteCIDR == netip.MustParsePrefix("::/0") {
+			t.Fatalf("world entity kept unsplit all-cidr %s", rule.RemoteCIDR)
+		}
+	}
+}
+
+func assertEntityCIDRsMatchIP(t *testing.T, rules []Rule, entity string, ip netip.Addr, want bool) {
+	t.Helper()
+	for _, rule := range rules {
+		if rule.RemoteEntity == entity && rule.RemoteCIDR.Contains(ip) {
+			if !want {
+				t.Fatalf("entity %s unexpectedly matches ip %s with cidr %s", entity, ip, rule.RemoteCIDR)
+			}
+			return
+		}
+	}
+	if want {
+		t.Fatalf("entity %s does not match ip %s", entity, ip)
+	}
+}
+
 func TestCompileForEndpointWithContextRejectsClusterEntityWithoutSubnets(t *testing.T) {
 	endpoint := model.Endpoint{
 		ID:             "pod-a",
@@ -784,6 +849,34 @@ func TestCompileForEndpointWithContextRejectsClusterEntityWithoutSubnets(t *test
 	}, CompileContext{})
 	if err == nil {
 		t.Fatal("expected cluster entity without subnets to fail")
+	}
+}
+
+func TestCompileForEndpointWithContextRejectsWorldEntityWithoutSubnets(t *testing.T) {
+	endpoint := model.Endpoint{
+		ID:             "pod-a",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"client"},
+	}
+	_, err := CompileForEndpointWithContext(endpoint, map[string]model.SecurityGroup{
+		"client": {
+			Name: "client",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:             "allow-world",
+				Direction:      model.DirectionEgress,
+				Protocol:       model.ProtocolTCP,
+				RemoteEntities: []string{"world"},
+				Ports:          []model.PortRange{{From: 443, To: 443}},
+				Action:         model.ActionAllow,
+			}},
+		},
+	}, CompileContext{})
+	if err == nil {
+		t.Fatal("expected world entity without subnets to fail")
 	}
 }
 
