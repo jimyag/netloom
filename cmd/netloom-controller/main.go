@@ -90,6 +90,10 @@ func (r *stateFileReconciler) reconcile(ctx context.Context, path string) error 
 	if err != nil {
 		return err
 	}
+	healthSummary, err := applyLoadBalancerHealthChecks(ctx, &state)
+	if err != nil {
+		return err
+	}
 
 	opsBefore := len(r.ovnBackend.Operations())
 	executedBefore := r.executedOperations()
@@ -100,7 +104,7 @@ func (r *stateFileReconciler) reconcile(ctx context.Context, path string) error 
 	ovnOps := len(r.ovnBackend.Operations()) - opsBefore
 	executed := r.executedOperations() - executedBefore
 	fmt.Printf(
-		"netloom-controller reconciled desired state vpcs=%d subnets=%d endpoints=%d route_tables=%d policy_routes=%d gateways=%d nat_rules=%d load_balancers=%d security_groups=%d policy_entries=%d ovn_ops=%d ovn_executed=%d\n",
+		"netloom-controller reconciled desired state vpcs=%d subnets=%d endpoints=%d route_tables=%d policy_routes=%d gateways=%d nat_rules=%d load_balancers=%d security_groups=%d policy_entries=%d lb_health_checked=%d lb_health_healthy=%d lb_health_unhealthy=%d ovn_ops=%d ovn_executed=%d\n",
 		len(state.VPCs),
 		len(state.Subnets),
 		len(state.Endpoints),
@@ -111,10 +115,25 @@ func (r *stateFileReconciler) reconcile(ctx context.Context, path string) error 
 		len(state.LoadBalancers),
 		len(state.SecurityGroups),
 		countPolicyEntries(r.memory),
+		healthSummary.Checked,
+		healthSummary.Healthy,
+		healthSummary.Unhealthy,
 		ovnOps,
 		executed,
 	)
 	return nil
+}
+
+func applyLoadBalancerHealthChecks(ctx context.Context, state *control.DesiredState) (control.LoadBalancerHealthSummary, error) {
+	if os.Getenv("NETLOOM_LB_HEALTH_PROBE") != "1" {
+		return control.LoadBalancerHealthSummary{}, nil
+	}
+	next, summary, err := control.ApplyLoadBalancerHealthChecks(ctx, *state, nil)
+	if err != nil {
+		return summary, err
+	}
+	*state = next
+	return summary, nil
 }
 
 func (r *stateFileReconciler) executedOperations() int {
