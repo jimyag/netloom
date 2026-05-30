@@ -234,20 +234,26 @@ func sortPolicyRoutes(routes []model.PolicyRoute) {
 }
 
 func cleanupManagedPolicyRules(root *netlink.Handle, options Options) error {
-	rules, err := root.RuleList(netlink.FAMILY_V4)
-	if err != nil {
-		return fmt.Errorf("list policy rules: %w", err)
-	}
-	for _, rule := range rules {
-		if !managedPolicyTable(rule.Table, options) {
-			continue
+	for _, family := range netlinkPolicyRuleFamilies() {
+		rules, err := root.RuleList(family)
+		if err != nil {
+			return fmt.Errorf("list policy rules family %d: %w", family, err)
 		}
-		ruleCopy := rule
-		if err := root.RuleDel(&ruleCopy); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("delete stale policy rule table %d priority %d: %w", rule.Table, rule.Priority, err)
+		for _, rule := range rules {
+			if !managedPolicyTable(rule.Table, options) {
+				continue
+			}
+			ruleCopy := rule
+			if err := root.RuleDel(&ruleCopy); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("delete stale policy rule family %d table %d priority %d: %w", family, rule.Table, rule.Priority, err)
+			}
 		}
 	}
 	return nil
+}
+
+func netlinkPolicyRuleFamilies() []int {
+	return []int{netlink.FAMILY_V4, netlink.FAMILY_V6}
 }
 
 func managedPolicyTable(table int, options Options) bool {

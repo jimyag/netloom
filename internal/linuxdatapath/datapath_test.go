@@ -372,6 +372,13 @@ func TestManagedPolicyTableRange(t *testing.T) {
 	}
 }
 
+func TestNetlinkPolicyRuleCleanupCoversIPv4AndIPv6(t *testing.T) {
+	families := netlinkPolicyRuleFamilies()
+	if !reflect.DeepEqual(families, []int{unix.AF_INET, unix.AF_INET6}) {
+		t.Fatalf("cleanup families = %#v, want IPv4 and IPv6", families)
+	}
+}
+
 func TestNetlinkPolicyRuleEncodesL4Match(t *testing.T) {
 	route := model.PolicyRoute{
 		Name:     "https-via-fw",
