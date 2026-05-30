@@ -62,12 +62,16 @@ The TCX datapath currently supports:
 
 - a map-backed verdict program for attach/detach verification
 - IPv4 source ACLs for ingress checks
-- IPv4 TCP/UDP exact `/32 source + destination port` ACLs
+- IPv4 TCP/UDP exact `/32 peer + destination port` ACLs. Ingress policy
+  matches the packet source address; egress policy matches the packet
+  destination address.
 - policy-driven TCX L4 selftests where `SecurityGroupRule` is compiled into a
   `policy.Program` before being projected into the TCX map
 
 Port ranges are already decomposed in the cilium-style policy compiler, but the
-TCX program intentionally starts with exact L4 matches. Wider CIDR and range
+TCX program intentionally starts with exact L4 matches. Workload TCX attach
+projects ingress rules to host-veth egress and egress rules to host-veth
+ingress, matching the direction split used by endpoint policy datapaths. Wider CIDR and range
 support should move to an LPM trie or identity-based policy lookup instead of
 expanding large ranges into hash entries.
 

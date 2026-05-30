@@ -239,34 +239,42 @@ func putIPv4L4ACLRule(aclMap *ebpf.Map, rule IPv4L4ACLRule) error {
 }
 
 func IPv4L4ACLRulesFromProgram(program policy.Program) ([]IPv4L4ACLRule, error) {
+	return IPv4L4ACLRulesFromProgramForDirection(program, model.DirectionIngress)
+}
+
+func IPv4L4ACLRulesFromProgramForDirection(program policy.Program, direction model.Direction) ([]IPv4L4ACLRule, error) {
 	rules := make([]IPv4L4ACLRule, 0, len(program.Rules))
 	seen := make(map[IPv4L4Key]struct{})
-	if err := appendIPv4L4ACLRulesFromProgram(&rules, seen, program); err != nil {
+	if err := appendIPv4L4ACLRulesFromProgram(&rules, seen, program, direction); err != nil {
 		return nil, err
 	}
 	if len(rules) == 0 {
-		return nil, fmt.Errorf("program %s has no exact IPv4 TCP/UDP L4 ACL rules for TCX", program.EndpointID)
+		return nil, fmt.Errorf("program %s has no exact IPv4 TCP/UDP L4 %s ACL rules for TCX", program.EndpointID, direction)
 	}
 	return rules, nil
 }
 
 func IPv4L4ACLRulesFromPrograms(programs []policy.Program) ([]IPv4L4ACLRule, error) {
+	return IPv4L4ACLRulesFromProgramsForDirection(programs, model.DirectionIngress)
+}
+
+func IPv4L4ACLRulesFromProgramsForDirection(programs []policy.Program, direction model.Direction) ([]IPv4L4ACLRule, error) {
 	rules := make([]IPv4L4ACLRule, 0, len(programs))
 	seen := make(map[IPv4L4Key]struct{})
 	for _, program := range programs {
-		if err := appendIPv4L4ACLRulesFromProgram(&rules, seen, program); err != nil {
+		if err := appendIPv4L4ACLRulesFromProgram(&rules, seen, program, direction); err != nil {
 			return nil, err
 		}
 	}
 	if len(rules) == 0 {
-		return nil, fmt.Errorf("programs have no exact IPv4 TCP/UDP L4 ACL rules for TCX")
+		return nil, fmt.Errorf("programs have no exact IPv4 TCP/UDP L4 %s ACL rules for TCX", direction)
 	}
 	return rules, nil
 }
 
-func appendIPv4L4ACLRulesFromProgram(rules *[]IPv4L4ACLRule, seen map[IPv4L4Key]struct{}, program policy.Program) error {
+func appendIPv4L4ACLRulesFromProgram(rules *[]IPv4L4ACLRule, seen map[IPv4L4Key]struct{}, program policy.Program, direction model.Direction) error {
 	for _, rule := range program.Rules {
-		if rule.Direction != model.DirectionIngress {
+		if rule.Direction != direction {
 			continue
 		}
 		protocol, err := protocolNumber(rule.Protocol)
@@ -333,6 +341,14 @@ func tcxAction(action model.Action) (int32, bool) {
 }
 
 func NewIPv4L4ACLTCXProgram(aclMap *ebpf.Map) (*ebpf.Program, error) {
+	return NewIPv4L4ACLTCXProgramForDirection(aclMap, model.DirectionIngress)
+}
+
+func NewIPv4L4ACLTCXProgramForDirection(aclMap *ebpf.Map, direction model.Direction) (*ebpf.Program, error) {
+	peerOffset, err := ipv4PeerOffset(direction)
+	if err != nil {
+		return nil, err
+	}
 	return ebpf.NewProgram(&ebpf.ProgramSpec{
 		Name:    "netloom_tcx_l4",
 		Type:    ebpf.SchedCLS,
@@ -343,7 +359,7 @@ func NewIPv4L4ACLTCXProgram(aclMap *ebpf.Map) (*ebpf.Program, error) {
 			asm.JNE.Imm(asm.R0, 0x0800, "pass"),
 			asm.LoadAbs(23, asm.Byte),
 			asm.StoreMem(asm.RFP, -4, asm.R0, asm.Byte),
-			asm.LoadAbs(26, asm.Word),
+			asm.LoadAbs(peerOffset, asm.Word),
 			asm.StoreMem(asm.RFP, -8, asm.R0, asm.Word),
 			asm.LoadAbs(20, asm.Half),
 			asm.And.Imm(asm.R0, 0x1fff),
@@ -365,6 +381,17 @@ func NewIPv4L4ACLTCXProgram(aclMap *ebpf.Map) (*ebpf.Program, error) {
 			asm.Return(),
 		},
 	})
+}
+
+func ipv4PeerOffset(direction model.Direction) (int32, error) {
+	switch direction {
+	case model.DirectionIngress:
+		return 26, nil
+	case model.DirectionEgress:
+		return 30, nil
+	default:
+		return 0, fmt.Errorf("unsupported policy direction %q", direction)
+	}
 }
 
 func AttachTCX(ctx context.Context, ifName string, program *ebpf.Program, attach ebpf.AttachType) (link.Link, error) {
@@ -515,15 +542,23 @@ func RunTCXIPv4L4Rules(ctx context.Context, ifName string, rules []IPv4L4ACLRule
 }
 
 func RunTCXIPv4L4ProgramsAttach(ctx context.Context, ifName string, programs []policy.Program, attach ebpf.AttachType, hold time.Duration) (TCXSelfTestResult, error) {
-	rules, err := IPv4L4ACLRulesFromPrograms(programs)
+	return RunTCXIPv4L4ProgramsAttachForDirection(ctx, ifName, programs, attach, model.DirectionIngress, hold)
+}
+
+func RunTCXIPv4L4ProgramsAttachForDirection(ctx context.Context, ifName string, programs []policy.Program, attach ebpf.AttachType, direction model.Direction, hold time.Duration) (TCXSelfTestResult, error) {
+	rules, err := IPv4L4ACLRulesFromProgramsForDirection(programs, direction)
 	if err != nil {
 		return TCXSelfTestResult{}, err
 	}
-	return RunTCXIPv4L4RulesAttach(ctx, ifName, rules, attach, hold)
+	return RunTCXIPv4L4RulesAttachForDirection(ctx, ifName, rules, attach, direction, hold)
 }
 
 func RunTCXIPv4L4RulesAttach(ctx context.Context, ifName string, rules []IPv4L4ACLRule, attach ebpf.AttachType, hold time.Duration) (TCXSelfTestResult, error) {
-	attachment, err := AttachTCXIPv4L4Rules(ctx, ifName, rules, attach)
+	return RunTCXIPv4L4RulesAttachForDirection(ctx, ifName, rules, attach, model.DirectionIngress, hold)
+}
+
+func RunTCXIPv4L4RulesAttachForDirection(ctx context.Context, ifName string, rules []IPv4L4ACLRule, attach ebpf.AttachType, direction model.Direction, hold time.Duration) (TCXSelfTestResult, error) {
+	attachment, err := AttachTCXIPv4L4RulesForDirection(ctx, ifName, rules, attach, direction)
 	if err != nil {
 		return TCXSelfTestResult{}, err
 	}
@@ -541,20 +576,28 @@ func RunTCXIPv4L4RulesAttach(ctx context.Context, ifName string, rules []IPv4L4A
 }
 
 func AttachTCXIPv4L4Programs(ctx context.Context, ifName string, programs []policy.Program, attach ebpf.AttachType) (*TCXAttachment, error) {
-	rules, err := IPv4L4ACLRulesFromPrograms(programs)
+	return AttachTCXIPv4L4ProgramsForDirection(ctx, ifName, programs, attach, model.DirectionIngress)
+}
+
+func AttachTCXIPv4L4ProgramsForDirection(ctx context.Context, ifName string, programs []policy.Program, attach ebpf.AttachType, direction model.Direction) (*TCXAttachment, error) {
+	rules, err := IPv4L4ACLRulesFromProgramsForDirection(programs, direction)
 	if err != nil {
 		return nil, err
 	}
-	return AttachTCXIPv4L4Rules(ctx, ifName, rules, attach)
+	return AttachTCXIPv4L4RulesForDirection(ctx, ifName, rules, attach, direction)
 }
 
 func AttachTCXIPv4L4Rules(ctx context.Context, ifName string, rules []IPv4L4ACLRule, attach ebpf.AttachType) (*TCXAttachment, error) {
+	return AttachTCXIPv4L4RulesForDirection(ctx, ifName, rules, attach, model.DirectionIngress)
+}
+
+func AttachTCXIPv4L4RulesForDirection(ctx context.Context, ifName string, rules []IPv4L4ACLRule, attach ebpf.AttachType, direction model.Direction) (*TCXAttachment, error) {
 	aclMap, err := NewIPv4L4ACLMapFromRules(rules)
 	if err != nil {
 		return nil, err
 	}
 
-	tcxProgram, err := NewIPv4L4ACLTCXProgram(aclMap)
+	tcxProgram, err := NewIPv4L4ACLTCXProgramForDirection(aclMap, direction)
 	if err != nil {
 		aclMap.Close()
 		return nil, err

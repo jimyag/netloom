@@ -12,6 +12,20 @@ import (
 	"github.com/jimyag/netloom/internal/policy"
 )
 
+func tcxProgram(endpointID string, direction model.Direction, cidr string, port uint16) policy.Program {
+	return policy.Program{
+		EndpointID: endpointID,
+		Rules: []policy.Rule{{
+			ID:         endpointID + "-tcx",
+			Direction:  direction,
+			Protocol:   model.ProtocolTCP,
+			RemoteCIDR: netip.MustParsePrefix(cidr),
+			Ports:      []model.PortRange{{From: port, To: port}},
+			Action:     model.ActionDrop,
+		}},
+	}
+}
+
 func TestReconcileNodeAppliesOnlyLocalEndpointPolicies(t *testing.T) {
 	state := control.DesiredState{
 		Endpoints: []model.Endpoint{
@@ -150,8 +164,8 @@ func TestReconcileNodeWithTCXInterfaceRequiresEligiblePolicy(t *testing.T) {
 
 func TestTCXTargetsBuildsOneEgressTargetPerWorkload(t *testing.T) {
 	targets := tcxTargets(ReconcileOptions{TCXWorkload: true}, []policy.Program{
-		{EndpointID: "pod-a"},
-		{EndpointID: "pod-b"},
+		tcxProgram("pod-a", model.DirectionIngress, "172.30.0.11/32", 8080),
+		tcxProgram("pod-b", model.DirectionIngress, "172.30.0.12/32", 8080),
 	})
 	if len(targets) != 2 {
 		t.Fatalf("targets = %d, want 2", len(targets))
@@ -159,6 +173,9 @@ func TestTCXTargetsBuildsOneEgressTargetPerWorkload(t *testing.T) {
 	for i, target := range targets {
 		if target.attach != ebpf.AttachTCXEgress {
 			t.Fatalf("target %d attach = %v, want egress", i, target.attach)
+		}
+		if target.policyDirection != model.DirectionIngress {
+			t.Fatalf("target %d policy direction = %s, want ingress", i, target.policyDirection)
 		}
 		if len(target.programs) != 1 {
 			t.Fatalf("target %d programs = %d, want 1", i, len(target.programs))
@@ -169,14 +186,33 @@ func TestTCXTargetsBuildsOneEgressTargetPerWorkload(t *testing.T) {
 	}
 }
 
+func TestTCXTargetsBuildsIngressTargetForWorkloadEgressPolicy(t *testing.T) {
+	targets := tcxTargets(ReconcileOptions{TCXWorkload: true}, []policy.Program{
+		tcxProgram("pod-a", model.DirectionEgress, "198.51.100.10/32", 443),
+	})
+	if len(targets) != 1 {
+		t.Fatalf("targets = %d, want 1", len(targets))
+	}
+	target := targets[0]
+	if target.attach != ebpf.AttachTCXIngress || target.policyDirection != model.DirectionEgress {
+		t.Fatalf("unexpected target attach=%v policy_direction=%s", target.attach, target.policyDirection)
+	}
+	if target.ifName == "" || len(target.programs) != 1 {
+		t.Fatalf("unexpected target: %+v", target)
+	}
+}
+
 func TestTCXTargetsBuildsOneIngressTargetForNodeInterface(t *testing.T) {
-	programs := []policy.Program{{EndpointID: "pod-a"}, {EndpointID: "pod-b"}}
+	programs := []policy.Program{
+		tcxProgram("pod-a", model.DirectionIngress, "172.30.0.11/32", 8080),
+		tcxProgram("pod-b", model.DirectionIngress, "172.30.0.12/32", 8080),
+	}
 	targets := tcxTargets(ReconcileOptions{TCXInterface: "eth0"}, programs)
 	if len(targets) != 1 {
 		t.Fatalf("targets = %d, want 1", len(targets))
 	}
 	target := targets[0]
-	if target.ifName != "eth0" || target.attach != ebpf.AttachTCXIngress || len(target.programs) != 2 {
+	if target.ifName != "eth0" || target.attach != ebpf.AttachTCXIngress || target.policyDirection != model.DirectionIngress || len(target.programs) != 2 {
 		t.Fatalf("unexpected target: %+v", target)
 	}
 }

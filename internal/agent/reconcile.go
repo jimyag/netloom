@@ -49,9 +49,10 @@ type ReconcileOptions struct {
 }
 
 type tcxTarget struct {
-	ifName   string
-	attach   ebpf.AttachType
-	programs []policy.Program
+	ifName          string
+	attach          ebpf.AttachType
+	policyDirection model.Direction
+	programs        []policy.Program
 }
 
 type tcxAttachmentHandle struct {
@@ -207,7 +208,7 @@ func prepareReconcile(ctx context.Context, state control.DesiredState, options R
 		result.Endpoints++
 		result.Programs++
 		result.Entries += len(program.MapEntries)
-		if _, err := dataplane.IPv4L4ACLRulesFromProgram(program); err == nil {
+		if tcxEligibleProgram(program) {
 			result.TCXEligible++
 			localPrograms = append(localPrograms, program)
 		}
@@ -236,11 +237,22 @@ func tcxTargets(options ReconcileOptions, programs []policy.Program) []tcxTarget
 	if options.TCXWorkload {
 		targets := make([]tcxTarget, 0, len(programs))
 		for _, program := range programs {
-			targets = append(targets, tcxTarget{
-				ifName:   linuxdatapath.HostVethName(program.EndpointID),
-				attach:   ebpf.AttachTCXEgress,
-				programs: []policy.Program{program},
-			})
+			if tcxEligibleProgramForDirection(program, model.DirectionIngress) {
+				targets = append(targets, tcxTarget{
+					ifName:          linuxdatapath.HostVethName(program.EndpointID),
+					attach:          ebpf.AttachTCXEgress,
+					policyDirection: model.DirectionIngress,
+					programs:        []policy.Program{program},
+				})
+			}
+			if tcxEligibleProgramForDirection(program, model.DirectionEgress) {
+				targets = append(targets, tcxTarget{
+					ifName:          linuxdatapath.HostVethName(program.EndpointID),
+					attach:          ebpf.AttachTCXIngress,
+					policyDirection: model.DirectionEgress,
+					programs:        []policy.Program{program},
+				})
+			}
 		}
 		return targets
 	}
@@ -248,10 +260,21 @@ func tcxTargets(options ReconcileOptions, programs []policy.Program) []tcxTarget
 		return nil
 	}
 	return []tcxTarget{{
-		ifName:   options.TCXInterface,
-		attach:   ebpf.AttachTCXIngress,
-		programs: programs,
+		ifName:          options.TCXInterface,
+		attach:          ebpf.AttachTCXIngress,
+		policyDirection: model.DirectionIngress,
+		programs:        programs,
 	}}
+}
+
+func tcxEligibleProgram(program policy.Program) bool {
+	return tcxEligibleProgramForDirection(program, model.DirectionIngress) ||
+		tcxEligibleProgramForDirection(program, model.DirectionEgress)
+}
+
+func tcxEligibleProgramForDirection(program policy.Program, direction model.Direction) bool {
+	_, err := dataplane.IPv4L4ACLRulesFromProgramForDirection(program, direction)
+	return err == nil
 }
 
 func attachTCXTargets(ctx context.Context, targets []tcxTarget, hold time.Duration) (string, error) {
@@ -325,7 +348,7 @@ func (r *Reconciler) syncTCXTargets(ctx context.Context, targets []tcxTarget) (s
 }
 
 func attachTCXTarget(ctx context.Context, target tcxTarget) (tcxAttachmentHandle, error) {
-	attachment, err := dataplane.AttachTCXIPv4L4Programs(ctx, target.ifName, target.programs, target.attach)
+	attachment, err := dataplane.AttachTCXIPv4L4ProgramsForDirection(ctx, target.ifName, target.programs, target.attach, target.policyDirection)
 	if err != nil {
 		return tcxAttachmentHandle{}, err
 	}
@@ -336,7 +359,7 @@ func attachTCXTarget(ctx context.Context, target tcxTarget) (tcxAttachmentHandle
 }
 
 func tcxTargetKey(target tcxTarget) string {
-	return fmt.Sprintf("%s/%d", target.ifName, target.attach)
+	return fmt.Sprintf("%s/%d/%s", target.ifName, target.attach, target.policyDirection)
 }
 
 func tcxTargetSignature(target tcxTarget) string {
@@ -348,5 +371,15 @@ func formatTCXResult(attachments []tcxAttachmentHandle) string {
 	if len(attachments) == 1 {
 		return fmt.Sprintf("attached:%s:%s:%s", first.Interface, first.Direction, first.Mode)
 	}
-	return fmt.Sprintf("attached-workloads:%d:%s:%s", len(attachments), first.Direction, first.Mode)
+	direction := first.Direction
+	mode := first.Mode
+	for _, attachment := range attachments[1:] {
+		if attachment.result.Direction != direction {
+			direction = "mixed"
+		}
+		if attachment.result.Mode != mode {
+			mode = "mixed"
+		}
+	}
+	return fmt.Sprintf("attached-workloads:%d:%s:%s", len(attachments), direction, mode)
 }

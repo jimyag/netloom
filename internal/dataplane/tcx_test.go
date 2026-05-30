@@ -84,6 +84,40 @@ func TestIPv4L4ACLRulesFromProgramProjectsExactIngressPolicy(t *testing.T) {
 	}
 }
 
+func TestIPv4L4ACLRulesFromProgramProjectsExactEgressPolicy(t *testing.T) {
+	program := policy.Program{
+		EndpointID: "pod-a",
+		Rules: []policy.Rule{
+			{
+				ID:         "skip-ingress",
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("172.30.0.11/32"),
+				Ports:      []model.PortRange{{From: 8080, To: 8080}},
+				Action:     model.ActionDrop,
+			},
+			{
+				ID:         "drop-egress-api",
+				Direction:  model.DirectionEgress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("198.51.100.10/32"),
+				Ports:      []model.PortRange{{From: 443, To: 443}},
+				Action:     model.ActionDrop,
+			},
+		},
+	}
+	rules, err := IPv4L4ACLRulesFromProgramForDirection(program, model.DirectionEgress)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 1 {
+		t.Fatalf("rules = %d, want 1", len(rules))
+	}
+	if rules[0].Source != netip.MustParseAddr("198.51.100.10") || rules[0].Protocol != 6 || rules[0].DestPort != 443 || rules[0].Action != TCXDrop {
+		t.Fatalf("unexpected rule: %+v", rules[0])
+	}
+}
+
 func TestIPv4L4ACLRulesFromProgramRejectsNoExactRules(t *testing.T) {
 	_, err := IPv4L4ACLRulesFromProgram(policy.Program{EndpointID: "pod-a"})
 	if err == nil {
