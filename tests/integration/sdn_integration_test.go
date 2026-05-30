@@ -37,6 +37,9 @@ func TestDesiredStateDrivesTopologyRoutesAndEBPFStyleACL(t *testing.T) {
 	if gateway, ok := memoryBackend.Gateways["gw-a"]; !ok || gateway.Node != "node-a" || gateway.LANIP.String() != "10.10.0.254" {
 		t.Fatalf("gateway gw-a was not reconciled, got: %+v", memoryBackend.Gateways)
 	}
+	if lb, ok := memoryBackend.LoadBalancers["web"]; !ok || lb.VIP.String() != "10.96.0.10" || len(lb.Backends) != 1 {
+		t.Fatalf("load balancer web was not reconciled, got: %+v", memoryBackend.LoadBalancers)
+	}
 	if len(memoryBackend.PolicyRoutes) != 1 {
 		t.Fatalf("policy routes = %d, want 1", len(memoryBackend.PolicyRoutes))
 	}
@@ -45,6 +48,9 @@ func TestDesiredStateDrivesTopologyRoutesAndEBPFStyleACL(t *testing.T) {
 	}
 	if !hasOVNCommand(ovnRecorder.Operations(), "lr-policy-add") {
 		t.Fatalf("expected OVN policy route operation, got: %+v", ovnRecorder.Operations())
+	}
+	if !hasOVNCommand(ovnRecorder.Operations(), "lb-add") {
+		t.Fatalf("expected OVN load balancer operation, got: %+v", ovnRecorder.Operations())
 	}
 
 	routeDecision, err := topology.Resolve(memoryBackend.TopologyState(), topology.Packet{
@@ -126,6 +132,7 @@ const integrationStateJSON = `{
   "policy_routes": [{"name": "https-via-fw", "vpc": "prod", "priority": 100, "match": {"source": "10.10.0.0/24", "destination": "172.16.0.0/16", "protocol": "tcp", "dst_ports": [{"from": 443, "to": 443}]}, "action": {"type": "reroute", "next_hop": "10.10.0.253"}}],
   "gateways": [{"name": "gw-a", "vpc": "prod", "node": "node-a", "external_if": "eth0", "lan_ip": "10.10.0.254"}],
   "nat_rules": [{"name": "egress", "vpc": "prod", "type": "snat", "match_cidr": "10.10.0.0/24", "external_ip": "198.51.100.10"}],
+  "load_balancers": [{"name": "web", "vpc": "prod", "vip": "10.96.0.10", "port": 80, "protocol": "tcp", "backends": [{"ip": "10.10.0.11", "port": 8080}], "subnets": ["apps"]}],
   "security_groups": [
     {"name": "client", "vpc": "prod", "rules": [{"id": "client-egress", "priority": 100, "direction": "egress", "protocol": "any", "remote_cidr": "0.0.0.0/0", "action": "allow"}]},
     {"name": "server", "vpc": "prod", "rules": [

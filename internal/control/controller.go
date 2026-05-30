@@ -19,6 +19,7 @@ type TopologyBackend interface {
 	EnsurePolicyRoute(context.Context, model.PolicyRoute) error
 	EnsureGateway(context.Context, model.Gateway) error
 	EnsureNATRule(context.Context, model.NATRule) error
+	EnsureLoadBalancer(context.Context, model.LoadBalancer) error
 }
 
 type TopologyLifecycleBackend interface {
@@ -113,6 +114,15 @@ func (m MultiTopologyBackend) EnsureNATRule(ctx context.Context, rule model.NATR
 	return nil
 }
 
+func (m MultiTopologyBackend) EnsureLoadBalancer(ctx context.Context, lb model.LoadBalancer) error {
+	for _, backend := range m {
+		if err := backend.EnsureLoadBalancer(ctx, lb); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 type PolicyBackend interface {
 	ApplyEndpointProgram(context.Context, policy.Program) error
 }
@@ -129,6 +139,7 @@ type DesiredState struct {
 	PolicyRoutes   []model.PolicyRoute   `json:"policy_routes"`
 	Gateways       []model.Gateway       `json:"gateways"`
 	NATRules       []model.NATRule       `json:"nat_rules"`
+	LoadBalancers  []model.LoadBalancer  `json:"load_balancers"`
 	SecurityGroups []model.SecurityGroup `json:"security_groups"`
 }
 
@@ -150,6 +161,9 @@ func (c *Controller) Reconcile(ctx context.Context, state DesiredState) error {
 		groups[group.Name] = group
 	}
 	if err := validateNATRules(state.NATRules); err != nil {
+		return err
+	}
+	if err := validateLoadBalancers(state.LoadBalancers); err != nil {
 		return err
 	}
 	topologyState := desiredTopologyState(state)
@@ -206,6 +220,11 @@ func (c *Controller) Reconcile(ctx context.Context, state DesiredState) error {
 	for _, rule := range state.NATRules {
 		if err := c.topology.EnsureNATRule(ctx, rule); err != nil {
 			return fmt.Errorf("ensure nat rule %s: %w", rule.Name, err)
+		}
+	}
+	for _, lb := range state.LoadBalancers {
+		if err := c.topology.EnsureLoadBalancer(ctx, lb); err != nil {
+			return fmt.Errorf("ensure load balancer %s: %w", lb.Name, err)
 		}
 	}
 	for _, endpoint := range state.Endpoints {
@@ -291,6 +310,31 @@ func inboundPortKeysPrefix(keys map[string]string, prefix string) string {
 	return ""
 }
 
+func validateLoadBalancers(loadBalancers []model.LoadBalancer) error {
+	names := make(map[string]struct{}, len(loadBalancers))
+	vips := make(map[string]string, len(loadBalancers))
+	for _, lb := range loadBalancers {
+		if err := lb.Validate(); err != nil {
+			return err
+		}
+		if _, ok := names[lb.Name]; ok {
+			return fmt.Errorf("duplicate load balancer name %q", lb.Name)
+		}
+		names[lb.Name] = struct{}{}
+
+		protocol := lb.Protocol
+		if protocol == "" {
+			protocol = model.ProtocolTCP
+		}
+		key := fmt.Sprintf("%s|%s|%s|%d", lb.VPC, lb.VIP, protocol, lb.Port)
+		if prev := vips[key]; prev != "" {
+			return fmt.Errorf("load balancer %q conflicts with %q on %s/%s:%d", lb.Name, prev, lb.VIP, protocol, lb.Port)
+		}
+		vips[key] = lb.Name
+	}
+	return nil
+}
+
 func desiredTopologyState(state DesiredState) topology.State {
 	vpcs := make(map[string]model.VPC, len(state.VPCs))
 	for _, vpc := range state.VPCs {
@@ -316,13 +360,18 @@ func desiredTopologyState(state DesiredState) topology.State {
 	for _, rule := range state.NATRules {
 		natRules[rule.Name] = rule
 	}
+	loadBalancers := make(map[string]model.LoadBalancer, len(state.LoadBalancers))
+	for _, lb := range state.LoadBalancers {
+		loadBalancers[lb.Name] = lb
+	}
 	return topology.State{
-		VPCs:         vpcs,
-		Subnets:      subnets,
-		Endpoints:    endpoints,
-		RouteTables:  routeTables,
-		PolicyRoutes: append([]model.PolicyRoute(nil), state.PolicyRoutes...),
-		Gateways:     gateways,
-		NATRules:     natRules,
+		VPCs:          vpcs,
+		Subnets:       subnets,
+		Endpoints:     endpoints,
+		RouteTables:   routeTables,
+		PolicyRoutes:  append([]model.PolicyRoute(nil), state.PolicyRoutes...),
+		Gateways:      gateways,
+		NATRules:      natRules,
+		LoadBalancers: loadBalancers,
 	}
 }

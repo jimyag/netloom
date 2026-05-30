@@ -68,6 +68,17 @@ func TestControllerReconcileSeparatesTopologyFromPolicy(t *testing.T) {
 			MatchCIDR:  netip.MustParsePrefix("10.10.0.0/24"),
 			ExternalIP: netip.MustParseAddr("192.0.2.10"),
 		}},
+		LoadBalancers: []model.LoadBalancer{{
+			Name: "web-vip",
+			VPC:  "prod",
+			VIP:  netip.MustParseAddr("10.96.0.10"),
+			Port: 80,
+			Backends: []model.LoadBalancerBackend{{
+				IP:   netip.MustParseAddr("10.10.0.10"),
+				Port: 8080,
+			}},
+			Subnets: []string{"apps"},
+		}},
 		SecurityGroups: []model.SecurityGroup{{
 			Name: "web",
 			VPC:  "prod",
@@ -102,6 +113,9 @@ func TestControllerReconcileSeparatesTopologyFromPolicy(t *testing.T) {
 	}
 	if got := backend.PolicyRoutes[0].Name; got != "force-private" {
 		t.Fatalf("first policy route = %s, want force-private", got)
+	}
+	if _, ok := backend.LoadBalancers["web-vip"]; !ok {
+		t.Fatalf("load balancer was not reconciled: %+v", backend.LoadBalancers)
 	}
 }
 
@@ -171,6 +185,42 @@ func TestControllerRejectsConflictingNATRules(t *testing.T) {
 				t.Fatalf("error %q does not contain %q", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestControllerRejectsConflictingLoadBalancers(t *testing.T) {
+	baseState := DesiredState{
+		VPCs: []model.VPC{{Name: "prod"}},
+	}
+	state := baseState
+	state.LoadBalancers = []model.LoadBalancer{
+		{
+			Name: "web-a",
+			VPC:  "prod",
+			VIP:  netip.MustParseAddr("10.96.0.10"),
+			Port: 80,
+			Backends: []model.LoadBalancerBackend{{
+				IP:   netip.MustParseAddr("10.10.0.10"),
+				Port: 8080,
+			}},
+		},
+		{
+			Name: "web-b",
+			VPC:  "prod",
+			VIP:  netip.MustParseAddr("10.96.0.10"),
+			Port: 80,
+			Backends: []model.LoadBalancerBackend{{
+				IP:   netip.MustParseAddr("10.10.0.11"),
+				Port: 8080,
+			}},
+		},
+	}
+	err := NewController(NewMemoryBackend(), NewMemoryBackend()).Reconcile(context.Background(), state)
+	if err == nil {
+		t.Fatal("expected conflicting load balancers to fail")
+	}
+	if !strings.Contains(err.Error(), "conflicts") {
+		t.Fatalf("error %q does not contain conflicts", err)
 	}
 }
 

@@ -66,6 +66,7 @@ func TestBackendCleanupEmitsDeletesForStaleDesiredObjects(t *testing.T) {
 	second := first
 	second.Endpoints = nil
 	second.NATRules = nil
+	second.LoadBalancers = nil
 	if err := controller.Reconcile(context.Background(), second); err != nil {
 		t.Fatal(err)
 	}
@@ -74,6 +75,9 @@ func TestBackendCleanupEmitsDeletesForStaleDesiredObjects(t *testing.T) {
 	for _, expected := range []string{
 		"--if-exists lsp-del nl_lp_pod-a",
 		"--if-exists lr-nat-del nl_lr_prod snat 10.10.0.0/24",
+		"--if-exists lr-lb-del nl_lr_prod nl_lb_web",
+		"--if-exists ls-lb-del nl_ls_apps nl_lb_web",
+		"--if-exists lb-del nl_lb_web",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("cleanup operations missing %q:\n%s", expected, joined)
@@ -147,6 +151,18 @@ func controlStateWithEndpoint(endpointID string) control.DesiredState {
 			Type:       model.ActionSNAT,
 			MatchCIDR:  netip.MustParsePrefix("10.10.0.0/24"),
 			ExternalIP: netip.MustParseAddr("198.51.100.10"),
+		}},
+		LoadBalancers: []model.LoadBalancer{{
+			Name:     "web",
+			VPC:      "prod",
+			VIP:      netip.MustParseAddr("10.96.0.10"),
+			Port:     80,
+			Protocol: model.ProtocolTCP,
+			Backends: []model.LoadBalancerBackend{{
+				IP:   netip.MustParseAddr("10.10.0.10"),
+				Port: 8080,
+			}},
+			Subnets: []string{"apps"},
 		}},
 	}
 }

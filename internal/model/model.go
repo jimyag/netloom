@@ -109,6 +109,21 @@ type NATRule struct {
 	TargetPort   uint16       `json:"target_port"`
 }
 
+type LoadBalancer struct {
+	Name     string                `json:"name"`
+	VPC      string                `json:"vpc"`
+	VIP      netip.Addr            `json:"vip"`
+	Port     uint16                `json:"port"`
+	Protocol Protocol              `json:"protocol"`
+	Backends []LoadBalancerBackend `json:"backends"`
+	Subnets  []string              `json:"subnets"`
+}
+
+type LoadBalancerBackend struct {
+	IP   netip.Addr `json:"ip"`
+	Port uint16     `json:"port"`
+}
+
 type SecurityGroup struct {
 	Name  string              `json:"name"`
 	VPC   string              `json:"vpc"`
@@ -322,6 +337,51 @@ func (n NATRule) Validate() error {
 		if n.Protocol != ProtocolAny {
 			return errors.New("dnat_and_snat protocol must be any")
 		}
+	}
+	return nil
+}
+
+func (l LoadBalancer) Validate() error {
+	if l.Name == "" {
+		return errors.New("load balancer name is required")
+	}
+	if l.VPC == "" {
+		return errors.New("load balancer vpc is required")
+	}
+	if !l.VIP.IsValid() {
+		return errors.New("load balancer vip is required")
+	}
+	if l.Port == 0 {
+		return errors.New("load balancer port is required")
+	}
+	if l.Protocol == "" {
+		l.Protocol = ProtocolTCP
+	}
+	if l.Protocol != ProtocolTCP && l.Protocol != ProtocolUDP {
+		return fmt.Errorf("unsupported load balancer protocol %q", l.Protocol)
+	}
+	if len(l.Backends) == 0 {
+		return errors.New("load balancer backends are required")
+	}
+	for i, backend := range l.Backends {
+		if err := backend.Validate(); err != nil {
+			return fmt.Errorf("load balancer backend %d: %w", i, err)
+		}
+	}
+	for i, subnet := range l.Subnets {
+		if subnet == "" {
+			return fmt.Errorf("load balancer subnet %d is empty", i)
+		}
+	}
+	return nil
+}
+
+func (b LoadBalancerBackend) Validate() error {
+	if !b.IP.IsValid() {
+		return errors.New("backend ip is required")
+	}
+	if b.Port == 0 {
+		return errors.New("backend port is required")
 	}
 	return nil
 }

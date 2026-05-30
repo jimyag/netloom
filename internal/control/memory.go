@@ -18,6 +18,7 @@ type MemoryBackend struct {
 	PolicyRoutes  []model.PolicyRoute
 	Gateways      map[string]model.Gateway
 	NATRules      map[string]model.NATRule
+	LoadBalancers map[string]model.LoadBalancer
 	PolicyProgram map[string]policy.Program
 }
 
@@ -29,6 +30,7 @@ func NewMemoryBackend() *MemoryBackend {
 		RouteTables:   make(map[string]model.RouteTable),
 		Gateways:      make(map[string]model.Gateway),
 		NATRules:      make(map[string]model.NATRule),
+		LoadBalancers: make(map[string]model.LoadBalancer),
 		PolicyProgram: make(map[string]policy.Program),
 	}
 }
@@ -82,6 +84,13 @@ func (m *MemoryBackend) EnsureNATRule(_ context.Context, rule model.NATRule) err
 	return nil
 }
 
+func (m *MemoryBackend) EnsureLoadBalancer(_ context.Context, lb model.LoadBalancer) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.LoadBalancers[lb.Name] = lb
+	return nil
+}
+
 func (m *MemoryBackend) BeginTopologyReconcile(context.Context, topology.State) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -99,6 +108,7 @@ func (m *MemoryBackend) CleanupTopology(_ context.Context, state topology.State)
 	m.RouteTables = cloneMap(state.RouteTables)
 	m.Gateways = cloneMap(state.Gateways)
 	m.NATRules = cloneMap(state.NATRules)
+	m.LoadBalancers = cloneMap(state.LoadBalancers)
 	return nil
 }
 
@@ -130,13 +140,14 @@ func (m *MemoryBackend) TopologyState() topology.State {
 	defer m.mu.Unlock()
 
 	return topology.State{
-		VPCs:         cloneMap(m.VPCs),
-		Subnets:      cloneMap(m.Subnets),
-		Endpoints:    cloneMap(m.Endpoints),
-		RouteTables:  cloneMap(m.RouteTables),
-		PolicyRoutes: append([]model.PolicyRoute(nil), m.PolicyRoutes...),
-		Gateways:     cloneMap(m.Gateways),
-		NATRules:     cloneMap(m.NATRules),
+		VPCs:          cloneMap(m.VPCs),
+		Subnets:       cloneMap(m.Subnets),
+		Endpoints:     cloneMap(m.Endpoints),
+		RouteTables:   cloneMap(m.RouteTables),
+		PolicyRoutes:  append([]model.PolicyRoute(nil), m.PolicyRoutes...),
+		Gateways:      cloneMap(m.Gateways),
+		NATRules:      cloneMap(m.NATRules),
+		LoadBalancers: cloneMap(m.LoadBalancers),
 	}
 }
 

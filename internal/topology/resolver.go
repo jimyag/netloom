@@ -9,13 +9,14 @@ import (
 )
 
 type State struct {
-	VPCs         map[string]model.VPC
-	Subnets      map[string]model.Subnet
-	Endpoints    map[string]model.Endpoint
-	RouteTables  map[string]model.RouteTable
-	PolicyRoutes []model.PolicyRoute
-	Gateways     map[string]model.Gateway
-	NATRules     map[string]model.NATRule
+	VPCs          map[string]model.VPC
+	Subnets       map[string]model.Subnet
+	Endpoints     map[string]model.Endpoint
+	RouteTables   map[string]model.RouteTable
+	PolicyRoutes  []model.PolicyRoute
+	Gateways      map[string]model.Gateway
+	NATRules      map[string]model.NATRule
+	LoadBalancers map[string]model.LoadBalancer
 }
 
 type Packet struct {

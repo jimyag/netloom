@@ -62,6 +62,18 @@ func TestPlannerMapsNetloomObjectsToOVNOperations(t *testing.T) {
 			MatchCIDR:  netip.MustParsePrefix("10.10.0.0/24"),
 			ExternalIP: netip.MustParseAddr("198.51.100.10"),
 		}},
+		LoadBalancers: []model.LoadBalancer{{
+			Name:     "web",
+			VPC:      "prod",
+			VIP:      netip.MustParseAddr("10.96.0.10"),
+			Port:     80,
+			Protocol: model.ProtocolTCP,
+			Backends: []model.LoadBalancerBackend{{
+				IP:   netip.MustParseAddr("10.10.0.10"),
+				Port: 8080,
+			}},
+			Subnets: []string{"apps"},
+		}},
 		SecurityGroups: []model.SecurityGroup{{
 			Name: "web",
 			VPC:  "prod",
@@ -88,6 +100,9 @@ func TestPlannerMapsNetloomObjectsToOVNOperations(t *testing.T) {
 		"lr-route-add nl_lr_prod 0.0.0.0/0 10.10.0.254",
 		"lr-policy-add nl_lr_prod 100",
 		"lr-nat-add nl_lr_prod snat 198.51.100.10 10.10.0.0/24",
+		"lb-add nl_lb_web 10.96.0.10:80 10.10.0.10:8080 tcp",
+		"lr-lb-add nl_lr_prod nl_lb_web",
+		"ls-lb-add nl_ls_apps nl_lb_web",
 		"lsp-add nl_ls_apps nl_lp_pod-a",
 	} {
 		if !strings.Contains(joined, expected) {
@@ -96,6 +111,37 @@ func TestPlannerMapsNetloomObjectsToOVNOperations(t *testing.T) {
 	}
 	if strings.Contains(joined, "acl") {
 		t.Fatalf("OVN planner must not generate ACL operations; got:\n%s", joined)
+	}
+}
+
+func TestPlannerBuildsLoadBalancerOperations(t *testing.T) {
+	planner := ovn.NewPlanner()
+	err := planner.EnsureLoadBalancer(context.Background(), model.LoadBalancer{
+		Name:     "web",
+		VPC:      "prod",
+		VIP:      netip.MustParseAddr("10.96.0.10"),
+		Port:     80,
+		Protocol: model.ProtocolTCP,
+		Backends: []model.LoadBalancerBackend{
+			{IP: netip.MustParseAddr("10.10.0.11"), Port: 8080},
+			{IP: netip.MustParseAddr("10.10.0.10"), Port: 8080},
+		},
+		Subnets: []string{"apps"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	joined := stringify(planner.Operations())
+	for _, expected := range []string{
+		"--may-exist lb-add nl_lb_web 10.96.0.10:80 10.10.0.10:8080,10.10.0.11:8080 tcp",
+		"external_ids:netloom_load_balancer=web",
+		"--may-exist lr-lb-add nl_lr_prod nl_lb_web",
+		"--may-exist ls-lb-add nl_ls_apps nl_lb_web",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("OVN operations missing %q:\n%s", expected, joined)
+		}
 	}
 }
 

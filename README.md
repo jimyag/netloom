@@ -153,7 +153,7 @@ OVN ACL 本身很适合做分布式虚拟网络策略，但它不是唯一选择
 当前仓库已经包含：
 
 - 控制面模型：VPC、Subnet、Endpoint、RouteTable、PolicyRoute、Gateway、NATRule、SecurityGroup。
-- OVN 风格拓扑后端：把逻辑交换、逻辑路由、策略路由、Gateway 和 NAT 转换为带 `external_ids` 所有权标记的批量 `ovn-nbctl` 事务；NAT 覆盖 SNAT、DNAT、Floating IP (`dnat_and_snat`) 和 OVN `--portrange` 端口 DNAT，并在控制面拒绝 EIP/端口冲突。
+- OVN 风格拓扑后端：把逻辑交换、逻辑路由、策略路由、Gateway、NAT 和 Service VIP 转换为带 `external_ids` 所有权标记的批量 `ovn-nbctl` 事务；NAT 覆盖 SNAT、DNAT、Floating IP (`dnat_and_snat`) 和 OVN `--portrange` 端口 DNAT，并在控制面拒绝 EIP/端口冲突。
 - Linux 工作负载 datapath：支持本机 `/32` 地址路由和 `netns + veth` 多工作负载模式，网卡/netns 操作可使用 `vishvananda/netlink`/`netns` 后端执行。
 - Cilium 风格策略编译：把安全组规则编译为 endpoint-scoped policy map entry，并把 `remote_group` 展开为 endpoint identity 与精确成员 CIDR。
 - Cilium 风格连接状态：stateful allow 规则会建立反向 conntrack 状态，策略变化或 endpoint 删除时清理旧状态。
@@ -168,6 +168,7 @@ OVN ACL 本身很适合做分布式虚拟网络策略，但它不是唯一选择
 - `SecurityGroupRule` 属于 ACL 意图，由 eBPF-style policy map 和 TCX ACL datapath 执行。
 - ACL 不放到 OVN ACL 里实现，避免和 eBPF 策略路径重叠。
 - DNAT 端口映射会校验协议意图；当前 OVN NAT schema 只有 `external_port_range`，没有协议列，也不做端口号转换，因此 Netloom 只接受 external/target 端口相同的端口 DNAT，并把同一个 EIP+端口视为冲突。
+- `LoadBalancer` 使用 OVN `lb-add`/`lr-lb-add`/`ls-lb-add` 表达 Kube-OVN 风格的 VPC Service VIP，控制面会拒绝同 VPC 内重复的 VIP+协议+端口。
 
 ## 开发
 

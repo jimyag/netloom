@@ -147,6 +147,23 @@ func (p *Planner) EnsureNATRule(_ context.Context, rule model.NATRule) error {
 	return nil
 }
 
+func (p *Planner) EnsureLoadBalancer(_ context.Context, lb model.LoadBalancer) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	name := loadBalancerName(lb.Name)
+	router := p.routerForVPC(lb.VPC)
+	p.ops = append(p.ops,
+		Operation{Command: "lb-add", Flags: []string{"--may-exist"}, Args: []string{name, loadBalancerVIP(lb), loadBalancerBackends(lb), string(loadBalancerProtocol(lb))}},
+		setOperation("load_balancer", name, "external_ids:netloom_owner=netloom", "external_ids:netloom_load_balancer="+lb.Name, "external_ids:netloom_vpc="+lb.VPC),
+		Operation{Command: "lr-lb-add", Flags: []string{"--may-exist"}, Args: []string{router, name}},
+	)
+	for _, subnet := range lb.Subnets {
+		p.ops = append(p.ops, Operation{Command: "ls-lb-add", Flags: []string{"--may-exist"}, Args: []string{logicalSwitch(subnet), name}})
+	}
+	return nil
+}
+
 func (p *Planner) Operations() []Operation {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -185,6 +202,10 @@ func logicalPort(endpoint string) string {
 	return "nl_lp_" + sanitize(endpoint)
 }
 
+func loadBalancerName(name string) string {
+	return "nl_lb_" + sanitize(name)
+}
+
 func routerPortName(router, subnet string) string {
 	return router + "_to_" + sanitize(subnet)
 }
@@ -205,6 +226,26 @@ func deterministicMAC(ip netip.Addr) string {
 	}
 	raw := ip.As16()
 	return fmt.Sprintf("0a:58:%02x:%02x:%02x:%02x", raw[12], raw[13], raw[14], raw[15])
+}
+
+func loadBalancerVIP(lb model.LoadBalancer) string {
+	return netip.AddrPortFrom(lb.VIP, lb.Port).String()
+}
+
+func loadBalancerBackends(lb model.LoadBalancer) string {
+	backends := make([]string, 0, len(lb.Backends))
+	for _, backend := range lb.Backends {
+		backends = append(backends, netip.AddrPortFrom(backend.IP, backend.Port).String())
+	}
+	sort.Strings(backends)
+	return strings.Join(backends, ",")
+}
+
+func loadBalancerProtocol(lb model.LoadBalancer) model.Protocol {
+	if lb.Protocol == "" {
+		return model.ProtocolTCP
+	}
+	return lb.Protocol
 }
 
 func policyRouteMatch(match model.RouteMatch) string {

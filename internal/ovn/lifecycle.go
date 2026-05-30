@@ -9,13 +9,14 @@ import (
 )
 
 type desiredSnapshot struct {
-	VPCs         map[string]model.VPC
-	Subnets      map[string]model.Subnet
-	Endpoints    map[string]model.Endpoint
-	Routes       map[string]routeRecord
-	PolicyRoutes map[string]policyRouteRecord
-	Gateways     map[string]model.Gateway
-	NATRules     map[string]model.NATRule
+	VPCs          map[string]model.VPC
+	Subnets       map[string]model.Subnet
+	Endpoints     map[string]model.Endpoint
+	Routes        map[string]routeRecord
+	PolicyRoutes  map[string]policyRouteRecord
+	Gateways      map[string]model.Gateway
+	NATRules      map[string]model.NATRule
+	LoadBalancers map[string]model.LoadBalancer
 }
 
 type routeRecord struct {
@@ -30,13 +31,14 @@ type policyRouteRecord struct {
 
 func snapshotDesired(state topology.State) desiredSnapshot {
 	out := desiredSnapshot{
-		VPCs:         make(map[string]model.VPC, len(state.VPCs)),
-		Subnets:      make(map[string]model.Subnet, len(state.Subnets)),
-		Endpoints:    make(map[string]model.Endpoint, len(state.Endpoints)),
-		Routes:       make(map[string]routeRecord),
-		PolicyRoutes: make(map[string]policyRouteRecord, len(state.PolicyRoutes)),
-		Gateways:     make(map[string]model.Gateway, len(state.Gateways)),
-		NATRules:     make(map[string]model.NATRule, len(state.NATRules)),
+		VPCs:          make(map[string]model.VPC, len(state.VPCs)),
+		Subnets:       make(map[string]model.Subnet, len(state.Subnets)),
+		Endpoints:     make(map[string]model.Endpoint, len(state.Endpoints)),
+		Routes:        make(map[string]routeRecord),
+		PolicyRoutes:  make(map[string]policyRouteRecord, len(state.PolicyRoutes)),
+		Gateways:      make(map[string]model.Gateway, len(state.Gateways)),
+		NATRules:      make(map[string]model.NATRule, len(state.NATRules)),
+		LoadBalancers: make(map[string]model.LoadBalancer, len(state.LoadBalancers)),
 	}
 	for name, vpc := range state.VPCs {
 		out.VPCs[name] = vpc
@@ -61,6 +63,9 @@ func snapshotDesired(state topology.State) desiredSnapshot {
 	}
 	for name, rule := range state.NATRules {
 		out.NATRules[name] = rule
+	}
+	for name, lb := range state.LoadBalancers {
+		out.LoadBalancers[name] = lb
 	}
 	return out
 }
@@ -103,6 +108,15 @@ func cleanupOperations(old, next desiredSnapshot) []Operation {
 			natType(rule.Type),
 			natDeleteMatch(rule),
 		}})
+	}
+	for _, key := range staleKeys(old.LoadBalancers, next.LoadBalancers) {
+		lb := old.LoadBalancers[key]
+		name := loadBalancerName(lb.Name)
+		ops = append(ops, Operation{Command: "lr-lb-del", Flags: []string{"--if-exists"}, Args: []string{logicalRouter(lb.VPC), name}})
+		for _, subnet := range lb.Subnets {
+			ops = append(ops, Operation{Command: "ls-lb-del", Flags: []string{"--if-exists"}, Args: []string{logicalSwitch(subnet), name}})
+		}
+		ops = append(ops, Operation{Command: "lb-del", Flags: []string{"--if-exists"}, Args: []string{name}})
 	}
 	for _, key := range staleKeys(old.Gateways, next.Gateways) {
 		gateway := old.Gateways[key]

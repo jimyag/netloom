@@ -100,7 +100,7 @@ func (r *stateFileReconciler) reconcile(ctx context.Context, path string) error 
 	ovnOps := len(r.ovnBackend.Operations()) - opsBefore
 	executed := r.executedOperations() - executedBefore
 	fmt.Printf(
-		"netloom-controller reconciled desired state vpcs=%d subnets=%d endpoints=%d route_tables=%d policy_routes=%d gateways=%d nat_rules=%d security_groups=%d policy_entries=%d ovn_ops=%d ovn_executed=%d\n",
+		"netloom-controller reconciled desired state vpcs=%d subnets=%d endpoints=%d route_tables=%d policy_routes=%d gateways=%d nat_rules=%d load_balancers=%d security_groups=%d policy_entries=%d ovn_ops=%d ovn_executed=%d\n",
 		len(state.VPCs),
 		len(state.Subnets),
 		len(state.Endpoints),
@@ -108,6 +108,7 @@ func (r *stateFileReconciler) reconcile(ctx context.Context, path string) error 
 		len(state.PolicyRoutes),
 		len(state.Gateways),
 		len(state.NATRules),
+		len(state.LoadBalancers),
 		len(state.SecurityGroups),
 		countPolicyEntries(r.memory),
 		ovnOps,

@@ -47,6 +47,10 @@ func (b *Backend) EnsureNATRule(ctx context.Context, rule model.NATRule) error {
 	return b.apply(ctx, func() error { return b.planner.EnsureNATRule(ctx, rule) })
 }
 
+func (b *Backend) EnsureLoadBalancer(ctx context.Context, lb model.LoadBalancer) error {
+	return b.apply(ctx, func() error { return b.planner.EnsureLoadBalancer(ctx, lb) })
+}
+
 func (b *Backend) BeginTopologyReconcile(context.Context, topology.State) error {
 	return nil
 }

@@ -246,3 +246,84 @@ func TestNATRuleValidateKubeOVNStyleNAT(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadBalancerValidateServiceVIP(t *testing.T) {
+	valid := LoadBalancer{
+		Name:     "web",
+		VPC:      "prod",
+		VIP:      netip.MustParseAddr("10.96.0.10"),
+		Port:     80,
+		Protocol: ProtocolTCP,
+		Backends: []LoadBalancerBackend{{
+			IP:   netip.MustParseAddr("10.10.0.10"),
+			Port: 8080,
+		}},
+		Subnets: []string{"apps"},
+	}
+	if err := valid.Validate(); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name    string
+		lb      LoadBalancer
+		wantErr string
+	}{
+		{
+			name: "vip required",
+			lb: LoadBalancer{
+				Name:     "web",
+				VPC:      "prod",
+				Port:     80,
+				Backends: valid.Backends,
+			},
+			wantErr: "vip is required",
+		},
+		{
+			name: "backend required",
+			lb: LoadBalancer{
+				Name: "web",
+				VPC:  "prod",
+				VIP:  netip.MustParseAddr("10.96.0.10"),
+				Port: 80,
+			},
+			wantErr: "backends are required",
+		},
+		{
+			name: "unsupported protocol",
+			lb: LoadBalancer{
+				Name:     "web",
+				VPC:      "prod",
+				VIP:      netip.MustParseAddr("10.96.0.10"),
+				Port:     80,
+				Protocol: ProtocolICMP,
+				Backends: valid.Backends,
+			},
+			wantErr: "unsupported load balancer protocol",
+		},
+		{
+			name: "backend port required",
+			lb: LoadBalancer{
+				Name: "web",
+				VPC:  "prod",
+				VIP:  netip.MustParseAddr("10.96.0.10"),
+				Port: 80,
+				Backends: []LoadBalancerBackend{{
+					IP: netip.MustParseAddr("10.10.0.10"),
+				}},
+			},
+			wantErr: "backend port is required",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.lb.Validate()
+			if err == nil {
+				t.Fatal("expected validation to fail")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error %q does not contain %q", err, tt.wantErr)
+			}
+		})
+	}
+}

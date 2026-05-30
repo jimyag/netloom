@@ -71,7 +71,7 @@ func TestDockerMultiNodeLab(t *testing.T) {
 	}
 	liveStateScript := "cat >/tmp/netloom-state.json <<'EOF'\n" + desiredStateJSON() + "\nEOF\nNETLOOM_STATE_FILE=/tmp/netloom-state.json NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller"
 	liveStateOutput := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", liveStateScript)
-	for _, expected := range []string{"reconciled desired state", "policy_routes=1", "nat_rules=4", "security_groups=1"} {
+	for _, expected := range []string{"reconciled desired state", "policy_routes=1", "nat_rules=4", "load_balancers=1", "security_groups=1"} {
 		if !strings.Contains(liveStateOutput, expected) {
 			t.Fatalf("live state-file controller output missing %q:\n%s", expected, liveStateOutput)
 		}
@@ -88,6 +88,12 @@ func TestDockerMultiNodeLab(t *testing.T) {
 			t.Fatalf("OVN NAT state missing %q:\n%s", expected, natState)
 		}
 	}
+	lbState := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "lb-list", "nl_lb_file-web")
+	for _, expected := range []string{"nl_lb_file-web", "10.96.0.10:80", "10.245.0.10:8080"} {
+		if !strings.Contains(lbState, expected) {
+			t.Fatalf("OVN LB state missing %q:\n%s", expected, lbState)
+		}
+	}
 	controllerWatchPath := "/tmp/netloom-controller-watch-state.json"
 	startControllerWatch := "cat >" + controllerWatchPath + " <<'EOF'\n" + desiredStateJSON() + "\nEOF\nNETLOOM_STATE_FILE=" + controllerWatchPath + " NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock NETLOOM_RECONCILE_INTERVAL_MS=500 /netloom/bin/netloom-controller >/tmp/netloom-controller-watch.log 2>&1 &"
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", startControllerWatch)
@@ -96,6 +102,7 @@ func TestDockerMultiNodeLab(t *testing.T) {
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", updateControllerWatch)
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "for i in $(seq 1 15); do ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock lsp-list nl_ls_fileapps | grep -q nl_lp_file-pod-a || exit 0; sleep 1; done; cat /tmp/netloom-controller-watch.log; ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock lsp-list nl_ls_fileapps; exit 1")
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock lr-nat-list nl_lr_file | grep -q 198.51.100.20 && { cat /tmp/netloom-controller-watch.log; exit 1; } || exit 0")
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock lb-list | grep -q nl_lb_file-web && { cat /tmp/netloom-controller-watch.log; ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock lb-list; exit 1; } || exit 0")
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "pkill", "-f", "netloom-controller")
 	agentOutput := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "-e", "NETLOOM_TCX_SELFTEST_IFACE=lo", "node-b", "/netloom/bin/netloom-agent")
 	if !strings.Contains(agentOutput, "ready for node policy") {
@@ -272,6 +279,7 @@ func desiredStateJSON() string {
     {"name": "web-fip", "vpc": "file", "type": "dnat_and_snat", "external_ip": "198.51.100.22", "target_ip": "10.245.0.10"},
     {"name": "ssh-port", "vpc": "file", "type": "dnat", "external_ip": "198.51.100.23", "target_ip": "10.245.0.10", "protocol": "tcp", "external_port": 2222, "target_port": 2222}
   ],
+  "load_balancers": [{"name": "file-web", "vpc": "file", "vip": "10.96.0.10", "port": 80, "protocol": "tcp", "backends": [{"ip": "10.245.0.10", "port": 8080}], "subnets": ["fileapps"]}],
   "security_groups": [{"name": "web", "vpc": "file", "rules": [{"id": "allow-web", "priority": 100, "direction": "ingress", "protocol": "tcp", "remote_cidr": "172.30.0.11/32", "ports": [{"from": 8080, "to": 8080}], "action": "allow", "stateful": true}]}]
 }`
 }
@@ -285,6 +293,7 @@ func desiredStateWithoutEndpointNATJSON() string {
   "policy_routes": [{"name": "https-via-fw", "vpc": "file", "priority": 100, "match": {"source": "10.245.0.0/24", "destination": "172.16.0.0/16", "protocol": "tcp", "dst_ports": [{"from": 443, "to": 443}]}, "action": {"type": "reroute", "next_hop": "10.245.0.253"}}],
   "gateways": [{"name": "gw-file", "vpc": "file", "node": "node-a", "external_if": "eth0", "lan_ip": "10.245.0.254"}],
   "nat_rules": [],
+  "load_balancers": [],
   "security_groups": [{"name": "web", "vpc": "file", "rules": [{"id": "allow-web", "priority": 100, "direction": "ingress", "protocol": "tcp", "remote_cidr": "172.30.0.11/32", "ports": [{"from": 8080, "to": 8080}], "action": "allow", "stateful": true}]}]
 }`
 }
