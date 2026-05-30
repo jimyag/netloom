@@ -337,7 +337,7 @@ const integrationStateJSON = `{
       {"id": "client-egress-docs", "priority": 80, "direction": "egress", "protocol": "tcp", "remote_cidr": "192.0.2.0/24", "except_cidrs": ["192.0.2.128/25"], "ports": [{"from": 9443, "to": 9443}], "action": "allow"},
       {"id": "client-egress-host", "priority": 70, "direction": "egress", "protocol": "tcp", "remote_entities": ["host"], "ports": [{"from": 9444, "to": 9444}], "action": "allow"},
       {"id": "client-egress-remote-node", "priority": 60, "direction": "egress", "protocol": "tcp", "remote_entities": ["remote-node"], "ports": [{"from": 4240, "to": 4240}], "action": "allow"},
-      {"id": "client-egress-server-selector", "priority": 50, "direction": "egress", "protocol": "tcp", "remote_endpoint_selector": {"app": "server", "env": "prod"}, "ports": [{"from": 9091, "to": 9091}], "action": "allow"},
+      {"id": "client-egress-server-selector", "priority": 50, "direction": "egress", "protocol": "tcp", "remote_endpoint_selector": {"app": "server"}, "remote_endpoint_expressions": [{"key": "env", "operator": "In", "values": ["prod"]}, {"key": "deprecated", "operator": "DoesNotExist"}], "ports": [{"from": 9091, "to": 9091}], "action": "allow"},
       {"id": "client-egress-web-service", "priority": 40, "direction": "egress", "protocol": "any", "remote_service": "web", "action": "allow"},
       {"id": "client-drop-platform-dns", "priority": 1000, "direction": "egress", "protocol": "tcp", "remote_cidr": "198.51.100.0/24", "ports": [{"from": 9553, "to": 9553}], "action": "drop"}
     ]},

@@ -190,6 +190,7 @@ type SecurityGroupRule struct {
 	ExceptCIDRs            []netip.Prefix `json:"except_cidrs"`
 	RemoteGroup            string         `json:"remote_group"`
 	RemoteEndpointSelector Labels         `json:"remote_endpoint_selector"`
+	RemoteEndpointExprs    []LabelExpr    `json:"remote_endpoint_expressions"`
 	RemoteService          string         `json:"remote_service"`
 	RemoteCIDRGroup        string         `json:"remote_cidr_group"`
 	RemoteEntities         []string       `json:"remote_entities"`
@@ -205,6 +206,12 @@ type SecurityGroupRule struct {
 }
 
 type Labels map[string]string
+
+type LabelExpr struct {
+	Key      string   `json:"key"`
+	Operator string   `json:"operator"`
+	Values   []string `json:"values"`
+}
 
 type NamedPort struct {
 	Name     string   `json:"name"`
@@ -366,6 +373,86 @@ func (l Labels) Matches(selector Labels) bool {
 		}
 	}
 	return true
+}
+
+func (l Labels) MatchesSelector(selector Labels, expressions []LabelExpr) bool {
+	if len(selector) == 0 && len(expressions) == 0 {
+		return false
+	}
+	for key, value := range selector {
+		if l[key] != value {
+			return false
+		}
+	}
+	for _, expression := range expressions {
+		if !expression.Matches(l) {
+			return false
+		}
+	}
+	return true
+}
+
+func (e LabelExpr) Validate() error {
+	if strings.TrimSpace(e.Key) == "" {
+		return errors.New("label expression key is required")
+	}
+	if strings.ContainsAny(e.Key, " \t\r\n") {
+		return fmt.Errorf("label expression key %q must not contain whitespace", e.Key)
+	}
+	operator := normalizeLabelExprOperator(e.Operator)
+	switch operator {
+	case "in", "notin":
+		if len(e.Values) == 0 {
+			return fmt.Errorf("label expression %q operator %s requires values", e.Key, e.Operator)
+		}
+	case "exists", "doesnotexist":
+		if len(e.Values) != 0 {
+			return fmt.Errorf("label expression %q operator %s must not set values", e.Key, e.Operator)
+		}
+	default:
+		return fmt.Errorf("unsupported label expression operator %q", e.Operator)
+	}
+	seen := make(map[string]struct{}, len(e.Values))
+	for i, value := range e.Values {
+		if strings.TrimSpace(value) == "" {
+			return fmt.Errorf("label expression %q value %d is required", e.Key, i)
+		}
+		if _, ok := seen[value]; ok {
+			return fmt.Errorf("label expression %q value %q is duplicated", e.Key, value)
+		}
+		seen[value] = struct{}{}
+	}
+	return nil
+}
+
+func (e LabelExpr) Matches(labels Labels) bool {
+	operator := normalizeLabelExprOperator(e.Operator)
+	value, ok := labels[e.Key]
+	switch operator {
+	case "in":
+		if !ok {
+			return false
+		}
+		return slices.Contains(e.Values, value)
+	case "notin":
+		if !ok {
+			return true
+		}
+		return !slices.Contains(e.Values, value)
+	case "exists":
+		return ok
+	case "doesnotexist":
+		return !ok
+	default:
+		return false
+	}
+}
+
+func normalizeLabelExprOperator(operator string) string {
+	operator = strings.ToLower(strings.TrimSpace(operator))
+	operator = strings.ReplaceAll(operator, "_", "")
+	operator = strings.ReplaceAll(operator, "-", "")
+	return operator
 }
 
 func (e Endpoint) NormalizedMAC() string {
@@ -901,7 +988,7 @@ func (r SecurityGroupRule) Validate() error {
 	if r.RemoteGroup != "" {
 		remoteSelectors++
 	}
-	if len(r.RemoteEndpointSelector) > 0 {
+	if len(r.RemoteEndpointSelector) > 0 || len(r.RemoteEndpointExprs) > 0 {
 		remoteSelectors++
 	}
 	if r.RemoteService != "" {
@@ -924,6 +1011,11 @@ func (r SecurityGroupRule) Validate() error {
 	}
 	if err := r.RemoteEndpointSelector.Validate(); err != nil {
 		return fmt.Errorf("remote endpoint selector: %w", err)
+	}
+	for i, expression := range r.RemoteEndpointExprs {
+		if err := expression.Validate(); err != nil {
+			return fmt.Errorf("remote endpoint expression %d: %w", i, err)
+		}
 	}
 	seenEntities := make(map[string]struct{}, len(r.RemoteEntities))
 	for i, entity := range r.RemoteEntities {

@@ -827,6 +827,14 @@ func TestReconcileNodeExpandsRemoteEndpointSelector(t *testing.T) {
 				Node:   "node-b",
 				Labels: model.Labels{"app": "client", "env": "prod"},
 			},
+			{
+				ID:     "pod-dev-client",
+				VPC:    "prod",
+				Subnet: "apps",
+				IP:     netip.MustParseAddr("10.10.0.11"),
+				Node:   "node-c",
+				Labels: model.Labels{"app": "client", "env": "dev"},
+			},
 		},
 		SecurityGroups: []model.SecurityGroup{{
 			Name: "web",
@@ -837,8 +845,11 @@ func TestReconcileNodeExpandsRemoteEndpointSelector(t *testing.T) {
 				Direction:              model.DirectionIngress,
 				Protocol:               model.ProtocolTCP,
 				RemoteEndpointSelector: model.Labels{"app": "client"},
-				Ports:                  []model.PortRange{{From: 8080, To: 8080}},
-				Action:                 model.ActionAllow,
+				RemoteEndpointExprs: []model.LabelExpr{
+					{Key: "env", Operator: "In", Values: []string{"prod"}},
+				},
+				Ports:  []model.PortRange{{From: 8080, To: 8080}},
+				Action: model.ActionAllow,
 			}},
 		}},
 	}
@@ -860,6 +871,16 @@ func TestReconcileNodeExpandsRemoteEndpointSelector(t *testing.T) {
 	})
 	if decision.Verdict != dataplane.VerdictAllow {
 		t.Fatalf("expected selector-derived ingress allow, got %+v", decision)
+	}
+	devDecision := dataplane.Evaluate(entries, dataplane.Packet{
+		RemoteIdentity: policy.EndpointIdentity("pod-dev-client"),
+		Direction:      dataplane.DirectionIngress,
+		Protocol:       6,
+		RemoteIP:       netip.MustParseAddr("10.10.0.11"),
+		DestPort:       8080,
+	})
+	if devDecision.Verdict != dataplane.VerdictDrop {
+		t.Fatalf("expected selector expression to reject dev client, got %+v", devDecision)
 	}
 }
 

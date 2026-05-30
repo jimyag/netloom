@@ -801,6 +801,45 @@ func TestSecurityGroupRuleValidatesRemoteEndpointSelector(t *testing.T) {
 	}
 }
 
+func TestSecurityGroupRuleValidatesRemoteEndpointExpressions(t *testing.T) {
+	rule := SecurityGroupRule{
+		ID:        "allow-web",
+		Direction: DirectionIngress,
+		Protocol:  ProtocolTCP,
+		RemoteEndpointExprs: []LabelExpr{
+			{Key: "env", Operator: "In", Values: []string{"prod", "staging"}},
+			{Key: "deprecated", Operator: "DoesNotExist"},
+		},
+		Ports:  []PortRange{{From: 8080, To: 8080}},
+		Action: ActionAllow,
+	}
+	if err := rule.Validate(); err != nil {
+		t.Fatal(err)
+	}
+
+	if !(Labels{"env": "prod", "app": "client"}).MatchesSelector(nil, rule.RemoteEndpointExprs) {
+		t.Fatal("expected label expressions to match prod endpoint without deprecated label")
+	}
+	if (Labels{"env": "dev", "app": "client"}).MatchesSelector(nil, rule.RemoteEndpointExprs) {
+		t.Fatal("expected label expressions to reject dev endpoint")
+	}
+
+	rule.RemoteEndpointExprs = []LabelExpr{{Key: "env", Operator: "In"}}
+	if err := rule.Validate(); err == nil || !strings.Contains(err.Error(), "requires values") {
+		t.Fatalf("error = %v, want missing expression values validation", err)
+	}
+
+	rule.RemoteEndpointExprs = []LabelExpr{{Key: "env", Operator: "Exists", Values: []string{"prod"}}}
+	if err := rule.Validate(); err == nil || !strings.Contains(err.Error(), "must not set values") {
+		t.Fatalf("error = %v, want exists expression values validation", err)
+	}
+
+	rule.RemoteEndpointExprs = []LabelExpr{{Key: "env", Operator: "GreaterThan", Values: []string{"prod"}}}
+	if err := rule.Validate(); err == nil || !strings.Contains(err.Error(), "unsupported label expression operator") {
+		t.Fatalf("error = %v, want unsupported operator validation", err)
+	}
+}
+
 func TestSecurityGroupRuleValidatesRemoteService(t *testing.T) {
 	rule := SecurityGroupRule{
 		ID:            "allow-web-service",

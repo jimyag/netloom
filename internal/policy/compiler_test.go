@@ -621,6 +621,78 @@ func TestCompileForEndpointWithContextResolvesEgressNamedPortFromRemoteEndpointS
 	}
 }
 
+func TestCompileForEndpointWithContextExpandsRemoteEndpointExpressions(t *testing.T) {
+	target := model.Endpoint{
+		ID:             "pod-web",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.20"),
+		Node:           "node-a",
+		SecurityGroups: []string{"web"},
+		NamedPorts:     []model.NamedPort{{Name: "admin", Protocol: model.ProtocolTCP, Port: 9443}},
+		Labels:         model.Labels{"app": "web"},
+	}
+	prodClient := model.Endpoint{
+		ID:         "pod-client",
+		VPC:        "prod",
+		Subnet:     "apps",
+		IP:         netip.MustParseAddr("10.10.0.10"),
+		Node:       "node-b",
+		NamedPorts: []model.NamedPort{{Name: "admin", Protocol: model.ProtocolTCP, Port: 9443}},
+		Labels:     model.Labels{"app": "client", "env": "prod", "track": "stable"},
+	}
+	devClient := model.Endpoint{
+		ID:         "pod-dev-client",
+		VPC:        "prod",
+		Subnet:     "apps",
+		IP:         netip.MustParseAddr("10.10.0.11"),
+		Node:       "node-c",
+		NamedPorts: []model.NamedPort{{Name: "admin", Protocol: model.ProtocolTCP, Port: 9443}},
+		Labels:     model.Labels{"app": "client", "env": "dev", "track": "stable"},
+	}
+	deprecatedClient := model.Endpoint{
+		ID:         "pod-deprecated-client",
+		VPC:        "prod",
+		Subnet:     "apps",
+		IP:         netip.MustParseAddr("10.10.0.12"),
+		Node:       "node-d",
+		NamedPorts: []model.NamedPort{{Name: "admin", Protocol: model.ProtocolTCP, Port: 9443}},
+		Labels:     model.Labels{"app": "client", "env": "prod", "deprecated": "true"},
+	}
+	program, err := CompileForEndpointWithContext(target, map[string]model.SecurityGroup{
+		"web": {
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:                     "allow-client",
+				Priority:               100,
+				Direction:              model.DirectionIngress,
+				Protocol:               model.ProtocolTCP,
+				RemoteEndpointSelector: model.Labels{"app": "client"},
+				RemoteEndpointExprs: []model.LabelExpr{
+					{Key: "env", Operator: "In", Values: []string{"prod", "staging"}},
+					{Key: "track", Operator: "Exists"},
+					{Key: "deprecated", Operator: "DoesNotExist"},
+				},
+				NamedPorts: []string{"admin"},
+				Action:     model.ActionAllow,
+			}},
+		},
+	}, CompileContext{Endpoints: []model.Endpoint{target, prodClient, devClient, deprecatedClient}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(program.Rules) != 1 || len(program.MapEntries) != 1 {
+		t.Fatalf("program rules=%d entries=%d, want only prod expression match", len(program.Rules), len(program.MapEntries))
+	}
+	if program.Rules[0].RemoteEndpoint != "pod-client" || program.Rules[0].RemoteCIDR.String() != "10.10.0.10/32" {
+		t.Fatalf("expression selector remote = endpoint %s cidr %s, want pod-client /32", program.Rules[0].RemoteEndpoint, program.Rules[0].RemoteCIDR)
+	}
+	if program.MapEntries[0].Key.RemoteIdentity != EndpointIdentity("pod-client") || program.MapEntries[0].Key.DestPort != 9443 {
+		t.Fatalf("expression selector entry = %+v, want pod-client identity and named port 9443", program.MapEntries[0].Key)
+	}
+}
+
 func TestCompileForEndpointWithContextAllowsUnmatchedRemoteEndpointSelector(t *testing.T) {
 	endpoint := model.Endpoint{
 		ID:             "pod-web",

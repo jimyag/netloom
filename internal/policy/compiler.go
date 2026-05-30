@@ -189,7 +189,7 @@ func expandRule(endpoint model.Endpoint, securityGroup model.SecurityGroup, rule
 		}
 		base.Ports = ports
 	}
-	if len(rule.NamedPorts) > 0 && rule.Direction == model.DirectionEgress && rule.RemoteGroup == "" && len(rule.RemoteEndpointSelector) == 0 {
+	if len(rule.NamedPorts) > 0 && rule.Direction == model.DirectionEgress && rule.RemoteGroup == "" && !hasRemoteEndpointSelector(rule) {
 		return nil, fmt.Errorf("rule %s: named ports require remote_group or remote_endpoint_selector for egress rules", rule.ID)
 	}
 	if len(rule.RemoteFQDNs) > 0 {
@@ -207,7 +207,7 @@ func expandRule(endpoint model.Endpoint, securityGroup model.SecurityGroup, rule
 	if rule.RemoteCIDR.IsValid() && len(rule.ExceptCIDRs) > 0 {
 		return expandCIDRExceptRule(base, rule.ExceptCIDRs), nil
 	}
-	if len(rule.RemoteEndpointSelector) > 0 {
+	if hasRemoteEndpointSelector(rule) {
 		return expandEndpointSelectorRule(endpoint, base, rule, endpointsBySelector)
 	}
 	if rule.RemoteGroup == "" || membersByGroup == nil {
@@ -226,11 +226,15 @@ func expandEndpointSelectorRule(endpoint model.Endpoint, base Rule, rule model.S
 	}
 	members := make([]model.Endpoint, 0)
 	for _, candidate := range endpoints {
-		if candidate.Labels.Matches(rule.RemoteEndpointSelector) {
+		if candidate.Labels.MatchesSelector(rule.RemoteEndpointSelector, rule.RemoteEndpointExprs) {
 			members = append(members, candidate)
 		}
 	}
 	return expandEndpointMembers(endpoint, base, rule, members)
+}
+
+func hasRemoteEndpointSelector(rule model.SecurityGroupRule) bool {
+	return len(rule.RemoteEndpointSelector) > 0 || len(rule.RemoteEndpointExprs) > 0
 }
 
 func expandEndpointMembers(endpoint model.Endpoint, base Rule, rule model.SecurityGroupRule, members []model.Endpoint) ([]Rule, error) {
