@@ -471,6 +471,13 @@ func TestLoadBalancerValidateServiceVIP(t *testing.T) {
 			Port: 8080,
 		}},
 		Subnets: []string{"apps"},
+		HealthCheck: LoadBalancerHealthCheck{
+			Enabled:      true,
+			Interval:     5,
+			Timeout:      20,
+			SuccessCount: 3,
+			FailureCount: 3,
+		},
 	}
 	if err := valid.Validate(); err != nil {
 		t.Fatal(err)
@@ -564,6 +571,48 @@ func TestLoadBalancerValidateServiceVIP(t *testing.T) {
 				}},
 			},
 			wantErr: "ip family must match vip",
+		},
+		{
+			name: "disabled health check with options",
+			lb: LoadBalancer{
+				Name:        "web",
+				VPC:         "prod",
+				VIP:         netip.MustParseAddr("10.96.0.10"),
+				Port:        80,
+				Backends:    valid.Backends,
+				HealthCheck: LoadBalancerHealthCheck{Interval: 5},
+			},
+			wantErr: "disabled health check",
+		},
+		{
+			name: "health check interval too large",
+			lb: LoadBalancer{
+				Name:     "web",
+				VPC:      "prod",
+				VIP:      netip.MustParseAddr("10.96.0.10"),
+				Port:     80,
+				Backends: valid.Backends,
+				HealthCheck: LoadBalancerHealthCheck{
+					Enabled:  true,
+					Interval: 86401,
+				},
+			},
+			wantErr: "interval must be at most",
+		},
+		{
+			name: "health check success count too large",
+			lb: LoadBalancer{
+				Name:     "web",
+				VPC:      "prod",
+				VIP:      netip.MustParseAddr("10.96.0.10"),
+				Port:     80,
+				Backends: valid.Backends,
+				HealthCheck: LoadBalancerHealthCheck{
+					Enabled:      true,
+					SuccessCount: 256,
+				},
+			},
+			wantErr: "success count must be at most",
 		},
 	}
 	for _, tt := range tests {

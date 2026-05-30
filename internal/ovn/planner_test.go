@@ -223,6 +223,13 @@ func TestPlannerBuildsLoadBalancerOperations(t *testing.T) {
 		Protocol:        model.ProtocolTCP,
 		SessionAffinity: true,
 		AffinityTimeout: 7200,
+		HealthCheck: model.LoadBalancerHealthCheck{
+			Enabled:      true,
+			Interval:     10,
+			Timeout:      30,
+			SuccessCount: 2,
+			FailureCount: 4,
+		},
 		Backends: []model.LoadBalancerBackend{
 			{IP: netip.MustParseAddr("10.10.0.11"), Port: 8080},
 			{IP: netip.MustParseAddr("10.10.0.10"), Port: 8080},
@@ -240,6 +247,14 @@ func TestPlannerBuildsLoadBalancerOperations(t *testing.T) {
 		"external_ids:netloom_load_balancer=web",
 		"external_ids:netloom_session_affinity=true",
 		"options:affinity_timeout=7200",
+		"clear load_balancer nl_lb_web health_check",
+		"--id=@nl_lbhc_web create Load_Balancer_Health_Check vip=10.96.0.10:80",
+		"options:interval=10",
+		"options:timeout=30",
+		"options:success_count=2",
+		"options:failure_count=4",
+		"external_ids:netloom_load_balancer=web",
+		"add load_balancer nl_lb_web health_check @nl_lbhc_web",
 		"--may-exist lr-lb-add nl_lr_prod nl_lb_web",
 		"--may-exist ls-lb-add nl_ls_apps nl_lb_web",
 	} {
@@ -267,6 +282,7 @@ func TestPlannerClearsLoadBalancerAffinityWhenDisabled(t *testing.T) {
 	for _, expected := range []string{
 		"external_ids:netloom_session_affinity=false",
 		"remove load_balancer nl_lb_web options affinity_timeout",
+		"clear load_balancer nl_lb_web health_check",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("OVN operations missing %q:\n%s", expected, joined)
@@ -291,6 +307,68 @@ func TestPlannerDefaultsLoadBalancerAffinityTimeout(t *testing.T) {
 	joined := stringify(planner.Operations())
 	if !strings.Contains(joined, "options:affinity_timeout=10800") {
 		t.Fatalf("OVN operations missing default affinity timeout:\n%s", joined)
+	}
+}
+
+func TestPlannerDefaultsLoadBalancerHealthCheckOptions(t *testing.T) {
+	planner := ovn.NewPlanner()
+	err := planner.EnsureLoadBalancer(context.Background(), model.LoadBalancer{
+		Name:        "web",
+		VPC:         "prod",
+		VIP:         netip.MustParseAddr("10.96.0.10"),
+		Port:        80,
+		Protocol:    model.ProtocolTCP,
+		HealthCheck: model.LoadBalancerHealthCheck{Enabled: true},
+		Backends:    []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.10"), Port: 8080}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := stringify(planner.Operations())
+	for _, expected := range []string{
+		"options:interval=5",
+		"options:timeout=20",
+		"options:success_count=3",
+		"options:failure_count=3",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("OVN operations missing default health check option %q:\n%s", expected, joined)
+		}
+	}
+}
+
+func TestPlannerDoesNotRecreateUnchangedLoadBalancerHealthCheck(t *testing.T) {
+	planner := ovn.NewPlanner()
+	lb := model.LoadBalancer{
+		Name:        "web",
+		VPC:         "prod",
+		VIP:         netip.MustParseAddr("10.96.0.10"),
+		Port:        80,
+		Protocol:    model.ProtocolTCP,
+		HealthCheck: model.LoadBalancerHealthCheck{Enabled: true},
+		Backends:    []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.10"), Port: 8080}},
+	}
+	if err := planner.EnsureLoadBalancer(context.Background(), lb); err != nil {
+		t.Fatal(err)
+	}
+	if err := planner.EnsureLoadBalancer(context.Background(), lb); err != nil {
+		t.Fatal(err)
+	}
+	joined := stringify(planner.Operations())
+	if got := strings.Count(joined, "create Load_Balancer_Health_Check"); got != 1 {
+		t.Fatalf("health check create count = %d, want 1:\n%s", got, joined)
+	}
+
+	lb.HealthCheck.Timeout = 30
+	if err := planner.EnsureLoadBalancer(context.Background(), lb); err != nil {
+		t.Fatal(err)
+	}
+	joined = stringify(planner.Operations())
+	if got := strings.Count(joined, "create Load_Balancer_Health_Check"); got != 2 {
+		t.Fatalf("changed health check create count = %d, want 2:\n%s", got, joined)
+	}
+	if !strings.Contains(joined, "options:timeout=30") {
+		t.Fatalf("changed health check timeout missing:\n%s", joined)
 	}
 }
 

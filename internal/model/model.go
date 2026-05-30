@@ -120,20 +120,29 @@ type NATRule struct {
 }
 
 type LoadBalancer struct {
-	Name            string                `json:"name"`
-	VPC             string                `json:"vpc"`
-	VIP             netip.Addr            `json:"vip"`
-	Port            uint16                `json:"port"`
-	Protocol        Protocol              `json:"protocol"`
-	Backends        []LoadBalancerBackend `json:"backends"`
-	Subnets         []string              `json:"subnets"`
-	SessionAffinity bool                  `json:"session_affinity"`
-	AffinityTimeout uint32                `json:"affinity_timeout"`
+	Name            string                  `json:"name"`
+	VPC             string                  `json:"vpc"`
+	VIP             netip.Addr              `json:"vip"`
+	Port            uint16                  `json:"port"`
+	Protocol        Protocol                `json:"protocol"`
+	Backends        []LoadBalancerBackend   `json:"backends"`
+	Subnets         []string                `json:"subnets"`
+	SessionAffinity bool                    `json:"session_affinity"`
+	AffinityTimeout uint32                  `json:"affinity_timeout"`
+	HealthCheck     LoadBalancerHealthCheck `json:"health_check"`
 }
 
 type LoadBalancerBackend struct {
 	IP   netip.Addr `json:"ip"`
 	Port uint16     `json:"port"`
+}
+
+type LoadBalancerHealthCheck struct {
+	Enabled      bool   `json:"enabled"`
+	Interval     uint32 `json:"interval"`
+	Timeout      uint32 `json:"timeout"`
+	SuccessCount uint32 `json:"success_count"`
+	FailureCount uint32 `json:"failure_count"`
 }
 
 type SecurityGroup struct {
@@ -453,6 +462,9 @@ func (l LoadBalancer) Validate() error {
 	if l.AffinityTimeout > 86400 {
 		return errors.New("load balancer affinity timeout must be at most 86400 seconds")
 	}
+	if err := l.HealthCheck.Validate(); err != nil {
+		return fmt.Errorf("load balancer health check: %w", err)
+	}
 	for i, backend := range l.Backends {
 		if err := backend.Validate(); err != nil {
 			return fmt.Errorf("load balancer backend %d: %w", i, err)
@@ -465,6 +477,28 @@ func (l LoadBalancer) Validate() error {
 		if subnet == "" {
 			return fmt.Errorf("load balancer subnet %d is empty", i)
 		}
+	}
+	return nil
+}
+
+func (h LoadBalancerHealthCheck) Validate() error {
+	if !h.Enabled {
+		if h.Interval != 0 || h.Timeout != 0 || h.SuccessCount != 0 || h.FailureCount != 0 {
+			return errors.New("disabled health check must not set interval, timeout, success count or failure count")
+		}
+		return nil
+	}
+	if h.Interval > 86400 {
+		return errors.New("health check interval must be at most 86400 seconds")
+	}
+	if h.Timeout > 86400 {
+		return errors.New("health check timeout must be at most 86400 seconds")
+	}
+	if h.SuccessCount > 255 {
+		return errors.New("health check success count must be at most 255")
+	}
+	if h.FailureCount > 255 {
+		return errors.New("health check failure count must be at most 255")
 	}
 	return nil
 }

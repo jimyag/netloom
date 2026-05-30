@@ -25,16 +25,18 @@ func (o Operation) String() string {
 }
 
 type Planner struct {
-	mu         sync.Mutex
-	ops        []Operation
-	vpcRouters map[string]string
-	subnets    map[string]model.Subnet
+	mu                       sync.Mutex
+	ops                      []Operation
+	vpcRouters               map[string]string
+	subnets                  map[string]model.Subnet
+	loadBalancerHealthChecks map[string]string
 }
 
 func NewPlanner() *Planner {
 	return &Planner{
-		vpcRouters: make(map[string]string),
-		subnets:    make(map[string]model.Subnet),
+		vpcRouters:               make(map[string]string),
+		subnets:                  make(map[string]model.Subnet),
+		loadBalancerHealthChecks: make(map[string]string),
 	}
 }
 
@@ -211,6 +213,7 @@ func (p *Planner) EnsureLoadBalancer(_ context.Context, lb model.LoadBalancer) e
 	if !lb.SessionAffinity {
 		p.ops = append(p.ops, Operation{Command: "remove", Args: []string{"load_balancer", name, "options", "affinity_timeout"}})
 	}
+	p.ops = append(p.ops, p.loadBalancerHealthCheckOperations(name, lb)...)
 	for _, subnet := range lb.Subnets {
 		p.ops = append(p.ops, Operation{Command: "ls-lb-add", Flags: []string{"--may-exist"}, Args: []string{logicalSwitch(subnet), name}})
 	}
@@ -227,6 +230,16 @@ func (p *Planner) Append(ops ...Operation) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.ops = append(p.ops, cloneOperations(ops)...)
+}
+
+func (p *Planner) SyncLoadBalancerHealthChecks(loadBalancers map[string]model.LoadBalancer) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for name := range p.loadBalancerHealthChecks {
+		if _, ok := loadBalancers[name]; !ok {
+			delete(p.loadBalancerHealthChecks, name)
+		}
+	}
 }
 
 func setOperation(table, record string, pairs ...string) Operation {
@@ -350,6 +363,63 @@ func loadBalancerOptions(lb model.LoadBalancer) []string {
 		return options
 	}
 	return append(options, "external_ids:netloom_session_affinity=false")
+}
+
+func (p *Planner) loadBalancerHealthCheckOperations(name string, lb model.LoadBalancer) []Operation {
+	if !lb.HealthCheck.Enabled {
+		delete(p.loadBalancerHealthChecks, lb.Name)
+		return []Operation{{Command: "clear", Args: []string{"load_balancer", name, "health_check"}}}
+	}
+	signature := loadBalancerHealthCheckSignature(lb)
+	if p.loadBalancerHealthChecks[lb.Name] == signature {
+		return nil
+	}
+	p.loadBalancerHealthChecks[lb.Name] = signature
+	uuid := loadBalancerHealthCheckUUID(lb.Name)
+	return []Operation{
+		{Command: "clear", Args: []string{"load_balancer", name, "health_check"}},
+		{Command: "create", Flags: []string{"--id=" + uuid}, Args: loadBalancerHealthCheckArgs(lb)},
+		{Command: "add", Args: []string{"load_balancer", name, "health_check", uuid}},
+	}
+}
+
+func loadBalancerHealthCheckSignature(lb model.LoadBalancer) string {
+	return strings.Join(loadBalancerHealthCheckArgs(lb), "|")
+}
+
+func loadBalancerHealthCheckUUID(lbName string) string {
+	return namedUUID("nl_lbhc_" + sanitize(lbName))
+}
+
+func loadBalancerHealthCheckArgs(lb model.LoadBalancer) []string {
+	hc := lb.HealthCheck
+	interval := hc.Interval
+	if interval == 0 {
+		interval = 5
+	}
+	timeout := hc.Timeout
+	if timeout == 0 {
+		timeout = 20
+	}
+	successCount := hc.SuccessCount
+	if successCount == 0 {
+		successCount = 3
+	}
+	failureCount := hc.FailureCount
+	if failureCount == 0 {
+		failureCount = 3
+	}
+	return []string{
+		"Load_Balancer_Health_Check",
+		"vip=" + loadBalancerVIP(lb),
+		fmt.Sprintf("options:interval=%d", interval),
+		fmt.Sprintf("options:timeout=%d", timeout),
+		fmt.Sprintf("options:success_count=%d", successCount),
+		fmt.Sprintf("options:failure_count=%d", failureCount),
+		"external_ids:netloom_owner=netloom",
+		"external_ids:netloom_load_balancer=" + lb.Name,
+		"external_ids:netloom_vpc=" + lb.VPC,
+	}
 }
 
 func logicalRouterPolicyArgs(route model.PolicyRoute, match string, nextHops []netip.Addr) []string {

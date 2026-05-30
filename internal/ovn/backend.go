@@ -61,6 +61,7 @@ func (b *Backend) CleanupTopology(ctx context.Context, state topology.State) err
 	ops := cleanupOperations(b.last, next)
 	b.last = next
 	b.mu.Unlock()
+	b.planner.SyncLoadBalancerHealthChecks(next.LoadBalancers)
 
 	if len(ops) == 0 {
 		return nil

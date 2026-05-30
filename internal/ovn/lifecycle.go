@@ -152,7 +152,10 @@ func cleanupOperations(old, next desiredSnapshot) []Operation {
 	for _, key := range staleKeys(old.LoadBalancers, next.LoadBalancers) {
 		lb := old.LoadBalancers[key]
 		name := loadBalancerName(lb.Name)
-		ops = append(ops, Operation{Command: "lr-lb-del", Flags: []string{"--if-exists"}, Args: []string{logicalRouter(lb.VPC), name}})
+		ops = append(ops,
+			Operation{Command: "clear", Args: []string{"load_balancer", name, "health_check"}},
+			Operation{Command: "lr-lb-del", Flags: []string{"--if-exists"}, Args: []string{logicalRouter(lb.VPC), name}},
+		)
 		for _, subnet := range lb.Subnets {
 			ops = append(ops, Operation{Command: "ls-lb-del", Flags: []string{"--if-exists"}, Args: []string{logicalSwitch(subnet), name}})
 		}
