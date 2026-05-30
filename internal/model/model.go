@@ -3,6 +3,7 @@ package model
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"slices"
 	"strings"
@@ -121,6 +122,8 @@ type NATRule struct {
 	Protocol     Protocol     `json:"protocol"`
 	ExternalPort uint16       `json:"external_port"`
 	TargetPort   uint16       `json:"target_port"`
+	LogicalPort  string       `json:"logical_port"`
+	ExternalMAC  string       `json:"external_mac"`
 }
 
 type LoadBalancer struct {
@@ -451,6 +454,9 @@ func (n NATRule) Validate() error {
 	if !validProtocol(n.Protocol) {
 		return fmt.Errorf("unsupported nat protocol %q", n.Protocol)
 	}
+	if err := n.validateDistributedNATFields(); err != nil {
+		return err
+	}
 	hasPortMapping := n.ExternalPort != 0 || n.TargetPort != 0
 	switch n.Type {
 	case ActionSNAT:
@@ -497,6 +503,24 @@ func (n NATRule) Validate() error {
 		if n.Protocol != ProtocolAny {
 			return errors.New("dnat_and_snat protocol must be any")
 		}
+	}
+	return nil
+}
+
+func (n NATRule) validateDistributedNATFields() error {
+	hasLogicalPort := strings.TrimSpace(n.LogicalPort) != ""
+	hasExternalMAC := strings.TrimSpace(n.ExternalMAC) != ""
+	if !hasLogicalPort && !hasExternalMAC {
+		return nil
+	}
+	if n.Type != ActionDNATSNAT {
+		return errors.New("logical_port and external_mac are only supported for dnat_and_snat")
+	}
+	if !hasLogicalPort || !hasExternalMAC {
+		return errors.New("logical_port and external_mac must be set together")
+	}
+	if _, err := net.ParseMAC(n.ExternalMAC); err != nil {
+		return fmt.Errorf("external_mac is invalid: %w", err)
 	}
 	return nil
 }

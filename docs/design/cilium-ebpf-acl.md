@@ -108,7 +108,11 @@ Service VIP handling follows OVN load-balancer behavior closely enough for
 control-plane validation. DNAT rules with equal external and target ports use OVN
 NAT `--portrange`; DNAT rules that translate the port use a netloom-owned OVN
 Load_Balancer bound to the logical router so the VIP port and backend port can
-differ while the control-plane object remains a NAT rule. `LoadBalancer` backends
+differ while the control-plane object remains a NAT rule. Floating IP
+`dnat_and_snat` rules can also carry OVN distributed NAT `logical_port` and
+`external_mac` fields, matching the Kube-OVN/OVN requirement that distributed
+floating IP ARP replies and egress packets use the logical switch port's MAC.
+`LoadBalancer` backends
 are rendered into the OVN VIP backend set and the userspace topology resolver
 uses the same stable hashing inputs for flow affinity. Backends default to healthy; when a backend is marked
 `healthy=false`, the planner omits it from the OVN VIP backend list and the

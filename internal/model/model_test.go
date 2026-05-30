@@ -752,6 +752,18 @@ func TestNATRuleValidateKubeOVNStyleNAT(t *testing.T) {
 			},
 		},
 		{
+			name: "distributed floating ip",
+			rule: NATRule{
+				Name:        "distributed-fip",
+				VPC:         "prod",
+				Type:        ActionDNATSNAT,
+				ExternalIP:  netip.MustParseAddr("198.51.100.31"),
+				TargetIP:    netip.MustParseAddr("10.10.0.14"),
+				LogicalPort: "nl_lp_pod-a",
+				ExternalMAC: "0a:58:0a:0a:00:0e",
+			},
+		},
+		{
 			name: "port dnat",
 			rule: NATRule{
 				Name:         "ssh",
@@ -832,6 +844,44 @@ func TestNATRuleValidateKubeOVNStyleNAT(t *testing.T) {
 				TargetIP:   netip.MustParseAddr("10.10.0.11"),
 			},
 			wantErr: "external ip family",
+		},
+		{
+			name: "distributed fields require floating ip",
+			rule: NATRule{
+				Name:        "broken-distributed-dnat",
+				VPC:         "prod",
+				Type:        ActionDNAT,
+				ExternalIP:  netip.MustParseAddr("198.51.100.91"),
+				TargetIP:    netip.MustParseAddr("10.10.0.15"),
+				LogicalPort: "nl_lp_pod-a",
+				ExternalMAC: "0a:58:0a:0a:00:0f",
+			},
+			wantErr: "only supported for dnat_and_snat",
+		},
+		{
+			name: "distributed fields must be paired",
+			rule: NATRule{
+				Name:        "broken-distributed-pair",
+				VPC:         "prod",
+				Type:        ActionDNATSNAT,
+				ExternalIP:  netip.MustParseAddr("198.51.100.92"),
+				TargetIP:    netip.MustParseAddr("10.10.0.16"),
+				LogicalPort: "nl_lp_pod-a",
+			},
+			wantErr: "must be set together",
+		},
+		{
+			name: "distributed external mac must parse",
+			rule: NATRule{
+				Name:        "broken-distributed-mac",
+				VPC:         "prod",
+				Type:        ActionDNATSNAT,
+				ExternalIP:  netip.MustParseAddr("198.51.100.93"),
+				TargetIP:    netip.MustParseAddr("10.10.0.17"),
+				LogicalPort: "nl_lp_pod-a",
+				ExternalMAC: "not-a-mac",
+			},
+			wantErr: "external_mac is invalid",
 		},
 	}
 	for _, tt := range tests {

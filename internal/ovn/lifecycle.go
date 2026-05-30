@@ -296,7 +296,7 @@ func natDeleteKey(rule model.NATRule) string {
 }
 
 func natRuleSignature(rule model.NATRule) string {
-	return fmt.Sprintf("%s|%s|%s|%s|%s|%s|%d|%d",
+	return fmt.Sprintf("%s|%s|%s|%s|%s|%s|%d|%d|%s|%s",
 		rule.VPC,
 		rule.Type,
 		rule.MatchCIDR,
@@ -305,6 +305,8 @@ func natRuleSignature(rule model.NATRule) string {
 		rule.Protocol,
 		rule.ExternalPort,
 		rule.TargetPort,
+		rule.LogicalPort,
+		rule.ExternalMAC,
 	)
 }
 
