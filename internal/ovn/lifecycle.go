@@ -128,6 +128,8 @@ func cleanupOperations(old, next desiredSnapshot) []Operation {
 		ops = append(ops,
 			Operation{Command: "remove", Args: []string{"logical_router", router, "external_ids", "netloom_gateway"}},
 			Operation{Command: "remove", Args: []string{"logical_router", router, "external_ids", "netloom_external_if"}},
+			Operation{Command: "remove", Args: []string{"logical_router", router, "external_ids", "netloom_gateway_lan_ip"}},
+			Operation{Command: "remove", Args: []string{"logical_router", router, "external_ids", "netloom_gateway_distributed"}},
 			Operation{Command: "remove", Args: []string{"logical_router", router, "options", "chassis"}},
 		)
 	}

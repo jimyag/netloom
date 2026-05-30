@@ -82,6 +82,16 @@ func TestDockerMultiNodeLab(t *testing.T) {
 			t.Fatalf("OVN NB state missing %q:\n%s", expected, nbState)
 		}
 	}
+	gatewayExternalIDs := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "get", "logical_router", "nl_lr_file", "external_ids")
+	for _, expected := range []string{"netloom_gateway=gw-file", "netloom_external_if=eth0", `netloom_gateway_lan_ip="10.245.0.254"`, `netloom_gateway_distributed="false"`} {
+		if !strings.Contains(gatewayExternalIDs, expected) {
+			t.Fatalf("OVN gateway external IDs missing %q:\n%s", expected, gatewayExternalIDs)
+		}
+	}
+	gatewayOptions := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "get", "logical_router", "nl_lr_file", "options")
+	if !strings.Contains(gatewayOptions, "chassis=node-a") {
+		t.Fatalf("OVN centralized gateway options missing chassis pin:\n%s", gatewayOptions)
+	}
 	localnetOptions := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "lsp-get-options", "nl_ls_fileapps_to_fileapps_localnet")
 	if !strings.Contains(localnetOptions, "network_name=physnet-a") {
 		t.Fatalf("OVN localnet options missing provider network:\n%s", localnetOptions)

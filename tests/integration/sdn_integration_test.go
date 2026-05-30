@@ -56,6 +56,16 @@ func TestDesiredStateDrivesTopologyRoutesAndEBPFStyleACL(t *testing.T) {
 	if !hasOVNCommand(ovnRecorder.Operations(), "lb-add") {
 		t.Fatalf("expected OVN load balancer operation, got: %+v", ovnRecorder.Operations())
 	}
+	ovnOps := stringifyOVNOps(ovnRecorder.Operations())
+	for _, expected := range []string{
+		"external_ids:netloom_gateway_lan_ip=10.10.0.254",
+		"external_ids:netloom_gateway_distributed=false",
+		"options:chassis=node-a",
+	} {
+		if !strings.Contains(ovnOps, expected) {
+			t.Fatalf("OVN gateway operations missing %q:\n%s", expected, ovnOps)
+		}
+	}
 
 	routeDecision, err := topology.Resolve(memoryBackend.TopologyState(), topology.Packet{
 		VPC:      "prod",
@@ -114,6 +124,14 @@ func hasOVNCommand(ops []ovn.Operation, command string) bool {
 		}
 	}
 	return false
+}
+
+func stringifyOVNOps(ops []ovn.Operation) string {
+	lines := make([]string, 0, len(ops))
+	for _, op := range ops {
+		lines = append(lines, op.String())
+	}
+	return strings.Join(lines, "\n")
 }
 
 func mustAddr(t *testing.T, raw string) netip.Addr {

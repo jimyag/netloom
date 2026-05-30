@@ -111,6 +111,10 @@ func TestPlannerMapsNetloomObjectsToOVNOperations(t *testing.T) {
 		"external_ids:netloom_vpc=prod",
 		"lr-route-add nl_lr_prod 0.0.0.0/0 10.10.0.254",
 		"lr-policy-add nl_lr_prod 100",
+		"external_ids:netloom_gateway=gw-a",
+		"external_ids:netloom_gateway_lan_ip=10.10.0.254",
+		"external_ids:netloom_gateway_distributed=false",
+		"options:chassis=node-a",
 		"lr-nat-add nl_lr_prod snat 198.51.100.10 10.10.0.0/24",
 		"lb-add nl_lb_web 10.96.0.10:80 10.10.0.10:8080 tcp",
 		"lr-lb-add nl_lr_prod nl_lb_web",
@@ -123,6 +127,36 @@ func TestPlannerMapsNetloomObjectsToOVNOperations(t *testing.T) {
 	}
 	if strings.Contains(joined, "acl") {
 		t.Fatalf("OVN planner must not generate ACL operations; got:\n%s", joined)
+	}
+}
+
+func TestPlannerBuildsDistributedGatewayOperations(t *testing.T) {
+	planner := ovn.NewPlanner()
+	err := planner.EnsureGateway(context.Background(), model.Gateway{
+		Name:        "gw-dist",
+		VPC:         "prod",
+		Node:        "node-a",
+		ExternalIF:  "eth0",
+		LANIP:       netip.MustParseAddr("10.10.0.254"),
+		Distributed: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := stringify(planner.Operations())
+	for _, expected := range []string{
+		"external_ids:netloom_gateway=gw-dist",
+		"external_ids:netloom_external_if=eth0",
+		"external_ids:netloom_gateway_lan_ip=10.10.0.254",
+		"external_ids:netloom_gateway_distributed=true",
+		"remove logical_router nl_lr_prod options chassis",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("OVN operations missing %q:\n%s", expected, joined)
+		}
+	}
+	if strings.Contains(joined, "options:chassis=node-a") {
+		t.Fatalf("distributed gateway must not pin chassis:\n%s", joined)
 	}
 }
 

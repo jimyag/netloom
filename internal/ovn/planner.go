@@ -140,11 +140,22 @@ func (p *Planner) EnsureGateway(_ context.Context, gateway model.Gateway) error 
 	defer p.mu.Unlock()
 
 	router := p.routerForVPC(gateway.VPC)
-	args := []string{router, "options:chassis=" + gateway.Node, "external_ids:netloom_gateway=" + gateway.Name}
+	args := []string{
+		router,
+		"external_ids:netloom_gateway=" + gateway.Name,
+		"external_ids:netloom_gateway_lan_ip=" + gateway.LANIP.String(),
+		fmt.Sprintf("external_ids:netloom_gateway_distributed=%t", gateway.Distributed),
+	}
+	if !gateway.Distributed {
+		args = append(args, "options:chassis="+gateway.Node)
+	}
 	if gateway.ExternalIF != "" {
 		args = append(args, "external_ids:netloom_external_if="+gateway.ExternalIF)
 	}
 	p.ops = append(p.ops, setOperation("logical_router", router, append(args[1:], "external_ids:netloom_owner=netloom")...))
+	if gateway.Distributed {
+		p.ops = append(p.ops, Operation{Command: "remove", Args: []string{"logical_router", router, "options", "chassis"}})
+	}
 	return nil
 }
 

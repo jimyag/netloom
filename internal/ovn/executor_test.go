@@ -86,6 +86,38 @@ func TestBackendCleanupEmitsDeletesForStaleDesiredObjects(t *testing.T) {
 	}
 }
 
+func TestBackendCleanupRemovesGatewayMetadata(t *testing.T) {
+	recorder := ovn.NewRecorderExecutor()
+	backend := ovn.NewBackend(recorder)
+	first := controlStateWithEndpoint("pod-a")
+	controller := control.NewController(backend, control.NewMemoryBackend())
+	if err := controller.Reconcile(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+
+	second := first
+	second.Gateways = nil
+	second.Endpoints = nil
+	second.NATRules = nil
+	second.LoadBalancers = nil
+	if err := controller.Reconcile(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+
+	joined := stringifyOVNOps(recorder.Operations())
+	for _, expected := range []string{
+		"remove logical_router nl_lr_prod external_ids netloom_gateway",
+		"remove logical_router nl_lr_prod external_ids netloom_external_if",
+		"remove logical_router nl_lr_prod external_ids netloom_gateway_lan_ip",
+		"remove logical_router nl_lr_prod external_ids netloom_gateway_distributed",
+		"remove logical_router nl_lr_prod options chassis",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("cleanup operations missing %q:\n%s", expected, joined)
+		}
+	}
+}
+
 func TestBackendCleanupDeletesLocalnetPortWithSubnet(t *testing.T) {
 	recorder := ovn.NewRecorderExecutor()
 	backend := ovn.NewBackend(recorder)
@@ -184,6 +216,13 @@ func controlStateWithEndpoint(endpointID string) control.DesiredState {
 			Type:       model.ActionSNAT,
 			MatchCIDR:  netip.MustParsePrefix("10.10.0.0/24"),
 			ExternalIP: netip.MustParseAddr("198.51.100.10"),
+		}},
+		Gateways: []model.Gateway{{
+			Name:       "gw-a",
+			VPC:        "prod",
+			Node:       "node-a",
+			ExternalIF: "eth0",
+			LANIP:      netip.MustParseAddr("10.10.0.254"),
 		}},
 		LoadBalancers: []model.LoadBalancer{{
 			Name:     "web",
