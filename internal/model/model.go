@@ -451,6 +451,9 @@ func (r SecurityGroupRule) Validate() error {
 	if !slices.Contains([]Action{ActionAllow, ActionDrop, ActionReject, ActionLog}, r.Action) {
 		return fmt.Errorf("unsupported security action %q", r.Action)
 	}
+	if len(r.Ports) > 0 && r.Protocol != ProtocolTCP && r.Protocol != ProtocolUDP {
+		return errors.New("ports require tcp or udp protocol")
+	}
 	if r.RemoteCIDR.IsValid() && r.RemoteGroup != "" {
 		return errors.New("remote cidr and remote group are mutually exclusive")
 	}

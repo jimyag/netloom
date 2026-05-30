@@ -319,6 +319,9 @@ func appendIPv4L4ACLRulesFromProgram(rules *[]IPv4L4ACLRule, seen map[IPv4L4Key]
 		if !ok {
 			continue
 		}
+		if protocol == 1 && len(rule.Ports) > 0 {
+			return fmt.Errorf("rule %s: ICMP TCX ACL does not support destination ports", rule.ID)
+		}
 		if protocol == 1 && len(rule.Ports) == 0 {
 			key := IPv4L4Key{
 				PrefixLen: ipv4L4PrefixLen(sourceCIDR),

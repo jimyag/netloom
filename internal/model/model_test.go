@@ -202,6 +202,36 @@ func TestSecurityGroupRuleDoesNotAcceptRouteActions(t *testing.T) {
 	}
 }
 
+func TestSecurityGroupRulePortsRequireTransportProtocol(t *testing.T) {
+	for _, protocol := range []Protocol{ProtocolAny, ProtocolICMP} {
+		rule := SecurityGroupRule{
+			ID:        "invalid-ports",
+			Direction: DirectionIngress,
+			Protocol:  protocol,
+			Ports:     []PortRange{{From: 443, To: 443}},
+			Action:    ActionDrop,
+		}
+		err := rule.Validate()
+		if err == nil {
+			t.Fatalf("expected %s security group ports to fail", protocol)
+		}
+		if !strings.Contains(err.Error(), "ports require tcp or udp protocol") {
+			t.Fatalf("error %q does not mention transport protocol", err)
+		}
+	}
+
+	rule := SecurityGroupRule{
+		ID:        "valid-ports",
+		Direction: DirectionIngress,
+		Protocol:  ProtocolUDP,
+		Ports:     []PortRange{{From: 53, To: 53}},
+		Action:    ActionAllow,
+	}
+	if err := rule.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestNATRuleValidateKubeOVNStyleNAT(t *testing.T) {
 	tests := []struct {
 		name    string

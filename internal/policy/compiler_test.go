@@ -89,6 +89,33 @@ func TestCompileForEndpointRejectsCrossVPCSecurityGroup(t *testing.T) {
 	}
 }
 
+func TestCompileForEndpointRejectsPortsWithoutTransportProtocol(t *testing.T) {
+	endpoint := model.Endpoint{
+		ID:             "pod-a",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"web"},
+	}
+	_, err := CompileForEndpoint(endpoint, map[string]model.SecurityGroup{
+		"web": {
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:        "invalid-icmp-port",
+				Direction: model.DirectionIngress,
+				Protocol:  model.ProtocolICMP,
+				Ports:     []model.PortRange{{From: 8, To: 8}},
+				Action:    model.ActionDrop,
+			}},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected ICMP security group port match to fail")
+	}
+}
+
 func TestCompileForEndpointDecomposesPortRangesIntoLPMEntries(t *testing.T) {
 	endpoint := model.Endpoint{
 		ID:             "pod-a",

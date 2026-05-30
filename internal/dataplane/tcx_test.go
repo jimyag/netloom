@@ -147,6 +147,27 @@ func TestIPv4L4ACLRulesFromProgramProjectsICMPCIDRPolicy(t *testing.T) {
 	}
 }
 
+func TestIPv4L4ACLRulesFromProgramRejectsICMPPorts(t *testing.T) {
+	program := policy.Program{
+		EndpointID: "pod-a",
+		Rules: []policy.Rule{{
+			ID:         "invalid-icmp-port",
+			Direction:  model.DirectionIngress,
+			Protocol:   model.ProtocolICMP,
+			RemoteCIDR: netip.MustParsePrefix("172.30.0.0/24"),
+			Ports:      []model.PortRange{{From: 8, To: 8}},
+			Action:     model.ActionDrop,
+		}},
+	}
+	_, err := IPv4L4ACLRulesFromProgram(program)
+	if err == nil {
+		t.Fatal("expected ICMP port TCX projection to fail")
+	}
+	if !strings.Contains(err.Error(), "ICMP TCX ACL does not support destination ports") {
+		t.Fatalf("error %q does not mention ICMP ports", err)
+	}
+}
+
 func TestIPv4L4ACLRulesFromProgramRejectsNoExactRules(t *testing.T) {
 	_, err := IPv4L4ACLRulesFromProgram(policy.Program{EndpointID: "pod-a"})
 	if err == nil {
