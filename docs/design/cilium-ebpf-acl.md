@@ -16,6 +16,8 @@ Relevant Cilium files:
 - `pkg/policy/mapstate.go`
 - `pkg/endpoint/policy.go`
 - `pkg/fqdn/doc.go`
+- `pkg/policy/api/cidr.go`
+- `pkg/policy/k8s/cilium_cidr_group.go`
 
 ## Decisions
 
@@ -127,6 +129,14 @@ drives policy-map evaluation, while the exact CIDR lets the current TCX IPv4 L4
 projection enforce remote-group rules for workload traffic. When membership
 changes, periodic agent reconcile recompiles the endpoint program and replaces
 the TCX attachment signature.
+
+CIDR groups follow Cilium's `CIDRGroupRef` idea for reusable external CIDR
+sets. Netloom models those sets as desired-state `cidr_groups`; a
+`SecurityGroupRule` can refer to one with `remote_cidr_group`, and the compiler
+expands the group into one CIDR-backed policy entry per prefix. The expanded
+entries share the same CIDR identity and CIDR fallback path as direct
+`remote_cidr` rules, so the userspace evaluator and TCX projection do not need
+a separate rule type.
 
 FQDN egress policy follows Cilium's `toFQDNs` split between DNS-derived state
 and endpoint policy. A `SecurityGroupRule` can use `remote_fqdns` selectors with

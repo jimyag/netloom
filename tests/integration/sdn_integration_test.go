@@ -51,8 +51,8 @@ func TestDesiredStateDrivesTopologyRoutesAndEBPFStyleACL(t *testing.T) {
 		t.Fatalf("security group rules for pod-b were not compiled, got: %+v", memoryBackend.PolicyProgram)
 	}
 	clientProgram, ok := memoryBackend.PolicyProgram["pod-a"]
-	if !ok || len(clientProgram.Rules) != 1 || clientProgram.Rules[0].RemoteCIDR.String() != "203.0.113.10/32" {
-		t.Fatalf("fqdn egress rule for pod-a was not compiled, got: %+v", memoryBackend.PolicyProgram)
+	if !ok || len(clientProgram.Rules) != 2 {
+		t.Fatalf("egress rules for pod-a were not compiled, got: %+v", memoryBackend.PolicyProgram)
 	}
 	if !hasOVNCommand(ovnRecorder.Operations(), "lr-policy-add") {
 		t.Fatalf("expected OVN policy route operation, got: %+v", ovnRecorder.Operations())
@@ -184,6 +184,15 @@ func TestDesiredStateDrivesTopologyRoutesAndEBPFStyleACL(t *testing.T) {
 	if fqdnDrop.Verdict != dataplane.VerdictDrop {
 		t.Fatalf("expected egress tcp/443 to unresolved ip to drop, got %+v", fqdnDrop)
 	}
+	cidrGroupAllow := dataplane.Evaluate(clientEntries, dataplane.Packet{
+		Direction: dataplane.DirectionEgress,
+		Protocol:  6,
+		RemoteIP:  mustAddr(t, "10.20.1.10"),
+		DestPort:  8443,
+	})
+	if cidrGroupAllow.Verdict != dataplane.VerdictAllow {
+		t.Fatalf("expected egress tcp/8443 to cidr-group-derived ip to allow, got %+v", cidrGroupAllow)
+	}
 }
 
 func hasOVNCommand(ops []ovn.Operation, command string) bool {
@@ -229,11 +238,15 @@ const integrationStateJSON = `{
   ],
   "load_balancers": [{"name": "web", "vpc": "prod", "vip": "10.96.0.10", "port": 80, "protocol": "tcp", "backends": [{"ip": "10.10.0.11", "port": 8080}], "subnets": ["apps"]}],
   "security_groups": [
-    {"name": "client", "vpc": "prod", "rules": [{"id": "client-egress-api", "priority": 100, "direction": "egress", "protocol": "tcp", "remote_fqdns": [{"match_name": "api.example.com"}], "ports": [{"from": 443, "to": 443}], "action": "allow"}]},
+    {"name": "client", "vpc": "prod", "rules": [
+      {"id": "client-egress-api", "priority": 100, "direction": "egress", "protocol": "tcp", "remote_fqdns": [{"match_name": "api.example.com"}], "ports": [{"from": 443, "to": 443}], "action": "allow"},
+      {"id": "client-egress-corp", "priority": 90, "direction": "egress", "protocol": "tcp", "remote_cidr_group": "corp", "ports": [{"from": 8443, "to": 8443}], "action": "allow"}
+    ]},
     {"name": "server", "vpc": "prod", "rules": [
       {"id": "drop-web", "priority": 200, "direction": "ingress", "protocol": "tcp", "remote_cidr": "10.10.0.10/32", "ports": [{"from": 8080, "to": 8080}], "action": "drop"},
       {"id": "allow-alt", "priority": 100, "direction": "ingress", "protocol": "tcp", "remote_cidr": "10.10.0.10/32", "ports": [{"from": 9090, "to": 9090}], "action": "allow"}
     ]}
   ],
+  "cidr_groups": [{"name": "corp", "vpc": "prod", "cidrs": ["10.20.0.0/16"]}],
   "dns_records": [{"name": "api.example.com", "ips": ["203.0.113.10"]}]
 }`

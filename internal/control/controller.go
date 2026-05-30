@@ -141,6 +141,7 @@ type DesiredState struct {
 	NATRules       []model.NATRule       `json:"nat_rules"`
 	LoadBalancers  []model.LoadBalancer  `json:"load_balancers"`
 	SecurityGroups []model.SecurityGroup `json:"security_groups"`
+	CIDRGroups     []model.CIDRGroup     `json:"cidr_groups"`
 	DNSRecords     []model.DNSRecord     `json:"dns_records"`
 }
 
@@ -247,6 +248,7 @@ func (c *Controller) Reconcile(ctx context.Context, state DesiredState) error {
 		program, err := policy.CompileForEndpointWithContext(endpoint, groups, policy.CompileContext{
 			Endpoints:  state.Endpoints,
 			DNSRecords: state.DNSRecords,
+			CIDRGroups: state.CIDRGroups,
 		})
 		if err != nil {
 			return err
@@ -350,6 +352,19 @@ func validateObjectGraph(state DesiredState) error {
 	}
 
 	securityGroups := make(map[string]model.SecurityGroup, len(state.SecurityGroups))
+	cidrGroups := make(map[string]model.CIDRGroup, len(state.CIDRGroups))
+	for _, group := range state.CIDRGroups {
+		if err := group.Validate(); err != nil {
+			return err
+		}
+		if _, ok := cidrGroups[group.Name]; ok {
+			return fmt.Errorf("duplicate cidr group name %q", group.Name)
+		}
+		if _, ok := vpcs[group.VPC]; !ok {
+			return fmt.Errorf("cidr group %q references unknown vpc %q", group.Name, group.VPC)
+		}
+		cidrGroups[group.Name] = group
+	}
 	for _, group := range state.SecurityGroups {
 		if err := group.Validate(); err != nil {
 			return err
@@ -364,15 +379,23 @@ func validateObjectGraph(state DesiredState) error {
 	}
 	for _, group := range securityGroups {
 		for _, rule := range group.Rules {
-			if rule.RemoteGroup == "" {
-				continue
+			if rule.RemoteGroup != "" {
+				remote, ok := securityGroups[rule.RemoteGroup]
+				if !ok {
+					return fmt.Errorf("security group rule %q references unknown remote group %q", rule.ID, rule.RemoteGroup)
+				}
+				if remote.VPC != group.VPC {
+					return fmt.Errorf("security group rule %q references remote group %q in vpc %q, want %q", rule.ID, rule.RemoteGroup, remote.VPC, group.VPC)
+				}
 			}
-			remote, ok := securityGroups[rule.RemoteGroup]
-			if !ok {
-				return fmt.Errorf("security group rule %q references unknown remote group %q", rule.ID, rule.RemoteGroup)
-			}
-			if remote.VPC != group.VPC {
-				return fmt.Errorf("security group rule %q references remote group %q in vpc %q, want %q", rule.ID, rule.RemoteGroup, remote.VPC, group.VPC)
+			if rule.RemoteCIDRGroup != "" {
+				remote, ok := cidrGroups[rule.RemoteCIDRGroup]
+				if !ok {
+					return fmt.Errorf("security group rule %q references unknown remote cidr group %q", rule.ID, rule.RemoteCIDRGroup)
+				}
+				if remote.VPC != group.VPC {
+					return fmt.Errorf("security group rule %q references remote cidr group %q in vpc %q, want %q", rule.ID, rule.RemoteCIDRGroup, remote.VPC, group.VPC)
+				}
 			}
 		}
 	}

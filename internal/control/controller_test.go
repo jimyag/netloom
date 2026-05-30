@@ -259,12 +259,44 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 			wantErr: "duplicate security group name",
 		},
 		{
+			name: "duplicate cidr group",
+			mutate: func(state *DesiredState) {
+				state.CIDRGroups = append(state.CIDRGroups,
+					model.CIDRGroup{Name: "corp", VPC: "prod", CIDRs: []netip.Prefix{netip.MustParsePrefix("10.20.0.0/16")}},
+					model.CIDRGroup{Name: "corp", VPC: "prod", CIDRs: []netip.Prefix{netip.MustParsePrefix("10.30.0.0/16")}},
+				)
+			},
+			wantErr: "duplicate cidr group name",
+		},
+		{
 			name: "remote group unknown",
 			mutate: func(state *DesiredState) {
 				state.SecurityGroups[0].Rules[0].RemoteCIDR = netip.Prefix{}
 				state.SecurityGroups[0].Rules[0].RemoteGroup = "missing"
 			},
 			wantErr: "references unknown remote group",
+		},
+		{
+			name: "remote cidr group unknown",
+			mutate: func(state *DesiredState) {
+				state.SecurityGroups[0].Rules[0].RemoteCIDR = netip.Prefix{}
+				state.SecurityGroups[0].Rules[0].RemoteCIDRGroup = "missing"
+			},
+			wantErr: "references unknown remote cidr group",
+		},
+		{
+			name: "remote cidr group vpc mismatch",
+			mutate: func(state *DesiredState) {
+				state.VPCs = append(state.VPCs, model.VPC{Name: "other"})
+				state.CIDRGroups = append(state.CIDRGroups, model.CIDRGroup{
+					Name:  "corp",
+					VPC:   "other",
+					CIDRs: []netip.Prefix{netip.MustParsePrefix("10.20.0.0/16")},
+				})
+				state.SecurityGroups[0].Rules[0].RemoteCIDR = netip.Prefix{}
+				state.SecurityGroups[0].Rules[0].RemoteCIDRGroup = "corp"
+			},
+			wantErr: "references remote cidr group",
 		},
 		{
 			name: "duplicate endpoint",

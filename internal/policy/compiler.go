@@ -19,19 +19,20 @@ type Program struct {
 }
 
 type Rule struct {
-	ID             string
-	Priority       int
-	Direction      model.Direction
-	Protocol       model.Protocol
-	RemoteCIDR     netip.Prefix
-	RemoteGroup    string
-	RemoteEndpoint string
-	RemoteFQDN     string
-	Ports          []model.PortRange
-	Action         model.Action
-	Stateful       bool
-	Log            bool
-	SecurityGroup  string
+	ID              string
+	Priority        int
+	Direction       model.Direction
+	Protocol        model.Protocol
+	RemoteCIDR      netip.Prefix
+	RemoteGroup     string
+	RemoteCIDRGroup string
+	RemoteEndpoint  string
+	RemoteFQDN      string
+	Ports           []model.PortRange
+	Action          model.Action
+	Stateful        bool
+	Log             bool
+	SecurityGroup   string
 }
 
 type MapEntry struct {
@@ -59,6 +60,7 @@ type MapValue struct {
 type CompileContext struct {
 	Endpoints  []model.Endpoint
 	DNSRecords []model.DNSRecord
+	CIDRGroups []model.CIDRGroup
 }
 
 func CompileForEndpoint(endpoint model.Endpoint, groups map[string]model.SecurityGroup) (Program, error) {
@@ -81,6 +83,10 @@ func CompileForEndpointWithContext(endpoint model.Endpoint, groups map[string]mo
 	if err != nil {
 		return Program{}, err
 	}
+	cidrGroups, err := indexCIDRGroups(endpoint.VPC, ctx.CIDRGroups)
+	if err != nil {
+		return Program{}, err
+	}
 	program := Program{EndpointID: endpoint.ID}
 	for _, groupName := range endpoint.SecurityGroups {
 		group, ok := groups[groupName]
@@ -94,7 +100,7 @@ func CompileForEndpointWithContext(endpoint model.Endpoint, groups map[string]mo
 			return Program{}, err
 		}
 		for _, rule := range group.Rules {
-			compiledRules, err := expandRule(endpoint, group.Name, rule, membersByGroup, dnsRecords)
+			compiledRules, err := expandRule(endpoint, group.Name, rule, membersByGroup, dnsRecords, cidrGroups)
 			if err != nil {
 				return Program{}, err
 			}
@@ -120,22 +126,26 @@ func CompileForEndpointWithContext(endpoint model.Endpoint, groups map[string]mo
 	return program, nil
 }
 
-func expandRule(endpoint model.Endpoint, securityGroup string, rule model.SecurityGroupRule, membersByGroup map[string][]model.Endpoint, dnsRecords map[string][]netip.Addr) ([]Rule, error) {
+func expandRule(endpoint model.Endpoint, securityGroup string, rule model.SecurityGroupRule, membersByGroup map[string][]model.Endpoint, dnsRecords map[string][]netip.Addr, cidrGroups map[string][]netip.Prefix) ([]Rule, error) {
 	base := Rule{
-		ID:            rule.ID,
-		Priority:      rule.Priority,
-		Direction:     rule.Direction,
-		Protocol:      rule.Protocol,
-		RemoteCIDR:    rule.RemoteCIDR,
-		RemoteGroup:   rule.RemoteGroup,
-		Ports:         append([]model.PortRange(nil), rule.Ports...),
-		Action:        rule.Action,
-		Stateful:      rule.Stateful,
-		Log:           rule.Log,
-		SecurityGroup: securityGroup,
+		ID:              rule.ID,
+		Priority:        rule.Priority,
+		Direction:       rule.Direction,
+		Protocol:        rule.Protocol,
+		RemoteCIDR:      rule.RemoteCIDR,
+		RemoteGroup:     rule.RemoteGroup,
+		RemoteCIDRGroup: rule.RemoteCIDRGroup,
+		Ports:           append([]model.PortRange(nil), rule.Ports...),
+		Action:          rule.Action,
+		Stateful:        rule.Stateful,
+		Log:             rule.Log,
+		SecurityGroup:   securityGroup,
 	}
 	if len(rule.RemoteFQDNs) > 0 {
 		return expandFQDNRule(base, rule.RemoteFQDNs, dnsRecords)
+	}
+	if rule.RemoteCIDRGroup != "" {
+		return expandCIDRGroupRule(base, cidrGroups)
 	}
 	if rule.RemoteGroup == "" || membersByGroup == nil {
 		return []Rule{base}, nil
@@ -158,6 +168,20 @@ func expandRule(endpoint model.Endpoint, securityGroup string, rule model.Securi
 			}
 			expanded.RemoteCIDR = netip.PrefixFrom(member.IP, bits)
 		}
+		out = append(out, expanded)
+	}
+	return out, nil
+}
+
+func expandCIDRGroupRule(base Rule, groups map[string][]netip.Prefix) ([]Rule, error) {
+	cidrs, ok := groups[base.RemoteCIDRGroup]
+	if !ok {
+		return nil, fmt.Errorf("rule %s references unknown remote cidr group %s", base.ID, base.RemoteCIDRGroup)
+	}
+	out := make([]Rule, 0, len(cidrs))
+	for _, cidr := range cidrs {
+		expanded := base
+		expanded.RemoteCIDR = cidr
 		out = append(out, expanded)
 	}
 	return out, nil
@@ -273,6 +297,30 @@ func indexDNSRecords(records []model.DNSRecord) (map[string][]netip.Addr, error)
 		sort.SliceStable(out[name], func(i, j int) bool {
 			return out[name][i].String() < out[name][j].String()
 		})
+	}
+	return out, nil
+}
+
+func indexCIDRGroups(vpc string, groups []model.CIDRGroup) (map[string][]netip.Prefix, error) {
+	if len(groups) == 0 {
+		return nil, nil
+	}
+	out := make(map[string][]netip.Prefix, len(groups))
+	for _, group := range groups {
+		if err := group.Validate(); err != nil {
+			return nil, err
+		}
+		if group.VPC != vpc {
+			continue
+		}
+		cidrs := make([]netip.Prefix, 0, len(group.CIDRs))
+		for _, cidr := range group.CIDRs {
+			cidrs = append(cidrs, cidr.Masked())
+		}
+		sort.SliceStable(cidrs, func(i, j int) bool {
+			return cidrs[i].String() < cidrs[j].String()
+		})
+		out[group.Name] = cidrs
 	}
 	return out, nil
 }

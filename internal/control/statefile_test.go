@@ -15,7 +15,8 @@ func TestLoadDesiredStateJSONDecodesSnakeCaseState(t *testing.T) {
 		"gateways": [{"name": "gw-a", "vpc": "prod", "node": "node-a", "external_if": "eth0", "lan_ip": "10.10.0.254"}],
 		"nat_rules": [{"name": "egress", "vpc": "prod", "type": "snat", "match_cidr": "10.10.0.0/24", "external_ip": "198.51.100.10"}],
 		"load_balancers": [{"name": "web", "vpc": "prod", "vip": "10.96.0.10", "port": 80, "protocol": "tcp", "backends": [{"ip": "10.10.0.10", "port": 8080}], "subnets": ["apps"], "health_check": {"enabled": true, "interval": 10, "timeout": 30, "success_count": 2, "failure_count": 4}}],
-		"security_groups": [{"name": "web", "vpc": "prod", "rules": [{"id": "allow-web", "priority": 10, "direction": "ingress", "protocol": "tcp", "remote_cidr": "10.10.1.0/24", "ports": [{"from": 443, "to": 443}], "action": "allow", "stateful": true}, {"id": "allow-api", "priority": 20, "direction": "egress", "protocol": "tcp", "remote_fqdns": [{"match_name": "api.example.com"}, {"match_pattern": "*.svc.example.com"}], "ports": [{"from": 443, "to": 443}], "action": "allow"}]}],
+		"security_groups": [{"name": "web", "vpc": "prod", "rules": [{"id": "allow-web", "priority": 10, "direction": "ingress", "protocol": "tcp", "remote_cidr": "10.10.1.0/24", "ports": [{"from": 443, "to": 443}], "action": "allow", "stateful": true}, {"id": "allow-api", "priority": 20, "direction": "egress", "protocol": "tcp", "remote_fqdns": [{"match_name": "api.example.com"}, {"match_pattern": "*.svc.example.com"}], "ports": [{"from": 443, "to": 443}], "action": "allow"}, {"id": "allow-corp", "priority": 30, "direction": "egress", "protocol": "tcp", "remote_cidr_group": "corp", "ports": [{"from": 8443, "to": 8443}], "action": "allow"}]}],
+		"cidr_groups": [{"name": "corp", "vpc": "prod", "cidrs": ["10.20.0.0/16", "2001:db8::/64"]}],
 		"dns_records": [{"name": "api.example.com", "ips": ["203.0.113.10"]}]
 	}`))
 	if err != nil {
@@ -41,6 +42,12 @@ func TestLoadDesiredStateJSONDecodesSnakeCaseState(t *testing.T) {
 	}
 	if got := state.SecurityGroups[0].Rules[1].RemoteFQDNs[0].MatchName; got != "api.example.com" {
 		t.Fatalf("remote fqdn match name = %s, want api.example.com", got)
+	}
+	if got := state.SecurityGroups[0].Rules[2].RemoteCIDRGroup; got != "corp" {
+		t.Fatalf("remote cidr group = %s, want corp", got)
+	}
+	if got := state.CIDRGroups[0].CIDRs[1].String(); got != "2001:db8::/64" {
+		t.Fatalf("cidr group cidr = %s, want 2001:db8::/64", got)
 	}
 	if got := state.DNSRecords[0].IPs[0].String(); got != "203.0.113.10" {
 		t.Fatalf("dns record ip = %s, want 203.0.113.10", got)

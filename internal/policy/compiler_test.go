@@ -381,3 +381,82 @@ func TestCompileForEndpointWithContextUnresolvedRemoteFQDNProducesNoEntries(t *t
 		t.Fatalf("unresolved fqdn compiled to rules=%d entries=%d, want none", len(program.Rules), len(program.MapEntries))
 	}
 }
+
+func TestCompileForEndpointWithContextExpandsRemoteCIDRGroup(t *testing.T) {
+	endpoint := model.Endpoint{
+		ID:             "pod-a",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"client"},
+	}
+	program, err := CompileForEndpointWithContext(endpoint, map[string]model.SecurityGroup{
+		"client": {
+			Name: "client",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:              "allow-corp",
+				Priority:        100,
+				Direction:       model.DirectionEgress,
+				Protocol:        model.ProtocolTCP,
+				RemoteCIDRGroup: "corp",
+				Ports:           []model.PortRange{{From: 443, To: 443}},
+				Action:          model.ActionAllow,
+			}},
+		},
+	}, CompileContext{
+		CIDRGroups: []model.CIDRGroup{
+			{Name: "corp", VPC: "prod", CIDRs: []netip.Prefix{
+				netip.MustParsePrefix("10.20.1.1/16"),
+				netip.MustParsePrefix("2001:db8::/64"),
+			}},
+			{Name: "corp", VPC: "other", CIDRs: []netip.Prefix{netip.MustParsePrefix("192.0.2.0/24")}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(program.Rules) != 2 {
+		t.Fatalf("rules = %d, want 2 cidr-group-derived rules", len(program.Rules))
+	}
+	gotCIDRs := []string{program.Rules[0].RemoteCIDR.String(), program.Rules[1].RemoteCIDR.String()}
+	sort.Strings(gotCIDRs)
+	wantCIDRs := []string{"10.20.0.0/16", "2001:db8::/64"}
+	for i := range wantCIDRs {
+		if gotCIDRs[i] != wantCIDRs[i] {
+			t.Fatalf("cidr group cidrs = %v, want %v", gotCIDRs, wantCIDRs)
+		}
+	}
+	if len(program.MapEntries) != 2 {
+		t.Fatalf("map entries = %d, want 2", len(program.MapEntries))
+	}
+}
+
+func TestCompileForEndpointWithContextRejectsUnknownRemoteCIDRGroup(t *testing.T) {
+	endpoint := model.Endpoint{
+		ID:             "pod-a",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"client"},
+	}
+	_, err := CompileForEndpointWithContext(endpoint, map[string]model.SecurityGroup{
+		"client": {
+			Name: "client",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:              "allow-corp",
+				Direction:       model.DirectionEgress,
+				Protocol:        model.ProtocolTCP,
+				RemoteCIDRGroup: "missing",
+				Ports:           []model.PortRange{{From: 443, To: 443}},
+				Action:          model.ActionAllow,
+			}},
+		},
+	}, CompileContext{})
+	if err == nil {
+		t.Fatal("expected unknown remote cidr group to fail")
+	}
+}

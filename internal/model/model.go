@@ -153,19 +153,26 @@ type SecurityGroup struct {
 	Rules []SecurityGroupRule `json:"rules"`
 }
 
+type CIDRGroup struct {
+	Name  string         `json:"name"`
+	VPC   string         `json:"vpc"`
+	CIDRs []netip.Prefix `json:"cidrs"`
+}
+
 type SecurityGroupRule struct {
-	ID          string         `json:"id"`
-	Priority    int            `json:"priority"`
-	Direction   Direction      `json:"direction"`
-	Protocol    Protocol       `json:"protocol"`
-	RemoteCIDR  netip.Prefix   `json:"remote_cidr"`
-	RemoteGroup string         `json:"remote_group"`
-	RemoteFQDNs []FQDNSelector `json:"remote_fqdns"`
-	Ports       []PortRange    `json:"ports"`
-	Action      Action         `json:"action"`
-	Stateful    bool           `json:"stateful"`
-	Log         bool           `json:"log"`
-	Description string         `json:"description"`
+	ID              string         `json:"id"`
+	Priority        int            `json:"priority"`
+	Direction       Direction      `json:"direction"`
+	Protocol        Protocol       `json:"protocol"`
+	RemoteCIDR      netip.Prefix   `json:"remote_cidr"`
+	RemoteGroup     string         `json:"remote_group"`
+	RemoteCIDRGroup string         `json:"remote_cidr_group"`
+	RemoteFQDNs     []FQDNSelector `json:"remote_fqdns"`
+	Ports           []PortRange    `json:"ports"`
+	Action          Action         `json:"action"`
+	Stateful        bool           `json:"stateful"`
+	Log             bool           `json:"log"`
+	Description     string         `json:"description"`
 }
 
 type FQDNSelector struct {
@@ -564,6 +571,30 @@ func (s SecurityGroup) Validate() error {
 	return nil
 }
 
+func (g CIDRGroup) Validate() error {
+	if g.Name == "" {
+		return errors.New("cidr group name is required")
+	}
+	if g.VPC == "" {
+		return errors.New("cidr group vpc is required")
+	}
+	if len(g.CIDRs) == 0 {
+		return errors.New("cidr group cidrs are required")
+	}
+	seen := make(map[netip.Prefix]struct{}, len(g.CIDRs))
+	for i, cidr := range g.CIDRs {
+		if !cidr.IsValid() {
+			return fmt.Errorf("cidr group cidr %d is invalid", i)
+		}
+		cidr = cidr.Masked()
+		if _, ok := seen[cidr]; ok {
+			return fmt.Errorf("cidr group cidr %s is duplicated", cidr)
+		}
+		seen[cidr] = struct{}{}
+	}
+	return nil
+}
+
 func (r SecurityGroupRule) Validate() error {
 	if r.ID == "" {
 		return errors.New("rule id is required")
@@ -590,11 +621,14 @@ func (r SecurityGroupRule) Validate() error {
 	if r.RemoteGroup != "" {
 		remoteSelectors++
 	}
+	if r.RemoteCIDRGroup != "" {
+		remoteSelectors++
+	}
 	if len(r.RemoteFQDNs) > 0 {
 		remoteSelectors++
 	}
 	if remoteSelectors > 1 {
-		return errors.New("remote cidr, remote group and remote fqdns are mutually exclusive")
+		return errors.New("remote cidr, remote group, remote cidr group and remote fqdns are mutually exclusive")
 	}
 	if len(r.RemoteFQDNs) > 0 && r.Direction != DirectionEgress {
 		return errors.New("remote fqdns are only supported for egress rules")

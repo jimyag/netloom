@@ -448,6 +448,62 @@ func TestDNSRecordValidation(t *testing.T) {
 	}
 }
 
+func TestCIDRGroupValidation(t *testing.T) {
+	group := CIDRGroup{
+		Name:  "corp",
+		VPC:   "prod",
+		CIDRs: []netip.Prefix{netip.MustParsePrefix("10.20.0.0/16"), netip.MustParsePrefix("2001:db8::/64")},
+	}
+	if err := group.Validate(); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name    string
+		group   CIDRGroup
+		wantErr string
+	}{
+		{name: "name required", group: CIDRGroup{VPC: "prod", CIDRs: group.CIDRs}, wantErr: "name is required"},
+		{name: "vpc required", group: CIDRGroup{Name: "corp", CIDRs: group.CIDRs}, wantErr: "vpc is required"},
+		{name: "cidrs required", group: CIDRGroup{Name: "corp", VPC: "prod"}, wantErr: "cidrs are required"},
+		{name: "duplicate cidr", group: CIDRGroup{Name: "corp", VPC: "prod", CIDRs: []netip.Prefix{netip.MustParsePrefix("10.20.0.1/16"), netip.MustParsePrefix("10.20.0.0/16")}}, wantErr: "duplicated"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.group.Validate()
+			if err == nil {
+				t.Fatal("expected validation to fail")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error %q does not contain %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestSecurityGroupRuleValidatesRemoteCIDRGroupExclusivity(t *testing.T) {
+	rule := SecurityGroupRule{
+		ID:              "allow-corp",
+		Direction:       DirectionEgress,
+		Protocol:        ProtocolTCP,
+		RemoteCIDRGroup: "corp",
+		Ports:           []PortRange{{From: 443, To: 443}},
+		Action:          ActionAllow,
+	}
+	if err := rule.Validate(); err != nil {
+		t.Fatal(err)
+	}
+
+	rule.RemoteCIDR = netip.MustParsePrefix("10.20.0.0/16")
+	err := rule.Validate()
+	if err == nil {
+		t.Fatal("expected remote cidr and cidr group to be mutually exclusive")
+	}
+	if !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("error %q does not mention mutual exclusion", err)
+	}
+}
+
 func TestNATRuleValidateKubeOVNStyleNAT(t *testing.T) {
 	tests := []struct {
 		name    string
