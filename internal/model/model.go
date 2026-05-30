@@ -252,6 +252,9 @@ func (r Route) Validate() error {
 	if !r.NextHop.IsValid() {
 		return errors.New("route next hop is required when route is not blackhole")
 	}
+	if r.NextHop.Is4() != r.Destination.Addr().Is4() {
+		return errors.New("route next hop family must match destination")
+	}
 	return nil
 }
 
@@ -350,6 +353,9 @@ func (n NATRule) Validate() error {
 		if !n.MatchCIDR.IsValid() {
 			return errors.New("snat match cidr is required")
 		}
+		if n.ExternalIP.Is4() != n.MatchCIDR.Addr().Is4() {
+			return errors.New("snat external ip family must match cidr")
+		}
 		if n.TargetIP.IsValid() {
 			return errors.New("snat target ip must be empty")
 		}
@@ -362,6 +368,9 @@ func (n NATRule) Validate() error {
 	case ActionDNAT:
 		if !n.TargetIP.IsValid() {
 			return errors.New("dnat target ip is required")
+		}
+		if n.ExternalIP.Is4() != n.TargetIP.Is4() {
+			return errors.New("dnat external ip family must match target ip")
 		}
 		if hasPortMapping {
 			if n.ExternalPort == 0 || n.TargetPort == 0 {
@@ -377,6 +386,9 @@ func (n NATRule) Validate() error {
 	case ActionDNATSNAT:
 		if !n.TargetIP.IsValid() {
 			return errors.New("dnat_and_snat target ip is required")
+		}
+		if n.ExternalIP.Is4() != n.TargetIP.Is4() {
+			return errors.New("dnat_and_snat external ip family must match target ip")
 		}
 		if hasPortMapping {
 			return errors.New("dnat_and_snat port mapping is not supported")
@@ -419,6 +431,9 @@ func (l LoadBalancer) Validate() error {
 	for i, backend := range l.Backends {
 		if err := backend.Validate(); err != nil {
 			return fmt.Errorf("load balancer backend %d: %w", i, err)
+		}
+		if backend.IP.Is4() != l.VIP.Is4() {
+			return fmt.Errorf("load balancer backend %d ip family must match vip", i)
 		}
 	}
 	for i, subnet := range l.Subnets {

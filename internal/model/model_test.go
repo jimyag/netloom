@@ -189,6 +189,20 @@ func TestPolicyRouteRequiresNextHopForReroute(t *testing.T) {
 	}
 }
 
+func TestRouteRejectsMixedIPFamilies(t *testing.T) {
+	route := Route{
+		Destination: netip.MustParsePrefix("fd00:10::/64"),
+		NextHop:     netip.MustParseAddr("10.10.0.254"),
+	}
+	err := route.Validate()
+	if err == nil {
+		t.Fatal("expected mixed route families to fail")
+	}
+	if !strings.Contains(err.Error(), "next hop family") {
+		t.Fatalf("error %q does not mention next hop family", err)
+	}
+}
+
 func TestPolicyRouteRejectsMixedIPFamilies(t *testing.T) {
 	route := PolicyRoute{
 		Name:     "mixed",
@@ -348,6 +362,39 @@ func TestNATRuleValidateKubeOVNStyleNAT(t *testing.T) {
 			},
 			wantErr: "port translation is not supported",
 		},
+		{
+			name: "snat family mismatch",
+			rule: NATRule{
+				Name:       "broken-snat-family",
+				VPC:        "prod",
+				Type:       ActionSNAT,
+				MatchCIDR:  netip.MustParsePrefix("fd00:10::/64"),
+				ExternalIP: netip.MustParseAddr("198.51.100.80"),
+			},
+			wantErr: "external ip family",
+		},
+		{
+			name: "dnat family mismatch",
+			rule: NATRule{
+				Name:       "broken-dnat-family",
+				VPC:        "prod",
+				Type:       ActionDNAT,
+				ExternalIP: netip.MustParseAddr("198.51.100.90"),
+				TargetIP:   netip.MustParseAddr("fd00:10::10"),
+			},
+			wantErr: "external ip family",
+		},
+		{
+			name: "floating ip family mismatch",
+			rule: NATRule{
+				Name:       "broken-fip-family",
+				VPC:        "prod",
+				Type:       ActionDNATSNAT,
+				ExternalIP: netip.MustParseAddr("2001:db8::10"),
+				TargetIP:   netip.MustParseAddr("10.10.0.11"),
+			},
+			wantErr: "external ip family",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -459,6 +506,20 @@ func TestLoadBalancerValidateServiceVIP(t *testing.T) {
 				AffinityTimeout: 86401,
 			},
 			wantErr: "at most 86400",
+		},
+		{
+			name: "backend family mismatch",
+			lb: LoadBalancer{
+				Name: "web",
+				VPC:  "prod",
+				VIP:  netip.MustParseAddr("10.96.0.10"),
+				Port: 80,
+				Backends: []LoadBalancerBackend{{
+					IP:   netip.MustParseAddr("fd00:10::10"),
+					Port: 8080,
+				}},
+			},
+			wantErr: "ip family must match vip",
 		},
 	}
 	for _, tt := range tests {
