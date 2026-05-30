@@ -2,6 +2,7 @@ package topology
 
 import (
 	"fmt"
+	"hash/fnv"
 	"net/netip"
 	"sort"
 
@@ -125,7 +126,7 @@ func resolveLoadBalancer(state State, packet Packet) (Decision, bool) {
 		if len(lb.Backends) == 0 {
 			continue
 		}
-		backend := firstLoadBalancerBackend(lb.Backends)
+		backend := selectLoadBalancerBackend(lb.Backends, packet)
 		return Decision{
 			Action:         model.ActionAllow,
 			Translated:     backend.IP,
@@ -158,14 +159,44 @@ func loadBalancerAllowsSourceSubnet(lb model.LoadBalancer, endpoint model.Endpoi
 	return false
 }
 
-func firstLoadBalancerBackend(backends []model.LoadBalancerBackend) model.LoadBalancerBackend {
+func selectLoadBalancerBackend(backends []model.LoadBalancerBackend, packet Packet) model.LoadBalancerBackend {
 	selected := backends[0]
+	selectedScore := loadBalancerBackendScore(selected, packet)
 	for _, backend := range backends[1:] {
-		if backend.IP.Compare(selected.IP) < 0 || (backend.IP == selected.IP && backend.Port < selected.Port) {
+		score := loadBalancerBackendScore(backend, packet)
+		if score > selectedScore || (score == selectedScore && compareLoadBalancerBackend(backend, selected) < 0) {
 			selected = backend
+			selectedScore = score
 		}
 	}
 	return selected
+}
+
+func loadBalancerBackendScore(backend model.LoadBalancerBackend, packet Packet) uint32 {
+	hash := fnv.New32a()
+	_, _ = fmt.Fprintf(hash, "%s|%s|%s|%s|%d|%s|%d",
+		packet.VPC,
+		packet.Source,
+		packet.Dest,
+		packet.Protocol,
+		packet.DestPort,
+		backend.IP,
+		backend.Port,
+	)
+	return hash.Sum32()
+}
+
+func compareLoadBalancerBackend(a, b model.LoadBalancerBackend) int {
+	if cmp := a.IP.Compare(b.IP); cmp != 0 {
+		return cmp
+	}
+	if a.Port < b.Port {
+		return -1
+	}
+	if a.Port > b.Port {
+		return 1
+	}
+	return 0
 }
 
 func findEndpoint(state State, vpc string, dest netip.Addr) string {

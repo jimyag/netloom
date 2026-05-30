@@ -1,6 +1,7 @@
 package topology
 
 import (
+	"fmt"
 	"net/netip"
 	"testing"
 
@@ -61,6 +62,59 @@ func TestResolveLoadBalancerVIPToBackend(t *testing.T) {
 	}
 	if decision.Translated != netip.MustParseAddr("10.10.0.20") || decision.TranslatedPort != 8080 {
 		t.Fatalf("backend = %s:%d, want 10.10.0.20:8080", decision.Translated, decision.TranslatedPort)
+	}
+}
+
+func TestResolveLoadBalancerBackendSelectionIsStablePerFlow(t *testing.T) {
+	state := State{
+		LoadBalancers: map[string]model.LoadBalancer{
+			"web": {
+				Name:     "web",
+				VPC:      "prod",
+				VIP:      netip.MustParseAddr("10.96.0.10"),
+				Port:     80,
+				Protocol: model.ProtocolTCP,
+				Backends: []model.LoadBalancerBackend{
+					{IP: netip.MustParseAddr("10.10.0.20"), Port: 8080},
+					{IP: netip.MustParseAddr("10.10.0.30"), Port: 8080},
+					{IP: netip.MustParseAddr("10.10.0.40"), Port: 8080},
+				},
+			},
+		},
+	}
+
+	packet := Packet{
+		VPC:      "prod",
+		Source:   netip.MustParseAddr("10.10.1.10"),
+		Dest:     netip.MustParseAddr("10.96.0.10"),
+		Protocol: model.ProtocolTCP,
+		DestPort: 80,
+	}
+	first, err := Resolve(state, packet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 10 {
+		decision, err := Resolve(state, packet)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if decision.Translated != first.Translated || decision.TranslatedPort != first.TranslatedPort {
+			t.Fatalf("backend changed from %s:%d to %s:%d for same flow", first.Translated, first.TranslatedPort, decision.Translated, decision.TranslatedPort)
+		}
+	}
+
+	seen := map[netip.Addr]bool{}
+	for i := 1; i <= 32; i++ {
+		packet.Source = netip.MustParseAddr(fmt.Sprintf("10.10.1.%d", i))
+		decision, err := Resolve(state, packet)
+		if err != nil {
+			t.Fatal(err)
+		}
+		seen[decision.Translated] = true
+	}
+	if len(seen) < 2 {
+		t.Fatalf("selected %d backend(s), want different flows to spread across backends", len(seen))
 	}
 }
 
