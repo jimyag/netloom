@@ -220,6 +220,30 @@ func TestPlannerClearsEndpointDHCPWhenSubnetDHCPDisabled(t *testing.T) {
 	}
 }
 
+func TestPlannerBuildsStaticEndpointMACAddress(t *testing.T) {
+	planner := ovn.NewPlanner()
+	if err := planner.EnsureEndpoint(context.Background(), model.Endpoint{
+		ID:     "pod-a",
+		VPC:    "prod",
+		Subnet: "apps",
+		IP:     netip.MustParseAddr("10.10.0.10"),
+		MAC:    "0A:58:0A:0A:00:0A",
+		Node:   "node-a",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	joined := stringify(planner.Operations())
+	for _, expected := range []string{
+		"lsp-set-addresses nl_lp_pod-a 0a:58:0a:0a:00:0a 10.10.0.10",
+		"lsp-set-port-security nl_lp_pod-a 0a:58:0a:0a:00:0a 10.10.0.10",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("OVN operations missing %q:\n%s", expected, joined)
+		}
+	}
+}
+
 func TestPlannerBuildsIPv6DHCPOptions(t *testing.T) {
 	planner := ovn.NewPlanner()
 	if err := planner.EnsureSubnet(context.Background(), model.Subnet{

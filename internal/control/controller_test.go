@@ -397,6 +397,29 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 			wantErr: "conflicts",
 		},
 		{
+			name: "endpoint mac conflicts with subnet gateway",
+			mutate: func(state *DesiredState) {
+				state.Endpoints[0].MAC = "0a:58:0a:0a:00:01"
+			},
+			wantErr: "conflicts with subnet \"apps\" gateway mac",
+		},
+		{
+			name: "endpoint mac conflict",
+			mutate: func(state *DesiredState) {
+				state.Endpoints[0].MAC = "0a:58:0a:0a:00:0a"
+				state.Endpoints = append(state.Endpoints, model.Endpoint{
+					ID:             "pod-b",
+					VPC:            "prod",
+					Subnet:         "apps",
+					IP:             netip.MustParseAddr("10.10.0.11"),
+					MAC:            "0A:58:0A:0A:00:0A",
+					Node:           "node-b",
+					SecurityGroups: []string{"web"},
+				})
+			},
+			wantErr: "conflicts with \"pod-a\" on mac",
+		},
+		{
 			name: "duplicate gateway",
 			mutate: func(state *DesiredState) {
 				state.Gateways = append(state.Gateways, state.Gateways[0])

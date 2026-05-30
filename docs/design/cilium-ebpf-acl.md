@@ -112,6 +112,12 @@ differ while the control-plane object remains a NAT rule. Floating IP
 `dnat_and_snat` rules can also carry OVN distributed NAT `logical_port` and
 `external_mac` fields, matching the Kube-OVN/OVN requirement that distributed
 floating IP ARP replies and egress packets use the logical switch port's MAC.
+Endpoint desired state can also carry a static `mac`. The control plane rejects
+duplicates inside the same subnet and rejects the Kube-OVN conflict case where a
+static endpoint MAC equals the deterministic router-port gateway MAC. When a
+MAC is present, the OVN planner writes `MAC IP` to the logical switch port
+addresses and port-security fields; otherwise it keeps OVN dynamic addressing
+for the endpoint IP.
 `LoadBalancer` backends
 are rendered into the OVN VIP backend set and the userspace topology resolver
 uses the same stable hashing inputs for flow affinity. The desired state can

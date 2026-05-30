@@ -406,6 +406,7 @@ func validateObjectGraph(state DesiredState) error {
 
 	endpoints := make(map[string]model.Endpoint, len(state.Endpoints))
 	endpointIPs := make(map[string]string, len(state.Endpoints))
+	endpointMACs := make(map[string]string, len(state.Endpoints))
 	for _, endpoint := range state.Endpoints {
 		if err := endpoint.Validate(); err != nil {
 			return err
@@ -425,6 +426,17 @@ func validateObjectGraph(state DesiredState) error {
 		}
 		if !subnet.CIDR.Contains(endpoint.IP) {
 			return fmt.Errorf("endpoint %q ip %s is outside subnet %q cidr %s", endpoint.ID, endpoint.IP, endpoint.Subnet, subnet.CIDR)
+		}
+		if mac := endpoint.NormalizedMAC(); mac != "" {
+			gatewayMAC := model.GatewayMAC(subnet.Gateway)
+			if mac == gatewayMAC {
+				return fmt.Errorf("endpoint %q mac %s conflicts with subnet %q gateway mac", endpoint.ID, mac, endpoint.Subnet)
+			}
+			macKey := endpoint.Subnet + "|" + mac
+			if previous := endpointMACs[macKey]; previous != "" {
+				return fmt.Errorf("endpoint %q conflicts with %q on mac %s in subnet %s", endpoint.ID, previous, mac, endpoint.Subnet)
+			}
+			endpointMACs[macKey] = endpoint.ID
 		}
 		for _, groupName := range endpoint.SecurityGroups {
 			group, ok := securityGroups[groupName]

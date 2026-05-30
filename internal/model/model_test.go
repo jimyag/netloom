@@ -366,6 +366,7 @@ func TestEndpointValidatesNamedPorts(t *testing.T) {
 		VPC:    "prod",
 		Subnet: "apps",
 		IP:     netip.MustParseAddr("10.10.0.10"),
+		MAC:    "0A:58:0A:0A:00:0A",
 		Node:   "node-a",
 		NamedPorts: []NamedPort{
 			{Name: "http", Protocol: ProtocolTCP, Port: 8080},
@@ -374,6 +375,9 @@ func TestEndpointValidatesNamedPorts(t *testing.T) {
 	}
 	if err := endpoint.Validate(); err != nil {
 		t.Fatal(err)
+	}
+	if got := endpoint.NormalizedMAC(); got != "0a:58:0a:0a:00:0a" {
+		t.Fatalf("normalized mac = %q, want lowercase canonical mac", got)
 	}
 
 	endpoint.NamedPorts = append(endpoint.NamedPorts, NamedPort{Name: "http", Protocol: ProtocolTCP, Port: 9090})
@@ -384,6 +388,21 @@ func TestEndpointValidatesNamedPorts(t *testing.T) {
 	endpoint.NamedPorts = []NamedPort{{Name: "bad.name", Protocol: ProtocolTCP, Port: 8080}}
 	if err := endpoint.Validate(); err == nil || !strings.Contains(err.Error(), "unsupported character") {
 		t.Fatalf("error = %v, want invalid named port name validation", err)
+	}
+
+	endpoint.NamedPorts = nil
+	endpoint.MAC = "not-a-mac"
+	if err := endpoint.Validate(); err == nil || !strings.Contains(err.Error(), "endpoint mac is invalid") {
+		t.Fatalf("error = %v, want invalid mac validation", err)
+	}
+}
+
+func TestGatewayMACMatchesOVNRouterPortMAC(t *testing.T) {
+	if got := GatewayMAC(netip.MustParseAddr("10.10.0.1")); got != "0a:58:0a:0a:00:01" {
+		t.Fatalf("gateway mac = %s", got)
+	}
+	if got := GatewayMAC(netip.MustParseAddr("fd00:10::1")); got != "0a:58:00:00:00:01" {
+		t.Fatalf("gateway mac = %s", got)
 	}
 }
 

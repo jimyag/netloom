@@ -64,6 +64,7 @@ type Endpoint struct {
 	VPC            string      `json:"vpc"`
 	Subnet         string      `json:"subnet"`
 	IP             netip.Addr  `json:"ip"`
+	MAC            string      `json:"mac"`
 	Node           string      `json:"node"`
 	SecurityGroups []string    `json:"security_groups"`
 	NamedPorts     []NamedPort `json:"named_ports"`
@@ -271,6 +272,11 @@ func (e Endpoint) Validate() error {
 	if !e.IP.IsValid() {
 		return errors.New("endpoint ip is required")
 	}
+	if strings.TrimSpace(e.MAC) != "" {
+		if _, err := net.ParseMAC(e.MAC); err != nil {
+			return fmt.Errorf("endpoint mac is invalid: %w", err)
+		}
+	}
 	if e.Node == "" {
 		return errors.New("endpoint node is required")
 	}
@@ -286,6 +292,26 @@ func (e Endpoint) Validate() error {
 		seenPorts[key] = struct{}{}
 	}
 	return nil
+}
+
+func (e Endpoint) NormalizedMAC() string {
+	if strings.TrimSpace(e.MAC) == "" {
+		return ""
+	}
+	mac, err := net.ParseMAC(e.MAC)
+	if err != nil {
+		return ""
+	}
+	return mac.String()
+}
+
+func GatewayMAC(ip netip.Addr) string {
+	if ip.Is4() {
+		raw := ip.As4()
+		return fmt.Sprintf("0a:58:%02x:%02x:%02x:%02x", raw[0], raw[1], raw[2], raw[3])
+	}
+	raw := ip.As16()
+	return fmt.Sprintf("0a:58:%02x:%02x:%02x:%02x", raw[12], raw[13], raw[14], raw[15])
 }
 
 func (r RouteTable) Validate() error {

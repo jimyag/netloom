@@ -102,11 +102,16 @@ func (p *Planner) EnsureEndpoint(_ context.Context, endpoint model.Endpoint) err
 	port := logicalPort(endpoint.ID)
 	p.ops = append(p.ops,
 		Operation{Command: "lsp-add", Flags: []string{"--may-exist"}, Args: []string{logicalSwitch(endpoint.Subnet), port}},
-		Operation{Command: "lsp-set-addresses", Args: []string{port, "dynamic " + endpoint.IP.String()}},
+		Operation{Command: "lsp-set-addresses", Args: []string{port, endpointAddress(endpoint)}},
 		setOperation("logical_switch_port", port, "external_ids:netloom_owner=netloom", "external_ids:netloom_endpoint="+endpoint.ID, "external_ids:netloom_node="+endpoint.Node, "external_ids:netloom_vpc="+endpoint.VPC, "external_ids:netloom_subnet="+endpoint.Subnet),
 		Operation{Command: "lsp-set-dhcpv4-options", Args: []string{port}},
 		Operation{Command: "lsp-set-dhcpv6-options", Args: []string{port}},
 	)
+	if endpoint.NormalizedMAC() != "" {
+		p.ops = append(p.ops, Operation{Command: "lsp-set-port-security", Args: []string{port, endpointAddress(endpoint)}})
+	} else {
+		p.ops = append(p.ops, Operation{Command: "lsp-set-port-security", Args: []string{port}})
+	}
 	if subnet, ok := p.subnets[endpoint.Subnet]; ok && subnet.DHCP.Enabled && endpoint.IP.Is4() {
 		dhcpID := dhcpOptionsUUID(endpoint, 4)
 		p.ops = append(p.ops,
@@ -122,6 +127,13 @@ func (p *Planner) EnsureEndpoint(_ context.Context, endpoint model.Endpoint) err
 		)
 	}
 	return nil
+}
+
+func endpointAddress(endpoint model.Endpoint) string {
+	if mac := endpoint.NormalizedMAC(); mac != "" {
+		return mac + " " + endpoint.IP.String()
+	}
+	return "dynamic " + endpoint.IP.String()
 }
 
 func (p *Planner) EnsureRouteTable(_ context.Context, table model.RouteTable) error {
@@ -330,12 +342,7 @@ func sanitize(value string) string {
 }
 
 func deterministicMAC(ip netip.Addr) string {
-	if ip.Is4() {
-		raw := ip.As4()
-		return fmt.Sprintf("0a:58:%02x:%02x:%02x:%02x", raw[0], raw[1], raw[2], raw[3])
-	}
-	raw := ip.As16()
-	return fmt.Sprintf("0a:58:%02x:%02x:%02x:%02x", raw[12], raw[13], raw[14], raw[15])
+	return model.GatewayMAC(ip)
 }
 
 func dhcpOptionsUUID(endpoint model.Endpoint, family int) string {

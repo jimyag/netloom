@@ -73,6 +73,8 @@ func TestDesiredStateDrivesTopologyRoutesAndEBPFStyleACL(t *testing.T) {
 		"external_ids:netloom_gateway_lan_ip=10.10.0.254",
 		"external_ids:netloom_gateway_distributed=false",
 		"options:chassis=node-a",
+		"lsp-set-addresses nl_lp_pod-a 0a:58:0a:0a:00:0a 10.10.0.10",
+		"lsp-set-port-security nl_lp_pod-a 0a:58:0a:0a:00:0a 10.10.0.10",
 	} {
 		if !strings.Contains(ovnOps, expected) {
 			t.Fatalf("OVN gateway operations missing %q:\n%s", expected, ovnOps)
@@ -243,7 +245,7 @@ const integrationStateJSON = `{
   "vpcs": [{"name": "prod"}],
   "subnets": [{"name": "apps", "vpc": "prod", "cidr": "10.10.0.0/24", "gateway": "10.10.0.1", "provider_network": "physnet-a", "vlan": 100, "dhcp": {"enabled": true, "lease_time": 7200, "mtu": 1400}}],
   "endpoints": [
-    {"id": "pod-a", "vpc": "prod", "subnet": "apps", "ip": "10.10.0.10", "node": "node-a", "security_groups": ["client"]},
+    {"id": "pod-a", "vpc": "prod", "subnet": "apps", "ip": "10.10.0.10", "mac": "0A:58:0A:0A:00:0A", "node": "node-a", "security_groups": ["client"]},
     {"id": "pod-b", "vpc": "prod", "subnet": "apps", "ip": "10.10.0.11", "node": "node-b", "security_groups": ["server"]}
   ],
   "route_tables": [{"name": "main", "vpc": "prod", "routes": [{"destination": "0.0.0.0/0", "next_hops": ["10.10.0.253", "10.10.0.254"]}]}],
