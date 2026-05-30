@@ -124,6 +124,7 @@ func cleanupOperations(old, next desiredSnapshot) []Operation {
 	}
 	for _, key := range staleKeys(old.NATRules, next.NATRules) {
 		rule := old.NATRules[key]
+		ops = append(ops, natCleanupOperations(rule)...)
 		ops = append(ops, Operation{Command: "lr-nat-del", Flags: []string{"--if-exists"}, Args: []string{
 			logicalRouter(rule.VPC),
 			natType(rule.Type),
@@ -135,6 +136,9 @@ func cleanupOperations(old, next desiredSnapshot) []Operation {
 		nextRule := next.NATRules[key]
 		if natRuleSignature(oldRule) == natRuleSignature(nextRule) {
 			continue
+		}
+		if natUsesLoadBalancer(oldRule) != natUsesLoadBalancer(nextRule) || natUsesLoadBalancer(oldRule) {
+			ops = append(ops, natCleanupOperations(oldRule)...)
 		}
 		if natDeleteKey(oldRule) == natDeleteKey(nextRule) {
 			continue
@@ -302,4 +306,17 @@ func natRuleSignature(rule model.NATRule) string {
 		rule.ExternalPort,
 		rule.TargetPort,
 	)
+}
+
+func natCleanupOperations(rule model.NATRule) []Operation {
+	if !natUsesLoadBalancer(rule) {
+		return nil
+	}
+	name := natLoadBalancerName(rule.Name)
+	lb := natLoadBalancer(rule)
+	return []Operation{
+		{Command: "lr-lb-del", Flags: []string{"--if-exists"}, Args: []string{logicalRouter(rule.VPC), name}},
+		{Command: "lb-del", Flags: []string{"--if-exists"}, Args: []string{name, loadBalancerVIP(lb)}},
+		{Command: "lb-del", Flags: []string{"--if-exists"}, Args: []string{name}},
+	}
 }

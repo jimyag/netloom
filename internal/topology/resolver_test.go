@@ -330,6 +330,45 @@ func TestResolvePortDNATRequiresProtocolAndPort(t *testing.T) {
 	}
 }
 
+func TestResolvePortDNATTranslatesTargetPort(t *testing.T) {
+	state := State{
+		Endpoints: map[string]model.Endpoint{
+			"web": {
+				ID:     "web",
+				VPC:    "prod",
+				Subnet: "apps",
+				IP:     netip.MustParseAddr("10.10.0.20"),
+				Node:   "node-a",
+			},
+		},
+		NATRules: map[string]model.NATRule{
+			"web-https": {
+				Name:         "web-https",
+				VPC:          "prod",
+				Type:         model.ActionDNAT,
+				ExternalIP:   netip.MustParseAddr("198.51.100.80"),
+				TargetIP:     netip.MustParseAddr("10.10.0.20"),
+				Protocol:     model.ProtocolTCP,
+				ExternalPort: 8443,
+				TargetPort:   443,
+			},
+		},
+	}
+	decision, err := Resolve(state, Packet{
+		VPC:      "prod",
+		Source:   netip.MustParseAddr("203.0.113.10"),
+		Dest:     netip.MustParseAddr("198.51.100.80"),
+		Protocol: model.ProtocolTCP,
+		DestPort: 8443,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.MatchedBy != "nat/web-https" || decision.Destination != "web" || decision.Translated != netip.MustParseAddr("10.10.0.20") || decision.TranslatedPort != 443 {
+		t.Fatalf("decision = %+v, want DNAT target port translation", decision)
+	}
+}
+
 func TestResolveFloatingIPToEndpoint(t *testing.T) {
 	state := State{
 		Endpoints: map[string]model.Endpoint{

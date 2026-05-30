@@ -224,6 +224,48 @@ func TestControllerRejectsConflictingLoadBalancers(t *testing.T) {
 	}
 }
 
+func TestControllerRejectsNATAndLoadBalancerVIPConflicts(t *testing.T) {
+	baseState := DesiredState{
+		VPCs: []model.VPC{{Name: "prod"}},
+		Subnets: []model.Subnet{{
+			Name:    "apps",
+			VPC:     "prod",
+			CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway: netip.MustParseAddr("10.10.0.1"),
+		}},
+	}
+	tests := []struct {
+		name string
+		nat  model.NATRule
+		lb   model.LoadBalancer
+	}{
+		{
+			name: "port dnat owns load balancer vip port",
+			nat:  model.NATRule{Name: "web-nat", VPC: "prod", Type: model.ActionDNAT, ExternalIP: netip.MustParseAddr("198.51.100.80"), TargetIP: netip.MustParseAddr("10.10.0.10"), Protocol: model.ProtocolTCP, ExternalPort: 8443, TargetPort: 443},
+			lb:   model.LoadBalancer{Name: "web-lb", VPC: "prod", VIP: netip.MustParseAddr("198.51.100.80"), Port: 8443, Protocol: model.ProtocolTCP, Backends: []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.11"), Port: 8080}}},
+		},
+		{
+			name: "floating ip owns all load balancer ports",
+			nat:  model.NATRule{Name: "web-fip", VPC: "prod", Type: model.ActionDNATSNAT, ExternalIP: netip.MustParseAddr("198.51.100.81"), TargetIP: netip.MustParseAddr("10.10.0.10")},
+			lb:   model.LoadBalancer{Name: "web-lb", VPC: "prod", VIP: netip.MustParseAddr("198.51.100.81"), Port: 8443, Protocol: model.ProtocolTCP, Backends: []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.11"), Port: 8080}}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state := baseState
+			state.NATRules = []model.NATRule{tt.nat}
+			state.LoadBalancers = []model.LoadBalancer{tt.lb}
+			err := NewController(NewMemoryBackend(), NewMemoryBackend()).Reconcile(context.Background(), state)
+			if err == nil {
+				t.Fatal("expected NAT/LB VIP conflict to fail")
+			}
+			if !strings.Contains(err.Error(), "conflicts") {
+				t.Fatalf("error %q does not contain conflicts", err)
+			}
+		})
+	}
+}
+
 func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 	tests := []struct {
 		name    string

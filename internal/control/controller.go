@@ -171,6 +171,9 @@ func (c *Controller) Reconcile(ctx context.Context, state DesiredState) error {
 	if err := validateLoadBalancers(state.LoadBalancers); err != nil {
 		return err
 	}
+	if err := validateInboundVIPConflicts(state.NATRules, state.LoadBalancers); err != nil {
+		return err
+	}
 	if err := validateRouteTables(state.RouteTables); err != nil {
 		return err
 	}
@@ -524,6 +527,32 @@ func validateLoadBalancers(loadBalancers []model.LoadBalancer) error {
 			return fmt.Errorf("load balancer %q conflicts with %q on %s/%s:%d", lb.Name, prev, lb.VIP, protocol, lb.Port)
 		}
 		vips[key] = lb.Name
+	}
+	return nil
+}
+
+func validateInboundVIPConflicts(natRules []model.NATRule, loadBalancers []model.LoadBalancer) error {
+	allPortNATs := make(map[string]string)
+	portNATs := make(map[string]string)
+	for _, rule := range natRules {
+		if rule.Type == model.ActionSNAT {
+			continue
+		}
+		baseKey := rule.VPC + "|" + rule.ExternalIP.String()
+		if rule.ExternalPort == 0 {
+			allPortNATs[baseKey] = rule.Name
+			continue
+		}
+		portNATs[fmt.Sprintf("%s|%d", baseKey, rule.ExternalPort)] = rule.Name
+	}
+	for _, lb := range loadBalancers {
+		baseKey := lb.VPC + "|" + lb.VIP.String()
+		if prev := allPortNATs[baseKey]; prev != "" {
+			return fmt.Errorf("load balancer %q conflicts with nat rule %q on external ip %s", lb.Name, prev, lb.VIP)
+		}
+		if prev := portNATs[fmt.Sprintf("%s|%d", baseKey, lb.Port)]; prev != "" {
+			return fmt.Errorf("load balancer %q conflicts with nat rule %q on %s:%d", lb.Name, prev, lb.VIP, lb.Port)
+		}
 	}
 	return nil
 }

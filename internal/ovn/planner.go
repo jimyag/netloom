@@ -206,6 +206,17 @@ func (p *Planner) EnsureNATRule(_ context.Context, rule model.NATRule) error {
 	case model.ActionSNAT:
 		p.ops = append(p.ops, Operation{Command: "lr-nat-add", Flags: []string{"--may-exist"}, Args: []string{router, "snat", rule.ExternalIP.String(), rule.MatchCIDR.String()}})
 	case model.ActionDNAT:
+		if natUsesLoadBalancer(rule) {
+			name := natLoadBalancerName(rule.Name)
+			lb := natLoadBalancer(rule)
+			p.ops = append(p.ops,
+				Operation{Command: "lb-del", Flags: []string{"--if-exists"}, Args: []string{name, loadBalancerVIP(lb)}},
+				Operation{Command: "lb-add", Flags: []string{"--may-exist"}, Args: []string{name, loadBalancerVIP(lb), loadBalancerBackends(lb), string(loadBalancerProtocol(lb))}},
+				setOperation("load_balancer", name, "external_ids:netloom_owner=netloom", "external_ids:netloom_nat="+rule.Name, "external_ids:netloom_vpc="+rule.VPC),
+				Operation{Command: "lr-lb-add", Flags: []string{"--may-exist"}, Args: []string{router, name}},
+			)
+			return nil
+		}
 		op := Operation{Command: "lr-nat-add", Flags: []string{"--may-exist"}, Args: []string{router, "dnat", rule.ExternalIP.String(), rule.TargetIP.String()}}
 		if rule.ExternalPort != 0 {
 			op.Flags = append([]string{"--portrange"}, op.Flags...)
@@ -385,6 +396,32 @@ func loadBalancerProtocol(lb model.LoadBalancer) model.Protocol {
 		return model.ProtocolTCP
 	}
 	return lb.Protocol
+}
+
+func natUsesLoadBalancer(rule model.NATRule) bool {
+	return rule.Type == model.ActionDNAT &&
+		rule.ExternalPort != 0 &&
+		rule.TargetPort != 0 &&
+		rule.ExternalPort != rule.TargetPort
+}
+
+func natLoadBalancerName(ruleName string) string {
+	replacer := strings.NewReplacer("-", "_")
+	return "nl_natlb_" + replacer.Replace(sanitize(ruleName))
+}
+
+func natLoadBalancer(rule model.NATRule) model.LoadBalancer {
+	return model.LoadBalancer{
+		Name:     rule.Name,
+		VPC:      rule.VPC,
+		VIP:      rule.ExternalIP,
+		Port:     rule.ExternalPort,
+		Protocol: rule.Protocol,
+		Backends: []model.LoadBalancerBackend{{
+			IP:   rule.TargetIP,
+			Port: rule.TargetPort,
+		}},
+	}
 }
 
 func loadBalancerOptions(lb model.LoadBalancer) []string {

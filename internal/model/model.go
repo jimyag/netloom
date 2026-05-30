@@ -480,9 +480,6 @@ func (n NATRule) Validate() error {
 			if n.ExternalPort == 0 || n.TargetPort == 0 {
 				return errors.New("dnat port mapping requires both external and target ports")
 			}
-			if n.ExternalPort != n.TargetPort {
-				return errors.New("dnat port translation is not supported")
-			}
 			if n.Protocol != ProtocolTCP && n.Protocol != ProtocolUDP {
 				return errors.New("dnat port mapping requires tcp or udp protocol")
 			}

@@ -155,6 +155,44 @@ func TestBackendCleanupConvergesChangedNATRule(t *testing.T) {
 	}
 }
 
+func TestBackendCleanupRemovesTranslatedDNATLoadBalancer(t *testing.T) {
+	recorder := ovn.NewRecorderExecutor()
+	backend := ovn.NewBackend(recorder)
+	first := controlStateWithEndpoint("pod-a")
+	first.NATRules = []model.NATRule{{
+		Name:         "web-translate",
+		VPC:          "prod",
+		Type:         model.ActionDNAT,
+		ExternalIP:   netip.MustParseAddr("198.51.100.80"),
+		TargetIP:     netip.MustParseAddr("10.10.0.10"),
+		Protocol:     model.ProtocolTCP,
+		ExternalPort: 8443,
+		TargetPort:   443,
+	}}
+	controller := control.NewController(backend, control.NewMemoryBackend())
+	if err := controller.Reconcile(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+
+	second := first
+	second.NATRules = nil
+	if err := controller.Reconcile(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+
+	joined := stringifyOVNOps(recorder.Operations())
+	for _, expected := range []string{
+		"--may-exist lb-add nl_natlb_web_translate 198.51.100.80:8443 10.10.0.10:443 tcp",
+		"--if-exists lr-lb-del nl_lr_prod nl_natlb_web_translate",
+		"--if-exists lb-del nl_natlb_web_translate 198.51.100.80:8443",
+		"--if-exists lb-del nl_natlb_web_translate",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("translated DNAT LB cleanup operation missing %q:\n%s", expected, joined)
+		}
+	}
+}
+
 func TestBackendCleanupConvergesChangedPolicyRoute(t *testing.T) {
 	recorder := ovn.NewRecorderExecutor()
 	backend := ovn.NewBackend(recorder)

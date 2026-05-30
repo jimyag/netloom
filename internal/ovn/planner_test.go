@@ -605,6 +605,16 @@ func TestPlannerBuildsKubeOVNStyleNATOperations(t *testing.T) {
 			ExternalPort: 2222,
 			TargetPort:   2222,
 		},
+		{
+			Name:         "web-translate",
+			VPC:          "prod",
+			Type:         model.ActionDNAT,
+			ExternalIP:   netip.MustParseAddr("198.51.100.41"),
+			TargetIP:     netip.MustParseAddr("10.10.0.13"),
+			Protocol:     model.ProtocolTCP,
+			ExternalPort: 8443,
+			TargetPort:   443,
+		},
 	} {
 		if err := planner.EnsureNATRule(context.Background(), rule); err != nil {
 			t.Fatal(err)
@@ -619,6 +629,11 @@ func TestPlannerBuildsKubeOVNStyleNATOperations(t *testing.T) {
 		"lr-nat-add nl_lr_prod dnat_and_snat 198.51.100.30 10.10.0.11",
 		"--if-exists lr-nat-del nl_lr_prod dnat 198.51.100.40",
 		"--portrange --may-exist lr-nat-add nl_lr_prod dnat 198.51.100.40 10.10.0.12 2222",
+		"--if-exists lr-nat-del nl_lr_prod dnat 198.51.100.41",
+		"--if-exists lb-del nl_natlb_web_translate 198.51.100.41:8443",
+		"--may-exist lb-add nl_natlb_web_translate 198.51.100.41:8443 10.10.0.13:443 tcp",
+		"set load_balancer nl_natlb_web_translate external_ids:netloom_owner=netloom external_ids:netloom_nat=web-translate external_ids:netloom_vpc=prod",
+		"--may-exist lr-lb-add nl_lr_prod nl_natlb_web_translate",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("OVN operations missing %q:\n%s", expected, joined)

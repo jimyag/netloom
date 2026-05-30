@@ -788,9 +788,9 @@ func TestNATRuleValidateKubeOVNStyleNAT(t *testing.T) {
 			wantErr: "requires tcp or udp protocol",
 		},
 		{
-			name: "port translation unsupported",
+			name: "port translation",
 			rule: NATRule{
-				Name:         "broken-translation",
+				Name:         "web-translation",
 				VPC:          "prod",
 				Type:         ActionDNAT,
 				ExternalIP:   netip.MustParseAddr("198.51.100.70"),
@@ -799,7 +799,6 @@ func TestNATRuleValidateKubeOVNStyleNAT(t *testing.T) {
 				ExternalPort: 8443,
 				TargetPort:   443,
 			},
-			wantErr: "port translation is not supported",
 		},
 		{
 			name: "snat family mismatch",
