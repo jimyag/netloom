@@ -149,6 +149,14 @@ projection enforce remote-group rules for workload traffic. When membership
 changes, periodic agent reconcile recompiles the endpoint program and replaces
 the TCX attachment signature.
 
+Named ports follow Cilium's late-binding policy behavior. Endpoints can declare
+`named_ports` with a name, TCP or UDP protocol, and concrete port number.
+Ingress rules resolve `named_ports` against the protected endpoint before map
+encoding. Egress rules resolve named ports only with `remote_group`, because the
+destination endpoint set is then known; each remote member contributes its own
+resolved port and exact CIDR. CIDR, CIDR-group, and FQDN egress rules reject
+named ports instead of guessing a destination port source.
+
 CIDR groups follow Cilium's `CIDRGroupRef` idea for reusable external CIDR
 sets. Netloom models those sets as desired-state `cidr_groups`; a
 `SecurityGroupRule` can refer to one with `remote_cidr_group`, and the compiler

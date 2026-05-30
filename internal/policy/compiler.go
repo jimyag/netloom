@@ -30,6 +30,7 @@ type Rule struct {
 	RemoteEndpoint  string
 	RemoteFQDN      string
 	Ports           []model.PortRange
+	NamedPorts      []string
 	ICMPType        *uint8
 	ICMPCode        *uint8
 	Action          model.Action
@@ -141,12 +142,23 @@ func expandRule(endpoint model.Endpoint, securityGroup string, rule model.Securi
 		RemoteGroup:     rule.RemoteGroup,
 		RemoteCIDRGroup: rule.RemoteCIDRGroup,
 		Ports:           append([]model.PortRange(nil), rule.Ports...),
+		NamedPorts:      append([]string(nil), rule.NamedPorts...),
 		ICMPType:        cloneUint8Ptr(rule.ICMPType),
 		ICMPCode:        cloneUint8Ptr(rule.ICMPCode),
 		Action:          rule.Action,
 		Stateful:        rule.Stateful,
 		Log:             rule.Log,
 		SecurityGroup:   securityGroup,
+	}
+	if len(rule.NamedPorts) > 0 && rule.Direction == model.DirectionIngress {
+		ports, err := resolveNamedPorts(rule.Ports, rule.NamedPorts, rule.Protocol, endpoint)
+		if err != nil {
+			return nil, fmt.Errorf("rule %s: %w", rule.ID, err)
+		}
+		base.Ports = ports
+	}
+	if len(rule.NamedPorts) > 0 && rule.Direction == model.DirectionEgress && rule.RemoteGroup == "" {
+		return nil, fmt.Errorf("rule %s: named ports require remote_group for egress rules", rule.ID)
 	}
 	if len(rule.RemoteFQDNs) > 0 {
 		return expandFQDNRule(base, rule.RemoteFQDNs, dnsRecords)
@@ -171,6 +183,13 @@ func expandRule(endpoint model.Endpoint, securityGroup string, rule model.Securi
 		}
 		expanded := base
 		expanded.RemoteEndpoint = member.ID
+		if len(rule.NamedPorts) > 0 && rule.Direction == model.DirectionEgress {
+			ports, err := resolveNamedPorts(rule.Ports, rule.NamedPorts, rule.Protocol, member)
+			if err != nil {
+				return nil, fmt.Errorf("rule %s remote endpoint %s: %w", rule.ID, member.ID, err)
+			}
+			expanded.Ports = ports
+		}
 		if member.IP.Is4() || member.IP.Is6() {
 			bits := 128
 			if member.IP.Is4() {
@@ -180,6 +199,36 @@ func expandRule(endpoint model.Endpoint, securityGroup string, rule model.Securi
 		}
 		out = append(out, expanded)
 	}
+	return out, nil
+}
+
+func resolveNamedPorts(staticPorts []model.PortRange, names []string, protocol model.Protocol, endpoint model.Endpoint) ([]model.PortRange, error) {
+	out := append([]model.PortRange(nil), staticPorts...)
+	if len(names) == 0 {
+		return out, nil
+	}
+	if protocol != model.ProtocolTCP && protocol != model.ProtocolUDP {
+		return nil, fmt.Errorf("named ports require tcp or udp protocol")
+	}
+	byName := make(map[string]uint16, len(endpoint.NamedPorts))
+	for _, port := range endpoint.NamedPorts {
+		if port.Protocol == protocol {
+			byName[port.Name] = port.Port
+		}
+	}
+	for _, name := range names {
+		port, ok := byName[name]
+		if !ok {
+			return nil, fmt.Errorf("named port %s/%s is not defined on endpoint %s", protocol, name, endpoint.ID)
+		}
+		out = append(out, model.PortRange{From: port, To: port})
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].From != out[j].From {
+			return out[i].From < out[j].From
+		}
+		return out[i].To < out[j].To
+	})
 	return out, nil
 }
 

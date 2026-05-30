@@ -59,12 +59,13 @@ type DHCPOptions struct {
 }
 
 type Endpoint struct {
-	ID             string     `json:"id"`
-	VPC            string     `json:"vpc"`
-	Subnet         string     `json:"subnet"`
-	IP             netip.Addr `json:"ip"`
-	Node           string     `json:"node"`
-	SecurityGroups []string   `json:"security_groups"`
+	ID             string      `json:"id"`
+	VPC            string      `json:"vpc"`
+	Subnet         string      `json:"subnet"`
+	IP             netip.Addr  `json:"ip"`
+	Node           string      `json:"node"`
+	SecurityGroups []string    `json:"security_groups"`
+	NamedPorts     []NamedPort `json:"named_ports"`
 }
 
 type RouteTable struct {
@@ -172,12 +173,19 @@ type SecurityGroupRule struct {
 	RemoteCIDRGroup string         `json:"remote_cidr_group"`
 	RemoteFQDNs     []FQDNSelector `json:"remote_fqdns"`
 	Ports           []PortRange    `json:"ports"`
+	NamedPorts      []string       `json:"named_ports"`
 	ICMPType        *uint8         `json:"icmp_type,omitempty"`
 	ICMPCode        *uint8         `json:"icmp_code,omitempty"`
 	Action          Action         `json:"action"`
 	Stateful        bool           `json:"stateful"`
 	Log             bool           `json:"log"`
 	Description     string         `json:"description"`
+}
+
+type NamedPort struct {
+	Name     string   `json:"name"`
+	Protocol Protocol `json:"protocol"`
+	Port     uint16   `json:"port"`
 }
 
 type FQDNSelector struct {
@@ -260,6 +268,17 @@ func (e Endpoint) Validate() error {
 	}
 	if e.Node == "" {
 		return errors.New("endpoint node is required")
+	}
+	seenPorts := make(map[string]struct{}, len(e.NamedPorts))
+	for i, port := range e.NamedPorts {
+		if err := port.Validate(); err != nil {
+			return fmt.Errorf("named port %d: %w", i, err)
+		}
+		key := string(port.Protocol) + "/" + port.Name
+		if _, ok := seenPorts[key]; ok {
+			return fmt.Errorf("named port %s/%s is duplicated", port.Protocol, port.Name)
+		}
+		seenPorts[key] = struct{}{}
 	}
 	return nil
 }
@@ -632,6 +651,19 @@ func (r SecurityGroupRule) Validate() error {
 	if len(r.Ports) > 0 && r.Protocol != ProtocolTCP && r.Protocol != ProtocolUDP {
 		return errors.New("ports require tcp or udp protocol")
 	}
+	if len(r.NamedPorts) > 0 && r.Protocol != ProtocolTCP && r.Protocol != ProtocolUDP {
+		return errors.New("named ports require tcp or udp protocol")
+	}
+	seenNamedPorts := make(map[string]struct{}, len(r.NamedPorts))
+	for i, name := range r.NamedPorts {
+		if err := validateNamedPortName(name); err != nil {
+			return fmt.Errorf("named port %d: %w", i, err)
+		}
+		if _, ok := seenNamedPorts[name]; ok {
+			return fmt.Errorf("named port %s is duplicated", name)
+		}
+		seenNamedPorts[name] = struct{}{}
+	}
 	if r.ICMPType != nil && r.Protocol != ProtocolICMP {
 		return errors.New("icmp_type requires icmp protocol")
 	}
@@ -791,6 +823,32 @@ func (p PortRange) Validate() error {
 	}
 	if p.From > p.To {
 		return fmt.Errorf("port range start %d exceeds end %d", p.From, p.To)
+	}
+	return nil
+}
+
+func (p NamedPort) Validate() error {
+	if err := validateNamedPortName(p.Name); err != nil {
+		return err
+	}
+	if p.Protocol != ProtocolTCP && p.Protocol != ProtocolUDP {
+		return errors.New("named port protocol must be tcp or udp")
+	}
+	if p.Port == 0 {
+		return errors.New("named port number must be between 1 and 65535")
+	}
+	return nil
+}
+
+func validateNamedPortName(name string) error {
+	if name == "" {
+		return errors.New("named port name is required")
+	}
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			continue
+		}
+		return fmt.Errorf("named port name %q contains unsupported character %q", name, r)
 	}
 	return nil
 }

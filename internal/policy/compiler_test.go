@@ -162,6 +162,120 @@ func TestCompileForEndpointEncodesICMPTypeAndCode(t *testing.T) {
 	}
 }
 
+func TestCompileForEndpointResolvesIngressNamedPort(t *testing.T) {
+	endpoint := model.Endpoint{
+		ID:             "pod-a",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"web"},
+		NamedPorts: []model.NamedPort{
+			{Name: "http", Protocol: model.ProtocolTCP, Port: 8080},
+		},
+	}
+	program, err := CompileForEndpoint(endpoint, map[string]model.SecurityGroup{
+		"web": {
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "allow-http",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("10.20.0.0/16"),
+				NamedPorts: []string{"http"},
+				Action:     model.ActionAllow,
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(program.MapEntries) != 1 {
+		t.Fatalf("entries = %d, want 1", len(program.MapEntries))
+	}
+	if program.MapEntries[0].Key.DestPort != 8080 || program.MapEntries[0].Key.L4PrefixBits != 24 {
+		t.Fatalf("named port map key = %+v, want tcp/8080 exact", program.MapEntries[0].Key)
+	}
+}
+
+func TestCompileForEndpointResolvesEgressNamedPortFromRemoteGroup(t *testing.T) {
+	endpoint := model.Endpoint{
+		ID:             "client",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"client"},
+	}
+	remote := model.Endpoint{
+		ID:             "api",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.20"),
+		Node:           "node-b",
+		SecurityGroups: []string{"api"},
+		NamedPorts: []model.NamedPort{
+			{Name: "http", Protocol: model.ProtocolTCP, Port: 8080},
+		},
+	}
+	groups := map[string]model.SecurityGroup{
+		"client": {
+			Name: "client",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:          "egress-api",
+				Priority:    100,
+				Direction:   model.DirectionEgress,
+				Protocol:    model.ProtocolTCP,
+				RemoteGroup: "api",
+				NamedPorts:  []string{"http"},
+				Action:      model.ActionAllow,
+			}},
+		},
+		"api": {Name: "api", VPC: "prod"},
+	}
+	program, err := CompileForEndpointWithContext(endpoint, groups, CompileContext{Endpoints: []model.Endpoint{endpoint, remote}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(program.MapEntries) != 1 {
+		t.Fatalf("entries = %d, want 1", len(program.MapEntries))
+	}
+	entry := program.MapEntries[0]
+	if entry.Key.DestPort != 8080 || entry.RemoteCIDR != netip.MustParsePrefix("10.10.0.20/32") {
+		t.Fatalf("egress named port entry = %+v, want remote api tcp/8080", entry)
+	}
+}
+
+func TestCompileForEndpointRejectsUnresolvableNamedPort(t *testing.T) {
+	endpoint := model.Endpoint{
+		ID:             "pod-a",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"web"},
+	}
+	_, err := CompileForEndpoint(endpoint, map[string]model.SecurityGroup{
+		"web": {
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "allow-http",
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				NamedPorts: []string{"http"},
+				Action:     model.ActionAllow,
+			}},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected missing named port to fail")
+	}
+}
+
 func TestCompileForEndpointDecomposesPortRangesIntoLPMEntries(t *testing.T) {
 	endpoint := model.Endpoint{
 		ID:             "pod-a",

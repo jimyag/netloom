@@ -359,6 +359,57 @@ func TestSecurityGroupRulePortsRequireTransportProtocol(t *testing.T) {
 	}
 }
 
+func TestEndpointValidatesNamedPorts(t *testing.T) {
+	endpoint := Endpoint{
+		ID:     "pod-a",
+		VPC:    "prod",
+		Subnet: "apps",
+		IP:     netip.MustParseAddr("10.10.0.10"),
+		Node:   "node-a",
+		NamedPorts: []NamedPort{
+			{Name: "http", Protocol: ProtocolTCP, Port: 8080},
+			{Name: "dns", Protocol: ProtocolUDP, Port: 53},
+		},
+	}
+	if err := endpoint.Validate(); err != nil {
+		t.Fatal(err)
+	}
+
+	endpoint.NamedPorts = append(endpoint.NamedPorts, NamedPort{Name: "http", Protocol: ProtocolTCP, Port: 9090})
+	if err := endpoint.Validate(); err == nil || !strings.Contains(err.Error(), "duplicated") {
+		t.Fatalf("error = %v, want duplicate named port validation", err)
+	}
+
+	endpoint.NamedPorts = []NamedPort{{Name: "bad.name", Protocol: ProtocolTCP, Port: 8080}}
+	if err := endpoint.Validate(); err == nil || !strings.Contains(err.Error(), "unsupported character") {
+		t.Fatalf("error = %v, want invalid named port name validation", err)
+	}
+}
+
+func TestSecurityGroupRuleValidatesNamedPorts(t *testing.T) {
+	rule := SecurityGroupRule{
+		ID:         "allow-http",
+		Direction:  DirectionIngress,
+		Protocol:   ProtocolTCP,
+		NamedPorts: []string{"http"},
+		Action:     ActionAllow,
+	}
+	if err := rule.Validate(); err != nil {
+		t.Fatal(err)
+	}
+
+	rule.Protocol = ProtocolICMP
+	if err := rule.Validate(); err == nil || !strings.Contains(err.Error(), "named ports require tcp or udp protocol") {
+		t.Fatalf("error = %v, want protocol validation", err)
+	}
+
+	rule.Protocol = ProtocolTCP
+	rule.NamedPorts = []string{"http", "http"}
+	if err := rule.Validate(); err == nil || !strings.Contains(err.Error(), "duplicated") {
+		t.Fatalf("error = %v, want duplicate named port validation", err)
+	}
+}
+
 func TestSecurityGroupRuleValidatesICMPTypeAndCode(t *testing.T) {
 	icmpType := uint8(8)
 	icmpCode := uint8(0)
