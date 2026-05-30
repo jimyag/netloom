@@ -25,6 +25,12 @@ func TestRunSelfTestCompilesAndEvaluatesPolicy(t *testing.T) {
 	if result.Denied != dataplane.VerdictDrop {
 		t.Fatalf("denied verdict = %s, want drop", result.Denied)
 	}
+	if result.PolicyStats.Allowed != 1 || result.PolicyStats.Dropped != 1 || result.PolicyStats.DenyDrops != 1 {
+		t.Fatalf("policy stats = %+v, want one allow and one deny drop", result.PolicyStats)
+	}
+	if result.DropEvents != 1 {
+		t.Fatalf("drop events = %d, want 1", result.DropEvents)
+	}
 	if result.TCX != "not-requested" {
 		t.Fatalf("tcx status = %s, want not-requested", result.TCX)
 	}

@@ -14,11 +14,13 @@ import (
 )
 
 type SelfTestResult struct {
-	EndpointID string
-	Entries    int
-	Allowed    dataplane.Verdict
-	Denied     dataplane.Verdict
-	TCX        string
+	EndpointID  string
+	Entries     int
+	Allowed     dataplane.Verdict
+	Denied      dataplane.Verdict
+	PolicyStats dataplane.PolicyMetrics
+	DropEvents  int
+	TCX         string
 }
 
 func RunSelfTest(ctx context.Context) (SelfTestResult, error) {
@@ -81,18 +83,19 @@ func RunSelfTest(ctx context.Context) (SelfTestResult, error) {
 		return SelfTestResult{}, fmt.Errorf("selftest policy did not compile expected remote identities")
 	}
 
-	allowed := dataplane.Evaluate(entries, dataplane.Packet{
+	recorder := dataplane.NewPolicyRecorder()
+	allowed := dataplane.EvaluateObserved(endpoint.ID, entries, dataplane.Packet{
 		RemoteIdentity: allowedIdentity,
 		Direction:      dataplane.DirectionIngress,
 		Protocol:       6,
 		DestPort:       443,
-	})
-	denied := dataplane.Evaluate(entries, dataplane.Packet{
+	}, recorder)
+	denied := dataplane.EvaluateObserved(endpoint.ID, entries, dataplane.Packet{
 		RemoteIdentity: deniedIdentity,
 		Direction:      dataplane.DirectionIngress,
 		Protocol:       6,
 		DestPort:       30008,
-	})
+	}, recorder)
 
 	if allowed.Verdict != dataplane.VerdictAllow {
 		return SelfTestResult{}, fmt.Errorf("expected https packet to be allowed, got %s", allowed.Verdict)
@@ -159,11 +162,13 @@ func RunSelfTest(ctx context.Context) (SelfTestResult, error) {
 	}
 
 	return SelfTestResult{
-		EndpointID: endpoint.ID,
-		Entries:    len(entries),
-		Allowed:    allowed.Verdict,
-		Denied:     denied.Verdict,
-		TCX:        tcxStatus,
+		EndpointID:  endpoint.ID,
+		Entries:     len(entries),
+		Allowed:     allowed.Verdict,
+		Denied:      denied.Verdict,
+		PolicyStats: recorder.Metrics(endpoint.ID),
+		DropEvents:  len(recorder.DropEvents()),
+		TCX:         tcxStatus,
 	}, nil
 }
 

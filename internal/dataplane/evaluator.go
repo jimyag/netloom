@@ -27,7 +27,115 @@ type Decision struct {
 	Established bool
 }
 
+type DropReason string
+
+const (
+	DropReasonPolicyDeny DropReason = "policy-deny"
+	DropReasonNoMatch    DropReason = "no-policy-match"
+)
+
+type DropEvent struct {
+	EndpointID     string
+	Reason         DropReason
+	RemoteIdentity uint32
+	Direction      uint8
+	Protocol       uint8
+	DestPort       uint16
+	RuleCookie     uint32
+}
+
+type PolicyMetrics struct {
+	Allowed      uint64
+	Dropped      uint64
+	Conntrack    uint64
+	Established  uint64
+	NoMatchDrops uint64
+	DenyDrops    uint64
+}
+
+type PolicyObserver interface {
+	Observe(endpointID string, packet Packet, decision Decision)
+}
+
+type PolicyRecorder struct {
+	mu      sync.Mutex
+	metrics map[string]PolicyMetrics
+	drops   []DropEvent
+}
+
+func NewPolicyRecorder() *PolicyRecorder {
+	return &PolicyRecorder{metrics: make(map[string]PolicyMetrics)}
+}
+
+func (r *PolicyRecorder) Observe(endpointID string, packet Packet, decision Decision) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	metrics := r.metrics[endpointID]
+	if decision.Verdict == VerdictAllow {
+		metrics.Allowed++
+		if decision.Conntrack {
+			metrics.Conntrack++
+		}
+		if decision.Established {
+			metrics.Established++
+		}
+		r.metrics[endpointID] = metrics
+		return
+	}
+	metrics.Dropped++
+	event := DropEvent{
+		EndpointID:     endpointID,
+		RemoteIdentity: packet.RemoteIdentity,
+		Direction:      packet.Direction,
+		Protocol:       packet.Protocol,
+		DestPort:       packet.DestPort,
+	}
+	if decision.Match == nil {
+		metrics.NoMatchDrops++
+		event.Reason = DropReasonNoMatch
+	} else {
+		metrics.DenyDrops++
+		event.Reason = DropReasonPolicyDeny
+		event.RuleCookie = decision.Match.Value.RuleCookie
+	}
+	r.metrics[endpointID] = metrics
+	r.drops = append(r.drops, event)
+}
+
+func (r *PolicyRecorder) Metrics(endpointID string) PolicyMetrics {
+	if r == nil {
+		return PolicyMetrics{}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.metrics[endpointID]
+}
+
+func (r *PolicyRecorder) DropEvents() []DropEvent {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]DropEvent(nil), r.drops...)
+}
+
 func Evaluate(entries []PolicyMapEntry, packet Packet) Decision {
+	return evaluate(entries, packet)
+}
+
+func EvaluateObserved(endpointID string, entries []PolicyMapEntry, packet Packet, observer PolicyObserver) Decision {
+	decision := evaluate(entries, packet)
+	if observer != nil {
+		observer.Observe(endpointID, packet, decision)
+	}
+	return decision
+}
+
+func evaluate(entries []PolicyMapEntry, packet Packet) Decision {
 	var selected *PolicyMapEntry
 	for i := range entries {
 		entry := &entries[i]
@@ -113,17 +221,31 @@ func (s *InMemoryConntrackStore) Len() int {
 }
 
 func EvaluateStateful(endpointID string, entries []PolicyMapEntry, packet Packet, conntrack ConntrackStore) Decision {
+	return EvaluateStatefulObserved(endpointID, entries, packet, conntrack, nil)
+}
+
+func EvaluateStatefulObserved(endpointID string, entries []PolicyMapEntry, packet Packet, conntrack ConntrackStore, observer PolicyObserver) Decision {
 	if endpointID != "" && conntrack != nil && conntrack.Has(conntrackKey(endpointID, packet)) {
-		return Decision{Verdict: VerdictAllow, Conntrack: true}
+		decision := Decision{Verdict: VerdictAllow, Conntrack: true}
+		if observer != nil {
+			observer.Observe(endpointID, packet, decision)
+		}
+		return decision
 	}
-	decision := Evaluate(entries, packet)
+	decision := evaluate(entries, packet)
 	if decision.Verdict != VerdictAllow || decision.Match == nil || decision.Match.Value.Stateful == 0 || conntrack == nil {
+		if observer != nil {
+			observer.Observe(endpointID, packet, decision)
+		}
 		return decision
 	}
 	reverse := reverseConntrackKey(endpointID, packet)
 	if reverse.EndpointID != "" {
 		conntrack.Add(reverse)
 		decision.Established = true
+	}
+	if observer != nil {
+		observer.Observe(endpointID, packet, decision)
 	}
 	return decision
 }

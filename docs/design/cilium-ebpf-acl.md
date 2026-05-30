@@ -133,6 +133,14 @@ create-populate-swap path for kernel-map safety, but records the same diff
 statistics so it can move to in-place map mutation without changing the control
 plane contract.
 
+The userspace policy evaluator also exposes Cilium-style observability hooks.
+`PolicyRecorder` tracks per-endpoint allow, drop, conntrack, and established
+flow counters. Drop decisions emit a structured event with endpoint ID, remote
+identity, direction, protocol, destination port, reason, and rule cookie when a
+policy-deny rule matched. No-match drops are recorded separately, which makes it
+possible to distinguish default deny from explicit security-group deny in tests
+and future agent output.
+
 The Linux datapath also has an explicit cleanup mode. When enabled, the agent
 removes netloom-owned network namespaces with the configured prefix that are no
 longer present as local endpoints in the desired state. Docker e2e validates
