@@ -769,6 +769,13 @@ func TestLoadBalancerValidateServiceVIP(t *testing.T) {
 	if err := valid.Validate(); err != nil {
 		t.Fatal(err)
 	}
+	unhealthy := false
+	if valid.Backends[0].Healthy != nil || !valid.Backends[0].IsHealthy() {
+		t.Fatal("backend without explicit health should default to healthy")
+	}
+	if (LoadBalancerBackend{IP: valid.Backends[0].IP, Port: valid.Backends[0].Port, Healthy: &unhealthy}).IsHealthy() {
+		t.Fatal("backend with healthy=false should be unhealthy")
+	}
 
 	tests := []struct {
 		name    string
@@ -858,6 +865,21 @@ func TestLoadBalancerValidateServiceVIP(t *testing.T) {
 				}},
 			},
 			wantErr: "ip family must match vip",
+		},
+		{
+			name: "all backends unhealthy",
+			lb: LoadBalancer{
+				Name: "web",
+				VPC:  "prod",
+				VIP:  netip.MustParseAddr("10.96.0.10"),
+				Port: 80,
+				Backends: []LoadBalancerBackend{{
+					IP:      netip.MustParseAddr("10.10.0.10"),
+					Port:    8080,
+					Healthy: &unhealthy,
+				}},
+			},
+			wantErr: "at least one healthy backend",
 		},
 		{
 			name: "disabled health check with options",

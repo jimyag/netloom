@@ -28,6 +28,7 @@ func TestResolveDirectEndpoint(t *testing.T) {
 }
 
 func TestResolveLoadBalancerVIPToBackend(t *testing.T) {
+	unhealthy := false
 	state := State{
 		Endpoints: map[string]model.Endpoint{
 			"pod-a": {ID: "pod-a", VPC: "prod", Subnet: "apps", IP: netip.MustParseAddr("10.10.0.10")},
@@ -40,6 +41,7 @@ func TestResolveLoadBalancerVIPToBackend(t *testing.T) {
 				Port:     80,
 				Protocol: model.ProtocolTCP,
 				Backends: []model.LoadBalancerBackend{
+					{IP: netip.MustParseAddr("10.10.0.10"), Port: 8080, Healthy: &unhealthy},
 					{IP: netip.MustParseAddr("10.10.0.30"), Port: 8080},
 					{IP: netip.MustParseAddr("10.10.0.20"), Port: 8080},
 				},
@@ -62,6 +64,58 @@ func TestResolveLoadBalancerVIPToBackend(t *testing.T) {
 	}
 	if decision.Translated != netip.MustParseAddr("10.10.0.20") || decision.TranslatedPort != 8080 {
 		t.Fatalf("backend = %s:%d, want 10.10.0.20:8080", decision.Translated, decision.TranslatedPort)
+	}
+}
+
+func TestResolveLoadBalancerSkipsUnhealthyBackends(t *testing.T) {
+	healthy := true
+	unhealthy := false
+	state := State{
+		LoadBalancers: map[string]model.LoadBalancer{
+			"web": {
+				Name:     "web",
+				VPC:      "prod",
+				VIP:      netip.MustParseAddr("10.96.0.10"),
+				Port:     80,
+				Protocol: model.ProtocolTCP,
+				Backends: []model.LoadBalancerBackend{
+					{IP: netip.MustParseAddr("10.10.0.20"), Port: 8080, Healthy: &unhealthy},
+					{IP: netip.MustParseAddr("10.10.0.30"), Port: 8080, Healthy: &healthy},
+				},
+			},
+		},
+	}
+	packet := Packet{
+		VPC:      "prod",
+		Source:   netip.MustParseAddr("10.10.1.10"),
+		Dest:     netip.MustParseAddr("10.96.0.10"),
+		Protocol: model.ProtocolTCP,
+		DestPort: 80,
+	}
+	decision, err := Resolve(state, packet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Translated != netip.MustParseAddr("10.10.0.30") || decision.TranslatedPort != 8080 {
+		t.Fatalf("backend = %s:%d, want only healthy backend", decision.Translated, decision.TranslatedPort)
+	}
+
+	state.LoadBalancers["web"] = model.LoadBalancer{
+		Name:     "web",
+		VPC:      "prod",
+		VIP:      netip.MustParseAddr("10.96.0.10"),
+		Port:     80,
+		Protocol: model.ProtocolTCP,
+		Backends: []model.LoadBalancerBackend{
+			{IP: netip.MustParseAddr("10.10.0.20"), Port: 8080, Healthy: &unhealthy},
+		},
+	}
+	decision, err = Resolve(state, packet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Action != model.ActionDrop || decision.MatchedBy != "no-route" {
+		t.Fatalf("decision = %+v, want drop when all backends are unhealthy", decision)
 	}
 }
 

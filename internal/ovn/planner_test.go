@@ -247,6 +247,7 @@ func TestPlannerBuildsDistributedGatewayOperations(t *testing.T) {
 }
 
 func TestPlannerBuildsLoadBalancerOperations(t *testing.T) {
+	unhealthy := false
 	planner := ovn.NewPlanner()
 	err := planner.EnsureLoadBalancer(context.Background(), model.LoadBalancer{
 		Name:            "web",
@@ -265,6 +266,7 @@ func TestPlannerBuildsLoadBalancerOperations(t *testing.T) {
 		},
 		Backends: []model.LoadBalancerBackend{
 			{IP: netip.MustParseAddr("10.10.0.11"), Port: 8080},
+			{IP: netip.MustParseAddr("10.10.0.12"), Port: 8080, Healthy: &unhealthy},
 			{IP: netip.MustParseAddr("10.10.0.10"), Port: 8080},
 		},
 		Subnets: []string{"apps"},
@@ -294,6 +296,9 @@ func TestPlannerBuildsLoadBalancerOperations(t *testing.T) {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("OVN operations missing %q:\n%s", expected, joined)
 		}
+	}
+	if strings.Contains(joined, "10.10.0.12:8080") {
+		t.Fatalf("unhealthy backend should not be programmed in OVN LB VIPs:\n%s", joined)
 	}
 }
 

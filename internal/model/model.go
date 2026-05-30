@@ -136,8 +136,9 @@ type LoadBalancer struct {
 }
 
 type LoadBalancerBackend struct {
-	IP   netip.Addr `json:"ip"`
-	Port uint16     `json:"port"`
+	IP      netip.Addr `json:"ip"`
+	Port    uint16     `json:"port"`
+	Healthy *bool      `json:"healthy,omitempty"`
 }
 
 type LoadBalancerHealthCheck struct {
@@ -512,6 +513,7 @@ func (l LoadBalancer) Validate() error {
 	if err := l.HealthCheck.Validate(); err != nil {
 		return fmt.Errorf("load balancer health check: %w", err)
 	}
+	healthyBackends := 0
 	for i, backend := range l.Backends {
 		if err := backend.Validate(); err != nil {
 			return fmt.Errorf("load balancer backend %d: %w", i, err)
@@ -519,6 +521,12 @@ func (l LoadBalancer) Validate() error {
 		if backend.IP.Is4() != l.VIP.Is4() {
 			return fmt.Errorf("load balancer backend %d ip family must match vip", i)
 		}
+		if backend.IsHealthy() {
+			healthyBackends++
+		}
+	}
+	if healthyBackends == 0 {
+		return errors.New("load balancer must have at least one healthy backend")
 	}
 	for i, subnet := range l.Subnets {
 		if subnet == "" {
@@ -558,6 +566,10 @@ func (b LoadBalancerBackend) Validate() error {
 		return errors.New("backend port is required")
 	}
 	return nil
+}
+
+func (b LoadBalancerBackend) IsHealthy() bool {
+	return b.Healthy == nil || *b.Healthy
 }
 
 func (s SecurityGroup) Validate() error {

@@ -41,7 +41,7 @@ func TestDesiredStateDrivesTopologyRoutesAndEBPFStyleACL(t *testing.T) {
 	if gateway, ok := memoryBackend.Gateways["gw-a"]; !ok || gateway.Node != "node-a" || gateway.LANIP.String() != "10.10.0.254" {
 		t.Fatalf("gateway gw-a was not reconciled, got: %+v", memoryBackend.Gateways)
 	}
-	if lb, ok := memoryBackend.LoadBalancers["web"]; !ok || lb.VIP.String() != "10.96.0.10" || len(lb.Backends) != 1 {
+	if lb, ok := memoryBackend.LoadBalancers["web"]; !ok || lb.VIP.String() != "10.96.0.10" || len(lb.Backends) != 2 {
 		t.Fatalf("load balancer web was not reconciled, got: %+v", memoryBackend.LoadBalancers)
 	}
 	if len(memoryBackend.PolicyRoutes) != 1 {
@@ -254,7 +254,7 @@ const integrationStateJSON = `{
     {"name": "web-dnat", "vpc": "prod", "type": "dnat", "external_ip": "198.51.100.20", "target_ip": "10.10.0.11"},
     {"name": "web-fip", "vpc": "prod", "type": "dnat_and_snat", "external_ip": "198.51.100.30", "target_ip": "10.10.0.11"}
   ],
-  "load_balancers": [{"name": "web", "vpc": "prod", "vip": "10.96.0.10", "port": 80, "protocol": "tcp", "backends": [{"ip": "10.10.0.11", "port": 8080}], "subnets": ["apps"]}],
+  "load_balancers": [{"name": "web", "vpc": "prod", "vip": "10.96.0.10", "port": 80, "protocol": "tcp", "backends": [{"ip": "10.10.0.12", "port": 8080, "healthy": false}, {"ip": "10.10.0.11", "port": 8080}], "subnets": ["apps"]}],
   "security_groups": [
     {"name": "client", "vpc": "prod", "rules": [
       {"id": "client-egress-api", "priority": 100, "direction": "egress", "protocol": "tcp", "remote_fqdns": [{"match_name": "api.example.com"}], "ports": [{"from": 443, "to": 443}], "action": "allow"},

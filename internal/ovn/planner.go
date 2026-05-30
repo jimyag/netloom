@@ -339,6 +339,9 @@ func loadBalancerVIP(lb model.LoadBalancer) string {
 func loadBalancerBackends(lb model.LoadBalancer) string {
 	backends := make([]string, 0, len(lb.Backends))
 	for _, backend := range lb.Backends {
+		if !backend.IsHealthy() {
+			continue
+		}
 		backends = append(backends, netip.AddrPortFrom(backend.IP, backend.Port).String())
 	}
 	sort.Strings(backends)

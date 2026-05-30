@@ -95,6 +95,17 @@ routes, policies, switches, router ports, and routers that are no longer
 desired. Docker e2e verifies endpoint and SNAT deletion against the live OVN
 Northbound database.
 
+Service VIP handling follows OVN load-balancer behavior closely enough for
+control-plane validation. `LoadBalancer` backends are rendered into the OVN VIP
+backend set and the userspace topology resolver uses the same stable hashing
+inputs for flow affinity. Backends default to healthy; when a backend is marked
+`healthy=false`, the planner omits it from the OVN VIP backend list and the
+resolver excludes it from local service resolution. Validation requires at
+least one healthy backend so the OVN `lb-add` operation never receives an empty
+backend set. This lets tests cover the same fail-away behavior expected from
+OVN health-check state without requiring a live health probe loop in the
+desired-state model.
+
 The agent can also realize a minimal Linux L3 workload datapath from the same
 desired-state file. It has two modes:
 

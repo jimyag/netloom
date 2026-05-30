@@ -125,10 +125,11 @@ func resolveLoadBalancer(state State, packet Packet) (Decision, bool) {
 		if len(lb.Subnets) > 0 && !loadBalancerAllowsSourceSubnet(lb, sourceEndpoint) {
 			continue
 		}
-		if len(lb.Backends) == 0 {
+		backends := healthyLoadBalancerBackends(lb)
+		if len(backends) == 0 {
 			continue
 		}
-		backend := selectLoadBalancerBackend(lb, packet)
+		backend := selectLoadBalancerBackend(lb, backends, packet)
 		return Decision{
 			Action:         model.ActionAllow,
 			Translated:     backend.IP,
@@ -161,8 +162,17 @@ func loadBalancerAllowsSourceSubnet(lb model.LoadBalancer, endpoint model.Endpoi
 	return false
 }
 
-func selectLoadBalancerBackend(lb model.LoadBalancer, packet Packet) model.LoadBalancerBackend {
-	backends := lb.Backends
+func healthyLoadBalancerBackends(lb model.LoadBalancer) []model.LoadBalancerBackend {
+	backends := make([]model.LoadBalancerBackend, 0, len(lb.Backends))
+	for _, backend := range lb.Backends {
+		if backend.IsHealthy() {
+			backends = append(backends, backend)
+		}
+	}
+	return backends
+}
+
+func selectLoadBalancerBackend(lb model.LoadBalancer, backends []model.LoadBalancerBackend, packet Packet) model.LoadBalancerBackend {
 	selected := backends[0]
 	selectedScore := loadBalancerBackendScore(selected, packet, lb.SessionAffinity)
 	for _, backend := range backends[1:] {
