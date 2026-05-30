@@ -34,6 +34,7 @@ type Options struct {
 	WorkloadIF      string
 	HostGateway     netip.Addr
 	PolicyTableBase int
+	PolicyTableSize int
 	CleanupStale    bool
 	Executor        Executor
 }
@@ -106,6 +107,10 @@ func Plan(ctx context.Context, state control.DesiredState, options Options) ([]O
 	if policyTableBase == 0 {
 		policyTableBase = 10000
 	}
+	policyTableSize := options.PolicyTableSize
+	if policyTableSize == 0 {
+		policyTableSize = 1024
+	}
 
 	result := Result{Device: localDevice, Mode: mode}
 	var ops []Operation
@@ -147,7 +152,7 @@ func Plan(ctx context.Context, state control.DesiredState, options Options) ([]O
 		})
 		result.RemoteRoutes++
 	}
-	policyOps, policyRoutes, err := planPolicyRoutes(state, options.Node, underlayDevice, policyTableBase)
+	policyOps, policyRoutes, err := planPolicyRoutes(state, options.Node, underlayDevice, policyTableBase, policyTableSize, options.CleanupStale)
 	if err != nil {
 		return nil, Result{}, err
 	}
@@ -156,8 +161,11 @@ func Plan(ctx context.Context, state control.DesiredState, options Options) ([]O
 	return ops, result, nil
 }
 
-func planPolicyRoutes(state control.DesiredState, node, device string, tableBase int) ([]Operation, int, error) {
+func planPolicyRoutes(state control.DesiredState, node, device string, tableBase, tableSize int, cleanup bool) ([]Operation, int, error) {
 	if len(state.PolicyRoutes) == 0 {
+		if cleanup {
+			return []Operation{planPolicyRouteCleanup(tableBase, tableSize)}, 0, nil
+		}
 		return nil, 0, nil
 	}
 	localVPCs := localVPCSet(state.Endpoints, node)
@@ -165,6 +173,9 @@ func planPolicyRoutes(state control.DesiredState, node, device string, tableBase
 	sortPolicyRoutes(routes)
 
 	var ops []Operation
+	if cleanup {
+		ops = append(ops, planPolicyRouteCleanup(tableBase, tableSize))
+	}
 	applied := 0
 	for _, route := range routes {
 		if _, ok := localVPCs[route.VPC]; !ok {
@@ -196,6 +207,12 @@ func planPolicyRoutes(state control.DesiredState, node, device string, tableBase
 		applied++
 	}
 	return ops, applied, nil
+}
+
+func planPolicyRouteCleanup(tableBase, tableSize int) Operation {
+	start := strconv.Itoa(tableBase)
+	end := strconv.Itoa(tableBase + tableSize)
+	return shellOperation("ip rule show | awk -v start=" + start + " -v end=" + end + " '{ for (i=1; i<=NF; i++) if (($i == \"lookup\" || $i == \"table\") && $(i+1) >= start && $(i+1) < end) print }' | while read -r rule; do priority=${rule%%:*}; table=$(printf '%s\\n' \"$rule\" | awk '{ for (i=1; i<=NF; i++) if (($i == \"lookup\" || $i == \"table\")) { print $(i+1); exit } }'); ip rule del priority \"$priority\" table \"$table\" 2>/dev/null || true; done")
 }
 
 func localVPCSet(endpoints []model.Endpoint, node string) map[string]struct{} {

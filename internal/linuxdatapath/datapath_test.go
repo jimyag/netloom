@@ -176,6 +176,36 @@ func TestPlanProgramsLinuxPolicyRoutes(t *testing.T) {
 	}
 }
 
+func TestPlanCleansManagedPolicyRouteRulesWhenRequested(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:     "pod-a",
+			VPC:    "prod",
+			Subnet: "apps",
+			IP:     netip.MustParseAddr("10.10.0.10"),
+			Node:   "node-a",
+		}},
+	}
+	ops, result, err := Plan(context.Background(), state, Options{
+		Node:            "node-a",
+		PolicyTableBase: 22000,
+		PolicyTableSize: 64,
+		CleanupStale:    true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.PolicyRoutes != 0 {
+		t.Fatalf("policy routes = %d, want 0", result.PolicyRoutes)
+	}
+	joined := stringifyOps(ops)
+	for _, expected := range []string{"ip rule show", "start=22000", "end=22064", "ip rule del priority"} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("cleanup ops missing %q:\n%s", expected, joined)
+		}
+	}
+}
+
 func TestPlanSkipsPolicyRoutesWithoutLocalVPC(t *testing.T) {
 	state := control.DesiredState{
 		Endpoints: []model.Endpoint{{
@@ -202,6 +232,45 @@ func TestPlanSkipsPolicyRoutesWithoutLocalVPC(t *testing.T) {
 	}
 	if strings.Contains(stringifyOps(ops), "ip rule") {
 		t.Fatalf("unexpected policy route ops:\n%s", stringifyOps(ops))
+	}
+}
+
+func TestApplicablePolicyRoutesValidatesAndSkipsNonLocalRoutes(t *testing.T) {
+	routes := []model.PolicyRoute{{
+		Name:   "invalid-any-port",
+		VPC:    "prod",
+		Match:  model.RouteMatch{Protocol: model.ProtocolAny, DstPorts: []model.PortRange{{From: 53, To: 53}}},
+		Action: model.RouteAction{Type: model.ActionDrop},
+	}, {
+		Name:   "other-vpc",
+		VPC:    "other",
+		Match:  model.RouteMatch{Destination: netip.MustParsePrefix("192.0.2.0/24")},
+		Action: model.RouteAction{Type: model.ActionDrop},
+	}}
+	_, err := applicablePolicyRoutes(routes, map[string]struct{}{"prod": struct{}{}})
+	if err == nil {
+		t.Fatal("expected local invalid policy route to fail")
+	}
+	applicable, err := applicablePolicyRoutes(routes, map[string]struct{}{"other": struct{}{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(applicable) != 1 || applicable[0].Name != "other-vpc" {
+		t.Fatalf("applicable routes = %+v, want only other-vpc", applicable)
+	}
+}
+
+func TestManagedPolicyTableRange(t *testing.T) {
+	options := Options{PolicyTableBase: 22000, PolicyTableSize: 64}
+	for _, table := range []int{22000, 22063} {
+		if !managedPolicyTable(table, options) {
+			t.Fatalf("table %d should be managed", table)
+		}
+	}
+	for _, table := range []int{21999, 22064} {
+		if managedPolicyTable(table, options) {
+			t.Fatalf("table %d should not be managed", table)
+		}
 	}
 }
 

@@ -178,6 +178,7 @@ func linuxDatapathOptions() *linuxdatapath.Options {
 		WorkloadIF:      getenvDefault("NETLOOM_WORKLOAD_IF", "eth0"),
 		NodeUnderlays:   parseNodeUnderlays(os.Getenv("NETLOOM_NODE_UNDERLAYS")),
 		PolicyTableBase: getenvIntDefault("NETLOOM_POLICY_ROUTE_TABLE_BASE", 10000),
+		PolicyTableSize: getenvIntDefault("NETLOOM_POLICY_ROUTE_TABLE_SIZE", 1024),
 		CleanupStale:    os.Getenv("NETLOOM_LINUX_DATAPATH_CLEANUP") == "1",
 	}
 }
