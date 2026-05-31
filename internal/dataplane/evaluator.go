@@ -200,7 +200,7 @@ func EvaluateObserved(endpointID string, entries []PolicyMapEntry, packet Packet
 }
 
 func evaluate(entries []PolicyMapEntry, packet Packet) Decision {
-	if isIPv4FragmentationNeeded(packet) {
+	if isIPv4FragmentationNeeded(packet) || isIPv6PacketTooBig(packet) {
 		return Decision{Verdict: VerdictAllow}
 	}
 	var selected *PolicyMapEntry
@@ -433,6 +433,10 @@ func remoteCIDRMatches(prefix netip.Prefix, remoteIP netip.Addr) bool {
 
 func isIPv4FragmentationNeeded(packet Packet) bool {
 	return packet.Protocol == 1 && packet.ICMPType == 3 && packet.ICMPCode == 4
+}
+
+func isIPv6PacketTooBig(packet Packet) bool {
+	return packet.Protocol == 58 && packet.ICMPType == 2
 }
 
 func betterMatch(candidate, selected PolicyMapEntry, packet Packet) bool {

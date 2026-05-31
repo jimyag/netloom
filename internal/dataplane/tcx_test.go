@@ -515,6 +515,21 @@ func TestIPv6L4ACLRulesFromProgramProjectsICMPv6DropTypeAndCode(t *testing.T) {
 	}
 }
 
+func TestIPv6L4ACLTCXProgramBypassesICMPv6PacketTooBig(t *testing.T) {
+	instructions := ipv6L4ACLTCXInstructions(1, 22)
+	seenICMPv6Load := false
+	for _, ins := range instructions {
+		if ins.Symbol() == "load_icmpv6" {
+			seenICMPv6Load = true
+			continue
+		}
+		if seenICMPv6Load && ins.Constant == 0x0200 && ins.Reference() == "pass" {
+			return
+		}
+	}
+	t.Fatalf("TCX instructions do not bypass ICMPv6 packet-too-big before policy lookup:\n%s", instructions)
+}
+
 func TestIPv6L4ACLRulesFromProgramRejectsICMPv6Ports(t *testing.T) {
 	program := policy.Program{
 		EndpointID: "pod-a",

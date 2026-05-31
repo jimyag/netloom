@@ -177,6 +177,45 @@ func TestEvaluateAllowsIPv4FragmentationNeededForPMTU(t *testing.T) {
 	}
 }
 
+func TestEvaluateAllowsIPv6PacketTooBigForPMTU(t *testing.T) {
+	entries := []PolicyMapEntry{{
+		Key: PolicyKey{
+			PrefixLen:      StaticPrefixBits + 24,
+			RemoteIdentity: 0,
+			Direction:      DirectionEgress,
+			Protocol:       58,
+			DestPortBE:     hostToNetwork16(0x0200),
+		},
+		Value: PolicyEntry{
+			Deny:        1,
+			L4PrefixLen: 24,
+			Precedence:  math.MaxUint32,
+		},
+	}}
+
+	decision := Evaluate(entries, Packet{
+		RemoteIP:  netip.MustParseAddr("2001:db8::10"),
+		Direction: DirectionEgress,
+		Protocol:  58,
+		ICMPType:  2,
+		ICMPCode:  0,
+	})
+	if decision.Verdict != VerdictAllow || decision.Match != nil {
+		t.Fatalf("packet-too-big decision = %+v, want unconditional PMTU allow", decision)
+	}
+
+	otherUnreachable := Evaluate(entries, Packet{
+		RemoteIP:  netip.MustParseAddr("2001:db8::10"),
+		Direction: DirectionEgress,
+		Protocol:  58,
+		ICMPType:  1,
+		ICMPCode:  0,
+	})
+	if otherUnreachable.Verdict != VerdictDrop {
+		t.Fatalf("other ICMPv6 unreachable decision = %+v, want policy drop", otherUnreachable)
+	}
+}
+
 func TestEvaluateMatchesPortPrefix(t *testing.T) {
 	entries := []PolicyMapEntry{{
 		Key: PolicyKey{
