@@ -82,6 +82,7 @@ func TestCoreNetworkResourcesValidateRequiredFields(t *testing.T) {
 					VPC:  "prod",
 					Rules: []SecurityGroupRule{{
 						ID:        "allow-web",
+						Priority:  100,
 						Direction: DirectionIngress,
 						Protocol:  ProtocolTCP,
 						Ports:     []PortRange{{From: 443, To: 443}},
@@ -94,6 +95,7 @@ func TestCoreNetworkResourcesValidateRequiredFields(t *testing.T) {
 					Name: "web",
 					Rules: []SecurityGroupRule{{
 						ID:        "allow-web",
+						Priority:  100,
 						Direction: DirectionIngress,
 						Action:    ActionAllow,
 					}},
@@ -235,6 +237,7 @@ func TestSecurityGroupTierValidation(t *testing.T) {
 		Tier: 1,
 		Rules: []SecurityGroupRule{{
 			ID:        "allow-web",
+			Priority:  100,
 			Direction: DirectionIngress,
 			Protocol:  ProtocolTCP,
 			Ports:     []PortRange{{From: 443, To: 443}},
@@ -258,6 +261,7 @@ func TestSecurityGroupRejectsDuplicateRuleIDs(t *testing.T) {
 		Rules: []SecurityGroupRule{
 			{
 				ID:        "allow-api",
+				Priority:  100,
 				Direction: DirectionIngress,
 				Protocol:  ProtocolTCP,
 				Ports:     []PortRange{{From: 443, To: 443}},
@@ -265,6 +269,7 @@ func TestSecurityGroupRejectsDuplicateRuleIDs(t *testing.T) {
 			},
 			{
 				ID:        "allow-api",
+				Priority:  100,
 				Direction: DirectionEgress,
 				Protocol:  ProtocolTCP,
 				Ports:     []PortRange{{From: 443, To: 443}},
@@ -291,12 +296,7 @@ func TestSecurityGroupRulePriorityValidation(t *testing.T) {
 	if err := valid.Validate(); err != nil {
 		t.Fatalf("valid rule priority failed: %v", err)
 	}
-	unspecified := valid
-	unspecified.Priority = 0
-	if err := unspecified.Validate(); err != nil {
-		t.Fatalf("unspecified rule priority failed: %v", err)
-	}
-	for _, priority := range []int{-1, SecurityGroupPriorityMax + 1} {
+	for _, priority := range []int{-1, 0, SecurityGroupPriorityMax + 1} {
 		invalid := valid
 		invalid.Priority = priority
 		if err := invalid.Validate(); err == nil || !strings.Contains(err.Error(), "priority") {
@@ -509,6 +509,7 @@ func TestPolicyRouteRejectsMixedIPFamilies(t *testing.T) {
 func TestSecurityGroupRuleDoesNotAcceptRouteActions(t *testing.T) {
 	rule := SecurityGroupRule{
 		ID:        "route-action",
+		Priority:  100,
 		Direction: DirectionEgress,
 		Protocol:  ProtocolTCP,
 		Ports:     []PortRange{{From: 443, To: 443}},
@@ -523,6 +524,7 @@ func TestSecurityGroupRulePortsRequireTransportProtocol(t *testing.T) {
 	for _, protocol := range []Protocol{ProtocolAny, ProtocolICMP} {
 		rule := SecurityGroupRule{
 			ID:        "invalid-ports",
+			Priority:  100,
 			Direction: DirectionIngress,
 			Protocol:  protocol,
 			Ports:     []PortRange{{From: 443, To: 443}},
@@ -539,6 +541,7 @@ func TestSecurityGroupRulePortsRequireTransportProtocol(t *testing.T) {
 
 	rule := SecurityGroupRule{
 		ID:        "valid-ports",
+		Priority:  100,
 		Direction: DirectionIngress,
 		Protocol:  ProtocolUDP,
 		Ports:     []PortRange{{From: 53, To: 53}},
@@ -656,6 +659,7 @@ func TestGatewayRequiresExternalInterface(t *testing.T) {
 func TestSecurityGroupRuleValidatesNamedPorts(t *testing.T) {
 	rule := SecurityGroupRule{
 		ID:         "allow-http",
+		Priority:   100,
 		Direction:  DirectionIngress,
 		Protocol:   ProtocolTCP,
 		NamedPorts: []string{"http"},
@@ -682,6 +686,7 @@ func TestSecurityGroupRuleValidatesICMPTypeAndCode(t *testing.T) {
 	icmpCode := uint8(0)
 	rule := SecurityGroupRule{
 		ID:        "icmp-echo",
+		Priority:  100,
 		Direction: DirectionEgress,
 		Protocol:  ProtocolICMP,
 		ICMPType:  &icmpType,
@@ -707,6 +712,7 @@ func TestSecurityGroupRuleValidatesICMPTypeAndCode(t *testing.T) {
 func TestSecurityGroupRuleValidatesRemoteFQDNSelectors(t *testing.T) {
 	valid := SecurityGroupRule{
 		ID:        "allow-api",
+		Priority:  100,
 		Direction: DirectionEgress,
 		Protocol:  ProtocolTCP,
 		RemoteFQDNs: []FQDNSelector{
@@ -729,6 +735,7 @@ func TestSecurityGroupRuleValidatesRemoteFQDNSelectors(t *testing.T) {
 			name: "ingress fqdn",
 			rule: SecurityGroupRule{
 				ID:          "bad-ingress",
+				Priority:    100,
 				Direction:   DirectionIngress,
 				Protocol:    ProtocolTCP,
 				RemoteFQDNs: []FQDNSelector{{MatchName: "api.example.com"}},
@@ -740,6 +747,7 @@ func TestSecurityGroupRuleValidatesRemoteFQDNSelectors(t *testing.T) {
 			name: "mutually exclusive",
 			rule: SecurityGroupRule{
 				ID:          "bad-remote",
+				Priority:    100,
 				Direction:   DirectionEgress,
 				Protocol:    ProtocolTCP,
 				RemoteCIDR:  netip.MustParsePrefix("10.10.0.0/24"),
@@ -752,6 +760,7 @@ func TestSecurityGroupRuleValidatesRemoteFQDNSelectors(t *testing.T) {
 			name: "empty selector",
 			rule: SecurityGroupRule{
 				ID:          "bad-empty",
+				Priority:    100,
 				Direction:   DirectionEgress,
 				Protocol:    ProtocolTCP,
 				RemoteFQDNs: []FQDNSelector{{}},
@@ -763,6 +772,7 @@ func TestSecurityGroupRuleValidatesRemoteFQDNSelectors(t *testing.T) {
 			name: "invalid character",
 			rule: SecurityGroupRule{
 				ID:          "bad-name",
+				Priority:    100,
 				Direction:   DirectionEgress,
 				Protocol:    ProtocolTCP,
 				RemoteFQDNs: []FQDNSelector{{MatchName: "api example.com"}},
@@ -787,6 +797,7 @@ func TestSecurityGroupRuleValidatesRemoteFQDNSelectors(t *testing.T) {
 func TestSecurityGroupRuleValidatesRemoteEntities(t *testing.T) {
 	rule := SecurityGroupRule{
 		ID:             "allow-world",
+		Priority:       100,
 		Direction:      DirectionEgress,
 		Protocol:       ProtocolTCP,
 		RemoteEntities: []string{"world", "world-ipv4", "world-ipv6", "host", "remote-node", "none"},
@@ -909,6 +920,7 @@ func TestCIDRGroupValidation(t *testing.T) {
 func TestSecurityGroupRuleValidatesRemoteCIDRGroupExclusivity(t *testing.T) {
 	rule := SecurityGroupRule{
 		ID:              "allow-corp",
+		Priority:        100,
 		Direction:       DirectionEgress,
 		Protocol:        ProtocolTCP,
 		RemoteCIDRGroup: "corp",
@@ -957,6 +969,7 @@ func TestEndpointValidatesLabels(t *testing.T) {
 func TestSecurityGroupRuleValidatesRemoteEndpointSelector(t *testing.T) {
 	rule := SecurityGroupRule{
 		ID:                     "allow-web",
+		Priority:               100,
 		Direction:              DirectionIngress,
 		Protocol:               ProtocolTCP,
 		RemoteEndpointSelector: Labels{"app": "client"},
@@ -982,6 +995,7 @@ func TestSecurityGroupRuleValidatesRemoteEndpointSelector(t *testing.T) {
 func TestSecurityGroupRuleValidatesRemoteEndpointExpressions(t *testing.T) {
 	rule := SecurityGroupRule{
 		ID:        "allow-web",
+		Priority:  100,
 		Direction: DirectionIngress,
 		Protocol:  ProtocolTCP,
 		RemoteEndpointExprs: []LabelExpr{
@@ -1021,6 +1035,7 @@ func TestSecurityGroupRuleValidatesRemoteEndpointExpressions(t *testing.T) {
 func TestSecurityGroupRuleValidatesRemoteService(t *testing.T) {
 	rule := SecurityGroupRule{
 		ID:            "allow-web-service",
+		Priority:      100,
 		Direction:     DirectionEgress,
 		Protocol:      ProtocolAny,
 		RemoteService: "web",
@@ -1051,6 +1066,7 @@ func TestSecurityGroupRuleValidatesRemoteService(t *testing.T) {
 func TestSecurityGroupRuleValidatesExceptCIDRs(t *testing.T) {
 	rule := SecurityGroupRule{
 		ID:          "allow-corp",
+		Priority:    100,
 		Direction:   DirectionEgress,
 		Protocol:    ProtocolTCP,
 		RemoteCIDR:  netip.MustParsePrefix("10.20.0.0/16"),
@@ -1071,6 +1087,7 @@ func TestSecurityGroupRuleValidatesExceptCIDRs(t *testing.T) {
 			name: "requires remote cidr",
 			rule: SecurityGroupRule{
 				ID:              "bad-cidr-group-except",
+				Priority:        100,
 				Direction:       DirectionEgress,
 				Protocol:        ProtocolTCP,
 				RemoteCIDRGroup: "corp",
@@ -1083,6 +1100,7 @@ func TestSecurityGroupRuleValidatesExceptCIDRs(t *testing.T) {
 			name: "family mismatch",
 			rule: SecurityGroupRule{
 				ID:          "bad-family",
+				Priority:    100,
 				Direction:   DirectionEgress,
 				Protocol:    ProtocolTCP,
 				RemoteCIDR:  netip.MustParsePrefix("10.20.0.0/16"),
@@ -1095,6 +1113,7 @@ func TestSecurityGroupRuleValidatesExceptCIDRs(t *testing.T) {
 			name: "outside remote cidr",
 			rule: SecurityGroupRule{
 				ID:          "bad-outside",
+				Priority:    100,
 				Direction:   DirectionEgress,
 				Protocol:    ProtocolTCP,
 				RemoteCIDR:  netip.MustParsePrefix("10.20.0.0/16"),
@@ -1107,6 +1126,7 @@ func TestSecurityGroupRuleValidatesExceptCIDRs(t *testing.T) {
 			name: "duplicate except cidr",
 			rule: SecurityGroupRule{
 				ID:          "bad-duplicate",
+				Priority:    100,
 				Direction:   DirectionEgress,
 				Protocol:    ProtocolTCP,
 				RemoteCIDR:  netip.MustParsePrefix("10.20.0.0/16"),

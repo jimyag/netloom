@@ -91,6 +91,7 @@ func TestPlannerMapsNetloomObjectsToOVNOperations(t *testing.T) {
 			VPC:  "prod",
 			Rules: []model.SecurityGroupRule{{
 				ID:        "allow-web",
+				Priority:  100,
 				Direction: model.DirectionIngress,
 				Protocol:  model.ProtocolTCP,
 				Ports:     []model.PortRange{{From: 443, To: 443}},

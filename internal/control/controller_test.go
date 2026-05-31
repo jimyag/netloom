@@ -602,6 +602,7 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 					VPC:  "prod",
 					Rules: []model.SecurityGroupRule{{
 						ID:          "egress-web",
+						Priority:    100,
 						Direction:   model.DirectionEgress,
 						Protocol:    model.ProtocolTCP,
 						RemoteGroup: "web",
@@ -629,6 +630,7 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 					VPC:  "prod",
 					Rules: []model.SecurityGroupRule{{
 						ID:                     "egress-api",
+						Priority:               100,
 						Direction:              model.DirectionEgress,
 						Protocol:               model.ProtocolTCP,
 						RemoteEndpointSelector: model.Labels{"app": "api"},

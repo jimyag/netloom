@@ -1057,8 +1057,8 @@ func (r SecurityGroupRule) Validate() error {
 	if !validProtocol(r.Protocol) {
 		return fmt.Errorf("unsupported protocol %q", r.Protocol)
 	}
-	if r.Priority < 0 || r.Priority > SecurityGroupPriorityMax {
-		return fmt.Errorf("security group rule priority must be 0 or between %d and %d", SecurityGroupPriorityMin, SecurityGroupPriorityMax)
+	if r.Priority < SecurityGroupPriorityMin || r.Priority > SecurityGroupPriorityMax {
+		return fmt.Errorf("security group rule priority must be between %d and %d", SecurityGroupPriorityMin, SecurityGroupPriorityMax)
 	}
 	if !slices.Contains([]Action{ActionAllow, ActionDrop, ActionReject, ActionLog}, r.Action) {
 		return fmt.Errorf("unsupported security action %q", r.Action)

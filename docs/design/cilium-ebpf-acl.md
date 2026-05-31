@@ -200,12 +200,12 @@ attachment signature.
 Security groups also carry a Kube-OVN-style `tier` field constrained to 0 or 1.
 The eBPF policy map encodes tier into rule precedence: tier 0 entries win over
 tier 1 entries, and within the same tier drop/reject entries continue to win
-over allow/log entries. Non-zero rule priorities follow Kube-OVN's 1..16384
-API range and lower numeric values win, matching Kube-OVN's
-`SecurityGroupHighestPriority - rule.Priority` OVN ACL projection. Priority 0
-is retained as the desired-state compatibility default and sorts below explicit
-priorities. This keeps platform guardrails deterministic without moving
-security-group enforcement back into OVN ACLs.
+over allow/log entries. Rule priorities follow Kube-OVN's 1..16384 API range
+and lower numeric values win, matching Kube-OVN's
+`SecurityGroupHighestPriority - rule.Priority` OVN ACL projection. Priority 0 is
+invalid, so desired state must make rule ordering explicit. This keeps platform
+guardrails deterministic without moving security-group enforcement back into
+OVN ACLs.
 
 Endpoint labels and named ports follow Cilium's late-binding policy behavior.
 Endpoints can declare `labels` and `named_ports` with a name, TCP or UDP
