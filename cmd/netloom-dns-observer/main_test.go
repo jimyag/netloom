@@ -87,6 +87,46 @@ func TestRunAppliesDefaultTTLToZeroTTLAnswers(t *testing.T) {
 	}
 }
 
+func TestRunPrunesExpiredExistingObservations(t *testing.T) {
+	dir := t.TempDir()
+	output := filepath.Join(dir, "dns-observations.json")
+	existing := `{"dns_records":[
+		{"name":"expired.example.com","ips":["203.0.113.30"],"ttl_seconds":30,"observed_at":"2026-05-30T11:59:30Z"},
+		{"name":"active.example.com","ips":["203.0.113.40"],"ttl_seconds":31,"observed_at":"2026-05-30T11:59:30Z"},
+		{"name":"static.example.com","ips":["203.0.113.50"]}
+	]}`
+	if err := os.WriteFile(output, []byte(existing), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	packet := dnsResponse(
+		dnsQuestion("api.example.com", 1),
+		dnsAnswerPtr(12, 1, 60, []byte{203, 0, 113, 10}),
+	)
+	input := strings.NewReader(base64.StdEncoding.EncodeToString(packet) + "\n")
+	now := func() time.Time { return time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC) }
+
+	if err := run(t.Context(), []string{"-observations", output}, input, ioDiscard{}, now); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Open(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	records, err := control.LoadDNSObservationsJSON(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := make([]string, 0, len(records))
+	for _, record := range records {
+		names = append(names, record.Name)
+	}
+	want := []string{"active.example.com", "api.example.com", "static.example.com"}
+	if strings.Join(names, ",") != strings.Join(want, ",") {
+		t.Fatalf("record names = %v, want %v", names, want)
+	}
+}
+
 func TestRunRejectsEmptyInput(t *testing.T) {
 	err := run(t.Context(), []string{"-observations", filepath.Join(t.TempDir(), "dns.json")}, strings.NewReader("\n# ignored\n"), ioDiscard{}, time.Now)
 	if err == nil {

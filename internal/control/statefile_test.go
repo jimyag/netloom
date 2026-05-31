@@ -3,6 +3,7 @@ package control
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoadDesiredStateJSONDecodesSnakeCaseState(t *testing.T) {
@@ -155,5 +156,27 @@ func TestMergeDNSRecordsAppendsObservedRecordsDeterministically(t *testing.T) {
 	}
 	if merged[0].Name != "api.example.com" || merged[1].Name != "static.example.com" {
 		t.Fatalf("merged order = %+v", merged)
+	}
+}
+
+func TestPruneExpiredDNSRecordsDropsOnlyExpiredTTLRecords(t *testing.T) {
+	now := time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)
+	records, err := LoadDNSObservationsJSON(strings.NewReader(`{"dns_records": [
+		{"name": "expired.example.com", "ips": ["203.0.113.10"], "ttl_seconds": 30, "observed_at": "2026-05-30T11:59:30Z"},
+		{"name": "active.example.com", "ips": ["203.0.113.20"], "ttl_seconds": 31, "observed_at": "2026-05-30T11:59:30Z"},
+		{"name": "static.example.com", "ips": ["203.0.113.30"]}
+	]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pruned, err := PruneExpiredDNSRecords(records, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pruned) != 2 {
+		t.Fatalf("records = %d, want 2: %+v", len(pruned), pruned)
+	}
+	if pruned[0].Name != "active.example.com" || pruned[1].Name != "static.example.com" {
+		t.Fatalf("records = %+v", pruned)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/jimyag/netloom/internal/model"
 )
@@ -58,6 +59,25 @@ func MergeDNSRecords(base, observed []model.DNSRecord) ([]model.DNSRecord, error
 		return merged[i].ObservedAt.Before(merged[j].ObservedAt)
 	})
 	return merged, nil
+}
+
+func PruneExpiredDNSRecords(records []model.DNSRecord, now time.Time) ([]model.DNSRecord, error) {
+	validated, err := validateDNSRecords(records)
+	if err != nil {
+		return nil, err
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	now = now.UTC()
+	pruned := validated[:0]
+	for _, record := range validated {
+		if record.IsExpired(now) {
+			continue
+		}
+		pruned = append(pruned, record)
+	}
+	return pruned, nil
 }
 
 func validateDNSRecords(records []model.DNSRecord) ([]model.DNSRecord, error) {

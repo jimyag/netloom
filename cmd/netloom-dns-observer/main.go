@@ -105,6 +105,10 @@ func run(_ context.Context, args []string, stdin io.Reader, stdout io.Writer, no
 			return err
 		}
 	}
+	merged, err = control.PruneExpiredDNSRecords(merged, observedAt)
+	if err != nil {
+		return err
+	}
 	if err := writeObservations(opts.outputPath, merged); err != nil {
 		return err
 	}
