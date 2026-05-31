@@ -626,6 +626,36 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 			wantErr: "route table \"main\" references unknown vpc",
 		},
 		{
+			name: "route table next hop outside subnet",
+			mutate: func(state *DesiredState) {
+				state.RouteTables = []model.RouteTable{{
+					Name: "main",
+					VPC:  "prod",
+					Routes: []model.Route{{
+						Destination: netip.MustParsePrefix("0.0.0.0/0"),
+						NextHops:    []netip.Addr{netip.MustParseAddr("10.20.0.254")},
+					}},
+				}}
+			},
+			wantErr: "route table \"main\" next hop 10.20.0.254 is outside vpc \"prod\" subnets",
+		},
+		{
+			name: "route table next hop excluded by subnet",
+			mutate: func(state *DesiredState) {
+				state.Subnets[0].ExcludeCIDRs = []netip.Prefix{netip.MustParsePrefix("10.10.0.254/32")}
+				state.Gateways[0].LANIP = netip.MustParseAddr("10.10.0.253")
+				state.RouteTables = []model.RouteTable{{
+					Name: "main",
+					VPC:  "prod",
+					Routes: []model.Route{{
+						Destination: netip.MustParsePrefix("0.0.0.0/0"),
+						NextHops:    []netip.Addr{netip.MustParseAddr("10.10.0.254")},
+					}},
+				}}
+			},
+			wantErr: "route table \"main\" next hop 10.10.0.254 is excluded by subnet \"apps\"",
+		},
+		{
 			name: "policy route unknown vpc",
 			mutate: func(state *DesiredState) {
 				state.PolicyRoutes = []model.PolicyRoute{{
@@ -637,6 +667,33 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 				}}
 			},
 			wantErr: "policy route \"drop-lab\" references unknown vpc",
+		},
+		{
+			name: "policy route next hop outside subnet",
+			mutate: func(state *DesiredState) {
+				state.PolicyRoutes = []model.PolicyRoute{{
+					Name:     "force-private",
+					VPC:      "prod",
+					Priority: 100,
+					Match:    model.RouteMatch{Destination: netip.MustParsePrefix("172.16.0.0/16")},
+					Action:   model.RouteAction{Type: model.ActionReroute, NextHops: []netip.Addr{netip.MustParseAddr("10.20.0.253")}},
+				}}
+			},
+			wantErr: "policy route \"force-private\" next hop 10.20.0.253 is outside vpc \"prod\" subnets",
+		},
+		{
+			name: "policy route next hop excluded by subnet",
+			mutate: func(state *DesiredState) {
+				state.Subnets[0].ExcludeCIDRs = []netip.Prefix{netip.MustParsePrefix("10.10.0.253/32")}
+				state.PolicyRoutes = []model.PolicyRoute{{
+					Name:     "force-private",
+					VPC:      "prod",
+					Priority: 100,
+					Match:    model.RouteMatch{Destination: netip.MustParsePrefix("172.16.0.0/16")},
+					Action:   model.RouteAction{Type: model.ActionReroute, NextHops: []netip.Addr{netip.MustParseAddr("10.10.0.253")}},
+				}}
+			},
+			wantErr: "policy route \"force-private\" next hop 10.10.0.253 is excluded by subnet \"apps\"",
 		},
 		{
 			name: "nat unknown vpc",
@@ -707,6 +764,12 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 func TestControllerRejectsConflictingStaticRoutes(t *testing.T) {
 	state := DesiredState{
 		VPCs: []model.VPC{{Name: "prod"}},
+		Subnets: []model.Subnet{{
+			Name:    "apps",
+			VPC:     "prod",
+			CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway: netip.MustParseAddr("10.10.0.1"),
+		}},
 		RouteTables: []model.RouteTable{
 			{
 				Name: "main",
@@ -755,6 +818,12 @@ func TestControllerRejectsDuplicateRouteTableNames(t *testing.T) {
 func TestControllerRejectsConflictingPolicyRoutes(t *testing.T) {
 	state := DesiredState{
 		VPCs: []model.VPC{{Name: "prod"}},
+		Subnets: []model.Subnet{{
+			Name:    "apps",
+			VPC:     "prod",
+			CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway: netip.MustParseAddr("10.10.0.1"),
+		}},
 		PolicyRoutes: []model.PolicyRoute{
 			{
 				Name:     "private-a",

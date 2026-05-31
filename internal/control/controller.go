@@ -521,6 +521,16 @@ func validateObjectGraph(state DesiredState) error {
 		if _, ok := vpcs[table.VPC]; !ok {
 			return fmt.Errorf("route table %q references unknown vpc %q", table.Name, table.VPC)
 		}
+		for _, route := range table.Routes {
+			if route.Blackhole {
+				continue
+			}
+			for _, nextHop := range route.RouteNextHops() {
+				if err := validateAddressInVPCSubnets(subnets, table.VPC, nextHop, fmt.Sprintf("route table %q next hop %s", table.Name, nextHop)); err != nil {
+					return err
+				}
+			}
+		}
 	}
 	for _, route := range state.PolicyRoutes {
 		if err := route.Validate(); err != nil {
@@ -528,6 +538,13 @@ func validateObjectGraph(state DesiredState) error {
 		}
 		if _, ok := vpcs[route.VPC]; !ok {
 			return fmt.Errorf("policy route %q references unknown vpc %q", route.Name, route.VPC)
+		}
+		if route.Action.Type == model.ActionReroute {
+			for _, nextHop := range route.Action.RerouteNextHops() {
+				if err := validateAddressInVPCSubnets(subnets, route.VPC, nextHop, fmt.Sprintf("policy route %q next hop %s", route.Name, nextHop)); err != nil {
+					return err
+				}
+			}
 		}
 	}
 	for _, rule := range state.NATRules {
