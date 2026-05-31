@@ -123,6 +123,10 @@ Subnet desired state supports `exclude_cidrs` as the CIDR form of Kube-OVN's
 subnet CIDR and use the same address family. The control plane rejects endpoint
 IPs that land in an excluded prefix, and the IPAM allocator can be constructed
 with the same excluded prefixes so automatic allocation skips reserved ranges.
+Route-table and policy-route ECMP both keep the full `next_hops` list in the
+userspace resolver decision while selecting one next hop with a stable flow hash.
+This mirrors the OVN/Linux datapath intent closely enough for unit and selftest
+validation without losing the multi next-hop state needed for assertions.
 `LoadBalancer` frontends are declared with a required `ports` array. Each
 frontend owns its protocol and backend target ports while sharing the same
 Service VIP; those backends are rendered into the OVN VIP backend set and the

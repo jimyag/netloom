@@ -267,7 +267,7 @@ func resolvePolicyRoute(routes []model.PolicyRoute, packet Packet) (Decision, bo
 			MatchedBy: "policy-route/" + route.Name,
 		}
 		if len(decision.NextHops) > 0 {
-			decision.NextHop = decision.NextHops[0]
+			decision.NextHop = selectECMPNextHop(route.Name, decision.NextHops, packet)
 		}
 		if route.Action.Type == model.ActionDrop {
 			return decision, true
@@ -332,9 +332,37 @@ func resolveRouteTables(tables map[string]model.RouteTable, packet Packet) (Deci
 		MatchedBy: "route-table/" + selectedName,
 	}
 	if len(nextHops) > 0 {
-		decision.NextHop = nextHops[0]
+		decision.NextHop = selectECMPNextHop(selectedName+"/"+selected.Destination.String(), nextHops, packet)
 	}
 	return decision, true
+}
+
+func selectECMPNextHop(scope string, nextHops []netip.Addr, packet Packet) netip.Addr {
+	selected := nextHops[0]
+	selectedScore := ecmpNextHopScore(scope, selected, packet)
+	for _, nextHop := range nextHops[1:] {
+		score := ecmpNextHopScore(scope, nextHop, packet)
+		if score > selectedScore || (score == selectedScore && nextHop.Compare(selected) < 0) {
+			selected = nextHop
+			selectedScore = score
+		}
+	}
+	return selected
+}
+
+func ecmpNextHopScore(scope string, nextHop netip.Addr, packet Packet) uint32 {
+	hash := fnv.New32a()
+	_, _ = fmt.Fprintf(hash, "%s|%s|%s|%d|%s|%s|%d|%s",
+		scope,
+		packet.VPC,
+		packet.Source,
+		packet.SourcePort,
+		packet.Dest,
+		packet.Protocol,
+		packet.DestPort,
+		nextHop,
+	)
+	return hash.Sum32()
 }
 
 func applyNATAndGateway(state State, packet Packet, decision Decision) Decision {

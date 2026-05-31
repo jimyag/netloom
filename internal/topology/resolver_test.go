@@ -690,6 +690,10 @@ func TestResolvePolicyRouteSNATUsesNextHopGateway(t *testing.T) {
 }
 
 func TestResolveECMPPolicyRouteReturnsNextHops(t *testing.T) {
+	nextHops := []netip.Addr{
+		netip.MustParseAddr("10.10.0.253"),
+		netip.MustParseAddr("10.10.0.254"),
+	}
 	state := State{
 		PolicyRoutes: []model.PolicyRoute{{
 			Name:     "centralized-egress",
@@ -699,11 +703,8 @@ func TestResolveECMPPolicyRouteReturnsNextHops(t *testing.T) {
 				Source: netip.MustParsePrefix("10.10.0.0/24"),
 			},
 			Action: model.RouteAction{
-				Type: model.ActionReroute,
-				NextHops: []netip.Addr{
-					netip.MustParseAddr("10.10.0.253"),
-					netip.MustParseAddr("10.10.0.254"),
-				},
+				Type:     model.ActionReroute,
+				NextHops: nextHops,
 			},
 		}},
 	}
@@ -715,12 +716,116 @@ func TestResolveECMPPolicyRouteReturnsNextHops(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if decision.NextHop != netip.MustParseAddr("10.10.0.253") {
-		t.Fatalf("next hop = %s, want first ECMP next hop", decision.NextHop)
+	if !containsAddr(nextHops, decision.NextHop) {
+		t.Fatalf("next hop = %s, want one of ECMP next hops %v", decision.NextHop, nextHops)
 	}
 	if len(decision.NextHops) != 2 || decision.NextHops[1] != netip.MustParseAddr("10.10.0.254") {
 		t.Fatalf("next hops = %v, want ECMP next hops", decision.NextHops)
 	}
+}
+
+func TestResolveECMPPolicyRouteSelectsStableNextHopPerFlow(t *testing.T) {
+	nextHops := []netip.Addr{
+		netip.MustParseAddr("10.10.0.253"),
+		netip.MustParseAddr("10.10.0.254"),
+	}
+	state := State{
+		PolicyRoutes: []model.PolicyRoute{{
+			Name:     "centralized-egress",
+			VPC:      "prod",
+			Priority: 100,
+			Match: model.RouteMatch{
+				Source: netip.MustParsePrefix("10.10.0.0/24"),
+			},
+			Action: model.RouteAction{Type: model.ActionReroute, NextHops: nextHops},
+		}},
+	}
+	packet := Packet{
+		VPC:        "prod",
+		Source:     netip.MustParseAddr("10.10.0.10"),
+		SourcePort: 40000,
+		Dest:       netip.MustParseAddr("203.0.113.10"),
+		Protocol:   model.ProtocolTCP,
+		DestPort:   443,
+	}
+	first, err := Resolve(state, packet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 10 {
+		decision, err := Resolve(state, packet)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if decision.NextHop != first.NextHop {
+			t.Fatalf("next hop changed for same flow: first=%s now=%s", first.NextHop, decision.NextHop)
+		}
+	}
+
+	selected := make(map[netip.Addr]struct{})
+	for sourcePort := uint16(40000); sourcePort < 40100; sourcePort++ {
+		packet.SourcePort = sourcePort
+		decision, err := Resolve(state, packet)
+		if err != nil {
+			t.Fatal(err)
+		}
+		selected[decision.NextHop] = struct{}{}
+	}
+	if len(selected) < 2 {
+		t.Fatalf("ECMP selection used %d next hop(s), want flow hash to spread across %v", len(selected), nextHops)
+	}
+}
+
+func TestResolveECMPStaticRouteSelectsStableNextHopPerFlow(t *testing.T) {
+	nextHops := []netip.Addr{
+		netip.MustParseAddr("10.10.0.253"),
+		netip.MustParseAddr("10.10.0.254"),
+	}
+	state := State{
+		RouteTables: map[string]model.RouteTable{
+			"main": {
+				Name: "main",
+				VPC:  "prod",
+				Routes: []model.Route{{
+					Destination: netip.MustParsePrefix("203.0.113.0/24"),
+					NextHops:    nextHops,
+				}},
+			},
+		},
+	}
+	packet := Packet{
+		VPC:        "prod",
+		Source:     netip.MustParseAddr("10.10.0.10"),
+		SourcePort: 50000,
+		Dest:       netip.MustParseAddr("203.0.113.10"),
+		Protocol:   model.ProtocolTCP,
+		DestPort:   443,
+	}
+	first, err := Resolve(state, packet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 10 {
+		decision, err := Resolve(state, packet)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if decision.NextHop != first.NextHop {
+			t.Fatalf("static route next hop changed for same flow: first=%s now=%s", first.NextHop, decision.NextHop)
+		}
+	}
+	if !containsAddr(nextHops, first.NextHop) || len(first.NextHops) != 2 {
+		t.Fatalf("decision = %+v, want selected member and all ECMP next hops", first)
+	}
+}
+
+func containsAddr(values []netip.Addr, target netip.Addr) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func TestResolveECMPStaticRouteReturnsNextHops(t *testing.T) {
