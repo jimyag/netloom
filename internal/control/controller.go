@@ -277,7 +277,12 @@ func (c *Controller) Reconcile(ctx context.Context, state DesiredState) error {
 
 func validateNATRules(rules []model.NATRule) error {
 	names := make(map[string]struct{}, len(rules))
-	snatKeys := make(map[string]string)
+	type snatRule struct {
+		name string
+		vpc  string
+		cidr netip.Prefix
+	}
+	var snatRules []snatRule
 	inboundAllPorts := make(map[string]string)
 	inboundPortKeys := make(map[string]string)
 	for _, rule := range rules {
@@ -290,11 +295,12 @@ func validateNATRules(rules []model.NATRule) error {
 		names[rule.Name] = struct{}{}
 
 		if rule.Type == model.ActionSNAT {
-			key := rule.VPC + "|" + rule.MatchCIDR.String()
-			if prev := snatKeys[key]; prev != "" {
-				return fmt.Errorf("snat rule %q conflicts with %q on %s", rule.Name, prev, rule.MatchCIDR)
+			for _, existing := range snatRules {
+				if existing.vpc == rule.VPC && prefixesOverlap(existing.cidr, rule.MatchCIDR) {
+					return fmt.Errorf("snat rule %q conflicts with %q on overlapping cidr %s in vpc %s", rule.Name, existing.name, rule.MatchCIDR, rule.VPC)
+				}
 			}
-			snatKeys[key] = rule.Name
+			snatRules = append(snatRules, snatRule{name: rule.Name, vpc: rule.VPC, cidr: rule.MatchCIDR})
 			continue
 		}
 

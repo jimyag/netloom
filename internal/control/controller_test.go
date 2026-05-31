@@ -145,6 +145,14 @@ func TestControllerRejectsConflictingNATRules(t *testing.T) {
 			wantErr: "conflicts",
 		},
 		{
+			name: "overlapping snat cidr",
+			rules: []model.NATRule{
+				{Name: "egress-a", VPC: "prod", Type: model.ActionSNAT, MatchCIDR: netip.MustParsePrefix("10.10.0.0/24"), ExternalIP: netip.MustParseAddr("198.51.100.10")},
+				{Name: "egress-b", VPC: "prod", Type: model.ActionSNAT, MatchCIDR: netip.MustParsePrefix("10.10.0.128/25"), ExternalIP: netip.MustParseAddr("198.51.100.11")},
+			},
+			wantErr: "overlapping cidr",
+		},
+		{
 			name: "floating ip owns whole external ip",
 			rules: []model.NATRule{
 				{Name: "fip", VPC: "prod", Type: model.ActionDNATSNAT, ExternalIP: netip.MustParseAddr("198.51.100.20"), TargetIP: netip.MustParseAddr("10.10.0.10")},
@@ -186,6 +194,23 @@ func TestControllerRejectsConflictingNATRules(t *testing.T) {
 				t.Fatalf("error %q does not contain %q", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestControllerAllowsOverlappingSNATCIDRsAcrossVPCs(t *testing.T) {
+	state := DesiredState{
+		VPCs: []model.VPC{{Name: "prod"}, {Name: "dev"}},
+		Subnets: []model.Subnet{
+			{Name: "prod-apps", VPC: "prod", CIDR: netip.MustParsePrefix("10.10.0.0/24"), Gateway: netip.MustParseAddr("10.10.0.1")},
+			{Name: "dev-apps", VPC: "dev", CIDR: netip.MustParsePrefix("10.10.0.0/24"), Gateway: netip.MustParseAddr("10.10.0.1")},
+		},
+		NATRules: []model.NATRule{
+			{Name: "prod-egress", VPC: "prod", Type: model.ActionSNAT, MatchCIDR: netip.MustParsePrefix("10.10.0.0/24"), ExternalIP: netip.MustParseAddr("198.51.100.10")},
+			{Name: "dev-egress", VPC: "dev", Type: model.ActionSNAT, MatchCIDR: netip.MustParsePrefix("10.10.0.0/24"), ExternalIP: netip.MustParseAddr("198.51.100.11")},
+		},
+	}
+	if err := NewController(NewMemoryBackend(), NewMemoryBackend()).Reconcile(context.Background(), state); err != nil {
+		t.Fatal(err)
 	}
 }
 
