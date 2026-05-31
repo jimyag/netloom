@@ -48,6 +48,8 @@ func (s *EBPFPolicyStore) ReplaceEndpoint(ctx context.Context, endpointID string
 		return fmt.Errorf("endpoint id is required")
 	}
 	plan := PlanPolicyUpdate(s.entries[endpointID], entries)
+	previousRevision := s.revisions[endpointID]
+	revision := previousRevision + 1
 
 	next, err := ebpf.NewMap(&ebpf.MapSpec{
 		Name:       mapName(endpointID),
@@ -58,21 +60,25 @@ func (s *EBPFPolicyStore) ReplaceEndpoint(ctx context.Context, endpointID string
 		Flags:      unix.BPF_F_NO_PREALLOC,
 	})
 	if err != nil {
-		return fmt.Errorf("create eBPF policy map for endpoint %s: %w", endpointID, err)
+		err = fmt.Errorf("create eBPF policy map for endpoint %s: %w", endpointID, err)
+		s.recordPolicyUpdateFailure(endpointID, previousRevision, revision, plan.Stats(), err)
+		return err
 	}
 	for _, entry := range entries {
 		if err := ctx.Err(); err != nil {
 			next.Close()
+			s.recordPolicyUpdateFailure(endpointID, previousRevision, revision, plan.Stats(), err)
 			return err
 		}
 		if err := next.Put(entry.Key, entry.Value); err != nil {
 			next.Close()
-			return fmt.Errorf("write eBPF policy map for endpoint %s: %w", endpointID, err)
+			err = fmt.Errorf("write eBPF policy map for endpoint %s: %w", endpointID, err)
+			s.recordPolicyUpdateFailure(endpointID, previousRevision, revision, plan.Stats(), err)
+			return err
 		}
 	}
 
 	old := s.maps[endpointID]
-	revision := s.revisions[endpointID] + 1
 	stats := plan.Stats()
 	stats.Revision = revision
 	s.maps[endpointID] = next
@@ -80,14 +86,28 @@ func (s *EBPFPolicyStore) ReplaceEndpoint(ctx context.Context, endpointID string
 	s.revisions[endpointID] = revision
 	s.lastStats[endpointID] = stats
 	s.events = append(s.events, PolicyUpdateEvent{
-		EndpointID: endpointID,
-		Revision:   revision,
-		Stats:      stats,
+		EndpointID:       endpointID,
+		PreviousRevision: previousRevision,
+		Revision:         revision,
+		Stats:            stats,
+		Success:          true,
 	})
 	if old != nil {
 		old.Close()
 	}
 	return nil
+}
+
+func (s *EBPFPolicyStore) recordPolicyUpdateFailure(endpointID string, previousRevision, revision uint64, stats PolicyUpdateStats, err error) {
+	stats.Revision = revision
+	s.events = append(s.events, PolicyUpdateEvent{
+		EndpointID:       endpointID,
+		PreviousRevision: previousRevision,
+		Revision:         revision,
+		Stats:            stats,
+		Success:          false,
+		Error:            err.Error(),
+	})
 }
 
 func (s *EBPFPolicyStore) DeleteEndpoint(ctx context.Context, endpointID string) error {

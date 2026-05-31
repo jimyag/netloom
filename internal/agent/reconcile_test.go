@@ -126,7 +126,7 @@ func TestReconcileNodeReportsPolicyDiffStatsAcrossRevisions(t *testing.T) {
 	if len(events) != 2 {
 		t.Fatalf("events = %d, want 2", len(events))
 	}
-	if events[1].EndpointID != "pod-a" || events[1].Stats.Updated != 1 || events[1].Stats.Revision != 2 {
+	if events[1].EndpointID != "pod-a" || !events[1].Success || events[1].PreviousRevision != 1 || events[1].Revision != 2 || events[1].Stats.Updated != 1 || events[1].Stats.Revision != 2 {
 		t.Fatalf("second event = %+v, want pod-a update revision 2", events[1])
 	}
 }

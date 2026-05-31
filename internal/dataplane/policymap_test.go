@@ -546,7 +546,10 @@ func TestInMemoryPolicyStoreAppliesIncrementalStats(t *testing.T) {
 	if len(events) != 2 {
 		t.Fatalf("events = %d, want 2", len(events))
 	}
-	if events[0].EndpointID != "pod-a" || events[0].Revision != 1 || events[1].Revision != 2 {
+	if events[0].EndpointID != "pod-a" || !events[0].Success || events[0].PreviousRevision != 0 || events[0].Revision != 1 {
+		t.Fatalf("first event = %+v, want pod-a success from revision 0 to 1", events[0])
+	}
+	if events[1].EndpointID != "pod-a" || !events[1].Success || events[1].PreviousRevision != 1 || events[1].Revision != 2 {
 		t.Fatalf("events = %+v, want pod-a revisions 1 and 2", events)
 	}
 }
@@ -599,5 +602,16 @@ func TestInMemoryPolicyStoreRollsBackOnFailure(t *testing.T) {
 	entries := store.Entries("pod-a")
 	if len(entries) != 1 || entries[0] != oldEntries[0] {
 		t.Fatalf("entries after failure = %+v, want old entries", entries)
+	}
+	events := store.Events()
+	if len(events) != 2 {
+		t.Fatalf("events = %d, want success and failed update event", len(events))
+	}
+	failed := events[1]
+	if failed.Success || failed.EndpointID != "pod-a" || failed.PreviousRevision != 1 || failed.Revision != 2 || failed.Error == "" {
+		t.Fatalf("failed event = %+v, want failed attempted revision 2 without advancing store revision", failed)
+	}
+	if failed.Stats.Revision != 2 || failed.Stats.Added != 1 || failed.Stats.Deleted != 1 {
+		t.Fatalf("failed stats = %+v, want attempted add/delete diff at revision 2", failed.Stats)
 	}
 }

@@ -291,13 +291,14 @@ update.
 Policy updates now compute a Cilium-style incremental diff before replacing an
 endpoint map. The diff reports added, updated, deleted, and unchanged entries.
 Successful replacement advances a per-endpoint policy revision and appends a
-policy update event with the diff stats. The agent reconcile result exposes the
-same counters, making policy churn visible without scraping raw BPF maps. The
-in-memory store applies that plan transactionally, so an injected failure leaves
-the previous endpoint policy and revision intact. The eBPF store still uses a
-create-populate-swap path for kernel-map safety, but records the same revision
-and diff statistics so it can move to in-place map mutation without changing the
-control plane contract.
+policy update event with previous/current revision and diff stats. Failed
+replacement appends a failed audit event with the attempted revision and error,
+but leaves the endpoint policy, last successful stats, and stored revision
+intact. The agent reconcile result exposes the same counters, making policy
+churn visible without scraping raw BPF maps. The in-memory store applies that
+plan transactionally. The eBPF store still uses a create-populate-swap path for
+kernel-map safety, but records the same revision and diff statistics so it can
+move to in-place map mutation without changing the control plane contract.
 
 The userspace policy evaluator also exposes Cilium-style observability hooks.
 `PolicyRecorder` tracks per-endpoint allow, drop, conntrack, established, and

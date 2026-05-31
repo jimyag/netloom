@@ -54,9 +54,12 @@ type PolicyUpdateStats struct {
 }
 
 type PolicyUpdateEvent struct {
-	EndpointID string
-	Revision   uint64
-	Stats      PolicyUpdateStats
+	EndpointID       string
+	PreviousRevision uint64
+	Revision         uint64
+	Stats            PolicyUpdateStats
+	Success          bool
+	Error            string
 }
 
 type PolicyUpdatePlan struct {
@@ -94,33 +97,52 @@ func (s *InMemoryPolicyStore) ReplaceEndpoint(_ context.Context, endpointID stri
 
 	plan := PlanPolicyUpdate(s.endpoints[endpointID], entries)
 	next := append([]PolicyMapEntry(nil), s.endpoints[endpointID]...)
+	previousRevision := s.revisions[endpointID]
+	revision := previousRevision + 1
 	applied := 0
 	for _, key := range plan.Delete {
 		if s.failAfter > 0 && applied >= s.failAfter {
-			return fmt.Errorf("in-memory policy update failed after %d operations", applied)
+			err := fmt.Errorf("in-memory policy update failed after %d operations", applied)
+			s.recordPolicyUpdateFailure(endpointID, previousRevision, revision, plan.Stats(), err)
+			return err
 		}
 		next = deleteEntry(next, key)
 		applied++
 	}
 	for _, entry := range append(append([]PolicyMapEntry(nil), plan.Add...), plan.Update...) {
 		if s.failAfter > 0 && applied >= s.failAfter {
-			return fmt.Errorf("in-memory policy update failed after %d operations", applied)
+			err := fmt.Errorf("in-memory policy update failed after %d operations", applied)
+			s.recordPolicyUpdateFailure(endpointID, previousRevision, revision, plan.Stats(), err)
+			return err
 		}
 		next = upsertEntry(next, entry)
 		applied++
 	}
-	revision := s.revisions[endpointID] + 1
 	stats := plan.Stats()
 	stats.Revision = revision
 	s.endpoints[endpointID] = canonicalPolicyEntries(next)
 	s.revisions[endpointID] = revision
 	s.lastStats[endpointID] = stats
 	s.events = append(s.events, PolicyUpdateEvent{
-		EndpointID: endpointID,
-		Revision:   revision,
-		Stats:      stats,
+		EndpointID:       endpointID,
+		PreviousRevision: previousRevision,
+		Revision:         revision,
+		Stats:            stats,
+		Success:          true,
 	})
 	return nil
+}
+
+func (s *InMemoryPolicyStore) recordPolicyUpdateFailure(endpointID string, previousRevision, revision uint64, stats PolicyUpdateStats, err error) {
+	stats.Revision = revision
+	s.events = append(s.events, PolicyUpdateEvent{
+		EndpointID:       endpointID,
+		PreviousRevision: previousRevision,
+		Revision:         revision,
+		Stats:            stats,
+		Success:          false,
+		Error:            err.Error(),
+	})
 }
 
 func (s *InMemoryPolicyStore) DeleteEndpoint(_ context.Context, endpointID string) error {
