@@ -1187,6 +1187,57 @@ func TestReconcileNodeRejectsDuplicateCIDRGroups(t *testing.T) {
 	}
 }
 
+func TestReconcileNodeAllowsSameCIDRGroupNameAcrossVPCs(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{
+			{ID: "pod-a", VPC: "prod", Subnet: "apps", IP: netip.MustParseAddr("10.10.0.10"), Node: "node-a", SecurityGroups: []string{"client"}},
+			{ID: "pod-b", VPC: "dev", Subnet: "apps-dev", IP: netip.MustParseAddr("10.20.0.10"), Node: "node-a", SecurityGroups: []string{"client"}},
+		},
+		SecurityGroups: []model.SecurityGroup{
+			{
+				Name: "client",
+				VPC:  "prod",
+				Rules: []model.SecurityGroupRule{{
+					ID:              "prod-corp",
+					Priority:        100,
+					Direction:       model.DirectionEgress,
+					Protocol:        model.ProtocolTCP,
+					RemoteCIDRGroup: "corp",
+					Ports:           []model.PortRange{{From: 443, To: 443}},
+					Action:          model.ActionAllow,
+				}},
+			},
+			{
+				Name: "client",
+				VPC:  "dev",
+				Rules: []model.SecurityGroupRule{{
+					ID:              "dev-corp",
+					Priority:        100,
+					Direction:       model.DirectionEgress,
+					Protocol:        model.ProtocolTCP,
+					RemoteCIDRGroup: "corp",
+					Ports:           []model.PortRange{{From: 443, To: 443}},
+					Action:          model.ActionAllow,
+				}},
+			},
+		},
+		CIDRGroups: []model.CIDRGroup{
+			{Name: "corp", VPC: "prod", CIDRs: []netip.Prefix{netip.MustParsePrefix("198.51.100.0/24")}},
+			{Name: "corp", VPC: "dev", CIDRs: []netip.Prefix{netip.MustParsePrefix("203.0.113.0/24")}},
+		},
+	}
+	store := dataplane.NewInMemoryPolicyStore()
+	if _, err := ReconcileNode(context.Background(), state, "node-a", store); err != nil {
+		t.Fatalf("same cidr group name in different vpcs should validate: %v", err)
+	}
+	if entries := store.Entries("pod-a"); len(entries) != 1 || entries[0].RemoteCIDR != netip.MustParsePrefix("198.51.100.0/24") {
+		t.Fatalf("pod-a entries = %+v, want prod cidr group entry", entries)
+	}
+	if entries := store.Entries("pod-b"); len(entries) != 1 || entries[0].RemoteCIDR != netip.MustParsePrefix("203.0.113.0/24") {
+		t.Fatalf("pod-b entries = %+v, want dev cidr group entry", entries)
+	}
+}
+
 func TestReconcileNodeExpandsRemoteGroupMembership(t *testing.T) {
 	state := control.DesiredState{
 		Endpoints: []model.Endpoint{

@@ -283,6 +283,10 @@ func securityGroupKey(vpc, name string) string {
 	return vpc + "\x00" + name
 }
 
+func cidrGroupKey(vpc, name string) string {
+	return vpc + "\x00" + name
+}
+
 func validateNATRules(rules []model.NATRule) error {
 	names := make(map[string]struct{}, len(rules))
 	type snatRule struct {
@@ -413,13 +417,14 @@ func validateObjectGraph(state DesiredState) error {
 		if err := group.Validate(); err != nil {
 			return err
 		}
-		if _, ok := cidrGroups[group.Name]; ok {
-			return fmt.Errorf("duplicate cidr group name %q", group.Name)
+		key := cidrGroupKey(group.VPC, group.Name)
+		if _, ok := cidrGroups[key]; ok {
+			return fmt.Errorf("duplicate cidr group name %q in vpc %q", group.Name, group.VPC)
 		}
 		if _, ok := vpcs[group.VPC]; !ok {
 			return fmt.Errorf("cidr group %q references unknown vpc %q", group.Name, group.VPC)
 		}
-		cidrGroups[group.Name] = group
+		cidrGroups[key] = group
 	}
 	for _, group := range state.SecurityGroups {
 		if err := group.Validate(); err != nil {
@@ -442,12 +447,8 @@ func validateObjectGraph(state DesiredState) error {
 				}
 			}
 			if rule.RemoteCIDRGroup != "" {
-				remote, ok := cidrGroups[rule.RemoteCIDRGroup]
-				if !ok {
+				if _, ok := cidrGroups[cidrGroupKey(group.VPC, rule.RemoteCIDRGroup)]; !ok {
 					return fmt.Errorf("security group rule %q references unknown remote cidr group %q", rule.ID, rule.RemoteCIDRGroup)
-				}
-				if remote.VPC != group.VPC {
-					return fmt.Errorf("security group rule %q references remote cidr group %q in vpc %q, want %q", rule.ID, rule.RemoteCIDRGroup, remote.VPC, group.VPC)
 				}
 			}
 			if rule.RemoteService != "" {

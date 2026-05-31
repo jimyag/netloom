@@ -466,7 +466,7 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 			wantErr: "references unknown remote cidr group",
 		},
 		{
-			name: "remote cidr group vpc mismatch",
+			name: "remote cidr group only exists in another vpc",
 			mutate: func(state *DesiredState) {
 				state.VPCs = append(state.VPCs, model.VPC{Name: "other"})
 				state.CIDRGroups = append(state.CIDRGroups, model.CIDRGroup{
@@ -477,7 +477,7 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 				state.SecurityGroups[0].Rules[0].RemoteCIDR = netip.Prefix{}
 				state.SecurityGroups[0].Rules[0].RemoteCIDRGroup = "corp"
 			},
-			wantErr: "references remote cidr group",
+			wantErr: "references unknown remote cidr group",
 		},
 		{
 			name: "remote service unknown",
@@ -1456,6 +1456,62 @@ func TestControllerAllowsSameSecurityGroupNameAcrossVPCs(t *testing.T) {
 	}
 	if got := backend.PolicyProgram["pod-b"].Rules[0].RemoteCIDR; got != netip.MustParsePrefix("203.0.113.10/32") {
 		t.Fatalf("pod-b security group cidr = %s, want dev group", got)
+	}
+}
+
+func TestControllerAllowsSameCIDRGroupNameAcrossVPCs(t *testing.T) {
+	backend := NewMemoryBackend()
+	state := DesiredState{
+		VPCs: []model.VPC{{Name: "prod"}, {Name: "dev"}},
+		Subnets: []model.Subnet{
+			{Name: "apps", VPC: "prod", CIDR: netip.MustParsePrefix("10.10.0.0/24"), Gateway: netip.MustParseAddr("10.10.0.1")},
+			{Name: "apps-dev", VPC: "dev", CIDR: netip.MustParsePrefix("10.20.0.0/24"), Gateway: netip.MustParseAddr("10.20.0.1")},
+		},
+		Endpoints: []model.Endpoint{
+			{ID: "pod-a", VPC: "prod", Subnet: "apps", IP: netip.MustParseAddr("10.10.0.10"), Node: "node-a", SecurityGroups: []string{"client"}},
+			{ID: "pod-b", VPC: "dev", Subnet: "apps-dev", IP: netip.MustParseAddr("10.20.0.10"), Node: "node-a", SecurityGroups: []string{"client"}},
+		},
+		SecurityGroups: []model.SecurityGroup{
+			{
+				Name: "client",
+				VPC:  "prod",
+				Rules: []model.SecurityGroupRule{{
+					ID:              "prod-corp",
+					Priority:        100,
+					Direction:       model.DirectionEgress,
+					Protocol:        model.ProtocolTCP,
+					RemoteCIDRGroup: "corp",
+					Ports:           []model.PortRange{{From: 443, To: 443}},
+					Action:          model.ActionAllow,
+				}},
+			},
+			{
+				Name: "client",
+				VPC:  "dev",
+				Rules: []model.SecurityGroupRule{{
+					ID:              "dev-corp",
+					Priority:        100,
+					Direction:       model.DirectionEgress,
+					Protocol:        model.ProtocolTCP,
+					RemoteCIDRGroup: "corp",
+					Ports:           []model.PortRange{{From: 443, To: 443}},
+					Action:          model.ActionAllow,
+				}},
+			},
+		},
+		CIDRGroups: []model.CIDRGroup{
+			{Name: "corp", VPC: "prod", CIDRs: []netip.Prefix{netip.MustParsePrefix("198.51.100.0/24")}},
+			{Name: "corp", VPC: "dev", CIDRs: []netip.Prefix{netip.MustParsePrefix("203.0.113.0/24")}},
+		},
+	}
+	if err := NewController(backend, backend).Reconcile(context.Background(), state); err != nil {
+		t.Fatalf("same cidr group name in different vpcs should validate: %v", err)
+	}
+	if got := backend.PolicyProgram["pod-a"].Rules[0].RemoteCIDR; got != netip.MustParsePrefix("198.51.100.0/24") {
+		t.Fatalf("pod-a cidr group cidr = %s, want prod cidr group", got)
+	}
+	if got := backend.PolicyProgram["pod-b"].Rules[0].RemoteCIDR; got != netip.MustParsePrefix("203.0.113.0/24") {
+		t.Fatalf("pod-b cidr group cidr = %s, want dev cidr group", got)
 	}
 }
 
