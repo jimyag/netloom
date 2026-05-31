@@ -76,6 +76,12 @@ func TestDockerMultiNodeLab(t *testing.T) {
 			t.Fatalf("live state-file controller output missing %q:\n%s", expected, liveStateOutput)
 		}
 	}
+	policyState := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "lr-policy-list", "nl_lr_file")
+	for _, expected := range []string{"tcp.src == 32000", "tcp.dst == 443", "10.245.0.253"} {
+		if !strings.Contains(policyState, expected) {
+			t.Fatalf("OVN policy route state missing %q:\n%s", expected, policyState)
+		}
+	}
 	nbState := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "show")
 	for _, expected := range []string{"nl_lr_default", "nl_ls_apps", "nl_lr_file", "nl_ls_fileapps"} {
 		if !strings.Contains(nbState, expected) {
@@ -393,7 +399,7 @@ func desiredStateJSON() string {
   "subnets": [{"name": "fileapps", "vpc": "file", "cidr": "10.245.0.0/24", "gateway": "10.245.0.1", "provider_network": "physnet-a", "vlan": 100, "dhcp": {"enabled": true, "lease_time": 7200, "mtu": 1400}}],
   "endpoints": [{"id": "file-pod-a", "vpc": "file", "subnet": "fileapps", "ip": "10.245.0.10", "node": "node-a", "security_groups": ["web"]}],
   "route_tables": [{"name": "main", "vpc": "file", "routes": [{"destination": "0.0.0.0/0", "next_hops": ["10.245.0.254"]}]}],
-  "policy_routes": [{"name": "https-via-fw", "vpc": "file", "priority": 100, "match": {"source": "10.245.0.0/24", "destination": "172.16.0.0/16", "protocol": "tcp", "dst_ports": [{"from": 443, "to": 443}]}, "action": {"type": "reroute", "next_hops": ["10.245.0.253"]}}],
+  "policy_routes": [{"name": "https-via-fw", "vpc": "file", "priority": 100, "match": {"source": "10.245.0.0/24", "destination": "172.16.0.0/16", "protocol": "tcp", "src_ports": [{"from": 32000, "to": 32000}], "dst_ports": [{"from": 443, "to": 443}]}, "action": {"type": "reroute", "next_hops": ["10.245.0.253"]}}],
   "gateways": [{"name": "gw-file", "vpc": "file", "node": "node-a", "external_if": "eth0", "lan_ip": "10.245.0.254"}],
   "nat_rules": [
     {"name": "egress", "vpc": "file", "type": "snat", "match_cidr": "10.245.0.0/24", "external_ip": "198.51.100.20"},

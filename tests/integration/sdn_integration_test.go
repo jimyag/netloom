@@ -66,6 +66,7 @@ func TestDesiredStateDrivesTopologyRoutesAndEBPFStyleACL(t *testing.T) {
 	for _, expected := range []string{
 		"--ecmp lr-route-add nl_lr_prod 0.0.0.0/0 10.10.0.253",
 		"--ecmp lr-route-add nl_lr_prod 0.0.0.0/0 10.10.0.254",
+		"tcp.src == 32000",
 	} {
 		if !strings.Contains(ovnOps, expected) {
 			t.Fatalf("expected OVN ECMP static route operation %q:\n%s", expected, ovnOps)
@@ -87,11 +88,12 @@ func TestDesiredStateDrivesTopologyRoutesAndEBPFStyleACL(t *testing.T) {
 	}
 
 	routeDecision, err := topology.Resolve(memoryBackend.TopologyState(), topology.Packet{
-		VPC:      "prod",
-		Source:   state.Endpoints[0].IP,
-		Dest:     mustAddr(t, "172.16.10.20"),
-		Protocol: model.ProtocolTCP,
-		DestPort: 443,
+		VPC:        "prod",
+		Source:     state.Endpoints[0].IP,
+		SourcePort: 32000,
+		Dest:       mustAddr(t, "172.16.10.20"),
+		Protocol:   model.ProtocolTCP,
+		DestPort:   443,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -101,6 +103,20 @@ func TestDesiredStateDrivesTopologyRoutesAndEBPFStyleACL(t *testing.T) {
 	}
 	if routeDecision.Translated.String() != "198.51.100.10" || routeDecision.Gateway != "gw-b" {
 		t.Fatalf("expected gateway SNAT to be applied, got: %+v", routeDecision)
+	}
+	routeDecision, err = topology.Resolve(memoryBackend.TopologyState(), topology.Packet{
+		VPC:        "prod",
+		Source:     state.Endpoints[0].IP,
+		SourcePort: 31000,
+		Dest:       mustAddr(t, "172.16.10.20"),
+		Protocol:   model.ProtocolTCP,
+		DestPort:   443,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if routeDecision.MatchedBy != "route-table/main" {
+		t.Fatalf("source-port mismatch should skip policy route, got: %+v", routeDecision)
 	}
 	serviceDecision, err := topology.Resolve(memoryBackend.TopologyState(), topology.Packet{
 		VPC:      "prod",
@@ -387,7 +403,7 @@ const integrationStateJSON = `{
     {"id": "pod-b", "vpc": "prod", "subnet": "apps", "ip": "10.10.0.11", "node": "node-b", "security_groups": ["server"], "labels": {"app": "server", "env": "prod"}}
   ],
   "route_tables": [{"name": "main", "vpc": "prod", "routes": [{"destination": "0.0.0.0/0", "next_hops": ["10.10.0.253", "10.10.0.254"]}]}],
-  "policy_routes": [{"name": "https-via-fw", "vpc": "prod", "priority": 100, "match": {"source": "10.10.0.0/24", "destination": "172.16.0.0/16", "protocol": "tcp", "dst_ports": [{"from": 443, "to": 443}]}, "action": {"type": "reroute", "next_hops": ["10.10.0.253"]}}],
+  "policy_routes": [{"name": "https-via-fw", "vpc": "prod", "priority": 100, "match": {"source": "10.10.0.0/24", "destination": "172.16.0.0/16", "protocol": "tcp", "src_ports": [{"from": 32000, "to": 32000}], "dst_ports": [{"from": 443, "to": 443}]}, "action": {"type": "reroute", "next_hops": ["10.10.0.253"]}}],
   "gateways": [
     {"name": "gw-a", "vpc": "prod", "node": "node-a", "external_if": "eth0", "lan_ip": "10.10.0.254"},
     {"name": "gw-b", "vpc": "prod", "node": "node-b", "external_if": "eth0", "lan_ip": "10.10.0.253"}
