@@ -1477,6 +1477,47 @@ func TestCompileForEndpointWithContextFQDNPatternUsesCiliumLabelWildcards(t *tes
 	}
 }
 
+func TestCompileForEndpointWithContextFQDNStarPatternStaysWithinSingleLabel(t *testing.T) {
+	endpoint := model.Endpoint{
+		ID:             "pod-a",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"client"},
+	}
+	program, err := CompileForEndpointWithContext(endpoint, map[string]model.SecurityGroup{
+		"client": {
+			Name: "client",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:          "allow-single-label",
+				Priority:    100,
+				Direction:   model.DirectionEgress,
+				Protocol:    model.ProtocolTCP,
+				RemoteFQDNs: []model.FQDNSelector{{MatchPattern: "*"}},
+				Ports:       []model.PortRange{{From: 443, To: 443}},
+				Action:      model.ActionAllow,
+			}},
+		},
+	}, CompileContext{
+		DNSRecords: []model.DNSRecord{
+			{Name: "api", IPs: []netip.Addr{netip.MustParseAddr("203.0.113.10")}},
+			{Name: "api.example.com", IPs: []netip.Addr{netip.MustParseAddr("203.0.113.20")}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(program.Rules) != 1 {
+		t.Fatalf("rules = %d, want only the single-label DNS name", len(program.Rules))
+	}
+	rule := program.Rules[0]
+	if rule.RemoteFQDN != "api" || rule.RemoteCIDR.String() != "203.0.113.10/32" {
+		t.Fatalf("fqdn rule = %+v, want api only", rule)
+	}
+}
+
 func TestCompileForEndpointWithContextUnresolvedRemoteFQDNProducesNoEntries(t *testing.T) {
 	endpoint := model.Endpoint{
 		ID:             "pod-a",

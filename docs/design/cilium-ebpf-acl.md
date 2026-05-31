@@ -273,9 +273,10 @@ and endpoint policy. A `SecurityGroupRule` can use `remote_fqdns` selectors with
 compiler matches those selectors against desired-state `dns_records` and emits
 one CIDR-backed policy entry per resolved IP (`/32` for IPv4, `/128` for IPv6).
 `match_pattern` follows Cilium's `matchpattern` wildcard semantics: ordinary
-`*` matches characters within one DNS label and does not cross `.`, while a
-leading `**.` matches one or more subdomain labels. Unresolved names compile to
-no entries, so they do not accidentally allow broad egress. This gives the eBPF
+`*` matches characters within one DNS label and does not cross `.`, even when
+the entire pattern is just `*`; a leading `**.` matches one or more subdomain
+labels. Unresolved names compile to no entries, so they do not accidentally
+allow broad egress. This gives the eBPF
 ACL path the same CIDR fallback enforcement shape as `remote_cidr` while
 preserving the higher-level FQDN intent in the model.
 The desired-state DNS cache supports TTL expiry with `ttl_seconds` and

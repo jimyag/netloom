@@ -695,9 +695,6 @@ func fqdnSelectorsMatch(selectors []model.FQDNSelector, name string) (bool, erro
 
 func fqdnPatternMatches(pattern, name string) (bool, error) {
 	pattern = strings.TrimSpace(pattern)
-	if dnsWildcardPattern(pattern) {
-		return normalizeDNSName(name) != "", nil
-	}
 	pattern = normalizeDNSName(pattern)
 	name = normalizeDNSName(name)
 	regexPattern := fqdnPatternRegexp(pattern)
@@ -715,14 +712,6 @@ func fqdnPatternRegexp(pattern string) string {
 	regexPattern := strings.ReplaceAll(pattern, ".", `\.`)
 	regexPattern = wildcardPattern.ReplaceAllString(regexPattern, `[-a-z0-9_]*`)
 	return regexPattern
-}
-
-func dnsWildcardPattern(pattern string) bool {
-	pattern = strings.TrimSpace(pattern)
-	if strings.HasSuffix(pattern, ".") {
-		pattern = strings.TrimSuffix(pattern, ".")
-	}
-	return pattern != "" && strings.Trim(pattern, "*") == ""
 }
 
 var wildcardPattern = regexp.MustCompile(`\*+`)
