@@ -469,6 +469,9 @@ func validateObjectGraph(state DesiredState) error {
 		if subnet.Excludes(endpoint.IP) {
 			return fmt.Errorf("endpoint %q ip %s is excluded by subnet %q", endpoint.ID, endpoint.IP, endpoint.Subnet)
 		}
+		if endpoint.IP == subnet.Gateway {
+			return fmt.Errorf("endpoint %q ip %s conflicts with subnet %q gateway ip", endpoint.ID, endpoint.IP, endpoint.Subnet)
+		}
 		if mac := endpoint.NormalizedMAC(); mac != "" {
 			gatewayMAC := model.SubnetGatewayMAC(subnet.VPC, subnet.Name, subnet.Gateway)
 			if mac == gatewayMAC {
@@ -510,6 +513,10 @@ func validateObjectGraph(state DesiredState) error {
 		}
 		if err := validateAddressInVPCSubnets(subnets, gateway.VPC, gateway.LANIP, fmt.Sprintf("gateway %q lan ip %s", gateway.Name, gateway.LANIP)); err != nil {
 			return err
+		}
+		ipKey := gateway.VPC + "|" + gateway.LANIP.String()
+		if previous := endpointIPs[ipKey]; previous != "" {
+			return fmt.Errorf("gateway %q lan ip %s conflicts with endpoint %q in vpc %s", gateway.Name, gateway.LANIP, previous, gateway.VPC)
 		}
 		gateways[gateway.Name] = struct{}{}
 	}

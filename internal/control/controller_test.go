@@ -512,6 +512,13 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 			wantErr: "excluded by subnet",
 		},
 		{
+			name: "endpoint ip conflicts with subnet gateway",
+			mutate: func(state *DesiredState) {
+				state.Endpoints[0].IP = netip.MustParseAddr("10.10.0.1")
+			},
+			wantErr: "endpoint \"pod-a\" ip 10.10.0.1 conflicts with subnet \"apps\" gateway ip",
+		},
+		{
 			name: "endpoint unknown security group",
 			mutate: func(state *DesiredState) {
 				state.Endpoints[0].SecurityGroups = []string{"missing"}
@@ -575,6 +582,13 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 				state.Subnets[0].ExcludeCIDRs = []netip.Prefix{netip.MustParsePrefix("10.10.0.248/29")}
 			},
 			wantErr: "gateway \"gw-a\" lan ip 10.10.0.254 is excluded by subnet \"apps\"",
+		},
+		{
+			name: "gateway lan ip conflicts with endpoint",
+			mutate: func(state *DesiredState) {
+				state.Gateways[0].LANIP = netip.MustParseAddr("10.10.0.10")
+			},
+			wantErr: "gateway \"gw-a\" lan ip 10.10.0.10 conflicts with endpoint \"pod-a\" in vpc prod",
 		},
 		{
 			name: "load balancer unknown subnet",
