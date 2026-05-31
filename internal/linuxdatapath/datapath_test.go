@@ -215,8 +215,8 @@ func TestPlanProgramsLinuxPolicyRoutes(t *testing.T) {
 	}
 	joined := stringifyOps(ops)
 	tables := mustPolicyTables(t, state.PolicyRoutes, Options{PolicyTableBase: 20000, PolicyTableSize: 1024})
-	httpsTable := tables["https-via-fw"]
-	dropTable := tables["drop-lab"]
+	httpsTable := tables[policyRouteTableKey(state.PolicyRoutes[0])]
+	dropTable := tables[policyRouteTableKey(state.PolicyRoutes[1])]
 	for _, expected := range []string{
 		fmt.Sprintf("ip route replace 172.16.0.0/16 via 10.10.0.253 dev eth9 table %d", httpsTable),
 		fmt.Sprintf("ip rule add priority 9800 from 10.10.0.0/24 to 172.16.0.0/16 ipproto tcp dport 443 table %d protocol 186", httpsTable),
@@ -275,7 +275,7 @@ func TestPlanProgramsAllowPolicyRouteToMainTable(t *testing.T) {
 	}
 	joined := stringifyOps(ops)
 	tables := mustPolicyTables(t, state.PolicyRoutes, Options{PolicyTableBase: 20000, PolicyTableSize: 1024})
-	dropTable := tables["drop-lab"]
+	dropTable := tables[policyRouteTableKey(state.PolicyRoutes[1])]
 	for _, expected := range []string{
 		"ip rule add priority 9700 from 10.10.0.0/24 to 198.51.100.10/32 ipproto tcp dport 443 table 254 protocol 186",
 		fmt.Sprintf("ip route replace blackhole 198.51.100.0/24 table %d", dropTable),
@@ -328,7 +328,7 @@ func TestPlanProgramsIPv6LinuxPolicyRoute(t *testing.T) {
 	}
 	joined := stringifyOps(ops)
 	tables := mustPolicyTables(t, state.PolicyRoutes, Options{PolicyTableBase: 20000, PolicyTableSize: 1024})
-	table := tables["v6-via-fw"]
+	table := tables[policyRouteTableKey(state.PolicyRoutes[0])]
 	for _, expected := range []string{
 		"ip addr replace fd00:10::10/128 dev nl0",
 		fmt.Sprintf("ip route replace ::/0 via fd00:10::fe dev eth9 table %d", table),
@@ -380,13 +380,58 @@ func TestPlanProgramsECMPPolicyRoute(t *testing.T) {
 	}
 	joined := stringifyOps(ops)
 	tables := mustPolicyTables(t, state.PolicyRoutes, Options{PolicyTableBase: 20000, PolicyTableSize: 1024})
-	table := tables["centralized-egress"]
+	table := tables[policyRouteTableKey(state.PolicyRoutes[0])]
 	for _, expected := range []string{
 		fmt.Sprintf("ip route replace 0.0.0.0/0 nexthop via 10.10.0.253 dev eth9 nexthop via 10.10.0.254 dev eth9 table %d", table),
 		fmt.Sprintf("ip rule add priority 9800 from 10.10.0.0/24 table %d protocol 186", table),
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("ECMP policy route ops missing %q:\n%s", expected, joined)
+		}
+	}
+}
+
+func TestPlanProgramsSamePolicyRouteNameAcrossVPCs(t *testing.T) {
+	prod := testReroutePolicyRoute("centralized-egress", 200)
+	dev := testReroutePolicyRoute("centralized-egress", 100)
+	dev.VPC = "dev"
+	dev.Match.Source = netip.MustParsePrefix("10.20.0.0/24")
+	dev.Action.NextHops = []netip.Addr{netip.MustParseAddr("10.20.0.253")}
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{
+			{ID: "pod-a", VPC: "prod", Subnet: "apps", IP: netip.MustParseAddr("10.10.0.10"), Node: "node-a"},
+			{ID: "pod-b", VPC: "dev", Subnet: "apps-dev", IP: netip.MustParseAddr("10.20.0.10"), Node: "node-a"},
+		},
+		PolicyRoutes: []model.PolicyRoute{prod, dev},
+	}
+
+	ops, result, err := Plan(context.Background(), state, Options{
+		Node:            "node-a",
+		LocalDevice:     "nl0",
+		UnderlayDevice:  "eth9",
+		PolicyTableBase: 20000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.PolicyRoutes != 2 {
+		t.Fatalf("policy routes = %d, want 2", result.PolicyRoutes)
+	}
+	tables := mustPolicyTables(t, state.PolicyRoutes, Options{PolicyTableBase: 20000, PolicyTableSize: 1024})
+	prodTable := tables[policyRouteTableKey(prod)]
+	devTable := tables[policyRouteTableKey(dev)]
+	if prodTable == devTable {
+		t.Fatalf("same-name routes in different VPCs share table %d", prodTable)
+	}
+	joined := stringifyOps(ops)
+	for _, expected := range []string{
+		fmt.Sprintf("ip route replace 172.16.0.0/16 via 10.10.0.253 dev eth9 table %d", prodTable),
+		fmt.Sprintf("ip rule add priority 9800 from 10.10.0.0/24 to 172.16.0.0/16 table %d protocol 186", prodTable),
+		fmt.Sprintf("ip route replace 172.16.0.0/16 via 10.20.0.253 dev eth9 table %d", devTable),
+		fmt.Sprintf("ip rule add priority 9900 from 10.20.0.0/24 to 172.16.0.0/16 table %d protocol 186", devTable),
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("same-name policy route op missing %q:\n%s", expected, joined)
 		}
 	}
 }
@@ -567,12 +612,16 @@ func TestAllocatePolicyRouteTablesKeepsExistingNamesStable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"web", "db"} {
-		if before[name] != after[name] {
-			t.Fatalf("table for %s changed from %d to %d after inserting another policy route", name, before[name], after[name])
+	for _, route := range routes {
+		key := policyRouteTableKey(route)
+		if before[key] != after[key] {
+			t.Fatalf("table for %s/%s changed from %d to %d after inserting another policy route", route.VPC, route.Name, before[key], after[key])
 		}
 	}
-	if before["web"] == before["db"] || after["api"] == after["web"] || after["api"] == after["db"] {
+	webKey := policyRouteTableKey(routes[0])
+	dbKey := policyRouteTableKey(routes[1])
+	apiKey := policyRouteTableKey(testReroutePolicyRoute("api", 300))
+	if before[webKey] == before[dbKey] || after[apiKey] == after[webKey] || after[apiKey] == after[dbKey] {
 		t.Fatalf("allocated duplicate tables: before=%v after=%v", before, after)
 	}
 }
@@ -612,10 +661,10 @@ func TestPlanPolicyRouteTablesRemainStableAfterPriorityInsertion(t *testing.T) {
 	tables := mustPolicyTables(t, baseState.PolicyRoutes, options)
 	baseJoined := stringifyOps(baseOps)
 	insertedJoined := stringifyOps(insertedOps)
-	for _, name := range []string{"web", "db"} {
-		expected := fmt.Sprintf("table %d", tables[name])
+	for _, route := range baseState.PolicyRoutes {
+		expected := fmt.Sprintf("table %d", tables[policyRouteTableKey(route)])
 		if !strings.Contains(baseJoined, expected) || !strings.Contains(insertedJoined, expected) {
-			t.Fatalf("policy route %s did not keep table %d after insertion:\nbase:\n%s\ninserted:\n%s", name, tables[name], baseJoined, insertedJoined)
+			t.Fatalf("policy route %s/%s did not keep table %d after insertion:\nbase:\n%s\ninserted:\n%s", route.VPC, route.Name, tables[policyRouteTableKey(route)], baseJoined, insertedJoined)
 		}
 	}
 }
@@ -637,6 +686,27 @@ func TestAllocatePolicyRouteTablesRejectsDuplicateNames(t *testing.T) {
 	}, Options{PolicyTableBase: 22000, PolicyTableSize: 64})
 	if err == nil {
 		t.Fatal("expected duplicate policy route names to fail")
+	}
+}
+
+func TestAllocatePolicyRouteTablesAllowsSameNameAcrossVPCs(t *testing.T) {
+	prod := testReroutePolicyRoute("egress", 200)
+	dev := testReroutePolicyRoute("egress", 100)
+	dev.VPC = "dev"
+	dev.Match.Source = netip.MustParsePrefix("10.20.0.0/24")
+	dev.Action.NextHops = []netip.Addr{netip.MustParseAddr("10.20.0.253")}
+
+	tables, err := allocatePolicyRouteTables([]model.PolicyRoute{prod, dev}, Options{PolicyTableBase: 22000, PolicyTableSize: 64})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prodTable := tables[policyRouteTableKey(prod)]
+	devTable := tables[policyRouteTableKey(dev)]
+	if prodTable == 0 || devTable == 0 {
+		t.Fatalf("missing VPC-scoped table allocation: %v", tables)
+	}
+	if prodTable == devTable {
+		t.Fatalf("same-name policy routes in different VPCs share table %d: %v", prodTable, tables)
 	}
 }
 

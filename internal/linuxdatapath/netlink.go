@@ -226,7 +226,7 @@ func applyPolicyRoutesNetlink(root *netlink.Handle, state control.DesiredState, 
 	for _, route := range applicable {
 		table := linuxMainRouteTable
 		if route.Action.Type != model.ActionAllow {
-			table = tables[route.Name]
+			table = tables[policyRouteTableKey(route)]
 			desiredRoutes[table], err = policyRouteNetlinkRoute(route, table, underlay.Attrs().Index)
 			if err != nil {
 				return 0, fmt.Errorf("build policy route %s table %d: %w", route.Name, table, err)
@@ -268,6 +268,9 @@ func sortPolicyRoutes(routes []model.PolicyRoute) {
 		if routes[i].Priority != routes[j].Priority {
 			return routes[i].Priority > routes[j].Priority
 		}
+		if routes[i].VPC != routes[j].VPC {
+			return routes[i].VPC < routes[j].VPC
+		}
 		return routes[i].Name < routes[j].Name
 	})
 }
@@ -279,24 +282,29 @@ func allocatePolicyRouteTables(routes []model.PolicyRoute, options Options) (map
 		if route.Action.Type == model.ActionAllow {
 			continue
 		}
-		if _, ok := out[route.Name]; ok {
-			return nil, fmt.Errorf("duplicate policy route name %q", route.Name)
+		key := policyRouteTableKey(route)
+		if _, ok := out[key]; ok {
+			return nil, fmt.Errorf("duplicate policy route name %q in vpc %q", route.Name, route.VPC)
 		}
 		if len(used) >= options.PolicyTableSize {
 			return nil, fmt.Errorf("policy route table range exhausted: base=%d size=%d", options.PolicyTableBase, options.PolicyTableSize)
 		}
-		offset := policyRouteTableOffset(route.Name, options.PolicyTableSize)
+		offset := policyRouteTableOffset(key, options.PolicyTableSize)
 		for probe := 0; probe < options.PolicyTableSize; probe++ {
 			table := options.PolicyTableBase + ((offset + probe) % options.PolicyTableSize)
 			if _, ok := used[table]; ok {
 				continue
 			}
-			used[table] = route.Name
-			out[route.Name] = table
+			used[table] = key
+			out[key] = table
 			break
 		}
 	}
 	return out, nil
+}
+
+func policyRouteTableKey(route model.PolicyRoute) string {
+	return route.VPC + "\x00" + route.Name
 }
 
 func policyRouteTableOffset(name string, size int) int {

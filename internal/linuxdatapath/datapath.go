@@ -206,7 +206,7 @@ func planPolicyRoutes(state control.DesiredState, node, device string, tableBase
 		table := linuxMainRouteTable
 		rulePriority := linuxPolicyRulePriority(route.Priority)
 		if route.Action.Type != model.ActionAllow {
-			table = tables[route.Name]
+			table = tables[policyRouteTableKey(route)]
 			destination := linuxPolicyRouteDestination(route)
 			if route.Action.Type == model.ActionDrop {
 				ops = append(ops, Operation{
