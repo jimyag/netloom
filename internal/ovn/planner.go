@@ -643,6 +643,7 @@ func loadBalancerHealthCheckSignature(lb model.LoadBalancer) string {
 	for _, frontend := range lb.Frontends() {
 		parts = append(parts, strings.Join(loadBalancerHealthCheckArgs(lb, frontend), "|"))
 	}
+	sort.Strings(parts)
 	return strings.Join(parts, "||")
 }
 

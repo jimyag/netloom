@@ -254,6 +254,57 @@ func TestBackendCleanupDoesNotReapplyUnchangedLoadBalancer(t *testing.T) {
 	}
 }
 
+func TestBackendDoesNotReapplyHealthCheckedLoadBalancerWhenPortsReordered(t *testing.T) {
+	recorder := ovn.NewRecorderExecutor()
+	backend := ovn.NewBackend(recorder)
+	first := controlStateWithEndpoint("pod-a")
+	first.LoadBalancers[0].HealthCheck = model.LoadBalancerHealthCheck{Enabled: true}
+	first.LoadBalancers[0].Ports = []model.LoadBalancerPort{
+		{
+			Name:     "http",
+			Port:     80,
+			Protocol: model.ProtocolTCP,
+			Backends: []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.10"), Port: 8080}},
+		},
+		{
+			Name:     "metrics",
+			Port:     9090,
+			Protocol: model.ProtocolTCP,
+			Backends: []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.10"), Port: 9091}},
+		},
+	}
+	controller := control.NewController(backend, control.NewMemoryBackend())
+	if err := controller.Reconcile(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+
+	second := first
+	second.LoadBalancers = append([]model.LoadBalancer(nil), first.LoadBalancers...)
+	second.LoadBalancers[0].Ports = []model.LoadBalancerPort{
+		first.LoadBalancers[0].Ports[1],
+		first.LoadBalancers[0].Ports[0],
+	}
+	if err := controller.Reconcile(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+
+	joined := stringifyOVNOps(recorder.Operations())
+	for _, expected := range []string{
+		"--may-exist lb-add nl_lb_web_tcp 10.96.0.10:80 10.10.0.10:8080 tcp",
+		"--may-exist lb-add nl_lb_web_tcp 10.96.0.10:9090 10.10.0.10:9091 tcp",
+	} {
+		if got := strings.Count(joined, expected); got != 1 {
+			t.Fatalf("load balancer op %q count = %d, want one initial apply:\n%s", expected, got, joined)
+		}
+	}
+	if got := strings.Count(joined, "ensure-load-balancer-health-check"); got != 2 {
+		t.Fatalf("health check ensure count = %d, want one per frontend from initial apply:\n%s", got, joined)
+	}
+	if got := strings.Count(joined, "gc-stale-load-balancer-health-checks web"); got != 1 {
+		t.Fatalf("stale health check GC count = %d, want one initial apply:\n%s", got, joined)
+	}
+}
+
 func TestBackendReappliesLoadBalancerWhenDefaultHealthCheckEnabled(t *testing.T) {
 	recorder := ovn.NewRecorderExecutor()
 	backend := ovn.NewBackend(recorder)
