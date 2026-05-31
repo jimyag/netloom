@@ -882,11 +882,11 @@ func TestPlannerBuildsECMPPolicyRouteOperation(t *testing.T) {
 	joined := stringify(planner.Operations())
 	for _, expected := range []string{
 		"--if-exists lr-policy-del nl_lr_prod 110 ip4.src == 10.10.0.0/24",
-		"--id=@nl_lrp_centralized_hegress create Logical_Router_Policy priority=110",
+		"--id=@nl_lrp_prod_centralized_hegress create Logical_Router_Policy priority=110",
 		"action=reroute",
 		"nexthops=[\"10.10.0.253\",\"10.10.0.254\"]",
 		"external_ids:netloom_policy_route=centralized-egress",
-		"add logical_router nl_lr_prod policies @nl_lrp_centralized_hegress",
+		"add logical_router nl_lr_prod policies @nl_lrp_prod_centralized_hegress",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("ECMP policy route operations missing %q:\n%s", expected, joined)
@@ -919,11 +919,42 @@ func TestPlannerECMPPolicyRouteNamedUUIDAvoidsEscapedNameCollisions(t *testing.T
 	}
 	joined := stringify(planner.Operations())
 	for _, expected := range []string{
-		"--id=@nl_lrp_pod_h1 create Logical_Router_Policy",
-		"--id=@nl_lrp_pod__1 create Logical_Router_Policy",
+		"--id=@nl_lrp_prod_pod_h1 create Logical_Router_Policy",
+		"--id=@nl_lrp_prod_pod__1 create Logical_Router_Policy",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("named UUID encoding missing %q:\n%s", expected, joined)
+		}
+	}
+}
+
+func TestPlannerECMPPolicyRouteNamedUUIDIncludesVPC(t *testing.T) {
+	planner := ovn.NewPlanner()
+	for _, vpc := range []string{"prod", "dev"} {
+		err := planner.EnsurePolicyRoute(context.Background(), model.PolicyRoute{
+			Name:     "centralized-egress",
+			VPC:      vpc,
+			Priority: 100,
+			Match:    model.RouteMatch{Destination: netip.MustParsePrefix("198.51.100.0/24")},
+			Action: model.RouteAction{
+				Type: model.ActionReroute,
+				NextHops: []netip.Addr{
+					netip.MustParseAddr("10.10.0.253"),
+					netip.MustParseAddr("10.10.0.254"),
+				},
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	joined := stringify(planner.Operations())
+	for _, expected := range []string{
+		"--id=@nl_lrp_prod_centralized_hegress create Logical_Router_Policy",
+		"--id=@nl_lrp_dev_centralized_hegress create Logical_Router_Policy",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("vpc-scoped named UUID missing %q:\n%s", expected, joined)
 		}
 	}
 }

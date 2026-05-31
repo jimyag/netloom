@@ -178,7 +178,7 @@ func (p *Planner) EnsurePolicyRoute(_ context.Context, route model.PolicyRoute) 
 			)
 			return nil
 		}
-		uuid := namedUUID("nl_lrp_" + sanitize(route.Name))
+		uuid := policyRouteNamedUUID(route)
 		p.ops = append(p.ops,
 			Operation{Command: "lr-policy-del", Flags: []string{"--if-exists"}, Args: []string{router, fmt.Sprint(route.Priority), match}},
 			Operation{Command: "create", Flags: []string{"--id=" + uuid}, Args: logicalRouterPolicyArgs(route, match, nextHops)},
@@ -359,6 +359,10 @@ func loadBalancerProtocolName(name string, protocol model.Protocol) string {
 
 func namedUUID(name string) string {
 	return "@" + strings.ReplaceAll(name, "-", "_h")
+}
+
+func policyRouteNamedUUID(route model.PolicyRoute) string {
+	return namedUUID("nl_lrp_" + sanitize(route.VPC) + "_" + sanitize(route.Name))
 }
 
 func routerPortName(router, subnet string) string {
