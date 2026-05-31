@@ -110,14 +110,15 @@ desired. Docker e2e verifies endpoint and SNAT deletion against the live OVN
 Northbound database.
 
 Service VIP handling follows OVN load-balancer behavior closely enough for
-control-plane validation. DNAT rules with equal external and target ports use OVN
-NAT `--portrange`; DNAT and Floating IP (`dnat_and_snat`) rules that translate
-the port use a netloom-owned OVN `NAT` row with `external_port_range` and
-`logical_port_range`, so port translation does not introduce an extra
-Load_Balancer topology. Floating IP rules can also carry OVN distributed NAT
-`logical_port` and `external_mac` fields, matching the Kube-OVN/OVN requirement
-that distributed floating IP ARP replies and egress packets use the logical
-switch port's MAC.
+control-plane validation. DNAT rules without port mapping are all-protocol
+rules, matching the OVN operation netloom emits. DNAT rules with equal external
+and target ports use OVN NAT `--portrange`; DNAT and Floating IP
+(`dnat_and_snat`) rules that translate the port use a netloom-owned OVN `NAT`
+row with `external_port_range` and `logical_port_range`, so port translation
+does not introduce an extra Load_Balancer topology. Floating IP rules can also
+carry OVN distributed NAT `logical_port` and `external_mac` fields, matching the
+Kube-OVN/OVN requirement that distributed floating IP ARP replies and egress
+packets use the logical switch port's MAC.
 Endpoint desired state can also carry a static `mac`. The control plane rejects
 duplicates inside the same subnet and rejects the Kube-OVN conflict case where a
 static endpoint MAC equals the deterministic router-port gateway MAC. When a

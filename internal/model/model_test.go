@@ -1262,6 +1262,18 @@ func TestNATRuleValidateKubeOVNStyleNAT(t *testing.T) {
 			wantErr: "requires tcp or udp protocol",
 		},
 		{
+			name: "dnat protocol requires port mapping",
+			rule: NATRule{
+				Name:       "broken-dnat-protocol",
+				VPC:        "prod",
+				Type:       ActionDNAT,
+				ExternalIP: netip.MustParseAddr("198.51.100.61"),
+				TargetIP:   netip.MustParseAddr("10.10.0.13"),
+				Protocol:   ProtocolTCP,
+			},
+			wantErr: "dnat protocol must be any",
+		},
+		{
 			name: "port translation",
 			rule: NATRule{
 				Name:         "web-translation",

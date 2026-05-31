@@ -733,6 +733,8 @@ func (n NATRule) Validate() error {
 			if n.Protocol != ProtocolTCP && n.Protocol != ProtocolUDP {
 				return errors.New("dnat port mapping requires tcp or udp protocol")
 			}
+		} else if n.Protocol != ProtocolAny {
+			return errors.New("dnat protocol must be any when port mapping is not set")
 		}
 	case ActionDNATSNAT:
 		if !n.TargetIP.IsValid() {
