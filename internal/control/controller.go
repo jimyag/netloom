@@ -159,13 +159,6 @@ func (c *Controller) Reconcile(ctx context.Context, state DesiredState) error {
 	if err := validateObjectGraph(state); err != nil {
 		return err
 	}
-	groups := make(map[string]model.SecurityGroup, len(state.SecurityGroups))
-	for _, group := range state.SecurityGroups {
-		if err := group.Validate(); err != nil {
-			return err
-		}
-		groups[group.Name] = group
-	}
 	if err := validateNATRules(state.NATRules); err != nil {
 		return err
 	}
@@ -249,6 +242,7 @@ func (c *Controller) Reconcile(ctx context.Context, state DesiredState) error {
 		if err := endpoint.Validate(); err != nil {
 			return err
 		}
+		groups := securityGroupsForVPC(state.SecurityGroups, endpoint.VPC)
 		if err := c.topology.EnsureEndpoint(ctx, endpoint); err != nil {
 			return fmt.Errorf("ensure endpoint %s: %w", endpoint.ID, err)
 		}
@@ -273,6 +267,20 @@ func (c *Controller) Reconcile(ctx context.Context, state DesiredState) error {
 		}
 	}
 	return nil
+}
+
+func securityGroupsForVPC(groups []model.SecurityGroup, vpc string) map[string]model.SecurityGroup {
+	out := make(map[string]model.SecurityGroup)
+	for _, group := range groups {
+		if group.VPC == vpc {
+			out[group.Name] = group
+		}
+	}
+	return out
+}
+
+func securityGroupKey(vpc, name string) string {
+	return vpc + "\x00" + name
 }
 
 func validateNATRules(rules []model.NATRule) error {
@@ -417,23 +425,20 @@ func validateObjectGraph(state DesiredState) error {
 		if err := group.Validate(); err != nil {
 			return err
 		}
-		if _, ok := securityGroups[group.Name]; ok {
-			return fmt.Errorf("duplicate security group name %q", group.Name)
+		key := securityGroupKey(group.VPC, group.Name)
+		if _, ok := securityGroups[key]; ok {
+			return fmt.Errorf("duplicate security group name %q in vpc %q", group.Name, group.VPC)
 		}
 		if _, ok := vpcs[group.VPC]; !ok {
 			return fmt.Errorf("security group %q references unknown vpc %q", group.Name, group.VPC)
 		}
-		securityGroups[group.Name] = group
+		securityGroups[key] = group
 	}
 	for _, group := range securityGroups {
 		for _, rule := range group.Rules {
 			if rule.RemoteGroup != "" {
-				remote, ok := securityGroups[rule.RemoteGroup]
-				if !ok {
+				if _, ok := securityGroups[securityGroupKey(group.VPC, rule.RemoteGroup)]; !ok {
 					return fmt.Errorf("security group rule %q references unknown remote group %q", rule.ID, rule.RemoteGroup)
-				}
-				if remote.VPC != group.VPC {
-					return fmt.Errorf("security group rule %q references remote group %q in vpc %q, want %q", rule.ID, rule.RemoteGroup, remote.VPC, group.VPC)
 				}
 			}
 			if rule.RemoteCIDRGroup != "" {
@@ -504,12 +509,8 @@ func validateObjectGraph(state DesiredState) error {
 			endpointMACs[macKey] = endpoint.ID
 		}
 		for _, groupName := range endpoint.SecurityGroups {
-			group, ok := securityGroups[groupName]
-			if !ok {
+			if _, ok := securityGroups[securityGroupKey(endpoint.VPC, groupName)]; !ok {
 				return fmt.Errorf("endpoint %q references unknown security group %q", endpoint.ID, groupName)
-			}
-			if group.VPC != endpoint.VPC {
-				return fmt.Errorf("endpoint %q references security group %q in vpc %q, want %q", endpoint.ID, groupName, group.VPC, endpoint.VPC)
 			}
 		}
 		ipKey := endpoint.VPC + "|" + endpoint.IP.String()
@@ -631,7 +632,7 @@ func validateObjectGraph(state DesiredState) error {
 func validateSecurityGroupNamedPortReferences(groups []model.SecurityGroup, endpoints []model.Endpoint, groupByName map[string]model.SecurityGroup) error {
 	for _, endpoint := range endpoints {
 		for _, groupName := range endpoint.SecurityGroups {
-			group := groupByName[groupName]
+			group := groupByName[securityGroupKey(endpoint.VPC, groupName)]
 			for _, rule := range group.Rules {
 				if len(rule.NamedPorts) == 0 {
 					continue
@@ -768,7 +769,7 @@ func validateSecurityGroupRemoteEntities(groups []model.SecurityGroup, endpoints
 	}
 	for _, endpoint := range endpoints {
 		for _, groupName := range endpoint.SecurityGroups {
-			group := groupByName[groupName]
+			group := groupByName[securityGroupKey(endpoint.VPC, groupName)]
 			for _, rule := range group.Rules {
 				for _, entity := range rule.RemoteEntities {
 					switch entity {

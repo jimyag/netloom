@@ -1056,6 +1056,53 @@ func TestReconcileNodeRejectsDuplicateSecurityGroups(t *testing.T) {
 	}
 }
 
+func TestReconcileNodeAllowsSameSecurityGroupNameAcrossVPCs(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{
+			{ID: "pod-a", VPC: "prod", Subnet: "apps", IP: netip.MustParseAddr("10.10.0.10"), Node: "node-a", SecurityGroups: []string{"web"}},
+			{ID: "pod-b", VPC: "dev", Subnet: "apps-dev", IP: netip.MustParseAddr("10.20.0.10"), Node: "node-a", SecurityGroups: []string{"web"}},
+		},
+		SecurityGroups: []model.SecurityGroup{
+			{
+				Name: "web",
+				VPC:  "prod",
+				Rules: []model.SecurityGroupRule{{
+					ID:         "prod-web",
+					Priority:   100,
+					Direction:  model.DirectionIngress,
+					Protocol:   model.ProtocolTCP,
+					RemoteCIDR: netip.MustParsePrefix("198.51.100.10/32"),
+					Ports:      []model.PortRange{{From: 443, To: 443}},
+					Action:     model.ActionAllow,
+				}},
+			},
+			{
+				Name: "web",
+				VPC:  "dev",
+				Rules: []model.SecurityGroupRule{{
+					ID:         "dev-web",
+					Priority:   100,
+					Direction:  model.DirectionIngress,
+					Protocol:   model.ProtocolTCP,
+					RemoteCIDR: netip.MustParsePrefix("203.0.113.10/32"),
+					Ports:      []model.PortRange{{From: 8443, To: 8443}},
+					Action:     model.ActionAllow,
+				}},
+			},
+		},
+	}
+	store := dataplane.NewInMemoryPolicyStore()
+	if _, err := ReconcileNode(context.Background(), state, "node-a", store); err != nil {
+		t.Fatalf("same security group name in different vpcs should validate: %v", err)
+	}
+	if entries := store.Entries("pod-a"); len(entries) != 1 || entries[0].RemoteCIDR != netip.MustParsePrefix("198.51.100.10/32") {
+		t.Fatalf("pod-a entries = %+v, want prod security group entry", entries)
+	}
+	if entries := store.Entries("pod-b"); len(entries) != 1 || entries[0].RemoteCIDR != netip.MustParsePrefix("203.0.113.10/32") {
+		t.Fatalf("pod-b entries = %+v, want dev security group entry", entries)
+	}
+}
+
 func TestReconcileNodeRejectsDuplicateEndpoints(t *testing.T) {
 	state := control.DesiredState{
 		Endpoints: []model.Endpoint{

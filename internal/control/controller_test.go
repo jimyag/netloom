@@ -1407,6 +1407,58 @@ func TestControllerAllowsSamePolicyRouteNameAcrossVPCs(t *testing.T) {
 	}
 }
 
+func TestControllerAllowsSameSecurityGroupNameAcrossVPCs(t *testing.T) {
+	backend := NewMemoryBackend()
+	state := DesiredState{
+		VPCs: []model.VPC{{Name: "prod"}, {Name: "dev"}},
+		Subnets: []model.Subnet{
+			{Name: "apps", VPC: "prod", CIDR: netip.MustParsePrefix("10.10.0.0/24"), Gateway: netip.MustParseAddr("10.10.0.1")},
+			{Name: "apps-dev", VPC: "dev", CIDR: netip.MustParsePrefix("10.20.0.0/24"), Gateway: netip.MustParseAddr("10.20.0.1")},
+		},
+		Endpoints: []model.Endpoint{
+			{ID: "pod-a", VPC: "prod", Subnet: "apps", IP: netip.MustParseAddr("10.10.0.10"), Node: "node-a", SecurityGroups: []string{"web"}},
+			{ID: "pod-b", VPC: "dev", Subnet: "apps-dev", IP: netip.MustParseAddr("10.20.0.10"), Node: "node-a", SecurityGroups: []string{"web"}},
+		},
+		SecurityGroups: []model.SecurityGroup{
+			{
+				Name: "web",
+				VPC:  "prod",
+				Rules: []model.SecurityGroupRule{{
+					ID:         "prod-web",
+					Priority:   100,
+					Direction:  model.DirectionIngress,
+					Protocol:   model.ProtocolTCP,
+					RemoteCIDR: netip.MustParsePrefix("198.51.100.10/32"),
+					Ports:      []model.PortRange{{From: 443, To: 443}},
+					Action:     model.ActionAllow,
+				}},
+			},
+			{
+				Name: "web",
+				VPC:  "dev",
+				Rules: []model.SecurityGroupRule{{
+					ID:         "dev-web",
+					Priority:   100,
+					Direction:  model.DirectionIngress,
+					Protocol:   model.ProtocolTCP,
+					RemoteCIDR: netip.MustParsePrefix("203.0.113.10/32"),
+					Ports:      []model.PortRange{{From: 8443, To: 8443}},
+					Action:     model.ActionAllow,
+				}},
+			},
+		},
+	}
+	if err := NewController(backend, backend).Reconcile(context.Background(), state); err != nil {
+		t.Fatalf("same security group name in different vpcs should validate: %v", err)
+	}
+	if got := backend.PolicyProgram["pod-a"].Rules[0].RemoteCIDR; got != netip.MustParsePrefix("198.51.100.10/32") {
+		t.Fatalf("pod-a security group cidr = %s, want prod group", got)
+	}
+	if got := backend.PolicyProgram["pod-b"].Rules[0].RemoteCIDR; got != netip.MustParsePrefix("203.0.113.10/32") {
+		t.Fatalf("pod-b security group cidr = %s, want dev group", got)
+	}
+}
+
 func TestControllerReconcileRemovesStaleMemoryState(t *testing.T) {
 	backend := NewMemoryBackend()
 	controller := NewController(backend, backend)

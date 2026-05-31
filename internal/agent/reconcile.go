@@ -209,14 +209,6 @@ func prepareReconcile(ctx context.Context, state control.DesiredState, options R
 		return ReconcileResult{}, nil, nil, err
 	}
 
-	groups := make(map[string]model.SecurityGroup, len(state.SecurityGroups))
-	for _, group := range state.SecurityGroups {
-		if err := group.Validate(); err != nil {
-			return ReconcileResult{}, nil, nil, err
-		}
-		groups[group.Name] = group
-	}
-
 	backend := dataplane.NewPolicyBackend(options.Store)
 	result := ReconcileResult{Node: options.Node, TCX: "not-requested", Datapath: "not-requested"}
 	var localPrograms []policy.Program
@@ -228,6 +220,7 @@ func prepareReconcile(ctx context.Context, state control.DesiredState, options R
 		if err := endpoint.Validate(); err != nil {
 			return ReconcileResult{}, nil, nil, err
 		}
+		groups := securityGroupsForEndpointVPC(state.SecurityGroups, endpoint.VPC)
 		program, err := policy.CompileForEndpointWithContext(endpoint, groups, policy.CompileContext{
 			Endpoints:  state.Endpoints,
 			Subnets:    state.Subnets,
@@ -291,16 +284,27 @@ func prepareReconcile(ctx context.Context, state control.DesiredState, options R
 	return result, targets, localPrograms, nil
 }
 
+func securityGroupsForEndpointVPC(groups []model.SecurityGroup, vpc string) map[string]model.SecurityGroup {
+	out := make(map[string]model.SecurityGroup)
+	for _, group := range groups {
+		if group.VPC == vpc {
+			out[group.Name] = group
+		}
+	}
+	return out
+}
+
 func validateAgentState(state control.DesiredState) error {
 	groups := make(map[string]struct{}, len(state.SecurityGroups))
 	for _, group := range state.SecurityGroups {
 		if err := group.Validate(); err != nil {
 			return err
 		}
-		if _, ok := groups[group.Name]; ok {
-			return fmt.Errorf("duplicate security group name %q", group.Name)
+		key := group.VPC + "\x00" + group.Name
+		if _, ok := groups[key]; ok {
+			return fmt.Errorf("duplicate security group name %q in vpc %q", group.Name, group.VPC)
 		}
-		groups[group.Name] = struct{}{}
+		groups[key] = struct{}{}
 	}
 	endpoints := make(map[string]struct{}, len(state.Endpoints))
 	for _, endpoint := range state.Endpoints {
