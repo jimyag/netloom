@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"net"
 	"net/netip"
 	"os"
@@ -194,30 +195,35 @@ func applyPolicyRoutesNetlink(root *netlink.Handle, state control.DesiredState, 
 	if err != nil {
 		return 0, fmt.Errorf("lookup policy route device %s: %w", options.UnderlayDevice, err)
 	}
-	if err := cleanupManagedPolicyRules(root, options); err != nil {
+	applied := 0
+	tables, err := allocatePolicyRouteTables(applicable, options)
+	if err != nil {
 		return 0, err
 	}
-
-	applied := 0
-	tableOffset := 0
+	desiredRules := make([]*netlink.Rule, 0, len(applicable))
+	desiredRoutes := make(map[int]*netlink.Route)
 	for _, route := range applicable {
 		table := linuxMainRouteTable
 		if route.Action.Type != model.ActionAllow {
-			table = options.PolicyTableBase + tableOffset
-			tableOffset++
-			if err := flushPolicyRouteTable(root, table); err != nil {
-				return 0, fmt.Errorf("flush policy route table %d: %w", table, err)
-			}
-			if err := replacePolicyRoute(root, route, table, underlay.Attrs().Index); err != nil {
-				return 0, fmt.Errorf("replace policy route %s table %d: %w", route.Name, table, err)
+			table = tables[route.Name]
+			desiredRoutes[table], err = policyRouteNetlinkRoute(route, table, underlay.Attrs().Index)
+			if err != nil {
+				return 0, fmt.Errorf("build policy route %s table %d: %w", route.Name, table, err)
 			}
 		}
-		for _, rule := range netlinkPolicyRules(route, linuxPolicyRulePriority(route.Priority), table) {
-			if err := root.RuleAdd(rule); err != nil {
-				return 0, fmt.Errorf("add policy rule %s: %w", route.Name, err)
-			}
-		}
+		desiredRules = append(desiredRules, netlinkPolicyRules(route, linuxPolicyRulePriority(route.Priority), table)...)
 		applied++
+	}
+	for table, route := range desiredRoutes {
+		if err := syncPolicyRouteTable(root, table, route); err != nil {
+			return 0, fmt.Errorf("sync policy route table %d: %w", table, err)
+		}
+	}
+	if err := cleanupStalePolicyRouteTables(root, desiredRoutes, options); err != nil {
+		return 0, err
+	}
+	if err := syncManagedPolicyRules(root, desiredRules, options); err != nil {
+		return 0, err
 	}
 	return applied, nil
 }
@@ -245,7 +251,48 @@ func sortPolicyRoutes(routes []model.PolicyRoute) {
 	})
 }
 
-func cleanupManagedPolicyRules(root *netlink.Handle, options Options) error {
+func allocatePolicyRouteTables(routes []model.PolicyRoute, options Options) (map[string]int, error) {
+	out := make(map[string]int)
+	used := make(map[int]string)
+	for _, route := range routes {
+		if route.Action.Type == model.ActionAllow {
+			continue
+		}
+		if _, ok := out[route.Name]; ok {
+			return nil, fmt.Errorf("duplicate policy route name %q", route.Name)
+		}
+		if len(used) >= options.PolicyTableSize {
+			return nil, fmt.Errorf("policy route table range exhausted: base=%d size=%d", options.PolicyTableBase, options.PolicyTableSize)
+		}
+		offset := policyRouteTableOffset(route.Name, options.PolicyTableSize)
+		for probe := 0; probe < options.PolicyTableSize; probe++ {
+			table := options.PolicyTableBase + ((offset + probe) % options.PolicyTableSize)
+			if _, ok := used[table]; ok {
+				continue
+			}
+			used[table] = route.Name
+			out[route.Name] = table
+			break
+		}
+	}
+	return out, nil
+}
+
+func policyRouteTableOffset(name string, size int) int {
+	if size <= 1 {
+		return 0
+	}
+	hash := fnv.New32a()
+	_, _ = hash.Write([]byte(name))
+	return int(hash.Sum32() % uint32(size))
+}
+
+func syncManagedPolicyRules(root *netlink.Handle, desired []*netlink.Rule, options Options) error {
+	desiredSet := make(map[string]*netlink.Rule, len(desired))
+	for _, rule := range desired {
+		desiredSet[policyRuleKey(*rule)] = rule
+	}
+	existingSet := make(map[string]struct{}, len(desired))
 	for _, family := range netlinkPolicyRuleFamilies() {
 		rules, err := root.RuleList(family)
 		if err != nil {
@@ -255,10 +302,23 @@ func cleanupManagedPolicyRules(root *netlink.Handle, options Options) error {
 			if !managedPolicyRule(rule, options) {
 				continue
 			}
+			key := policyRuleKey(rule)
+			if _, ok := desiredSet[key]; ok {
+				existingSet[key] = struct{}{}
+				continue
+			}
 			ruleCopy := rule
 			if err := root.RuleDel(&ruleCopy); err != nil && !errors.Is(err, os.ErrNotExist) {
 				return fmt.Errorf("delete stale policy rule family %d table %d priority %d: %w", family, rule.Table, rule.Priority, err)
 			}
+		}
+	}
+	for key, rule := range desiredSet {
+		if _, ok := existingSet[key]; ok {
+			continue
+		}
+		if err := root.RuleAdd(rule); err != nil && !errors.Is(err, os.ErrExist) && !errors.Is(err, unix.EEXIST) {
+			return fmt.Errorf("add policy rule table %d priority %d: %w", rule.Table, rule.Priority, err)
 		}
 	}
 	return nil
@@ -276,26 +336,10 @@ func managedPolicyRule(rule netlink.Rule, options Options) bool {
 	return managedPolicyTable(rule.Table, options) || int(rule.Protocol) == linuxPolicyRuleProtocolID
 }
 
-func flushPolicyRouteTable(root *netlink.Handle, table int) error {
-	for _, family := range []int{netlink.FAMILY_V4, netlink.FAMILY_V6} {
-		routes, err := root.RouteListFiltered(family, &netlink.Route{Table: table}, netlink.RT_FILTER_TABLE)
-		if err != nil {
-			return err
-		}
-		for i := range routes {
-			route := routes[i]
-			if err := root.RouteDel(&route); err != nil && !errors.Is(err, os.ErrNotExist) {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-func replacePolicyRoute(root *netlink.Handle, route model.PolicyRoute, table, linkIndex int) error {
+func policyRouteNetlinkRoute(route model.PolicyRoute, table, linkIndex int) (*netlink.Route, error) {
 	dst, err := ipNetFromPrefix(linuxPolicyRouteDestination(route))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	nlRoute := &netlink.Route{Table: table, Dst: dst}
 	if route.Action.Type == model.ActionDrop {
@@ -315,7 +359,60 @@ func replacePolicyRoute(root *netlink.Handle, route model.PolicyRoute, table, li
 			}
 		}
 	}
-	return root.RouteReplace(nlRoute)
+	return nlRoute, nil
+}
+
+func syncPolicyRouteTable(root *netlink.Handle, table int, desired *netlink.Route) error {
+	current, err := policyRouteTableRoutes(root, table)
+	if err != nil {
+		return err
+	}
+	for i := range current {
+		route := current[i]
+		if routeSameDestination(route, *desired) {
+			continue
+		}
+		if err := root.RouteDel(&route); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	for _, route := range current {
+		if routeEquivalent(route, *desired) {
+			return nil
+		}
+	}
+	return root.RouteReplace(desired)
+}
+
+func cleanupStalePolicyRouteTables(root *netlink.Handle, desired map[int]*netlink.Route, options Options) error {
+	for table := options.PolicyTableBase; table < options.PolicyTableBase+options.PolicyTableSize; table++ {
+		if _, ok := desired[table]; ok {
+			continue
+		}
+		routes, err := policyRouteTableRoutes(root, table)
+		if err != nil {
+			return fmt.Errorf("list stale policy route table %d: %w", table, err)
+		}
+		for i := range routes {
+			route := routes[i]
+			if err := root.RouteDel(&route); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("delete stale policy route table %d: %w", table, err)
+			}
+		}
+	}
+	return nil
+}
+
+func policyRouteTableRoutes(root *netlink.Handle, table int) ([]netlink.Route, error) {
+	var out []netlink.Route
+	for _, family := range []int{netlink.FAMILY_V4, netlink.FAMILY_V6} {
+		routes, err := root.RouteListFiltered(family, &netlink.Route{Table: table}, netlink.RT_FILTER_TABLE)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, routes...)
+	}
+	return out, nil
 }
 
 func netlinkPolicyRules(route model.PolicyRoute, priority, table int) []*netlink.Rule {
@@ -348,6 +445,55 @@ func netlinkPolicyRule(route model.PolicyRoute, priority, table int, port *model
 		rule.Dport = netlink.NewRulePortRange(port.From, port.To)
 	}
 	return rule
+}
+
+func policyRuleKey(rule netlink.Rule) string {
+	parts := []string{
+		fmt.Sprintf("priority=%d", rule.Priority),
+		fmt.Sprintf("table=%d", rule.Table),
+		fmt.Sprintf("family=%d", rule.Family),
+		fmt.Sprintf("protocol=%d", rule.Protocol),
+		fmt.Sprintf("ipproto=%d", rule.IPProto),
+	}
+	if rule.Src != nil {
+		parts = append(parts, "src="+rule.Src.String())
+	}
+	if rule.Dst != nil {
+		parts = append(parts, "dst="+rule.Dst.String())
+	}
+	if rule.Dport != nil {
+		parts = append(parts, fmt.Sprintf("dport=%d-%d", rule.Dport.Start, rule.Dport.End))
+	}
+	if rule.Sport != nil {
+		parts = append(parts, fmt.Sprintf("sport=%d-%d", rule.Sport.Start, rule.Sport.End))
+	}
+	return strings.Join(parts, "|")
+}
+
+func routeSameDestination(a, b netlink.Route) bool {
+	return a.Table == b.Table && ipNetString(a.Dst) == ipNetString(b.Dst)
+}
+
+func routeEquivalent(a, b netlink.Route) bool {
+	if !routeSameDestination(a, b) || a.Type != b.Type || a.LinkIndex != b.LinkIndex || !a.Gw.Equal(b.Gw) {
+		return false
+	}
+	if len(a.MultiPath) != len(b.MultiPath) {
+		return false
+	}
+	for i := range a.MultiPath {
+		if a.MultiPath[i].LinkIndex != b.MultiPath[i].LinkIndex || !a.MultiPath[i].Gw.Equal(b.MultiPath[i].Gw) {
+			return false
+		}
+	}
+	return true
+}
+
+func ipNetString(value *net.IPNet) string {
+	if value == nil {
+		return ""
+	}
+	return value.String()
 }
 
 func policyRouteFamily(route model.PolicyRoute) int {

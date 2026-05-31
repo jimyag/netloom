@@ -461,6 +461,97 @@ func TestManagedPolicyRuleIncludesProtocolMarker(t *testing.T) {
 	}
 }
 
+func TestAllocatePolicyRouteTablesKeepsExistingNamesStable(t *testing.T) {
+	options := Options{PolicyTableBase: 22000, PolicyTableSize: 1024}
+	routes := []model.PolicyRoute{
+		testReroutePolicyRoute("web", 200),
+		testReroutePolicyRoute("db", 100),
+	}
+	before, err := allocatePolicyRouteTables(routes, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := allocatePolicyRouteTables(append([]model.PolicyRoute{testReroutePolicyRoute("api", 300)}, routes...), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"web", "db"} {
+		if before[name] != after[name] {
+			t.Fatalf("table for %s changed from %d to %d after inserting another policy route", name, before[name], after[name])
+		}
+	}
+	if before["web"] == before["db"] || after["api"] == after["web"] || after["api"] == after["db"] {
+		t.Fatalf("allocated duplicate tables: before=%v after=%v", before, after)
+	}
+}
+
+func TestAllocatePolicyRouteTablesRejectsExhaustedRange(t *testing.T) {
+	_, err := allocatePolicyRouteTables([]model.PolicyRoute{
+		testReroutePolicyRoute("web", 200),
+		testReroutePolicyRoute("db", 100),
+	}, Options{PolicyTableBase: 22000, PolicyTableSize: 1})
+	if err == nil {
+		t.Fatal("expected exhausted policy table range to fail")
+	}
+}
+
+func TestAllocatePolicyRouteTablesRejectsDuplicateNames(t *testing.T) {
+	_, err := allocatePolicyRouteTables([]model.PolicyRoute{
+		testReroutePolicyRoute("web", 200),
+		testReroutePolicyRoute("web", 100),
+	}, Options{PolicyTableBase: 22000, PolicyTableSize: 64})
+	if err == nil {
+		t.Fatal("expected duplicate policy route names to fail")
+	}
+}
+
+func TestPolicyRuleKeySeparatesPortsAndProtocolMarker(t *testing.T) {
+	route := model.PolicyRoute{
+		Name:     "https-via-fw",
+		VPC:      "prod",
+		Priority: 200,
+		Match: model.RouteMatch{
+			Source:      netip.MustParsePrefix("10.10.0.0/24"),
+			Destination: netip.MustParsePrefix("172.16.0.0/16"),
+			Protocol:    model.ProtocolTCP,
+			DstPorts:    []model.PortRange{{From: 443, To: 443}, {From: 8443, To: 8443}},
+		},
+		Action: model.RouteAction{Type: model.ActionReroute, NextHops: []netip.Addr{netip.MustParseAddr("10.10.0.253")}},
+	}
+	rules := netlinkPolicyRules(route, linuxPolicyRulePriority(route.Priority), 20000)
+	if policyRuleKey(*rules[0]) == policyRuleKey(*rules[1]) {
+		t.Fatalf("policy rule keys should include destination port: %q", policyRuleKey(*rules[0]))
+	}
+	unmarked := *rules[0]
+	unmarked.Protocol = 0
+	if policyRuleKey(*rules[0]) == policyRuleKey(unmarked) {
+		t.Fatalf("policy rule keys should include protocol marker: %q", policyRuleKey(*rules[0]))
+	}
+}
+
+func TestRouteEquivalentDetectsNextHopChanges(t *testing.T) {
+	route := testReroutePolicyRoute("web", 200)
+	first, err := policyRouteNetlinkRoute(route, 22000, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	route.Action.NextHops = []netip.Addr{netip.MustParseAddr("10.10.0.254")}
+	second, err := policyRouteNetlinkRoute(route, 22000, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if routeEquivalent(*first, *second) {
+		t.Fatalf("routes with different next hops should not be equivalent: %#v %#v", first, second)
+	}
+	clone, err := policyRouteNetlinkRoute(testReroutePolicyRoute("web", 200), 22000, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !routeEquivalent(*first, *clone) {
+		t.Fatalf("identical routes should be equivalent: %#v %#v", first, clone)
+	}
+}
+
 func TestNetlinkPolicyRuleEncodesL4Match(t *testing.T) {
 	route := model.PolicyRoute{
 		Name:     "https-via-fw",
@@ -487,6 +578,19 @@ func TestNetlinkPolicyRuleEncodesL4Match(t *testing.T) {
 	}
 	if rule.IPProto != 6 || rule.Dport == nil || rule.Dport.Start != 443 || rule.Dport.End != 443 {
 		t.Fatalf("unexpected L4 match: proto=%d dport=%+v", rule.IPProto, rule.Dport)
+	}
+}
+
+func testReroutePolicyRoute(name string, priority int) model.PolicyRoute {
+	return model.PolicyRoute{
+		Name:     name,
+		VPC:      "prod",
+		Priority: priority,
+		Match: model.RouteMatch{
+			Source:      netip.MustParsePrefix("10.10.0.0/24"),
+			Destination: netip.MustParsePrefix("172.16.0.0/16"),
+		},
+		Action: model.RouteAction{Type: model.ActionReroute, NextHops: []netip.Addr{netip.MustParseAddr("10.10.0.253")}},
 	}
 }
 
