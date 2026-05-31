@@ -175,6 +175,31 @@ func TestIPv4L4ACLRulesFromProgramProjectsExactEgressPolicy(t *testing.T) {
 	}
 }
 
+func TestIPv4L4ACLRulesFromProgramProjectsRejectAsDrop(t *testing.T) {
+	program := policy.Program{
+		EndpointID: "pod-a",
+		Rules: []policy.Rule{{
+			ID:         "reject-web",
+			Direction:  model.DirectionIngress,
+			Protocol:   model.ProtocolTCP,
+			RemoteCIDR: netip.MustParsePrefix("172.30.0.20/32"),
+			Ports:      []model.PortRange{{From: 8080, To: 8080}},
+			Action:     model.ActionReject,
+		}},
+	}
+
+	rules, err := IPv4L4ACLRulesFromProgram(program)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 1 {
+		t.Fatalf("rules = %d, want 1 reject-derived drop rule", len(rules))
+	}
+	if rules[0].SourceCIDR != netip.MustParsePrefix("172.30.0.20/32") || rules[0].Protocol != 6 || rules[0].DestPort != 8080 || rules[0].Action != TCXDrop {
+		t.Fatalf("reject TCX rule = %+v, want tcp/8080 drop projection", rules[0])
+	}
+}
+
 func TestIPv4L4ACLRulesFromProgramPrunesLowerPrecedenceNarrowRule(t *testing.T) {
 	program := policy.Program{
 		EndpointID: "pod-a",
@@ -462,6 +487,31 @@ func TestIPv6L4ACLRulesFromProgramProjectsExactIngressPolicy(t *testing.T) {
 	}
 	if rules[0].Source != netip.MustParseAddr("fd00:10::20") || rules[0].SourceCIDR != netip.MustParsePrefix("fd00:10::20/128") || rules[0].Protocol != 6 || rules[0].DestPort != 8443 || rules[0].DestPortPrefixBits != 16 || rules[0].Action != TCXDrop {
 		t.Fatalf("unexpected IPv6 rule: %+v", rules[0])
+	}
+}
+
+func TestIPv6L4ACLRulesFromProgramProjectsRejectAsDrop(t *testing.T) {
+	program := policy.Program{
+		EndpointID: "pod-a",
+		Rules: []policy.Rule{{
+			ID:         "reject-v6-web",
+			Direction:  model.DirectionIngress,
+			Protocol:   model.ProtocolTCP,
+			RemoteCIDR: netip.MustParsePrefix("fd00:10::20/128"),
+			Ports:      []model.PortRange{{From: 8443, To: 8443}},
+			Action:     model.ActionReject,
+		}},
+	}
+
+	rules, err := IPv6L4ACLRulesFromProgram(program)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 1 {
+		t.Fatalf("rules = %d, want 1 reject-derived IPv6 drop rule", len(rules))
+	}
+	if rules[0].SourceCIDR != netip.MustParsePrefix("fd00:10::20/128") || rules[0].Protocol != 6 || rules[0].DestPort != 8443 || rules[0].Action != TCXDrop {
+		t.Fatalf("reject IPv6 TCX rule = %+v, want tcp/8443 drop projection", rules[0])
 	}
 }
 
