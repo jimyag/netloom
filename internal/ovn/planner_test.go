@@ -859,14 +859,16 @@ func TestPlannerBuildsKubeOVNStyleNATOperations(t *testing.T) {
 		"--if-exists lr-nat-del nl_lr_prod dnat 198.51.100.40",
 		"--portrange --may-exist lr-nat-add nl_lr_prod dnat 198.51.100.40 10.10.0.12 2222",
 		"--if-exists lr-nat-del nl_lr_prod dnat 198.51.100.41",
-		"--if-exists lb-del nl_natlb_web_translate 198.51.100.41:8443",
-		"--may-exist lb-add nl_natlb_web_translate 198.51.100.41:8443 10.10.0.13:443 tcp",
-		"set load_balancer nl_natlb_web_translate external_ids:netloom_owner=netloom external_ids:netloom_nat=web-translate external_ids:netloom_vpc=prod",
-		"--may-exist lr-lb-add nl_lr_prod nl_natlb_web_translate",
+		"--id=@nl_nat_web_translate create NAT type=dnat external_ip=198.51.100.41 logical_ip=10.10.0.13 external_port_range=8443 logical_port_range=443 protocol=tcp",
+		"external_ids:netloom_nat=web-translate",
+		"add logical_router nl_lr_prod nat @nl_nat_web_translate",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("OVN operations missing %q:\n%s", expected, joined)
 		}
+	}
+	if strings.Contains(joined, "nl_natlb_web_translate") {
+		t.Fatalf("translated DNAT must not create load balancer operations:\n%s", joined)
 	}
 }
 

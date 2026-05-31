@@ -134,9 +134,6 @@ func cleanupOperations(old, next desiredSnapshot) []Operation {
 		if natRuleSignature(oldRule) == natRuleSignature(nextRule) {
 			continue
 		}
-		if natUsesLoadBalancer(oldRule) != natUsesLoadBalancer(nextRule) || natUsesLoadBalancer(oldRule) {
-			ops = append(ops, natCleanupOperations(oldRule)...)
-		}
 		if natDeleteKey(oldRule) == natDeleteKey(nextRule) {
 			continue
 		}
@@ -363,14 +360,5 @@ func natRuleSignature(rule model.NATRule) string {
 }
 
 func natCleanupOperations(rule model.NATRule) []Operation {
-	if !natUsesLoadBalancer(rule) {
-		return nil
-	}
-	name := natLoadBalancerName(rule.Name)
-	lb := natLoadBalancer(rule)
-	return []Operation{
-		{Command: "lr-lb-del", Flags: []string{"--if-exists"}, Args: []string{logicalRouter(rule.VPC), name}},
-		{Command: "lb-del", Flags: []string{"--if-exists"}, Args: []string{name, loadBalancerVIP(lb)}},
-		{Command: "lb-del", Flags: []string{"--if-exists"}, Args: []string{name}},
-	}
+	return nil
 }

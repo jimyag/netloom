@@ -184,7 +184,7 @@ func TestBackendCleanupConvergesChangedNATRule(t *testing.T) {
 	}
 }
 
-func TestBackendCleanupRemovesTranslatedDNATLoadBalancer(t *testing.T) {
+func TestBackendCleanupRemovesTranslatedDNATRule(t *testing.T) {
 	recorder := ovn.NewRecorderExecutor()
 	backend := ovn.NewBackend(recorder)
 	first := controlStateWithEndpoint("pod-a")
@@ -211,14 +211,16 @@ func TestBackendCleanupRemovesTranslatedDNATLoadBalancer(t *testing.T) {
 
 	joined := stringifyOVNOps(recorder.Operations())
 	for _, expected := range []string{
-		"--may-exist lb-add nl_natlb_web_translate 198.51.100.80:8443 10.10.0.10:443 tcp",
-		"--if-exists lr-lb-del nl_lr_prod nl_natlb_web_translate",
-		"--if-exists lb-del nl_natlb_web_translate 198.51.100.80:8443",
-		"--if-exists lb-del nl_natlb_web_translate",
+		"--id=@nl_nat_web_translate create NAT type=dnat external_ip=198.51.100.80 logical_ip=10.10.0.10 external_port_range=8443 logical_port_range=443 protocol=tcp",
+		"add logical_router nl_lr_prod nat @nl_nat_web_translate",
+		"--if-exists lr-nat-del nl_lr_prod dnat 198.51.100.80",
 	} {
 		if !strings.Contains(joined, expected) {
-			t.Fatalf("translated DNAT LB cleanup operation missing %q:\n%s", expected, joined)
+			t.Fatalf("translated DNAT cleanup operation missing %q:\n%s", expected, joined)
 		}
+	}
+	if strings.Contains(joined, "nl_natlb_web_translate") {
+		t.Fatalf("translated DNAT must not create load balancer cleanup operations:\n%s", joined)
 	}
 }
 

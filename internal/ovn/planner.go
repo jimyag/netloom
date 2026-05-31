@@ -217,14 +217,11 @@ func (p *Planner) EnsureNATRule(_ context.Context, rule model.NATRule) error {
 	case model.ActionSNAT:
 		p.ops = append(p.ops, Operation{Command: "lr-nat-add", Flags: []string{"--may-exist"}, Args: []string{router, "snat", rule.ExternalIP.String(), rule.MatchCIDR.String()}})
 	case model.ActionDNAT:
-		if natUsesLoadBalancer(rule) {
-			name := natLoadBalancerName(rule.Name)
-			lb := natLoadBalancer(rule)
+		if natUsesDirectPortTranslation(rule) {
+			uuid := namedUUID("nl_nat_" + sanitize(rule.Name))
 			p.ops = append(p.ops,
-				Operation{Command: "lb-del", Flags: []string{"--if-exists"}, Args: []string{name, loadBalancerVIP(lb)}},
-				Operation{Command: "lb-add", Flags: []string{"--may-exist"}, Args: []string{name, loadBalancerVIP(lb), loadBalancerBackends(lb), string(loadBalancerProtocol(lb))}},
-				setOperation("load_balancer", name, "external_ids:netloom_owner=netloom", "external_ids:netloom_nat="+rule.Name, "external_ids:netloom_vpc="+rule.VPC),
-				Operation{Command: "lr-lb-add", Flags: []string{"--may-exist"}, Args: []string{router, name}},
+				Operation{Command: "create", Flags: []string{"--id=" + uuid}, Args: natPortTranslationArgs(rule)},
+				Operation{Command: "add", Args: []string{"logical_router", router, "nat", uuid}},
 			)
 			return nil
 		}
@@ -487,39 +484,25 @@ func loadBalancerFrontendBackends(frontend model.LoadBalancerFrontend) string {
 	return strings.Join(backends, ",")
 }
 
-func loadBalancerProtocol(lb model.LoadBalancer) model.Protocol {
-	frontends := lb.Frontends()
-	if len(frontends) == 0 || frontends[0].Protocol == "" {
-		return model.ProtocolTCP
-	}
-	return frontends[0].Protocol
-}
-
-func natUsesLoadBalancer(rule model.NATRule) bool {
+func natUsesDirectPortTranslation(rule model.NATRule) bool {
 	return rule.Type == model.ActionDNAT &&
 		rule.ExternalPort != 0 &&
 		rule.TargetPort != 0 &&
 		rule.ExternalPort != rule.TargetPort
 }
 
-func natLoadBalancerName(ruleName string) string {
-	replacer := strings.NewReplacer("-", "_")
-	return "nl_natlb_" + replacer.Replace(sanitize(ruleName))
-}
-
-func natLoadBalancer(rule model.NATRule) model.LoadBalancer {
-	return model.LoadBalancer{
-		Name: rule.Name,
-		VPC:  rule.VPC,
-		VIP:  rule.ExternalIP,
-		Ports: []model.LoadBalancerPort{{
-			Port:     rule.ExternalPort,
-			Protocol: rule.Protocol,
-			Backends: []model.LoadBalancerBackend{{
-				IP:   rule.TargetIP,
-				Port: rule.TargetPort,
-			}},
-		}},
+func natPortTranslationArgs(rule model.NATRule) []string {
+	return []string{
+		"NAT",
+		"type=dnat",
+		"external_ip=" + rule.ExternalIP.String(),
+		"logical_ip=" + rule.TargetIP.String(),
+		"external_port_range=" + fmt.Sprint(rule.ExternalPort),
+		"logical_port_range=" + fmt.Sprint(rule.TargetPort),
+		"protocol=" + string(rule.Protocol),
+		"external_ids:netloom_owner=netloom",
+		"external_ids:netloom_nat=" + rule.Name,
+		"external_ids:netloom_vpc=" + rule.VPC,
 	}
 }
 
