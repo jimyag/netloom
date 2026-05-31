@@ -471,13 +471,13 @@ func TestPlannerBuildsLoadBalancerOperations(t *testing.T) {
 		"external_ids:netloom_session_affinity=true",
 		"options:affinity_timeout=7200",
 		"clear load_balancer nl_lb_web_tcp health_check",
-		"--id=@nl_lbhc_web_tcp_80 create Load_Balancer_Health_Check vip=10.96.0.10:80",
+		"ensure-load-balancer-health-check nl_lb_web_tcp web prod vip=10.96.0.10:80",
 		"options:interval=10",
 		"options:timeout=30",
 		"options:success_count=2",
 		"options:failure_count=4",
 		"external_ids:netloom_load_balancer=web",
-		"add load_balancer nl_lb_web_tcp health_check @nl_lbhc_web_tcp_80",
+		"gc-stale-load-balancer-health-checks web 10.96.0.10:80",
 		"--may-exist lr-lb-add nl_lr_prod nl_lb_web_tcp",
 		"--may-exist ls-lb-add nl_ls_apps nl_lb_web_tcp",
 	} {
@@ -522,8 +522,9 @@ func TestPlannerBuildsMultiPortLoadBalancerOperations(t *testing.T) {
 	for _, expected := range []string{
 		"--may-exist lb-add nl_lb_web_tcp 10.96.0.10:80 10.10.0.10:8080 tcp",
 		"--may-exist lb-add nl_lb_web_tcp 10.96.0.10:9090 10.10.0.10:9091 tcp",
-		"--id=@nl_lbhc_web_tcp_80 create Load_Balancer_Health_Check vip=10.96.0.10:80",
-		"--id=@nl_lbhc_web_tcp_9090 create Load_Balancer_Health_Check vip=10.96.0.10:9090",
+		"ensure-load-balancer-health-check nl_lb_web_tcp web prod vip=10.96.0.10:80",
+		"ensure-load-balancer-health-check nl_lb_web_tcp web prod vip=10.96.0.10:9090",
+		"gc-stale-load-balancer-health-checks web 10.96.0.10:80 10.96.0.10:9090",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("OVN operations missing %q:\n%s", expected, joined)
@@ -565,8 +566,8 @@ func TestPlannerSplitsMultiProtocolLoadBalancerOperations(t *testing.T) {
 		"--may-exist lr-lb-add nl_lr_prod nl_lb_web_udp",
 		"--may-exist ls-lb-add nl_ls_apps nl_lb_web_tcp",
 		"--may-exist ls-lb-add nl_ls_apps nl_lb_web_udp",
-		"add load_balancer nl_lb_web_tcp health_check @nl_lbhc_web_tcp_80",
-		"add load_balancer nl_lb_web_udp health_check @nl_lbhc_web_udp_53",
+		"ensure-load-balancer-health-check nl_lb_web_tcp web prod vip=10.96.0.10:80",
+		"ensure-load-balancer-health-check nl_lb_web_udp web prod vip=10.96.0.10:53",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("OVN operations missing %q:\n%s", expected, joined)
@@ -703,8 +704,8 @@ func TestPlannerDoesNotRecreateUnchangedLoadBalancerHealthCheck(t *testing.T) {
 		t.Fatal(err)
 	}
 	joined := stringify(planner.Operations())
-	if got := strings.Count(joined, "create Load_Balancer_Health_Check"); got != 1 {
-		t.Fatalf("health check create count = %d, want 1:\n%s", got, joined)
+	if got := strings.Count(joined, "ensure-load-balancer-health-check"); got != 1 {
+		t.Fatalf("health check ensure count = %d, want 1:\n%s", got, joined)
 	}
 
 	lb.HealthCheck.Timeout = 30
@@ -712,11 +713,11 @@ func TestPlannerDoesNotRecreateUnchangedLoadBalancerHealthCheck(t *testing.T) {
 		t.Fatal(err)
 	}
 	joined = stringify(planner.Operations())
-	if got := strings.Count(joined, "create Load_Balancer_Health_Check"); got != 2 {
-		t.Fatalf("changed health check create count = %d, want 2:\n%s", got, joined)
+	if got := strings.Count(joined, "ensure-load-balancer-health-check"); got != 2 {
+		t.Fatalf("changed health check ensure count = %d, want 2:\n%s", got, joined)
 	}
-	if got := strings.Count(joined, "gc-load-balancer-health-checks web"); got != 2 {
-		t.Fatalf("health check GC count = %d, want 2:\n%s", got, joined)
+	if got := strings.Count(joined, "gc-stale-load-balancer-health-checks web"); got != 2 {
+		t.Fatalf("stale health check GC count = %d, want 2:\n%s", got, joined)
 	}
 	if !strings.Contains(joined, "options:timeout=30") {
 		t.Fatalf("changed health check timeout missing:\n%s", joined)

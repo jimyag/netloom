@@ -270,11 +270,11 @@ func TestBackendReappliesLoadBalancerWhenDefaultHealthCheckEnabled(t *testing.T)
 	}
 
 	joined := stringifyOVNOps(recorder.Operations())
-	if got := strings.Count(joined, "create Load_Balancer_Health_Check"); got != 1 {
-		t.Fatalf("health check create count = %d, want one enable apply:\n%s", got, joined)
+	if got := strings.Count(joined, "ensure-load-balancer-health-check"); got != 1 {
+		t.Fatalf("health check ensure count = %d, want one enable apply:\n%s", got, joined)
 	}
-	if !strings.Contains(joined, "--id=@nl_lbhc_web_tcp_80 create Load_Balancer_Health_Check vip=10.96.0.10:80") {
-		t.Fatalf("default health check create missing:\n%s", joined)
+	if !strings.Contains(joined, "ensure-load-balancer-health-check nl_lb_web_tcp web prod vip=10.96.0.10:80") {
+		t.Fatalf("default health check ensure missing:\n%s", joined)
 	}
 	if got := strings.Count(joined, "--may-exist lb-add nl_lb_web_tcp 10.96.0.10:80 10.10.0.10:8080 tcp"); got != 2 {
 		t.Fatalf("load balancer frontend apply count = %d, want initial and health-check enable apply:\n%s", got, joined)
@@ -1139,6 +1139,159 @@ esac
 	}
 	if !strings.Contains(calls[4], "lb-del\nnl_lb_web_tcp") {
 		t.Fatalf("final call should delete load balancer:\n%s", calls[4])
+	}
+}
+
+func TestNBCTLExecutorEnsuresExistingLoadBalancerHealthCheck(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args")
+	binary := filepath.Join(dir, "ovn-nbctl")
+	script := fmt.Sprintf(`#!/bin/sh
+printf '%%s\n' '---' >> %q
+printf '%%s\n' "$@" >> %q
+case "$*" in
+  *"--columns=_uuid find Load_Balancer_Health_Check"*"vip=10.96.0.10:80"*) printf 'hc-existing\nhc-duplicate\n' ;;
+esac
+`, argsFile, argsFile)
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	executor := ovn.NewNBCTLExecutor(binary, "--db=unix:/tmp/ovnnb.sock")
+	err := executor.Execute(context.Background(), []ovn.Operation{{
+		Command: "ensure-load-balancer-health-check",
+		Args: []string{
+			"nl_lb_web_tcp",
+			"web",
+			"prod",
+			"vip=10.96.0.10:80",
+			"options:interval=5",
+			"options:timeout=20",
+			"options:success_count=3",
+			"options:failure_count=3",
+			"external_ids:netloom_owner=netloom",
+			"external_ids:netloom_load_balancer=web",
+			"external_ids:netloom_vpc=prod",
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := strings.Split(strings.TrimPrefix(strings.TrimSpace(string(raw)), "---\n"), "\n---\n")
+	if len(calls) != 4 {
+		t.Fatalf("calls = %d, want find, set, destroy duplicate, add:\n%s", len(calls), raw)
+	}
+	if !strings.Contains(calls[0], "--columns=_uuid\nfind\nLoad_Balancer_Health_Check") ||
+		!strings.Contains(calls[0], "external_ids:netloom_load_balancer=web") ||
+		!strings.Contains(calls[0], "vip=10.96.0.10:80") {
+		t.Fatalf("first call should find health check by owner and vip:\n%s", calls[0])
+	}
+	if !strings.Contains(calls[1], "set\nLoad_Balancer_Health_Check\nhc-existing") ||
+		!strings.Contains(calls[1], "options:timeout=20") {
+		t.Fatalf("second call should update existing health check:\n%s", calls[1])
+	}
+	if !strings.Contains(calls[2], "destroy\nLoad_Balancer_Health_Check\nhc-duplicate") {
+		t.Fatalf("third call should destroy duplicate health check:\n%s", calls[2])
+	}
+	if !strings.Contains(calls[3], "add\nload_balancer\nnl_lb_web_tcp\nhealth_check\nhc-existing") {
+		t.Fatalf("final call should attach existing health check:\n%s", calls[3])
+	}
+}
+
+func TestNBCTLExecutorCreatesMissingLoadBalancerHealthCheck(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args")
+	binary := filepath.Join(dir, "ovn-nbctl")
+	script := fmt.Sprintf(`#!/bin/sh
+printf '%%s\n' '---' >> %q
+printf '%%s\n' "$@" >> %q
+case "$*" in
+  *"create Load_Balancer_Health_Check"*) printf 'hc-new\n' ;;
+esac
+`, argsFile, argsFile)
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	executor := ovn.NewNBCTLExecutor(binary, "--db=unix:/tmp/ovnnb.sock")
+	err := executor.Execute(context.Background(), []ovn.Operation{{
+		Command: "ensure-load-balancer-health-check",
+		Args: []string{
+			"nl_lb_web_tcp",
+			"web",
+			"prod",
+			"vip=10.96.0.10:80",
+			"options:interval=5",
+			"options:timeout=20",
+			"options:success_count=3",
+			"options:failure_count=3",
+			"external_ids:netloom_owner=netloom",
+			"external_ids:netloom_load_balancer=web",
+			"external_ids:netloom_vpc=prod",
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := strings.Split(strings.TrimPrefix(strings.TrimSpace(string(raw)), "---\n"), "\n---\n")
+	if len(calls) != 3 {
+		t.Fatalf("calls = %d, want find, create, add:\n%s", len(calls), raw)
+	}
+	if !strings.Contains(calls[1], "create\nLoad_Balancer_Health_Check") ||
+		!strings.Contains(calls[1], "vip=10.96.0.10:80") {
+		t.Fatalf("second call should create missing health check:\n%s", calls[1])
+	}
+	if !strings.Contains(calls[2], "add\nload_balancer\nnl_lb_web_tcp\nhealth_check\nhc-new") {
+		t.Fatalf("final call should attach created health check:\n%s", calls[2])
+	}
+}
+
+func TestNBCTLExecutorDestroysStaleLoadBalancerHealthChecksByVIP(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args")
+	binary := filepath.Join(dir, "ovn-nbctl")
+	script := fmt.Sprintf(`#!/bin/sh
+printf '%%s\n' '---' >> %q
+printf '%%s\n' "$@" >> %q
+case "$*" in
+  *"--columns=_uuid,vip find Load_Balancer_Health_Check"*) printf 'hc-keep,10.96.0.10:80\nhc-stale,10.96.0.10:9090\n' ;;
+esac
+`, argsFile, argsFile)
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	executor := ovn.NewNBCTLExecutor(binary, "--db=unix:/tmp/ovnnb.sock")
+	err := executor.Execute(context.Background(), []ovn.Operation{{
+		Command: "gc-stale-load-balancer-health-checks",
+		Args:    []string{"web", "10.96.0.10:80"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := strings.Split(strings.TrimPrefix(strings.TrimSpace(string(raw)), "---\n"), "\n---\n")
+	if len(calls) != 2 {
+		t.Fatalf("calls = %d, want find and one stale destroy:\n%s", len(calls), raw)
+	}
+	if !strings.Contains(calls[0], "--columns=_uuid,vip\nfind\nLoad_Balancer_Health_Check") ||
+		!strings.Contains(calls[0], "external_ids:netloom_load_balancer=web") {
+		t.Fatalf("first call should find health checks by load balancer:\n%s", calls[0])
+	}
+	if !strings.Contains(calls[1], "destroy\nLoad_Balancer_Health_Check\nhc-stale") ||
+		strings.Contains(calls[1], "hc-keep") {
+		t.Fatalf("second call should destroy only stale health check:\n%s", calls[1])
 	}
 }
 

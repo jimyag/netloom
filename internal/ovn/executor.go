@@ -142,7 +142,7 @@ func firstSpecialOperation(ops []Operation) int {
 
 func isSpecialOperation(op Operation) bool {
 	switch op.Command {
-	case "gc-dhcp-options", "gc-load-balancer-health-checks", "gc-nat-rule", "gc-stale-nat-rules", "tag-policy-route", "gc-stale-policy-routes":
+	case "gc-dhcp-options", "gc-load-balancer-health-checks", "ensure-load-balancer-health-check", "gc-stale-load-balancer-health-checks", "gc-nat-rule", "gc-stale-nat-rules", "tag-policy-route", "gc-stale-policy-routes":
 		return true
 	default:
 		return false
@@ -164,6 +164,10 @@ func (e *NBCTLExecutor) executeSpecial(ctx context.Context, op Operation) error 
 			"external_ids:netloom_owner=netloom",
 			"external_ids:netloom_load_balancer="+op.Args[0],
 		)
+	case "ensure-load-balancer-health-check":
+		return e.ensureLoadBalancerHealthCheck(ctx, op.Args)
+	case "gc-stale-load-balancer-health-checks":
+		return e.destroyStaleLoadBalancerHealthChecks(ctx, op.Args)
 	case "gc-nat-rule":
 		return e.destroyMatchingRecords(ctx, "NAT",
 			"external_ids:netloom_owner=netloom",
@@ -178,6 +182,149 @@ func (e *NBCTLExecutor) executeSpecial(ctx context.Context, op Operation) error 
 	default:
 		return fmt.Errorf("unsupported special operation %q", op.Command)
 	}
+}
+
+func (e *NBCTLExecutor) ensureLoadBalancerHealthCheck(ctx context.Context, fields []string) error {
+	ovnLoadBalancer, _, _, vip := fields[0], fields[1], fields[2], loadBalancerHealthCheckVIP(fields[3:])
+	uuids, err := e.loadBalancerHealthCheckUUIDs(ctx, fields[1], fields[2], vip)
+	if err != nil {
+		return err
+	}
+	var uuid string
+	if len(uuids) == 0 {
+		uuid, err = e.createLoadBalancerHealthCheck(ctx, fields[3:])
+		if err != nil {
+			return err
+		}
+	} else {
+		uuid = uuids[0]
+		if err := e.setLoadBalancerHealthCheck(ctx, uuid, fields[3:]); err != nil {
+			return err
+		}
+	}
+	if len(uuids) > 1 {
+		for _, duplicate := range uuids[1:] {
+			if err := e.destroyLoadBalancerHealthCheck(ctx, duplicate); err != nil {
+				return err
+			}
+		}
+	}
+	args := append([]string(nil), e.BaseArgs...)
+	args = append(args, "add", "load_balancer", ovnLoadBalancer, "health_check", uuid)
+	return e.runCommand(ctx, args)
+}
+
+func (e *NBCTLExecutor) loadBalancerHealthCheckUUIDs(ctx context.Context, loadBalancer, vpc, vip string) ([]string, error) {
+	return e.findLoadBalancerHealthChecks(ctx,
+		"external_ids:netloom_owner=netloom",
+		"external_ids:netloom_load_balancer="+loadBalancer,
+		"external_ids:netloom_vpc="+vpc,
+		"vip="+vip,
+	)
+}
+
+func (e *NBCTLExecutor) createLoadBalancerHealthCheck(ctx context.Context, fields []string) (string, error) {
+	args := append([]string(nil), e.BaseArgs...)
+	args = append(args, "create", "Load_Balancer_Health_Check")
+	args = append(args, fields...)
+	output, err := e.outputCommand(ctx, args)
+	if err != nil {
+		return "", err
+	}
+	uuid := strings.TrimSpace(string(output))
+	if uuid == "" {
+		return "", fmt.Errorf("ovn-nbctl create Load_Balancer_Health_Check returned empty uuid")
+	}
+	return uuid, nil
+}
+
+func (e *NBCTLExecutor) setLoadBalancerHealthCheck(ctx context.Context, uuid string, fields []string) error {
+	args := append([]string(nil), e.BaseArgs...)
+	args = append(args, "set", "Load_Balancer_Health_Check", uuid)
+	args = append(args, fields...)
+	return e.runCommand(ctx, args)
+}
+
+func (e *NBCTLExecutor) destroyLoadBalancerHealthCheck(ctx context.Context, uuid string) error {
+	args := append([]string(nil), e.BaseArgs...)
+	args = append(args, "--if-exists", "destroy", "Load_Balancer_Health_Check", uuid)
+	return e.runCommand(ctx, args)
+}
+
+func (e *NBCTLExecutor) destroyStaleLoadBalancerHealthChecks(ctx context.Context, args []string) error {
+	loadBalancer := args[0]
+	keep := make(map[string]struct{}, len(args)-1)
+	for _, vip := range args[1:] {
+		keep[vip] = struct{}{}
+	}
+	rows, err := e.loadBalancerHealthCheckRows(ctx, loadBalancer)
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		if _, ok := keep[row.vip]; ok {
+			continue
+		}
+		if err := e.destroyLoadBalancerHealthCheck(ctx, row.uuid); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type loadBalancerHealthCheckRow struct {
+	uuid string
+	vip  string
+}
+
+func (e *NBCTLExecutor) loadBalancerHealthCheckRows(ctx context.Context, loadBalancer string) ([]loadBalancerHealthCheckRow, error) {
+	args := append([]string(nil), e.BaseArgs...)
+	args = append(args, "--format=csv", "--data=bare", "--no-headings", "--columns=_uuid,vip", "find", "Load_Balancer_Health_Check",
+		"external_ids:netloom_owner=netloom",
+		"external_ids:netloom_load_balancer="+loadBalancer,
+	)
+	output, err := e.outputCommand(ctx, args)
+	if err != nil {
+		return nil, err
+	}
+	var rows []loadBalancerHealthCheckRow
+	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+		uuid, vip, ok := parseLoadBalancerHealthCheckRow(line)
+		if ok {
+			rows = append(rows, loadBalancerHealthCheckRow{uuid: uuid, vip: vip})
+		}
+	}
+	return rows, nil
+}
+
+func (e *NBCTLExecutor) findLoadBalancerHealthChecks(ctx context.Context, matches ...string) ([]string, error) {
+	args := append([]string(nil), e.BaseArgs...)
+	args = append(args, "--bare", "--columns=_uuid", "find", "Load_Balancer_Health_Check")
+	args = append(args, matches...)
+	output, err := e.outputCommand(ctx, args)
+	if err != nil {
+		return nil, err
+	}
+	return strings.Fields(string(output)), nil
+}
+
+func loadBalancerHealthCheckVIP(fields []string) string {
+	for _, field := range fields {
+		if vip, ok := strings.CutPrefix(field, "vip="); ok {
+			return vip
+		}
+	}
+	return ""
+}
+
+func parseLoadBalancerHealthCheckRow(line string) (string, string, bool) {
+	uuid, vip, ok := strings.Cut(strings.TrimSpace(line), ",")
+	if !ok {
+		return "", "", false
+	}
+	uuid = strings.Trim(strings.TrimSpace(uuid), `"`)
+	vip = strings.Trim(strings.TrimSpace(vip), `"`)
+	return uuid, vip, uuid != "" && vip != ""
 }
 
 func (e *NBCTLExecutor) tagPolicyRoute(ctx context.Context, vpc, name, priority, match string) error {
@@ -467,6 +614,31 @@ func validateSpecialOperation(op Operation) error {
 		for _, arg := range op.Args {
 			if arg == "" {
 				return fmt.Errorf("special operation %q contains empty keep argument", op.Command)
+			}
+		}
+		return nil
+	}
+	if op.Command == "ensure-load-balancer-health-check" {
+		if len(op.Args) < 9 {
+			return fmt.Errorf("special operation %q requires load balancer, identity, vip, options, and external ids", op.Command)
+		}
+		if loadBalancerHealthCheckVIP(op.Args[3:]) == "" {
+			return fmt.Errorf("special operation %q requires vip field", op.Command)
+		}
+		for _, arg := range op.Args {
+			if arg == "" {
+				return fmt.Errorf("special operation %q contains empty argument", op.Command)
+			}
+		}
+		return nil
+	}
+	if op.Command == "gc-stale-load-balancer-health-checks" {
+		if len(op.Args) == 0 || op.Args[0] == "" {
+			return fmt.Errorf("special operation %q requires load balancer name", op.Command)
+		}
+		for _, arg := range op.Args[1:] {
+			if arg == "" {
+				return fmt.Errorf("special operation %q contains empty keep vip", op.Command)
 			}
 		}
 		return nil

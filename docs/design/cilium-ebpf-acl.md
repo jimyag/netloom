@@ -139,9 +139,10 @@ agree on ClientIP affinity. Backends default to healthy; when a backend is
 marked `healthy=false`, the planner omits it from that OVN VIP backend list and
 the resolver excludes it from local service resolution. Validation requires at
 least one healthy backend per frontend so the OVN `lb-add` operation never
-receives an empty backend set. Multi-port health checks create one OVN
-`Load_Balancer_Health_Check` row per frontend VIP. The state-file controller
-can additionally enable active TCP backend probes with
+receives an empty backend set. Multi-port health checks converge one OVN
+`Load_Balancer_Health_Check` row per frontend VIP by finding existing managed
+rows, updating their options in place, and only creating missing rows. The
+state-file controller can additionally enable active TCP backend probes with
 `NETLOOM_LB_HEALTH_PROBE=1`; probe results are applied to TCP load balancers
 with health checks before the OVN plan is generated. A per-controller tracker
 honors the configured `success_count` and `failure_count` across reconcile

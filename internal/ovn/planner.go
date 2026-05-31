@@ -560,17 +560,16 @@ func (p *Planner) loadBalancerHealthCheckOperations(lb model.LoadBalancer, front
 	for _, name := range names {
 		ops = append(ops, Operation{Command: "clear", Args: []string{"load_balancer", name, "health_check"}})
 	}
-	ops = append(ops, gcLoadBalancerHealthChecksOperation(lb.Name))
+	keepVIPs := make([]string, 0, len(lb.Frontends()))
 	for _, protocol := range sortedLoadBalancerProtocols(frontendsByProtocol) {
 		name := loadBalancerProtocolName(lb.Name, protocol)
 		for _, frontend := range frontendsByProtocol[protocol] {
-			uuid := loadBalancerHealthCheckUUID(lb.Name, frontend)
-			ops = append(ops,
-				Operation{Command: "create", Flags: []string{"--id=" + uuid}, Args: loadBalancerHealthCheckArgs(lb, frontend)},
-				Operation{Command: "add", Args: []string{"load_balancer", name, "health_check", uuid}},
-			)
+			vip := loadBalancerFrontendVIP(frontend)
+			keepVIPs = append(keepVIPs, vip)
+			ops = append(ops, ensureLoadBalancerHealthCheckOperation(name, lb.Name, lb.VPC, loadBalancerHealthCheckArgs(lb, frontend)))
 		}
 	}
+	ops = append(ops, gcStaleLoadBalancerHealthChecksOperation(lb.Name, keepVIPs))
 	return ops
 }
 
@@ -608,6 +607,15 @@ func gcDHCPOptionsOperation(endpoint string) Operation {
 
 func gcLoadBalancerHealthChecksOperation(loadBalancer string) Operation {
 	return Operation{Command: "gc-load-balancer-health-checks", Args: []string{loadBalancer}}
+}
+
+func ensureLoadBalancerHealthCheckOperation(ovnLoadBalancer, loadBalancer, vpc string, args []string) Operation {
+	return Operation{Command: "ensure-load-balancer-health-check", Args: append([]string{ovnLoadBalancer, loadBalancer, vpc}, args[1:]...)}
+}
+
+func gcStaleLoadBalancerHealthChecksOperation(loadBalancer string, keepVIPs []string) Operation {
+	args := append([]string{loadBalancer}, keepVIPs...)
+	return Operation{Command: "gc-stale-load-balancer-health-checks", Args: args}
 }
 
 func loadBalancerHealthCheckSignature(lb model.LoadBalancer) string {
