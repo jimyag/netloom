@@ -626,6 +626,27 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 			wantErr: "load balancer \"web\" backend 10.10.0.10:8080 is excluded by subnet \"apps\"",
 		},
 		{
+			name: "load balancer vip inside vpc subnet",
+			mutate: func(state *DesiredState) {
+				state.LoadBalancers[0].VIP = netip.MustParseAddr("10.10.0.20")
+			},
+			wantErr: "load balancer \"web\" vip 10.10.0.20 is inside subnet \"apps\" in vpc \"prod\"",
+		},
+		{
+			name: "load balancer vip conflicts with subnet gateway",
+			mutate: func(state *DesiredState) {
+				state.LoadBalancers[0].VIP = netip.MustParseAddr("10.10.0.1")
+			},
+			wantErr: "load balancer \"web\" vip 10.10.0.1 is inside subnet \"apps\" in vpc \"prod\"",
+		},
+		{
+			name: "load balancer vip conflicts with endpoint",
+			mutate: func(state *DesiredState) {
+				state.LoadBalancers[0].VIP = netip.MustParseAddr("10.10.0.10")
+			},
+			wantErr: "load balancer \"web\" vip 10.10.0.10 is inside subnet \"apps\" in vpc \"prod\"",
+		},
+		{
 			name: "route table unknown vpc",
 			mutate: func(state *DesiredState) {
 				state.RouteTables = []model.RouteTable{{

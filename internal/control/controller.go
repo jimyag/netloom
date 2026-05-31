@@ -379,6 +379,9 @@ func validateObjectGraph(state DesiredState) error {
 			}
 		}
 		for _, frontend := range lb.Frontends() {
+			if err := validateAddressOutsideVPCSubnets(subnets, lb.VPC, frontend.VIP, fmt.Sprintf("load balancer %q vip %s", lb.Name, frontend.VIP)); err != nil {
+				return err
+			}
 			for _, backend := range frontend.Backends {
 				if err := validateAddressInVPCSubnets(subnets, lb.VPC, backend.IP, fmt.Sprintf("load balancer %q backend %s", lb.Name, netip.AddrPortFrom(backend.IP, backend.Port))); err != nil {
 					return err
