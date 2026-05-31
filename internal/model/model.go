@@ -180,10 +180,12 @@ type LoadBalancerHealthCheck struct {
 }
 
 type SecurityGroup struct {
-	Name  string              `json:"name"`
-	VPC   string              `json:"vpc"`
-	Tier  int                 `json:"tier"`
-	Rules []SecurityGroupRule `json:"rules"`
+	Name               string              `json:"name"`
+	VPC                string              `json:"vpc"`
+	Tier               int                 `json:"tier"`
+	DefaultDenyIngress *bool               `json:"default_deny_ingress,omitempty"`
+	DefaultDenyEgress  *bool               `json:"default_deny_egress,omitempty"`
+	Rules              []SecurityGroupRule `json:"rules"`
 }
 
 type CIDRGroup struct {

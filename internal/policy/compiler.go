@@ -121,6 +121,7 @@ func CompileForEndpointWithContext(endpoint model.Endpoint, groups map[string]mo
 		return Program{}, err
 	}
 	program := Program{EndpointID: endpoint.ID}
+	attachedGroups := make([]model.SecurityGroup, 0, len(endpoint.SecurityGroups))
 	for _, groupName := range endpoint.SecurityGroups {
 		group, ok := groups[groupName]
 		if !ok {
@@ -132,6 +133,7 @@ func CompileForEndpointWithContext(endpoint model.Endpoint, groups map[string]mo
 		if err := group.Validate(); err != nil {
 			return Program{}, err
 		}
+		attachedGroups = append(attachedGroups, group)
 		for _, rule := range group.Rules {
 			compiledRules, err := expandRule(endpoint, group, rule, membersByGroup, endpointsBySelector, dnsRecords, cidrGroups, services, subnetsByVPC, gatewayCIDRsByVPC)
 			if err != nil {
@@ -147,6 +149,9 @@ func CompileForEndpointWithContext(endpoint model.Endpoint, groups map[string]mo
 			}
 		}
 	}
+	if err := appendDefaultAllowRules(&program, attachedGroups); err != nil {
+		return Program{}, err
+	}
 	sort.SliceStable(program.Rules, func(i, j int) bool {
 		if left, right := precedence(program.Rules[i]), precedence(program.Rules[j]); left != right {
 			return left > right
@@ -160,6 +165,49 @@ func CompileForEndpointWithContext(endpoint model.Endpoint, groups map[string]mo
 		return program.MapEntries[i].RuleID < program.MapEntries[j].RuleID
 	})
 	return program, nil
+}
+
+func appendDefaultAllowRules(program *Program, groups []model.SecurityGroup) error {
+	for _, direction := range []model.Direction{model.DirectionIngress, model.DirectionEgress} {
+		if !defaultDenyDisabledForDirection(groups, direction) {
+			continue
+		}
+		rule := Rule{
+			ID:        "netloom-default-allow-" + string(direction),
+			Tier:      1,
+			Direction: direction,
+			Protocol:  model.ProtocolAny,
+			Action:    model.ActionAllow,
+		}
+		program.Rules = append(program.Rules, rule)
+		entries, err := compileMapEntries(rule)
+		if err != nil {
+			return err
+		}
+		program.MapEntries = append(program.MapEntries, entries...)
+	}
+	return nil
+}
+
+func defaultDenyDisabledForDirection(groups []model.SecurityGroup, direction model.Direction) bool {
+	if len(groups) == 0 {
+		return false
+	}
+	for _, group := range groups {
+		var setting *bool
+		switch direction {
+		case model.DirectionIngress:
+			setting = group.DefaultDenyIngress
+		case model.DirectionEgress:
+			setting = group.DefaultDenyEgress
+		default:
+			return false
+		}
+		if setting == nil || *setting {
+			return false
+		}
+	}
+	return true
 }
 
 func expandRule(endpoint model.Endpoint, securityGroup model.SecurityGroup, rule model.SecurityGroupRule, membersByGroup map[string][]model.Endpoint, endpointsBySelector []model.Endpoint, dnsRecords map[string][]netip.Addr, cidrGroups map[string][]netip.Prefix, services map[string]model.LoadBalancer, subnetsByVPC map[string][]netip.Prefix, gatewayCIDRsByVPC map[string][]gatewayCIDR) ([]Rule, error) {

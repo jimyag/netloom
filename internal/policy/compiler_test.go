@@ -122,6 +122,94 @@ func TestCompileForEndpointUsesKubeOVNStyleLowerRulePriorityFirst(t *testing.T) 
 	}
 }
 
+func TestCompileForEndpointSupportsCiliumStyleDefaultAllowMode(t *testing.T) {
+	defaultAllow := false
+	endpoint := model.Endpoint{
+		ID:             "pod-a",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"web"},
+	}
+	groups := map[string]model.SecurityGroup{
+		"web": {
+			Name:               "web",
+			VPC:                "prod",
+			DefaultDenyIngress: &defaultAllow,
+			DefaultDenyEgress:  &defaultAllow,
+			Rules: []model.SecurityGroupRule{{
+				ID:         "deny-admin",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("10.20.0.0/16"),
+				Ports:      []model.PortRange{{From: 8443, To: 8443}},
+				Action:     model.ActionDrop,
+			}},
+		},
+	}
+
+	program, err := CompileForEndpoint(endpoint, groups)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantDefaultRules := map[string]struct{}{
+		"netloom-default-allow-ingress": {},
+		"netloom-default-allow-egress":  {},
+	}
+	for _, rule := range program.Rules {
+		delete(wantDefaultRules, rule.ID)
+	}
+	if len(wantDefaultRules) != 0 {
+		t.Fatalf("default allow rules missing: %v", wantDefaultRules)
+	}
+	for _, entry := range program.MapEntries {
+		if strings.HasPrefix(entry.RuleID, "netloom-default-allow-") {
+			if entry.Key.RemoteIdentity != 0 || entry.Key.Protocol != model.ProtocolAny || entry.Key.DestPort != 0 || entry.Key.L4PrefixBits != 0 {
+				t.Fatalf("default allow entry must be wildcard, got %+v", entry.Key)
+			}
+			if entry.Value.Deny || entry.Value.Precedence != 0 {
+				t.Fatalf("default allow value = %+v, want lowest precedence allow", entry.Value)
+			}
+		}
+	}
+}
+
+func TestCompileForEndpointKeepsDefaultDenyWhenAnyGroupRequiresIt(t *testing.T) {
+	defaultAllow := false
+	endpoint := model.Endpoint{
+		ID:             "pod-a",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"default-allow", "default-deny"},
+	}
+	groups := map[string]model.SecurityGroup{
+		"default-allow": {
+			Name:               "default-allow",
+			VPC:                "prod",
+			DefaultDenyIngress: &defaultAllow,
+			DefaultDenyEgress:  &defaultAllow,
+		},
+		"default-deny": {
+			Name: "default-deny",
+			VPC:  "prod",
+		},
+	}
+
+	program, err := CompileForEndpoint(endpoint, groups)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range program.MapEntries {
+		if strings.HasPrefix(entry.RuleID, "netloom-default-allow-") {
+			t.Fatalf("mixed default-deny groups must not install wildcard allow: %+v", entry)
+		}
+	}
+}
+
 func TestCompileForEndpointSortsSecurityGroupTierBeforeRulePriority(t *testing.T) {
 	endpoint := model.Endpoint{
 		ID:             "pod-a",

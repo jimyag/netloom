@@ -132,6 +132,70 @@ func TestPolicyBackendReplacesEndpointEntries(t *testing.T) {
 	}
 }
 
+func TestCiliumStyleDefaultAllowModeLeavesExplicitDenyEnforced(t *testing.T) {
+	defaultAllow := false
+	endpoint := model.Endpoint{
+		ID:             "pod-a",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"web"},
+	}
+	program, err := policy.CompileForEndpoint(endpoint, map[string]model.SecurityGroup{
+		"web": {
+			Name:               "web",
+			VPC:                "prod",
+			DefaultDenyEgress:  &defaultAllow,
+			DefaultDenyIngress: &defaultAllow,
+			Rules: []model.SecurityGroupRule{{
+				ID:         "deny-admin",
+				Priority:   100,
+				Direction:  model.DirectionEgress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("203.0.113.0/24"),
+				Ports:      []model.PortRange{{From: 8443, To: 8443}},
+				Action:     model.ActionDrop,
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := EncodeProgram(program)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	allow := Evaluate(entries, Packet{
+		RemoteIP:  netip.MustParseAddr("198.51.100.10"),
+		Direction: DirectionEgress,
+		Protocol:  6,
+		DestPort:  443,
+	})
+	if allow.Verdict != VerdictAllow {
+		t.Fatalf("default-allow unmatched verdict = %s, want allow", allow.Verdict)
+	}
+	deny := Evaluate(entries, Packet{
+		RemoteIP:  netip.MustParseAddr("203.0.113.20"),
+		Direction: DirectionEgress,
+		Protocol:  6,
+		DestPort:  8443,
+	})
+	if deny.Verdict != VerdictDrop || deny.Match == nil || deny.Match.Value.Deny == 0 {
+		t.Fatalf("explicit deny decision = %+v, want policy drop", deny)
+	}
+	ingress := Evaluate(entries, Packet{
+		RemoteIP:  netip.MustParseAddr("198.51.100.20"),
+		Direction: DirectionIngress,
+		Protocol:  17,
+		DestPort:  53,
+	})
+	if ingress.Verdict != VerdictAllow {
+		t.Fatalf("ingress default-allow verdict = %s, want allow", ingress.Verdict)
+	}
+}
+
 func TestPolicyBackendHonorsSecurityGroupTierPrecedence(t *testing.T) {
 	endpoint := model.Endpoint{
 		ID:             "pod-a",
