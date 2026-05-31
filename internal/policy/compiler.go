@@ -479,6 +479,9 @@ func expandServiceRule(base Rule, services map[string]model.LoadBalancer) ([]Rul
 	out := make([]Rule, 0, len(service.Frontends()))
 	seen := make(map[string]struct{})
 	for _, frontend := range service.Frontends() {
+		if base.Protocol != "" && base.Protocol != model.ProtocolAny && base.Protocol != frontend.Protocol {
+			continue
+		}
 		expanded := base
 		bits := 128
 		if frontend.VIP.Is4() {

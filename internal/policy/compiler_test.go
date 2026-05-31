@@ -911,6 +911,53 @@ func TestCompileForEndpointWithContextExpandsMultiPortRemoteService(t *testing.T
 	}
 }
 
+func TestCompileForEndpointWithContextRemoteServiceHonorsExplicitProtocol(t *testing.T) {
+	endpoint := model.Endpoint{
+		ID:             "pod-client",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"client"},
+	}
+	program, err := CompileForEndpointWithContext(endpoint, map[string]model.SecurityGroup{
+		"client": {
+			Name: "client",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:            "egress-web-service",
+				Priority:      100,
+				Direction:     model.DirectionEgress,
+				Protocol:      model.ProtocolTCP,
+				RemoteService: "web",
+				Action:        model.ActionAllow,
+			}},
+		},
+	}, CompileContext{Services: []model.LoadBalancer{{
+		Name: "web",
+		VPC:  "prod",
+		VIP:  netip.MustParseAddr("10.96.0.10"),
+		Ports: []model.LoadBalancerPort{
+			{Port: 443, Protocol: model.ProtocolTCP, Backends: []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.20"), Port: 8443}}},
+			{Port: 53, Protocol: model.ProtocolUDP, Backends: []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.21"), Port: 53}}},
+		},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(program.Rules) != 1 || len(program.MapEntries) != 1 {
+		t.Fatalf("program rules=%d entries=%d, want only matching tcp frontend", len(program.Rules), len(program.MapEntries))
+	}
+	rule := program.Rules[0]
+	if rule.Protocol != model.ProtocolTCP || len(rule.Ports) != 1 || rule.Ports[0].From != 443 {
+		t.Fatalf("service rule = %+v, want tcp frontend port 443 only", rule)
+	}
+	entry := program.MapEntries[0]
+	if entry.Key.Protocol != model.ProtocolTCP || entry.Key.DestPort != 443 {
+		t.Fatalf("service entry key = %+v, want tcp/443 only", entry.Key)
+	}
+}
+
 func TestCompileForEndpointWithContextRejectsUnknownRemoteService(t *testing.T) {
 	endpoint := model.Endpoint{
 		ID:             "pod-client",
