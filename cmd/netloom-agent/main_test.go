@@ -140,3 +140,27 @@ func TestWithDNSObservationsMergesObservedRecords(t *testing.T) {
 		t.Fatalf("policy entries = %+v, want observed FQDN CIDR", entries)
 	}
 }
+
+func TestWithDNSObservationsPrunesExpiredRecords(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "dns-observations.json")
+	if err := os.WriteFile(path, []byte(`{"dns_records": [
+		{"name": "expired.example.com", "ips": ["203.0.113.10"], "ttl_seconds": 30, "observed_at": "2026-05-30T11:59:30Z"},
+		{"name": "active.example.com", "ips": ["203.0.113.20"], "ttl_seconds": 31, "observed_at": "2026-05-30T11:59:30Z"},
+		{"name": "static.example.com", "ips": ["203.0.113.30"]}
+	]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NETLOOM_DNS_OBSERVATIONS_FILE", path)
+	now := time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)
+
+	state, err := withDNSObservationsAt(control.DesiredState{}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.DNSRecords) != 2 {
+		t.Fatalf("dns records = %d, want 2: %+v", len(state.DNSRecords), state.DNSRecords)
+	}
+	if state.DNSRecords[0].Name != "active.example.com" || state.DNSRecords[1].Name != "static.example.com" {
+		t.Fatalf("dns records = %+v", state.DNSRecords)
+	}
+}

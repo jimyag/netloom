@@ -134,6 +134,10 @@ func reconcileStateFileOnce(ctx context.Context, path, node, storeName string, s
 }
 
 func withDNSObservations(state control.DesiredState) (control.DesiredState, error) {
+	return withDNSObservationsAt(state, time.Now().UTC())
+}
+
+func withDNSObservationsAt(state control.DesiredState, now time.Time) (control.DesiredState, error) {
 	path := os.Getenv("NETLOOM_DNS_OBSERVATIONS_FILE")
 	if path == "" {
 		return state, nil
@@ -148,6 +152,10 @@ func withDNSObservations(state control.DesiredState) (control.DesiredState, erro
 		return control.DesiredState{}, err
 	}
 	merged, err := control.MergeDNSRecords(state.DNSRecords, records)
+	if err != nil {
+		return control.DesiredState{}, err
+	}
+	merged, err = control.PruneExpiredDNSRecords(merged, now)
 	if err != nil {
 		return control.DesiredState{}, err
 	}
