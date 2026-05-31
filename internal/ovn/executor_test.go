@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jimyag/netloom/internal/control"
 	"github.com/jimyag/netloom/internal/model"
@@ -635,6 +636,29 @@ esac
 	}
 	if !strings.Contains(calls[4], "lsp-del\nnl_lp_pod-a") {
 		t.Fatalf("final call should delete logical switch port:\n%s", calls[4])
+	}
+}
+
+func TestNBCTLExecutorAppliesDefaultCommandTimeout(t *testing.T) {
+	dir := t.TempDir()
+	binary := filepath.Join(dir, "ovn-nbctl")
+	script := "#!/bin/sh\nexec sleep 1\n"
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	executor := ovn.NewNBCTLExecutor(binary)
+	executor.Timeout = 20 * time.Millisecond
+	start := time.Now()
+	err := executor.Execute(context.Background(), []ovn.Operation{{Command: "show"}})
+	if err == nil {
+		t.Fatal("expected nbctl timeout")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error = %v, want context deadline exceeded", err)
+	}
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("timeout took %s, want command to be canceled promptly", elapsed)
 	}
 }
 

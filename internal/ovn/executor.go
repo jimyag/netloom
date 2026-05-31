@@ -7,7 +7,10 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 )
+
+const DefaultNBCTLTimeout = 30 * time.Second
 
 type Executor interface {
 	Execute(context.Context, []Operation) error
@@ -39,13 +42,14 @@ type NBCTLExecutor struct {
 	Binary      string
 	BaseArgs    []string
 	Transaction bool
+	Timeout     time.Duration
 }
 
 func NewNBCTLExecutor(binary string, baseArgs ...string) *NBCTLExecutor {
 	if binary == "" {
 		binary = "ovn-nbctl"
 	}
-	return &NBCTLExecutor{Binary: binary, BaseArgs: append([]string(nil), baseArgs...), Transaction: true}
+	return &NBCTLExecutor{Binary: binary, BaseArgs: append([]string(nil), baseArgs...), Transaction: true, Timeout: DefaultNBCTLTimeout}
 }
 
 func (e *NBCTLExecutor) Execute(ctx context.Context, ops []Operation) error {
@@ -66,11 +70,8 @@ func (e *NBCTLExecutor) Execute(ctx context.Context, ops []Operation) error {
 		args = append(args, op.Flags...)
 		args = append(args, op.Command)
 		args = append(args, op.Args...)
-		cmd := exec.CommandContext(ctx, e.Binary, args...)
-		var stderr bytes.Buffer
-		cmd.Stderr = &stderr
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("%s %v failed: %w: %s", e.Binary, args, err, stderr.String())
+		if err := e.runCommand(ctx, args); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -115,13 +116,7 @@ func (e *NBCTLExecutor) executeTransactionBatch(ctx context.Context, ops []Opera
 		args = append(args, op.Command)
 		args = append(args, op.Args...)
 	}
-	cmd := exec.CommandContext(ctx, e.Binary, args...)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("%s %v failed: %w: %s", e.Binary, args, err, stderr.String())
-	}
-	return nil
+	return e.runCommand(ctx, args)
 }
 
 func nextTransactionBatchEnd(ops []Operation) int {
@@ -178,24 +173,61 @@ func (e *NBCTLExecutor) destroyMatchingRecords(ctx context.Context, table string
 	args := append([]string(nil), e.BaseArgs...)
 	args = append(args, "--bare", "--columns=_uuid", "find", table)
 	args = append(args, matches...)
-	cmd := exec.CommandContext(ctx, e.Binary, args...)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	output, err := cmd.Output()
+	output, err := e.outputCommand(ctx, args)
 	if err != nil {
-		return fmt.Errorf("%s %v failed: %w: %s", e.Binary, args, err, stderr.String())
+		return err
 	}
 	for _, uuid := range strings.Fields(string(output)) {
 		destroyArgs := append([]string(nil), e.BaseArgs...)
 		destroyArgs = append(destroyArgs, "--if-exists", "destroy", table, uuid)
-		destroyCmd := exec.CommandContext(ctx, e.Binary, destroyArgs...)
-		stderr.Reset()
-		destroyCmd.Stderr = &stderr
-		if err := destroyCmd.Run(); err != nil {
-			return fmt.Errorf("%s %v failed: %w: %s", e.Binary, destroyArgs, err, stderr.String())
+		if err := e.runCommand(ctx, destroyArgs); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+func (e *NBCTLExecutor) runCommand(ctx context.Context, args []string) error {
+	cmdCtx, cancel := e.commandContext(ctx)
+	defer cancel()
+
+	cmd := exec.CommandContext(cmdCtx, e.Binary, args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if cmdCtx.Err() != nil {
+			return fmt.Errorf("%s %v timed out or was canceled: %w", e.Binary, args, cmdCtx.Err())
+		}
+		return fmt.Errorf("%s %v failed: %w: %s", e.Binary, args, err, stderr.String())
+	}
+	return nil
+}
+
+func (e *NBCTLExecutor) outputCommand(ctx context.Context, args []string) ([]byte, error) {
+	cmdCtx, cancel := e.commandContext(ctx)
+	defer cancel()
+
+	cmd := exec.CommandContext(cmdCtx, e.Binary, args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	output, err := cmd.Output()
+	if err != nil {
+		if cmdCtx.Err() != nil {
+			return nil, fmt.Errorf("%s %v timed out or was canceled: %w", e.Binary, args, cmdCtx.Err())
+		}
+		return nil, fmt.Errorf("%s %v failed: %w: %s", e.Binary, args, err, stderr.String())
+	}
+	return output, nil
+}
+
+func (e *NBCTLExecutor) commandContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if e.Timeout <= 0 {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, e.Timeout)
 }
 
 func validateOperation(op Operation) error {

@@ -29,6 +29,25 @@ func TestReconcileIntervalRejectsInvalidValue(t *testing.T) {
 	}
 }
 
+func TestNBCTLTimeoutParsesMilliseconds(t *testing.T) {
+	t.Setenv("NETLOOM_OVN_NBCTL_TIMEOUT_MS", "250")
+	timeout, err := nbctlTimeout()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if timeout != 250*time.Millisecond {
+		t.Fatalf("timeout = %s, want 250ms", timeout)
+	}
+}
+
+func TestNBCTLTimeoutRejectsInvalidValue(t *testing.T) {
+	t.Setenv("NETLOOM_OVN_NBCTL_TIMEOUT_MS", "slow")
+	_, err := nbctlTimeout()
+	if err == nil {
+		t.Fatal("expected invalid nbctl timeout to fail")
+	}
+}
+
 func TestApplyLoadBalancerHealthChecksDisabledByDefault(t *testing.T) {
 	state := control.DesiredState{LoadBalancers: []model.LoadBalancer{{
 		Name:        "web",

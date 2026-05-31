@@ -224,6 +224,8 @@ agent 以 `NETLOOM_STATE_FILE` 运行时可额外设置 `NETLOOM_DNS_OBSERVATION
 
 controller 以 `NETLOOM_STATE_FILE` 运行时可额外设置 `NETLOOM_LB_HEALTH_PROBE=1`，对开启 `health_check.enabled` 的 TCP LoadBalancer backend 做主动 TCP 探测，并在本轮 reconcile 前把失败 backend 标记为 unhealthy；显式 `healthy=false` 的 backend 视为人工摘除，不会被探测恢复。
 
+controller 使用真实 OVN backend 时会给每次 `ovn-nbctl` 调用设置默认 30 秒超时，避免 OVN NB 卡住时阻塞 reconcile；可通过 `NETLOOM_OVN_NBCTL_TIMEOUT_MS` 调整，设置为 `0` 表示只继承外部 context。
+
 ## 参与贡献
 
 参见 [CONTRIBUTING.md](CONTRIBUTING.md)。

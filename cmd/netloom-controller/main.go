@@ -23,7 +23,11 @@ func main() {
 
 	result, err := control.RunSelfTest(ctx)
 	if db := os.Getenv("NETLOOM_OVN_NBCTL_DB"); db != "" {
-		result, err = control.RunOVNSelfTest(ctx, ovn.NewNBCTLExecutor("ovn-nbctl", "--db="+db))
+		executor, executorErr := newNBCTLExecutorFromEnv(db)
+		if executorErr != nil {
+			log.Fatal(executorErr)
+		}
+		result, err = control.RunOVNSelfTest(ctx, executor)
 	}
 	if err != nil {
 		log.Fatal(err)
@@ -36,7 +40,10 @@ func runStateFile(ctx context.Context, path string) error {
 	if err != nil {
 		return err
 	}
-	reconciler := newStateFileReconciler()
+	reconciler, err := newStateFileReconciler()
+	if err != nil {
+		return err
+	}
 	reconcile := func() error {
 		return reconciler.reconcile(ctx, path)
 	}
@@ -64,11 +71,15 @@ type stateFileReconciler struct {
 	controller *control.Controller
 }
 
-func newStateFileReconciler() *stateFileReconciler {
+func newStateFileReconciler() (*stateFileReconciler, error) {
 	memory := control.NewMemoryBackend()
 	var executor ovn.Executor = ovn.NewRecorderExecutor()
 	if db := os.Getenv("NETLOOM_OVN_NBCTL_DB"); db != "" {
-		executor = ovn.NewNBCTLExecutor("ovn-nbctl", "--db="+db)
+		nbctl, err := newNBCTLExecutorFromEnv(db)
+		if err != nil {
+			return nil, err
+		}
+		executor = nbctl
 	}
 	ovnBackend := ovn.NewBackend(executor)
 	return &stateFileReconciler{
@@ -76,7 +87,7 @@ func newStateFileReconciler() *stateFileReconciler {
 		executor:   executor,
 		ovnBackend: ovnBackend,
 		controller: control.NewController(control.MultiTopologyBackend{memory, ovnBackend}, memory),
-	}
+	}, nil
 }
 
 func (r *stateFileReconciler) reconcile(ctx context.Context, path string) error {
@@ -151,6 +162,31 @@ func reconcileInterval() (time.Duration, error) {
 	ms, err := strconv.Atoi(raw)
 	if err != nil {
 		return 0, fmt.Errorf("invalid NETLOOM_RECONCILE_INTERVAL_MS: %w", err)
+	}
+	if ms <= 0 {
+		return 0, nil
+	}
+	return time.Duration(ms) * time.Millisecond, nil
+}
+
+func newNBCTLExecutorFromEnv(db string) (*ovn.NBCTLExecutor, error) {
+	executor := ovn.NewNBCTLExecutor("ovn-nbctl", "--db="+db)
+	timeout, err := nbctlTimeout()
+	if err != nil {
+		return nil, err
+	}
+	executor.Timeout = timeout
+	return executor, nil
+}
+
+func nbctlTimeout() (time.Duration, error) {
+	raw := os.Getenv("NETLOOM_OVN_NBCTL_TIMEOUT_MS")
+	if raw == "" {
+		return ovn.DefaultNBCTLTimeout, nil
+	}
+	ms, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("invalid NETLOOM_OVN_NBCTL_TIMEOUT_MS: %w", err)
 	}
 	if ms <= 0 {
 		return 0, nil
