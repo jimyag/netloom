@@ -879,6 +879,12 @@ func TestPlannerCleanupDeletesDNATSNATRule(t *testing.T) {
 	controller := control.NewController(backend, control.NewMemoryBackend())
 	first := control.DesiredState{
 		VPCs: []model.VPC{{Name: "prod"}},
+		Subnets: []model.Subnet{{
+			Name:    "apps",
+			VPC:     "prod",
+			CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway: netip.MustParseAddr("10.10.0.1"),
+		}},
 		NATRules: []model.NATRule{{
 			Name:       "fip",
 			VPC:        "prod",

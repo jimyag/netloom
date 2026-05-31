@@ -378,6 +378,13 @@ func validateObjectGraph(state DesiredState) error {
 				return fmt.Errorf("load balancer %q references subnet %q in vpc %q, want %q", lb.Name, subnetName, subnet.VPC, lb.VPC)
 			}
 		}
+		for _, frontend := range lb.Frontends() {
+			for _, backend := range frontend.Backends {
+				if err := validateAddressInVPCSubnets(subnets, lb.VPC, backend.IP, fmt.Sprintf("load balancer %q backend %s", lb.Name, netip.AddrPortFrom(backend.IP, backend.Port))); err != nil {
+					return err
+				}
+			}
+		}
 		loadBalancers[lb.Name] = lb
 	}
 	for _, group := range state.CIDRGroups {
@@ -501,12 +508,8 @@ func validateObjectGraph(state DesiredState) error {
 		if _, ok := vpcs[gateway.VPC]; !ok {
 			return fmt.Errorf("gateway %q references unknown vpc %q", gateway.Name, gateway.VPC)
 		}
-		subnet, ok := subnetContainingAddress(subnets, gateway.VPC, gateway.LANIP)
-		if !ok {
-			return fmt.Errorf("gateway %q lan ip %s is outside vpc %q subnets", gateway.Name, gateway.LANIP, gateway.VPC)
-		}
-		if subnet.Excludes(gateway.LANIP) {
-			return fmt.Errorf("gateway %q lan ip %s is excluded by subnet %q", gateway.Name, gateway.LANIP, subnet.Name)
+		if err := validateAddressInVPCSubnets(subnets, gateway.VPC, gateway.LANIP, fmt.Sprintf("gateway %q lan ip %s", gateway.Name, gateway.LANIP)); err != nil {
+			return err
 		}
 		gateways[gateway.Name] = struct{}{}
 	}
@@ -534,11 +537,27 @@ func validateObjectGraph(state DesiredState) error {
 		if _, ok := vpcs[rule.VPC]; !ok {
 			return fmt.Errorf("nat rule %q references unknown vpc %q", rule.Name, rule.VPC)
 		}
+		if rule.Type == model.ActionDNAT || rule.Type == model.ActionDNATSNAT {
+			if err := validateAddressInVPCSubnets(subnets, rule.VPC, rule.TargetIP, fmt.Sprintf("nat rule %q target ip %s", rule.Name, rule.TargetIP)); err != nil {
+				return err
+			}
+		}
 	}
 	for _, record := range state.DNSRecords {
 		if err := record.Validate(); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func validateAddressInVPCSubnets(subnets map[string]model.Subnet, vpc string, addr netip.Addr, subject string) error {
+	subnet, ok := subnetContainingAddress(subnets, vpc, addr)
+	if !ok {
+		return fmt.Errorf("%s is outside vpc %q subnets", subject, vpc)
+	}
+	if subnet.Excludes(addr) {
+		return fmt.Errorf("%s is excluded by subnet %q", subject, subnet.Name)
 	}
 	return nil
 }

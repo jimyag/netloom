@@ -192,6 +192,12 @@ func TestControllerRejectsConflictingNATRules(t *testing.T) {
 func TestControllerRejectsConflictingLoadBalancers(t *testing.T) {
 	baseState := DesiredState{
 		VPCs: []model.VPC{{Name: "prod"}},
+		Subnets: []model.Subnet{{
+			Name:    "apps",
+			VPC:     "prod",
+			CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway: netip.MustParseAddr("10.10.0.1"),
+		}},
 	}
 	tests := []struct {
 		name          string
@@ -456,6 +462,7 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 				})
 				state.LoadBalancers[0].VPC = "other"
 				state.LoadBalancers[0].Subnets = []string{"other-apps"}
+				state.LoadBalancers[0].Ports[0].Backends[0].IP = netip.MustParseAddr("10.20.0.10")
 				state.SecurityGroups[0].Rules[0].RemoteCIDR = netip.Prefix{}
 				state.SecurityGroups[0].Rules[0].Direction = model.DirectionEgress
 				state.SecurityGroups[0].Rules[0].RemoteService = "web"
@@ -591,6 +598,20 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 			wantErr: "references subnet \"other-apps\" in vpc \"other\"",
 		},
 		{
+			name: "load balancer backend outside subnet",
+			mutate: func(state *DesiredState) {
+				state.LoadBalancers[0].Ports[0].Backends[0].IP = netip.MustParseAddr("10.20.0.10")
+			},
+			wantErr: "load balancer \"web\" backend 10.20.0.10:8080 is outside vpc \"prod\" subnets",
+		},
+		{
+			name: "load balancer backend excluded by subnet",
+			mutate: func(state *DesiredState) {
+				state.Subnets[0].ExcludeCIDRs = []netip.Prefix{netip.MustParsePrefix("10.10.0.8/29")}
+			},
+			wantErr: "load balancer \"web\" backend 10.10.0.10:8080 is excluded by subnet \"apps\"",
+		},
+		{
 			name: "route table unknown vpc",
 			mutate: func(state *DesiredState) {
 				state.RouteTables = []model.RouteTable{{
@@ -629,6 +650,34 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 				}}
 			},
 			wantErr: "nat rule \"egress\" references unknown vpc",
+		},
+		{
+			name: "dnat target outside subnet",
+			mutate: func(state *DesiredState) {
+				state.NATRules = []model.NATRule{{
+					Name:       "web-dnat",
+					VPC:        "prod",
+					Type:       model.ActionDNAT,
+					ExternalIP: netip.MustParseAddr("198.51.100.20"),
+					TargetIP:   netip.MustParseAddr("10.20.0.10"),
+				}}
+			},
+			wantErr: "nat rule \"web-dnat\" target ip 10.20.0.10 is outside vpc \"prod\" subnets",
+		},
+		{
+			name: "floating ip target excluded by subnet",
+			mutate: func(state *DesiredState) {
+				state.Subnets[0].ExcludeCIDRs = []netip.Prefix{netip.MustParsePrefix("10.10.0.12/32")}
+				state.LoadBalancers[0].Ports[0].Backends[0].IP = netip.MustParseAddr("10.10.0.20")
+				state.NATRules = []model.NATRule{{
+					Name:       "web-fip",
+					VPC:        "prod",
+					Type:       model.ActionDNATSNAT,
+					ExternalIP: netip.MustParseAddr("198.51.100.30"),
+					TargetIP:   netip.MustParseAddr("10.10.0.12"),
+				}}
+			},
+			wantErr: "nat rule \"web-fip\" target ip 10.10.0.12 is excluded by subnet \"apps\"",
 		},
 		{
 			name: "load balancer unknown vpc",
