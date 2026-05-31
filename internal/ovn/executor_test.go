@@ -204,6 +204,33 @@ func TestBackendCleanupRemovesStaleLoadBalancerProtocolRows(t *testing.T) {
 	}
 }
 
+func TestBackendCleanupFailureDoesNotAdvanceSnapshot(t *testing.T) {
+	executor := &failOnCommandExecutor{command: "lr-lb-del", fail: true}
+	backend := ovn.NewBackend(executor)
+	first := controlStateWithEndpoint("pod-a")
+	controller := control.NewController(backend, control.NewMemoryBackend())
+	if err := controller.Reconcile(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+
+	second := first
+	second.LoadBalancers = nil
+	if err := controller.Reconcile(context.Background(), second); err == nil {
+		t.Fatal("expected cleanup failure")
+	}
+	if got := executor.Count("lr-lb-del", "nl_lr_prod", "nl_lb_web_tcp"); got != 1 {
+		t.Fatalf("failed cleanup lr-lb-del count = %d, want 1", got)
+	}
+
+	executor.fail = false
+	if err := controller.Reconcile(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+	if got := executor.Count("lr-lb-del", "nl_lr_prod", "nl_lb_web_tcp"); got != 2 {
+		t.Fatalf("cleanup retry lr-lb-del count = %d, want failed attempt plus retry", got)
+	}
+}
+
 func TestBackendCleanupDoesNotReapplyUnchangedLoadBalancer(t *testing.T) {
 	recorder := ovn.NewRecorderExecutor()
 	backend := ovn.NewBackend(recorder)
@@ -1206,6 +1233,60 @@ type failingExecutor struct{}
 
 func (failingExecutor) Execute(context.Context, []ovn.Operation) error {
 	return errors.New("boom")
+}
+
+type failOnCommandExecutor struct {
+	command string
+	fail    bool
+	ops     []ovn.Operation
+}
+
+func (e *failOnCommandExecutor) Execute(_ context.Context, ops []ovn.Operation) error {
+	e.ops = append(e.ops, cloneTestOperations(ops)...)
+	if !e.fail {
+		return nil
+	}
+	for _, op := range ops {
+		if op.Command == e.command {
+			return errors.New("boom")
+		}
+	}
+	return nil
+}
+
+func (e *failOnCommandExecutor) Count(command string, args ...string) int {
+	count := 0
+	for _, op := range e.ops {
+		if op.Command != command {
+			continue
+		}
+		if len(args) > len(op.Args) {
+			continue
+		}
+		matched := true
+		for i, arg := range args {
+			if op.Args[i] != arg {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			count++
+		}
+	}
+	return count
+}
+
+func cloneTestOperations(ops []ovn.Operation) []ovn.Operation {
+	cloned := make([]ovn.Operation, len(ops))
+	for i, op := range ops {
+		cloned[i] = ovn.Operation{
+			Command: op.Command,
+			Flags:   append([]string(nil), op.Flags...),
+			Args:    append([]string(nil), op.Args...),
+		}
+	}
+	return cloned
 }
 
 func controlStateWithEndpoint(endpointID string) control.DesiredState {

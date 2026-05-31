@@ -91,25 +91,26 @@ func (b *Backend) CleanupTopology(ctx context.Context, state topology.State) err
 	if !b.seen {
 		ops = append([]Operation{gcStaleNATRulesOperation(next.NATRules)}, ops...)
 	}
-	b.skipNAT = unchangedNATRules(b.last, next)
-	b.skipLB = unchangedLoadBalancers(b.last, next)
-	b.skipPR = unchangedPolicyRoutes(b.last, next)
+	skipNAT := unchangedNATRules(b.last, next)
+	skipLB := unchangedLoadBalancers(b.last, next)
+	skipPR := unchangedPolicyRoutes(b.last, next)
+
+	if len(ops) > 0 {
+		if b.executor == nil {
+			b.planner.Append(ops...)
+		} else {
+			if err := b.executor.Execute(ctx, ops); err != nil {
+				return err
+			}
+			b.recordOperationsLocked(ops)
+		}
+	}
+	b.skipNAT = skipNAT
+	b.skipLB = skipLB
+	b.skipPR = skipPR
 	b.last = next
 	b.seen = true
 	b.planner.SyncLoadBalancerHealthChecks(next.LoadBalancers)
-
-	if len(ops) == 0 {
-		return nil
-	}
-	b.planner.Append(ops...)
-	if b.executor == nil {
-		return nil
-	}
-	if err := b.executor.Execute(ctx, ops); err != nil {
-		return err
-	}
-	b.recordOperationsLocked(ops)
-	b.planner.DiscardOperations(len(b.planner.Operations()))
 	return nil
 }
 
