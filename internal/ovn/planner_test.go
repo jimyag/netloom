@@ -233,8 +233,43 @@ func TestPlannerClearsEndpointDHCPWhenSubnetDHCPDisabled(t *testing.T) {
 	if !strings.Contains(joined, "lsp-set-dhcpv6-options nl_lp_pod-a") {
 		t.Fatalf("endpoint DHCPv6 clear operation missing:\n%s", joined)
 	}
+	if !strings.Contains(joined, "gc-dhcp-options pod-a") {
+		t.Fatalf("disabled DHCP should GC stale endpoint DHCP options:\n%s", joined)
+	}
 	if strings.Contains(joined, "create DHCP_Options") || strings.Contains(joined, "dhcpv4_options=@") || strings.Contains(joined, "dhcpv6_options=@") {
 		t.Fatalf("disabled DHCP should not create or bind DHCP options:\n%s", joined)
+	}
+}
+
+func TestPlannerGCDHCPOptionsBeforeRecreate(t *testing.T) {
+	planner := ovn.NewPlanner()
+	if err := planner.EnsureSubnet(context.Background(), model.Subnet{
+		Name:    "apps",
+		VPC:     "prod",
+		CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+		Gateway: netip.MustParseAddr("10.10.0.1"),
+		DHCP:    model.DHCPOptions{Enabled: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := planner.EnsureEndpoint(context.Background(), model.Endpoint{
+		ID:     "pod-a",
+		VPC:    "prod",
+		Subnet: "apps",
+		IP:     netip.MustParseAddr("10.10.0.10"),
+		Node:   "node-a",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	joined := stringify(planner.Operations())
+	gc := strings.Index(joined, "gc-dhcp-options pod-a")
+	create := strings.Index(joined, "create DHCP_Options")
+	if gc < 0 || create < 0 {
+		t.Fatalf("expected DHCP GC and recreate operations:\n%s", joined)
+	}
+	if gc > create {
+		t.Fatalf("DHCP GC must run before recreating endpoint DHCP options:\n%s", joined)
 	}
 }
 

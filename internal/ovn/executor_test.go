@@ -102,6 +102,8 @@ func TestBackendCleanupEmitsDeletesForStaleDesiredObjects(t *testing.T) {
 
 	joined := stringifyOVNOps(recorder.Operations())
 	for _, expected := range []string{
+		"lsp-set-dhcpv4-options nl_lp_pod-a",
+		"lsp-set-dhcpv6-options nl_lp_pod-a",
 		"gc-dhcp-options pod-a",
 		"--if-exists lsp-del nl_lp_pod-a",
 		"--if-exists lr-nat-del nl_lr_prod snat 10.10.0.0/24",
@@ -113,6 +115,12 @@ func TestBackendCleanupEmitsDeletesForStaleDesiredObjects(t *testing.T) {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("cleanup operations missing %q:\n%s", expected, joined)
 		}
+	}
+	clear := strings.Index(joined, "lsp-set-dhcpv4-options nl_lp_pod-a")
+	gc := strings.Index(joined, "gc-dhcp-options pod-a")
+	del := strings.Index(joined, "--if-exists lsp-del nl_lp_pod-a")
+	if clear < 0 || gc < 0 || del < 0 || !(clear < gc && gc < del) {
+		t.Fatalf("endpoint DHCP cleanup should clear references, GC options, then delete port:\n%s", joined)
 	}
 }
 

@@ -107,19 +107,23 @@ func (p *Planner) EnsureEndpoint(_ context.Context, endpoint model.Endpoint) err
 		Operation{Command: "lsp-set-dhcpv4-options", Args: []string{port}},
 		Operation{Command: "lsp-set-dhcpv6-options", Args: []string{port}},
 	)
+	subnet, hasSubnet := p.subnets[endpoint.Subnet]
+	if hasSubnet {
+		p.ops = append(p.ops, gcDHCPOptionsOperation(endpoint.ID))
+	}
 	if endpoint.NormalizedMAC() != "" {
 		p.ops = append(p.ops, Operation{Command: "lsp-set-port-security", Args: []string{port, endpointAddress(endpoint)}})
 	} else {
 		p.ops = append(p.ops, Operation{Command: "lsp-set-port-security", Args: []string{port}})
 	}
-	if subnet, ok := p.subnets[endpoint.Subnet]; ok && subnet.DHCP.Enabled && endpoint.IP.Is4() {
+	if hasSubnet && subnet.DHCP.Enabled && endpoint.IP.Is4() {
 		dhcpID := dhcpOptionsUUID(endpoint, 4)
 		p.ops = append(p.ops,
 			Operation{Command: "create", Flags: []string{"--id=" + dhcpID}, Args: dhcpv4OptionsArgs(subnet, endpoint)},
 			Operation{Command: "set", Args: []string{"logical_switch_port", port, "dhcpv4_options=" + dhcpID}},
 		)
 	}
-	if subnet, ok := p.subnets[endpoint.Subnet]; ok && subnet.DHCP.Enabled && endpoint.IP.Is6() {
+	if hasSubnet && subnet.DHCP.Enabled && endpoint.IP.Is6() {
 		dhcpID := dhcpOptionsUUID(endpoint, 6)
 		p.ops = append(p.ops,
 			Operation{Command: "create", Flags: []string{"--id=" + dhcpID}, Args: dhcpv6OptionsArgs(subnet, endpoint)},

@@ -118,10 +118,15 @@ func cloneSnapshotLoadBalancer(lb model.LoadBalancer) model.LoadBalancer {
 func cleanupOperations(old, next desiredSnapshot) []Operation {
 	var ops []Operation
 	for _, key := range staleKeys(old.Endpoints, next.Endpoints) {
+		port := logicalPort(key)
 		if subnet, ok := old.Subnets[old.Endpoints[key].Subnet]; ok && subnet.DHCP.Enabled {
+			ops = append(ops,
+				Operation{Command: "lsp-set-dhcpv4-options", Args: []string{port}},
+				Operation{Command: "lsp-set-dhcpv6-options", Args: []string{port}},
+			)
 			ops = append(ops, gcDHCPOptionsOperation(key))
 		}
-		ops = append(ops, Operation{Command: "lsp-del", Flags: []string{"--if-exists"}, Args: []string{logicalPort(key)}})
+		ops = append(ops, Operation{Command: "lsp-del", Flags: []string{"--if-exists"}, Args: []string{port}})
 	}
 	for _, key := range staleKeys(old.Subnets, next.Subnets) {
 		subnet := old.Subnets[key]
