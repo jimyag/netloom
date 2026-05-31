@@ -363,9 +363,15 @@ func TestBackendCleanupDoesNotRecreateUnchangedTranslatedDNATRule(t *testing.T) 
 	}
 
 	joined := stringifyOVNOps(recorder.Operations())
+	if !strings.Contains(joined, "gc-nat-rule web-translate\n--id=@nl_nat_web_htranslate create NAT") {
+		t.Fatalf("translated dnat should GC existing managed NAT before create:\n%s", joined)
+	}
 	expected := "--id=@nl_nat_web_htranslate create NAT type=dnat external_ip=198.51.100.80 logical_ip=10.10.0.10 external_port_range=8443 logical_port_range=443 protocol=tcp"
 	if got := strings.Count(joined, expected); got != 1 {
 		t.Fatalf("unchanged translated dnat create count = %d, want one initial create:\n%s", got, joined)
+	}
+	if got := strings.Count(joined, "gc-nat-rule web-translate"); got != 1 {
+		t.Fatalf("unchanged translated dnat GC count = %d, want one initial GC before create:\n%s", got, joined)
 	}
 	if strings.Contains(joined, "lr-nat-del") {
 		t.Fatalf("unchanged translated dnat should not be deleted:\n%s", joined)
@@ -407,8 +413,8 @@ func TestBackendCleanupReplacesChangedTranslatedDNATRule(t *testing.T) {
 			t.Fatalf("changed translated dnat operation missing %q:\n%s", expected, joined)
 		}
 	}
-	if got := strings.Count(joined, "gc-nat-rule web-translate"); got != 1 {
-		t.Fatalf("changed translated dnat GC count = %d, want one lifecycle cleanup:\n%s", got, joined)
+	if got := strings.Count(joined, "gc-nat-rule web-translate"); got != 3 {
+		t.Fatalf("changed translated dnat GC count = %d, want initial create, lifecycle cleanup, and replacement create GC:\n%s", got, joined)
 	}
 	if strings.Contains(joined, "lr-nat-del nl_lr_prod dnat 198.51.100.80") {
 		t.Fatalf("translated dnat cleanup must not delete all NAT entries for the external IP:\n%s", joined)
@@ -493,8 +499,8 @@ func TestBackendCleanupChangedPortDNATDoesNotDeleteSiblingExternalIPRules(t *tes
 	if strings.Contains(joined, "lr-nat-del nl_lr_prod dnat 198.51.100.80") {
 		t.Fatalf("changed port DNAT should not delete sibling DNAT rules sharing the external IP:\n%s", joined)
 	}
-	if got := strings.Count(joined, "gc-nat-rule web"); got != 1 {
-		t.Fatalf("changed port DNAT GC count = %d, want one targeted GC:\n%s", got, joined)
+	if got := strings.Count(joined, "gc-nat-rule web"); got != 3 {
+		t.Fatalf("changed port DNAT GC count = %d, want initial create, lifecycle cleanup, and replacement create GC:\n%s", got, joined)
 	}
 	if got := strings.Count(joined, "external_ids:netloom_nat=ssh"); got != 1 {
 		t.Fatalf("unchanged sibling DNAT should not be recreated or removed, create count = %d:\n%s", got, joined)

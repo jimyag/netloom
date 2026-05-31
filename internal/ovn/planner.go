@@ -219,6 +219,7 @@ func (p *Planner) EnsureNATRule(_ context.Context, rule model.NATRule) error {
 		if natUsesManagedRecord(rule) {
 			uuid := namedUUID("nl_nat_" + sanitize(rule.Name))
 			p.ops = append(p.ops,
+				Operation{Command: "gc-nat-rule", Args: []string{rule.Name}},
 				Operation{Command: "create", Flags: []string{"--id=" + uuid}, Args: natPortTranslationArgs(rule)},
 				Operation{Command: "add", Args: []string{"logical_router", router, "nat", uuid}},
 			)
