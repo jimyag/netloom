@@ -386,7 +386,7 @@ func IPv4L4ACLRulesFromProgram(program policy.Program) ([]IPv4L4ACLRule, error) 
 
 func IPv4L4ACLRulesFromProgramForDirection(program policy.Program, direction model.Direction) ([]IPv4L4ACLRule, error) {
 	rules := make([]IPv4L4ACLRule, 0, len(program.Rules))
-	seen := make(map[IPv4L4Key]struct{})
+	seen := make(map[IPv4L4Key]int32)
 	if err := appendIPv4L4ACLRulesFromProgram(&rules, seen, program, direction); err != nil {
 		return nil, err
 	}
@@ -402,7 +402,7 @@ func IPv4L4ACLRulesFromPrograms(programs []policy.Program) ([]IPv4L4ACLRule, err
 
 func IPv4L4ACLRulesFromProgramsForDirection(programs []policy.Program, direction model.Direction) ([]IPv4L4ACLRule, error) {
 	rules := make([]IPv4L4ACLRule, 0, len(programs))
-	seen := make(map[IPv4L4Key]struct{})
+	seen := make(map[IPv4L4Key]int32)
 	for _, program := range programs {
 		if err := appendIPv4L4ACLRulesFromProgram(&rules, seen, program, direction); err != nil {
 			return nil, err
@@ -420,7 +420,7 @@ func IPv6L4ACLRulesFromProgram(program policy.Program) ([]IPv6L4ACLRule, error) 
 
 func IPv6L4ACLRulesFromProgramForDirection(program policy.Program, direction model.Direction) ([]IPv6L4ACLRule, error) {
 	rules := make([]IPv6L4ACLRule, 0, len(program.Rules))
-	seen := make(map[IPv6L4Key]struct{})
+	seen := make(map[IPv6L4Key]int32)
 	if err := appendIPv6L4ACLRulesFromProgram(&rules, seen, program, direction); err != nil {
 		return nil, err
 	}
@@ -436,7 +436,7 @@ func IPv6L4ACLRulesFromPrograms(programs []policy.Program) ([]IPv6L4ACLRule, err
 
 func IPv6L4ACLRulesFromProgramsForDirection(programs []policy.Program, direction model.Direction) ([]IPv6L4ACLRule, error) {
 	rules := make([]IPv6L4ACLRule, 0, len(programs))
-	seen := make(map[IPv6L4Key]struct{})
+	seen := make(map[IPv6L4Key]int32)
 	for _, program := range programs {
 		if err := appendIPv6L4ACLRulesFromProgram(&rules, seen, program, direction); err != nil {
 			return nil, err
@@ -473,7 +473,7 @@ func ValidateL4ACLProgramSupport(program policy.Program) error {
 	return ValidateIPv6L4ACLProgramSupport(program)
 }
 
-func appendIPv4L4ACLRulesFromProgram(rules *[]IPv4L4ACLRule, seen map[IPv4L4Key]struct{}, program policy.Program, direction model.Direction) error {
+func appendIPv4L4ACLRulesFromProgram(rules *[]IPv4L4ACLRule, seen map[IPv4L4Key]int32, program policy.Program, direction model.Direction) error {
 	for _, rule := range program.Rules {
 		if rule.Direction != direction {
 			continue
@@ -505,10 +505,12 @@ func appendIPv4L4ACLRulesFromProgram(rules *[]IPv4L4ACLRule, seen map[IPv4L4Key]
 		if protocol == 1 && len(rule.Ports) == 0 {
 			icmpValue, icmpPrefixBits := icmpTCXMatch(rule)
 			key := ipv4L4RuleKey(sourceCIDR, protocol, icmpValue, icmpPrefixBits)
-			if _, ok := seen[key]; ok {
+			if duplicate, err := seenTCXActionConflict(seen, key, action); duplicate || err != nil {
+				if err != nil {
+					return fmt.Errorf("rule %s: %w", rule.ID, err)
+				}
 				continue
 			}
-			seen[key] = struct{}{}
 			*rules = append(*rules, IPv4L4ACLRule{
 				Source:             sourceCIDR.Addr(),
 				SourceCIDR:         sourceCIDR,
@@ -521,10 +523,12 @@ func appendIPv4L4ACLRulesFromProgram(rules *[]IPv4L4ACLRule, seen map[IPv4L4Key]
 		}
 		if len(rule.Ports) == 0 {
 			key := ipv4L4RuleKey(sourceCIDR, protocol, 0, 0)
-			if _, ok := seen[key]; ok {
+			if duplicate, err := seenTCXActionConflict(seen, key, action); duplicate || err != nil {
+				if err != nil {
+					return fmt.Errorf("rule %s: %w", rule.ID, err)
+				}
 				continue
 			}
-			seen[key] = struct{}{}
 			*rules = append(*rules, IPv4L4ACLRule{
 				Source:             sourceCIDR.Addr(),
 				SourceCIDR:         sourceCIDR,
@@ -541,10 +545,12 @@ func appendIPv4L4ACLRulesFromProgram(rules *[]IPv4L4ACLRule, seen map[IPv4L4Key]
 			}
 			for _, block := range splitTCXPortRange(port.From, port.To) {
 				key := ipv4L4RuleKey(sourceCIDR, protocol, block.port, block.prefixBits)
-				if _, ok := seen[key]; ok {
+				if duplicate, err := seenTCXActionConflict(seen, key, action); duplicate || err != nil {
+					if err != nil {
+						return fmt.Errorf("rule %s: %w", rule.ID, err)
+					}
 					continue
 				}
-				seen[key] = struct{}{}
 				*rules = append(*rules, IPv4L4ACLRule{
 					Source:             sourceCIDR.Addr(),
 					SourceCIDR:         sourceCIDR,
@@ -559,7 +565,7 @@ func appendIPv4L4ACLRulesFromProgram(rules *[]IPv4L4ACLRule, seen map[IPv4L4Key]
 	return nil
 }
 
-func appendIPv6L4ACLRulesFromProgram(rules *[]IPv6L4ACLRule, seen map[IPv6L4Key]struct{}, program policy.Program, direction model.Direction) error {
+func appendIPv6L4ACLRulesFromProgram(rules *[]IPv6L4ACLRule, seen map[IPv6L4Key]int32, program policy.Program, direction model.Direction) error {
 	for _, rule := range program.Rules {
 		if rule.Direction != direction {
 			continue
@@ -591,10 +597,12 @@ func appendIPv6L4ACLRulesFromProgram(rules *[]IPv6L4ACLRule, seen map[IPv6L4Key]
 		if protocol == 58 && len(rule.Ports) == 0 {
 			icmpValue, icmpPrefixBits := icmpTCXMatch(rule)
 			key := ipv6L4RuleKey(sourceCIDR, protocol, icmpValue, icmpPrefixBits)
-			if _, ok := seen[key]; ok {
+			if duplicate, err := seenTCXActionConflict(seen, key, action); duplicate || err != nil {
+				if err != nil {
+					return fmt.Errorf("rule %s: %w", rule.ID, err)
+				}
 				continue
 			}
-			seen[key] = struct{}{}
 			*rules = append(*rules, IPv6L4ACLRule{
 				Source:             sourceCIDR.Addr(),
 				SourceCIDR:         sourceCIDR,
@@ -607,10 +615,12 @@ func appendIPv6L4ACLRulesFromProgram(rules *[]IPv6L4ACLRule, seen map[IPv6L4Key]
 		}
 		if len(rule.Ports) == 0 {
 			key := ipv6L4RuleKey(sourceCIDR, protocol, 0, 0)
-			if _, ok := seen[key]; ok {
+			if duplicate, err := seenTCXActionConflict(seen, key, action); duplicate || err != nil {
+				if err != nil {
+					return fmt.Errorf("rule %s: %w", rule.ID, err)
+				}
 				continue
 			}
-			seen[key] = struct{}{}
 			*rules = append(*rules, IPv6L4ACLRule{
 				Source:             sourceCIDR.Addr(),
 				SourceCIDR:         sourceCIDR,
@@ -627,10 +637,12 @@ func appendIPv6L4ACLRulesFromProgram(rules *[]IPv6L4ACLRule, seen map[IPv6L4Key]
 			}
 			for _, block := range splitTCXPortRange(port.From, port.To) {
 				key := ipv6L4RuleKey(sourceCIDR, protocol, block.port, block.prefixBits)
-				if _, ok := seen[key]; ok {
+				if duplicate, err := seenTCXActionConflict(seen, key, action); duplicate || err != nil {
+					if err != nil {
+						return fmt.Errorf("rule %s: %w", rule.ID, err)
+					}
 					continue
 				}
-				seen[key] = struct{}{}
 				*rules = append(*rules, IPv6L4ACLRule{
 					Source:             sourceCIDR.Addr(),
 					SourceCIDR:         sourceCIDR,
@@ -643,6 +655,18 @@ func appendIPv6L4ACLRulesFromProgram(rules *[]IPv6L4ACLRule, seen map[IPv6L4Key]
 		}
 	}
 	return nil
+}
+
+func seenTCXActionConflict[K comparable](seen map[K]int32, key K, action int32) (bool, error) {
+	existing, ok := seen[key]
+	if !ok {
+		seen[key] = action
+		return false, nil
+	}
+	if existing != action {
+		return false, fmt.Errorf("conflicting TCX ACL actions for identical match key")
+	}
+	return true, nil
 }
 
 func validateIPv4L4ACLRuleSupport(rule policy.Rule) error {

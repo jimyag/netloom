@@ -540,6 +540,35 @@ func TestIPv4L4ACLRulesFromProgramsDeduplicatesRules(t *testing.T) {
 	}
 }
 
+func TestIPv4L4ACLRulesFromProgramsRejectsConflictingDuplicateKey(t *testing.T) {
+	drop := policy.Program{
+		EndpointID: "pod-a",
+		Rules: []policy.Rule{{
+			ID:         "drop-web",
+			Direction:  model.DirectionIngress,
+			Protocol:   model.ProtocolTCP,
+			RemoteCIDR: netip.MustParsePrefix("172.30.0.11/32"),
+			Ports:      []model.PortRange{{From: 8080, To: 8080}},
+			Action:     model.ActionDrop,
+		}},
+	}
+	allow := policy.Program{
+		EndpointID: "pod-b",
+		Rules: []policy.Rule{{
+			ID:         "allow-web",
+			Direction:  model.DirectionIngress,
+			Protocol:   model.ProtocolTCP,
+			RemoteCIDR: netip.MustParsePrefix("172.30.0.11/32"),
+			Ports:      []model.PortRange{{From: 8080, To: 8080}},
+			Action:     model.ActionAllow,
+		}},
+	}
+	_, err := IPv4L4ACLRulesFromPrograms([]policy.Program{drop, allow})
+	if err == nil || !strings.Contains(err.Error(), "conflicting TCX ACL actions") {
+		t.Fatalf("error = %v, want conflicting TCX ACL actions", err)
+	}
+}
+
 func TestIPv6L4ACLRulesFromProgramsDeduplicatesRules(t *testing.T) {
 	program := policy.Program{
 		EndpointID: "pod-a",
@@ -560,6 +589,35 @@ func TestIPv6L4ACLRulesFromProgramsDeduplicatesRules(t *testing.T) {
 	}
 	if len(rules) != 1 {
 		t.Fatalf("rules = %d, want 1", len(rules))
+	}
+}
+
+func TestIPv6L4ACLRulesFromProgramsRejectsConflictingDuplicateKey(t *testing.T) {
+	drop := policy.Program{
+		EndpointID: "pod-a",
+		Rules: []policy.Rule{{
+			ID:         "drop-v6-web",
+			Direction:  model.DirectionIngress,
+			Protocol:   model.ProtocolTCP,
+			RemoteCIDR: netip.MustParsePrefix("fd00:10::11/128"),
+			Ports:      []model.PortRange{{From: 8080, To: 8080}},
+			Action:     model.ActionDrop,
+		}},
+	}
+	allow := policy.Program{
+		EndpointID: "pod-b",
+		Rules: []policy.Rule{{
+			ID:         "allow-v6-web",
+			Direction:  model.DirectionIngress,
+			Protocol:   model.ProtocolTCP,
+			RemoteCIDR: netip.MustParsePrefix("fd00:10::11/128"),
+			Ports:      []model.PortRange{{From: 8080, To: 8080}},
+			Action:     model.ActionAllow,
+		}},
+	}
+	_, err := IPv6L4ACLRulesFromPrograms([]policy.Program{drop, allow})
+	if err == nil || !strings.Contains(err.Error(), "conflicting TCX ACL actions") {
+		t.Fatalf("error = %v, want conflicting TCX ACL actions", err)
 	}
 }
 
