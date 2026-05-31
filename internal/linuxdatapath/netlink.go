@@ -240,10 +240,8 @@ func applyPolicyRoutesNetlink(root *netlink.Handle, state control.DesiredState, 
 			return 0, fmt.Errorf("sync policy route table %d: %w", table, err)
 		}
 	}
-	if options.CleanupStale {
-		if err := cleanupStalePolicyRouteTables(root, desiredRoutes, options); err != nil {
-			return 0, err
-		}
+	if err := cleanupStalePolicyRouteTables(root, desiredRoutes, options); err != nil {
+		return 0, err
 	}
 	if err := syncManagedPolicyRules(root, desiredRules, options); err != nil {
 		return 0, err
@@ -356,10 +354,8 @@ func planManagedPolicyRuleSync(existing []netlink.Rule, desired []*netlink.Rule,
 			existingSet[key] = struct{}{}
 			continue
 		}
-		if options.CleanupStale {
-			ruleCopy := rule
-			plan.Delete = append(plan.Delete, &ruleCopy)
-		}
+		ruleCopy := rule
+		plan.Delete = append(plan.Delete, &ruleCopy)
 	}
 	for key, rule := range desiredSet {
 		if _, ok := existingSet[key]; ok {
@@ -498,7 +494,7 @@ func syncPolicyRouteTable(root *netlink.Handle, table int, desired *netlink.Rout
 }
 
 func cleanupStalePolicyRouteTables(root *netlink.Handle, desired map[int]*netlink.Route, options Options) error {
-	for table := options.PolicyTableBase; table < options.PolicyTableBase+options.PolicyTableSize; table++ {
+	for _, table := range managedPolicyTables(options) {
 		if _, ok := desired[table]; ok {
 			continue
 		}
@@ -514,6 +510,14 @@ func cleanupStalePolicyRouteTables(root *netlink.Handle, desired map[int]*netlin
 		}
 	}
 	return nil
+}
+
+func managedPolicyTables(options Options) []int {
+	tables := make([]int, 0, options.PolicyTableSize)
+	for table := options.PolicyTableBase; table < options.PolicyTableBase+options.PolicyTableSize; table++ {
+		tables = append(tables, table)
+	}
+	return tables
 }
 
 func policyRouteTableRoutes(root *netlink.Handle, table int) ([]netlink.Route, error) {
