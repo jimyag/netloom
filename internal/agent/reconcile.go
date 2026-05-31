@@ -282,7 +282,11 @@ func prepareReconcile(ctx context.Context, state control.DesiredState, options R
 				return ReconcileResult{}, nil, nil, fmt.Errorf("tcx policy for endpoint %s: %w", program.EndpointID, err)
 			}
 		}
-		targets = tcxTargets(options, tcxPrograms)
+		var err error
+		targets, err = tcxTargets(options, tcxPrograms)
+		if err != nil {
+			return ReconcileResult{}, nil, nil, err
+		}
 	}
 	return result, targets, localPrograms, nil
 }
@@ -333,7 +337,7 @@ func validateAgentState(state control.DesiredState) error {
 	return nil
 }
 
-func tcxTargets(options ReconcileOptions, programs []policy.Program) []tcxTarget {
+func tcxTargets(options ReconcileOptions, programs []policy.Program) ([]tcxTarget, error) {
 	if options.TCXWorkload {
 		targets := make([]tcxTarget, 0, len(programs))
 		for _, program := range programs {
@@ -354,20 +358,32 @@ func tcxTargets(options ReconcileOptions, programs []policy.Program) []tcxTarget
 				})
 			}
 		}
-		return targets
+		return targets, nil
 	}
 	if options.TCXInterface == "" {
-		return nil
+		return nil, nil
 	}
 	if len(programs) == 0 {
-		return nil
+		return nil, nil
+	}
+	ingressPrograms := make([]policy.Program, 0, len(programs))
+	for _, program := range programs {
+		if tcxEligibleProgramForDirection(program, model.DirectionIngress) {
+			ingressPrograms = append(ingressPrograms, program)
+		}
+	}
+	if len(ingressPrograms) == 0 {
+		return nil, nil
+	}
+	if len(ingressPrograms) > 1 {
+		return nil, fmt.Errorf("tcx interface %s cannot safely attach ingress policy for %d endpoints; use workload TCX", options.TCXInterface, len(ingressPrograms))
 	}
 	return []tcxTarget{{
 		ifName:          options.TCXInterface,
 		attach:          ebpf.AttachTCXIngress,
 		policyDirection: model.DirectionIngress,
-		programs:        programs,
-	}}
+		programs:        ingressPrograms,
+	}}, nil
 }
 
 func tcxEligibleProgram(program policy.Program) bool {

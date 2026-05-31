@@ -403,10 +403,13 @@ func TestPrepareReconcileWithTCXInterfaceAcceptsIPv6OnlyPolicy(t *testing.T) {
 }
 
 func TestTCXTargetsBuildsOneEgressTargetPerWorkload(t *testing.T) {
-	targets := tcxTargets(ReconcileOptions{TCXWorkload: true}, []policy.Program{
+	targets, err := tcxTargets(ReconcileOptions{TCXWorkload: true}, []policy.Program{
 		tcxProgram("pod-a", model.DirectionIngress, "172.30.0.11/32", 8080),
 		tcxProgram("pod-b", model.DirectionIngress, "172.30.0.12/32", 8080),
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(targets) != 2 {
 		t.Fatalf("targets = %d, want 2", len(targets))
 	}
@@ -427,9 +430,12 @@ func TestTCXTargetsBuildsOneEgressTargetPerWorkload(t *testing.T) {
 }
 
 func TestTCXTargetsBuildsIngressTargetForWorkloadEgressPolicy(t *testing.T) {
-	targets := tcxTargets(ReconcileOptions{TCXWorkload: true}, []policy.Program{
+	targets, err := tcxTargets(ReconcileOptions{TCXWorkload: true}, []policy.Program{
 		tcxProgram("pod-a", model.DirectionEgress, "198.51.100.10/32", 443),
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(targets) != 1 {
 		t.Fatalf("targets = %d, want 1", len(targets))
 	}
@@ -442,18 +448,34 @@ func TestTCXTargetsBuildsIngressTargetForWorkloadEgressPolicy(t *testing.T) {
 	}
 }
 
-func TestTCXTargetsBuildsOneIngressTargetForNodeInterface(t *testing.T) {
+func TestTCXTargetsBuildsSingleIngressTargetForNodeInterface(t *testing.T) {
 	programs := []policy.Program{
 		tcxProgram("pod-a", model.DirectionIngress, "172.30.0.11/32", 8080),
-		tcxProgram("pod-b", model.DirectionIngress, "172.30.0.12/32", 8080),
 	}
-	targets := tcxTargets(ReconcileOptions{TCXInterface: "eth0"}, programs)
+	targets, err := tcxTargets(ReconcileOptions{TCXInterface: "eth0"}, programs)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(targets) != 1 {
 		t.Fatalf("targets = %d, want 1", len(targets))
 	}
 	target := targets[0]
-	if target.ifName != "eth0" || target.attach != ebpf.AttachTCXIngress || target.policyDirection != model.DirectionIngress || len(target.programs) != 2 {
+	if target.ifName != "eth0" || target.attach != ebpf.AttachTCXIngress || target.policyDirection != model.DirectionIngress || len(target.programs) != 1 {
 		t.Fatalf("unexpected target: %+v", target)
+	}
+}
+
+func TestTCXTargetsRejectsMultipleIngressProgramsForNodeInterface(t *testing.T) {
+	programs := []policy.Program{
+		tcxProgram("pod-a", model.DirectionIngress, "172.30.0.11/32", 8080),
+		tcxProgram("pod-b", model.DirectionIngress, "172.30.0.12/32", 8080),
+	}
+	_, err := tcxTargets(ReconcileOptions{TCXInterface: "eth0"}, programs)
+	if err == nil {
+		t.Fatal("expected node interface TCX to reject multiple ingress endpoint programs")
+	}
+	if !strings.Contains(err.Error(), "cannot safely attach ingress policy for 2 endpoints") {
+		t.Fatalf("error = %v, want unsafe multi-endpoint TCX rejection", err)
 	}
 }
 
@@ -930,6 +952,53 @@ func TestReconcileNodeAllowsMultipleEligibleWorkloadsWithoutTCXAttach(t *testing
 	}
 	if result.TCXEligible != 2 {
 		t.Fatalf("tcx eligible = %d, want 2", result.TCXEligible)
+	}
+}
+
+func TestReconcileNodeWithTCXInterfaceRejectsMultipleEligibleIngressEndpoints(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{
+			{
+				ID:             "pod-a",
+				VPC:            "prod",
+				Subnet:         "apps",
+				IP:             netip.MustParseAddr("10.10.0.10"),
+				Node:           "node-a",
+				SecurityGroups: []string{"web"},
+			},
+			{
+				ID:             "pod-b",
+				VPC:            "prod",
+				Subnet:         "apps",
+				IP:             netip.MustParseAddr("10.10.0.11"),
+				Node:           "node-a",
+				SecurityGroups: []string{"web"},
+			},
+		},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "drop-http",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("172.30.0.11/32"),
+				Ports:      []model.PortRange{{From: 8080, To: 8080}},
+				Action:     model.ActionDrop,
+			}},
+		}},
+	}
+	_, err := ReconcileNodeWithOptions(context.Background(), state, ReconcileOptions{
+		Node:         "node-a",
+		Store:        dataplane.NewInMemoryPolicyStore(),
+		TCXInterface: "eth0",
+	})
+	if err == nil {
+		t.Fatal("expected node-wide TCX interface attach to reject multiple endpoint programs")
+	}
+	if !strings.Contains(err.Error(), "cannot safely attach ingress policy for 2 endpoints") {
+		t.Fatalf("error = %v, want unsafe multi-endpoint TCX rejection", err)
 	}
 }
 
