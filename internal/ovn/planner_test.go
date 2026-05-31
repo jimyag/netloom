@@ -361,6 +361,60 @@ func TestPlannerEncodesOVNNamesWithoutCollisions(t *testing.T) {
 	}
 }
 
+func TestPlannerBoundsLongOVNNamesWithHashSuffix(t *testing.T) {
+	planner := ovn.NewPlanner()
+	longA := strings.Repeat("tenant.segment.", 12) + "a"
+	longB := strings.Repeat("tenant.segment.", 12) + "b"
+	for _, name := range []string{longA, longB} {
+		if err := planner.EnsureVPC(context.Background(), model.VPC{Name: name}); err != nil {
+			t.Fatal(err)
+		}
+		if err := planner.EnsurePolicyRoute(context.Background(), model.PolicyRoute{
+			Name:     name,
+			VPC:      "prod",
+			Priority: 100,
+			Match:    model.RouteMatch{Destination: netip.MustParsePrefix("198.51.100.0/24")},
+			Action: model.RouteAction{
+				Type:     model.ActionReroute,
+				NextHops: []netip.Addr{netip.MustParseAddr("10.10.0.253"), netip.MustParseAddr("10.10.0.254")},
+			},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	ops := planner.Operations()
+	routers := operationArgValues(ops, "lr-add", 0)
+	if len(routers) != 2 {
+		t.Fatalf("routers = %v, want 2", routers)
+	}
+	assertBoundedHashedIdentifier(t, routers[0])
+	assertBoundedHashedIdentifier(t, routers[1])
+	if routers[0] == routers[1] {
+		t.Fatalf("long OVN router names collided: %q", routers[0])
+	}
+
+	var uuids []string
+	for _, op := range ops {
+		if op.Command != "create" {
+			continue
+		}
+		for _, flag := range op.Flags {
+			if strings.HasPrefix(flag, "--id=@nl_lrp_") {
+				uuids = append(uuids, strings.TrimPrefix(flag, "--id=@"))
+			}
+		}
+	}
+	if len(uuids) != 2 {
+		t.Fatalf("policy route named UUIDs = %v, want 2", uuids)
+	}
+	assertBoundedHashedIdentifier(t, uuids[0])
+	assertBoundedHashedIdentifier(t, uuids[1])
+	if uuids[0] == uuids[1] {
+		t.Fatalf("long named UUIDs collided: %q", uuids[0])
+	}
+}
+
 func TestPlannerBuildsStaticEndpointMACAddress(t *testing.T) {
 	planner := ovn.NewPlanner()
 	if err := planner.EnsureEndpoint(context.Background(), model.Endpoint{
@@ -1176,4 +1230,25 @@ func stringify(ops []ovn.Operation) string {
 		lines = append(lines, op.String())
 	}
 	return strings.Join(lines, "\n")
+}
+
+func operationArgValues(ops []ovn.Operation, command string, index int) []string {
+	var values []string
+	for _, op := range ops {
+		if op.Command != command || len(op.Args) <= index {
+			continue
+		}
+		values = append(values, op.Args[index])
+	}
+	return values
+}
+
+func assertBoundedHashedIdentifier(t *testing.T, name string) {
+	t.Helper()
+	if len(name) > 63 {
+		t.Fatalf("OVN identifier length = %d for %q, want <= 63", len(name), name)
+	}
+	if !strings.Contains(name, "_h") {
+		t.Fatalf("OVN identifier %q does not contain hash suffix", name)
+	}
 }

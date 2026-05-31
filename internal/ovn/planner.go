@@ -2,6 +2,7 @@ package ovn
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"net/netip"
 	"sort"
@@ -16,6 +17,8 @@ type Operation struct {
 	Flags   []string
 	Args    []string
 }
+
+const ovnIdentifierMaxLen = 63
 
 func (o Operation) String() string {
 	parts := append([]string(nil), o.Flags...)
@@ -338,27 +341,27 @@ func (p *Planner) routerForVPC(vpc string) string {
 }
 
 func logicalRouter(vpc string) string {
-	return "nl_lr_" + sanitize(vpc)
+	return ovnIdentifier("nl_lr_" + sanitize(vpc))
 }
 
 func logicalSwitch(subnet string) string {
-	return "nl_ls_" + sanitize(subnet)
+	return ovnIdentifier("nl_ls_" + sanitize(subnet))
 }
 
 func logicalPort(endpoint string) string {
-	return "nl_lp_" + sanitize(endpoint)
+	return ovnIdentifier("nl_lp_" + sanitize(endpoint))
 }
 
 func loadBalancerName(vpc, name string) string {
-	return "nl_lb_" + sanitize(vpc) + "_" + sanitize(name)
+	return ovnIdentifier("nl_lb_" + sanitize(vpc) + "_" + sanitize(name))
 }
 
 func loadBalancerProtocolName(vpc, name string, protocol model.Protocol) string {
-	return loadBalancerName(vpc, name) + "_" + sanitize(string(protocol))
+	return ovnIdentifier(loadBalancerName(vpc, name) + "_" + sanitize(string(protocol)))
 }
 
 func namedUUID(name string) string {
-	return "@" + strings.ReplaceAll(name, "-", "_h")
+	return "@" + ovnIdentifier(strings.ReplaceAll(name, "-", "_h"))
 }
 
 func policyRouteNamedUUID(route model.PolicyRoute) string {
@@ -366,15 +369,32 @@ func policyRouteNamedUUID(route model.PolicyRoute) string {
 }
 
 func routerPortName(router, subnet string) string {
-	return router + "_to_" + sanitize(subnet)
+	return ovnIdentifier(router + "_to_" + sanitize(subnet))
 }
 
 func switchRouterPortName(switchName, subnet string) string {
-	return switchName + "_to_" + sanitize(subnet) + "_router"
+	return ovnIdentifier(switchName + "_to_" + sanitize(subnet) + "_router")
 }
 
 func localnetPortName(switchName, subnet string) string {
-	return switchName + "_to_" + sanitize(subnet) + "_localnet"
+	return ovnIdentifier(switchName + "_to_" + sanitize(subnet) + "_localnet")
+}
+
+func ovnIdentifier(name string) string {
+	if len(name) <= ovnIdentifierMaxLen {
+		return name
+	}
+	hash := ovnIdentifierHash(name)
+	headLen := ovnIdentifierMaxLen - len("_h") - len(hash)
+	if headLen < 1 {
+		headLen = 1
+	}
+	return strings.TrimRight(name[:headLen], "_-") + "_h" + hash
+}
+
+func ovnIdentifierHash(name string) string {
+	sum := sha256.Sum256([]byte(name))
+	return fmt.Sprintf("%x", sum[:6])
 }
 
 func sanitize(value string) string {
