@@ -109,10 +109,21 @@ func cloneSnapshotLoadBalancer(lb model.LoadBalancer) model.LoadBalancer {
 	lb.Ports = append([]model.LoadBalancerPort(nil), lb.Ports...)
 	for i := range lb.Ports {
 		lb.Ports[i].Backends = append([]model.LoadBalancerBackend(nil), lb.Ports[i].Backends...)
+		for j := range lb.Ports[i].Backends {
+			lb.Ports[i].Backends[j].Healthy = cloneBoolPtr(lb.Ports[i].Backends[j].Healthy)
+		}
 	}
 	lb.Subnets = append([]string(nil), lb.Subnets...)
 	lb.SelectionFields = append([]string(nil), lb.SelectionFields...)
 	return lb
+}
+
+func cloneBoolPtr(value *bool) *bool {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
 }
 
 func cleanupOperations(old, next desiredSnapshot) []Operation {

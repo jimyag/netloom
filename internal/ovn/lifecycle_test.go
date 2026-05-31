@@ -68,6 +68,35 @@ func TestCleanupPolicyRouteUsesNameIdentityAndOldMatch(t *testing.T) {
 	}
 }
 
+func TestSnapshotDesiredClonesLoadBalancerBackendHealthPointers(t *testing.T) {
+	healthy := true
+	state := topology.State{
+		LoadBalancers: map[string]model.LoadBalancer{
+			"web": {
+				Name: "web",
+				VPC:  "prod",
+				VIP:  netip.MustParseAddr("10.96.0.10"),
+				Ports: []model.LoadBalancerPort{{
+					Port: 80,
+					Backends: []model.LoadBalancerBackend{{
+						IP:      netip.MustParseAddr("10.10.0.10"),
+						Port:    8080,
+						Healthy: &healthy,
+					}},
+				}},
+			},
+		},
+	}
+
+	snapshot := snapshotDesired(state)
+	healthy = false
+
+	got := snapshot.LoadBalancers["web"].Ports[0].Backends[0].Healthy
+	if got == nil || !*got {
+		t.Fatalf("snapshot backend health = %v, want cloned true value after source mutation", got)
+	}
+}
+
 func stringifyOperations(ops []Operation) string {
 	var lines []string
 	for _, op := range ops {
