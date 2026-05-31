@@ -216,6 +216,47 @@ func TestEvaluateAllowsIPv6PacketTooBigForPMTU(t *testing.T) {
 	}
 }
 
+func TestEvaluateAllowsIPv6NeighborDiscovery(t *testing.T) {
+	entries := []PolicyMapEntry{{
+		Key: PolicyKey{
+			PrefixLen:      StaticPrefixBits + 24,
+			RemoteIdentity: 0,
+			Direction:      DirectionIngress,
+			Protocol:       58,
+			DestPortBE:     hostToNetwork16(0x8700),
+		},
+		Value: PolicyEntry{
+			Deny:        1,
+			L4PrefixLen: 24,
+			Precedence:  math.MaxUint32,
+		},
+	}}
+
+	for _, icmpType := range []uint8{133, 134, 135, 136} {
+		decision := Evaluate(entries, Packet{
+			RemoteIP:  netip.MustParseAddr("fe80::1"),
+			Direction: DirectionIngress,
+			Protocol:  58,
+			ICMPType:  icmpType,
+			ICMPCode:  0,
+		})
+		if decision.Verdict != VerdictAllow || decision.Match != nil {
+			t.Fatalf("ICMPv6 type %d decision = %+v, want unconditional NDP allow", icmpType, decision)
+		}
+	}
+
+	malformed := Evaluate(entries, Packet{
+		RemoteIP:  netip.MustParseAddr("fe80::1"),
+		Direction: DirectionIngress,
+		Protocol:  58,
+		ICMPType:  135,
+		ICMPCode:  1,
+	})
+	if malformed.Verdict != VerdictDrop {
+		t.Fatalf("malformed NDP decision = %+v, want policy drop", malformed)
+	}
+}
+
 func TestEvaluateMatchesPortPrefix(t *testing.T) {
 	entries := []PolicyMapEntry{{
 		Key: PolicyKey{

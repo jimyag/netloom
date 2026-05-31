@@ -200,7 +200,7 @@ func EvaluateObserved(endpointID string, entries []PolicyMapEntry, packet Packet
 }
 
 func evaluate(entries []PolicyMapEntry, packet Packet) Decision {
-	if isIPv4FragmentationNeeded(packet) || isIPv6PacketTooBig(packet) {
+	if isIPv4FragmentationNeeded(packet) || isIPv6PacketTooBig(packet) || isIPv6NeighborDiscovery(packet) {
 		return Decision{Verdict: VerdictAllow}
 	}
 	var selected *PolicyMapEntry
@@ -437,6 +437,10 @@ func isIPv4FragmentationNeeded(packet Packet) bool {
 
 func isIPv6PacketTooBig(packet Packet) bool {
 	return packet.Protocol == 58 && packet.ICMPType == 2
+}
+
+func isIPv6NeighborDiscovery(packet Packet) bool {
+	return packet.Protocol == 58 && packet.ICMPCode == 0 && packet.ICMPType >= 133 && packet.ICMPType <= 136
 }
 
 func betterMatch(candidate, selected PolicyMapEntry, packet Packet) bool {
