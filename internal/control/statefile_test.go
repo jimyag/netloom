@@ -159,6 +159,36 @@ func TestMergeDNSRecordsAppendsObservedRecordsDeterministically(t *testing.T) {
 	}
 }
 
+func TestMergeDNSRecordsUpsertsRepeatedObservations(t *testing.T) {
+	base, err := LoadDNSObservationsJSON(strings.NewReader(`{"dns_records": [
+		{"name": "api.example.com", "ips": ["203.0.113.20", "203.0.113.21"], "ttl_seconds": 30, "observed_at": "2026-05-30T11:59:00Z"},
+		{"name": "static.example.com", "ips": ["203.0.113.30"]}
+	]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	observed, err := LoadDNSObservationsJSON(strings.NewReader(`{"dns_records": [
+		{"name": "API.EXAMPLE.COM.", "ips": ["203.0.113.21", "203.0.113.20"], "ttl_seconds": 60, "observed_at": "2026-05-30T12:00:00Z"},
+		{"name": "static.example.com", "ips": ["203.0.113.30"], "ttl_seconds": 60, "observed_at": "2026-05-30T12:00:00Z"}
+	]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	merged, err := MergeDNSRecords(base, observed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(merged) != 2 {
+		t.Fatalf("merged records = %d, want 2: %+v", len(merged), merged)
+	}
+	if merged[0].Name != "API.EXAMPLE.COM." || merged[0].TTLSeconds != 60 || !merged[0].ObservedAt.Equal(time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)) {
+		t.Fatalf("observed record was not updated: %+v", merged[0])
+	}
+	if merged[1].Name != "static.example.com" || merged[1].TTLSeconds != 0 {
+		t.Fatalf("static record should remain non-expiring: %+v", merged[1])
+	}
+}
+
 func TestPruneExpiredDNSRecordsDropsOnlyExpiredTTLRecords(t *testing.T) {
 	now := time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)
 	records, err := LoadDNSObservationsJSON(strings.NewReader(`{"dns_records": [

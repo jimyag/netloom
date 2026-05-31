@@ -127,6 +127,44 @@ func TestRunPrunesExpiredExistingObservations(t *testing.T) {
 	}
 }
 
+func TestRunUpsertsRepeatedExistingObservations(t *testing.T) {
+	dir := t.TempDir()
+	output := filepath.Join(dir, "dns-observations.json")
+	existing := `{"dns_records":[{"name":"api.example.com","ips":["203.0.113.10"],"ttl_seconds":30,"observed_at":"2026-05-30T11:59:00Z"}]}`
+	if err := os.WriteFile(output, []byte(existing), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	packet := dnsResponse(
+		dnsQuestion("api.example.com", 1),
+		dnsAnswerPtr(12, 1, 60, []byte{203, 0, 113, 10}),
+	)
+	input := strings.NewReader(base64.StdEncoding.EncodeToString(packet) + "\n")
+	var stdout bytes.Buffer
+	now := func() time.Time { return time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC) }
+
+	if err := run(t.Context(), []string{"-observations", output}, input, &stdout, now); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout.String(), "packets=1 records=1 written=1") {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+	file, err := os.Open(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	records, err := control.LoadDNSObservationsJSON(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("records = %d, want 1: %+v", len(records), records)
+	}
+	if records[0].TTLSeconds != 60 || !records[0].ObservedAt.Equal(now()) {
+		t.Fatalf("record was not refreshed: %+v", records[0])
+	}
+}
+
 func TestRunRejectsEmptyInput(t *testing.T) {
 	err := run(t.Context(), []string{"-observations", filepath.Join(t.TempDir(), "dns.json")}, strings.NewReader("\n# ignored\n"), ioDiscard{}, time.Now)
 	if err == nil {

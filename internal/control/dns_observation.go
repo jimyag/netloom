@@ -51,6 +51,7 @@ func MergeDNSRecords(base, observed []model.DNSRecord) ([]model.DNSRecord, error
 		return nil, err
 	}
 	merged = append(merged, records...)
+	merged = compactDNSRecords(merged)
 	sort.SliceStable(merged, func(i, j int) bool {
 		left, right := canonicalDNSName(merged[i].Name), canonicalDNSName(merged[j].Name)
 		if left != right {
@@ -59,6 +60,43 @@ func MergeDNSRecords(base, observed []model.DNSRecord) ([]model.DNSRecord, error
 		return merged[i].ObservedAt.Before(merged[j].ObservedAt)
 	})
 	return merged, nil
+}
+
+func compactDNSRecords(records []model.DNSRecord) []model.DNSRecord {
+	index := make(map[string]int, len(records))
+	out := make([]model.DNSRecord, 0, len(records))
+	for _, record := range records {
+		key := canonicalDNSRecordKey(record)
+		if pos, ok := index[key]; ok {
+			out[pos] = preferredDNSRecord(out[pos], record)
+			continue
+		}
+		index[key] = len(out)
+		out = append(out, record)
+	}
+	return out
+}
+
+func preferredDNSRecord(current, candidate model.DNSRecord) model.DNSRecord {
+	if current.TTLSeconds == 0 {
+		return current
+	}
+	if candidate.TTLSeconds == 0 {
+		return candidate
+	}
+	if candidate.ObservedAt.After(current.ObservedAt) {
+		return candidate
+	}
+	return current
+}
+
+func canonicalDNSRecordKey(record model.DNSRecord) string {
+	ips := make([]string, 0, len(record.IPs))
+	for _, ip := range record.IPs {
+		ips = append(ips, ip.String())
+	}
+	sort.Strings(ips)
+	return canonicalDNSName(record.Name) + "|" + strings.Join(ips, ",")
 }
 
 func PruneExpiredDNSRecords(records []model.DNSRecord, now time.Time) ([]model.DNSRecord, error) {
