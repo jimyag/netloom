@@ -277,6 +277,19 @@ func (p *Planner) Operations() []Operation {
 	return append([]Operation(nil), p.ops...)
 }
 
+func (p *Planner) DiscardOperations(n int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if n <= 0 {
+		return
+	}
+	if n >= len(p.ops) {
+		p.ops = nil
+		return
+	}
+	p.ops = append([]Operation(nil), p.ops[n:]...)
+}
+
 func (p *Planner) Append(ops ...Operation) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -341,8 +354,31 @@ func localnetPortName(switchName, subnet string) string {
 }
 
 func sanitize(value string) string {
-	replacer := strings.NewReplacer("/", "_", ":", "_", ".", "_")
-	return replacer.Replace(value)
+	var out strings.Builder
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z',
+			r >= 'A' && r <= 'Z',
+			r >= '0' && r <= '9',
+			r == '-':
+			out.WriteRune(r)
+		case r == '_':
+			out.WriteString("__")
+		case r == '.':
+			out.WriteString("_d")
+		case r == '/':
+			out.WriteString("_s")
+		case r == ':':
+			out.WriteString("_c")
+		default:
+			out.WriteString("_x")
+			out.WriteString(fmt.Sprintf("%04x", r))
+		}
+	}
+	if out.Len() == 0 {
+		return "empty"
+	}
+	return out.String()
 }
 
 func deterministicMAC(ip netip.Addr) string {
@@ -492,14 +528,20 @@ func loadBalancerOptions(lb model.LoadBalancer) []string {
 func (p *Planner) loadBalancerHealthCheckOperations(name string, lb model.LoadBalancer) []Operation {
 	if !lb.HealthCheck.Enabled {
 		delete(p.loadBalancerHealthChecks, lb.Name)
-		return []Operation{{Command: "clear", Args: []string{"load_balancer", name, "health_check"}}}
+		return []Operation{
+			{Command: "clear", Args: []string{"load_balancer", name, "health_check"}},
+			gcLoadBalancerHealthChecksOperation(lb.Name),
+		}
 	}
 	signature := loadBalancerHealthCheckSignature(lb)
 	if p.loadBalancerHealthChecks[lb.Name] == signature {
 		return nil
 	}
 	p.loadBalancerHealthChecks[lb.Name] = signature
-	ops := []Operation{{Command: "clear", Args: []string{"load_balancer", name, "health_check"}}}
+	ops := []Operation{
+		{Command: "clear", Args: []string{"load_balancer", name, "health_check"}},
+		gcLoadBalancerHealthChecksOperation(lb.Name),
+	}
 	for _, frontend := range lb.Frontends() {
 		uuid := loadBalancerHealthCheckUUID(lb.Name, frontend)
 		ops = append(ops,
@@ -508,6 +550,14 @@ func (p *Planner) loadBalancerHealthCheckOperations(name string, lb model.LoadBa
 		)
 	}
 	return ops
+}
+
+func gcDHCPOptionsOperation(endpoint string) Operation {
+	return Operation{Command: "gc-dhcp-options", Args: []string{endpoint}}
+}
+
+func gcLoadBalancerHealthChecksOperation(loadBalancer string) Operation {
+	return Operation{Command: "gc-load-balancer-health-checks", Args: []string{loadBalancer}}
 }
 
 func loadBalancerHealthCheckSignature(lb model.LoadBalancer) string {

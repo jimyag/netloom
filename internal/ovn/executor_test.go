@@ -3,10 +3,12 @@ package ovn_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/jimyag/netloom/internal/control"
@@ -46,6 +48,32 @@ func TestBackendExecutesPlannedOperations(t *testing.T) {
 	}
 }
 
+func TestBackendSerializesConcurrentApplyBatches(t *testing.T) {
+	recorder := ovn.NewRecorderExecutor()
+	backend := ovn.NewBackend(recorder)
+	var wg sync.WaitGroup
+	for _, vpc := range []string{"prod", "stage", "dev"} {
+		wg.Add(1)
+		go func(vpc string) {
+			defer wg.Done()
+			if err := backend.EnsureVPC(context.Background(), model.VPC{Name: vpc}); err != nil {
+				t.Errorf("ensure vpc %s: %v", vpc, err)
+			}
+		}(vpc)
+	}
+	wg.Wait()
+
+	joined := stringifyOVNOps(recorder.Operations())
+	for _, router := range []string{"nl_lr_prod", "nl_lr_stage", "nl_lr_dev"} {
+		if got := strings.Count(joined, "--may-exist lr-add "+router); got != 1 {
+			t.Fatalf("router %s lr-add count = %d, want 1:\n%s", router, got, joined)
+		}
+	}
+	if got := len(backend.Operations()); got != len(recorder.Operations()) {
+		t.Fatalf("backend operations = %d, recorder operations = %d", got, len(recorder.Operations()))
+	}
+}
+
 func TestBackendPropagatesExecutorFailure(t *testing.T) {
 	backend := ovn.NewBackend(failingExecutor{})
 	err := backend.EnsureVPC(context.Background(), model.VPC{Name: "prod"})
@@ -73,9 +101,10 @@ func TestBackendCleanupEmitsDeletesForStaleDesiredObjects(t *testing.T) {
 
 	joined := stringifyOVNOps(recorder.Operations())
 	for _, expected := range []string{
-		"--if-exists destroy DHCP_Options nl_lp_pod-a",
+		"gc-dhcp-options pod-a",
 		"--if-exists lsp-del nl_lp_pod-a",
 		"--if-exists lr-nat-del nl_lr_prod snat 10.10.0.0/24",
+		"gc-load-balancer-health-checks web",
 		"--if-exists lr-lb-del nl_lr_prod nl_lb_web",
 		"--if-exists ls-lb-del nl_ls_apps nl_lb_web",
 		"--if-exists lb-del nl_lb_web",
@@ -447,6 +476,54 @@ func TestNBCTLExecutorSplitsNATAddAfterDelete(t *testing.T) {
 	}
 	if !strings.Contains(calls[1], "--\nset\nlogical_router\nnl_lr_prod") {
 		t.Fatalf("second transaction should keep following operations batched:\n%s", calls[1])
+	}
+}
+
+func TestNBCTLExecutorDestroysRecordsMatchedByExternalIDs(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args")
+	binary := filepath.Join(dir, "ovn-nbctl")
+	script := fmt.Sprintf(`#!/bin/sh
+printf '%%s\n' '---' >> %q
+printf '%%s\n' "$@" >> %q
+case "$*" in
+  *"--columns=_uuid find DHCP_Options"*) printf 'uuid-a\nuuid-b\n' ;;
+esac
+`, argsFile, argsFile)
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	executor := ovn.NewNBCTLExecutor(binary, "--db=unix:/tmp/ovnnb.sock")
+	err := executor.Execute(context.Background(), []ovn.Operation{
+		{Command: "set", Args: []string{"logical_switch_port", "nl_lp_pod-a", "dhcpv4_options=[]"}},
+		{Command: "gc-dhcp-options", Args: []string{"pod-a"}},
+		{Command: "lsp-del", Flags: []string{"--if-exists"}, Args: []string{"nl_lp_pod-a"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := strings.Split(strings.TrimPrefix(strings.TrimSpace(string(raw)), "---\n"), "\n---\n")
+	if len(calls) != 5 {
+		t.Fatalf("calls = %d, want clear, find, two destroys, lsp-del:\n%s", len(calls), raw)
+	}
+	if !strings.Contains(calls[0], "set\nlogical_switch_port\nnl_lp_pod-a") {
+		t.Fatalf("first call should clear references before GC:\n%s", calls[0])
+	}
+	if !strings.Contains(calls[1], "--columns=_uuid\nfind\nDHCP_Options") ||
+		!strings.Contains(calls[1], "external_ids:netloom_endpoint=pod-a") {
+		t.Fatalf("second call should find DHCP options by ownership:\n%s", calls[1])
+	}
+	if !strings.Contains(calls[2], "destroy\nDHCP_Options\nuuid-a") ||
+		!strings.Contains(calls[3], "destroy\nDHCP_Options\nuuid-b") {
+		t.Fatalf("matching DHCP options should be destroyed:\n%s", raw)
+	}
+	if !strings.Contains(calls[4], "lsp-del\nnl_lp_pod-a") {
+		t.Fatalf("final call should delete logical switch port:\n%s", calls[4])
 	}
 }
 

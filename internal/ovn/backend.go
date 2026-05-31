@@ -13,7 +13,10 @@ type Backend struct {
 	executor Executor
 	mu       sync.Mutex
 	last     desiredSnapshot
+	history  []Operation
 }
+
+const operationHistoryLimit = 4096
 
 func NewBackend(executor Executor) *Backend {
 	return &Backend{planner: NewPlanner(), executor: executor}
@@ -56,11 +59,12 @@ func (b *Backend) BeginTopologyReconcile(context.Context, topology.State) error 
 }
 
 func (b *Backend) CleanupTopology(ctx context.Context, state topology.State) error {
-	next := snapshotDesired(state)
 	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	next := snapshotDesired(state)
 	ops := cleanupOperations(b.last, next)
 	b.last = next
-	b.mu.Unlock()
 	b.planner.SyncLoadBalancerHealthChecks(next.LoadBalancers)
 
 	if len(ops) == 0 {
@@ -70,14 +74,26 @@ func (b *Backend) CleanupTopology(ctx context.Context, state topology.State) err
 	if b.executor == nil {
 		return nil
 	}
-	return b.executor.Execute(ctx, ops)
+	if err := b.executor.Execute(ctx, ops); err != nil {
+		return err
+	}
+	b.recordOperationsLocked(ops)
+	b.planner.DiscardOperations(len(b.planner.Operations()))
+	return nil
 }
 
 func (b *Backend) Operations() []Operation {
-	return b.planner.Operations()
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	ops := cloneOperations(b.history)
+	ops = append(ops, b.planner.Operations()...)
+	return ops
 }
 
 func (b *Backend) apply(ctx context.Context, plan func() error) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
 	before := len(b.planner.Operations())
 	if err := plan(); err != nil {
 		return err
@@ -87,5 +103,20 @@ func (b *Backend) apply(ctx context.Context, plan func() error) error {
 	if len(next) == 0 || b.executor == nil {
 		return nil
 	}
-	return b.executor.Execute(ctx, next)
+	if err := b.executor.Execute(ctx, next); err != nil {
+		return err
+	}
+	b.recordOperationsLocked(next)
+	b.planner.DiscardOperations(len(planned))
+	return nil
+}
+
+func (b *Backend) recordOperationsLocked(ops []Operation) {
+	if len(ops) == 0 {
+		return
+	}
+	b.history = append(b.history, cloneOperations(ops)...)
+	if len(b.history) > operationHistoryLimit {
+		b.history = append([]Operation(nil), b.history[len(b.history)-operationHistoryLimit:]...)
+	}
 }

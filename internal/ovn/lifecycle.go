@@ -75,7 +75,7 @@ func cleanupOperations(old, next desiredSnapshot) []Operation {
 	var ops []Operation
 	for _, key := range staleKeys(old.Endpoints, next.Endpoints) {
 		if subnet, ok := old.Subnets[old.Endpoints[key].Subnet]; ok && subnet.DHCP.Enabled {
-			ops = append(ops, Operation{Command: "destroy", Flags: []string{"--if-exists"}, Args: []string{"DHCP_Options", logicalPort(key)}})
+			ops = append(ops, gcDHCPOptionsOperation(key))
 		}
 		ops = append(ops, Operation{Command: "lsp-del", Flags: []string{"--if-exists"}, Args: []string{logicalPort(key)}})
 	}
@@ -154,6 +154,7 @@ func cleanupOperations(old, next desiredSnapshot) []Operation {
 		name := loadBalancerName(lb.Name)
 		ops = append(ops,
 			Operation{Command: "clear", Args: []string{"load_balancer", name, "health_check"}},
+			gcLoadBalancerHealthChecksOperation(lb.Name),
 			Operation{Command: "lr-lb-del", Flags: []string{"--if-exists"}, Args: []string{logicalRouter(lb.VPC), name}},
 		)
 		for _, subnet := range lb.Subnets {

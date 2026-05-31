@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"strings"
 	"sync"
 )
 
@@ -52,6 +53,12 @@ func (e *NBCTLExecutor) Execute(ctx context.Context, ops []Operation) error {
 		return e.executeTransaction(ctx, ops)
 	}
 	for _, op := range ops {
+		if isSpecialOperation(op) {
+			if err := e.executeSpecial(ctx, op); err != nil {
+				return err
+			}
+			continue
+		}
 		if err := validateOperation(op); err != nil {
 			return err
 		}
@@ -74,7 +81,19 @@ func (e *NBCTLExecutor) executeTransaction(ctx context.Context, ops []Operation)
 		return nil
 	}
 	for len(ops) > 0 {
-		batchEnd := nextTransactionBatchEnd(ops)
+		if isSpecialOperation(ops[0]) {
+			if err := e.executeSpecial(ctx, ops[0]); err != nil {
+				return err
+			}
+			ops = ops[1:]
+			continue
+		}
+		special := firstSpecialOperation(ops)
+		regular := ops
+		if special >= 0 {
+			regular = ops[:special]
+		}
+		batchEnd := nextTransactionBatchEnd(regular)
 		if err := e.executeTransactionBatch(ctx, ops[:batchEnd]); err != nil {
 			return err
 		}
@@ -117,6 +136,68 @@ func nextTransactionBatchEnd(ops []Operation) int {
 	return len(ops)
 }
 
+func firstSpecialOperation(ops []Operation) int {
+	for i, op := range ops {
+		if isSpecialOperation(op) {
+			return i
+		}
+	}
+	return -1
+}
+
+func isSpecialOperation(op Operation) bool {
+	switch op.Command {
+	case "gc-dhcp-options", "gc-load-balancer-health-checks":
+		return true
+	default:
+		return false
+	}
+}
+
+func (e *NBCTLExecutor) executeSpecial(ctx context.Context, op Operation) error {
+	if err := validateSpecialOperation(op); err != nil {
+		return err
+	}
+	switch op.Command {
+	case "gc-dhcp-options":
+		return e.destroyMatchingRecords(ctx, "DHCP_Options",
+			"external_ids:netloom_owner=netloom",
+			"external_ids:netloom_endpoint="+op.Args[0],
+		)
+	case "gc-load-balancer-health-checks":
+		return e.destroyMatchingRecords(ctx, "Load_Balancer_Health_Check",
+			"external_ids:netloom_owner=netloom",
+			"external_ids:netloom_load_balancer="+op.Args[0],
+		)
+	default:
+		return fmt.Errorf("unsupported special operation %q", op.Command)
+	}
+}
+
+func (e *NBCTLExecutor) destroyMatchingRecords(ctx context.Context, table string, matches ...string) error {
+	args := append([]string(nil), e.BaseArgs...)
+	args = append(args, "--bare", "--columns=_uuid", "find", table)
+	args = append(args, matches...)
+	cmd := exec.CommandContext(ctx, e.Binary, args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	output, err := cmd.Output()
+	if err != nil {
+		return fmt.Errorf("%s %v failed: %w: %s", e.Binary, args, err, stderr.String())
+	}
+	for _, uuid := range strings.Fields(string(output)) {
+		destroyArgs := append([]string(nil), e.BaseArgs...)
+		destroyArgs = append(destroyArgs, "--if-exists", "destroy", table, uuid)
+		destroyCmd := exec.CommandContext(ctx, e.Binary, destroyArgs...)
+		stderr.Reset()
+		destroyCmd.Stderr = &stderr
+		if err := destroyCmd.Run(); err != nil {
+			return fmt.Errorf("%s %v failed: %w: %s", e.Binary, destroyArgs, err, stderr.String())
+		}
+	}
+	return nil
+}
+
 func validateOperation(op Operation) error {
 	if op.Command == "" {
 		return fmt.Errorf("operation command is required")
@@ -128,6 +209,16 @@ func validateOperation(op Operation) error {
 		if arg == "" {
 			return fmt.Errorf("operation %q contains empty argument", op.Command)
 		}
+	}
+	return nil
+}
+
+func validateSpecialOperation(op Operation) error {
+	if len(op.Flags) != 0 {
+		return fmt.Errorf("special operation %q must not set flags", op.Command)
+	}
+	if len(op.Args) != 1 || op.Args[0] == "" {
+		return fmt.Errorf("special operation %q requires one non-empty argument", op.Command)
 	}
 	return nil
 }

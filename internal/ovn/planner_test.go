@@ -222,6 +222,28 @@ func TestPlannerClearsEndpointDHCPWhenSubnetDHCPDisabled(t *testing.T) {
 	}
 }
 
+func TestPlannerEncodesOVNNamesWithoutCollisions(t *testing.T) {
+	planner := ovn.NewPlanner()
+	for _, endpoint := range []model.Endpoint{
+		{ID: "pod.1", VPC: "prod", Subnet: "apps", IP: netip.MustParseAddr("10.10.0.10"), Node: "node-a"},
+		{ID: "pod_1", VPC: "prod", Subnet: "apps", IP: netip.MustParseAddr("10.10.0.11"), Node: "node-a"},
+	} {
+		if err := planner.EnsureEndpoint(context.Background(), endpoint); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	joined := stringify(planner.Operations())
+	for _, expected := range []string{
+		"lsp-add nl_ls_apps nl_lp_pod_d1",
+		"lsp-add nl_ls_apps nl_lp_pod__1",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("OVN name encoding missing %q:\n%s", expected, joined)
+		}
+	}
+}
+
 func TestPlannerBuildsStaticEndpointMACAddress(t *testing.T) {
 	planner := ovn.NewPlanner()
 	if err := planner.EnsureEndpoint(context.Background(), model.Endpoint{
@@ -468,6 +490,7 @@ func TestPlannerClearsLoadBalancerAffinityWhenDisabled(t *testing.T) {
 		"external_ids:netloom_session_affinity=false",
 		"remove load_balancer nl_lb_web options affinity_timeout",
 		"clear load_balancer nl_lb_web health_check",
+		"gc-load-balancer-health-checks web",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("OVN operations missing %q:\n%s", expected, joined)
@@ -583,6 +606,9 @@ func TestPlannerDoesNotRecreateUnchangedLoadBalancerHealthCheck(t *testing.T) {
 	if got := strings.Count(joined, "create Load_Balancer_Health_Check"); got != 2 {
 		t.Fatalf("changed health check create count = %d, want 2:\n%s", got, joined)
 	}
+	if got := strings.Count(joined, "gc-load-balancer-health-checks web"); got != 2 {
+		t.Fatalf("health check GC count = %d, want 2:\n%s", got, joined)
+	}
 	if !strings.Contains(joined, "options:timeout=30") {
 		t.Fatalf("changed health check timeout missing:\n%s", joined)
 	}
@@ -676,6 +702,37 @@ func TestPlannerBuildsECMPPolicyRouteOperation(t *testing.T) {
 	}
 	if strings.Contains(joined, "lr-policy-add") {
 		t.Fatalf("ECMP policy route must use Logical_Router_Policy nexthops set:\n%s", joined)
+	}
+}
+
+func TestPlannerECMPPolicyRouteNamedUUIDAvoidsEscapedNameCollisions(t *testing.T) {
+	planner := ovn.NewPlanner()
+	for _, name := range []string{"pod-1", "pod_1"} {
+		err := planner.EnsurePolicyRoute(context.Background(), model.PolicyRoute{
+			Name:     name,
+			VPC:      "prod",
+			Priority: 100,
+			Match:    model.RouteMatch{Source: netip.MustParsePrefix("10.10.0.0/24")},
+			Action: model.RouteAction{
+				Type: model.ActionReroute,
+				NextHops: []netip.Addr{
+					netip.MustParseAddr("10.10.0.253"),
+					netip.MustParseAddr("10.10.0.254"),
+				},
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	joined := stringify(planner.Operations())
+	for _, expected := range []string{
+		"--id=@nl_lrp_pod_1 create Logical_Router_Policy",
+		"--id=@nl_lrp_pod__1 create Logical_Router_Policy",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("named UUID encoding missing %q:\n%s", expected, joined)
+		}
 	}
 }
 
