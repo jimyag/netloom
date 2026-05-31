@@ -526,6 +526,68 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 			wantErr: "references unknown security group",
 		},
 		{
+			name: "ingress named port missing on endpoint",
+			mutate: func(state *DesiredState) {
+				state.SecurityGroups[0].Rules[0].RemoteCIDR = netip.Prefix{}
+				state.SecurityGroups[0].Rules[0].NamedPorts = []string{"http"}
+				state.SecurityGroups[0].Rules[0].Ports = nil
+			},
+			wantErr: "security group rule \"allow-client\" named port tcp/http is not defined on endpoint \"pod-a\"",
+		},
+		{
+			name: "egress remote group named port missing on remote endpoint",
+			mutate: func(state *DesiredState) {
+				state.SecurityGroups = append(state.SecurityGroups, model.SecurityGroup{
+					Name: "client",
+					VPC:  "prod",
+					Rules: []model.SecurityGroupRule{{
+						ID:          "egress-web",
+						Direction:   model.DirectionEgress,
+						Protocol:    model.ProtocolTCP,
+						RemoteGroup: "web",
+						NamedPorts:  []string{"http"},
+						Action:      model.ActionAllow,
+					}},
+				})
+				state.Endpoints = append(state.Endpoints, model.Endpoint{
+					ID:             "pod-client",
+					VPC:            "prod",
+					Subnet:         "apps",
+					IP:             netip.MustParseAddr("10.10.0.11"),
+					Node:           "node-a",
+					SecurityGroups: []string{"client"},
+				})
+			},
+			wantErr: "security group rule \"egress-web\" remote endpoint \"pod-a\": security group rule \"egress-web\" named port tcp/http is not defined on endpoint \"pod-a\"",
+		},
+		{
+			name: "egress selector named port missing on remote endpoint",
+			mutate: func(state *DesiredState) {
+				state.Endpoints[0].Labels = model.Labels{"app": "api"}
+				state.SecurityGroups = append(state.SecurityGroups, model.SecurityGroup{
+					Name: "client",
+					VPC:  "prod",
+					Rules: []model.SecurityGroupRule{{
+						ID:                     "egress-api",
+						Direction:              model.DirectionEgress,
+						Protocol:               model.ProtocolTCP,
+						RemoteEndpointSelector: model.Labels{"app": "api"},
+						NamedPorts:             []string{"http"},
+						Action:                 model.ActionAllow,
+					}},
+				})
+				state.Endpoints = append(state.Endpoints, model.Endpoint{
+					ID:             "pod-client",
+					VPC:            "prod",
+					Subnet:         "apps",
+					IP:             netip.MustParseAddr("10.10.0.11"),
+					Node:           "node-a",
+					SecurityGroups: []string{"client"},
+				})
+			},
+			wantErr: "security group rule \"egress-api\" remote endpoint \"pod-a\": security group rule \"egress-api\" named port tcp/http is not defined on endpoint \"pod-a\"",
+		},
+		{
 			name: "endpoint ip conflict",
 			mutate: func(state *DesiredState) {
 				state.Endpoints = append(state.Endpoints, model.Endpoint{

@@ -502,6 +502,9 @@ func validateObjectGraph(state DesiredState) error {
 		endpointIPs[ipKey] = endpoint.ID
 		endpoints[endpoint.ID] = endpoint
 	}
+	if err := validateSecurityGroupNamedPortReferences(state.SecurityGroups, state.Endpoints, securityGroups); err != nil {
+		return err
+	}
 
 	gateways := make(map[string]struct{}, len(state.Gateways))
 	for _, gateway := range state.Gateways {
@@ -589,6 +592,100 @@ func validateObjectGraph(state DesiredState) error {
 		}
 	}
 	return nil
+}
+
+func validateSecurityGroupNamedPortReferences(groups []model.SecurityGroup, endpoints []model.Endpoint, groupByName map[string]model.SecurityGroup) error {
+	for _, endpoint := range endpoints {
+		for _, groupName := range endpoint.SecurityGroups {
+			group := groupByName[groupName]
+			for _, rule := range group.Rules {
+				if len(rule.NamedPorts) == 0 {
+					continue
+				}
+				switch rule.Direction {
+				case model.DirectionIngress:
+					if err := validateEndpointNamedPorts(rule, endpoint); err != nil {
+						return err
+					}
+				case model.DirectionEgress:
+					members, err := egressNamedPortMembers(rule, endpoint, endpoints)
+					if err != nil {
+						return err
+					}
+					for _, member := range members {
+						if err := validateEndpointNamedPorts(rule, member); err != nil {
+							return fmt.Errorf("security group rule %q remote endpoint %q: %w", rule.ID, member.ID, err)
+						}
+					}
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func egressNamedPortMembers(rule model.SecurityGroupRule, endpoint model.Endpoint, endpoints []model.Endpoint) ([]model.Endpoint, error) {
+	switch {
+	case rule.RemoteGroup != "":
+		return endpointsInSecurityGroup(endpoint, endpoints, rule.RemoteGroup), nil
+	case len(rule.RemoteEndpointSelector) > 0 || len(rule.RemoteEndpointExprs) > 0:
+		return endpointsMatchingSelector(endpoint, endpoints, rule.RemoteEndpointSelector, rule.RemoteEndpointExprs), nil
+	default:
+		return nil, fmt.Errorf("security group rule %q named ports require remote_group or remote_endpoint_selector for egress rules", rule.ID)
+	}
+}
+
+func endpointsInSecurityGroup(endpoint model.Endpoint, endpoints []model.Endpoint, groupName string) []model.Endpoint {
+	members := make([]model.Endpoint, 0)
+	for _, candidate := range endpoints {
+		if candidate.ID == endpoint.ID || candidate.VPC != endpoint.VPC {
+			continue
+		}
+		if endpointHasSecurityGroup(candidate, groupName) {
+			members = append(members, candidate)
+		}
+	}
+	return members
+}
+
+func endpointsMatchingSelector(endpoint model.Endpoint, endpoints []model.Endpoint, selector model.Labels, expressions []model.LabelExpr) []model.Endpoint {
+	members := make([]model.Endpoint, 0)
+	for _, candidate := range endpoints {
+		if candidate.ID == endpoint.ID || candidate.VPC != endpoint.VPC {
+			continue
+		}
+		if candidate.Labels.MatchesSelector(selector, expressions) {
+			members = append(members, candidate)
+		}
+	}
+	return members
+}
+
+func endpointHasSecurityGroup(endpoint model.Endpoint, groupName string) bool {
+	for _, attached := range endpoint.SecurityGroups {
+		if attached == groupName {
+			return true
+		}
+	}
+	return false
+}
+
+func validateEndpointNamedPorts(rule model.SecurityGroupRule, endpoint model.Endpoint) error {
+	for _, name := range rule.NamedPorts {
+		if !endpointDefinesNamedPort(endpoint, rule.Protocol, name) {
+			return fmt.Errorf("security group rule %q named port %s/%s is not defined on endpoint %q", rule.ID, rule.Protocol, name, endpoint.ID)
+		}
+	}
+	return nil
+}
+
+func endpointDefinesNamedPort(endpoint model.Endpoint, protocol model.Protocol, name string) bool {
+	for _, port := range endpoint.NamedPorts {
+		if port.Protocol == protocol && port.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 func validateAddressOutsideVPCSubnets(subnets map[string]model.Subnet, vpc string, addr netip.Addr, subject string) error {
