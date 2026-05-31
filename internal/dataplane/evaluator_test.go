@@ -634,6 +634,92 @@ func TestEvaluateStatefulDenyDoesNotCreateConntrack(t *testing.T) {
 	}
 }
 
+func TestEvaluateStatefulDenyOverridesConntrack(t *testing.T) {
+	entries := []PolicyMapEntry{{
+		Key: PolicyKey{
+			PrefixLen:      StaticPrefixBits + 24,
+			RemoteIdentity: 100,
+			Direction:      DirectionEgress,
+			Protocol:       6,
+			DestPortBE:     hostToNetwork16(55000),
+		},
+		Value: PolicyEntry{
+			Deny:        1,
+			L4PrefixLen: 24,
+			Precedence:  math.MaxUint32,
+			RuleCookie:  99,
+		},
+	}}
+	conntrack := NewInMemoryConntrackStore()
+	conntrack.Add(ConntrackKey{
+		EndpointID:     "pod-a",
+		RemoteIdentity: 100,
+		Direction:      DirectionEgress,
+		Protocol:       6,
+		SourcePort:     443,
+		DestPort:       55000,
+	})
+
+	recorder := NewPolicyRecorder()
+	decision := EvaluateStatefulObserved("pod-a", entries, Packet{
+		RemoteIdentity: 100,
+		Direction:      DirectionEgress,
+		Protocol:       6,
+		SourcePort:     443,
+		DestPort:       55000,
+	}, conntrack, recorder)
+	if decision.Verdict != VerdictDrop || decision.Conntrack {
+		t.Fatalf("decision = %+v, want explicit deny to override conntrack", decision)
+	}
+	metrics := recorder.Metrics("pod-a")
+	if metrics.Dropped != 1 || metrics.DenyDrops != 1 || metrics.Allowed != 0 || metrics.Conntrack != 0 {
+		t.Fatalf("metrics = %+v, want one policy deny without conntrack allow", metrics)
+	}
+	events := recorder.DropEvents()
+	if len(events) != 1 || events[0].Reason != DropReasonPolicyDeny || events[0].RuleCookie != 99 {
+		t.Fatalf("drop events = %+v, want explicit deny event", events)
+	}
+}
+
+func TestEvaluateStatefulRejectOverridesConntrack(t *testing.T) {
+	entries := []PolicyMapEntry{{
+		Key: PolicyKey{
+			PrefixLen:      StaticPrefixBits + 24,
+			RemoteIdentity: 100,
+			Direction:      DirectionEgress,
+			Protocol:       6,
+			DestPortBE:     hostToNetwork16(55000),
+		},
+		Value: PolicyEntry{
+			Deny:        1,
+			Reject:      1,
+			L4PrefixLen: 24,
+			Precedence:  math.MaxUint32,
+			RuleCookie:  101,
+		},
+	}}
+	conntrack := NewInMemoryConntrackStore()
+	conntrack.Add(ConntrackKey{
+		EndpointID:     "pod-a",
+		RemoteIdentity: 100,
+		Direction:      DirectionEgress,
+		Protocol:       6,
+		SourcePort:     443,
+		DestPort:       55000,
+	})
+
+	decision := EvaluateStateful("pod-a", entries, Packet{
+		RemoteIdentity: 100,
+		Direction:      DirectionEgress,
+		Protocol:       6,
+		SourcePort:     443,
+		DestPort:       55000,
+	}, conntrack)
+	if decision.Verdict != VerdictReject || decision.Conntrack {
+		t.Fatalf("decision = %+v, want explicit reject to override conntrack", decision)
+	}
+}
+
 func TestConntrackDeleteEndpointRemovesState(t *testing.T) {
 	conntrack := NewInMemoryConntrackStore()
 	conntrack.Add(ConntrackKey{EndpointID: "pod-a", RemoteIdentity: 100, Direction: DirectionEgress, Protocol: 6, DestPort: 55000})

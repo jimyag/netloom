@@ -350,6 +350,13 @@ func EvaluateStateful(endpointID string, entries []PolicyMapEntry, packet Packet
 }
 
 func EvaluateStatefulObserved(endpointID string, entries []PolicyMapEntry, packet Packet, conntrack ConntrackStore, observer PolicyObserver) Decision {
+	decision := evaluate(entries, packet)
+	if decision.Match != nil && (decision.Verdict == VerdictDrop || decision.Verdict == VerdictReject) {
+		if observer != nil {
+			observer.Observe(endpointID, packet, decision)
+		}
+		return decision
+	}
 	if endpointID != "" && conntrack != nil && conntrack.Has(conntrackKey(endpointID, packet)) {
 		decision := Decision{Verdict: VerdictAllow, Conntrack: true}
 		if observer != nil {
@@ -357,7 +364,6 @@ func EvaluateStatefulObserved(endpointID string, entries []PolicyMapEntry, packe
 		}
 		return decision
 	}
-	decision := evaluate(entries, packet)
 	if decision.Verdict != VerdictAllow || decision.Match == nil || decision.Match.Value.Stateful == 0 || conntrack == nil {
 		if observer != nil {
 			observer.Observe(endpointID, packet, decision)
