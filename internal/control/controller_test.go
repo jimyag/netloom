@@ -26,7 +26,7 @@ func TestControllerReconcileSeparatesTopologyFromPolicy(t *testing.T) {
 			VPC:  "prod",
 			Routes: []model.Route{{
 				Destination: netip.MustParsePrefix("0.0.0.0/0"),
-				NextHop:     netip.MustParseAddr("10.10.0.254"),
+				NextHops:    []netip.Addr{netip.MustParseAddr("10.10.0.254")},
 			}},
 		}},
 		PolicyRoutes: []model.PolicyRoute{
@@ -49,8 +49,8 @@ func TestControllerReconcileSeparatesTopologyFromPolicy(t *testing.T) {
 					Protocol:    model.ProtocolTCP,
 				},
 				Action: model.RouteAction{
-					Type:    model.ActionReroute,
-					NextHop: netip.MustParseAddr("10.10.0.253"),
+					Type:     model.ActionReroute,
+					NextHops: []netip.Addr{netip.MustParseAddr("10.10.0.253")},
 				},
 			},
 		},
@@ -543,7 +543,7 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 					VPC:  "missing",
 					Routes: []model.Route{{
 						Destination: netip.MustParsePrefix("0.0.0.0/0"),
-						NextHop:     netip.MustParseAddr("10.10.0.254"),
+						NextHops:    []netip.Addr{netip.MustParseAddr("10.10.0.254")},
 					}},
 				}}
 			},
@@ -609,7 +609,7 @@ func TestControllerRejectsConflictingStaticRoutes(t *testing.T) {
 				VPC:  "prod",
 				Routes: []model.Route{{
 					Destination: netip.MustParsePrefix("0.0.0.0/0"),
-					NextHop:     netip.MustParseAddr("10.10.0.254"),
+					NextHops:    []netip.Addr{netip.MustParseAddr("10.10.0.254")},
 				}},
 			},
 			{
@@ -617,7 +617,7 @@ func TestControllerRejectsConflictingStaticRoutes(t *testing.T) {
 				VPC:  "prod",
 				Routes: []model.Route{{
 					Destination: netip.MustParsePrefix("0.0.0.0/0"),
-					NextHop:     netip.MustParseAddr("10.10.0.253"),
+					NextHops:    []netip.Addr{netip.MustParseAddr("10.10.0.253")},
 				}},
 			},
 		},
@@ -662,7 +662,7 @@ func TestControllerRejectsConflictingPolicyRoutes(t *testing.T) {
 					Protocol:    model.ProtocolTCP,
 					DstPorts:    []model.PortRange{{From: 443, To: 443}},
 				},
-				Action: model.RouteAction{Type: model.ActionReroute, NextHop: netip.MustParseAddr("10.10.0.253")},
+				Action: model.RouteAction{Type: model.ActionReroute, NextHops: []netip.Addr{netip.MustParseAddr("10.10.0.253")}},
 			},
 			{
 				Name:     "private-b",

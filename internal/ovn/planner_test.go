@@ -43,7 +43,7 @@ func TestPlannerMapsNetloomObjectsToOVNOperations(t *testing.T) {
 			VPC:  "prod",
 			Routes: []model.Route{{
 				Destination: netip.MustParsePrefix("0.0.0.0/0"),
-				NextHop:     netip.MustParseAddr("10.10.0.254"),
+				NextHops:    []netip.Addr{netip.MustParseAddr("10.10.0.254")},
 			}},
 		}},
 		PolicyRoutes: []model.PolicyRoute{{
@@ -56,7 +56,7 @@ func TestPlannerMapsNetloomObjectsToOVNOperations(t *testing.T) {
 				Protocol:    model.ProtocolTCP,
 				DstPorts:    []model.PortRange{{From: 443, To: 443}},
 			},
-			Action: model.RouteAction{Type: model.ActionReroute, NextHop: netip.MustParseAddr("10.10.0.253")},
+			Action: model.RouteAction{Type: model.ActionReroute, NextHops: []netip.Addr{netip.MustParseAddr("10.10.0.253")}},
 		}},
 		Gateways: []model.Gateway{{
 			Name:       "gw-a",
@@ -647,7 +647,7 @@ func TestPlannerBuildsPolicyRouteOperation(t *testing.T) {
 			Protocol:    model.ProtocolTCP,
 			DstPorts:    []model.PortRange{{From: 443, To: 443}},
 		},
-		Action: model.RouteAction{Type: model.ActionReroute, NextHop: netip.MustParseAddr("10.10.0.253")},
+		Action: model.RouteAction{Type: model.ActionReroute, NextHops: []netip.Addr{netip.MustParseAddr("10.10.0.253")}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -711,7 +711,7 @@ func TestPlannerBuildsIPv6PolicyRouteOperation(t *testing.T) {
 			Protocol:    model.ProtocolUDP,
 			DstPorts:    []model.PortRange{{From: 53, To: 53}},
 		},
-		Action: model.RouteAction{Type: model.ActionReroute, NextHop: netip.MustParseAddr("fd00:10::fe")},
+		Action: model.RouteAction{Type: model.ActionReroute, NextHops: []netip.Addr{netip.MustParseAddr("fd00:10::fe")}},
 	})
 	if err != nil {
 		t.Fatal(err)

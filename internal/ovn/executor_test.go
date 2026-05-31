@@ -239,7 +239,7 @@ func TestBackendCleanupConvergesChangedPolicyRoute(t *testing.T) {
 			Protocol:    model.ProtocolTCP,
 			DstPorts:    []model.PortRange{{From: 443, To: 443}},
 		},
-		Action: model.RouteAction{Type: model.ActionReroute, NextHop: netip.MustParseAddr("10.10.0.253")},
+		Action: model.RouteAction{Type: model.ActionReroute, NextHops: []netip.Addr{netip.MustParseAddr("10.10.0.253")}},
 	}}
 	controller := control.NewController(backend, control.NewMemoryBackend())
 	if err := controller.Reconcile(context.Background(), first); err != nil {
@@ -247,7 +247,7 @@ func TestBackendCleanupConvergesChangedPolicyRoute(t *testing.T) {
 	}
 
 	second := first
-	second.PolicyRoutes[0].Action.NextHop = netip.MustParseAddr("10.10.0.252")
+	second.PolicyRoutes[0].Action.NextHops = []netip.Addr{netip.MustParseAddr("10.10.0.252")}
 	if err := controller.Reconcile(context.Background(), second); err != nil {
 		t.Fatal(err)
 	}
@@ -309,7 +309,7 @@ func TestBackendCleanupConvergesChangedStaticRoute(t *testing.T) {
 		VPC:  "prod",
 		Routes: []model.Route{{
 			Destination: netip.MustParsePrefix("0.0.0.0/0"),
-			NextHop:     netip.MustParseAddr("10.10.0.254"),
+			NextHops:    []netip.Addr{netip.MustParseAddr("10.10.0.254")},
 		}},
 	}}
 	controller := control.NewController(backend, control.NewMemoryBackend())
@@ -318,7 +318,7 @@ func TestBackendCleanupConvergesChangedStaticRoute(t *testing.T) {
 	}
 
 	second := first
-	second.RouteTables[0].Routes[0].NextHop = netip.MustParseAddr("10.10.0.253")
+	second.RouteTables[0].Routes[0].NextHops = []netip.Addr{netip.MustParseAddr("10.10.0.253")}
 	if err := controller.Reconcile(context.Background(), second); err != nil {
 		t.Fatal(err)
 	}
@@ -346,7 +346,7 @@ func TestBackendCleanupConvergesChangedStaticRouteToECMP(t *testing.T) {
 		VPC:  "prod",
 		Routes: []model.Route{{
 			Destination: netip.MustParsePrefix("0.0.0.0/0"),
-			NextHop:     netip.MustParseAddr("10.10.0.254"),
+			NextHops:    []netip.Addr{netip.MustParseAddr("10.10.0.254")},
 		}},
 	}}
 	controller := control.NewController(backend, control.NewMemoryBackend())
@@ -355,7 +355,7 @@ func TestBackendCleanupConvergesChangedStaticRouteToECMP(t *testing.T) {
 	}
 
 	second := first
-	second.RouteTables[0].Routes[0].NextHop = netip.Addr{}
+	second.RouteTables[0].Routes[0].NextHops = nil
 	second.RouteTables[0].Routes[0].NextHops = []netip.Addr{
 		netip.MustParseAddr("10.10.0.253"),
 		netip.MustParseAddr("10.10.0.254"),

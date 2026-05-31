@@ -486,7 +486,7 @@ func TestResolvePolicyRouteBeatsStaticRoute(t *testing.T) {
 				VPC:  "prod",
 				Routes: []model.Route{{
 					Destination: netip.MustParsePrefix("172.16.0.0/16"),
-					NextHop:     netip.MustParseAddr("10.10.0.254"),
+					NextHops:    []netip.Addr{netip.MustParseAddr("10.10.0.254")},
 				}},
 			},
 		},
@@ -501,8 +501,8 @@ func TestResolvePolicyRouteBeatsStaticRoute(t *testing.T) {
 				DstPorts:    []model.PortRange{{From: 443, To: 443}},
 			},
 			Action: model.RouteAction{
-				Type:    model.ActionReroute,
-				NextHop: netip.MustParseAddr("10.10.0.253"),
+				Type:     model.ActionReroute,
+				NextHops: []netip.Addr{netip.MustParseAddr("10.10.0.253")},
 			},
 		}},
 	}
@@ -586,8 +586,8 @@ func TestResolvePolicyRouteSNATUsesNextHopGateway(t *testing.T) {
 				Destination: netip.MustParsePrefix("172.16.0.0/16"),
 			},
 			Action: model.RouteAction{
-				Type:    model.ActionReroute,
-				NextHop: netip.MustParseAddr("10.10.0.253"),
+				Type:     model.ActionReroute,
+				NextHops: []netip.Addr{netip.MustParseAddr("10.10.0.253")},
 			},
 		}},
 		Gateways: map[string]model.Gateway{
@@ -695,8 +695,8 @@ func TestResolveLongestPrefixStaticRouteAndSNATGateway(t *testing.T) {
 				Name: "main",
 				VPC:  "prod",
 				Routes: []model.Route{
-					{Destination: netip.MustParsePrefix("0.0.0.0/0"), NextHop: netip.MustParseAddr("10.10.0.254")},
-					{Destination: netip.MustParsePrefix("203.0.113.0/24"), NextHop: netip.MustParseAddr("10.10.0.253")},
+					{Destination: netip.MustParsePrefix("0.0.0.0/0"), NextHops: []netip.Addr{netip.MustParseAddr("10.10.0.254")}},
+					{Destination: netip.MustParsePrefix("203.0.113.0/24"), NextHops: []netip.Addr{netip.MustParseAddr("10.10.0.253")}},
 				},
 			},
 		},

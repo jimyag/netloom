@@ -89,7 +89,6 @@ type RouteTable struct {
 
 type Route struct {
 	Destination netip.Prefix `json:"destination"`
-	NextHop     netip.Addr   `json:"next_hop"`
 	NextHops    []netip.Addr `json:"next_hops"`
 	Blackhole   bool         `json:"blackhole"`
 }
@@ -111,7 +110,6 @@ type RouteMatch struct {
 
 type RouteAction struct {
 	Type     Action       `json:"type"`
-	NextHop  netip.Addr   `json:"next_hop"`
 	NextHops []netip.Addr `json:"next_hops"`
 }
 
@@ -534,13 +532,10 @@ func (r Route) Validate() error {
 		return errors.New("route destination is required")
 	}
 	if r.Blackhole {
-		if r.NextHop.IsValid() || len(r.NextHops) > 0 {
+		if len(r.NextHops) > 0 {
 			return errors.New("blackhole route must not set next hop")
 		}
 		return nil
-	}
-	if r.NextHop.IsValid() && len(r.NextHops) > 0 {
-		return errors.New("route must use either next_hop or next_hops, not both")
 	}
 	nextHops := r.RouteNextHops()
 	if len(nextHops) == 0 {
@@ -563,10 +558,7 @@ func (r Route) Validate() error {
 }
 
 func (r Route) RouteNextHops() []netip.Addr {
-	nextHops := make([]netip.Addr, 0, 1+len(r.NextHops))
-	if r.NextHop.IsValid() {
-		nextHops = append(nextHops, r.NextHop)
-	}
+	nextHops := make([]netip.Addr, 0, len(r.NextHops))
 	nextHops = append(nextHops, r.NextHops...)
 	return nextHops
 }
@@ -586,9 +578,6 @@ func (r PolicyRoute) Validate() error {
 	}
 	if !slices.Contains([]Action{ActionAllow, ActionDrop, ActionReroute}, r.Action.Type) {
 		return fmt.Errorf("unsupported policy route action %q", r.Action.Type)
-	}
-	if r.Action.NextHop.IsValid() && len(r.Action.NextHops) > 0 {
-		return errors.New("policy route reroute action must use either next_hop or next_hops, not both")
 	}
 	nextHops := r.Action.RerouteNextHops()
 	if r.Action.Type == ActionReroute && len(nextHops) == 0 {
@@ -623,10 +612,7 @@ func (r PolicyRoute) Validate() error {
 }
 
 func (a RouteAction) RerouteNextHops() []netip.Addr {
-	nextHops := make([]netip.Addr, 0, 1+len(a.NextHops))
-	if a.NextHop.IsValid() {
-		nextHops = append(nextHops, a.NextHop)
-	}
+	nextHops := make([]netip.Addr, 0, len(a.NextHops))
 	nextHops = append(nextHops, a.NextHops...)
 	return nextHops
 }

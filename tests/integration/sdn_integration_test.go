@@ -340,7 +340,7 @@ const integrationStateJSON = `{
     {"id": "pod-b", "vpc": "prod", "subnet": "apps", "ip": "10.10.0.11", "node": "node-b", "security_groups": ["server"], "labels": {"app": "server", "env": "prod"}}
   ],
   "route_tables": [{"name": "main", "vpc": "prod", "routes": [{"destination": "0.0.0.0/0", "next_hops": ["10.10.0.253", "10.10.0.254"]}]}],
-  "policy_routes": [{"name": "https-via-fw", "vpc": "prod", "priority": 100, "match": {"source": "10.10.0.0/24", "destination": "172.16.0.0/16", "protocol": "tcp", "dst_ports": [{"from": 443, "to": 443}]}, "action": {"type": "reroute", "next_hop": "10.10.0.253"}}],
+  "policy_routes": [{"name": "https-via-fw", "vpc": "prod", "priority": 100, "match": {"source": "10.10.0.0/24", "destination": "172.16.0.0/16", "protocol": "tcp", "dst_ports": [{"from": 443, "to": 443}]}, "action": {"type": "reroute", "next_hops": ["10.10.0.253"]}}],
   "gateways": [
     {"name": "gw-a", "vpc": "prod", "node": "node-a", "external_if": "eth0", "lan_ip": "10.10.0.254"},
     {"name": "gw-b", "vpc": "prod", "node": "node-b", "external_if": "eth0", "lan_ip": "10.10.0.253"}

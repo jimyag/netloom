@@ -138,8 +138,8 @@ func TestPlanProgramsLinuxPolicyRoutes(t *testing.T) {
 				DstPorts:    []model.PortRange{{From: 443, To: 443}},
 			},
 			Action: model.RouteAction{
-				Type:    model.ActionReroute,
-				NextHop: netip.MustParseAddr("10.10.0.253"),
+				Type:     model.ActionReroute,
+				NextHops: []netip.Addr{netip.MustParseAddr("10.10.0.253")},
 			},
 		}, {
 			Name:     "drop-lab",
@@ -255,8 +255,8 @@ func TestPlanProgramsIPv6LinuxPolicyRoute(t *testing.T) {
 				Protocol: model.ProtocolICMP,
 			},
 			Action: model.RouteAction{
-				Type:    model.ActionReroute,
-				NextHop: netip.MustParseAddr("fd00:10::fe"),
+				Type:     model.ActionReroute,
+				NextHops: []netip.Addr{netip.MustParseAddr("fd00:10::fe")},
 			},
 		}},
 	}
@@ -378,7 +378,7 @@ func TestPlanSkipsPolicyRoutesWithoutLocalVPC(t *testing.T) {
 			VPC:      "other",
 			Priority: 100,
 			Match:    model.RouteMatch{Destination: netip.MustParsePrefix("172.16.0.0/16")},
-			Action:   model.RouteAction{Type: model.ActionReroute, NextHop: netip.MustParseAddr("10.10.0.253")},
+			Action:   model.RouteAction{Type: model.ActionReroute, NextHops: []netip.Addr{netip.MustParseAddr("10.10.0.253")}},
 		}},
 	}
 	ops, result, err := Plan(context.Background(), state, Options{Node: "node-a", UnderlayDevice: "eth9"})
@@ -472,7 +472,7 @@ func TestNetlinkPolicyRuleEncodesL4Match(t *testing.T) {
 			Protocol:    model.ProtocolTCP,
 			DstPorts:    []model.PortRange{{From: 443, To: 443}},
 		},
-		Action: model.RouteAction{Type: model.ActionReroute, NextHop: netip.MustParseAddr("10.10.0.253")},
+		Action: model.RouteAction{Type: model.ActionReroute, NextHops: []netip.Addr{netip.MustParseAddr("10.10.0.253")}},
 	}
 	rules := netlinkPolicyRules(route, linuxPolicyRulePriority(route.Priority), 20000)
 	if len(rules) != 1 {
@@ -499,7 +499,7 @@ func TestNetlinkPolicyRuleEncodesIPv6Family(t *testing.T) {
 			Source:   netip.MustParsePrefix("fd00:10::/64"),
 			Protocol: model.ProtocolICMP,
 		},
-		Action: model.RouteAction{Type: model.ActionReroute, NextHop: netip.MustParseAddr("fd00:10::fe")},
+		Action: model.RouteAction{Type: model.ActionReroute, NextHops: []netip.Addr{netip.MustParseAddr("fd00:10::fe")}},
 	}
 	rules := netlinkPolicyRules(route, linuxPolicyRulePriority(route.Priority), 20000)
 	if len(rules) != 1 {

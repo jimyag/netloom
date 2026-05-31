@@ -54,7 +54,7 @@ func runSelfTest(ctx context.Context, executor ovn.Executor) (SelfTestResult, er
 			VPC:  "default",
 			Routes: []model.Route{{
 				Destination: netip.MustParsePrefix("0.0.0.0/0"),
-				NextHop:     netip.MustParseAddr("10.244.0.254"),
+				NextHops:    []netip.Addr{netip.MustParseAddr("10.244.0.254")},
 			}},
 		}},
 		PolicyRoutes: []model.PolicyRoute{{
@@ -68,8 +68,8 @@ func runSelfTest(ctx context.Context, executor ovn.Executor) (SelfTestResult, er
 				DstPorts:    []model.PortRange{{From: 443, To: 443}},
 			},
 			Action: model.RouteAction{
-				Type:    model.ActionReroute,
-				NextHop: netip.MustParseAddr("10.244.0.253"),
+				Type:     model.ActionReroute,
+				NextHops: []netip.Addr{netip.MustParseAddr("10.244.0.253")},
 			},
 		}},
 		Gateways: []model.Gateway{{
