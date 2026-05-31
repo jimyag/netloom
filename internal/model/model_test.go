@@ -297,6 +297,161 @@ func TestModelRejectsUnspecifiedConcreteAddresses(t *testing.T) {
 	}
 }
 
+func TestModelRejectsUnmaskedPrefixes(t *testing.T) {
+	tests := []struct {
+		name    string
+		valid   func() error
+		wantErr string
+	}{
+		{
+			name: "subnet cidr",
+			valid: func() error {
+				return Subnet{
+					Name:    "apps",
+					VPC:     "prod",
+					CIDR:    netip.MustParsePrefix("10.10.0.10/24"),
+					Gateway: netip.MustParseAddr("10.10.0.1"),
+				}.Validate()
+			},
+			wantErr: "subnet cidr must be masked",
+		},
+		{
+			name: "subnet exclude cidr",
+			valid: func() error {
+				return Subnet{
+					Name:         "apps",
+					VPC:          "prod",
+					CIDR:         netip.MustParsePrefix("10.10.0.0/24"),
+					Gateway:      netip.MustParseAddr("10.10.0.1"),
+					ExcludeCIDRs: []netip.Prefix{netip.MustParsePrefix("10.10.0.20/28")},
+				}.Validate()
+			},
+			wantErr: "subnet exclude cidr 0 must be masked",
+		},
+		{
+			name: "route destination",
+			valid: func() error {
+				return Route{
+					Destination: netip.MustParsePrefix("198.51.100.10/24"),
+					NextHops:    []netip.Addr{netip.MustParseAddr("198.51.100.1")},
+				}.Validate()
+			},
+			wantErr: "route destination must be masked",
+		},
+		{
+			name: "policy route source",
+			valid: func() error {
+				return PolicyRoute{
+					Name:     "egress",
+					VPC:      "prod",
+					Priority: 100,
+					Match:    RouteMatch{Source: netip.MustParsePrefix("10.10.0.10/24")},
+					Action:   RouteAction{Type: ActionDrop},
+				}.Validate()
+			},
+			wantErr: "source prefix must be masked",
+		},
+		{
+			name: "policy route destination",
+			valid: func() error {
+				return PolicyRoute{
+					Name:     "egress",
+					VPC:      "prod",
+					Priority: 100,
+					Match:    RouteMatch{Destination: netip.MustParsePrefix("198.51.100.10/24")},
+					Action:   RouteAction{Type: ActionDrop},
+				}.Validate()
+			},
+			wantErr: "destination prefix must be masked",
+		},
+		{
+			name: "snat match cidr",
+			valid: func() error {
+				return NATRule{
+					Name:       "egress",
+					VPC:        "prod",
+					Type:       ActionSNAT,
+					MatchCIDR:  netip.MustParsePrefix("10.10.0.10/24"),
+					ExternalIP: netip.MustParseAddr("198.51.100.10"),
+				}.Validate()
+			},
+			wantErr: "snat match cidr must be masked",
+		},
+		{
+			name: "remote cidr",
+			valid: func() error {
+				return SecurityGroupRule{
+					ID:         "allow-corp",
+					Priority:   100,
+					Direction:  DirectionEgress,
+					Protocol:   ProtocolTCP,
+					RemoteCIDR: netip.MustParsePrefix("198.51.100.10/24"),
+					Ports:      []PortRange{{From: 443, To: 443}},
+					Action:     ActionAllow,
+				}.Validate()
+			},
+			wantErr: "remote cidr must be masked",
+		},
+		{
+			name: "remote cidr except",
+			valid: func() error {
+				return SecurityGroupRule{
+					ID:          "allow-corp",
+					Priority:    100,
+					Direction:   DirectionEgress,
+					Protocol:    ProtocolTCP,
+					RemoteCIDR:  netip.MustParsePrefix("198.51.100.0/24"),
+					ExceptCIDRs: []netip.Prefix{netip.MustParsePrefix("198.51.100.10/28")},
+					Ports:       []PortRange{{From: 443, To: 443}},
+					Action:      ActionAllow,
+				}.Validate()
+			},
+			wantErr: "except cidr 0 must be masked",
+		},
+		{
+			name: "cidr group cidr",
+			valid: func() error {
+				return CIDRGroup{
+					Name:  "corp",
+					VPC:   "prod",
+					CIDRs: []netip.Prefix{netip.MustParsePrefix("198.51.100.10/24")},
+				}.Validate()
+			},
+			wantErr: "cidr group cidr 0 must be masked",
+		},
+		{
+			name: "cidr group entry",
+			valid: func() error {
+				return CIDRGroupEntry{
+					CIDR: netip.MustParsePrefix("198.51.100.10/24"),
+				}.Validate()
+			},
+			wantErr: "cidr must be masked",
+		},
+		{
+			name: "cidr group entry except",
+			valid: func() error {
+				return CIDRGroupEntry{
+					CIDR:        netip.MustParsePrefix("198.51.100.0/24"),
+					ExceptCIDRs: []netip.Prefix{netip.MustParsePrefix("198.51.100.10/28")},
+				}.Validate()
+			},
+			wantErr: "except cidr 0 must be masked",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.valid()
+			if err == nil {
+				t.Fatal("expected validation to fail")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error %q does not contain %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestSubnetDHCPValidation(t *testing.T) {
 	subnet := Subnet{
 		Name:    "apps",
@@ -1174,8 +1329,8 @@ func TestCIDRGroupValidation(t *testing.T) {
 		{name: "name required", group: CIDRGroup{VPC: "prod", CIDRs: group.CIDRs}, wantErr: "name is required"},
 		{name: "vpc required", group: CIDRGroup{Name: "corp", CIDRs: group.CIDRs}, wantErr: "vpc is required"},
 		{name: "cidrs or entries required", group: CIDRGroup{Name: "corp", VPC: "prod"}, wantErr: "cidrs or entries are required"},
-		{name: "duplicate cidr", group: CIDRGroup{Name: "corp", VPC: "prod", CIDRs: []netip.Prefix{netip.MustParsePrefix("10.20.0.1/16"), netip.MustParsePrefix("10.20.0.0/16")}}, wantErr: "duplicated"},
-		{name: "duplicate entry cidr", group: CIDRGroup{Name: "corp", VPC: "prod", CIDRs: []netip.Prefix{netip.MustParsePrefix("10.20.0.0/16")}, Entries: []CIDRGroupEntry{{CIDR: netip.MustParsePrefix("10.20.0.1/16")}}}, wantErr: "duplicated"},
+		{name: "duplicate cidr", group: CIDRGroup{Name: "corp", VPC: "prod", CIDRs: []netip.Prefix{netip.MustParsePrefix("10.20.0.0/16"), netip.MustParsePrefix("10.20.0.0/16")}}, wantErr: "duplicated"},
+		{name: "duplicate entry cidr", group: CIDRGroup{Name: "corp", VPC: "prod", CIDRs: []netip.Prefix{netip.MustParsePrefix("10.20.0.0/16")}, Entries: []CIDRGroupEntry{{CIDR: netip.MustParsePrefix("10.20.0.0/16")}}}, wantErr: "duplicated"},
 		{name: "entry except family mismatch", group: CIDRGroup{Name: "corp", VPC: "prod", Entries: []CIDRGroupEntry{{CIDR: netip.MustParsePrefix("10.20.0.0/16"), ExceptCIDRs: []netip.Prefix{netip.MustParsePrefix("2001:db8::/64")}}}}, wantErr: "family must match"},
 		{name: "entry except outside cidr", group: CIDRGroup{Name: "corp", VPC: "prod", Entries: []CIDRGroupEntry{{CIDR: netip.MustParsePrefix("10.20.0.0/16"), ExceptCIDRs: []netip.Prefix{netip.MustParsePrefix("10.30.0.0/16")}}}}, wantErr: "must be contained"},
 	}

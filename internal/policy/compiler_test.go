@@ -1679,7 +1679,7 @@ func TestCompileForEndpointWithContextExpandsRemoteCIDRGroup(t *testing.T) {
 				VPC:   "prod",
 				CIDRs: []netip.Prefix{netip.MustParsePrefix("2001:db8::/64")},
 				Entries: []model.CIDRGroupEntry{{
-					CIDR:        netip.MustParsePrefix("10.20.1.1/16"),
+					CIDR:        netip.MustParsePrefix("10.20.0.0/16"),
 					ExceptCIDRs: []netip.Prefix{netip.MustParsePrefix("10.20.128.0/17")},
 				}},
 			},

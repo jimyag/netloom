@@ -273,6 +273,9 @@ func (s Subnet) Validate() error {
 	if !s.CIDR.IsValid() {
 		return errors.New("subnet cidr is required")
 	}
+	if err := validateMaskedPrefix(s.CIDR, "subnet cidr"); err != nil {
+		return err
+	}
 	if !s.Gateway.IsValid() {
 		return errors.New("subnet gateway is required")
 	}
@@ -286,6 +289,9 @@ func (s Subnet) Validate() error {
 	for i, exclude := range s.ExcludeCIDRs {
 		if !exclude.IsValid() {
 			return fmt.Errorf("subnet exclude cidr %d is invalid", i)
+		}
+		if err := validateMaskedPrefix(exclude, fmt.Sprintf("subnet exclude cidr %d", i)); err != nil {
+			return err
 		}
 		exclude = exclude.Masked()
 		if exclude.Addr().Is4() != s.CIDR.Addr().Is4() {
@@ -553,6 +559,9 @@ func (r Route) Validate() error {
 	if !r.Destination.IsValid() {
 		return errors.New("route destination is required")
 	}
+	if err := validateMaskedPrefix(r.Destination, "route destination"); err != nil {
+		return err
+	}
 	if r.Blackhole {
 		if len(r.NextHops) > 0 {
 			return errors.New("blackhole route must not set next hop")
@@ -655,6 +664,16 @@ func (m RouteMatch) Validate() error {
 	if !validProtocol(m.Protocol) {
 		return fmt.Errorf("unsupported protocol %q", m.Protocol)
 	}
+	if m.Source.IsValid() {
+		if err := validateMaskedPrefix(m.Source, "source prefix"); err != nil {
+			return err
+		}
+	}
+	if m.Destination.IsValid() {
+		if err := validateMaskedPrefix(m.Destination, "destination prefix"); err != nil {
+			return err
+		}
+	}
 	if m.Source.IsValid() && m.Destination.IsValid() && m.Source.Addr().Is4() != m.Destination.Addr().Is4() {
 		return errors.New("source and destination prefixes must use the same IP family")
 	}
@@ -729,6 +748,9 @@ func (n NATRule) Validate() error {
 	case ActionSNAT:
 		if !n.MatchCIDR.IsValid() {
 			return errors.New("snat match cidr is required")
+		}
+		if err := validateMaskedPrefix(n.MatchCIDR, "snat match cidr"); err != nil {
+			return err
 		}
 		if n.ExternalIP.Is4() != n.MatchCIDR.Addr().Is4() {
 			return errors.New("snat external ip family must match cidr")
@@ -1037,6 +1059,9 @@ func (g CIDRGroup) Validate() error {
 		if !cidr.IsValid() {
 			return fmt.Errorf("cidr group cidr %d is invalid", i)
 		}
+		if err := validateMaskedPrefix(cidr, fmt.Sprintf("cidr group cidr %d", i)); err != nil {
+			return err
+		}
 		cidr = cidr.Masked()
 		if _, ok := seen[cidr]; ok {
 			return fmt.Errorf("cidr group cidr %s is duplicated", cidr)
@@ -1060,11 +1085,17 @@ func (e CIDRGroupEntry) Validate() error {
 	if !e.CIDR.IsValid() {
 		return errors.New("cidr is invalid")
 	}
+	if err := validateMaskedPrefix(e.CIDR, "cidr"); err != nil {
+		return err
+	}
 	cidr := e.CIDR.Masked()
 	seen := make(map[netip.Prefix]struct{}, len(e.ExceptCIDRs))
 	for i, except := range e.ExceptCIDRs {
 		if !except.IsValid() {
 			return fmt.Errorf("except cidr %d is invalid", i)
+		}
+		if err := validateMaskedPrefix(except, fmt.Sprintf("except cidr %d", i)); err != nil {
+			return err
 		}
 		except = except.Masked()
 		if except.Addr().Is4() != cidr.Addr().Is4() {
@@ -1182,10 +1213,18 @@ func (r SecurityGroupRule) Validate() error {
 	if len(r.ExceptCIDRs) > 0 && !r.RemoteCIDR.IsValid() {
 		return errors.New("except cidrs require remote cidr")
 	}
+	if r.RemoteCIDR.IsValid() {
+		if err := validateMaskedPrefix(r.RemoteCIDR, "remote cidr"); err != nil {
+			return err
+		}
+	}
 	seenExceptCIDRs := make(map[netip.Prefix]struct{}, len(r.ExceptCIDRs))
 	for i, except := range r.ExceptCIDRs {
 		if !except.IsValid() {
 			return fmt.Errorf("except cidr %d is invalid", i)
+		}
+		if err := validateMaskedPrefix(except, fmt.Sprintf("except cidr %d", i)); err != nil {
+			return err
 		}
 		except = except.Masked()
 		if except.Addr().Is4() != r.RemoteCIDR.Addr().Is4() {
@@ -1226,6 +1265,13 @@ func prefixContainsPrefix(parent, child netip.Prefix) bool {
 		parent.Bits() <= child.Bits() &&
 		parent.Contains(child.Addr()) &&
 		parent.Contains(prefixLastAddr(child))
+}
+
+func validateMaskedPrefix(prefix netip.Prefix, name string) error {
+	if prefix != prefix.Masked() {
+		return fmt.Errorf("%s must be masked", name)
+	}
+	return nil
 }
 
 func prefixLastAddr(prefix netip.Prefix) netip.Addr {
