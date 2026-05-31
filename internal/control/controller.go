@@ -353,6 +353,11 @@ func validateObjectGraph(state DesiredState) error {
 		if _, ok := vpcs[subnet.VPC]; !ok {
 			return fmt.Errorf("subnet %q references unknown vpc %q", subnet.Name, subnet.VPC)
 		}
+		for _, existing := range subnets {
+			if existing.VPC == subnet.VPC && prefixesOverlap(existing.CIDR, subnet.CIDR) {
+				return fmt.Errorf("subnet %q cidr %s overlaps with subnet %q cidr %s in vpc %q", subnet.Name, subnet.CIDR, existing.Name, existing.CIDR, subnet.VPC)
+			}
+		}
 		subnets[subnet.Name] = subnet
 	}
 
@@ -841,6 +846,15 @@ func subnetContainingPrefix(subnets map[string]model.Subnet, vpc string, prefix 
 		}
 	}
 	return model.Subnet{}, false
+}
+
+func prefixesOverlap(left, right netip.Prefix) bool {
+	left = left.Masked()
+	right = right.Masked()
+	if !left.IsValid() || !right.IsValid() || left.Addr().Is4() != right.Addr().Is4() {
+		return false
+	}
+	return left.Contains(right.Addr()) || right.Contains(left.Addr())
 }
 
 func prefixLastAddress(prefix netip.Prefix) netip.Addr {

@@ -1046,6 +1046,39 @@ func TestControllerRejectsDuplicateRouteTableNames(t *testing.T) {
 	}
 }
 
+func TestControllerRejectsOverlappingSubnetsInSameVPC(t *testing.T) {
+	state := DesiredState{
+		VPCs: []model.VPC{{Name: "prod"}, {Name: "dev"}},
+		Subnets: []model.Subnet{
+			{
+				Name:    "apps",
+				VPC:     "prod",
+				CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+				Gateway: netip.MustParseAddr("10.10.0.1"),
+			},
+			{
+				Name:    "apps-overlap",
+				VPC:     "prod",
+				CIDR:    netip.MustParsePrefix("10.10.0.128/25"),
+				Gateway: netip.MustParseAddr("10.10.0.129"),
+			},
+			{
+				Name:    "dev-apps",
+				VPC:     "dev",
+				CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+				Gateway: netip.MustParseAddr("10.10.0.1"),
+			},
+		},
+	}
+	err := NewController(NewMemoryBackend(), NewMemoryBackend()).Reconcile(context.Background(), state)
+	if err == nil {
+		t.Fatal("expected overlapping subnets in the same vpc to fail")
+	}
+	if !strings.Contains(err.Error(), "overlaps") || !strings.Contains(err.Error(), "prod") {
+		t.Fatalf("error %q does not describe same-vpc subnet overlap", err)
+	}
+}
+
 func TestControllerRejectsConflictingPolicyRoutes(t *testing.T) {
 	state := DesiredState{
 		VPCs: []model.VPC{{Name: "prod"}},
