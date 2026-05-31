@@ -282,8 +282,14 @@ func canonicalPolicyMapEntries(entries []PolicyMapEntry) ([]PolicyMapEntry, erro
 	for _, entry := range entries {
 		existing, ok := byKey[entry.Key]
 		if !ok || betterPolicyMapEntry(entry, existing) {
+			if ok && entry.RemoteCIDR != existing.RemoteCIDR {
+				return nil, fmt.Errorf("conflicting policy map entries for identical key and remote cidr metadata")
+			}
 			byKey[entry.Key] = entry
 			continue
+		}
+		if entry.RemoteCIDR != existing.RemoteCIDR {
+			return nil, fmt.Errorf("conflicting policy map entries for identical key and remote cidr metadata")
 		}
 		if samePolicyMapPriority(entry, existing) && entry.Value != existing.Value {
 			return nil, fmt.Errorf("conflicting policy map entries for identical key")

@@ -455,6 +455,60 @@ func TestPlanPolicyUpdateDetectsRemoteCIDRMetadataChange(t *testing.T) {
 	}
 }
 
+func TestCanonicalPolicyMapEntriesRejectsRemoteCIDRIdentityCollision(t *testing.T) {
+	key := PolicyKey{
+		PrefixLen:      StaticPrefixBits + 24,
+		RemoteIdentity: 100,
+		Direction:      DirectionIngress,
+		Protocol:       6,
+		DestPortBE:     hostToNetwork16(443),
+	}
+	entries := []PolicyMapEntry{
+		{
+			Key:        key,
+			Value:      PolicyEntry{L4PrefixLen: 24, Precedence: 100},
+			RemoteCIDR: netip.MustParsePrefix("10.20.0.0/24"),
+		},
+		{
+			Key:        key,
+			Value:      PolicyEntry{L4PrefixLen: 24, Precedence: 100},
+			RemoteCIDR: netip.MustParsePrefix("10.30.0.0/24"),
+		},
+	}
+
+	_, err := canonicalPolicyMapEntries(entries)
+	if err == nil || !strings.Contains(err.Error(), "remote cidr metadata") {
+		t.Fatalf("error = %v, want remote cidr metadata collision", err)
+	}
+}
+
+func TestCanonicalPolicyMapEntriesRejectsHigherPrecedenceRemoteCIDRCollision(t *testing.T) {
+	key := PolicyKey{
+		PrefixLen:      StaticPrefixBits + 24,
+		RemoteIdentity: 100,
+		Direction:      DirectionIngress,
+		Protocol:       6,
+		DestPortBE:     hostToNetwork16(443),
+	}
+	entries := []PolicyMapEntry{
+		{
+			Key:        key,
+			Value:      PolicyEntry{L4PrefixLen: 24, Precedence: 100},
+			RemoteCIDR: netip.MustParsePrefix("10.20.0.0/24"),
+		},
+		{
+			Key:        key,
+			Value:      PolicyEntry{L4PrefixLen: 24, Precedence: 200},
+			RemoteCIDR: netip.MustParsePrefix("10.30.0.0/24"),
+		},
+	}
+
+	_, err := canonicalPolicyMapEntries(entries)
+	if err == nil || !strings.Contains(err.Error(), "remote cidr metadata") {
+		t.Fatalf("error = %v, want higher precedence remote cidr collision", err)
+	}
+}
+
 func TestInMemoryPolicyStoreAppliesIncrementalStats(t *testing.T) {
 	store := NewInMemoryPolicyStore()
 	first := []PolicyMapEntry{{
