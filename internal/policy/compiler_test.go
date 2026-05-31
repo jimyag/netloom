@@ -1139,6 +1139,54 @@ func TestCompileForEndpointWithContextRemoteServiceAnyProtocolHonorsExplicitPort
 	}
 }
 
+func TestCompileForEndpointWithContextRemoteServiceNarrowsExplicitPortRangeToFrontend(t *testing.T) {
+	endpoint := model.Endpoint{
+		ID:             "pod-client",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"client"},
+	}
+	program, err := CompileForEndpointWithContext(endpoint, map[string]model.SecurityGroup{
+		"client": {
+			Name: "client",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:            "egress-web-service",
+				Priority:      100,
+				Direction:     model.DirectionEgress,
+				Protocol:      model.ProtocolAny,
+				RemoteService: "web",
+				Ports:         []model.PortRange{{From: 80, To: 90}},
+				Action:        model.ActionAllow,
+			}},
+		},
+	}, CompileContext{Services: []model.LoadBalancer{{
+		Name: "web",
+		VPC:  "prod",
+		VIP:  netip.MustParseAddr("10.96.0.10"),
+		Ports: []model.LoadBalancerPort{
+			{Port: 80, Protocol: model.ProtocolTCP, Backends: []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.20"), Port: 8080}}},
+			{Port: 91, Protocol: model.ProtocolTCP, Backends: []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.21"), Port: 9091}}},
+		},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(program.Rules) != 1 || len(program.MapEntries) != 1 {
+		t.Fatalf("program rules=%d entries=%d, want only frontend within explicit range", len(program.Rules), len(program.MapEntries))
+	}
+	rule := program.Rules[0]
+	if len(rule.Ports) != 1 || rule.Ports[0].From != 80 || rule.Ports[0].To != 80 {
+		t.Fatalf("service rule ports=%+v, want narrowed frontend port 80", rule.Ports)
+	}
+	entry := program.MapEntries[0]
+	if entry.Key.Protocol != model.ProtocolTCP || entry.Key.DestPort != 80 || entry.Key.L4PrefixBits != 24 {
+		t.Fatalf("service entry key = %+v, want exact tcp/80 only", entry.Key)
+	}
+}
+
 func TestCompileForEndpointWithContextRejectsRemoteServiceWithoutMatchingFrontend(t *testing.T) {
 	endpoint := model.Endpoint{
 		ID:             "pod-client",

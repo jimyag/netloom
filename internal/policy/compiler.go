@@ -512,9 +512,7 @@ func expandServiceRule(base Rule, services map[string]model.LoadBalancer) ([]Rul
 		if expanded.Protocol == "" || expanded.Protocol == model.ProtocolAny {
 			expanded.Protocol = frontend.Protocol
 		}
-		if len(expanded.Ports) == 0 {
-			expanded.Ports = []model.PortRange{{From: frontend.Port, To: frontend.Port}}
-		}
+		expanded.Ports = []model.PortRange{{From: frontend.Port, To: frontend.Port}}
 		key := expanded.RemoteCIDR.String() + "|" + string(expanded.Protocol) + "|" + portRangesKey(expanded.Ports)
 		if _, ok := seen[key]; ok {
 			continue

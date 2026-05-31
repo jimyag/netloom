@@ -227,7 +227,10 @@ same-VPC desired-state `LoadBalancer`; the compiler expands it to the service
 VIP as `/32` or `/128`. If the rule does not pin a concrete protocol or port,
 the expanded ACL inherits the LoadBalancer protocol and frontend port, so the
 eBPF policy map enforces the service-facing tuple while topology resolution can
-still translate the VIP to a healthy backend.
+still translate the VIP to a healthy backend. If the rule provides an explicit
+port range, that range is used only to select matching service frontends; each
+compiled ACL is narrowed back to the exact frontend port, avoiding accidental
+VIP exposure for nearby ports in the same range.
 
 Remote entities follow the Cilium `toEntities` and `fromEntities` shape for
 common destination classes that should not be repeated as hand-written CIDRs.
