@@ -410,6 +410,7 @@ func dhcpv4OptionsArgs(subnet model.Subnet, endpoint model.Endpoint) []string {
 	if subnet.DHCP.MTU != 0 {
 		args = append(args, fmt.Sprintf("options:mtu=%d", subnet.DHCP.MTU))
 	}
+	args = append(args, dhcpDNSOptions(subnet)...)
 	return args
 }
 
@@ -421,6 +422,25 @@ func dhcpv6OptionsArgs(subnet model.Subnet, endpoint model.Endpoint) []string {
 		"external_ids:netloom_owner=netloom",
 		"external_ids:netloom_subnet=" + subnet.Name,
 		"external_ids:netloom_endpoint=" + endpoint.ID,
+	}
+	args = append(args, dhcpDNSOptions(subnet)...)
+	return args
+}
+
+func dhcpDNSOptions(subnet model.Subnet) []string {
+	var args []string
+	if len(subnet.DHCP.DNSServers) > 0 {
+		servers := make([]string, 0, len(subnet.DHCP.DNSServers))
+		for _, server := range subnet.DHCP.DNSServers {
+			servers = append(servers, server.String())
+		}
+		args = append(args, "options:dns_server="+ovnStringSetValues(servers))
+	}
+	if subnet.DHCP.DomainName != "" {
+		args = append(args, "options:domain_name="+subnet.DHCP.DomainName)
+	}
+	if len(subnet.DHCP.SearchDomains) > 0 {
+		args = append(args, "options:domain_search_list="+ovnStringSetValues(subnet.DHCP.SearchDomains))
 	}
 	return args
 }

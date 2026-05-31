@@ -22,7 +22,14 @@ func TestPlannerMapsNetloomObjectsToOVNOperations(t *testing.T) {
 			Gateway:         netip.MustParseAddr("10.10.0.1"),
 			ProviderNetwork: "physnet-a",
 			VLAN:            100,
-			DHCP:            model.DHCPOptions{Enabled: true, LeaseTime: 7200, MTU: 1400},
+			DHCP: model.DHCPOptions{
+				Enabled:       true,
+				LeaseTime:     7200,
+				MTU:           1400,
+				DNSServers:    []netip.Addr{netip.MustParseAddr("10.96.0.10"), netip.MustParseAddr("fd00:96::10")},
+				DomainName:    "svc.cluster.local",
+				SearchDomains: []string{"cluster.local", "svc.cluster.local"},
+			},
 		}},
 		Endpoints: []model.Endpoint{{
 			ID:     "pod-a",
@@ -107,6 +114,9 @@ func TestPlannerMapsNetloomObjectsToOVNOperations(t *testing.T) {
 		"--id=@nl_dhcp_pod_a create DHCP_Options cidr=10.10.0.0/24",
 		"options:server_id=10.10.0.1",
 		"options:server_mac=0a:58:3e:f3:95:f0",
+		"options:dns_server=[\"10.96.0.10\",\"fd00:96::10\"]",
+		"options:domain_name=svc.cluster.local",
+		"options:domain_search_list=[\"cluster.local\",\"svc.cluster.local\"]",
 		"options:lease_time=7200",
 		"options:mtu=1400",
 		"lsp-set-dhcpv4-options nl_lp_pod-a",
@@ -276,7 +286,14 @@ func TestPlannerBuildsIPv6DHCPOptions(t *testing.T) {
 		VPC:     "prod",
 		CIDR:    netip.MustParsePrefix("fd00:10::/64"),
 		Gateway: netip.MustParseAddr("fd00:10::1"),
-		DHCP:    model.DHCPOptions{Enabled: true, LeaseTime: 7200, MTU: 1400},
+		DHCP: model.DHCPOptions{
+			Enabled:       true,
+			LeaseTime:     7200,
+			MTU:           1400,
+			DNSServers:    []netip.Addr{netip.MustParseAddr("fd00:96::10")},
+			DomainName:    "svc.cluster.local",
+			SearchDomains: []string{"cluster.local"},
+		},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -296,6 +313,9 @@ func TestPlannerBuildsIPv6DHCPOptions(t *testing.T) {
 		"lsp-set-dhcpv6-options nl_lp_pod-v6",
 		"--id=@nl_dhcp6_pod_v6 create DHCP_Options cidr=fd00:10::/64",
 		"options:server_id=0a:58:85:d4:23:26",
+		"options:dns_server=[\"fd00:96::10\"]",
+		"options:domain_name=svc.cluster.local",
+		"options:domain_search_list=[\"cluster.local\"]",
 		"set logical_switch_port nl_lp_pod-v6 dhcpv6_options=@nl_dhcp6_pod_v6",
 	} {
 		if !strings.Contains(joined, expected) {

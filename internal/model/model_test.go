@@ -35,7 +35,14 @@ func TestCoreNetworkResourcesValidateRequiredFields(t *testing.T) {
 					Gateway:         netip.MustParseAddr("10.10.0.1"),
 					ProviderNetwork: "physnet-a",
 					VLAN:            100,
-					DHCP:            DHCPOptions{Enabled: true, LeaseTime: 3600, MTU: 1450},
+					DHCP: DHCPOptions{
+						Enabled:       true,
+						LeaseTime:     3600,
+						MTU:           1450,
+						DNSServers:    []netip.Addr{netip.MustParseAddr("10.96.0.10")},
+						DomainName:    "svc.cluster.local",
+						SearchDomains: []string{"cluster.local"},
+					},
 				}.Validate()
 			},
 			invalid: func() error {
@@ -160,6 +167,34 @@ func TestSubnetDHCPValidation(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "at least 60") {
 		t.Fatalf("error %q does not mention lease time", err)
+	}
+
+	subnet.DHCP = DHCPOptions{DNSServers: []netip.Addr{netip.MustParseAddr("10.96.0.10")}}
+	err = subnet.Validate()
+	if err == nil || !strings.Contains(err.Error(), "disabled dhcp") {
+		t.Fatalf("error = %v, want disabled dhcp dns validation", err)
+	}
+
+	subnet.DHCP = DHCPOptions{Enabled: true, DNSServers: []netip.Addr{netip.Addr{}}}
+	err = subnet.Validate()
+	if err == nil || !strings.Contains(err.Error(), "dns server 0 is invalid") {
+		t.Fatalf("error = %v, want invalid dns server validation", err)
+	}
+
+	subnet.DHCP = DHCPOptions{Enabled: true, DomainName: "bad domain"}
+	err = subnet.Validate()
+	if err == nil || !strings.Contains(err.Error(), "dhcp domain name") {
+		t.Fatalf("error = %v, want invalid domain validation", err)
+	}
+
+	subnet.DHCP = DHCPOptions{
+		Enabled:       true,
+		DNSServers:    []netip.Addr{netip.MustParseAddr("10.96.0.10")},
+		DomainName:    "svc.cluster.local",
+		SearchDomains: []string{"cluster.local", "svc.cluster.local"},
+	}
+	if err := subnet.Validate(); err != nil {
+		t.Fatalf("valid dhcp dns options failed: %v", err)
 	}
 }
 

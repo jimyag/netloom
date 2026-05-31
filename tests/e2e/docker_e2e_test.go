@@ -106,7 +106,7 @@ func TestDockerMultiNodeLab(t *testing.T) {
 	}
 	dhcpOptionsID = strings.Fields(dhcpOptionsID)[0]
 	dhcpOptions := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "dhcp-options-get-options", dhcpOptionsID)
-	for _, expected := range []string{"lease_time=7200", "mtu=1400", "router=10.245.0.1", "server_id=10.245.0.1"} {
+	for _, expected := range []string{"lease_time=7200", "mtu=1400", "router=10.245.0.1", "server_id=10.245.0.1", "dns_server=10.96.0.10", "domain_name=svc.cluster.local", "domain_search_list=cluster.local"} {
 		if !strings.Contains(dhcpOptions, expected) {
 			t.Fatalf("OVN DHCP options missing %q:\n%s", expected, dhcpOptions)
 		}
@@ -294,7 +294,7 @@ func TestDockerMultiNodeLab(t *testing.T) {
 func desiredPolicyDropStateJSON() string {
 	return `{
   "vpcs": [{"name": "file"}],
-  "subnets": [{"name": "fileapps", "vpc": "file", "cidr": "10.245.0.0/24", "gateway": "10.245.0.1", "provider_network": "physnet-a", "vlan": 100, "dhcp": {"enabled": true, "lease_time": 7200, "mtu": 1400}}],
+  "subnets": [{"name": "fileapps", "vpc": "file", "cidr": "10.245.0.0/24", "gateway": "10.245.0.1", "provider_network": "physnet-a", "vlan": 100, "dhcp": {"enabled": true, "lease_time": 7200, "mtu": 1400, "dns_servers": ["10.96.0.10"], "domain_name": "svc.cluster.local", "search_domains": ["cluster.local", "svc.cluster.local"]}}],
   "endpoints": [{"id": "file-pod-b", "vpc": "file", "subnet": "fileapps", "ip": "10.245.0.11", "node": "node-b", "security_groups": ["drop-web"]}],
   "security_groups": [{"name": "drop-web", "vpc": "file", "rules": [{"id": "drop-web-from-node-a", "priority": 100, "direction": "ingress", "protocol": "tcp", "remote_cidr": "172.30.0.11/32", "ports": [{"from": 8080, "to": 8080}], "action": "drop"}]}]
 }`
@@ -318,7 +318,7 @@ func dnsObservationJSON() string {
 func desiredWorkloadPolicyDropStateJSON() string {
 	return `{
   "vpcs": [{"name": "file"}],
-  "subnets": [{"name": "fileapps", "vpc": "file", "cidr": "10.245.0.0/24", "gateway": "10.245.0.1", "provider_network": "physnet-a", "vlan": 100, "dhcp": {"enabled": true, "lease_time": 7200, "mtu": 1400}}],
+  "subnets": [{"name": "fileapps", "vpc": "file", "cidr": "10.245.0.0/24", "gateway": "10.245.0.1", "provider_network": "physnet-a", "vlan": 100, "dhcp": {"enabled": true, "lease_time": 7200, "mtu": 1400, "dns_servers": ["10.96.0.10"], "domain_name": "svc.cluster.local", "search_domains": ["cluster.local", "svc.cluster.local"]}}],
   "endpoints": [
     {"id": "file-pod-a", "vpc": "file", "subnet": "fileapps", "ip": "10.245.0.10", "node": "node-a", "security_groups": ["allow-web", "clients"]},
     {"id": "file-pod-b", "vpc": "file", "subnet": "fileapps", "ip": "10.245.0.11", "node": "node-b", "security_groups": ["drop-web"]},

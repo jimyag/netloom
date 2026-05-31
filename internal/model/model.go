@@ -61,9 +61,12 @@ type Subnet struct {
 }
 
 type DHCPOptions struct {
-	Enabled   bool   `json:"enabled"`
-	LeaseTime uint32 `json:"lease_time"`
-	MTU       uint16 `json:"mtu"`
+	Enabled       bool         `json:"enabled"`
+	LeaseTime     uint32       `json:"lease_time"`
+	MTU           uint16       `json:"mtu"`
+	DNSServers    []netip.Addr `json:"dns_servers"`
+	DomainName    string       `json:"domain_name"`
+	SearchDomains []string     `json:"search_domains"`
 }
 
 type Endpoint struct {
@@ -313,13 +316,28 @@ func (s Subnet) Excludes(ip netip.Addr) bool {
 
 func (d DHCPOptions) Validate() error {
 	if !d.Enabled {
-		if d.LeaseTime != 0 || d.MTU != 0 {
-			return errors.New("disabled dhcp must not set lease time or mtu")
+		if d.LeaseTime != 0 || d.MTU != 0 || len(d.DNSServers) != 0 || d.DomainName != "" || len(d.SearchDomains) != 0 {
+			return errors.New("disabled dhcp must not set lease time, mtu, dns servers, domain name, or search domains")
 		}
 		return nil
 	}
 	if d.LeaseTime != 0 && d.LeaseTime < 60 {
 		return errors.New("dhcp lease time must be at least 60 seconds")
+	}
+	for i, server := range d.DNSServers {
+		if !server.IsValid() {
+			return fmt.Errorf("dhcp dns server %d is invalid", i)
+		}
+	}
+	if d.DomainName != "" {
+		if err := validateDNSName(d.DomainName, false); err != nil {
+			return fmt.Errorf("dhcp domain name: %w", err)
+		}
+	}
+	for i, domain := range d.SearchDomains {
+		if err := validateDNSName(domain, false); err != nil {
+			return fmt.Errorf("dhcp search domain %d: %w", i, err)
+		}
 	}
 	return nil
 }
