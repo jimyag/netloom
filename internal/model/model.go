@@ -366,6 +366,16 @@ func (e Endpoint) Validate() error {
 	if err := e.Labels.Validate(); err != nil {
 		return fmt.Errorf("endpoint labels: %w", err)
 	}
+	seenGroups := make(map[string]struct{}, len(e.SecurityGroups))
+	for _, group := range e.SecurityGroups {
+		if group == "" {
+			return errors.New("endpoint security group is empty")
+		}
+		if _, ok := seenGroups[group]; ok {
+			return fmt.Errorf("endpoint security group %q is duplicated", group)
+		}
+		seenGroups[group] = struct{}{}
+	}
 	seenPorts := make(map[string]struct{}, len(e.NamedPorts))
 	for i, port := range e.NamedPorts {
 		if err := port.Validate(); err != nil {

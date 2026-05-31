@@ -542,6 +542,25 @@ func TestEndpointValidatesNamedPorts(t *testing.T) {
 	}
 }
 
+func TestEndpointRejectsDuplicateSecurityGroups(t *testing.T) {
+	endpoint := Endpoint{
+		ID:             "pod-a",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"web", "web"},
+	}
+	if err := endpoint.Validate(); err == nil || !strings.Contains(err.Error(), "security group \"web\" is duplicated") {
+		t.Fatalf("error = %v, want duplicate security group validation", err)
+	}
+
+	endpoint.SecurityGroups = []string{""}
+	if err := endpoint.Validate(); err == nil || !strings.Contains(err.Error(), "security group is empty") {
+		t.Fatalf("error = %v, want empty security group validation", err)
+	}
+}
+
 func TestGatewayMACMatchesOVNRouterPortMAC(t *testing.T) {
 	if got := GatewayMAC(netip.MustParseAddr("10.10.0.1")); got != "0a:58:0a:0a:00:01" {
 		t.Fatalf("gateway mac = %s", got)
