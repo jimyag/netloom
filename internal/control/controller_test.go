@@ -530,6 +530,18 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 			wantErr: "security group rule \"allow-client\" references remote service \"web\" without matching tcp frontend port 443-443",
 		},
 		{
+			name: "remote service named port rejected before compile",
+			mutate: func(state *DesiredState) {
+				state.SecurityGroups[0].Rules[0].RemoteCIDR = netip.Prefix{}
+				state.SecurityGroups[0].Rules[0].Direction = model.DirectionEgress
+				state.SecurityGroups[0].Rules[0].RemoteService = "web"
+				state.SecurityGroups[0].Rules[0].Protocol = model.ProtocolTCP
+				state.SecurityGroups[0].Rules[0].Ports = nil
+				state.SecurityGroups[0].Rules[0].NamedPorts = []string{"http"}
+			},
+			wantErr: "egress named ports require remote_group or remote_endpoint_selector",
+		},
+		{
 			name: "duplicate endpoint",
 			mutate: func(state *DesiredState) {
 				state.Endpoints = append(state.Endpoints, state.Endpoints[0])

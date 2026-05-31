@@ -218,8 +218,8 @@ the protected endpoint before map encoding. Egress rules resolve named ports
 with `remote_group`, `remote_endpoint_selector`, or
 `remote_endpoint_expressions`, because the destination endpoint set is then
 known; each remote member contributes its own resolved port and exact CIDR.
-CIDR, CIDR-group, entity, service, and FQDN egress rules reject named ports
-instead of guessing a destination port source.
+Validation rejects named ports on CIDR, CIDR-group, entity, service, and FQDN
+egress rules instead of guessing a destination port source.
 
 Service egress policy follows Cilium's `toServices` shape for VIP-based
 dependencies. A `SecurityGroupRule` can use `remote_service` to reference a

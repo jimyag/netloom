@@ -1069,6 +1069,9 @@ func (r SecurityGroupRule) Validate() error {
 	if len(r.NamedPorts) > 0 && r.Protocol != ProtocolTCP && r.Protocol != ProtocolUDP {
 		return errors.New("named ports require tcp or udp protocol")
 	}
+	if len(r.NamedPorts) > 0 && r.Direction == DirectionEgress && r.RemoteGroup == "" && len(r.RemoteEndpointSelector) == 0 && len(r.RemoteEndpointExprs) == 0 {
+		return errors.New("egress named ports require remote_group or remote_endpoint_selector")
+	}
 	seenNamedPorts := make(map[string]struct{}, len(r.NamedPorts))
 	for i, name := range r.NamedPorts {
 		if err := validateNamedPortName(name); err != nil {

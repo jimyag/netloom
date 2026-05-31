@@ -679,6 +679,29 @@ func TestSecurityGroupRuleValidatesNamedPorts(t *testing.T) {
 	if err := rule.Validate(); err == nil || !strings.Contains(err.Error(), "duplicated") {
 		t.Fatalf("error = %v, want duplicate named port validation", err)
 	}
+
+	rule.NamedPorts = []string{"http"}
+	rule.Direction = DirectionEgress
+	if err := rule.Validate(); err == nil || !strings.Contains(err.Error(), "egress named ports require remote_group or remote_endpoint_selector") {
+		t.Fatalf("error = %v, want egress remote endpoint source validation", err)
+	}
+
+	rule.RemoteGroup = "web"
+	if err := rule.Validate(); err != nil {
+		t.Fatalf("egress remote group named port should validate: %v", err)
+	}
+
+	rule.RemoteGroup = ""
+	rule.RemoteEndpointSelector = Labels{"app": "web"}
+	if err := rule.Validate(); err != nil {
+		t.Fatalf("egress remote endpoint selector named port should validate: %v", err)
+	}
+
+	rule.RemoteEndpointSelector = nil
+	rule.RemoteEndpointExprs = []LabelExpr{{Key: "app", Operator: "Exists"}}
+	if err := rule.Validate(); err != nil {
+		t.Fatalf("egress remote endpoint expression named port should validate: %v", err)
+	}
 }
 
 func TestSecurityGroupRuleValidatesICMPTypeAndCode(t *testing.T) {
