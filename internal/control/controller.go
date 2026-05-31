@@ -999,6 +999,7 @@ func routeMatchesOverlap(left, right model.RouteMatch) bool {
 	return prefixesMayOverlap(left.Source, right.Source) &&
 		prefixesMayOverlap(left.Destination, right.Destination) &&
 		protocolsMayOverlap(left.Protocol, right.Protocol) &&
+		portRangesMayOverlap(left.SrcPorts, right.SrcPorts) &&
 		portRangesMayOverlap(left.DstPorts, right.DstPorts)
 }
 
@@ -1035,12 +1036,16 @@ func routeMatchKey(match model.RouteMatch) string {
 	if protocol == "" {
 		protocol = model.ProtocolAny
 	}
-	ports := make([]string, 0, len(match.DstPorts))
-	for _, port := range match.DstPorts {
+	return fmt.Sprintf("src=%s|dst=%s|proto=%s|sports=%s|dports=%s", match.Source, match.Destination, protocol, routeMatchPortKey(match.SrcPorts), routeMatchPortKey(match.DstPorts))
+}
+
+func routeMatchPortKey(ranges []model.PortRange) string {
+	ports := make([]string, 0, len(ranges))
+	for _, port := range ranges {
 		ports = append(ports, fmt.Sprintf("%d-%d", port.From, port.To))
 	}
 	sort.Strings(ports)
-	return fmt.Sprintf("src=%s|dst=%s|proto=%s|dports=%s", match.Source, match.Destination, protocol, strings.Join(ports, ","))
+	return strings.Join(ports, ",")
 }
 
 func desiredTopologyState(state DesiredState) topology.State {

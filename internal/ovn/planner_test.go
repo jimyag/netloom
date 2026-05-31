@@ -752,6 +752,47 @@ func TestPlannerBuildsPolicyRouteOperation(t *testing.T) {
 	}
 }
 
+func TestPlannerBuildsPolicyRouteSourceAndDestinationPortMatch(t *testing.T) {
+	planner := ovn.NewPlanner()
+	err := planner.EnsurePolicyRoute(context.Background(), model.PolicyRoute{
+		Name:     "tenant-api",
+		VPC:      "prod",
+		Priority: 120,
+		Match: model.RouteMatch{
+			Source:      netip.MustParsePrefix("10.10.0.0/24"),
+			Destination: netip.MustParsePrefix("198.51.100.0/24"),
+			Protocol:    model.ProtocolTCP,
+			SrcPorts: []model.PortRange{
+				{From: 1024, To: 2048},
+				{From: 32000, To: 32000},
+			},
+			DstPorts: []model.PortRange{
+				{From: 443, To: 443},
+				{From: 8443, To: 8444},
+			},
+		},
+		Action: model.RouteAction{Type: model.ActionReroute, NextHops: []netip.Addr{netip.MustParseAddr("10.10.0.253")}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := stringify(planner.Operations())
+	for _, expected := range []string{
+		"(tcp.src >= 1024 && tcp.src <= 2048)",
+		"tcp.src == 32000",
+		"(tcp.dst >= 8443 && tcp.dst <= 8444)",
+		"tcp.dst == 443",
+		"||",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("policy route L4 match missing %q:\n%s", expected, joined)
+		}
+	}
+	if strings.Contains(joined, "tcp.dst == 443 && (tcp.dst >= 8443") {
+		t.Fatalf("alternative destination ports must be ORed, not ANDed:\n%s", joined)
+	}
+}
+
 func TestPlannerBuildsAllowPolicyRouteOperation(t *testing.T) {
 	planner := ovn.NewPlanner()
 	err := planner.EnsurePolicyRoute(context.Background(), model.PolicyRoute{

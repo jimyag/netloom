@@ -105,6 +105,7 @@ type RouteMatch struct {
 	Source      netip.Prefix `json:"source"`
 	Destination netip.Prefix `json:"destination"`
 	Protocol    Protocol     `json:"protocol"`
+	SrcPorts    []PortRange  `json:"src_ports"`
 	DstPorts    []PortRange  `json:"dst_ports"`
 }
 
@@ -640,8 +641,16 @@ func (m RouteMatch) Validate() error {
 	if m.Source.IsValid() && m.Destination.IsValid() && m.Source.Addr().Is4() != m.Destination.Addr().Is4() {
 		return errors.New("source and destination prefixes must use the same IP family")
 	}
+	if len(m.SrcPorts) > 0 && m.Protocol != ProtocolTCP && m.Protocol != ProtocolUDP {
+		return errors.New("src ports require tcp or udp protocol")
+	}
 	if len(m.DstPorts) > 0 && m.Protocol != ProtocolTCP && m.Protocol != ProtocolUDP {
 		return errors.New("dst ports require tcp or udp protocol")
+	}
+	for i, p := range m.SrcPorts {
+		if err := p.Validate(); err != nil {
+			return fmt.Errorf("src port range %d: %w", i, err)
+		}
 	}
 	for i, p := range m.DstPorts {
 		if err := p.Validate(); err != nil {

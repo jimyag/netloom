@@ -290,11 +290,18 @@ func routeMatch(match model.RouteMatch, packet Packet) bool {
 	if match.Protocol != "" && match.Protocol != model.ProtocolAny && match.Protocol != packet.Protocol {
 		return false
 	}
-	if len(match.DstPorts) == 0 {
-		return true
+	if len(match.SrcPorts) > 0 && !portRangesContain(match.SrcPorts, packet.SourcePort) {
+		return false
 	}
-	for _, p := range match.DstPorts {
-		if packet.DestPort >= p.From && packet.DestPort <= p.To {
+	if len(match.DstPorts) > 0 && !portRangesContain(match.DstPorts, packet.DestPort) {
+		return false
+	}
+	return true
+}
+
+func portRangesContain(ports []model.PortRange, port uint16) bool {
+	for _, p := range ports {
+		if port >= p.From && port <= p.To {
 			return true
 		}
 	}

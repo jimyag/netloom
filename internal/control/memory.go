@@ -210,6 +210,7 @@ func clonePolicyRoutes(routes []model.PolicyRoute) []model.PolicyRoute {
 }
 
 func clonePolicyRoute(route model.PolicyRoute) model.PolicyRoute {
+	route.Match.SrcPorts = append([]model.PortRange(nil), route.Match.SrcPorts...)
 	route.Match.DstPorts = append([]model.PortRange(nil), route.Match.DstPorts...)
 	route.Action.NextHops = append([]netip.Addr(nil), route.Action.NextHops...)
 	return route

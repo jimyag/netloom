@@ -133,6 +133,11 @@ Route-table and policy-route ECMP both keep the full `next_hops` list in the
 userspace resolver decision while selecting one next hop with a stable flow hash.
 This mirrors the OVN/Linux datapath intent closely enough for unit and selftest
 validation without losing the multi next-hop state needed for assertions.
+Policy-route L4 matching includes both `src_ports` and `dst_ports`. The OVN
+planner groups alternative source or destination port ranges with OR before
+joining them with the rest of the logical-router-policy match, while the Linux
+datapath expands the same intent into the source/destination port cross product
+required by `ip rule`/netlink.
 `LoadBalancer` frontends are declared with a required `ports` array. Each
 frontend owns its protocol and backend target ports while sharing the same
 Service VIP; those backends are rendered into the OVN VIP backend set and the

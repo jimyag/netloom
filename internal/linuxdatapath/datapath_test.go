@@ -742,6 +742,7 @@ func TestNetlinkPolicyRuleEncodesL4Match(t *testing.T) {
 			Source:      netip.MustParsePrefix("10.10.0.0/24"),
 			Destination: netip.MustParsePrefix("172.16.0.0/16"),
 			Protocol:    model.ProtocolTCP,
+			SrcPorts:    []model.PortRange{{From: 32000, To: 32010}},
 			DstPorts:    []model.PortRange{{From: 443, To: 443}},
 		},
 		Action: model.RouteAction{Type: model.ActionReroute, NextHops: []netip.Addr{netip.MustParseAddr("10.10.0.253")}},
@@ -757,8 +758,45 @@ func TestNetlinkPolicyRuleEncodesL4Match(t *testing.T) {
 	if int(rule.Protocol) != linuxPolicyRuleProtocolID {
 		t.Fatalf("rule protocol = %d, want %d", rule.Protocol, linuxPolicyRuleProtocolID)
 	}
-	if rule.IPProto != 6 || rule.Dport == nil || rule.Dport.Start != 443 || rule.Dport.End != 443 {
-		t.Fatalf("unexpected L4 match: proto=%d dport=%+v", rule.IPProto, rule.Dport)
+	if rule.IPProto != 6 || rule.Sport == nil || rule.Sport.Start != 32000 || rule.Sport.End != 32010 || rule.Dport == nil || rule.Dport.Start != 443 || rule.Dport.End != 443 {
+		t.Fatalf("unexpected L4 match: proto=%d sport=%+v dport=%+v", rule.IPProto, rule.Sport, rule.Dport)
+	}
+}
+
+func TestPolicyRuleArgsExpandSourceAndDestinationPortCombinations(t *testing.T) {
+	route := model.PolicyRoute{
+		Name:     "tenant-api",
+		VPC:      "prod",
+		Priority: 200,
+		Match: model.RouteMatch{
+			Source:      netip.MustParsePrefix("10.10.0.0/24"),
+			Destination: netip.MustParsePrefix("198.51.100.0/24"),
+			Protocol:    model.ProtocolTCP,
+			SrcPorts: []model.PortRange{
+				{From: 32000, To: 32000},
+				{From: 32100, To: 32110},
+			},
+			DstPorts: []model.PortRange{
+				{From: 443, To: 443},
+				{From: 8443, To: 8444},
+			},
+		},
+		Action: model.RouteAction{Type: model.ActionReroute, NextHops: []netip.Addr{netip.MustParseAddr("10.10.0.253")}},
+	}
+	args := linuxPolicyRuleArgs(route, linuxPolicyRulePriority(route.Priority), 20000)
+	if len(args) != 4 {
+		t.Fatalf("policy rule args = %d, want src/dst port cross product: %v", len(args), args)
+	}
+	joined := strings.Join(args, "\n")
+	for _, expected := range []string{
+		"sport 32000 dport 443",
+		"sport 32000 dport 8443-8444",
+		"sport 32100-32110 dport 443",
+		"sport 32100-32110 dport 8443-8444",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("policy rule args missing %q:\n%s", expected, joined)
+		}
 	}
 }
 

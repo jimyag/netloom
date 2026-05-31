@@ -608,6 +608,62 @@ func TestResolveAllowPolicyRouteBeatsLowerPriorityDrop(t *testing.T) {
 	}
 }
 
+func TestResolvePolicyRouteMatchesSourceAndDestinationPorts(t *testing.T) {
+	state := State{
+		PolicyRoutes: []model.PolicyRoute{{
+			Name:     "tenant-api",
+			VPC:      "prod",
+			Priority: 200,
+			Match: model.RouteMatch{
+				Source:      netip.MustParsePrefix("10.10.0.0/24"),
+				Destination: netip.MustParsePrefix("198.51.100.0/24"),
+				Protocol:    model.ProtocolTCP,
+				SrcPorts:    []model.PortRange{{From: 32000, To: 32010}},
+				DstPorts:    []model.PortRange{{From: 443, To: 443}},
+			},
+			Action: model.RouteAction{Type: model.ActionReroute, NextHops: []netip.Addr{netip.MustParseAddr("10.10.0.253")}},
+		}, {
+			Name:     "fallback",
+			VPC:      "prod",
+			Priority: 100,
+			Match: model.RouteMatch{
+				Source:      netip.MustParsePrefix("10.10.0.0/24"),
+				Destination: netip.MustParsePrefix("198.51.100.0/24"),
+			},
+			Action: model.RouteAction{Type: model.ActionDrop},
+		}},
+	}
+	decision, err := Resolve(state, Packet{
+		VPC:        "prod",
+		Source:     netip.MustParseAddr("10.10.0.10"),
+		SourcePort: 32001,
+		Dest:       netip.MustParseAddr("198.51.100.10"),
+		Protocol:   model.ProtocolTCP,
+		DestPort:   443,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.MatchedBy != "policy-route/tenant-api" || decision.NextHop != netip.MustParseAddr("10.10.0.253") {
+		t.Fatalf("decision = %+v, want source-port policy route", decision)
+	}
+
+	decision, err = Resolve(state, Packet{
+		VPC:        "prod",
+		Source:     netip.MustParseAddr("10.10.0.10"),
+		SourcePort: 31000,
+		Dest:       netip.MustParseAddr("198.51.100.10"),
+		Protocol:   model.ProtocolTCP,
+		DestPort:   443,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.MatchedBy != "policy-route/fallback" || decision.Action != model.ActionDrop {
+		t.Fatalf("decision = %+v, want source-port mismatch to fall back", decision)
+	}
+}
+
 func TestResolveAllowPolicyRouteContinuesToStaticRoute(t *testing.T) {
 	state := State{
 		RouteTables: map[string]model.RouteTable{

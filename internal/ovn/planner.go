@@ -719,18 +719,37 @@ func policyRouteMatch(match model.RouteMatch) string {
 	if match.Protocol != "" && match.Protocol != model.ProtocolAny {
 		parts = append(parts, string(match.Protocol))
 	}
-	for _, port := range match.DstPorts {
-		if port.From == port.To {
-			parts = append(parts, fmt.Sprintf("%s.dst == %d", match.Protocol, port.From))
-		} else {
-			parts = append(parts, fmt.Sprintf("%s.dst >= %d && %s.dst <= %d", match.Protocol, port.From, match.Protocol, port.To))
-		}
+	if clause := policyRoutePortMatch(match.Protocol, "src", match.SrcPorts); clause != "" {
+		parts = append(parts, clause)
+	}
+	if clause := policyRoutePortMatch(match.Protocol, "dst", match.DstPorts); clause != "" {
+		parts = append(parts, clause)
 	}
 	sort.Strings(parts)
 	if len(parts) == 0 {
 		return "1 == 1"
 	}
 	return strings.Join(parts, " && ")
+}
+
+func policyRoutePortMatch(protocol model.Protocol, direction string, ports []model.PortRange) string {
+	if len(ports) == 0 {
+		return ""
+	}
+	clauses := make([]string, 0, len(ports))
+	field := fmt.Sprintf("%s.%s", protocol, direction)
+	for _, port := range ports {
+		if port.From == port.To {
+			clauses = append(clauses, fmt.Sprintf("%s == %d", field, port.From))
+		} else {
+			clauses = append(clauses, fmt.Sprintf("(%s >= %d && %s <= %d)", field, port.From, field, port.To))
+		}
+	}
+	sort.Strings(clauses)
+	if len(clauses) == 1 {
+		return clauses[0]
+	}
+	return "(" + strings.Join(clauses, " || ") + ")"
 }
 
 func ipFamily(prefix netip.Prefix) string {

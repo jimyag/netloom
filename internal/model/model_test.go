@@ -344,6 +344,30 @@ func TestPolicyRouteRequiresNextHopForReroute(t *testing.T) {
 	}
 }
 
+func TestPolicyRouteMatchValidatesSourcePorts(t *testing.T) {
+	match := RouteMatch{
+		Source:      netip.MustParsePrefix("10.10.0.0/24"),
+		Destination: netip.MustParsePrefix("198.51.100.0/24"),
+		Protocol:    ProtocolTCP,
+		SrcPorts:    []PortRange{{From: 1024, To: 65535}},
+		DstPorts:    []PortRange{{From: 443, To: 443}},
+	}
+	if err := match.Validate(); err != nil {
+		t.Fatal(err)
+	}
+
+	match.Protocol = ProtocolICMP
+	if err := match.Validate(); err == nil || !strings.Contains(err.Error(), "src ports require tcp or udp protocol") {
+		t.Fatalf("error = %v, want src port protocol validation", err)
+	}
+
+	match.Protocol = ProtocolTCP
+	match.SrcPorts = []PortRange{{From: 9000, To: 8000}}
+	if err := match.Validate(); err == nil || !strings.Contains(err.Error(), "src port range 0") {
+		t.Fatalf("error = %v, want src port range validation", err)
+	}
+}
+
 func TestPolicyRouteRejectsNextHopsForNonRerouteActions(t *testing.T) {
 	for _, action := range []Action{ActionAllow, ActionDrop} {
 		route := PolicyRoute{

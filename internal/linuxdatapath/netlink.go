@@ -533,17 +533,31 @@ func policyRouteTableRoutes(root *netlink.Handle, table int) ([]netlink.Route, e
 }
 
 func netlinkPolicyRules(route model.PolicyRoute, priority, table int) []*netlink.Rule {
-	if len(route.Match.DstPorts) == 0 {
-		return []*netlink.Rule{netlinkPolicyRule(route, priority, table, nil)}
+	srcPorts := route.Match.SrcPorts
+	dstPorts := route.Match.DstPorts
+	if len(srcPorts) == 0 {
+		srcPorts = []model.PortRange{{}}
 	}
-	rules := make([]*netlink.Rule, 0, len(route.Match.DstPorts))
-	for i := range route.Match.DstPorts {
-		rules = append(rules, netlinkPolicyRule(route, priority, table, &route.Match.DstPorts[i]))
+	if len(dstPorts) == 0 {
+		dstPorts = []model.PortRange{{}}
+	}
+	rules := make([]*netlink.Rule, 0, len(srcPorts)*len(dstPorts))
+	for i := range srcPorts {
+		for j := range dstPorts {
+			var srcPort, dstPort *model.PortRange
+			if len(route.Match.SrcPorts) > 0 {
+				srcPort = &srcPorts[i]
+			}
+			if len(route.Match.DstPorts) > 0 {
+				dstPort = &dstPorts[j]
+			}
+			rules = append(rules, netlinkPolicyRule(route, priority, table, srcPort, dstPort))
+		}
 	}
 	return rules
 }
 
-func netlinkPolicyRule(route model.PolicyRoute, priority, table int, port *model.PortRange) *netlink.Rule {
+func netlinkPolicyRule(route model.PolicyRoute, priority, table int, srcPort, dstPort *model.PortRange) *netlink.Rule {
 	rule := netlink.NewRule()
 	rule.Priority = priority
 	rule.Table = table
@@ -558,8 +572,11 @@ func netlinkPolicyRule(route model.PolicyRoute, priority, table int, port *model
 	if proto := linuxPolicyRuleProtocolNumber(route.Match.Protocol, rule.Family); proto != 0 {
 		rule.IPProto = proto
 	}
-	if port != nil {
-		rule.Dport = netlink.NewRulePortRange(port.From, port.To)
+	if srcPort != nil {
+		rule.Sport = netlink.NewRulePortRange(srcPort.From, srcPort.To)
+	}
+	if dstPort != nil {
+		rule.Dport = netlink.NewRulePortRange(dstPort.From, dstPort.To)
 	}
 	return rule
 }

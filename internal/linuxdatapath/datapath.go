@@ -296,17 +296,31 @@ func linuxPolicyRulePriority(priority int) int {
 }
 
 func linuxPolicyRuleArgs(route model.PolicyRoute, priority, table int) []string {
-	if len(route.Match.DstPorts) == 0 {
-		return []string{linuxPolicyRuleArgsForPort(route, priority, table, nil)}
+	srcPorts := route.Match.SrcPorts
+	dstPorts := route.Match.DstPorts
+	if len(srcPorts) == 0 {
+		srcPorts = []model.PortRange{{}}
 	}
-	args := make([]string, 0, len(route.Match.DstPorts))
-	for i := range route.Match.DstPorts {
-		args = append(args, linuxPolicyRuleArgsForPort(route, priority, table, &route.Match.DstPorts[i]))
+	if len(dstPorts) == 0 {
+		dstPorts = []model.PortRange{{}}
+	}
+	args := make([]string, 0, len(srcPorts)*len(dstPorts))
+	for i := range srcPorts {
+		for j := range dstPorts {
+			var srcPort, dstPort *model.PortRange
+			if len(route.Match.SrcPorts) > 0 {
+				srcPort = &srcPorts[i]
+			}
+			if len(route.Match.DstPorts) > 0 {
+				dstPort = &dstPorts[j]
+			}
+			args = append(args, linuxPolicyRuleArgsForPort(route, priority, table, srcPort, dstPort))
+		}
 	}
 	return args
 }
 
-func linuxPolicyRuleArgsForPort(route model.PolicyRoute, priority, table int, port *model.PortRange) string {
+func linuxPolicyRuleArgsForPort(route model.PolicyRoute, priority, table int, srcPort, dstPort *model.PortRange) string {
 	args := []string{"priority", strconv.Itoa(priority)}
 	if route.Match.Source.IsValid() {
 		args = append(args, "from", route.Match.Source.String())
@@ -317,8 +331,11 @@ func linuxPolicyRuleArgsForPort(route model.PolicyRoute, priority, table int, po
 	if protocol := linuxPolicyRuleProtocol(route.Match.Protocol, routeIPFamily(route)); protocol != "" {
 		args = append(args, "ipproto", protocol)
 	}
-	if port != nil {
-		args = append(args, "dport", linuxPolicyRulePort(*port))
+	if srcPort != nil {
+		args = append(args, "sport", linuxPolicyRulePort(*srcPort))
+	}
+	if dstPort != nil {
+		args = append(args, "dport", linuxPolicyRulePort(*dstPort))
 	}
 	args = append(args, "table", strconv.Itoa(table), "protocol", strconv.Itoa(linuxPolicyRuleProtocolID))
 	return strings.Join(args, " ")

@@ -12,7 +12,7 @@ func TestLoadDesiredStateJSONDecodesSnakeCaseState(t *testing.T) {
 		"subnets": [{"name": "apps", "vpc": "prod", "cidr": "10.10.0.0/24", "gateway": "10.10.0.1", "exclude_cidrs": ["10.10.0.128/25"]}],
 		"endpoints": [{"id": "pod-a", "vpc": "prod", "subnet": "apps", "ip": "10.10.0.10", "node": "node-a", "security_groups": ["web"], "named_ports": [{"name": "http", "protocol": "tcp", "port": 8080}], "labels": {"app": "web", "env": "prod"}}],
 		"route_tables": [{"name": "main", "vpc": "prod", "routes": [{"destination": "0.0.0.0/0", "next_hops": ["10.10.0.253", "10.10.0.254"]}]}],
-		"policy_routes": [{"name": "fw", "vpc": "prod", "priority": 100, "match": {"source": "10.10.0.0/24", "destination": "172.16.0.0/16", "protocol": "tcp", "dst_ports": [{"from": 443, "to": 443}]}, "action": {"type": "reroute", "next_hops": ["10.10.0.253"]}}],
+		"policy_routes": [{"name": "fw", "vpc": "prod", "priority": 100, "match": {"source": "10.10.0.0/24", "destination": "172.16.0.0/16", "protocol": "tcp", "src_ports": [{"from": 32000, "to": 32010}], "dst_ports": [{"from": 443, "to": 443}]}, "action": {"type": "reroute", "next_hops": ["10.10.0.253"]}}],
 		"gateways": [{"name": "gw-a", "vpc": "prod", "node": "node-a", "external_if": "eth0", "lan_ip": "10.10.0.254"}],
 		"nat_rules": [{"name": "egress", "vpc": "prod", "type": "snat", "match_cidr": "10.10.0.0/24", "external_ip": "198.51.100.10"}],
 		"load_balancers": [{"name": "web", "vpc": "prod", "vip": "10.96.0.10", "ports": [{"name": "http", "port": 80, "protocol": "tcp", "backends": [{"ip": "10.10.0.10", "port": 8080, "healthy": true}]}, {"name": "metrics", "port": 9090, "protocol": "tcp", "backends": [{"ip": "10.10.0.10", "port": 9091}]}], "subnets": ["apps"], "health_check": {"enabled": true, "interval": 10, "timeout": 30, "success_count": 2, "failure_count": 4}}],
@@ -40,6 +40,9 @@ func TestLoadDesiredStateJSONDecodesSnakeCaseState(t *testing.T) {
 	}
 	if got := state.PolicyRoutes[0].Action.NextHops[0].String(); got != "10.10.0.253" {
 		t.Fatalf("policy route next hop = %s", got)
+	}
+	if got := state.PolicyRoutes[0].Match.SrcPorts[0]; got.From != 32000 || got.To != 32010 {
+		t.Fatalf("policy route src port = %+v", got)
 	}
 	if got := state.RouteTables[0].Routes[0].NextHops[1].String(); got != "10.10.0.254" {
 		t.Fatalf("static route ecmp next hop = %s, want 10.10.0.254", got)

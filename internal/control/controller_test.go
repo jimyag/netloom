@@ -1268,6 +1268,49 @@ func TestControllerAllowsDisjointPolicyRoutesAtSamePriority(t *testing.T) {
 	}
 }
 
+func TestControllerAllowsPolicyRoutesWithDisjointSourcePortsAtSamePriority(t *testing.T) {
+	state := DesiredState{
+		VPCs: []model.VPC{{Name: "prod"}},
+		Subnets: []model.Subnet{{
+			Name:    "apps",
+			VPC:     "prod",
+			CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway: netip.MustParseAddr("10.10.0.1"),
+		}},
+		PolicyRoutes: []model.PolicyRoute{
+			{
+				Name:     "tenant-a",
+				VPC:      "prod",
+				Priority: 100,
+				Match: model.RouteMatch{
+					Source:      netip.MustParsePrefix("10.10.0.0/24"),
+					Destination: netip.MustParsePrefix("172.16.0.0/16"),
+					Protocol:    model.ProtocolTCP,
+					SrcPorts:    []model.PortRange{{From: 32000, To: 32010}},
+					DstPorts:    []model.PortRange{{From: 443, To: 443}},
+				},
+				Action: model.RouteAction{Type: model.ActionAllow},
+			},
+			{
+				Name:     "tenant-b",
+				VPC:      "prod",
+				Priority: 100,
+				Match: model.RouteMatch{
+					Source:      netip.MustParsePrefix("10.10.0.0/24"),
+					Destination: netip.MustParsePrefix("172.16.0.0/16"),
+					Protocol:    model.ProtocolTCP,
+					SrcPorts:    []model.PortRange{{From: 32100, To: 32110}},
+					DstPorts:    []model.PortRange{{From: 443, To: 443}},
+				},
+				Action: model.RouteAction{Type: model.ActionDrop},
+			},
+		},
+	}
+	if err := NewController(NewMemoryBackend(), NewMemoryBackend()).Reconcile(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestControllerRejectsDuplicatePolicyRouteNames(t *testing.T) {
 	state := DesiredState{
 		VPCs: []model.VPC{{Name: "prod"}},
