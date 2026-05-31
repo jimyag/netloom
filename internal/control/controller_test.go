@@ -653,6 +653,25 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 			wantErr: "gateway \"gw-a\" lan ip 10.10.0.10 conflicts with endpoint \"pod-a\" in vpc prod",
 		},
 		{
+			name: "remote entity host without gateway",
+			mutate: func(state *DesiredState) {
+				state.Gateways = nil
+				state.SecurityGroups[0].Rules[0].Direction = model.DirectionEgress
+				state.SecurityGroups[0].Rules[0].RemoteCIDR = netip.Prefix{}
+				state.SecurityGroups[0].Rules[0].RemoteEntities = []string{"host"}
+			},
+			wantErr: "security group rule \"allow-client\" remote entity host requires at least one gateway in vpc \"prod\"",
+		},
+		{
+			name: "remote entity remote-node without different gateway node",
+			mutate: func(state *DesiredState) {
+				state.SecurityGroups[0].Rules[0].Direction = model.DirectionEgress
+				state.SecurityGroups[0].Rules[0].RemoteCIDR = netip.Prefix{}
+				state.SecurityGroups[0].Rules[0].RemoteEntities = []string{"remote-node"}
+			},
+			wantErr: "security group rule \"allow-client\" remote entity remote-node requires at least one gateway on a different node in vpc \"prod\"",
+		},
+		{
 			name: "load balancer unknown subnet",
 			mutate: func(state *DesiredState) {
 				state.LoadBalancers[0].Subnets = []string{"missing"}

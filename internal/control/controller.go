@@ -506,7 +506,7 @@ func validateObjectGraph(state DesiredState) error {
 		return err
 	}
 
-	gateways := make(map[string]struct{}, len(state.Gateways))
+	gateways := make(map[string]model.Gateway, len(state.Gateways))
 	for _, gateway := range state.Gateways {
 		if err := gateway.Validate(); err != nil {
 			return err
@@ -524,7 +524,10 @@ func validateObjectGraph(state DesiredState) error {
 		if previous := endpointIPs[ipKey]; previous != "" {
 			return fmt.Errorf("gateway %q lan ip %s conflicts with endpoint %q in vpc %s", gateway.Name, gateway.LANIP, previous, gateway.VPC)
 		}
-		gateways[gateway.Name] = struct{}{}
+		gateways[gateway.Name] = gateway
+	}
+	if err := validateSecurityGroupRemoteEntities(state.SecurityGroups, state.Endpoints, securityGroups, gateways, subnets); err != nil {
+		return err
 	}
 
 	for _, table := range state.RouteTables {
@@ -664,6 +667,56 @@ func endpointsMatchingSelector(endpoint model.Endpoint, endpoints []model.Endpoi
 func endpointHasSecurityGroup(endpoint model.Endpoint, groupName string) bool {
 	for _, attached := range endpoint.SecurityGroups {
 		if attached == groupName {
+			return true
+		}
+	}
+	return false
+}
+
+func validateSecurityGroupRemoteEntities(groups []model.SecurityGroup, endpoints []model.Endpoint, groupByName map[string]model.SecurityGroup, gateways map[string]model.Gateway, subnets map[string]model.Subnet) error {
+	if len(groups) == 0 || len(endpoints) == 0 {
+		return nil
+	}
+	gatewayNodesByVPC := make(map[string]map[string]struct{})
+	for _, gateway := range gateways {
+		if _, ok := gatewayNodesByVPC[gateway.VPC]; !ok {
+			gatewayNodesByVPC[gateway.VPC] = make(map[string]struct{})
+		}
+		gatewayNodesByVPC[gateway.VPC][gateway.Node] = struct{}{}
+	}
+	hasSubnetByVPC := make(map[string]bool)
+	for _, subnet := range subnets {
+		hasSubnetByVPC[subnet.VPC] = true
+	}
+	for _, endpoint := range endpoints {
+		for _, groupName := range endpoint.SecurityGroups {
+			group := groupByName[groupName]
+			for _, rule := range group.Rules {
+				for _, entity := range rule.RemoteEntities {
+					switch entity {
+					case "cluster", "world", "world-ipv4", "world-ipv6":
+						if !hasSubnetByVPC[endpoint.VPC] {
+							return fmt.Errorf("security group rule %q remote entity %s requires at least one subnet in vpc %q", rule.ID, entity, endpoint.VPC)
+						}
+					case "host":
+						if len(gatewayNodesByVPC[endpoint.VPC]) == 0 {
+							return fmt.Errorf("security group rule %q remote entity host requires at least one gateway in vpc %q", rule.ID, endpoint.VPC)
+						}
+					case "remote-node":
+						if !hasRemoteGatewayNode(gatewayNodesByVPC[endpoint.VPC], endpoint.Node) {
+							return fmt.Errorf("security group rule %q remote entity remote-node requires at least one gateway on a different node in vpc %q", rule.ID, endpoint.VPC)
+						}
+					}
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func hasRemoteGatewayNode(nodes map[string]struct{}, localNode string) bool {
+	for node := range nodes {
+		if node != localNode {
 			return true
 		}
 	}
