@@ -123,6 +123,12 @@ func TestDockerMultiNodeLab(t *testing.T) {
 			t.Fatalf("OVN LB state missing %q:\n%s", expected, lbState)
 		}
 	}
+	udpLBState := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "lb-list", "nl_lb_file-web_udp")
+	for _, expected := range []string{"nl_lb_file-web_udp", "10.96.0.10:53", "10.245.0.10:5353"} {
+		if !strings.Contains(udpLBState, expected) {
+			t.Fatalf("OVN UDP LB state missing %q:\n%s", expected, udpLBState)
+		}
+	}
 	controllerWatchPath := "/tmp/netloom-controller-watch-state.json"
 	startControllerWatch := "cat >" + controllerWatchPath + " <<'EOF'\n" + desiredStateJSON() + "\nEOF\nNETLOOM_STATE_FILE=" + controllerWatchPath + " NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock NETLOOM_RECONCILE_INTERVAL_MS=500 /netloom/bin/netloom-controller >/tmp/netloom-controller-watch.log 2>&1 &"
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", startControllerWatch)
@@ -130,6 +136,7 @@ func TestDockerMultiNodeLab(t *testing.T) {
 	updateControllerWatch := "cat >" + controllerWatchPath + " <<'EOF'\n" + desiredStateWithUpdatedLoadBalancerJSON() + "\nEOF"
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", updateControllerWatch)
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "for i in $(seq 1 15); do vips=$(ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock get load_balancer nl_lb_file-web_tcp vips); echo \"$vips\" | grep -q '10.96.0.20:80' && echo \"$vips\" | grep -q '10.245.0.11:8080' && ! echo \"$vips\" | grep -q '10.96.0.10:80' && exit 0; sleep 1; done; cat /tmp/netloom-controller-watch.log; ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock get load_balancer nl_lb_file-web_tcp vips; exit 1")
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "for i in $(seq 1 15); do ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock lb-list | grep -q nl_lb_file-web_udp || exit 0; sleep 1; done; cat /tmp/netloom-controller-watch.log; ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock lb-list; exit 1")
 	updateControllerWatch = "cat >" + controllerWatchPath + " <<'EOF'\n" + desiredStateWithUpdatedNATJSON() + "\nEOF"
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", updateControllerWatch)
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "for i in $(seq 1 15); do nat=$(ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock lr-nat-list nl_lr_file); echo \"$nat\" | grep -q '198.51.100.50' && ! echo \"$nat\" | grep -q '198.51.100.20' && exit 0; sleep 1; done; cat /tmp/netloom-controller-watch.log; ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock lr-nat-list nl_lr_file; exit 1")
@@ -394,7 +401,7 @@ func desiredStateJSON() string {
     {"name": "web-fip", "vpc": "file", "type": "dnat_and_snat", "external_ip": "198.51.100.22", "target_ip": "10.245.0.10"},
     {"name": "ssh-port", "vpc": "file", "type": "dnat", "external_ip": "198.51.100.23", "target_ip": "10.245.0.10", "protocol": "tcp", "external_port": 2222, "target_port": 2222}
   ],
-  "load_balancers": [{"name": "file-web", "vpc": "file", "vip": "10.96.0.10", "ports": [{"name": "http", "port": 80, "protocol": "tcp", "backends": [{"ip": "10.245.0.10", "port": 8080}]}], "subnets": ["fileapps"]}],
+  "load_balancers": [{"name": "file-web", "vpc": "file", "vip": "10.96.0.10", "ports": [{"name": "http", "port": 80, "protocol": "tcp", "backends": [{"ip": "10.245.0.10", "port": 8080}]}, {"name": "dns", "port": 53, "protocol": "udp", "backends": [{"ip": "10.245.0.10", "port": 5353}]}], "subnets": ["fileapps"]}],
   "security_groups": [{"name": "web", "vpc": "file", "rules": [{"id": "allow-web", "priority": 100, "direction": "ingress", "protocol": "tcp", "remote_cidr": "172.30.0.11/32", "ports": [{"from": 8080, "to": 8080}], "action": "allow", "stateful": true}]}]
 }`
 }
