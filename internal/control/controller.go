@@ -311,7 +311,7 @@ func validateNATRules(rules []model.NATRule) error {
 		if prev := inboundAllPorts[baseKey]; prev != "" {
 			return fmt.Errorf("nat rule %q conflicts with %q on external ip %s", rule.Name, prev, rule.ExternalIP)
 		}
-		portKey := fmt.Sprintf("%s|%d", baseKey, rule.ExternalPort)
+		portKey := fmt.Sprintf("%s|%s|%d", baseKey, rule.Protocol, rule.ExternalPort)
 		if prev := inboundPortKeys[portKey]; prev != "" {
 			return fmt.Errorf("nat rule %q conflicts with %q on %s/%s:%d", rule.Name, prev, rule.ExternalIP, rule.Protocol, rule.ExternalPort)
 		}
@@ -570,7 +570,7 @@ func validateInboundVIPConflicts(natRules []model.NATRule, loadBalancers []model
 			allPortNATs[baseKey] = rule.Name
 			continue
 		}
-		portNATs[fmt.Sprintf("%s|%d", baseKey, rule.ExternalPort)] = rule.Name
+		portNATs[fmt.Sprintf("%s|%s|%d", baseKey, rule.Protocol, rule.ExternalPort)] = rule.Name
 	}
 	for _, lb := range loadBalancers {
 		for _, frontend := range lb.Frontends() {
@@ -578,7 +578,7 @@ func validateInboundVIPConflicts(natRules []model.NATRule, loadBalancers []model
 			if prev := allPortNATs[baseKey]; prev != "" {
 				return fmt.Errorf("load balancer %q conflicts with nat rule %q on external ip %s", lb.Name, prev, frontend.VIP)
 			}
-			if prev := portNATs[fmt.Sprintf("%s|%d", baseKey, frontend.Port)]; prev != "" {
+			if prev := portNATs[fmt.Sprintf("%s|%s|%d", baseKey, frontend.Protocol, frontend.Port)]; prev != "" {
 				return fmt.Errorf("load balancer %q conflicts with nat rule %q on %s:%d", lb.Name, prev, frontend.VIP, frontend.Port)
 			}
 		}

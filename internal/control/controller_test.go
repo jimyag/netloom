@@ -161,12 +161,11 @@ func TestControllerRejectsConflictingNATRules(t *testing.T) {
 			wantErr: "conflicts",
 		},
 		{
-			name: "same external port conflicts across protocol",
+			name: "same external port across protocol",
 			rules: []model.NATRule{
 				{Name: "tcp", VPC: "prod", Type: model.ActionDNAT, ExternalIP: netip.MustParseAddr("198.51.100.40"), TargetIP: netip.MustParseAddr("10.10.0.10"), Protocol: model.ProtocolTCP, ExternalPort: 8443, TargetPort: 8443},
 				{Name: "udp", VPC: "prod", Type: model.ActionDNAT, ExternalIP: netip.MustParseAddr("198.51.100.40"), TargetIP: netip.MustParseAddr("10.10.0.11"), Protocol: model.ProtocolUDP, ExternalPort: 8443, TargetPort: 8443},
 			},
-			wantErr: "conflicts",
 		},
 	}
 	for _, tt := range tests {
@@ -317,6 +316,41 @@ func TestControllerRejectsNATAndLoadBalancerVIPConflicts(t *testing.T) {
 				t.Fatalf("error %q does not contain conflicts", err)
 			}
 		})
+	}
+}
+
+func TestControllerAllowsNATAndLoadBalancerSamePortDifferentProtocol(t *testing.T) {
+	state := DesiredState{
+		VPCs: []model.VPC{{Name: "prod"}},
+		Subnets: []model.Subnet{{
+			Name:    "apps",
+			VPC:     "prod",
+			CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway: netip.MustParseAddr("10.10.0.1"),
+		}},
+		NATRules: []model.NATRule{{
+			Name:         "udp-nat",
+			VPC:          "prod",
+			Type:         model.ActionDNAT,
+			ExternalIP:   netip.MustParseAddr("198.51.100.90"),
+			TargetIP:     netip.MustParseAddr("10.10.0.10"),
+			Protocol:     model.ProtocolUDP,
+			ExternalPort: 8443,
+			TargetPort:   8443,
+		}},
+		LoadBalancers: []model.LoadBalancer{{
+			Name: "tcp-lb",
+			VPC:  "prod",
+			VIP:  netip.MustParseAddr("198.51.100.90"),
+			Ports: []model.LoadBalancerPort{{
+				Port:     8443,
+				Protocol: model.ProtocolTCP,
+				Backends: []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.11"), Port: 8080}},
+			}},
+		}},
+	}
+	if err := NewController(NewMemoryBackend(), NewMemoryBackend()).Reconcile(context.Background(), state); err != nil {
+		t.Fatal(err)
 	}
 }
 
