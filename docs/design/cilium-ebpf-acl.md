@@ -85,6 +85,11 @@ type/code: protocol-only ICMP has no L4 prefix, type-only matches the first
 8 bits, and type+code matches all 16 bits. Workload TCX attach projects ingress
 rules to host-veth egress and egress rules to host-veth ingress, matching the
 direction split used by endpoint policy datapaths.
+Remote-group and remote-endpoint-selector rules keep their Cilium-style remote
+identity in the userspace policy map, but the TCX fast path projects the exact
+endpoint `/32` or `/128` CIDR already emitted by the compiler. This keeps TCX
+usable for local enforcement while preserving identity-aware validation in the
+canonical policy map and evaluator.
 In dual-stack endpoint policies, IPv4 and IPv6 CIDR entries can both be
 projected into LPM-backed TCX rule sets. The agent uses a unified L4 TCX attach
 path: IPv4-only policies attach the IPv4 program, IPv6-only policies attach the

@@ -787,9 +787,6 @@ func validateIPv4L4ACLRuleSupport(rule policy.Rule) error {
 	if _, ok := tcxAction(rule.Action); !ok {
 		return nil
 	}
-	if rule.RemoteEndpoint != "" {
-		return fmt.Errorf("remote endpoint identity match is not supported by TCX ACL projection")
-	}
 	return nil
 }
 
@@ -803,9 +800,6 @@ func validateIPv6L4ACLRuleSupport(rule policy.Rule) error {
 	}
 	if _, ok := tcxAction(rule.Action); !ok {
 		return nil
-	}
-	if rule.RemoteEndpoint != "" {
-		return fmt.Errorf("remote endpoint identity match is not supported by TCX ACL projection")
 	}
 	return nil
 }

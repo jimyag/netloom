@@ -90,7 +90,7 @@ func TestIPv4L4ACLRulesFromProgramProjectsExactIngressPolicy(t *testing.T) {
 	}
 }
 
-func TestIPv4L4ACLRulesFromProgramRejectsRemoteEndpointIdentityMatch(t *testing.T) {
+func TestIPv4L4ACLRulesFromProgramProjectsRemoteEndpointIdentityCIDR(t *testing.T) {
 	program := policy.Program{
 		EndpointID: "pod-a",
 		Rules: []policy.Rule{{
@@ -104,12 +104,18 @@ func TestIPv4L4ACLRulesFromProgramRejectsRemoteEndpointIdentityMatch(t *testing.
 		}},
 	}
 
-	_, err := IPv4L4ACLRulesFromProgram(program)
-	if err == nil || !strings.Contains(err.Error(), "remote endpoint identity match") {
-		t.Fatalf("error = %v, want explicit remote endpoint identity rejection", err)
+	rules, err := IPv4L4ACLRulesFromProgram(program)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if err := ValidateL4ACLProgramSupport(program); err == nil || !strings.Contains(err.Error(), "remote endpoint identity match") {
-		t.Fatalf("support error = %v, want explicit remote endpoint identity rejection", err)
+	if err := ValidateL4ACLProgramSupport(program); err != nil {
+		t.Fatalf("support error = %v, want remote endpoint exact CIDR projection", err)
+	}
+	if len(rules) != 1 {
+		t.Fatalf("rules = %d, want one projected remote endpoint CIDR rule", len(rules))
+	}
+	if rules[0].SourceCIDR != netip.MustParsePrefix("172.30.0.11/32") || rules[0].Protocol != 6 || rules[0].DestPort != 8080 || rules[0].Action != TCXDrop {
+		t.Fatalf("remote endpoint TCX rule = %+v, want exact CIDR tcp/8080 drop", rules[0])
 	}
 }
 
