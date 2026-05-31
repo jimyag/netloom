@@ -958,6 +958,50 @@ func TestCompileForEndpointWithContextRemoteServiceHonorsExplicitProtocol(t *tes
 	}
 }
 
+func TestCompileForEndpointWithContextRemoteServiceAnyProtocolHonorsExplicitPort(t *testing.T) {
+	endpoint := model.Endpoint{
+		ID:             "pod-client",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"client"},
+	}
+	program, err := CompileForEndpointWithContext(endpoint, map[string]model.SecurityGroup{
+		"client": {
+			Name: "client",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:            "egress-web-service",
+				Priority:      100,
+				Direction:     model.DirectionEgress,
+				Protocol:      model.ProtocolAny,
+				RemoteService: "web",
+				Ports:         []model.PortRange{{From: 80, To: 80}},
+				Action:        model.ActionAllow,
+			}},
+		},
+	}, CompileContext{Services: []model.LoadBalancer{{
+		Name: "web",
+		VPC:  "prod",
+		VIP:  netip.MustParseAddr("10.96.0.10"),
+		Ports: []model.LoadBalancerPort{
+			{Port: 80, Protocol: model.ProtocolTCP, Backends: []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.20"), Port: 8080}}},
+			{Port: 53, Protocol: model.ProtocolUDP, Backends: []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.21"), Port: 53}}},
+		},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(program.Rules) != 1 || len(program.MapEntries) != 1 {
+		t.Fatalf("program rules=%d entries=%d, want only matching service frontend port", len(program.Rules), len(program.MapEntries))
+	}
+	entry := program.MapEntries[0]
+	if entry.Key.Protocol != model.ProtocolTCP || entry.Key.DestPort != 80 {
+		t.Fatalf("service entry key = %+v, want tcp/80 only", entry.Key)
+	}
+}
+
 func TestCompileForEndpointWithContextRejectsUnknownRemoteService(t *testing.T) {
 	endpoint := model.Endpoint{
 		ID:             "pod-client",

@@ -482,6 +482,9 @@ func expandServiceRule(base Rule, services map[string]model.LoadBalancer) ([]Rul
 		if base.Protocol != "" && base.Protocol != model.ProtocolAny && base.Protocol != frontend.Protocol {
 			continue
 		}
+		if len(base.Ports) > 0 && !portRangesContain(base.Ports, frontend.Port) {
+			continue
+		}
 		expanded := base
 		bits := 128
 		if frontend.VIP.Is4() {
@@ -502,6 +505,15 @@ func expandServiceRule(base Rule, services map[string]model.LoadBalancer) ([]Rul
 		out = append(out, expanded)
 	}
 	return out, nil
+}
+
+func portRangesContain(ranges []model.PortRange, port uint16) bool {
+	for _, portRange := range ranges {
+		if portRange.From <= port && port <= portRange.To {
+			return true
+		}
+	}
+	return false
 }
 
 func portRangesKey(ports []model.PortRange) string {
