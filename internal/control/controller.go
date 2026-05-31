@@ -646,7 +646,7 @@ func loadBalancerHasMatchingFrontendProtocol(lb model.LoadBalancer, protocol mod
 func loadBalancerHasMatchingFrontendPort(lb model.LoadBalancer, protocol model.Protocol, ports []model.PortRange) bool {
 	protocol = effectiveProtocol(protocol)
 	for _, frontend := range lb.Frontends() {
-		if frontend.Protocol != protocol {
+		if protocol != model.ProtocolAny && frontend.Protocol != protocol {
 			continue
 		}
 		if portRangesContain(ports, frontend.Port) {

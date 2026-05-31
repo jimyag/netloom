@@ -969,6 +969,12 @@ func TestSecurityGroupRuleValidatesRemoteService(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	rule.Ports = []PortRange{{From: 80, To: 80}}
+	if err := rule.Validate(); err != nil {
+		t.Fatalf("remote service with any protocol and explicit port should validate: %v", err)
+	}
+
+	rule.Ports = nil
 	rule.RemoteCIDR = netip.MustParsePrefix("10.20.0.0/16")
 	if err := rule.Validate(); err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
 		t.Fatalf("error = %v, want remote service exclusivity validation", err)

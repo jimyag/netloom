@@ -360,6 +360,19 @@ func TestControllerAllowsNATAndLoadBalancerSamePortDifferentProtocol(t *testing.
 	}
 }
 
+func TestControllerAllowsRemoteServiceAnyProtocolExplicitPort(t *testing.T) {
+	state := validObjectGraphState()
+	state.SecurityGroups[0].Rules[0].RemoteCIDR = netip.Prefix{}
+	state.SecurityGroups[0].Rules[0].Direction = model.DirectionEgress
+	state.SecurityGroups[0].Rules[0].Protocol = model.ProtocolAny
+	state.SecurityGroups[0].Rules[0].RemoteService = "web"
+	state.SecurityGroups[0].Rules[0].Ports = []model.PortRange{{From: 80, To: 80}}
+
+	if err := NewController(NewMemoryBackend(), NewMemoryBackend()).Reconcile(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 	tests := []struct {
 		name    string

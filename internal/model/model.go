@@ -1044,7 +1044,7 @@ func (r SecurityGroupRule) Validate() error {
 	if !slices.Contains([]Action{ActionAllow, ActionDrop, ActionReject, ActionLog}, r.Action) {
 		return fmt.Errorf("unsupported security action %q", r.Action)
 	}
-	if len(r.Ports) > 0 && r.Protocol != ProtocolTCP && r.Protocol != ProtocolUDP {
+	if len(r.Ports) > 0 && r.Protocol != ProtocolTCP && r.Protocol != ProtocolUDP && !(r.Protocol == ProtocolAny && r.RemoteService != "") {
 		return errors.New("ports require tcp or udp protocol")
 	}
 	if len(r.NamedPorts) > 0 && r.Protocol != ProtocolTCP && r.Protocol != ProtocolUDP {
