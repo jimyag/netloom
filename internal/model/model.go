@@ -1275,15 +1275,35 @@ func validateDNSName(name string, allowWildcard bool) error {
 	if name == "" {
 		return errors.New("dns name is required")
 	}
-	for _, r := range name {
-		switch {
-		case r >= 'a' && r <= 'z':
-		case r >= 'A' && r <= 'Z':
-		case r >= '0' && r <= '9':
-		case r == '-' || r == '.' || r == '_':
-		case allowWildcard && r == '*':
-		default:
-			return fmt.Errorf("dns name %q contains unsupported character %q", name, r)
+	if strings.HasSuffix(name, ".") {
+		name = strings.TrimSuffix(name, ".")
+	}
+	if name == "" {
+		return errors.New("dns name must contain at least one label")
+	}
+	if len(name) > 253 {
+		return fmt.Errorf("dns name %q exceeds 253 characters", name)
+	}
+	for _, label := range strings.Split(name, ".") {
+		if label == "" {
+			return fmt.Errorf("dns name %q contains empty label", name)
+		}
+		if len(label) > 63 {
+			return fmt.Errorf("dns label %q exceeds 63 characters", label)
+		}
+		if strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
+			return fmt.Errorf("dns label %q must not start or end with '-'", label)
+		}
+		for _, r := range label {
+			switch {
+			case r >= 'a' && r <= 'z':
+			case r >= 'A' && r <= 'Z':
+			case r >= '0' && r <= '9':
+			case r == '-' || r == '_':
+			case allowWildcard && r == '*':
+			default:
+				return fmt.Errorf("dns name %q contains unsupported character %q", name, r)
+			}
 		}
 	}
 	return nil

@@ -278,9 +278,11 @@ one CIDR-backed policy entry per resolved IP (`/32` for IPv4, `/128` for IPv6).
 `match_pattern` follows Cilium's `matchpattern` wildcard semantics: ordinary
 `*` matches characters within one DNS label and does not cross `.`, even when
 the entire pattern is just `*`; a leading `**.` matches one or more subdomain
-labels. Unresolved names compile to no entries, so they do not accidentally
-allow broad egress. This gives the eBPF
-ACL path the same CIDR fallback enforcement shape as `remote_cidr` while
+labels. DNS names, DHCP search domains, and FQDN selectors are validated
+label-by-label before policy compilation; empty labels, overlong labels, and
+wildcards in exact `match_name` selectors are rejected. Unresolved names compile
+to no entries, so they do not accidentally allow broad egress. This gives the
+eBPF ACL path the same CIDR fallback enforcement shape as `remote_cidr` while
 preserving the higher-level FQDN intent in the model.
 The desired-state DNS cache supports TTL expiry with `ttl_seconds` and
 `observed_at`; expired records are skipped during policy compilation so stale

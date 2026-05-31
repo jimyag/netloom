@@ -190,11 +190,23 @@ func TestSubnetDHCPValidation(t *testing.T) {
 		t.Fatalf("error = %v, want invalid domain validation", err)
 	}
 
+	subnet.DHCP = DHCPOptions{Enabled: true, DomainName: "svc..cluster.local"}
+	err = subnet.Validate()
+	if err == nil || !strings.Contains(err.Error(), "empty label") {
+		t.Fatalf("error = %v, want empty dhcp domain label validation", err)
+	}
+
+	subnet.DHCP = DHCPOptions{Enabled: true, SearchDomains: []string{"cluster..local"}}
+	err = subnet.Validate()
+	if err == nil || !strings.Contains(err.Error(), "empty label") {
+		t.Fatalf("error = %v, want empty dhcp search domain label validation", err)
+	}
+
 	subnet.DHCP = DHCPOptions{
 		Enabled:       true,
 		DNSServers:    []netip.Addr{netip.MustParseAddr("10.96.0.10")},
-		DomainName:    "svc.cluster.local",
-		SearchDomains: []string{"cluster.local", "svc.cluster.local"},
+		DomainName:    "svc.cluster.local.",
+		SearchDomains: []string{"cluster.local", "svc.cluster.local."},
 	}
 	if err := subnet.Validate(); err != nil {
 		t.Fatalf("valid dhcp dns options failed: %v", err)
@@ -759,8 +771,9 @@ func TestSecurityGroupRuleValidatesRemoteFQDNSelectors(t *testing.T) {
 		Direction: DirectionEgress,
 		Protocol:  ProtocolTCP,
 		RemoteFQDNs: []FQDNSelector{
-			{MatchName: "api.example.com"},
+			{MatchName: "api.example.com."},
 			{MatchPattern: "*.svc.example.com"},
+			{MatchPattern: "**.deep.example.com"},
 		},
 		Ports:  []PortRange{{From: 443, To: 443}},
 		Action: ActionAllow,
@@ -823,6 +836,54 @@ func TestSecurityGroupRuleValidatesRemoteFQDNSelectors(t *testing.T) {
 			},
 			wantErr: "unsupported character",
 		},
+		{
+			name: "empty match name label",
+			rule: SecurityGroupRule{
+				ID:          "bad-empty-label",
+				Priority:    100,
+				Direction:   DirectionEgress,
+				Protocol:    ProtocolTCP,
+				RemoteFQDNs: []FQDNSelector{{MatchName: "api..example.com"}},
+				Action:      ActionAllow,
+			},
+			wantErr: "empty label",
+		},
+		{
+			name: "empty match pattern label",
+			rule: SecurityGroupRule{
+				ID:          "bad-pattern-empty-label",
+				Priority:    100,
+				Direction:   DirectionEgress,
+				Protocol:    ProtocolTCP,
+				RemoteFQDNs: []FQDNSelector{{MatchPattern: "*.bad..example.com"}},
+				Action:      ActionAllow,
+			},
+			wantErr: "empty label",
+		},
+		{
+			name: "match name wildcard",
+			rule: SecurityGroupRule{
+				ID:          "bad-name-wildcard",
+				Priority:    100,
+				Direction:   DirectionEgress,
+				Protocol:    ProtocolTCP,
+				RemoteFQDNs: []FQDNSelector{{MatchName: "*.example.com"}},
+				Action:      ActionAllow,
+			},
+			wantErr: "unsupported character",
+		},
+		{
+			name: "label starts with hyphen",
+			rule: SecurityGroupRule{
+				ID:          "bad-label-hyphen",
+				Priority:    100,
+				Direction:   DirectionEgress,
+				Protocol:    ProtocolTCP,
+				RemoteFQDNs: []FQDNSelector{{MatchName: "-api.example.com"}},
+				Action:      ActionAllow,
+			},
+			wantErr: "must not start or end",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -878,6 +939,10 @@ func TestDNSRecordValidation(t *testing.T) {
 	if err := record.Validate(); err != nil {
 		t.Fatal(err)
 	}
+	rootedRecord := DNSRecord{Name: "api.example.com.", IPs: []netip.Addr{netip.MustParseAddr("203.0.113.12")}}
+	if err := rootedRecord.Validate(); err != nil {
+		t.Fatal(err)
+	}
 	underscoreRecord := DNSRecord{Name: "_api.example.com", IPs: []netip.Addr{netip.MustParseAddr("203.0.113.11")}}
 	if err := underscoreRecord.Validate(); err != nil {
 		t.Fatal(err)
@@ -899,6 +964,18 @@ func TestDNSRecordValidation(t *testing.T) {
 	}
 	if err := (DNSRecord{Name: "api.example.com"}).Validate(); err == nil {
 		t.Fatal("expected dns record without ips to fail")
+	}
+	if err := (DNSRecord{
+		Name: "api..example.com",
+		IPs:  []netip.Addr{netip.MustParseAddr("203.0.113.10")},
+	}).Validate(); err == nil || !strings.Contains(err.Error(), "empty label") {
+		t.Fatalf("error = %v, want empty label validation", err)
+	}
+	if err := (DNSRecord{
+		Name: "-api.example.com",
+		IPs:  []netip.Addr{netip.MustParseAddr("203.0.113.10")},
+	}).Validate(); err == nil || !strings.Contains(err.Error(), "must not start or end") {
+		t.Fatalf("error = %v, want hyphen boundary validation", err)
 	}
 	if err := (DNSRecord{
 		Name:       "api.example.com",
