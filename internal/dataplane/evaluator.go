@@ -228,6 +228,8 @@ type ConntrackKey struct {
 	RemoteIP       netip.Addr
 	Direction      uint8
 	Protocol       uint8
+	ICMPType       uint8
+	ICMPCode       uint8
 	SourcePort     uint16
 	DestPort       uint16
 }
@@ -449,12 +451,15 @@ func networkToHost16(value uint16) uint16 {
 }
 
 func conntrackKey(endpointID string, packet Packet) ConntrackKey {
+	icmpType, icmpCode := conntrackICMP(packet.Protocol, packet.ICMPType, packet.ICMPCode)
 	return ConntrackKey{
 		EndpointID:     endpointID,
 		RemoteIdentity: packet.RemoteIdentity,
 		RemoteIP:       packet.RemoteIP,
 		Direction:      packet.Direction,
 		Protocol:       packet.Protocol,
+		ICMPType:       icmpType,
+		ICMPCode:       icmpCode,
 		SourcePort:     packet.SourcePort,
 		DestPort:       packet.DestPort,
 	}
@@ -465,15 +470,52 @@ func reverseConntrackKey(endpointID string, packet Packet) ConntrackKey {
 	if port == 0 {
 		port = packet.DestPort
 	}
+	icmpType, icmpCode := reverseConntrackICMP(packet.Protocol, packet.ICMPType, packet.ICMPCode)
 	return ConntrackKey{
 		EndpointID:     endpointID,
 		RemoteIdentity: packet.RemoteIdentity,
 		RemoteIP:       packet.RemoteIP,
 		Direction:      reverseDirection(packet.Direction),
 		Protocol:       packet.Protocol,
+		ICMPType:       icmpType,
+		ICMPCode:       icmpCode,
 		SourcePort:     packet.DestPort,
 		DestPort:       port,
 	}
+}
+
+func conntrackICMP(protocol, icmpType, icmpCode uint8) (uint8, uint8) {
+	if !isICMPProtocol(protocol) {
+		return 0, 0
+	}
+	return icmpType, icmpCode
+}
+
+func reverseConntrackICMP(protocol, icmpType, icmpCode uint8) (uint8, uint8) {
+	if !isICMPProtocol(protocol) {
+		return 0, 0
+	}
+	switch protocol {
+	case 1:
+		switch icmpType {
+		case 8:
+			return 0, icmpCode
+		case 0:
+			return 8, icmpCode
+		}
+	case 58:
+		switch icmpType {
+		case 128:
+			return 129, icmpCode
+		case 129:
+			return 128, icmpCode
+		}
+	}
+	return icmpType, icmpCode
+}
+
+func isICMPProtocol(protocol uint8) bool {
+	return protocol == 1 || protocol == 58
 }
 
 func reverseDirection(direction uint8) uint8 {

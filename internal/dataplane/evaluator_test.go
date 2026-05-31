@@ -460,6 +460,108 @@ func TestEvaluateStatefulKeepsConntrackSourcePortsSeparate(t *testing.T) {
 	}
 }
 
+func TestEvaluateStatefulKeepsICMPTypesSeparate(t *testing.T) {
+	entries := []PolicyMapEntry{{
+		Key: PolicyKey{
+			PrefixLen:      StaticPrefixBits + 24,
+			RemoteIdentity: 100,
+			Direction:      DirectionEgress,
+			Protocol:       1,
+			DestPortBE:     hostToNetwork16(0x0800),
+		},
+		Value: PolicyEntry{
+			L4PrefixLen: 24,
+			Precedence:  100,
+			Stateful:    1,
+		},
+	}}
+	conntrack := NewInMemoryConntrackStore()
+
+	request := EvaluateStateful("pod-a", entries, Packet{
+		RemoteIdentity: 100,
+		Direction:      DirectionEgress,
+		Protocol:       1,
+		ICMPType:       8,
+		ICMPCode:       0,
+	}, conntrack)
+	if request.Verdict != VerdictAllow || !request.Established {
+		t.Fatalf("request decision = %+v, want stateful allow", request)
+	}
+
+	wrongReply := EvaluateStateful("pod-a", nil, Packet{
+		RemoteIdentity: 100,
+		Direction:      DirectionIngress,
+		Protocol:       1,
+		ICMPType:       3,
+		ICMPCode:       0,
+	}, conntrack)
+	if wrongReply.Verdict != VerdictDrop || wrongReply.Conntrack {
+		t.Fatalf("wrong reply decision = %+v, want no conntrack match", wrongReply)
+	}
+
+	echoReply := EvaluateStateful("pod-a", nil, Packet{
+		RemoteIdentity: 100,
+		Direction:      DirectionIngress,
+		Protocol:       1,
+		ICMPType:       0,
+		ICMPCode:       0,
+	}, conntrack)
+	if echoReply.Verdict != VerdictAllow || !echoReply.Conntrack {
+		t.Fatalf("echo reply decision = %+v, want conntrack allow", echoReply)
+	}
+}
+
+func TestEvaluateStatefulKeepsICMPv6TypesSeparate(t *testing.T) {
+	entries := []PolicyMapEntry{{
+		Key: PolicyKey{
+			PrefixLen:      StaticPrefixBits + 24,
+			RemoteIdentity: 100,
+			Direction:      DirectionEgress,
+			Protocol:       58,
+			DestPortBE:     hostToNetwork16(0x8000),
+		},
+		Value: PolicyEntry{
+			L4PrefixLen: 24,
+			Precedence:  100,
+			Stateful:    1,
+		},
+	}}
+	conntrack := NewInMemoryConntrackStore()
+
+	request := EvaluateStateful("pod-a", entries, Packet{
+		RemoteIdentity: 100,
+		Direction:      DirectionEgress,
+		Protocol:       58,
+		ICMPType:       128,
+		ICMPCode:       0,
+	}, conntrack)
+	if request.Verdict != VerdictAllow || !request.Established {
+		t.Fatalf("request decision = %+v, want stateful allow", request)
+	}
+
+	wrongReply := EvaluateStateful("pod-a", nil, Packet{
+		RemoteIdentity: 100,
+		Direction:      DirectionIngress,
+		Protocol:       58,
+		ICMPType:       1,
+		ICMPCode:       0,
+	}, conntrack)
+	if wrongReply.Verdict != VerdictDrop || wrongReply.Conntrack {
+		t.Fatalf("wrong reply decision = %+v, want no conntrack match", wrongReply)
+	}
+
+	echoReply := EvaluateStateful("pod-a", nil, Packet{
+		RemoteIdentity: 100,
+		Direction:      DirectionIngress,
+		Protocol:       58,
+		ICMPType:       129,
+		ICMPCode:       0,
+	}, conntrack)
+	if echoReply.Verdict != VerdictAllow || !echoReply.Conntrack {
+		t.Fatalf("echo reply decision = %+v, want conntrack allow", echoReply)
+	}
+}
+
 func TestEvaluateStatefulDenyDoesNotCreateConntrack(t *testing.T) {
 	entries := []PolicyMapEntry{{
 		Key: PolicyKey{
