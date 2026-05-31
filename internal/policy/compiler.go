@@ -786,6 +786,9 @@ func indexCIDRGroups(vpc string, groups []model.CIDRGroup) (map[string][]netip.P
 		if group.VPC != vpc {
 			continue
 		}
+		if _, ok := out[group.Name]; ok {
+			return nil, fmt.Errorf("duplicate cidr group %q in vpc %s", group.Name, vpc)
+		}
 		cidrs := make([]netip.Prefix, 0, len(group.CIDRs))
 		for _, cidr := range group.CIDRs {
 			cidrs = append(cidrs, cidr.Masked())
@@ -812,6 +815,9 @@ func indexServices(vpc string, services []model.LoadBalancer) (map[string]model.
 		}
 		if service.VPC != vpc {
 			continue
+		}
+		if _, ok := out[service.Name]; ok {
+			return nil, fmt.Errorf("duplicate service %q in vpc %s", service.Name, vpc)
 		}
 		out[service.Name] = service
 	}

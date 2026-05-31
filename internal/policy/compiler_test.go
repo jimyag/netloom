@@ -986,6 +986,55 @@ func TestCompileForEndpointWithContextRejectsUnknownRemoteService(t *testing.T) 
 	}
 }
 
+func TestCompileForEndpointWithContextRejectsDuplicateRemoteServiceNames(t *testing.T) {
+	endpoint := model.Endpoint{
+		ID:             "pod-client",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"client"},
+	}
+	_, err := CompileForEndpointWithContext(endpoint, map[string]model.SecurityGroup{
+		"client": {
+			Name: "client",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:            "egress-web-service",
+				Priority:      100,
+				Direction:     model.DirectionEgress,
+				Protocol:      model.ProtocolAny,
+				RemoteService: "web",
+				Action:        model.ActionAllow,
+			}},
+		},
+	}, CompileContext{Services: []model.LoadBalancer{
+		{
+			Name: "web",
+			VPC:  "prod",
+			VIP:  netip.MustParseAddr("10.96.0.10"),
+			Ports: []model.LoadBalancerPort{{
+				Port:     80,
+				Protocol: model.ProtocolTCP,
+				Backends: []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.20"), Port: 8080}},
+			}},
+		},
+		{
+			Name: "web",
+			VPC:  "prod",
+			VIP:  netip.MustParseAddr("10.96.0.11"),
+			Ports: []model.LoadBalancerPort{{
+				Port:     80,
+				Protocol: model.ProtocolTCP,
+				Backends: []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.21"), Port: 8080}},
+			}},
+		},
+	}})
+	if err == nil || !strings.Contains(err.Error(), "duplicate service") {
+		t.Fatalf("error = %v, want duplicate service validation", err)
+	}
+}
+
 func TestCompileForEndpointWithStateRejectsUnknownRemoteGroup(t *testing.T) {
 	endpoint := model.Endpoint{
 		ID:             "pod-a",
@@ -1270,6 +1319,38 @@ func TestCompileForEndpointWithContextExpandsRemoteCIDRGroup(t *testing.T) {
 	}
 	if len(program.MapEntries) != 2 {
 		t.Fatalf("map entries = %d, want 2", len(program.MapEntries))
+	}
+}
+
+func TestCompileForEndpointWithContextRejectsDuplicateRemoteCIDRGroupNames(t *testing.T) {
+	endpoint := model.Endpoint{
+		ID:             "pod-a",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"client"},
+	}
+	_, err := CompileForEndpointWithContext(endpoint, map[string]model.SecurityGroup{
+		"client": {
+			Name: "client",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:              "allow-corp",
+				Priority:        100,
+				Direction:       model.DirectionEgress,
+				Protocol:        model.ProtocolTCP,
+				RemoteCIDRGroup: "corp",
+				Ports:           []model.PortRange{{From: 443, To: 443}},
+				Action:          model.ActionAllow,
+			}},
+		},
+	}, CompileContext{CIDRGroups: []model.CIDRGroup{
+		{Name: "corp", VPC: "prod", CIDRs: []netip.Prefix{netip.MustParsePrefix("10.20.0.0/16")}},
+		{Name: "corp", VPC: "prod", CIDRs: []netip.Prefix{netip.MustParsePrefix("10.30.0.0/16")}},
+	}})
+	if err == nil || !strings.Contains(err.Error(), "duplicate cidr group") {
+		t.Fatalf("error = %v, want duplicate cidr group validation", err)
 	}
 }
 
