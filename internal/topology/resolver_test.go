@@ -524,6 +524,57 @@ func TestResolvePolicyRouteBeatsStaticRoute(t *testing.T) {
 	}
 }
 
+func TestResolveAllowPolicyRouteBeatsLowerPriorityDrop(t *testing.T) {
+	state := State{
+		PolicyRoutes: []model.PolicyRoute{{
+			Name:     "allow-api",
+			VPC:      "prod",
+			Priority: 300,
+			Match: model.RouteMatch{
+				Source:      netip.MustParsePrefix("10.10.0.0/24"),
+				Destination: netip.MustParsePrefix("198.51.100.10/32"),
+				Protocol:    model.ProtocolTCP,
+				DstPorts:    []model.PortRange{{From: 443, To: 443}},
+			},
+			Action: model.RouteAction{Type: model.ActionAllow},
+		}, {
+			Name:     "drop-lab",
+			VPC:      "prod",
+			Priority: 100,
+			Match: model.RouteMatch{
+				Source:      netip.MustParsePrefix("10.10.0.0/24"),
+				Destination: netip.MustParsePrefix("198.51.100.0/24"),
+			},
+			Action: model.RouteAction{Type: model.ActionDrop},
+		}},
+	}
+	decision, err := Resolve(state, Packet{
+		VPC:      "prod",
+		Source:   netip.MustParseAddr("10.10.0.10"),
+		Dest:     netip.MustParseAddr("198.51.100.10"),
+		Protocol: model.ProtocolTCP,
+		DestPort: 443,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Action != model.ActionAllow || decision.MatchedBy != "policy-route/allow-api" {
+		t.Fatalf("decision = %+v, want allow-api allow", decision)
+	}
+
+	decision, err = Resolve(state, Packet{
+		VPC:    "prod",
+		Source: netip.MustParseAddr("10.10.0.10"),
+		Dest:   netip.MustParseAddr("198.51.100.20"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Action != model.ActionDrop || decision.MatchedBy != "policy-route/drop-lab" {
+		t.Fatalf("decision = %+v, want lower priority drop", decision)
+	}
+}
+
 func TestResolvePolicyRouteSNATUsesNextHopGateway(t *testing.T) {
 	state := State{
 		PolicyRoutes: []model.PolicyRoute{{

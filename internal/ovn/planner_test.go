@@ -639,6 +639,40 @@ func TestPlannerBuildsPolicyRouteOperation(t *testing.T) {
 	}
 }
 
+func TestPlannerBuildsAllowPolicyRouteOperation(t *testing.T) {
+	planner := ovn.NewPlanner()
+	err := planner.EnsurePolicyRoute(context.Background(), model.PolicyRoute{
+		Name:     "allow-api",
+		VPC:      "prod",
+		Priority: 300,
+		Match: model.RouteMatch{
+			Source:      netip.MustParsePrefix("10.10.0.0/24"),
+			Destination: netip.MustParsePrefix("198.51.100.10/32"),
+			Protocol:    model.ProtocolTCP,
+			DstPorts:    []model.PortRange{{From: 443, To: 443}},
+		},
+		Action: model.RouteAction{Type: model.ActionAllow},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := stringify(planner.Operations())
+	for _, expected := range []string{
+		"--if-exists lr-policy-del nl_lr_prod 300",
+		"lr-policy-add nl_lr_prod 300",
+		"allow",
+		"ip4.dst == 198.51.100.10/32",
+		"tcp.dst == 443",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("allow policy route operation missing %q:\n%s", expected, joined)
+		}
+	}
+	if strings.Contains(joined, "reroute") || strings.Contains(joined, "nexthops=") {
+		t.Fatalf("allow policy route must not program reroute nexthops:\n%s", joined)
+	}
+}
+
 func TestPlannerBuildsIPv6PolicyRouteOperation(t *testing.T) {
 	planner := ovn.NewPlanner()
 	err := planner.EnsurePolicyRoute(context.Background(), model.PolicyRoute{

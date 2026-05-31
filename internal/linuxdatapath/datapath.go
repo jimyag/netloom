@@ -50,6 +50,11 @@ type Result struct {
 
 type CommandExecutor struct{}
 
+const (
+	linuxMainRouteTable       = 254
+	linuxPolicyRuleProtocolID = 186
+)
+
 func (CommandExecutor) Execute(ctx context.Context, op Operation) error {
 	cmd := exec.CommandContext(ctx, op.Command, op.Args...)
 	output, err := cmd.CombinedOutput()
@@ -188,6 +193,7 @@ func planPolicyRoutes(state control.DesiredState, node, device string, tableBase
 		ops = append(ops, planPolicyRouteCleanup(tableBase, tableSize))
 	}
 	applied := 0
+	tableOffset := 0
 	for _, route := range routes {
 		if _, ok := localVPCs[route.VPC]; !ok {
 			continue
@@ -195,32 +201,33 @@ func planPolicyRoutes(state control.DesiredState, node, device string, tableBase
 		if err := route.Validate(); err != nil {
 			return nil, 0, fmt.Errorf("policy route %s: %w", route.Name, err)
 		}
-		if route.Action.Type == model.ActionAllow {
-			continue
-		}
-		table := tableBase + applied
+		table := linuxMainRouteTable
 		rulePriority := linuxPolicyRulePriority(route.Priority)
-		destination := linuxPolicyRouteDestination(route)
-		if route.Action.Type == model.ActionDrop {
-			ops = append(ops, Operation{
-				Command: "ip",
-				Args:    []string{"route", "replace", "blackhole", destination.String(), "table", strconv.Itoa(table)},
-			})
-		} else {
-			nextHops := route.Action.RerouteNextHops()
-			args := []string{"route", "replace", destination.String()}
-			if len(nextHops) == 1 {
-				args = append(args, "via", nextHops[0].String(), "dev", device)
+		if route.Action.Type != model.ActionAllow {
+			table = tableBase + tableOffset
+			tableOffset++
+			destination := linuxPolicyRouteDestination(route)
+			if route.Action.Type == model.ActionDrop {
+				ops = append(ops, Operation{
+					Command: "ip",
+					Args:    []string{"route", "replace", "blackhole", destination.String(), "table", strconv.Itoa(table)},
+				})
 			} else {
-				for _, nextHop := range nextHops {
-					args = append(args, "nexthop", "via", nextHop.String(), "dev", device)
+				nextHops := route.Action.RerouteNextHops()
+				args := []string{"route", "replace", destination.String()}
+				if len(nextHops) == 1 {
+					args = append(args, "via", nextHops[0].String(), "dev", device)
+				} else {
+					for _, nextHop := range nextHops {
+						args = append(args, "nexthop", "via", nextHop.String(), "dev", device)
+					}
 				}
+				args = append(args, "table", strconv.Itoa(table))
+				ops = append(ops, Operation{
+					Command: "ip",
+					Args:    args,
+				})
 			}
-			args = append(args, "table", strconv.Itoa(table))
-			ops = append(ops, Operation{
-				Command: "ip",
-				Args:    args,
-			})
 		}
 		for _, ruleArgs := range linuxPolicyRuleArgs(route, rulePriority, table) {
 			ops = append(ops, shellOperation("ip rule del "+ruleArgs+" 2>/dev/null || true; ip rule add "+ruleArgs))
@@ -233,7 +240,8 @@ func planPolicyRoutes(state control.DesiredState, node, device string, tableBase
 func planPolicyRouteCleanup(tableBase, tableSize int) Operation {
 	start := strconv.Itoa(tableBase)
 	end := strconv.Itoa(tableBase + tableSize)
-	return shellOperation("ip rule show | awk -v start=" + start + " -v end=" + end + " '{ for (i=1; i<=NF; i++) if (($i == \"lookup\" || $i == \"table\") && $(i+1) >= start && $(i+1) < end) print }' | while read -r rule; do priority=${rule%%:*}; table=$(printf '%s\\n' \"$rule\" | awk '{ for (i=1; i<=NF; i++) if (($i == \"lookup\" || $i == \"table\")) { print $(i+1); exit } }'); ip rule del priority \"$priority\" table \"$table\" 2>/dev/null || true; done")
+	protocol := strconv.Itoa(linuxPolicyRuleProtocolID)
+	return shellOperation("ip rule show | awk -v start=" + start + " -v end=" + end + " -v proto=" + protocol + " '{ managed=0; for (i=1; i<=NF; i++) { if (($i == \"lookup\" || $i == \"table\") && $(i+1) >= start && $(i+1) < end) managed=1; if (($i == \"proto\" || $i == \"protocol\") && $(i+1) == proto) managed=1 } if (managed) print }' | while read -r rule; do priority=${rule%%:*}; table=$(printf '%s\\n' \"$rule\" | awk '{ for (i=1; i<=NF; i++) if (($i == \"lookup\" || $i == \"table\")) { print $(i+1); exit } }'); ip rule del priority \"$priority\" table \"$table\" 2>/dev/null || true; done")
 }
 
 func localVPCSet(endpoints []model.Endpoint, node string) map[string]struct{} {
@@ -289,7 +297,7 @@ func linuxPolicyRuleArgsForPort(route model.PolicyRoute, priority, table int, po
 	if port != nil {
 		args = append(args, "dport", linuxPolicyRulePort(*port))
 	}
-	args = append(args, "table", strconv.Itoa(table))
+	args = append(args, "table", strconv.Itoa(table), "protocol", strconv.Itoa(linuxPolicyRuleProtocolID))
 	return strings.Join(args, " ")
 }
 

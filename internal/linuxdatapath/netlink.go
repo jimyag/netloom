@@ -180,8 +180,18 @@ func applyPolicyRoutesNetlink(root *netlink.Handle, state control.DesiredState, 
 		return 0, err
 	}
 
-	underlay, err := root.LinkByName(options.UnderlayDevice)
-	if err != nil && len(applicable) > 0 {
+	needsUnderlay := false
+	for _, route := range applicable {
+		if route.Action.Type != model.ActionAllow {
+			needsUnderlay = true
+			break
+		}
+	}
+	var underlay netlink.Link
+	if needsUnderlay {
+		underlay, err = root.LinkByName(options.UnderlayDevice)
+	}
+	if err != nil {
 		return 0, fmt.Errorf("lookup policy route device %s: %w", options.UnderlayDevice, err)
 	}
 	if err := cleanupManagedPolicyRules(root, options); err != nil {
@@ -189,13 +199,18 @@ func applyPolicyRoutesNetlink(root *netlink.Handle, state control.DesiredState, 
 	}
 
 	applied := 0
+	tableOffset := 0
 	for _, route := range applicable {
-		table := options.PolicyTableBase + applied
-		if err := flushPolicyRouteTable(root, table); err != nil {
-			return 0, fmt.Errorf("flush policy route table %d: %w", table, err)
-		}
-		if err := replacePolicyRoute(root, route, table, underlay.Attrs().Index); err != nil {
-			return 0, fmt.Errorf("replace policy route %s table %d: %w", route.Name, table, err)
+		table := linuxMainRouteTable
+		if route.Action.Type != model.ActionAllow {
+			table = options.PolicyTableBase + tableOffset
+			tableOffset++
+			if err := flushPolicyRouteTable(root, table); err != nil {
+				return 0, fmt.Errorf("flush policy route table %d: %w", table, err)
+			}
+			if err := replacePolicyRoute(root, route, table, underlay.Attrs().Index); err != nil {
+				return 0, fmt.Errorf("replace policy route %s table %d: %w", route.Name, table, err)
+			}
 		}
 		for _, rule := range netlinkPolicyRules(route, linuxPolicyRulePriority(route.Priority), table) {
 			if err := root.RuleAdd(rule); err != nil {
@@ -215,9 +230,6 @@ func applicablePolicyRoutes(routes []model.PolicyRoute, localVPCs map[string]str
 		}
 		if err := route.Validate(); err != nil {
 			return nil, fmt.Errorf("policy route %s: %w", route.Name, err)
-		}
-		if route.Action.Type == model.ActionAllow {
-			continue
 		}
 		out = append(out, route)
 	}
@@ -240,7 +252,7 @@ func cleanupManagedPolicyRules(root *netlink.Handle, options Options) error {
 			return fmt.Errorf("list policy rules family %d: %w", family, err)
 		}
 		for _, rule := range rules {
-			if !managedPolicyTable(rule.Table, options) {
+			if !managedPolicyRule(rule, options) {
 				continue
 			}
 			ruleCopy := rule
@@ -258,6 +270,10 @@ func netlinkPolicyRuleFamilies() []int {
 
 func managedPolicyTable(table int, options Options) bool {
 	return table >= options.PolicyTableBase && table < options.PolicyTableBase+options.PolicyTableSize
+}
+
+func managedPolicyRule(rule netlink.Rule, options Options) bool {
+	return managedPolicyTable(rule.Table, options) || int(rule.Protocol) == linuxPolicyRuleProtocolID
 }
 
 func flushPolicyRouteTable(root *netlink.Handle, table int) error {
@@ -318,6 +334,7 @@ func netlinkPolicyRule(route model.PolicyRoute, priority, table int, port *model
 	rule.Priority = priority
 	rule.Table = table
 	rule.Family = policyRouteFamily(route)
+	rule.Protocol = linuxPolicyRuleProtocolID
 	if route.Match.Source.IsValid() {
 		rule.Src, _ = ipNetFromPrefix(route.Match.Source)
 	}

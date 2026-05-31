@@ -11,6 +11,7 @@ import (
 
 	"github.com/jimyag/netloom/internal/control"
 	"github.com/jimyag/netloom/internal/model"
+	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 )
 
@@ -167,13 +168,72 @@ func TestPlanProgramsLinuxPolicyRoutes(t *testing.T) {
 	joined := stringifyOps(ops)
 	for _, expected := range []string{
 		"ip route replace 172.16.0.0/16 via 10.10.0.253 dev eth9 table 20000",
-		"ip rule add priority 9800 from 10.10.0.0/24 to 172.16.0.0/16 ipproto tcp dport 443 table 20000",
+		"ip rule add priority 9800 from 10.10.0.0/24 to 172.16.0.0/16 ipproto tcp dport 443 table 20000 protocol 186",
 		"ip route replace blackhole 198.51.100.0/24 table 20001",
-		"ip rule add priority 9900 from 10.10.0.0/24 to 198.51.100.0/24 table 20001",
+		"ip rule add priority 9900 from 10.10.0.0/24 to 198.51.100.0/24 table 20001 protocol 186",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("policy route ops missing %q:\n%s", expected, joined)
 		}
+	}
+}
+
+func TestPlanProgramsAllowPolicyRouteToMainTable(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:     "pod-a",
+			VPC:    "prod",
+			Subnet: "apps",
+			IP:     netip.MustParseAddr("10.10.0.10"),
+			Node:   "node-a",
+		}},
+		PolicyRoutes: []model.PolicyRoute{{
+			Name:     "allow-https",
+			VPC:      "prod",
+			Priority: 300,
+			Match: model.RouteMatch{
+				Source:      netip.MustParsePrefix("10.10.0.0/24"),
+				Destination: netip.MustParsePrefix("198.51.100.10/32"),
+				Protocol:    model.ProtocolTCP,
+				DstPorts:    []model.PortRange{{From: 443, To: 443}},
+			},
+			Action: model.RouteAction{Type: model.ActionAllow},
+		}, {
+			Name:     "drop-lab",
+			VPC:      "prod",
+			Priority: 100,
+			Match: model.RouteMatch{
+				Source:      netip.MustParsePrefix("10.10.0.0/24"),
+				Destination: netip.MustParsePrefix("198.51.100.0/24"),
+			},
+			Action: model.RouteAction{Type: model.ActionDrop},
+		}},
+	}
+
+	ops, result, err := Plan(context.Background(), state, Options{
+		Node:            "node-a",
+		LocalDevice:     "nl0",
+		UnderlayDevice:  "eth9",
+		PolicyTableBase: 20000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.PolicyRoutes != 2 {
+		t.Fatalf("policy routes = %d, want 2", result.PolicyRoutes)
+	}
+	joined := stringifyOps(ops)
+	for _, expected := range []string{
+		"ip rule add priority 9700 from 10.10.0.0/24 to 198.51.100.10/32 ipproto tcp dport 443 table 254 protocol 186",
+		"ip route replace blackhole 198.51.100.0/24 table 20000",
+		"ip rule add priority 9900 from 10.10.0.0/24 to 198.51.100.0/24 table 20000 protocol 186",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("allow policy route ops missing %q:\n%s", expected, joined)
+		}
+	}
+	if strings.Contains(joined, "ip route replace 198.51.100.10/32") {
+		t.Fatalf("allow policy route must not program a managed route table:\n%s", joined)
 	}
 }
 
@@ -217,7 +277,7 @@ func TestPlanProgramsIPv6LinuxPolicyRoute(t *testing.T) {
 	for _, expected := range []string{
 		"ip addr replace fd00:10::10/128 dev nl0",
 		"ip route replace ::/0 via fd00:10::fe dev eth9 table 20000",
-		"ip rule add priority 9800 from fd00:10::/64 ipproto ipv6-icmp table 20000",
+		"ip rule add priority 9800 from fd00:10::/64 ipproto ipv6-icmp table 20000 protocol 186",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("IPv6 policy route ops missing %q:\n%s", expected, joined)
@@ -266,7 +326,7 @@ func TestPlanProgramsECMPPolicyRoute(t *testing.T) {
 	joined := stringifyOps(ops)
 	for _, expected := range []string{
 		"ip route replace 0.0.0.0/0 nexthop via 10.10.0.253 dev eth9 nexthop via 10.10.0.254 dev eth9 table 20000",
-		"ip rule add priority 9800 from 10.10.0.0/24 table 20000",
+		"ip rule add priority 9800 from 10.10.0.0/24 table 20000 protocol 186",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("ECMP policy route ops missing %q:\n%s", expected, joined)
@@ -297,7 +357,7 @@ func TestPlanCleansManagedPolicyRouteRulesWhenRequested(t *testing.T) {
 		t.Fatalf("policy routes = %d, want 0", result.PolicyRoutes)
 	}
 	joined := stringifyOps(ops)
-	for _, expected := range []string{"ip rule show", "start=22000", "end=22064", "ip rule del priority"} {
+	for _, expected := range []string{"ip rule show", "start=22000", "end=22064", "proto=186", "ip rule del priority"} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("cleanup ops missing %q:\n%s", expected, joined)
 		}
@@ -344,6 +404,11 @@ func TestApplicablePolicyRoutesValidatesAndSkipsNonLocalRoutes(t *testing.T) {
 		VPC:    "other",
 		Match:  model.RouteMatch{Destination: netip.MustParsePrefix("192.0.2.0/24")},
 		Action: model.RouteAction{Type: model.ActionDrop},
+	}, {
+		Name:   "local-allow",
+		VPC:    "prod",
+		Match:  model.RouteMatch{Destination: netip.MustParsePrefix("203.0.113.10/32")},
+		Action: model.RouteAction{Type: model.ActionAllow},
 	}}
 	_, err := applicablePolicyRoutes(routes, map[string]struct{}{"prod": struct{}{}})
 	if err == nil {
@@ -355,6 +420,13 @@ func TestApplicablePolicyRoutesValidatesAndSkipsNonLocalRoutes(t *testing.T) {
 	}
 	if len(applicable) != 1 || applicable[0].Name != "other-vpc" {
 		t.Fatalf("applicable routes = %+v, want only other-vpc", applicable)
+	}
+	applicable, err = applicablePolicyRoutes(routes[1:], map[string]struct{}{"prod": struct{}{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(applicable) != 1 || applicable[0].Name != "local-allow" {
+		t.Fatalf("applicable routes = %+v, want local allow route", applicable)
 	}
 }
 
@@ -379,6 +451,16 @@ func TestNetlinkPolicyRuleCleanupCoversIPv4AndIPv6(t *testing.T) {
 	}
 }
 
+func TestManagedPolicyRuleIncludesProtocolMarker(t *testing.T) {
+	options := Options{PolicyTableBase: 22000, PolicyTableSize: 64}
+	if !managedPolicyRule(netlink.Rule{Table: linuxMainRouteTable, Protocol: linuxPolicyRuleProtocolID}, options) {
+		t.Fatal("rule with netloom protocol marker should be managed")
+	}
+	if managedPolicyRule(netlink.Rule{Table: linuxMainRouteTable}, options) {
+		t.Fatal("main table rule without netloom protocol marker should not be managed")
+	}
+}
+
 func TestNetlinkPolicyRuleEncodesL4Match(t *testing.T) {
 	route := model.PolicyRoute{
 		Name:     "https-via-fw",
@@ -399,6 +481,9 @@ func TestNetlinkPolicyRuleEncodesL4Match(t *testing.T) {
 	rule := rules[0]
 	if rule.Priority != 9800 || rule.Table != 20000 || rule.Src.String() != "10.10.0.0/24" || rule.Dst.String() != "172.16.0.0/16" {
 		t.Fatalf("unexpected rule: %+v", rule)
+	}
+	if int(rule.Protocol) != linuxPolicyRuleProtocolID {
+		t.Fatalf("rule protocol = %d, want %d", rule.Protocol, linuxPolicyRuleProtocolID)
 	}
 	if rule.IPProto != 6 || rule.Dport == nil || rule.Dport.Start != 443 || rule.Dport.End != 443 {
 		t.Fatalf("unexpected L4 match: proto=%d dport=%+v", rule.IPProto, rule.Dport)
