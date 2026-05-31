@@ -943,7 +943,21 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 					Action:   model.RouteAction{Type: model.ActionDrop},
 				}}
 			},
-			wantErr: "policy route \"drop-excluded-source\" source 10.10.0.20/32 is excluded by subnet \"apps\"",
+			wantErr: "policy route \"drop-excluded-source\" source 10.10.0.20/32 overlaps excluded cidr 10.10.0.20/32 in subnet \"apps\"",
+		},
+		{
+			name: "policy route source overlaps excluded subnet range",
+			mutate: func(state *DesiredState) {
+				state.Subnets[0].ExcludeCIDRs = []netip.Prefix{netip.MustParsePrefix("10.10.0.20/32")}
+				state.PolicyRoutes = []model.PolicyRoute{{
+					Name:     "drop-source-with-exclude",
+					VPC:      "prod",
+					Priority: 100,
+					Match:    model.RouteMatch{Source: netip.MustParsePrefix("10.10.0.0/24")},
+					Action:   model.RouteAction{Type: model.ActionDrop},
+				}}
+			},
+			wantErr: "policy route \"drop-source-with-exclude\" source 10.10.0.0/24 overlaps excluded cidr 10.10.0.20/32 in subnet \"apps\"",
 		},
 		{
 			name: "nat unknown vpc",
@@ -983,7 +997,21 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 					ExternalIP: netip.MustParseAddr("198.51.100.10"),
 				}}
 			},
-			wantErr: "nat rule \"host-egress\" match cidr 10.10.0.20/32 is excluded by subnet \"apps\"",
+			wantErr: "nat rule \"host-egress\" match cidr 10.10.0.20/32 overlaps excluded cidr 10.10.0.20/32 in subnet \"apps\"",
+		},
+		{
+			name: "snat match cidr overlaps excluded subnet range",
+			mutate: func(state *DesiredState) {
+				state.Subnets[0].ExcludeCIDRs = []netip.Prefix{netip.MustParsePrefix("10.10.0.20/32")}
+				state.NATRules = []model.NATRule{{
+					Name:       "subnet-egress",
+					VPC:        "prod",
+					Type:       model.ActionSNAT,
+					MatchCIDR:  netip.MustParsePrefix("10.10.0.0/24"),
+					ExternalIP: netip.MustParseAddr("198.51.100.10"),
+				}}
+			},
+			wantErr: "nat rule \"subnet-egress\" match cidr 10.10.0.0/24 overlaps excluded cidr 10.10.0.20/32 in subnet \"apps\"",
 		},
 		{
 			name: "snat external ip inside vpc subnet",

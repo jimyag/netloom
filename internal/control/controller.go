@@ -842,10 +842,21 @@ func validatePrefixInVPCSubnets(subnets map[string]model.Subnet, vpc string, pre
 	if !ok {
 		return fmt.Errorf("%s is outside vpc %q subnets", subject, vpc)
 	}
-	if subnet.Excludes(prefix.Masked().Addr()) && subnet.Excludes(prefixLastAddress(prefix)) {
-		return fmt.Errorf("%s is excluded by subnet %q", subject, subnet.Name)
+	if exclude, ok := prefixOverlapsSubnetExclude(subnet, prefix); ok {
+		return fmt.Errorf("%s overlaps excluded cidr %s in subnet %q", subject, exclude, subnet.Name)
 	}
 	return nil
+}
+
+func prefixOverlapsSubnetExclude(subnet model.Subnet, prefix netip.Prefix) (netip.Prefix, bool) {
+	prefix = prefix.Masked()
+	for _, exclude := range subnet.ExcludeCIDRs {
+		exclude = exclude.Masked()
+		if prefixesOverlap(prefix, exclude) {
+			return exclude, true
+		}
+	}
+	return netip.Prefix{}, false
 }
 
 func subnetContainingAddress(subnets map[string]model.Subnet, vpc string, addr netip.Addr) (model.Subnet, bool) {
