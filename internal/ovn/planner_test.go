@@ -131,9 +131,9 @@ func TestPlannerMapsNetloomObjectsToOVNOperations(t *testing.T) {
 		"external_ids:netloom_gateway_distributed=false",
 		"options:chassis=node-a",
 		"lr-nat-add nl_lr_prod snat 198.51.100.10 10.10.0.0/24",
-		"lb-add nl_lb_web 10.96.0.10:80 10.10.0.10:8080 tcp",
-		"lr-lb-add nl_lr_prod nl_lb_web",
-		"ls-lb-add nl_ls_apps nl_lb_web",
+		"lb-add nl_lb_web_tcp 10.96.0.10:80 10.10.0.10:8080 tcp",
+		"lr-lb-add nl_lr_prod nl_lb_web_tcp",
+		"ls-lb-add nl_ls_apps nl_lb_web_tcp",
 		"lsp-add nl_ls_apps nl_lp_pod-a",
 	} {
 		if !strings.Contains(joined, expected) {
@@ -465,22 +465,22 @@ func TestPlannerBuildsLoadBalancerOperations(t *testing.T) {
 
 	joined := stringify(planner.Operations())
 	for _, expected := range []string{
-		"--if-exists lb-del nl_lb_web 10.96.0.10:80",
-		"--may-exist lb-add nl_lb_web 10.96.0.10:80 10.10.0.10:8080,10.10.0.11:8080 tcp",
+		"--if-exists lb-del nl_lb_web_tcp 10.96.0.10:80",
+		"--may-exist lb-add nl_lb_web_tcp 10.96.0.10:80 10.10.0.10:8080,10.10.0.11:8080 tcp",
 		"external_ids:netloom_load_balancer=web",
 		"selection_fields=[\"ip_src\"]",
 		"external_ids:netloom_session_affinity=true",
 		"options:affinity_timeout=7200",
-		"clear load_balancer nl_lb_web health_check",
+		"clear load_balancer nl_lb_web_tcp health_check",
 		"--id=@nl_lbhc_web_tcp_80 create Load_Balancer_Health_Check vip=10.96.0.10:80",
 		"options:interval=10",
 		"options:timeout=30",
 		"options:success_count=2",
 		"options:failure_count=4",
 		"external_ids:netloom_load_balancer=web",
-		"add load_balancer nl_lb_web health_check @nl_lbhc_web_tcp_80",
-		"--may-exist lr-lb-add nl_lr_prod nl_lb_web",
-		"--may-exist ls-lb-add nl_ls_apps nl_lb_web",
+		"add load_balancer nl_lb_web_tcp health_check @nl_lbhc_web_tcp_80",
+		"--may-exist lr-lb-add nl_lr_prod nl_lb_web_tcp",
+		"--may-exist ls-lb-add nl_ls_apps nl_lb_web_tcp",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("OVN operations missing %q:\n%s", expected, joined)
@@ -518,14 +518,60 @@ func TestPlannerBuildsMultiPortLoadBalancerOperations(t *testing.T) {
 	}
 	joined := stringify(planner.Operations())
 	for _, expected := range []string{
-		"--may-exist lb-add nl_lb_web 10.96.0.10:80 10.10.0.10:8080 tcp",
-		"--may-exist lb-add nl_lb_web 10.96.0.10:9090 10.10.0.10:9091 tcp",
+		"--may-exist lb-add nl_lb_web_tcp 10.96.0.10:80 10.10.0.10:8080 tcp",
+		"--may-exist lb-add nl_lb_web_tcp 10.96.0.10:9090 10.10.0.10:9091 tcp",
 		"--id=@nl_lbhc_web_tcp_80 create Load_Balancer_Health_Check vip=10.96.0.10:80",
 		"--id=@nl_lbhc_web_tcp_9090 create Load_Balancer_Health_Check vip=10.96.0.10:9090",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("OVN operations missing %q:\n%s", expected, joined)
 		}
+	}
+}
+
+func TestPlannerSplitsMultiProtocolLoadBalancerOperations(t *testing.T) {
+	planner := ovn.NewPlanner()
+	err := planner.EnsureLoadBalancer(context.Background(), model.LoadBalancer{
+		Name: "web",
+		VPC:  "prod",
+		VIP:  netip.MustParseAddr("10.96.0.10"),
+		Ports: []model.LoadBalancerPort{
+			{
+				Name:     "http",
+				Port:     80,
+				Protocol: model.ProtocolTCP,
+				Backends: []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.10"), Port: 8080}},
+			},
+			{
+				Name:     "dns",
+				Port:     53,
+				Protocol: model.ProtocolUDP,
+				Backends: []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.10"), Port: 5353}},
+			},
+		},
+		Subnets:     []string{"apps"},
+		HealthCheck: model.LoadBalancerHealthCheck{Enabled: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := stringify(planner.Operations())
+	for _, expected := range []string{
+		"--may-exist lb-add nl_lb_web_tcp 10.96.0.10:80 10.10.0.10:8080 tcp",
+		"--may-exist lb-add nl_lb_web_udp 10.96.0.10:53 10.10.0.10:5353 udp",
+		"--may-exist lr-lb-add nl_lr_prod nl_lb_web_tcp",
+		"--may-exist lr-lb-add nl_lr_prod nl_lb_web_udp",
+		"--may-exist ls-lb-add nl_ls_apps nl_lb_web_tcp",
+		"--may-exist ls-lb-add nl_ls_apps nl_lb_web_udp",
+		"add load_balancer nl_lb_web_tcp health_check @nl_lbhc_web_tcp_80",
+		"add load_balancer nl_lb_web_udp health_check @nl_lbhc_web_udp_53",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("OVN operations missing %q:\n%s", expected, joined)
+		}
+	}
+	if strings.Contains(joined, "lb-add nl_lb_web ") {
+		t.Fatalf("multi-protocol load balancer must not use a shared OVN LB row:\n%s", joined)
 	}
 }
 
@@ -549,8 +595,8 @@ func TestPlannerClearsLoadBalancerAffinityWhenDisabled(t *testing.T) {
 	for _, expected := range []string{
 		"selection_fields=[]",
 		"external_ids:netloom_session_affinity=false",
-		"remove load_balancer nl_lb_web options affinity_timeout",
-		"clear load_balancer nl_lb_web health_check",
+		"remove load_balancer nl_lb_web_tcp options affinity_timeout",
+		"clear load_balancer nl_lb_web_tcp health_check",
 		"gc-load-balancer-health-checks web",
 	} {
 		if !strings.Contains(joined, expected) {

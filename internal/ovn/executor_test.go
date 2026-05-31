@@ -108,9 +108,9 @@ func TestBackendCleanupEmitsDeletesForStaleDesiredObjects(t *testing.T) {
 		"--if-exists lsp-del nl_lp_pod-a",
 		"--if-exists lr-nat-del nl_lr_prod snat 10.10.0.0/24",
 		"gc-load-balancer-health-checks web",
-		"--if-exists lr-lb-del nl_lr_prod nl_lb_web",
-		"--if-exists ls-lb-del nl_ls_apps nl_lb_web",
-		"--if-exists lb-del nl_lb_web",
+		"--if-exists lr-lb-del nl_lr_prod nl_lb_web_tcp",
+		"--if-exists ls-lb-del nl_ls_apps nl_lb_web_tcp",
+		"--if-exists lb-del nl_lb_web_tcp",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("cleanup operations missing %q:\n%s", expected, joined)
@@ -150,17 +150,57 @@ func TestBackendCleanupConvergesChangedLoadBalancerBindings(t *testing.T) {
 
 	joined := stringifyOVNOps(recorder.Operations())
 	for _, expected := range []string{
-		"--if-exists lb-del nl_lb_web 10.96.0.20:80",
-		"--may-exist lb-add nl_lb_web 10.96.0.20:80 10.10.0.12:8080 tcp",
-		"--if-exists lb-del nl_lb_web 10.96.0.10:80",
-		"--if-exists ls-lb-del nl_ls_dmz nl_lb_web",
+		"--if-exists lb-del nl_lb_web_tcp 10.96.0.20:80",
+		"--may-exist lb-add nl_lb_web_tcp 10.96.0.20:80 10.10.0.12:8080 tcp",
+		"--if-exists lb-del nl_lb_web_tcp 10.96.0.10:80",
+		"--if-exists ls-lb-del nl_ls_dmz nl_lb_web_tcp",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("load balancer convergence operation missing %q:\n%s", expected, joined)
 		}
 	}
-	if strings.Contains(joined, "--if-exists lb-del nl_lb_web\n") {
+	if strings.Contains(joined, "--if-exists lb-del nl_lb_web_tcp\n") {
 		t.Fatalf("changed load balancer must not delete the whole LB object:\n%s", joined)
+	}
+}
+
+func TestBackendCleanupRemovesStaleLoadBalancerProtocolRows(t *testing.T) {
+	recorder := ovn.NewRecorderExecutor()
+	backend := ovn.NewBackend(recorder)
+	first := controlStateWithEndpoint("pod-a")
+	first.LoadBalancers[0].HealthCheck = model.LoadBalancerHealthCheck{Enabled: true}
+	first.LoadBalancers[0].Ports = append(first.LoadBalancers[0].Ports, model.LoadBalancerPort{
+		Name:     "dns",
+		Port:     53,
+		Protocol: model.ProtocolUDP,
+		Backends: []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.10"), Port: 5353}},
+	})
+	controller := control.NewController(backend, control.NewMemoryBackend())
+	if err := controller.Reconcile(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+
+	second := first
+	second.LoadBalancers[0].Ports = second.LoadBalancers[0].Ports[:1]
+	if err := controller.Reconcile(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+
+	joined := stringifyOVNOps(recorder.Operations())
+	for _, expected := range []string{
+		"--may-exist lb-add nl_lb_web_tcp 10.96.0.10:80 10.10.0.10:8080 tcp",
+		"--may-exist lb-add nl_lb_web_udp 10.96.0.10:53 10.10.0.10:5353 udp",
+		"clear load_balancer nl_lb_web_udp health_check",
+		"--if-exists lr-lb-del nl_lr_prod nl_lb_web_udp",
+		"--if-exists ls-lb-del nl_ls_apps nl_lb_web_udp",
+		"--if-exists lb-del nl_lb_web_udp",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("load balancer protocol cleanup operation missing %q:\n%s", expected, joined)
+		}
+	}
+	if strings.Contains(joined, "--if-exists lb-del nl_lb_web_tcp\n") {
+		t.Fatalf("removing udp frontend must not delete tcp LB row:\n%s", joined)
 	}
 }
 
@@ -178,10 +218,10 @@ func TestBackendCleanupDoesNotReapplyUnchangedLoadBalancer(t *testing.T) {
 
 	joined := stringifyOVNOps(recorder.Operations())
 	for _, expected := range []string{
-		"--if-exists lb-del nl_lb_web 10.96.0.10:80",
-		"--may-exist lb-add nl_lb_web 10.96.0.10:80 10.10.0.10:8080 tcp",
-		"--may-exist lr-lb-add nl_lr_prod nl_lb_web",
-		"--may-exist ls-lb-add nl_ls_apps nl_lb_web",
+		"--if-exists lb-del nl_lb_web_tcp 10.96.0.10:80",
+		"--may-exist lb-add nl_lb_web_tcp 10.96.0.10:80 10.10.0.10:8080 tcp",
+		"--may-exist lr-lb-add nl_lr_prod nl_lb_web_tcp",
+		"--may-exist ls-lb-add nl_ls_apps nl_lb_web_tcp",
 	} {
 		if got := strings.Count(joined, expected); got != 1 {
 			t.Fatalf("unchanged load balancer op %q count = %d, want one initial apply:\n%s", expected, got, joined)
@@ -211,7 +251,7 @@ func TestBackendReappliesLoadBalancerWhenDefaultHealthCheckEnabled(t *testing.T)
 	if !strings.Contains(joined, "--id=@nl_lbhc_web_tcp_80 create Load_Balancer_Health_Check vip=10.96.0.10:80") {
 		t.Fatalf("default health check create missing:\n%s", joined)
 	}
-	if got := strings.Count(joined, "--may-exist lb-add nl_lb_web 10.96.0.10:80 10.10.0.10:8080 tcp"); got != 2 {
+	if got := strings.Count(joined, "--may-exist lb-add nl_lb_web_tcp 10.96.0.10:80 10.10.0.10:8080 tcp"); got != 2 {
 		t.Fatalf("load balancer frontend apply count = %d, want initial and health-check enable apply:\n%s", got, joined)
 	}
 }
@@ -233,14 +273,14 @@ func TestBackendCleanupReappliesChangedLoadBalancerBackends(t *testing.T) {
 
 	joined := stringifyOVNOps(recorder.Operations())
 	for _, expected := range []string{
-		"--may-exist lb-add nl_lb_web 10.96.0.10:80 10.10.0.10:8080 tcp",
-		"--may-exist lb-add nl_lb_web 10.96.0.10:80 10.10.0.12:8080 tcp",
+		"--may-exist lb-add nl_lb_web_tcp 10.96.0.10:80 10.10.0.10:8080 tcp",
+		"--may-exist lb-add nl_lb_web_tcp 10.96.0.10:80 10.10.0.12:8080 tcp",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("changed load balancer backend operation missing %q:\n%s", expected, joined)
 		}
 	}
-	if got := strings.Count(joined, "--if-exists lb-del nl_lb_web 10.96.0.10:80"); got != 2 {
+	if got := strings.Count(joined, "--if-exists lb-del nl_lb_web_tcp 10.96.0.10:80"); got != 2 {
 		t.Fatalf("changed load balancer frontend delete count = %d, want initial and changed apply:\n%s", got, joined)
 	}
 }
@@ -289,7 +329,7 @@ func TestBackendSnapshotIsNotMutatedByCallerAfterReconcile(t *testing.T) {
 	for _, expected := range []string{
 		"--if-exists lr-route-del nl_lr_prod 0.0.0.0/0",
 		"--if-exists lr-policy-del nl_lr_prod 100",
-		"--may-exist lb-add nl_lb_web 10.96.0.10:80 10.10.0.12:8080 tcp",
+		"--may-exist lb-add nl_lb_web_tcp 10.96.0.10:80 10.10.0.12:8080 tcp",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("snapshot mutation regression operation missing %q:\n%s", expected, joined)
@@ -1011,9 +1051,9 @@ esac
 
 	executor := ovn.NewNBCTLExecutor(binary, "--db=unix:/tmp/ovnnb.sock")
 	err := executor.Execute(context.Background(), []ovn.Operation{
-		{Command: "clear", Args: []string{"load_balancer", "nl_lb_web", "health_check"}},
+		{Command: "clear", Args: []string{"load_balancer", "nl_lb_web_tcp", "health_check"}},
 		{Command: "gc-load-balancer-health-checks", Args: []string{"web"}},
-		{Command: "lb-del", Flags: []string{"--if-exists"}, Args: []string{"nl_lb_web"}},
+		{Command: "lb-del", Flags: []string{"--if-exists"}, Args: []string{"nl_lb_web_tcp"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1026,7 +1066,7 @@ esac
 	if len(calls) != 5 {
 		t.Fatalf("calls = %d, want clear, find, two destroys, lb-del:\n%s", len(calls), raw)
 	}
-	if !strings.Contains(calls[0], "clear\nload_balancer\nnl_lb_web\nhealth_check") {
+	if !strings.Contains(calls[0], "clear\nload_balancer\nnl_lb_web_tcp\nhealth_check") {
 		t.Fatalf("first call should clear health check references before GC:\n%s", calls[0])
 	}
 	if !strings.Contains(calls[1], "--columns=_uuid\nfind\nLoad_Balancer_Health_Check") ||
@@ -1037,7 +1077,7 @@ esac
 		!strings.Contains(calls[3], "destroy\nLoad_Balancer_Health_Check\nhc-b") {
 		t.Fatalf("matching LB health checks should be destroyed:\n%s", raw)
 	}
-	if !strings.Contains(calls[4], "lb-del\nnl_lb_web") {
+	if !strings.Contains(calls[4], "lb-del\nnl_lb_web_tcp") {
 		t.Fatalf("final call should delete load balancer:\n%s", calls[4])
 	}
 }

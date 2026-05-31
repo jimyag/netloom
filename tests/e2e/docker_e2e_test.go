@@ -117,8 +117,8 @@ func TestDockerMultiNodeLab(t *testing.T) {
 			t.Fatalf("OVN NAT state missing %q:\n%s", expected, natState)
 		}
 	}
-	lbState := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "lb-list", "nl_lb_file-web")
-	for _, expected := range []string{"nl_lb_file-web", "10.96.0.10:80", "10.245.0.10:8080"} {
+	lbState := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "lb-list", "nl_lb_file-web_tcp")
+	for _, expected := range []string{"nl_lb_file-web_tcp", "10.96.0.10:80", "10.245.0.10:8080"} {
 		if !strings.Contains(lbState, expected) {
 			t.Fatalf("OVN LB state missing %q:\n%s", expected, lbState)
 		}
@@ -129,7 +129,7 @@ func TestDockerMultiNodeLab(t *testing.T) {
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "for i in $(seq 1 15); do grep -q 'reconciled desired state' /tmp/netloom-controller-watch.log 2>/dev/null && exit 0; sleep 1; done; cat /tmp/netloom-controller-watch.log; exit 1")
 	updateControllerWatch := "cat >" + controllerWatchPath + " <<'EOF'\n" + desiredStateWithUpdatedLoadBalancerJSON() + "\nEOF"
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", updateControllerWatch)
-	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "for i in $(seq 1 15); do vips=$(ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock get load_balancer nl_lb_file-web vips); echo \"$vips\" | grep -q '10.96.0.20:80' && echo \"$vips\" | grep -q '10.245.0.11:8080' && ! echo \"$vips\" | grep -q '10.96.0.10:80' && exit 0; sleep 1; done; cat /tmp/netloom-controller-watch.log; ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock get load_balancer nl_lb_file-web vips; exit 1")
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "for i in $(seq 1 15); do vips=$(ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock get load_balancer nl_lb_file-web_tcp vips); echo \"$vips\" | grep -q '10.96.0.20:80' && echo \"$vips\" | grep -q '10.245.0.11:8080' && ! echo \"$vips\" | grep -q '10.96.0.10:80' && exit 0; sleep 1; done; cat /tmp/netloom-controller-watch.log; ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock get load_balancer nl_lb_file-web_tcp vips; exit 1")
 	updateControllerWatch = "cat >" + controllerWatchPath + " <<'EOF'\n" + desiredStateWithUpdatedNATJSON() + "\nEOF"
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", updateControllerWatch)
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "for i in $(seq 1 15); do nat=$(ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock lr-nat-list nl_lr_file); echo \"$nat\" | grep -q '198.51.100.50' && ! echo \"$nat\" | grep -q '198.51.100.20' && exit 0; sleep 1; done; cat /tmp/netloom-controller-watch.log; ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock lr-nat-list nl_lr_file; exit 1")
@@ -151,7 +151,7 @@ func TestDockerMultiNodeLab(t *testing.T) {
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock lsp-list nl_ls_fileapps | grep -q nl_ls_fileapps_to_fileapps_localnet || { cat /tmp/netloom-controller-watch.log; ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock lsp-list nl_ls_fileapps; exit 1; }")
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock dhcp-options-list | grep -q netloom_endpoint=file-pod-a && { cat /tmp/netloom-controller-watch.log; ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock dhcp-options-list; exit 1; } || exit 0")
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock lr-nat-list nl_lr_file | grep -q 198.51.100.20 && { cat /tmp/netloom-controller-watch.log; exit 1; } || exit 0")
-	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock lb-list | grep -q nl_lb_file-web && { cat /tmp/netloom-controller-watch.log; ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock lb-list; exit 1; } || exit 0")
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock lb-list | grep -q nl_lb_file-web_tcp && { cat /tmp/netloom-controller-watch.log; ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock lb-list; exit 1; } || exit 0")
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "pkill", "-f", "netloom-controller")
 	agentOutput := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "-e", "NETLOOM_TCX_SELFTEST_IFACE=lo", "node-b", "/netloom/bin/netloom-agent")
 	if !strings.Contains(agentOutput, "ready for node policy") {

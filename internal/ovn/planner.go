@@ -249,25 +249,28 @@ func (p *Planner) EnsureLoadBalancer(_ context.Context, lb model.LoadBalancer) e
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	name := loadBalancerName(lb.Name)
 	router := p.routerForVPC(lb.VPC)
-	for _, frontend := range lb.Frontends() {
+	frontendsByProtocol := loadBalancerFrontendsByProtocol(lb)
+	for _, protocol := range sortedLoadBalancerProtocols(frontendsByProtocol) {
+		name := loadBalancerProtocolName(lb.Name, protocol)
+		for _, frontend := range frontendsByProtocol[protocol] {
+			p.ops = append(p.ops,
+				Operation{Command: "lb-del", Flags: []string{"--if-exists"}, Args: []string{name, loadBalancerFrontendVIP(frontend)}},
+				Operation{Command: "lb-add", Flags: []string{"--may-exist"}, Args: []string{name, loadBalancerFrontendVIP(frontend), loadBalancerFrontendBackends(frontend), string(frontend.Protocol)}},
+			)
+		}
 		p.ops = append(p.ops,
-			Operation{Command: "lb-del", Flags: []string{"--if-exists"}, Args: []string{name, loadBalancerFrontendVIP(frontend)}},
-			Operation{Command: "lb-add", Flags: []string{"--may-exist"}, Args: []string{name, loadBalancerFrontendVIP(frontend), loadBalancerFrontendBackends(frontend), string(frontend.Protocol)}},
+			setOperation("load_balancer", name, loadBalancerOptions(lb)...),
+			Operation{Command: "lr-lb-add", Flags: []string{"--may-exist"}, Args: []string{router, name}},
 		)
+		if !lb.SessionAffinity {
+			p.ops = append(p.ops, Operation{Command: "remove", Args: []string{"load_balancer", name, "options", "affinity_timeout"}})
+		}
+		for _, subnet := range lb.Subnets {
+			p.ops = append(p.ops, Operation{Command: "ls-lb-add", Flags: []string{"--may-exist"}, Args: []string{logicalSwitch(subnet), name}})
+		}
 	}
-	p.ops = append(p.ops,
-		setOperation("load_balancer", name, loadBalancerOptions(lb)...),
-		Operation{Command: "lr-lb-add", Flags: []string{"--may-exist"}, Args: []string{router, name}},
-	)
-	if !lb.SessionAffinity {
-		p.ops = append(p.ops, Operation{Command: "remove", Args: []string{"load_balancer", name, "options", "affinity_timeout"}})
-	}
-	p.ops = append(p.ops, p.loadBalancerHealthCheckOperations(name, lb)...)
-	for _, subnet := range lb.Subnets {
-		p.ops = append(p.ops, Operation{Command: "ls-lb-add", Flags: []string{"--may-exist"}, Args: []string{logicalSwitch(subnet), name}})
-	}
+	p.ops = append(p.ops, p.loadBalancerHealthCheckOperations(lb, frontendsByProtocol)...)
 	return nil
 }
 
@@ -334,6 +337,10 @@ func logicalPort(endpoint string) string {
 
 func loadBalancerName(name string) string {
 	return "nl_lb_" + sanitize(name)
+}
+
+func loadBalancerProtocolName(name string, protocol model.Protocol) string {
+	return loadBalancerName(name) + "_" + sanitize(string(protocol))
 }
 
 func namedUUID(name string) string {
@@ -529,31 +536,65 @@ func loadBalancerOptions(lb model.LoadBalancer) []string {
 	return append(options, "external_ids:netloom_session_affinity=false")
 }
 
-func (p *Planner) loadBalancerHealthCheckOperations(name string, lb model.LoadBalancer) []Operation {
+func (p *Planner) loadBalancerHealthCheckOperations(lb model.LoadBalancer, frontendsByProtocol map[model.Protocol][]model.LoadBalancerFrontend) []Operation {
+	names := loadBalancerProtocolNamesFromFrontends(lb.Name, frontendsByProtocol)
 	if !lb.HealthCheck.Enabled {
 		delete(p.loadBalancerHealthChecks, lb.Name)
-		return []Operation{
-			{Command: "clear", Args: []string{"load_balancer", name, "health_check"}},
-			gcLoadBalancerHealthChecksOperation(lb.Name),
+		ops := make([]Operation, 0, len(names)+1)
+		for _, name := range names {
+			ops = append(ops, Operation{Command: "clear", Args: []string{"load_balancer", name, "health_check"}})
 		}
+		return append(ops, gcLoadBalancerHealthChecksOperation(lb.Name))
 	}
 	signature := loadBalancerHealthCheckSignature(lb)
 	if p.loadBalancerHealthChecks[lb.Name] == signature {
 		return nil
 	}
 	p.loadBalancerHealthChecks[lb.Name] = signature
-	ops := []Operation{
-		{Command: "clear", Args: []string{"load_balancer", name, "health_check"}},
-		gcLoadBalancerHealthChecksOperation(lb.Name),
+	ops := make([]Operation, 0, len(names)+1+len(lb.Frontends())*2)
+	for _, name := range names {
+		ops = append(ops, Operation{Command: "clear", Args: []string{"load_balancer", name, "health_check"}})
 	}
-	for _, frontend := range lb.Frontends() {
-		uuid := loadBalancerHealthCheckUUID(lb.Name, frontend)
-		ops = append(ops,
-			Operation{Command: "create", Flags: []string{"--id=" + uuid}, Args: loadBalancerHealthCheckArgs(lb, frontend)},
-			Operation{Command: "add", Args: []string{"load_balancer", name, "health_check", uuid}},
-		)
+	ops = append(ops, gcLoadBalancerHealthChecksOperation(lb.Name))
+	for _, protocol := range sortedLoadBalancerProtocols(frontendsByProtocol) {
+		name := loadBalancerProtocolName(lb.Name, protocol)
+		for _, frontend := range frontendsByProtocol[protocol] {
+			uuid := loadBalancerHealthCheckUUID(lb.Name, frontend)
+			ops = append(ops,
+				Operation{Command: "create", Flags: []string{"--id=" + uuid}, Args: loadBalancerHealthCheckArgs(lb, frontend)},
+				Operation{Command: "add", Args: []string{"load_balancer", name, "health_check", uuid}},
+			)
+		}
 	}
 	return ops
+}
+
+func loadBalancerFrontendsByProtocol(lb model.LoadBalancer) map[model.Protocol][]model.LoadBalancerFrontend {
+	out := make(map[model.Protocol][]model.LoadBalancerFrontend)
+	for _, frontend := range lb.Frontends() {
+		out[frontend.Protocol] = append(out[frontend.Protocol], frontend)
+	}
+	return out
+}
+
+func sortedLoadBalancerProtocols[T any](frontendsByProtocol map[model.Protocol][]T) []model.Protocol {
+	protocols := make([]model.Protocol, 0, len(frontendsByProtocol))
+	for protocol := range frontendsByProtocol {
+		protocols = append(protocols, protocol)
+	}
+	sort.Slice(protocols, func(i, j int) bool {
+		return protocols[i] < protocols[j]
+	})
+	return protocols
+}
+
+func loadBalancerProtocolNamesFromFrontends(lbName string, frontendsByProtocol map[model.Protocol][]model.LoadBalancerFrontend) []string {
+	protocols := sortedLoadBalancerProtocols(frontendsByProtocol)
+	names := make([]string, 0, len(protocols))
+	for _, protocol := range protocols {
+		names = append(names, loadBalancerProtocolName(lbName, protocol))
+	}
+	return names
 }
 
 func gcDHCPOptionsOperation(endpoint string) Operation {

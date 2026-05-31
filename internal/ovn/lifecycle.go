@@ -193,29 +193,61 @@ func cleanupOperations(old, next desiredSnapshot) []Operation {
 	}
 	for _, key := range staleKeys(old.LoadBalancers, next.LoadBalancers) {
 		lb := old.LoadBalancers[key]
-		name := loadBalancerName(lb.Name)
-		ops = append(ops,
-			Operation{Command: "clear", Args: []string{"load_balancer", name, "health_check"}},
-			gcLoadBalancerHealthChecksOperation(lb.Name),
-			Operation{Command: "lr-lb-del", Flags: []string{"--if-exists"}, Args: []string{logicalRouter(lb.VPC), name}},
-		)
-		for _, subnet := range lb.Subnets {
-			ops = append(ops, Operation{Command: "ls-lb-del", Flags: []string{"--if-exists"}, Args: []string{logicalSwitch(subnet), name}})
+		names := loadBalancerProtocolNames(lb)
+		for _, name := range names {
+			ops = append(ops, Operation{Command: "clear", Args: []string{"load_balancer", name, "health_check"}})
 		}
-		ops = append(ops, Operation{Command: "lb-del", Flags: []string{"--if-exists"}, Args: []string{name}})
+		ops = append(ops, gcLoadBalancerHealthChecksOperation(lb.Name))
+		for _, name := range names {
+			ops = append(ops, Operation{Command: "lr-lb-del", Flags: []string{"--if-exists"}, Args: []string{logicalRouter(lb.VPC), name}})
+			for _, subnet := range lb.Subnets {
+				ops = append(ops, Operation{Command: "ls-lb-del", Flags: []string{"--if-exists"}, Args: []string{logicalSwitch(subnet), name}})
+			}
+			ops = append(ops, Operation{Command: "lb-del", Flags: []string{"--if-exists"}, Args: []string{name}})
+		}
 	}
 	for _, key := range commonKeys(old.LoadBalancers, next.LoadBalancers) {
 		oldLB := old.LoadBalancers[key]
 		nextLB := next.LoadBalancers[key]
-		name := loadBalancerName(oldLB.Name)
+		oldNames := loadBalancerProtocolNames(oldLB)
+		nextNames := loadBalancerProtocolNames(nextLB)
+		removedNames := removedStrings(oldNames, nextNames)
+		for _, name := range removedNames {
+			ops = append(ops, Operation{Command: "clear", Args: []string{"load_balancer", name, "health_check"}})
+		}
+		if len(removedNames) > 0 {
+			ops = append(ops, gcLoadBalancerHealthChecksOperation(oldLB.Name))
+		}
 		if oldLB.VPC != nextLB.VPC {
-			ops = append(ops, Operation{Command: "lr-lb-del", Flags: []string{"--if-exists"}, Args: []string{logicalRouter(oldLB.VPC), name}})
+			for _, name := range oldNames {
+				ops = append(ops, Operation{Command: "lr-lb-del", Flags: []string{"--if-exists"}, Args: []string{logicalRouter(oldLB.VPC), name}})
+			}
 		}
-		for _, vip := range removedStrings(loadBalancerVIPs(oldLB), loadBalancerVIPs(nextLB)) {
-			ops = append(ops, Operation{Command: "lb-del", Flags: []string{"--if-exists"}, Args: []string{name, vip}})
+		oldVIPsByProtocol := loadBalancerVIPsByProtocol(oldLB)
+		nextVIPsByProtocol := loadBalancerVIPsByProtocol(nextLB)
+		for _, protocol := range sortedLoadBalancerProtocols(oldVIPsByProtocol) {
+			name := loadBalancerProtocolName(oldLB.Name, protocol)
+			for _, vip := range removedStrings(oldVIPsByProtocol[protocol], nextVIPsByProtocol[protocol]) {
+				ops = append(ops, Operation{Command: "lb-del", Flags: []string{"--if-exists"}, Args: []string{name, vip}})
+			}
 		}
-		for _, subnet := range removedStrings(oldLB.Subnets, nextLB.Subnets) {
-			ops = append(ops, Operation{Command: "ls-lb-del", Flags: []string{"--if-exists"}, Args: []string{logicalSwitch(subnet), name}})
+		removedSubnets := removedStrings(oldLB.Subnets, nextLB.Subnets)
+		for _, subnet := range removedSubnets {
+			for _, name := range oldNames {
+				ops = append(ops, Operation{Command: "ls-lb-del", Flags: []string{"--if-exists"}, Args: []string{logicalSwitch(subnet), name}})
+			}
+		}
+		for _, name := range removedNames {
+			if oldLB.VPC == nextLB.VPC {
+				ops = append(ops, Operation{Command: "lr-lb-del", Flags: []string{"--if-exists"}, Args: []string{logicalRouter(oldLB.VPC), name}})
+			}
+			for _, subnet := range oldLB.Subnets {
+				if stringInSlice(subnet, removedSubnets) {
+					continue
+				}
+				ops = append(ops, Operation{Command: "ls-lb-del", Flags: []string{"--if-exists"}, Args: []string{logicalSwitch(subnet), name}})
+			}
+			ops = append(ops, Operation{Command: "lb-del", Flags: []string{"--if-exists"}, Args: []string{name}})
 		}
 	}
 	for _, key := range staleKeys(old.Gateways, next.Gateways) {
@@ -309,6 +341,30 @@ func removedStrings(old, next []string) []string {
 	}
 	sort.Strings(removed)
 	return removed
+}
+
+func stringInSlice(needle string, values []string) bool {
+	for _, value := range values {
+		if value == needle {
+			return true
+		}
+	}
+	return false
+}
+
+func loadBalancerProtocolNames(lb model.LoadBalancer) []string {
+	return loadBalancerProtocolNamesFromFrontends(lb.Name, loadBalancerFrontendsByProtocol(lb))
+}
+
+func loadBalancerVIPsByProtocol(lb model.LoadBalancer) map[model.Protocol][]string {
+	out := make(map[model.Protocol][]string)
+	for _, frontend := range lb.Frontends() {
+		out[frontend.Protocol] = append(out[frontend.Protocol], loadBalancerFrontendVIP(frontend))
+	}
+	for protocol := range out {
+		sort.Strings(out[protocol])
+	}
+	return out
 }
 
 func routeKey(vpc string, route model.Route) string {
