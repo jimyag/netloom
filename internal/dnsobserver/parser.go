@@ -33,6 +33,8 @@ func RecordsFromResponse(packet []byte, observedAt time.Time) ([]model.DNSRecord
 	}
 	qdCount := int(binary.BigEndian.Uint16(packet[4:6]))
 	anCount := int(binary.BigEndian.Uint16(packet[6:8]))
+	nsCount := int(binary.BigEndian.Uint16(packet[8:10]))
+	arCount := int(binary.BigEndian.Uint16(packet[10:12]))
 	offset := 12
 	var err error
 	for i := 0; i < qdCount; i++ {
@@ -48,46 +50,20 @@ func RecordsFromResponse(packet []byte, observedAt time.Time) ([]model.DNSRecord
 
 	records := make(map[string]rrset)
 	cnames := make(map[string]string)
-	for i := 0; i < anCount; i++ {
-		name, next, err := readName(packet, offset)
-		if err != nil {
-			return nil, fmt.Errorf("read answer %d name: %w", i, err)
-		}
-		if next+10 > len(packet) {
-			return nil, fmt.Errorf("answer %d header is truncated", i)
-		}
-		rrType := binary.BigEndian.Uint16(packet[next : next+2])
-		class := binary.BigEndian.Uint16(packet[next+2 : next+4])
-		ttl := binary.BigEndian.Uint32(packet[next+4 : next+8])
-		rdLen := int(binary.BigEndian.Uint16(packet[next+8 : next+10]))
-		rdata := next + 10
-		if rdata+rdLen > len(packet) {
-			return nil, fmt.Errorf("answer %d rdata is truncated", i)
-		}
-		offset = rdata + rdLen
-		if class != dnsClassIN {
-			continue
-		}
-		name = canonicalName(name)
-		switch rrType {
-		case dnsTypeA:
-			if rdLen != 4 {
-				return nil, fmt.Errorf("answer %d A rdata length = %d", i, rdLen)
-			}
-			appendRecord(records, name, netip.AddrFrom4([4]byte{packet[rdata], packet[rdata+1], packet[rdata+2], packet[rdata+3]}), ttl)
-		case dnsTypeAAAA:
-			if rdLen != 16 {
-				return nil, fmt.Errorf("answer %d AAAA rdata length = %d", i, rdLen)
-			}
-			var raw [16]byte
-			copy(raw[:], packet[rdata:rdata+16])
-			appendRecord(records, name, netip.AddrFrom16(raw), ttl)
-		case dnsTypeCNAME:
-			target, _, err := readName(packet, rdata)
+	for _, section := range []struct {
+		name  string
+		count int
+	}{
+		{name: "answer", count: anCount},
+		{name: "authority", count: nsCount},
+		{name: "additional", count: arCount},
+	} {
+		for i := 0; i < section.count; i++ {
+			var err error
+			offset, err = parseResourceRecord(packet, offset, section.name, i, records, cnames)
 			if err != nil {
-				return nil, fmt.Errorf("read answer %d cname target: %w", i, err)
+				return nil, err
 			}
-			cnames[name] = canonicalName(target)
 		}
 	}
 	for alias, target := range cnames {
@@ -112,6 +88,50 @@ func RecordsFromResponse(packet []byte, observedAt time.Time) ([]model.DNSRecord
 		}
 	}
 	return dnsRecords(records, observedAt), nil
+}
+
+func parseResourceRecord(packet []byte, offset int, section string, index int, records map[string]rrset, cnames map[string]string) (int, error) {
+	name, next, err := readName(packet, offset)
+	if err != nil {
+		return 0, fmt.Errorf("read %s %d name: %w", section, index, err)
+	}
+	if next+10 > len(packet) {
+		return 0, fmt.Errorf("%s %d header is truncated", section, index)
+	}
+	rrType := binary.BigEndian.Uint16(packet[next : next+2])
+	class := binary.BigEndian.Uint16(packet[next+2 : next+4])
+	ttl := binary.BigEndian.Uint32(packet[next+4 : next+8])
+	rdLen := int(binary.BigEndian.Uint16(packet[next+8 : next+10]))
+	rdata := next + 10
+	if rdata+rdLen > len(packet) {
+		return 0, fmt.Errorf("%s %d rdata is truncated", section, index)
+	}
+	next = rdata + rdLen
+	if class != dnsClassIN {
+		return next, nil
+	}
+	name = canonicalName(name)
+	switch rrType {
+	case dnsTypeA:
+		if rdLen != 4 {
+			return 0, fmt.Errorf("%s %d A rdata length = %d", section, index, rdLen)
+		}
+		appendRecord(records, name, netip.AddrFrom4([4]byte{packet[rdata], packet[rdata+1], packet[rdata+2], packet[rdata+3]}), ttl)
+	case dnsTypeAAAA:
+		if rdLen != 16 {
+			return 0, fmt.Errorf("%s %d AAAA rdata length = %d", section, index, rdLen)
+		}
+		var raw [16]byte
+		copy(raw[:], packet[rdata:rdata+16])
+		appendRecord(records, name, netip.AddrFrom16(raw), ttl)
+	case dnsTypeCNAME:
+		target, _, err := readName(packet, rdata)
+		if err != nil {
+			return 0, fmt.Errorf("read %s %d cname target: %w", section, index, err)
+		}
+		cnames[name] = canonicalName(target)
+	}
+	return next, nil
 }
 
 func readName(packet []byte, offset int) (string, int, error) {

@@ -55,6 +55,35 @@ func TestRecordsFromResponseProjectsCNAMEAnswersToAlias(t *testing.T) {
 	}
 }
 
+func TestRecordsFromResponseParsesAdditionalAddressRecords(t *testing.T) {
+	observedAt := time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)
+	packet := dnsResponseWithSections(
+		dnsQuestion("api.example.com", dnsTypeA),
+		[][]byte{
+			dnsAnswerPtr(12, dnsTypeCNAME, 60, dnsName("service.example.com")),
+		},
+		nil,
+		[][]byte{
+			dnsAnswerName("service.example.com", dnsTypeA, 45, []byte{203, 0, 113, 20}),
+			dnsAnswerName("service.example.com", dnsTypeAAAA, 30, netip.MustParseAddr("2001:db8::20").AsSlice()),
+		},
+	)
+
+	records, err := RecordsFromResponse(packet, observedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 2 {
+		t.Fatalf("records = %d, want alias and canonical records: %+v", len(records), records)
+	}
+	if records[0].Name != "api.example.com" || records[0].TTLSeconds != 30 || len(records[0].IPs) != 2 {
+		t.Fatalf("alias record = %+v, want projected additional A/AAAA with min TTL", records[0])
+	}
+	if records[1].Name != "service.example.com" || records[1].TTLSeconds != 30 || len(records[1].IPs) != 2 {
+		t.Fatalf("canonical record = %+v, want additional A/AAAA with min TTL", records[1])
+	}
+}
+
 func TestRecordsFromResponseRejectsTruncatedPacket(t *testing.T) {
 	_, err := RecordsFromResponse([]byte{0, 1, 0x81}, time.Time{})
 	if err == nil {
@@ -63,17 +92,23 @@ func TestRecordsFromResponseRejectsTruncatedPacket(t *testing.T) {
 }
 
 func dnsResponse(question []byte, answers ...[]byte) []byte {
+	return dnsResponseWithSections(question, answers, nil, nil)
+}
+
+func dnsResponseWithSections(question []byte, answers, authority, additional [][]byte) []byte {
 	packet := []byte{
 		0x12, 0x34,
 		0x81, 0x80,
 		0x00, 0x01,
 		0x00, byte(len(answers)),
-		0x00, 0x00,
-		0x00, 0x00,
+		0x00, byte(len(authority)),
+		0x00, byte(len(additional)),
 	}
 	packet = append(packet, question...)
-	for _, answer := range answers {
-		packet = append(packet, answer...)
+	for _, section := range [][][]byte{answers, authority, additional} {
+		for _, rr := range section {
+			packet = append(packet, rr...)
+		}
 	}
 	return packet
 }
