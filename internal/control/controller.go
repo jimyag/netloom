@@ -442,6 +442,9 @@ func validateObjectGraph(state DesiredState) error {
 				if service.VPC != group.VPC {
 					return fmt.Errorf("security group rule %q references remote service %q in vpc %q, want %q", rule.ID, rule.RemoteService, service.VPC, group.VPC)
 				}
+				if !loadBalancerHasMatchingFrontendProtocol(service, rule.Protocol) {
+					return fmt.Errorf("security group rule %q references remote service %q without matching %s frontend", rule.ID, rule.RemoteService, effectiveProtocol(rule.Protocol))
+				}
 			}
 		}
 	}
@@ -625,6 +628,23 @@ func validateSecurityGroupNamedPortReferences(groups []model.SecurityGroup, endp
 		}
 	}
 	return nil
+}
+
+func loadBalancerHasMatchingFrontendProtocol(lb model.LoadBalancer, protocol model.Protocol) bool {
+	protocol = effectiveProtocol(protocol)
+	for _, frontend := range lb.Frontends() {
+		if protocol == model.ProtocolAny || frontend.Protocol == protocol {
+			return true
+		}
+	}
+	return false
+}
+
+func effectiveProtocol(protocol model.Protocol) model.Protocol {
+	if protocol == "" {
+		return model.ProtocolAny
+	}
+	return protocol
 }
 
 func egressNamedPortMembers(rule model.SecurityGroupRule, endpoint model.Endpoint, endpoints []model.Endpoint) ([]model.Endpoint, error) {

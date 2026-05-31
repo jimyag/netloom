@@ -470,6 +470,17 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 			wantErr: "references remote service",
 		},
 		{
+			name: "remote service protocol mismatch",
+			mutate: func(state *DesiredState) {
+				state.LoadBalancers[0].Ports[0].Protocol = model.ProtocolUDP
+				state.SecurityGroups[0].Rules[0].RemoteCIDR = netip.Prefix{}
+				state.SecurityGroups[0].Rules[0].Direction = model.DirectionEgress
+				state.SecurityGroups[0].Rules[0].RemoteService = "web"
+				state.SecurityGroups[0].Rules[0].Protocol = model.ProtocolTCP
+			},
+			wantErr: "security group rule \"allow-client\" references remote service \"web\" without matching tcp frontend",
+		},
+		{
 			name: "duplicate endpoint",
 			mutate: func(state *DesiredState) {
 				state.Endpoints = append(state.Endpoints, state.Endpoints[0])
