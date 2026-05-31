@@ -498,6 +498,11 @@ func TestSecurityGroupRulePortsRequireTransportProtocol(t *testing.T) {
 	if err := rule.Validate(); err != nil {
 		t.Fatal(err)
 	}
+
+	rule.Ports = []PortRange{{From: 53, To: 53}, {From: 53, To: 53}}
+	if err := rule.Validate(); err == nil || !strings.Contains(err.Error(), "duplicated") {
+		t.Fatalf("error = %v, want duplicate port range validation", err)
+	}
 }
 
 func TestEndpointValidatesNamedPorts(t *testing.T) {
@@ -1002,6 +1007,18 @@ func TestSecurityGroupRuleValidatesExceptCIDRs(t *testing.T) {
 				Action:      ActionAllow,
 			},
 			wantErr: "must be contained",
+		},
+		{
+			name: "duplicate except cidr",
+			rule: SecurityGroupRule{
+				ID:          "bad-duplicate",
+				Direction:   DirectionEgress,
+				Protocol:    ProtocolTCP,
+				RemoteCIDR:  netip.MustParsePrefix("10.20.0.0/16"),
+				ExceptCIDRs: []netip.Prefix{netip.MustParsePrefix("10.20.10.0/24"), netip.MustParsePrefix("10.20.10.0/24")},
+				Action:      ActionAllow,
+			},
+			wantErr: "duplicated",
 		},
 	}
 	for _, tt := range tests {

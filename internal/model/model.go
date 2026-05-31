@@ -1099,6 +1099,7 @@ func (r SecurityGroupRule) Validate() error {
 	if len(r.ExceptCIDRs) > 0 && !r.RemoteCIDR.IsValid() {
 		return errors.New("except cidrs require remote cidr")
 	}
+	seenExceptCIDRs := make(map[netip.Prefix]struct{}, len(r.ExceptCIDRs))
 	for i, except := range r.ExceptCIDRs {
 		if !except.IsValid() {
 			return fmt.Errorf("except cidr %d is invalid", i)
@@ -1110,6 +1111,10 @@ func (r SecurityGroupRule) Validate() error {
 		if !prefixContainsPrefix(r.RemoteCIDR.Masked(), except) {
 			return fmt.Errorf("except cidr %s must be contained within remote cidr %s", except, r.RemoteCIDR.Masked())
 		}
+		if _, ok := seenExceptCIDRs[except]; ok {
+			return fmt.Errorf("except cidr %s is duplicated", except)
+		}
+		seenExceptCIDRs[except] = struct{}{}
 	}
 	if len(r.RemoteFQDNs) > 0 && r.Direction != DirectionEgress {
 		return errors.New("remote fqdns are only supported for egress rules")
@@ -1119,10 +1124,15 @@ func (r SecurityGroupRule) Validate() error {
 			return fmt.Errorf("remote fqdn %d: %w", i, err)
 		}
 	}
+	seenPorts := make(map[PortRange]struct{}, len(r.Ports))
 	for i, p := range r.Ports {
 		if err := p.Validate(); err != nil {
 			return fmt.Errorf("port range %d: %w", i, err)
 		}
+		if _, ok := seenPorts[p]; ok {
+			return fmt.Errorf("port range %d %d-%d is duplicated", i, p.From, p.To)
+		}
+		seenPorts[p] = struct{}{}
 	}
 	return nil
 }
