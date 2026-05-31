@@ -445,6 +445,9 @@ func validateObjectGraph(state DesiredState) error {
 				if !loadBalancerHasMatchingFrontendProtocol(service, rule.Protocol) {
 					return fmt.Errorf("security group rule %q references remote service %q without matching %s frontend", rule.ID, rule.RemoteService, effectiveProtocol(rule.Protocol))
 				}
+				if len(rule.Ports) > 0 && !loadBalancerHasMatchingFrontendPort(service, rule.Protocol, rule.Ports) {
+					return fmt.Errorf("security group rule %q references remote service %q without matching %s frontend port %s", rule.ID, rule.RemoteService, effectiveProtocol(rule.Protocol), portRangesKey(rule.Ports))
+				}
 			}
 		}
 	}
@@ -638,6 +641,36 @@ func loadBalancerHasMatchingFrontendProtocol(lb model.LoadBalancer, protocol mod
 		}
 	}
 	return false
+}
+
+func loadBalancerHasMatchingFrontendPort(lb model.LoadBalancer, protocol model.Protocol, ports []model.PortRange) bool {
+	protocol = effectiveProtocol(protocol)
+	for _, frontend := range lb.Frontends() {
+		if frontend.Protocol != protocol {
+			continue
+		}
+		if portRangesContain(ports, frontend.Port) {
+			return true
+		}
+	}
+	return false
+}
+
+func portRangesContain(ranges []model.PortRange, port uint16) bool {
+	for _, portRange := range ranges {
+		if portRange.From <= port && port <= portRange.To {
+			return true
+		}
+	}
+	return false
+}
+
+func portRangesKey(ranges []model.PortRange) string {
+	parts := make([]string, 0, len(ranges))
+	for _, portRange := range ranges {
+		parts = append(parts, fmt.Sprintf("%d-%d", portRange.From, portRange.To))
+	}
+	return strings.Join(parts, ",")
 }
 
 func effectiveProtocol(protocol model.Protocol) model.Protocol {
