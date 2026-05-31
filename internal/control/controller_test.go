@@ -696,6 +696,33 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 			wantErr: "policy route \"force-private\" next hop 10.10.0.253 is excluded by subnet \"apps\"",
 		},
 		{
+			name: "policy route source outside subnet",
+			mutate: func(state *DesiredState) {
+				state.PolicyRoutes = []model.PolicyRoute{{
+					Name:     "drop-other-source",
+					VPC:      "prod",
+					Priority: 100,
+					Match:    model.RouteMatch{Source: netip.MustParsePrefix("10.20.0.0/24")},
+					Action:   model.RouteAction{Type: model.ActionDrop},
+				}}
+			},
+			wantErr: "policy route \"drop-other-source\" source 10.20.0.0/24 is outside vpc \"prod\" subnets",
+		},
+		{
+			name: "policy route source excluded by subnet",
+			mutate: func(state *DesiredState) {
+				state.Subnets[0].ExcludeCIDRs = []netip.Prefix{netip.MustParsePrefix("10.10.0.20/32")}
+				state.PolicyRoutes = []model.PolicyRoute{{
+					Name:     "drop-excluded-source",
+					VPC:      "prod",
+					Priority: 100,
+					Match:    model.RouteMatch{Source: netip.MustParsePrefix("10.10.0.20/32")},
+					Action:   model.RouteAction{Type: model.ActionDrop},
+				}}
+			},
+			wantErr: "policy route \"drop-excluded-source\" source 10.10.0.20/32 is excluded by subnet \"apps\"",
+		},
+		{
 			name: "nat unknown vpc",
 			mutate: func(state *DesiredState) {
 				state.NATRules = []model.NATRule{{
@@ -707,6 +734,33 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 				}}
 			},
 			wantErr: "nat rule \"egress\" references unknown vpc",
+		},
+		{
+			name: "snat match cidr outside subnet",
+			mutate: func(state *DesiredState) {
+				state.NATRules = []model.NATRule{{
+					Name:       "egress",
+					VPC:        "prod",
+					Type:       model.ActionSNAT,
+					MatchCIDR:  netip.MustParsePrefix("10.20.0.0/24"),
+					ExternalIP: netip.MustParseAddr("198.51.100.10"),
+				}}
+			},
+			wantErr: "nat rule \"egress\" match cidr 10.20.0.0/24 is outside vpc \"prod\" subnets",
+		},
+		{
+			name: "snat match cidr excluded by subnet",
+			mutate: func(state *DesiredState) {
+				state.Subnets[0].ExcludeCIDRs = []netip.Prefix{netip.MustParsePrefix("10.10.0.20/32")}
+				state.NATRules = []model.NATRule{{
+					Name:       "host-egress",
+					VPC:        "prod",
+					Type:       model.ActionSNAT,
+					MatchCIDR:  netip.MustParsePrefix("10.10.0.20/32"),
+					ExternalIP: netip.MustParseAddr("198.51.100.10"),
+				}}
+			},
+			wantErr: "nat rule \"host-egress\" match cidr 10.10.0.20/32 is excluded by subnet \"apps\"",
 		},
 		{
 			name: "dnat target outside subnet",

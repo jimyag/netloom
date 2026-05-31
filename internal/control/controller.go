@@ -539,6 +539,11 @@ func validateObjectGraph(state DesiredState) error {
 		if _, ok := vpcs[route.VPC]; !ok {
 			return fmt.Errorf("policy route %q references unknown vpc %q", route.Name, route.VPC)
 		}
+		if route.Match.Source.IsValid() {
+			if err := validatePrefixInVPCSubnets(subnets, route.VPC, route.Match.Source, fmt.Sprintf("policy route %q source %s", route.Name, route.Match.Source)); err != nil {
+				return err
+			}
+		}
 		if route.Action.Type == model.ActionReroute {
 			for _, nextHop := range route.Action.RerouteNextHops() {
 				if err := validateAddressInVPCSubnets(subnets, route.VPC, nextHop, fmt.Sprintf("policy route %q next hop %s", route.Name, nextHop)); err != nil {
@@ -553,6 +558,11 @@ func validateObjectGraph(state DesiredState) error {
 		}
 		if _, ok := vpcs[rule.VPC]; !ok {
 			return fmt.Errorf("nat rule %q references unknown vpc %q", rule.Name, rule.VPC)
+		}
+		if rule.Type == model.ActionSNAT {
+			if err := validatePrefixInVPCSubnets(subnets, rule.VPC, rule.MatchCIDR, fmt.Sprintf("nat rule %q match cidr %s", rule.Name, rule.MatchCIDR)); err != nil {
+				return err
+			}
 		}
 		if rule.Type == model.ActionDNAT || rule.Type == model.ActionDNATSNAT {
 			if err := validateAddressInVPCSubnets(subnets, rule.VPC, rule.TargetIP, fmt.Sprintf("nat rule %q target ip %s", rule.Name, rule.TargetIP)); err != nil {
@@ -579,6 +589,17 @@ func validateAddressInVPCSubnets(subnets map[string]model.Subnet, vpc string, ad
 	return nil
 }
 
+func validatePrefixInVPCSubnets(subnets map[string]model.Subnet, vpc string, prefix netip.Prefix, subject string) error {
+	subnet, ok := subnetContainingPrefix(subnets, vpc, prefix)
+	if !ok {
+		return fmt.Errorf("%s is outside vpc %q subnets", subject, vpc)
+	}
+	if subnet.Excludes(prefix.Masked().Addr()) && subnet.Excludes(prefixLastAddress(prefix)) {
+		return fmt.Errorf("%s is excluded by subnet %q", subject, subnet.Name)
+	}
+	return nil
+}
+
 func subnetContainingAddress(subnets map[string]model.Subnet, vpc string, addr netip.Addr) (model.Subnet, bool) {
 	for _, subnet := range subnets {
 		if subnet.VPC == vpc && subnet.CIDR.Contains(addr) {
@@ -586,6 +607,35 @@ func subnetContainingAddress(subnets map[string]model.Subnet, vpc string, addr n
 		}
 	}
 	return model.Subnet{}, false
+}
+
+func subnetContainingPrefix(subnets map[string]model.Subnet, vpc string, prefix netip.Prefix) (model.Subnet, bool) {
+	first := prefix.Masked().Addr()
+	last := prefixLastAddress(prefix)
+	for _, subnet := range subnets {
+		if subnet.VPC == vpc && subnet.CIDR.Contains(first) && subnet.CIDR.Contains(last) {
+			return subnet, true
+		}
+	}
+	return model.Subnet{}, false
+}
+
+func prefixLastAddress(prefix netip.Prefix) netip.Addr {
+	addr := prefix.Masked().Addr()
+	if addr.Is4() {
+		bytes := addr.As4()
+		setHostBits(bytes[:], prefix.Bits(), 32)
+		return netip.AddrFrom4(bytes)
+	}
+	bytes := addr.As16()
+	setHostBits(bytes[:], prefix.Bits(), 128)
+	return netip.AddrFrom16(bytes)
+}
+
+func setHostBits(bytes []byte, prefixBits, totalBits int) {
+	for bit := prefixBits; bit < totalBits; bit++ {
+		bytes[bit/8] |= 1 << uint(7-bit%8)
+	}
 }
 
 func validateLoadBalancers(loadBalancers []model.LoadBalancer) error {
