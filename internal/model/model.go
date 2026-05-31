@@ -43,6 +43,8 @@ const (
 const (
 	SecurityGroupPriorityMin = 1
 	SecurityGroupPriorityMax = 16384
+	PolicyRoutePriorityMin   = 0
+	PolicyRoutePriorityMax   = 32767
 )
 
 type VPC struct {
@@ -581,8 +583,8 @@ func (r PolicyRoute) Validate() error {
 	if r.VPC == "" {
 		return errors.New("policy route vpc is required")
 	}
-	if r.Priority < 0 {
-		return errors.New("policy route priority must be non-negative")
+	if r.Priority < PolicyRoutePriorityMin || r.Priority > PolicyRoutePriorityMax {
+		return fmt.Errorf("policy route priority must be between %d and %d", PolicyRoutePriorityMin, PolicyRoutePriorityMax)
 	}
 	if r.Action.Type == "" {
 		return errors.New("policy route action is required")

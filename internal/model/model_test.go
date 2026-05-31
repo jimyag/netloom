@@ -344,6 +344,26 @@ func TestPolicyRouteRequiresNextHopForReroute(t *testing.T) {
 	}
 }
 
+func TestPolicyRoutePriorityValidation(t *testing.T) {
+	valid := PolicyRoute{
+		Name:     "allow-web",
+		VPC:      "prod",
+		Priority: PolicyRoutePriorityMax,
+		Match:    RouteMatch{Destination: netip.MustParsePrefix("198.51.100.0/24")},
+		Action:   RouteAction{Type: ActionAllow},
+	}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("valid policy route priority failed: %v", err)
+	}
+	for _, priority := range []int{PolicyRoutePriorityMin - 1, PolicyRoutePriorityMax + 1} {
+		invalid := valid
+		invalid.Priority = priority
+		if err := invalid.Validate(); err == nil || !strings.Contains(err.Error(), "priority") {
+			t.Fatalf("priority %d error = %v, want priority validation", priority, err)
+		}
+	}
+}
+
 func TestPolicyRouteMatchValidatesSourcePorts(t *testing.T) {
 	match := RouteMatch{
 		Source:      netip.MustParsePrefix("10.10.0.0/24"),

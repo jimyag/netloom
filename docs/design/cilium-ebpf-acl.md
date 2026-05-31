@@ -138,7 +138,9 @@ Policy-route L4 matching includes both `src_ports` and `dst_ports`. The OVN
 planner groups alternative source or destination port ranges with OR before
 joining them with the rest of the logical-router-policy match, while the Linux
 datapath expands the same intent into the source/destination port cross product
-required by `ip rule`/netlink.
+required by `ip rule`/netlink. Policy-route priority is constrained to OVN's
+logical-router-policy range `0..32767`, so invalid priorities fail validation
+before reaching a live Northbound transaction.
 `LoadBalancer` frontends are declared with a required `ports` array. Each
 frontend owns its protocol and backend target ports while sharing the same
 Service VIP; those backends are rendered into the OVN VIP backend set and the
