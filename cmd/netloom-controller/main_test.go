@@ -59,7 +59,8 @@ func TestApplyLoadBalancerHealthChecksDisabledByDefault(t *testing.T) {
 			Backends: []model.LoadBalancerBackend{{IP: netip.MustParseAddr("127.0.0.1"), Port: 1}},
 		}},
 	}}}
-	summary, err := applyLoadBalancerHealthChecks(context.Background(), &state)
+	reconciler := &stateFileReconciler{healthTracker: control.NewLoadBalancerHealthTracker()}
+	summary, err := reconciler.applyLoadBalancerHealthChecks(context.Background(), &state)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -65,10 +65,11 @@ func runStateFile(ctx context.Context, path string) error {
 }
 
 type stateFileReconciler struct {
-	memory     *control.MemoryBackend
-	executor   ovn.Executor
-	ovnBackend *ovn.Backend
-	controller *control.Controller
+	memory        *control.MemoryBackend
+	executor      ovn.Executor
+	ovnBackend    *ovn.Backend
+	controller    *control.Controller
+	healthTracker *control.LoadBalancerHealthTracker
 }
 
 func newStateFileReconciler() (*stateFileReconciler, error) {
@@ -83,10 +84,11 @@ func newStateFileReconciler() (*stateFileReconciler, error) {
 	}
 	ovnBackend := ovn.NewBackend(executor)
 	return &stateFileReconciler{
-		memory:     memory,
-		executor:   executor,
-		ovnBackend: ovnBackend,
-		controller: control.NewController(control.MultiTopologyBackend{memory, ovnBackend}, memory),
+		memory:        memory,
+		executor:      executor,
+		ovnBackend:    ovnBackend,
+		controller:    control.NewController(control.MultiTopologyBackend{memory, ovnBackend}, memory),
+		healthTracker: control.NewLoadBalancerHealthTracker(),
 	}, nil
 }
 
@@ -101,7 +103,7 @@ func (r *stateFileReconciler) reconcile(ctx context.Context, path string) error 
 	if err != nil {
 		return err
 	}
-	healthSummary, err := applyLoadBalancerHealthChecks(ctx, &state)
+	healthSummary, err := r.applyLoadBalancerHealthChecks(ctx, &state)
 	if err != nil {
 		return err
 	}
@@ -135,11 +137,11 @@ func (r *stateFileReconciler) reconcile(ctx context.Context, path string) error 
 	return nil
 }
 
-func applyLoadBalancerHealthChecks(ctx context.Context, state *control.DesiredState) (control.LoadBalancerHealthSummary, error) {
+func (r *stateFileReconciler) applyLoadBalancerHealthChecks(ctx context.Context, state *control.DesiredState) (control.LoadBalancerHealthSummary, error) {
 	if os.Getenv("NETLOOM_LB_HEALTH_PROBE") != "1" {
 		return control.LoadBalancerHealthSummary{}, nil
 	}
-	next, summary, err := control.ApplyLoadBalancerHealthChecks(ctx, *state, nil)
+	next, summary, err := control.ApplyLoadBalancerHealthChecksWithTracker(ctx, *state, nil, r.healthTracker)
 	if err != nil {
 		return summary, err
 	}

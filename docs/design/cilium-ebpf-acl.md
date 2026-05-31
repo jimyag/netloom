@@ -139,7 +139,10 @@ receives an empty backend set. Multi-port health checks create one OVN
 `Load_Balancer_Health_Check` row per frontend VIP. The state-file controller
 can additionally enable active TCP backend probes with
 `NETLOOM_LB_HEALTH_PROBE=1`; probe results are applied to TCP load balancers
-with health checks before the OVN plan is generated, while explicit
+with health checks before the OVN plan is generated. A per-controller tracker
+honors the configured `success_count` and `failure_count` across reconcile
+loops, so transient probe failures do not immediately remove a backend and
+recovery requires the configured number of successful probes. Explicit
 `healthy=false` still acts as a manual drain. This lets tests cover the same
 fail-away behavior expected from OVN health-check state while keeping
 health-derived backend selection visible in the desired-state model.
