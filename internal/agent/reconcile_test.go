@@ -897,6 +897,62 @@ func TestReconcileNodeRejectsDuplicateEndpoints(t *testing.T) {
 	}
 }
 
+func TestReconcileNodeRejectsDuplicateLoadBalancers(t *testing.T) {
+	state := control.DesiredState{
+		LoadBalancers: []model.LoadBalancer{
+			{
+				Name: "api",
+				VPC:  "prod",
+				VIP:  netip.MustParseAddr("10.96.0.10"),
+				Ports: []model.LoadBalancerPort{{
+					Port:     443,
+					Protocol: model.ProtocolTCP,
+					Backends: []model.LoadBalancerBackend{{
+						IP:   netip.MustParseAddr("10.10.0.10"),
+						Port: 8443,
+					}},
+				}},
+			},
+			{
+				Name: "api",
+				VPC:  "prod",
+				VIP:  netip.MustParseAddr("10.96.0.11"),
+				Ports: []model.LoadBalancerPort{{
+					Port:     443,
+					Protocol: model.ProtocolTCP,
+					Backends: []model.LoadBalancerBackend{{
+						IP:   netip.MustParseAddr("10.10.0.11"),
+						Port: 8443,
+					}},
+				}},
+			},
+		},
+	}
+	_, err := ReconcileNode(context.Background(), state, "node-a", dataplane.NewInMemoryPolicyStore())
+	if err == nil {
+		t.Fatal("expected duplicate load balancers to fail")
+	}
+	if !strings.Contains(err.Error(), "duplicate load balancer") {
+		t.Fatalf("error %q does not mention duplicate load balancer", err)
+	}
+}
+
+func TestReconcileNodeRejectsDuplicateCIDRGroups(t *testing.T) {
+	state := control.DesiredState{
+		CIDRGroups: []model.CIDRGroup{
+			{Name: "corp", VPC: "prod", CIDRs: []netip.Prefix{netip.MustParsePrefix("10.20.0.0/16")}},
+			{Name: "corp", VPC: "prod", CIDRs: []netip.Prefix{netip.MustParsePrefix("10.30.0.0/16")}},
+		},
+	}
+	_, err := ReconcileNode(context.Background(), state, "node-a", dataplane.NewInMemoryPolicyStore())
+	if err == nil {
+		t.Fatal("expected duplicate cidr groups to fail")
+	}
+	if !strings.Contains(err.Error(), "duplicate cidr group") {
+		t.Fatalf("error %q does not mention duplicate cidr group", err)
+	}
+}
+
 func TestReconcileNodeExpandsRemoteGroupMembership(t *testing.T) {
 	state := control.DesiredState{
 		Endpoints: []model.Endpoint{

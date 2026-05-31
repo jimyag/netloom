@@ -308,6 +308,28 @@ func validateAgentState(state control.DesiredState) error {
 		}
 		endpoints[endpoint.ID] = struct{}{}
 	}
+	loadBalancers := make(map[string]struct{}, len(state.LoadBalancers))
+	for _, lb := range state.LoadBalancers {
+		if err := lb.Validate(); err != nil {
+			return err
+		}
+		key := lb.VPC + "/" + lb.Name
+		if _, ok := loadBalancers[key]; ok {
+			return fmt.Errorf("duplicate load balancer %q in vpc %s", lb.Name, lb.VPC)
+		}
+		loadBalancers[key] = struct{}{}
+	}
+	cidrGroups := make(map[string]struct{}, len(state.CIDRGroups))
+	for _, group := range state.CIDRGroups {
+		if err := group.Validate(); err != nil {
+			return err
+		}
+		key := group.VPC + "/" + group.Name
+		if _, ok := cidrGroups[key]; ok {
+			return fmt.Errorf("duplicate cidr group %q in vpc %s", group.Name, group.VPC)
+		}
+		cidrGroups[key] = struct{}{}
+	}
 	return nil
 }
 
