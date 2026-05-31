@@ -777,6 +777,19 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 			wantErr: "nat rule \"host-egress\" match cidr 10.10.0.20/32 is excluded by subnet \"apps\"",
 		},
 		{
+			name: "snat external ip inside vpc subnet",
+			mutate: func(state *DesiredState) {
+				state.NATRules = []model.NATRule{{
+					Name:       "egress",
+					VPC:        "prod",
+					Type:       model.ActionSNAT,
+					MatchCIDR:  netip.MustParsePrefix("10.10.0.0/24"),
+					ExternalIP: netip.MustParseAddr("10.10.0.254"),
+				}}
+			},
+			wantErr: "nat rule \"egress\" external ip 10.10.0.254 is inside subnet \"apps\" in vpc \"prod\"",
+		},
+		{
 			name: "dnat target outside subnet",
 			mutate: func(state *DesiredState) {
 				state.NATRules = []model.NATRule{{
@@ -788,6 +801,19 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 				}}
 			},
 			wantErr: "nat rule \"web-dnat\" target ip 10.20.0.10 is outside vpc \"prod\" subnets",
+		},
+		{
+			name: "dnat external ip inside vpc subnet",
+			mutate: func(state *DesiredState) {
+				state.NATRules = []model.NATRule{{
+					Name:       "web-dnat",
+					VPC:        "prod",
+					Type:       model.ActionDNAT,
+					ExternalIP: netip.MustParseAddr("10.10.0.20"),
+					TargetIP:   netip.MustParseAddr("10.10.0.10"),
+				}}
+			},
+			wantErr: "nat rule \"web-dnat\" external ip 10.10.0.20 is inside subnet \"apps\" in vpc \"prod\"",
 		},
 		{
 			name: "floating ip target excluded by subnet",

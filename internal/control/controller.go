@@ -566,6 +566,9 @@ func validateObjectGraph(state DesiredState) error {
 		if _, ok := vpcs[rule.VPC]; !ok {
 			return fmt.Errorf("nat rule %q references unknown vpc %q", rule.Name, rule.VPC)
 		}
+		if err := validateAddressOutsideVPCSubnets(subnets, rule.VPC, rule.ExternalIP, fmt.Sprintf("nat rule %q external ip %s", rule.Name, rule.ExternalIP)); err != nil {
+			return err
+		}
 		if rule.Type == model.ActionSNAT {
 			if err := validatePrefixInVPCSubnets(subnets, rule.VPC, rule.MatchCIDR, fmt.Sprintf("nat rule %q match cidr %s", rule.Name, rule.MatchCIDR)); err != nil {
 				return err
@@ -581,6 +584,13 @@ func validateObjectGraph(state DesiredState) error {
 		if err := record.Validate(); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func validateAddressOutsideVPCSubnets(subnets map[string]model.Subnet, vpc string, addr netip.Addr, subject string) error {
+	if subnet, ok := subnetContainingAddress(subnets, vpc, addr); ok {
+		return fmt.Errorf("%s is inside subnet %q in vpc %q", subject, subnet.Name, vpc)
 	}
 	return nil
 }
