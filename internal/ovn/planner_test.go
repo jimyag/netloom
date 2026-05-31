@@ -114,7 +114,6 @@ func TestPlannerMapsNetloomObjectsToOVNOperations(t *testing.T) {
 		"set logical_switch_port nl_lp_pod-a dhcpv4_options=@nl_dhcp_pod_a",
 		"external_ids:netloom_owner=netloom",
 		"external_ids:netloom_vpc=prod",
-		"--if-exists lr-route-del nl_lr_prod 0.0.0.0/0",
 		"lr-route-add nl_lr_prod 0.0.0.0/0 10.10.0.254",
 		"lr-policy-add nl_lr_prod 100",
 		"external_ids:netloom_gateway=gw-a",
@@ -160,13 +159,15 @@ func TestPlannerBuildsECMPStaticRouteOperations(t *testing.T) {
 
 	joined := stringify(planner.Operations())
 	for _, expected := range []string{
-		"--if-exists lr-route-del nl_lr_prod 0.0.0.0/0",
 		"--may-exist --ecmp lr-route-add nl_lr_prod 0.0.0.0/0 10.10.0.253",
 		"--may-exist --ecmp lr-route-add nl_lr_prod 0.0.0.0/0 10.10.0.254",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("ECMP static route operation missing %q:\n%s", expected, joined)
 		}
+	}
+	if strings.Contains(joined, "lr-route-del") {
+		t.Fatalf("planner should not delete routes during idempotent ensure:\n%s", joined)
 	}
 }
 

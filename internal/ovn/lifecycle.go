@@ -92,15 +92,12 @@ func cleanupOperations(old, next desiredSnapshot) []Operation {
 	}
 	for _, key := range staleKeys(old.Routes, next.Routes) {
 		record := old.Routes[key]
-		ops = append(ops, Operation{Command: "lr-route-del", Flags: []string{"--if-exists"}, Args: []string{logicalRouter(record.VPC), record.Route.Destination.String()}})
+		ops = append(ops, deleteStaticRouteDestinationOperation(record))
 	}
 	for _, key := range commonKeys(old.Routes, next.Routes) {
 		oldRecord := old.Routes[key]
 		nextRecord := next.Routes[key]
-		if routeSignature(oldRecord) == routeSignature(nextRecord) {
-			continue
-		}
-		ops = append(ops, Operation{Command: "lr-route-del", Flags: []string{"--if-exists"}, Args: []string{logicalRouter(oldRecord.VPC), oldRecord.Route.Destination.String()}})
+		ops = append(ops, routeUpdateCleanupOperations(oldRecord, nextRecord)...)
 	}
 	for _, key := range staleKeys(old.PolicyRoutes, next.PolicyRoutes) {
 		record := old.PolicyRoutes[key]
@@ -246,6 +243,60 @@ func routeSignature(record routeRecord) string {
 	}
 	sort.Strings(values)
 	return routeKey(record.VPC, route) + "|" + strings.Join(values, ",")
+}
+
+func routeUpdateCleanupOperations(oldRecord, nextRecord routeRecord) []Operation {
+	if routeSignature(oldRecord) == routeSignature(nextRecord) {
+		return nil
+	}
+	if oldRecord.Route.Blackhole || nextRecord.Route.Blackhole {
+		return []Operation{deleteStaticRouteDestinationOperation(oldRecord)}
+	}
+	oldNextHops := sortedRouteNextHops(oldRecord.Route)
+	nextNextHops := sortedRouteNextHops(nextRecord.Route)
+	if len(oldNextHops) != len(nextNextHops) && (len(oldNextHops) == 1 || len(nextNextHops) == 1) {
+		return []Operation{deleteStaticRouteDestinationOperation(oldRecord)}
+	}
+	if len(oldNextHops) == 1 && len(nextNextHops) == 1 {
+		return []Operation{deleteStaticRouteDestinationOperation(oldRecord)}
+	}
+	nextSet := make(map[string]struct{}, len(nextNextHops))
+	for _, nextHop := range nextNextHops {
+		nextSet[nextHop] = struct{}{}
+	}
+	var ops []Operation
+	for _, nextHop := range oldNextHops {
+		if _, ok := nextSet[nextHop]; ok {
+			continue
+		}
+		ops = append(ops, deleteStaticRouteNextHopOperation(oldRecord, nextHop))
+	}
+	return ops
+}
+
+func sortedRouteNextHops(route model.Route) []string {
+	nextHops := route.RouteNextHops()
+	values := make([]string, 0, len(nextHops))
+	for _, nextHop := range nextHops {
+		values = append(values, nextHop.String())
+	}
+	sort.Strings(values)
+	return values
+}
+
+func deleteStaticRouteDestinationOperation(record routeRecord) Operation {
+	return Operation{Command: "lr-route-del", Flags: []string{"--if-exists"}, Args: []string{
+		logicalRouter(record.VPC),
+		record.Route.Destination.String(),
+	}}
+}
+
+func deleteStaticRouteNextHopOperation(record routeRecord, nextHop string) Operation {
+	return Operation{Command: "lr-route-del", Flags: []string{"--if-exists"}, Args: []string{
+		logicalRouter(record.VPC),
+		record.Route.Destination.String(),
+		nextHop,
+	}}
 }
 
 func policyRouteKey(vpc string, priority int, match string) string {

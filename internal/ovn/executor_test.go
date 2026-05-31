@@ -296,8 +296,8 @@ func TestBackendCleanupConvergesChangedStaticRoute(t *testing.T) {
 			t.Fatalf("static route convergence operation missing %q:\n%s", expected, joined)
 		}
 	}
-	if strings.Count(joined, "--if-exists lr-route-del nl_lr_prod 0.0.0.0/0") < 2 {
-		t.Fatalf("changed static route should clear the managed destination before each add:\n%s", joined)
+	if strings.Count(joined, "--if-exists lr-route-del nl_lr_prod 0.0.0.0/0") != 1 {
+		t.Fatalf("changed static route should clear the managed destination once:\n%s", joined)
 	}
 }
 
@@ -337,6 +337,82 @@ func TestBackendCleanupConvergesChangedStaticRouteToECMP(t *testing.T) {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("static ECMP convergence operation missing %q:\n%s", expected, joined)
 		}
+	}
+}
+
+func TestBackendCleanupAddsECMPNextHopWithoutDeletingExistingRoutes(t *testing.T) {
+	recorder := ovn.NewRecorderExecutor()
+	backend := ovn.NewBackend(recorder)
+	first := controlStateWithEndpoint("pod-a")
+	first.RouteTables = []model.RouteTable{{
+		Name: "main",
+		VPC:  "prod",
+		Routes: []model.Route{{
+			Destination: netip.MustParsePrefix("0.0.0.0/0"),
+			NextHops: []netip.Addr{
+				netip.MustParseAddr("10.10.0.253"),
+				netip.MustParseAddr("10.10.0.254"),
+			},
+		}},
+	}}
+	controller := control.NewController(backend, control.NewMemoryBackend())
+	if err := controller.Reconcile(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+
+	second := first
+	second.RouteTables[0].Routes[0].NextHops = append(second.RouteTables[0].Routes[0].NextHops, netip.MustParseAddr("10.10.0.252"))
+	if err := controller.Reconcile(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+
+	joined := stringifyOVNOps(recorder.Operations())
+	if strings.Contains(joined, "lr-route-del nl_lr_prod 0.0.0.0/0") {
+		t.Fatalf("adding ECMP next hop should not delete existing route destination:\n%s", joined)
+	}
+	expected := "--may-exist --ecmp lr-route-add nl_lr_prod 0.0.0.0/0 10.10.0.252"
+	if !strings.Contains(joined, expected) {
+		t.Fatalf("added ECMP next hop operation missing %q:\n%s", expected, joined)
+	}
+}
+
+func TestBackendCleanupRemovesOnlyStaleECMPNextHop(t *testing.T) {
+	recorder := ovn.NewRecorderExecutor()
+	backend := ovn.NewBackend(recorder)
+	first := controlStateWithEndpoint("pod-a")
+	first.RouteTables = []model.RouteTable{{
+		Name: "main",
+		VPC:  "prod",
+		Routes: []model.Route{{
+			Destination: netip.MustParsePrefix("0.0.0.0/0"),
+			NextHops: []netip.Addr{
+				netip.MustParseAddr("10.10.0.252"),
+				netip.MustParseAddr("10.10.0.253"),
+				netip.MustParseAddr("10.10.0.254"),
+			},
+		}},
+	}}
+	controller := control.NewController(backend, control.NewMemoryBackend())
+	if err := controller.Reconcile(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+
+	second := first
+	second.RouteTables[0].Routes[0].NextHops = []netip.Addr{
+		netip.MustParseAddr("10.10.0.253"),
+		netip.MustParseAddr("10.10.0.254"),
+	}
+	if err := controller.Reconcile(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+
+	joined := stringifyOVNOps(recorder.Operations())
+	expected := "--if-exists lr-route-del nl_lr_prod 0.0.0.0/0 10.10.0.252"
+	if !strings.Contains(joined, expected) {
+		t.Fatalf("stale ECMP next hop delete missing %q:\n%s", expected, joined)
+	}
+	if strings.Contains(joined, "--if-exists lr-route-del nl_lr_prod 0.0.0.0/0\n") {
+		t.Fatalf("removing one ECMP next hop should not delete the whole destination:\n%s", joined)
 	}
 }
 
