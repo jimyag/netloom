@@ -45,6 +45,7 @@ type DropEvent struct {
 	EndpointID     string
 	Reason         DropReason
 	RemoteIdentity uint32
+	RemoteIP       netip.Addr
 	Direction      uint8
 	Protocol       uint8
 	DestPort       uint16
@@ -55,6 +56,7 @@ type PolicyEvent struct {
 	EndpointID     string
 	Verdict        Verdict
 	RemoteIdentity uint32
+	RemoteIP       netip.Addr
 	Direction      uint8
 	Protocol       uint8
 	DestPort       uint16
@@ -115,6 +117,7 @@ func (r *PolicyRecorder) Observe(endpointID string, packet Packet, decision Deci
 	event := DropEvent{
 		EndpointID:     endpointID,
 		RemoteIdentity: packet.RemoteIdentity,
+		RemoteIP:       packet.RemoteIP,
 		Direction:      packet.Direction,
 		Protocol:       packet.Protocol,
 		DestPort:       packet.DestPort,
@@ -175,6 +178,7 @@ func policyEvent(endpointID string, packet Packet, decision Decision) PolicyEven
 		EndpointID:     endpointID,
 		Verdict:        decision.Verdict,
 		RemoteIdentity: packet.RemoteIdentity,
+		RemoteIP:       packet.RemoteIP,
 		Direction:      packet.Direction,
 		Protocol:       packet.Protocol,
 		DestPort:       packet.DestPort,

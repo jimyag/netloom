@@ -917,9 +917,9 @@ func TestPolicyRecorderTracksMetricsAndDropEvents(t *testing.T) {
 		},
 	}
 	recorder := NewPolicyRecorder()
-	allow := EvaluateObserved("pod-a", entries, Packet{RemoteIdentity: 100, Direction: DirectionIngress, Protocol: 6, DestPort: 443}, recorder)
-	deny := EvaluateObserved("pod-a", entries, Packet{RemoteIdentity: 200, Direction: DirectionIngress, Protocol: 6, DestPort: 443}, recorder)
-	noMatch := EvaluateObserved("pod-a", entries, Packet{RemoteIdentity: 300, Direction: DirectionIngress, Protocol: 6, DestPort: 443}, recorder)
+	allow := EvaluateObserved("pod-a", entries, Packet{RemoteIdentity: 100, RemoteIP: netip.MustParseAddr("10.20.0.10"), Direction: DirectionIngress, Protocol: 6, DestPort: 443}, recorder)
+	deny := EvaluateObserved("pod-a", entries, Packet{RemoteIdentity: 200, RemoteIP: netip.MustParseAddr("10.20.0.20"), Direction: DirectionIngress, Protocol: 6, DestPort: 443}, recorder)
+	noMatch := EvaluateObserved("pod-a", entries, Packet{RemoteIdentity: 300, RemoteIP: netip.MustParseAddr("10.20.0.30"), Direction: DirectionIngress, Protocol: 6, DestPort: 443}, recorder)
 	if allow.Verdict != VerdictAllow || deny.Verdict != VerdictDrop || noMatch.Verdict != VerdictDrop {
 		t.Fatalf("unexpected decisions: allow=%+v deny=%+v noMatch=%+v", allow, deny, noMatch)
 	}
@@ -931,10 +931,10 @@ func TestPolicyRecorderTracksMetricsAndDropEvents(t *testing.T) {
 	if len(events) != 2 {
 		t.Fatalf("drop events = %d, want 2", len(events))
 	}
-	if events[0].Reason != DropReasonPolicyDeny || events[0].RuleCookie != 99 {
+	if events[0].Reason != DropReasonPolicyDeny || events[0].RuleCookie != 99 || events[0].RemoteIP != netip.MustParseAddr("10.20.0.20") {
 		t.Fatalf("first event = %+v, want policy deny with cookie 99", events[0])
 	}
-	if events[1].Reason != DropReasonNoMatch || events[1].RuleCookie != 0 {
+	if events[1].Reason != DropReasonNoMatch || events[1].RuleCookie != 0 || events[1].RemoteIP != netip.MustParseAddr("10.20.0.30") {
 		t.Fatalf("second event = %+v, want no-match", events[1])
 	}
 }
@@ -974,9 +974,9 @@ func TestPolicyRecorderTracksLoggedPolicyEvents(t *testing.T) {
 		},
 	}
 	recorder := NewPolicyRecorder()
-	allow := EvaluateObserved("pod-a", entries, Packet{RemoteIdentity: 100, Direction: DirectionIngress, Protocol: 6, DestPort: 443}, recorder)
-	drop := EvaluateObserved("pod-a", entries, Packet{RemoteIdentity: 200, Direction: DirectionIngress, Protocol: 6, DestPort: 8443}, recorder)
-	noMatch := EvaluateObserved("pod-a", entries, Packet{RemoteIdentity: 300, Direction: DirectionIngress, Protocol: 6, DestPort: 443}, recorder)
+	allow := EvaluateObserved("pod-a", entries, Packet{RemoteIdentity: 100, RemoteIP: netip.MustParseAddr("10.30.0.10"), Direction: DirectionIngress, Protocol: 6, DestPort: 443}, recorder)
+	drop := EvaluateObserved("pod-a", entries, Packet{RemoteIdentity: 200, RemoteIP: netip.MustParseAddr("10.30.0.20"), Direction: DirectionIngress, Protocol: 6, DestPort: 8443}, recorder)
+	noMatch := EvaluateObserved("pod-a", entries, Packet{RemoteIdentity: 300, RemoteIP: netip.MustParseAddr("10.30.0.30"), Direction: DirectionIngress, Protocol: 6, DestPort: 443}, recorder)
 	if allow.Verdict != VerdictAllow || drop.Verdict != VerdictDrop || noMatch.Verdict != VerdictDrop {
 		t.Fatalf("unexpected decisions: allow=%+v drop=%+v noMatch=%+v", allow, drop, noMatch)
 	}
@@ -988,10 +988,10 @@ func TestPolicyRecorderTracksLoggedPolicyEvents(t *testing.T) {
 	if len(events) != 2 {
 		t.Fatalf("policy events = %d, want 2", len(events))
 	}
-	if events[0].Verdict != VerdictAllow || events[0].RuleCookie != 42 || events[0].DestPort != 443 {
+	if events[0].Verdict != VerdictAllow || events[0].RuleCookie != 42 || events[0].DestPort != 443 || events[0].RemoteIP != netip.MustParseAddr("10.30.0.10") {
 		t.Fatalf("first event = %+v, want logged allow", events[0])
 	}
-	if events[1].Verdict != VerdictDrop || events[1].RuleCookie != 99 || events[1].DestPort != 8443 {
+	if events[1].Verdict != VerdictDrop || events[1].RuleCookie != 99 || events[1].DestPort != 8443 || events[1].RemoteIP != netip.MustParseAddr("10.30.0.20") {
 		t.Fatalf("second event = %+v, want logged drop", events[1])
 	}
 }
@@ -1043,7 +1043,7 @@ func TestActionLogCompilesToAllowPolicyEvent(t *testing.T) {
 		t.Fatalf("metrics = %+v, want one logged allow", metrics)
 	}
 	events := recorder.PolicyEvents()
-	if len(events) != 1 || events[0].Verdict != VerdictAllow || events[0].RuleCookie == 0 {
+	if len(events) != 1 || events[0].Verdict != VerdictAllow || events[0].RuleCookie == 0 || events[0].RemoteIP != netip.MustParseAddr("10.20.0.10") {
 		t.Fatalf("policy events = %+v, want one logged allow with cookie", events)
 	}
 }

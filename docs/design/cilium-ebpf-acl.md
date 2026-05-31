@@ -311,13 +311,13 @@ move to in-place map mutation without changing the control plane contract.
 The userspace policy evaluator also exposes Cilium-style observability hooks.
 `PolicyRecorder` tracks per-endpoint allow, drop, conntrack, established, and
 logged flow counters. Drop decisions emit a structured event with endpoint ID,
-remote identity, direction, protocol, destination port, reason, and rule cookie
-when a policy-deny rule matched. No-match drops are recorded separately, which
-makes it possible to distinguish default deny from explicit security-group deny
-in tests and future agent output. Rules with `log` set, or with `action=log`,
-also emit a policy verdict event for both allow and drop decisions, matching
-the Cilium idea that policy verdict observability is not limited to denied
-traffic.
+remote identity, remote IP, direction, protocol, destination port, reason, and
+rule cookie when a policy-deny rule matched. No-match drops are recorded
+separately, which makes it possible to distinguish default deny from explicit
+security-group deny in tests and future agent output. Rules with `log` set, or
+with `action=log`, also emit a policy verdict event for both allow and drop
+decisions with the same remote identity and IP context, matching the Cilium
+idea that policy verdict observability is not limited to denied traffic.
 `action=reject` is preserved separately from `drop` in the policy map and
 userspace evaluator: matching packets return a `reject` verdict and generate a
 `policy-reject` drop event. The current TCX fast path still maps reject to drop
