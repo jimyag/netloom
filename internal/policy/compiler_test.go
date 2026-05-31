@@ -178,6 +178,7 @@ func TestCompileForEndpointSupportsCiliumStyleDefaultAllowMode(t *testing.T) {
 
 func TestCompileForEndpointKeepsDefaultDenyWhenAnyGroupRequiresIt(t *testing.T) {
 	defaultAllow := false
+	defaultDeny := true
 	endpoint := model.Endpoint{
 		ID:             "pod-a",
 		VPC:            "prod",
@@ -194,8 +195,10 @@ func TestCompileForEndpointKeepsDefaultDenyWhenAnyGroupRequiresIt(t *testing.T) 
 			DefaultDenyEgress:  &defaultAllow,
 		},
 		"default-deny": {
-			Name: "default-deny",
-			VPC:  "prod",
+			Name:               "default-deny",
+			VPC:                "prod",
+			DefaultDenyIngress: &defaultDeny,
+			DefaultDenyEgress:  &defaultDeny,
 		},
 	}
 
@@ -208,6 +211,107 @@ func TestCompileForEndpointKeepsDefaultDenyWhenAnyGroupRequiresIt(t *testing.T) 
 			t.Fatalf("mixed default-deny groups must not install wildcard allow: %+v", entry)
 		}
 	}
+}
+
+func TestCompileForEndpointAllowsDefaultAllowBesideEmptyDefaultDenyGroup(t *testing.T) {
+	defaultAllow := false
+	endpoint := model.Endpoint{
+		ID:             "pod-a",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"default-allow", "empty-default"},
+	}
+	groups := map[string]model.SecurityGroup{
+		"default-allow": {
+			Name:               "default-allow",
+			VPC:                "prod",
+			DefaultDenyIngress: &defaultAllow,
+			Rules: []model.SecurityGroupRule{{
+				ID:         "audit-admin",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("10.20.0.0/16"),
+				Ports:      []model.PortRange{{From: 8443, To: 8443}},
+				Action:     model.ActionLog,
+			}},
+		},
+		"empty-default": {
+			Name: "empty-default",
+			VPC:  "prod",
+		},
+	}
+
+	program, err := CompileForEndpoint(endpoint, groups)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasRuleID(program.Rules, "netloom-default-allow-ingress") {
+		t.Fatalf("expected ingress default allow rule, got %+v", program.Rules)
+	}
+	if hasRuleID(program.Rules, "netloom-default-allow-egress") {
+		t.Fatalf("unexpected egress default allow rule without egress default-allow policy: %+v", program.Rules)
+	}
+}
+
+func TestCompileForEndpointBlocksDefaultAllowWhenDirectionHasDefaultDenyRule(t *testing.T) {
+	defaultAllow := false
+	endpoint := model.Endpoint{
+		ID:             "pod-a",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"default-allow", "default-deny"},
+	}
+	groups := map[string]model.SecurityGroup{
+		"default-allow": {
+			Name:               "default-allow",
+			VPC:                "prod",
+			DefaultDenyIngress: &defaultAllow,
+			Rules: []model.SecurityGroupRule{{
+				ID:         "audit-admin",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("10.20.0.0/16"),
+				Ports:      []model.PortRange{{From: 8443, To: 8443}},
+				Action:     model.ActionLog,
+			}},
+		},
+		"default-deny": {
+			Name: "default-deny",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "allow-health",
+				Priority:   10,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("10.30.0.0/16"),
+				Ports:      []model.PortRange{{From: 8080, To: 8080}},
+				Action:     model.ActionAllow,
+			}},
+		},
+	}
+
+	program, err := CompileForEndpoint(endpoint, groups)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasRuleID(program.Rules, "netloom-default-allow-ingress") {
+		t.Fatalf("direction with a default-deny rule must not install wildcard allow: %+v", program.Rules)
+	}
+}
+
+func hasRuleID(rules []Rule, id string) bool {
+	for _, rule := range rules {
+		if rule.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 func TestCompileForEndpointSortsSecurityGroupTierBeforeRulePriority(t *testing.T) {

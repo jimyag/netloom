@@ -194,6 +194,7 @@ func defaultDenyDisabledForDirection(groups []model.SecurityGroup, direction mod
 	if len(groups) == 0 {
 		return false
 	}
+	hasDefaultAllowPolicy := false
 	for _, group := range groups {
 		var setting *bool
 		switch direction {
@@ -204,11 +205,24 @@ func defaultDenyDisabledForDirection(groups []model.SecurityGroup, direction mod
 		default:
 			return false
 		}
-		if setting == nil || *setting {
+		if setting != nil && !*setting {
+			hasDefaultAllowPolicy = true
+			continue
+		}
+		if setting != nil || hasRulesForDirection(group.Rules, direction) {
 			return false
 		}
 	}
-	return true
+	return hasDefaultAllowPolicy
+}
+
+func hasRulesForDirection(rules []model.SecurityGroupRule, direction model.Direction) bool {
+	for _, rule := range rules {
+		if rule.Direction == direction {
+			return true
+		}
+	}
+	return false
 }
 
 func expandRule(endpoint model.Endpoint, securityGroup model.SecurityGroup, rule model.SecurityGroupRule, membersByGroup map[string][]model.Endpoint, endpointsBySelector []model.Endpoint, dnsRecords map[string][]netip.Addr, cidrGroups map[string][]netip.Prefix, services map[string]model.LoadBalancer, subnetsByVPC map[string][]netip.Prefix, gatewayCIDRsByVPC map[string][]gatewayCIDR) ([]Rule, error) {
