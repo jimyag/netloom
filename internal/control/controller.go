@@ -518,6 +518,7 @@ func validateObjectGraph(state DesiredState) error {
 	}
 
 	gateways := make(map[string]model.Gateway, len(state.Gateways))
+	gatewayIPs := make(map[string]string, len(state.Gateways))
 	for _, gateway := range state.Gateways {
 		if err := gateway.Validate(); err != nil {
 			return err
@@ -531,10 +532,17 @@ func validateObjectGraph(state DesiredState) error {
 		if err := validateAddressInVPCSubnets(subnets, gateway.VPC, gateway.LANIP, fmt.Sprintf("gateway %q lan ip %s", gateway.Name, gateway.LANIP)); err != nil {
 			return err
 		}
+		if subnet, ok := subnetContainingAddress(subnets, gateway.VPC, gateway.LANIP); ok && gateway.LANIP == subnet.Gateway {
+			return fmt.Errorf("gateway %q lan ip %s conflicts with subnet %q gateway ip", gateway.Name, gateway.LANIP, subnet.Name)
+		}
 		ipKey := gateway.VPC + "|" + gateway.LANIP.String()
 		if previous := endpointIPs[ipKey]; previous != "" {
 			return fmt.Errorf("gateway %q lan ip %s conflicts with endpoint %q in vpc %s", gateway.Name, gateway.LANIP, previous, gateway.VPC)
 		}
+		if previous := gatewayIPs[ipKey]; previous != "" {
+			return fmt.Errorf("gateway %q conflicts with %q on lan ip %s in vpc %s", gateway.Name, previous, gateway.LANIP, gateway.VPC)
+		}
+		gatewayIPs[ipKey] = gateway.Name
 		gateways[gateway.Name] = gateway
 	}
 	if err := validateSecurityGroupRemoteEntities(state.SecurityGroups, state.Endpoints, securityGroups, gateways, subnets); err != nil {

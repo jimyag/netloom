@@ -688,6 +688,25 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 			wantErr: "gateway \"gw-a\" lan ip 10.10.0.10 conflicts with endpoint \"pod-a\" in vpc prod",
 		},
 		{
+			name: "gateway lan ip conflicts with subnet gateway",
+			mutate: func(state *DesiredState) {
+				state.Gateways[0].LANIP = netip.MustParseAddr("10.10.0.1")
+			},
+			wantErr: "gateway \"gw-a\" lan ip 10.10.0.1 conflicts with subnet \"apps\" gateway ip",
+		},
+		{
+			name: "gateway lan ip conflicts with another gateway",
+			mutate: func(state *DesiredState) {
+				state.Gateways = append(state.Gateways, model.Gateway{
+					Name:  "gw-b",
+					VPC:   "prod",
+					Node:  "node-b",
+					LANIP: netip.MustParseAddr("10.10.0.254"),
+				})
+			},
+			wantErr: "gateway \"gw-b\" conflicts with \"gw-a\" on lan ip 10.10.0.254 in vpc prod",
+		},
+		{
 			name: "remote entity host without gateway",
 			mutate: func(state *DesiredState) {
 				state.Gateways = nil
