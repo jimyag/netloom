@@ -160,14 +160,7 @@ func (r *Reconciler) Close() error {
 	if r == nil {
 		return nil
 	}
-	var firstErr error
-	for key, attachment := range r.attachments {
-		if err := attachment.close(); err != nil && firstErr == nil {
-			firstErr = err
-		}
-		delete(r.attachments, key)
-	}
-	return firstErr
+	return r.closeTCXAttachments()
 }
 
 func (r *Reconciler) ConntrackStore() *dataplane.InMemoryConntrackStore {
@@ -368,7 +361,10 @@ func attachTCXTargets(ctx context.Context, targets []tcxTarget, hold time.Durati
 
 func (r *Reconciler) syncTCXTargets(ctx context.Context, targets []tcxTarget) (string, error) {
 	if len(targets) == 0 {
-		return "", fmt.Errorf("no TCX policy targets")
+		if err := r.closeTCXAttachments(); err != nil {
+			return "", err
+		}
+		return "not-attached", nil
 	}
 	desired := make(map[string]tcxTarget, len(targets))
 	for _, target := range targets {
@@ -405,6 +401,17 @@ func (r *Reconciler) syncTCXTargets(ctx context.Context, targets []tcxTarget) (s
 		attachments = append(attachments, r.attachments[tcxTargetKey(target)])
 	}
 	return formatTCXResult(attachments), nil
+}
+
+func (r *Reconciler) closeTCXAttachments() error {
+	var firstErr error
+	for key, attachment := range r.attachments {
+		if err := attachment.close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		delete(r.attachments, key)
+	}
+	return firstErr
 }
 
 func attachTCXTarget(ctx context.Context, target tcxTarget) (tcxAttachmentHandle, error) {

@@ -9,6 +9,7 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/jimyag/netloom/internal/control"
 	"github.com/jimyag/netloom/internal/dataplane"
+	"github.com/jimyag/netloom/internal/linuxdatapath"
 	"github.com/jimyag/netloom/internal/model"
 	"github.com/jimyag/netloom/internal/policy"
 )
@@ -542,6 +543,73 @@ func TestReconcilerKeepsAndReplacesTCXAttachments(t *testing.T) {
 	}
 	if closes != 4 {
 		t.Fatalf("final closes = %d, want 4", closes)
+	}
+}
+
+func TestReconcilerClosesTCXAttachmentsWhenPolicyNoLongerEligible(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:             "pod-a",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"web"},
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "drop-http",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("172.30.0.11/32"),
+				Ports:      []model.PortRange{{From: 8080, To: 8080}},
+				Action:     model.ActionDrop,
+			}},
+		}},
+	}
+	reconciler := NewReconciler(dataplane.NewInMemoryPolicyStore())
+	var attaches int
+	var closes int
+	reconciler.attach = func(_ context.Context, target tcxTarget) (tcxAttachmentHandle, error) {
+		attaches++
+		return tcxAttachmentHandle{
+			result: dataplane.TCXSelfTestResult{Interface: target.ifName, Direction: "egress", Mode: "policy-l4"},
+			close: func() error {
+				closes++
+				return nil
+			},
+		}, nil
+	}
+	options := ReconcileOptions{Node: "node-a", TCXWorkload: true}
+	result, err := reconciler.Reconcile(context.Background(), state, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.TCX != "attached:"+linuxdatapath.HostVethName("pod-a")+":egress:policy-l4" || attaches != 1 || closes != 0 {
+		t.Fatalf("unexpected first reconcile result=%+v attaches=%d closes=%d", result, attaches, closes)
+	}
+
+	state.SecurityGroups[0].Rules[0].RemoteCIDR = netip.Prefix{}
+	state.SecurityGroups[0].Rules[0].RemoteGroup = "client"
+	state.SecurityGroups = append(state.SecurityGroups, model.SecurityGroup{Name: "client", VPC: "prod"})
+	result, err = reconciler.Reconcile(context.Background(), state, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.TCX != "not-attached" {
+		t.Fatalf("tcx = %q, want not-attached", result.TCX)
+	}
+	if attaches != 1 || closes != 1 {
+		t.Fatalf("expected stale attachment to close without reattach, attaches=%d closes=%d", attaches, closes)
+	}
+	if err := reconciler.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if closes != 1 {
+		t.Fatalf("close should not close already removed attachments again, closes=%d", closes)
 	}
 }
 
