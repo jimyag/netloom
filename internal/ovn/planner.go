@@ -255,7 +255,6 @@ func (p *Planner) EnsureLoadBalancer(_ context.Context, lb model.LoadBalancer) e
 		name := loadBalancerProtocolName(lb.Name, protocol)
 		for _, frontend := range frontendsByProtocol[protocol] {
 			p.ops = append(p.ops,
-				Operation{Command: "lb-del", Flags: []string{"--if-exists"}, Args: []string{name, loadBalancerFrontendVIP(frontend)}},
 				Operation{Command: "lb-add", Flags: []string{"--may-exist"}, Args: []string{name, loadBalancerFrontendVIP(frontend), loadBalancerFrontendBackends(frontend), string(frontend.Protocol)}},
 			)
 		}

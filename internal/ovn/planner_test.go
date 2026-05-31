@@ -465,7 +465,6 @@ func TestPlannerBuildsLoadBalancerOperations(t *testing.T) {
 
 	joined := stringify(planner.Operations())
 	for _, expected := range []string{
-		"--if-exists lb-del nl_lb_web_tcp 10.96.0.10:80",
 		"--may-exist lb-add nl_lb_web_tcp 10.96.0.10:80 10.10.0.10:8080,10.10.0.11:8080 tcp",
 		"external_ids:netloom_load_balancer=web",
 		"selection_fields=[\"ip_src\"]",
@@ -488,6 +487,9 @@ func TestPlannerBuildsLoadBalancerOperations(t *testing.T) {
 	}
 	if strings.Contains(joined, "10.10.0.12:8080") {
 		t.Fatalf("unhealthy backend should not be programmed in OVN LB VIPs:\n%s", joined)
+	}
+	if strings.Contains(joined, "lb-del nl_lb_web_tcp 10.96.0.10:80") {
+		t.Fatalf("planner should leave per-VIP replacement to lifecycle diff:\n%s", joined)
 	}
 }
 

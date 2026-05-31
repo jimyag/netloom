@@ -150,7 +150,6 @@ func TestBackendCleanupConvergesChangedLoadBalancerBindings(t *testing.T) {
 
 	joined := stringifyOVNOps(recorder.Operations())
 	for _, expected := range []string{
-		"--if-exists lb-del nl_lb_web_tcp 10.96.0.20:80",
 		"--may-exist lb-add nl_lb_web_tcp 10.96.0.20:80 10.10.0.12:8080 tcp",
 		"--if-exists lb-del nl_lb_web_tcp 10.96.0.10:80",
 		"--if-exists ls-lb-del nl_ls_dmz nl_lb_web_tcp",
@@ -245,7 +244,6 @@ func TestBackendCleanupDoesNotReapplyUnchangedLoadBalancer(t *testing.T) {
 
 	joined := stringifyOVNOps(recorder.Operations())
 	for _, expected := range []string{
-		"--if-exists lb-del nl_lb_web_tcp 10.96.0.10:80",
 		"--may-exist lb-add nl_lb_web_tcp 10.96.0.10:80 10.10.0.10:8080 tcp",
 		"--may-exist lr-lb-add nl_lr_prod nl_lb_web_tcp",
 		"--may-exist ls-lb-add nl_ls_apps nl_lb_web_tcp",
@@ -281,6 +279,9 @@ func TestBackendReappliesLoadBalancerWhenDefaultHealthCheckEnabled(t *testing.T)
 	if got := strings.Count(joined, "--may-exist lb-add nl_lb_web_tcp 10.96.0.10:80 10.10.0.10:8080 tcp"); got != 2 {
 		t.Fatalf("load balancer frontend apply count = %d, want initial and health-check enable apply:\n%s", got, joined)
 	}
+	if strings.Contains(joined, "--if-exists lb-del nl_lb_web_tcp 10.96.0.10:80") {
+		t.Fatalf("health-check-only update should not delete unchanged LB VIP:\n%s", joined)
+	}
 }
 
 func TestBackendCleanupReappliesChangedLoadBalancerBackends(t *testing.T) {
@@ -307,8 +308,8 @@ func TestBackendCleanupReappliesChangedLoadBalancerBackends(t *testing.T) {
 			t.Fatalf("changed load balancer backend operation missing %q:\n%s", expected, joined)
 		}
 	}
-	if got := strings.Count(joined, "--if-exists lb-del nl_lb_web_tcp 10.96.0.10:80"); got != 2 {
-		t.Fatalf("changed load balancer frontend delete count = %d, want initial and changed apply:\n%s", got, joined)
+	if got := strings.Count(joined, "--if-exists lb-del nl_lb_web_tcp 10.96.0.10:80"); got != 1 {
+		t.Fatalf("changed load balancer frontend delete count = %d, want one lifecycle diff delete:\n%s", got, joined)
 	}
 }
 

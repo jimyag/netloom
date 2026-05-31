@@ -231,6 +231,16 @@ func cleanupOperations(old, next desiredSnapshot) []Operation {
 				ops = append(ops, Operation{Command: "lb-del", Flags: []string{"--if-exists"}, Args: []string{name, vip}})
 			}
 		}
+		oldFrontendSignatures := loadBalancerFrontendSignaturesByProtocol(oldLB)
+		nextFrontendSignatures := loadBalancerFrontendSignaturesByProtocol(nextLB)
+		for _, protocol := range sortedProtocolKeys(oldFrontendSignatures) {
+			name := loadBalancerProtocolName(oldLB.Name, protocol)
+			for _, vip := range commonStringKeys(oldFrontendSignatures[protocol], nextFrontendSignatures[protocol]) {
+				if oldFrontendSignatures[protocol][vip] != nextFrontendSignatures[protocol][vip] {
+					ops = append(ops, Operation{Command: "lb-del", Flags: []string{"--if-exists"}, Args: []string{name, vip}})
+				}
+			}
+		}
 		removedSubnets := removedStrings(oldLB.Subnets, nextLB.Subnets)
 		for _, subnet := range removedSubnets {
 			for _, name := range oldNames {
@@ -365,6 +375,39 @@ func loadBalancerVIPsByProtocol(lb model.LoadBalancer) map[model.Protocol][]stri
 		sort.Strings(out[protocol])
 	}
 	return out
+}
+
+func loadBalancerFrontendSignaturesByProtocol(lb model.LoadBalancer) map[model.Protocol]map[string]string {
+	out := make(map[model.Protocol]map[string]string)
+	for _, frontend := range lb.Frontends() {
+		if _, ok := out[frontend.Protocol]; !ok {
+			out[frontend.Protocol] = make(map[string]string)
+		}
+		out[frontend.Protocol][loadBalancerFrontendVIP(frontend)] = loadBalancerFrontendBackends(frontend)
+	}
+	return out
+}
+
+func sortedProtocolKeys[T any](values map[model.Protocol]T) []model.Protocol {
+	protocols := make([]model.Protocol, 0, len(values))
+	for protocol := range values {
+		protocols = append(protocols, protocol)
+	}
+	sort.Slice(protocols, func(i, j int) bool {
+		return protocols[i] < protocols[j]
+	})
+	return protocols
+}
+
+func commonStringKeys[T any](old, next map[string]T) []string {
+	keys := make([]string, 0)
+	for key := range old {
+		if _, ok := next[key]; ok {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func routeKey(vpc string, route model.Route) string {
