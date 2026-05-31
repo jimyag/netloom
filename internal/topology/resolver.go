@@ -66,6 +66,12 @@ func Resolve(state State, packet Packet) (Decision, error) {
 		return decision, nil
 	}
 	if decision, ok := resolvePolicyRoute(state.PolicyRoutes, packet); ok {
+		if decision.Action == model.ActionAllow {
+			if routed, ok := resolveRouteTables(state.RouteTables, packet); ok {
+				routed.MatchedBy = decision.MatchedBy
+				return applyNATAndGateway(state, packet, routed), nil
+			}
+		}
 		return applyNATAndGateway(state, packet, decision), nil
 	}
 	if decision, ok := resolveRouteTables(state.RouteTables, packet); ok {

@@ -575,6 +575,73 @@ func TestResolveAllowPolicyRouteBeatsLowerPriorityDrop(t *testing.T) {
 	}
 }
 
+func TestResolveAllowPolicyRouteContinuesToStaticRoute(t *testing.T) {
+	state := State{
+		RouteTables: map[string]model.RouteTable{
+			"main": {
+				Name: "main",
+				VPC:  "prod",
+				Routes: []model.Route{{
+					Destination: netip.MustParsePrefix("198.51.100.0/24"),
+					NextHops:    []netip.Addr{netip.MustParseAddr("10.10.0.254")},
+				}},
+			},
+		},
+		PolicyRoutes: []model.PolicyRoute{{
+			Name:     "allow-api",
+			VPC:      "prod",
+			Priority: 300,
+			Match: model.RouteMatch{
+				Source:      netip.MustParsePrefix("10.10.0.0/24"),
+				Destination: netip.MustParsePrefix("198.51.100.10/32"),
+				Protocol:    model.ProtocolTCP,
+				DstPorts:    []model.PortRange{{From: 443, To: 443}},
+			},
+			Action: model.RouteAction{Type: model.ActionAllow},
+		}, {
+			Name:     "drop-lab",
+			VPC:      "prod",
+			Priority: 100,
+			Match: model.RouteMatch{
+				Source:      netip.MustParsePrefix("10.10.0.0/24"),
+				Destination: netip.MustParsePrefix("198.51.100.0/24"),
+			},
+			Action: model.RouteAction{Type: model.ActionDrop},
+		}},
+		Gateways: map[string]model.Gateway{
+			"gw-a": {Name: "gw-a", VPC: "prod", Node: "node-a", LANIP: netip.MustParseAddr("10.10.0.254")},
+		},
+		NATRules: map[string]model.NATRule{
+			"snat": {
+				Name:       "snat",
+				VPC:        "prod",
+				Type:       model.ActionSNAT,
+				MatchCIDR:  netip.MustParsePrefix("10.10.0.0/24"),
+				ExternalIP: netip.MustParseAddr("203.0.113.10"),
+			},
+		},
+	}
+	decision, err := Resolve(state, Packet{
+		VPC:      "prod",
+		Source:   netip.MustParseAddr("10.10.0.10"),
+		Dest:     netip.MustParseAddr("198.51.100.10"),
+		Protocol: model.ProtocolTCP,
+		DestPort: 443,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Action != model.ActionReroute || decision.MatchedBy != "policy-route/allow-api" {
+		t.Fatalf("decision = %+v, want allow policy to continue into static route", decision)
+	}
+	if decision.NextHop != netip.MustParseAddr("10.10.0.254") || decision.Gateway != "gw-a" {
+		t.Fatalf("route = next-hop %s gateway %s, want static route via gw-a", decision.NextHop, decision.Gateway)
+	}
+	if decision.Translated != netip.MustParseAddr("203.0.113.10") {
+		t.Fatalf("translated = %s, want SNAT after allowed static route", decision.Translated)
+	}
+}
+
 func TestResolvePolicyRouteSNATUsesNextHopGateway(t *testing.T) {
 	state := State{
 		PolicyRoutes: []model.PolicyRoute{{
