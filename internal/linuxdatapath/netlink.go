@@ -556,15 +556,23 @@ func routeEquivalent(a, b netlink.Route) bool {
 	if !routeSameDestination(a, b) || a.Type != b.Type || a.LinkIndex != b.LinkIndex || !a.Gw.Equal(b.Gw) {
 		return false
 	}
-	if len(a.MultiPath) != len(b.MultiPath) {
-		return false
+	return nexthopSetKey(a.MultiPath) == nexthopSetKey(b.MultiPath)
+}
+
+func nexthopSetKey(nextHops []*netlink.NexthopInfo) string {
+	if len(nextHops) == 0 {
+		return ""
 	}
-	for i := range a.MultiPath {
-		if a.MultiPath[i].LinkIndex != b.MultiPath[i].LinkIndex || !a.MultiPath[i].Gw.Equal(b.MultiPath[i].Gw) {
-			return false
+	parts := make([]string, 0, len(nextHops))
+	for _, nextHop := range nextHops {
+		if nextHop == nil {
+			parts = append(parts, "<nil>")
+			continue
 		}
+		parts = append(parts, fmt.Sprintf("if=%d|gw=%s|hops=%d|flags=%d", nextHop.LinkIndex, nextHop.Gw.String(), nextHop.Hops, nextHop.Flags))
 	}
-	return true
+	sort.Strings(parts)
+	return strings.Join(parts, ";")
 }
 
 func ipNetString(value *net.IPNet) string {

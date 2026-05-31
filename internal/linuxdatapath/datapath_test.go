@@ -597,6 +597,25 @@ func TestRouteEquivalentDetectsNextHopChanges(t *testing.T) {
 	if !routeEquivalent(*first, *clone) {
 		t.Fatalf("identical routes should be equivalent: %#v %#v", first, clone)
 	}
+
+	ecmp := testReroutePolicyRoute("ecmp-web", 200)
+	ecmp.Action.NextHops = []netip.Addr{netip.MustParseAddr("10.10.0.253"), netip.MustParseAddr("10.10.0.254")}
+	left, err := policyRouteNetlinkRoute(ecmp, 22000, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ecmp.Action.NextHops = []netip.Addr{netip.MustParseAddr("10.10.0.254"), netip.MustParseAddr("10.10.0.253")}
+	right, err := policyRouteNetlinkRoute(ecmp, 22000, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !routeEquivalent(*left, *right) {
+		t.Fatalf("ECMP routes with reordered next hops should be equivalent: %#v %#v", left, right)
+	}
+	right.MultiPath[0].Hops = 10
+	if routeEquivalent(*left, *right) {
+		t.Fatalf("ECMP routes with different next-hop weights should not be equivalent: %#v %#v", left, right)
+	}
 }
 
 func TestRemoteEndpointNetlinkRouteCarriesProtocolMarker(t *testing.T) {
