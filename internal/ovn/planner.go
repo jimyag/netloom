@@ -165,7 +165,6 @@ func (p *Planner) EnsurePolicyRoute(_ context.Context, route model.PolicyRoute) 
 	router := p.routerForVPC(route.VPC)
 	match := policyRouteMatch(route.Match)
 	action := route.Action.Type
-	p.ops = append(p.ops, Operation{Command: "lr-policy-del", Flags: []string{"--if-exists"}, Args: []string{router, fmt.Sprint(route.Priority), match}})
 	if action == model.ActionReroute {
 		nextHops := route.Action.RerouteNextHops()
 		if len(nextHops) == 1 {
@@ -174,6 +173,7 @@ func (p *Planner) EnsurePolicyRoute(_ context.Context, route model.PolicyRoute) 
 		}
 		uuid := namedUUID("nl_lrp_" + sanitize(route.Name))
 		p.ops = append(p.ops,
+			Operation{Command: "lr-policy-del", Flags: []string{"--if-exists"}, Args: []string{router, fmt.Sprint(route.Priority), match}},
 			Operation{Command: "create", Flags: []string{"--id=" + uuid}, Args: logicalRouterPolicyArgs(route, match, nextHops)},
 			Operation{Command: "add", Args: []string{"logical_router", router, "policies", uuid}},
 		)

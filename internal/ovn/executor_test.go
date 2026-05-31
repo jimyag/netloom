@@ -259,8 +259,41 @@ func TestBackendCleanupConvergesChangedPolicyRoute(t *testing.T) {
 			t.Fatalf("policy route convergence operation missing %q:\n%s", expected, joined)
 		}
 	}
-	if strings.Count(joined, "--if-exists lr-policy-del nl_lr_prod 100") < 2 {
-		t.Fatalf("changed policy route should clear the managed key before each add:\n%s", joined)
+	if strings.Count(joined, "--if-exists lr-policy-del nl_lr_prod 100") != 1 {
+		t.Fatalf("changed policy route should clear the managed key once:\n%s", joined)
+	}
+}
+
+func TestBackendCleanupDoesNotDeleteUnchangedPolicyRoute(t *testing.T) {
+	recorder := ovn.NewRecorderExecutor()
+	backend := ovn.NewBackend(recorder)
+	state := controlStateWithEndpoint("pod-a")
+	state.PolicyRoutes = []model.PolicyRoute{{
+		Name:     "allow-api",
+		VPC:      "prod",
+		Priority: 300,
+		Match: model.RouteMatch{
+			Source:      netip.MustParsePrefix("10.10.0.0/24"),
+			Destination: netip.MustParsePrefix("198.51.100.10/32"),
+			Protocol:    model.ProtocolTCP,
+			DstPorts:    []model.PortRange{{From: 443, To: 443}},
+		},
+		Action: model.RouteAction{Type: model.ActionAllow},
+	}}
+	controller := control.NewController(backend, control.NewMemoryBackend())
+	if err := controller.Reconcile(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.Reconcile(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+
+	joined := stringifyOVNOps(recorder.Operations())
+	if strings.Contains(joined, "lr-policy-del nl_lr_prod 300") {
+		t.Fatalf("unchanged allow policy route should not be deleted:\n%s", joined)
+	}
+	if got := strings.Count(joined, "--may-exist lr-policy-add nl_lr_prod 300"); got != 2 {
+		t.Fatalf("policy route add count = %d, want one idempotent add per reconcile:\n%s", got, joined)
 	}
 }
 

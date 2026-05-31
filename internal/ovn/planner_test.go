@@ -633,10 +633,13 @@ func TestPlannerBuildsPolicyRouteOperation(t *testing.T) {
 		t.Fatal(err)
 	}
 	match := stringify(planner.Operations())
-	for _, expected := range []string{"--if-exists lr-policy-del nl_lr_prod 100", "ip4.src == 10.10.0.0/24", "ip4.dst == 172.16.0.0/16", "tcp", "tcp.dst == 443"} {
+	for _, expected := range []string{"lr-policy-add nl_lr_prod 100", "ip4.src == 10.10.0.0/24", "ip4.dst == 172.16.0.0/16", "tcp", "tcp.dst == 443"} {
 		if !strings.Contains(match, expected) {
 			t.Fatalf("match %q missing %q", match, expected)
 		}
+	}
+	if strings.Contains(match, "lr-policy-del") {
+		t.Fatalf("single-next-hop policy route should not delete during idempotent ensure:\n%s", match)
 	}
 }
 
@@ -659,7 +662,6 @@ func TestPlannerBuildsAllowPolicyRouteOperation(t *testing.T) {
 	}
 	joined := stringify(planner.Operations())
 	for _, expected := range []string{
-		"--if-exists lr-policy-del nl_lr_prod 300",
 		"lr-policy-add nl_lr_prod 300",
 		"allow",
 		"ip4.dst == 198.51.100.10/32",
@@ -671,6 +673,9 @@ func TestPlannerBuildsAllowPolicyRouteOperation(t *testing.T) {
 	}
 	if strings.Contains(joined, "reroute") || strings.Contains(joined, "nexthops=") {
 		t.Fatalf("allow policy route must not program reroute nexthops:\n%s", joined)
+	}
+	if strings.Contains(joined, "lr-policy-del") {
+		t.Fatalf("allow policy route should not delete during idempotent ensure:\n%s", joined)
 	}
 }
 

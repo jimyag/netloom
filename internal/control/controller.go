@@ -185,6 +185,9 @@ func (c *Controller) Reconcile(ctx context.Context, state DesiredState) error {
 		if err := lifecycle.BeginTopologyReconcile(ctx, topologyState); err != nil {
 			return fmt.Errorf("begin topology reconcile: %w", err)
 		}
+		if err := lifecycle.CleanupTopology(ctx, topologyState); err != nil {
+			return fmt.Errorf("cleanup topology: %w", err)
+		}
 	}
 
 	for _, vpc := range state.VPCs {
@@ -261,11 +264,6 @@ func (c *Controller) Reconcile(ctx context.Context, state DesiredState) error {
 		}
 		if err := c.policy.ApplyEndpointProgram(ctx, program); err != nil {
 			return fmt.Errorf("apply policy program for endpoint %s: %w", endpoint.ID, err)
-		}
-	}
-	if lifecycle, ok := c.topology.(TopologyLifecycleBackend); ok {
-		if err := lifecycle.CleanupTopology(ctx, topologyState); err != nil {
-			return fmt.Errorf("cleanup topology: %w", err)
 		}
 	}
 	if lifecycle, ok := c.policy.(PolicyLifecycleBackend); ok {
