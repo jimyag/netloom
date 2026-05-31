@@ -254,6 +254,36 @@ func TestBackendCleanupDoesNotReapplyUnchangedLoadBalancer(t *testing.T) {
 	}
 }
 
+func TestBackendDoesNotReapplyLoadBalancerWhenOnlyPortNameChanges(t *testing.T) {
+	recorder := ovn.NewRecorderExecutor()
+	backend := ovn.NewBackend(recorder)
+	first := controlStateWithEndpoint("pod-a")
+	first.LoadBalancers[0].Ports[0].Name = "http"
+	controller := control.NewController(backend, control.NewMemoryBackend())
+	if err := controller.Reconcile(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+
+	second := first
+	second.LoadBalancers = append([]model.LoadBalancer(nil), first.LoadBalancers...)
+	second.LoadBalancers[0].Ports = append([]model.LoadBalancerPort(nil), first.LoadBalancers[0].Ports...)
+	second.LoadBalancers[0].Ports[0].Name = "public-http"
+	if err := controller.Reconcile(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+
+	joined := stringifyOVNOps(recorder.Operations())
+	for _, expected := range []string{
+		"--may-exist lb-add nl_lb_web_tcp 10.96.0.10:80 10.10.0.10:8080 tcp",
+		"--may-exist lr-lb-add nl_lr_prod nl_lb_web_tcp",
+		"--may-exist ls-lb-add nl_ls_apps nl_lb_web_tcp",
+	} {
+		if got := strings.Count(joined, expected); got != 1 {
+			t.Fatalf("port-name-only load balancer op %q count = %d, want one initial apply:\n%s", expected, got, joined)
+		}
+	}
+}
+
 func TestBackendDoesNotReapplyHealthCheckedLoadBalancerWhenPortsReordered(t *testing.T) {
 	recorder := ovn.NewRecorderExecutor()
 	backend := ovn.NewBackend(recorder)

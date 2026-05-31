@@ -513,7 +513,6 @@ func loadBalancerSignature(lb model.LoadBalancer) string {
 	frontendParts := make([]string, 0, len(frontends))
 	for _, frontend := range frontends {
 		frontendParts = append(frontendParts, strings.Join([]string{
-			frontend.Name,
 			loadBalancerFrontendVIP(frontend),
 			string(frontend.Protocol),
 			loadBalancerFrontendBackends(frontend),
