@@ -242,6 +242,15 @@ func (p *Planner) EnsureNATRule(_ context.Context, rule model.NATRule) error {
 		}
 		p.ops = append(p.ops, op)
 	case model.ActionDNATSNAT:
+		if natUsesManagedRecord(rule) {
+			uuid := namedUUID("nl_nat_" + sanitize(rule.Name))
+			p.ops = append(p.ops,
+				Operation{Command: "gc-nat-rule", Args: []string{rule.Name}},
+				Operation{Command: "create", Flags: []string{"--id=" + uuid}, Args: natPortTranslationArgs(rule)},
+				Operation{Command: "add", Args: []string{"logical_router", router, "nat", uuid}},
+			)
+			return nil
+		}
 		args := []string{router, "dnat_and_snat", rule.ExternalIP.String(), rule.TargetIP.String()}
 		if rule.LogicalPort != "" {
 			args = append(args, rule.LogicalPort, rule.ExternalMAC)
@@ -500,15 +509,15 @@ func loadBalancerFrontendBackends(frontend model.LoadBalancerFrontend) string {
 }
 
 func natUsesManagedRecord(rule model.NATRule) bool {
-	return rule.Type == model.ActionDNAT &&
+	return (rule.Type == model.ActionDNAT || rule.Type == model.ActionDNATSNAT) &&
 		rule.ExternalPort != 0 &&
 		rule.TargetPort != 0
 }
 
 func natPortTranslationArgs(rule model.NATRule) []string {
-	return []string{
+	args := []string{
 		"NAT",
-		"type=dnat",
+		"type=" + natType(rule.Type),
 		"external_ip=" + rule.ExternalIP.String(),
 		"logical_ip=" + rule.TargetIP.String(),
 		"external_port_range=" + fmt.Sprint(rule.ExternalPort),
@@ -518,6 +527,10 @@ func natPortTranslationArgs(rule model.NATRule) []string {
 		"external_ids:netloom_nat=" + rule.Name,
 		"external_ids:netloom_vpc=" + rule.VPC,
 	}
+	if rule.Type == model.ActionDNATSNAT && rule.LogicalPort != "" {
+		args = append(args, "logical_port="+rule.LogicalPort, "external_mac="+rule.ExternalMAC)
+	}
+	return args
 }
 
 func loadBalancerOptions(lb model.LoadBalancer) []string {

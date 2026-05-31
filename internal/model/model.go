@@ -733,9 +733,13 @@ func (n NATRule) Validate() error {
 			return errors.New("dnat_and_snat external ip family must match target ip")
 		}
 		if hasPortMapping {
-			return errors.New("dnat_and_snat port mapping is not supported")
-		}
-		if n.Protocol != ProtocolAny {
+			if n.ExternalPort == 0 || n.TargetPort == 0 {
+				return errors.New("dnat_and_snat port mapping requires both external and target ports")
+			}
+			if n.Protocol != ProtocolTCP && n.Protocol != ProtocolUDP {
+				return errors.New("dnat_and_snat port mapping requires tcp or udp protocol")
+			}
+		} else if n.Protocol != ProtocolAny {
 			return errors.New("dnat_and_snat protocol must be any")
 		}
 	}

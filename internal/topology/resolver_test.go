@@ -478,6 +478,39 @@ func TestResolveFloatingIPToEndpoint(t *testing.T) {
 	}
 }
 
+func TestResolveFloatingIPPortTranslation(t *testing.T) {
+	state := State{
+		Endpoints: map[string]model.Endpoint{
+			"pod-a": {ID: "pod-a", VPC: "prod", IP: netip.MustParseAddr("10.10.0.10")},
+		},
+		NATRules: map[string]model.NATRule{
+			"fip-https": {
+				Name:         "fip-https",
+				VPC:          "prod",
+				Type:         model.ActionDNATSNAT,
+				ExternalIP:   netip.MustParseAddr("198.51.100.30"),
+				TargetIP:     netip.MustParseAddr("10.10.0.10"),
+				Protocol:     model.ProtocolTCP,
+				ExternalPort: 8443,
+				TargetPort:   443,
+			},
+		},
+	}
+	decision, err := Resolve(state, Packet{
+		VPC:      "prod",
+		Source:   netip.MustParseAddr("203.0.113.10"),
+		Dest:     netip.MustParseAddr("198.51.100.30"),
+		Protocol: model.ProtocolTCP,
+		DestPort: 8443,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.MatchedBy != "nat/fip-https" || decision.Destination != "pod-a" || decision.Translated != netip.MustParseAddr("10.10.0.10") || decision.TranslatedPort != 443 {
+		t.Fatalf("decision = %+v, want floating IP target port translation", decision)
+	}
+}
+
 func TestResolvePolicyRouteBeatsStaticRoute(t *testing.T) {
 	state := State{
 		RouteTables: map[string]model.RouteTable{

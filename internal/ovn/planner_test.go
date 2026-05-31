@@ -932,6 +932,28 @@ func TestPlannerBuildsKubeOVNStyleNATOperations(t *testing.T) {
 			ExternalPort: 8443,
 			TargetPort:   443,
 		},
+		{
+			Name:         "fip-translate",
+			VPC:          "prod",
+			Type:         model.ActionDNATSNAT,
+			ExternalIP:   netip.MustParseAddr("198.51.100.42"),
+			TargetIP:     netip.MustParseAddr("10.10.0.15"),
+			Protocol:     model.ProtocolTCP,
+			ExternalPort: 9443,
+			TargetPort:   443,
+		},
+		{
+			Name:         "distributed-fip-translate",
+			VPC:          "prod",
+			Type:         model.ActionDNATSNAT,
+			ExternalIP:   netip.MustParseAddr("198.51.100.43"),
+			TargetIP:     netip.MustParseAddr("10.10.0.16"),
+			Protocol:     model.ProtocolUDP,
+			ExternalPort: 5353,
+			TargetPort:   53,
+			LogicalPort:  "nl_lp_pod-dns",
+			ExternalMAC:  "0a:58:0a:0a:00:10",
+		},
 	} {
 		if err := planner.EnsureNATRule(context.Background(), rule); err != nil {
 			t.Fatal(err)
@@ -951,6 +973,16 @@ func TestPlannerBuildsKubeOVNStyleNATOperations(t *testing.T) {
 		"--id=@nl_nat_web_htranslate create NAT type=dnat external_ip=198.51.100.41 logical_ip=10.10.0.13 external_port_range=8443 logical_port_range=443 protocol=tcp",
 		"external_ids:netloom_nat=web-translate",
 		"add logical_router nl_lr_prod nat @nl_nat_web_htranslate",
+		"gc-nat-rule fip-translate",
+		"--id=@nl_nat_fip_htranslate create NAT type=dnat_and_snat external_ip=198.51.100.42 logical_ip=10.10.0.15 external_port_range=9443 logical_port_range=443 protocol=tcp",
+		"external_ids:netloom_nat=fip-translate",
+		"add logical_router nl_lr_prod nat @nl_nat_fip_htranslate",
+		"gc-nat-rule distributed-fip-translate",
+		"--id=@nl_nat_distributed_hfip_htranslate create NAT type=dnat_and_snat external_ip=198.51.100.43 logical_ip=10.10.0.16 external_port_range=5353 logical_port_range=53 protocol=udp",
+		"logical_port=nl_lp_pod-dns",
+		"external_mac=0a:58:0a:0a:00:10",
+		"external_ids:netloom_nat=distributed-fip-translate",
+		"add logical_router nl_lr_prod nat @nl_nat_distributed_hfip_htranslate",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("OVN operations missing %q:\n%s", expected, joined)

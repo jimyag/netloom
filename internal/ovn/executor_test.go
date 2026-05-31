@@ -497,6 +497,49 @@ func TestBackendCleanupReplacesChangedTranslatedDNATRule(t *testing.T) {
 	}
 }
 
+func TestBackendCleanupReplacesChangedTranslatedFloatingIPRule(t *testing.T) {
+	recorder := ovn.NewRecorderExecutor()
+	backend := ovn.NewBackend(recorder)
+	first := controlStateWithEndpoint("pod-a")
+	first.NATRules = []model.NATRule{{
+		Name:         "fip-translate",
+		VPC:          "prod",
+		Type:         model.ActionDNATSNAT,
+		ExternalIP:   netip.MustParseAddr("198.51.100.80"),
+		TargetIP:     netip.MustParseAddr("10.10.0.10"),
+		Protocol:     model.ProtocolTCP,
+		ExternalPort: 8443,
+		TargetPort:   443,
+	}}
+	controller := control.NewController(backend, control.NewMemoryBackend())
+	if err := controller.Reconcile(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+
+	second := first
+	second.NATRules[0].TargetPort = 444
+	if err := controller.Reconcile(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+
+	joined := stringifyOVNOps(recorder.Operations())
+	for _, expected := range []string{
+		"gc-nat-rule fip-translate",
+		"create NAT type=dnat_and_snat external_ip=198.51.100.80 logical_ip=10.10.0.10 external_port_range=8443 logical_port_range=443 protocol=tcp",
+		"create NAT type=dnat_and_snat external_ip=198.51.100.80 logical_ip=10.10.0.10 external_port_range=8443 logical_port_range=444 protocol=tcp",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("changed translated floating ip operation missing %q:\n%s", expected, joined)
+		}
+	}
+	if got := strings.Count(joined, "gc-nat-rule fip-translate"); got != 3 {
+		t.Fatalf("changed translated floating ip GC count = %d, want initial create, lifecycle cleanup, and replacement create GC:\n%s", got, joined)
+	}
+	if strings.Contains(joined, "lr-nat-del nl_lr_prod dnat_and_snat 198.51.100.80") {
+		t.Fatalf("translated floating ip cleanup must use managed NAT GC, not broad lr-nat-del:\n%s", joined)
+	}
+}
+
 func TestBackendCleanupRemovesTranslatedDNATRule(t *testing.T) {
 	recorder := ovn.NewRecorderExecutor()
 	backend := ovn.NewBackend(recorder)

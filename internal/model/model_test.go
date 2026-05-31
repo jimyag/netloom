@@ -1203,6 +1203,32 @@ func TestNATRuleValidateKubeOVNStyleNAT(t *testing.T) {
 			},
 		},
 		{
+			name: "floating ip port translation",
+			rule: NATRule{
+				Name:         "fip-translation",
+				VPC:          "prod",
+				Type:         ActionDNATSNAT,
+				ExternalIP:   netip.MustParseAddr("198.51.100.71"),
+				TargetIP:     netip.MustParseAddr("10.10.0.15"),
+				Protocol:     ProtocolTCP,
+				ExternalPort: 8443,
+				TargetPort:   443,
+			},
+		},
+		{
+			name: "floating ip port translation protocol required",
+			rule: NATRule{
+				Name:         "broken-fip-port",
+				VPC:          "prod",
+				Type:         ActionDNATSNAT,
+				ExternalIP:   netip.MustParseAddr("198.51.100.72"),
+				TargetIP:     netip.MustParseAddr("10.10.0.16"),
+				ExternalPort: 8443,
+				TargetPort:   443,
+			},
+			wantErr: "requires tcp or udp protocol",
+		},
+		{
 			name: "snat family mismatch",
 			rule: NATRule{
 				Name:       "broken-snat-family",
