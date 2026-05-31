@@ -603,6 +603,9 @@ func TestCompileForEndpointWithStateExpandsRemoteGroupMembers(t *testing.T) {
 	if program.MapEntries[0].RemoteCIDR != netip.MustParsePrefix("10.10.0.11/32") {
 		t.Fatalf("map entry remote cidr = %s, want pod-b /32", program.MapEntries[0].RemoteCIDR)
 	}
+	if !program.MapEntries[0].Value.RequireIdentity {
+		t.Fatal("remote group member entry should require endpoint identity as well as CIDR")
+	}
 }
 
 func TestCompileForEndpointWithContextExpandsRemoteEndpointSelector(t *testing.T) {

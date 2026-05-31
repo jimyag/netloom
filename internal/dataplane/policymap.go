@@ -29,13 +29,14 @@ type PolicyKey struct {
 }
 
 type PolicyEntry struct {
-	Deny        uint8
-	L4PrefixLen uint8
-	Stateful    uint8
-	Log         uint8
-	Precedence  uint32
-	RuleCookie  uint32
-	Reject      uint8
+	Deny            uint8
+	L4PrefixLen     uint8
+	Stateful        uint8
+	Log             uint8
+	Precedence      uint32
+	RuleCookie      uint32
+	Reject          uint8
+	RequireIdentity uint8
 }
 
 type PolicyMapEntry struct {
@@ -211,13 +212,14 @@ func EncodeEntry(entry policy.MapEntry) (PolicyMapEntry, error) {
 		},
 		RemoteCIDR: entry.RemoteCIDR,
 		Value: PolicyEntry{
-			Deny:        boolByte(entry.Value.Deny),
-			L4PrefixLen: entry.Key.L4PrefixBits,
-			Stateful:    boolByte(entry.Value.Stateful),
-			Log:         boolByte(entry.Value.Log),
-			Precedence:  entry.Value.Precedence,
-			RuleCookie:  stableCookie(entry.RuleID),
-			Reject:      boolByte(entry.Value.Reject),
+			Deny:            boolByte(entry.Value.Deny),
+			L4PrefixLen:     entry.Key.L4PrefixBits,
+			Stateful:        boolByte(entry.Value.Stateful),
+			Log:             boolByte(entry.Value.Log),
+			Precedence:      entry.Value.Precedence,
+			RuleCookie:      stableCookie(entry.RuleID),
+			Reject:          boolByte(entry.Value.Reject),
+			RequireIdentity: boolByte(entry.Value.RequireIdentity),
 		},
 	}, nil
 }

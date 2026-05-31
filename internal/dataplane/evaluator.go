@@ -380,8 +380,11 @@ func matches(entry PolicyMapEntry, packet Packet) bool {
 	if key.Direction != packet.Direction {
 		return false
 	}
+	if entry.RemoteCIDR.IsValid() && !remoteCIDRMatches(entry.RemoteCIDR, packet.RemoteIP) {
+		return false
+	}
 	if key.RemoteIdentity != 0 {
-		if key.RemoteIdentity != packet.RemoteIdentity && !remoteCIDRMatches(entry.RemoteCIDR, packet.RemoteIP) {
+		if key.RemoteIdentity != packet.RemoteIdentity && (entry.Value.RequireIdentity != 0 || !entry.RemoteCIDR.IsValid()) {
 			return false
 		}
 	}

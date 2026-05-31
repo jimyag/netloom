@@ -166,6 +166,7 @@ func TestDesiredStateDrivesTopologyRoutesAndEBPFStyleACL(t *testing.T) {
 	remoteIdentity := entries[0].Key.RemoteIdentity
 	drop := dataplane.Evaluate(entries, dataplane.Packet{
 		RemoteIdentity: remoteIdentity,
+		RemoteIP:       mustAddr(t, "10.10.0.10"),
 		Direction:      dataplane.DirectionIngress,
 		Protocol:       6,
 		DestPort:       8080,
@@ -175,6 +176,7 @@ func TestDesiredStateDrivesTopologyRoutesAndEBPFStyleACL(t *testing.T) {
 	}
 	allow := dataplane.Evaluate(entries, dataplane.Packet{
 		RemoteIdentity: remoteIdentity,
+		RemoteIP:       mustAddr(t, "10.10.0.10"),
 		Direction:      dataplane.DirectionIngress,
 		Protocol:       6,
 		DestPort:       9090,

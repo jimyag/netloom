@@ -58,11 +58,12 @@ type MapKey struct {
 }
 
 type MapValue struct {
-	Deny       bool
-	Reject     bool
-	Precedence uint32
-	Stateful   bool
-	Log        bool
+	Deny            bool
+	Reject          bool
+	Precedence      uint32
+	Stateful        bool
+	Log             bool
+	RequireIdentity bool
 }
 
 type CompileContext struct {
@@ -935,11 +936,12 @@ func compileMapEntries(rule Rule) ([]MapEntry, error) {
 				L4PrefixBits:   port.l4PrefixBits,
 			},
 			Value: MapValue{
-				Deny:       rule.Action == model.ActionDrop || rule.Action == model.ActionReject,
-				Reject:     rule.Action == model.ActionReject,
-				Precedence: precedence(rule),
-				Stateful:   rule.Stateful,
-				Log:        rule.Log || rule.Action == model.ActionLog,
+				Deny:            rule.Action == model.ActionDrop || rule.Action == model.ActionReject,
+				Reject:          rule.Action == model.ActionReject,
+				Precedence:      precedence(rule),
+				Stateful:        rule.Stateful,
+				Log:             rule.Log || rule.Action == model.ActionLog,
+				RequireIdentity: rule.RemoteEndpoint != "",
 			},
 			RemoteCIDR: rule.RemoteCIDR,
 			RuleID:     rule.ID,

@@ -21,10 +21,11 @@ func TestEncodeEntryUsesCiliumStylePolicyKeyShape(t *testing.T) {
 			L4PrefixBits:   24,
 		},
 		Value: policy.MapValue{
-			Deny:       false,
-			Precedence: 100,
-			Stateful:   true,
-			Log:        true,
+			Deny:            false,
+			Precedence:      100,
+			Stateful:        true,
+			Log:             true,
+			RequireIdentity: true,
 		},
 		RemoteCIDR: netip.MustParsePrefix("10.20.0.0/16"),
 		RuleID:     "allow-https",
@@ -43,8 +44,8 @@ func TestEncodeEntryUsesCiliumStylePolicyKeyShape(t *testing.T) {
 	if encoded.Key.Direction != DirectionIngress {
 		t.Fatalf("direction = %d, want ingress/%d", encoded.Key.Direction, DirectionIngress)
 	}
-	if encoded.Value.Stateful != 1 || encoded.Value.Log != 1 {
-		t.Fatalf("stateful/log flags = %d/%d, want 1/1", encoded.Value.Stateful, encoded.Value.Log)
+	if encoded.Value.Stateful != 1 || encoded.Value.Log != 1 || encoded.Value.RequireIdentity != 1 {
+		t.Fatalf("stateful/log/require-identity flags = %d/%d/%d, want 1/1/1", encoded.Value.Stateful, encoded.Value.Log, encoded.Value.RequireIdentity)
 	}
 	if encoded.RemoteCIDR != netip.MustParsePrefix("10.20.0.0/16") {
 		t.Fatalf("remote cidr = %s, want 10.20.0.0/16", encoded.RemoteCIDR)

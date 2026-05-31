@@ -88,12 +88,14 @@ func RunSelfTest(ctx context.Context) (SelfTestResult, error) {
 	recorder := dataplane.NewPolicyRecorder()
 	allowed := dataplane.EvaluateObserved(endpoint.ID, entries, dataplane.Packet{
 		RemoteIdentity: allowedIdentity,
+		RemoteIP:       netip.MustParseAddr("10.244.1.10"),
 		Direction:      dataplane.DirectionIngress,
 		Protocol:       6,
 		DestPort:       443,
 	}, recorder)
 	denied := dataplane.EvaluateObserved(endpoint.ID, entries, dataplane.Packet{
 		RemoteIdentity: deniedIdentity,
+		RemoteIP:       netip.MustParseAddr("10.244.2.10"),
 		Direction:      dataplane.DirectionIngress,
 		Protocol:       6,
 		DestPort:       30008,
