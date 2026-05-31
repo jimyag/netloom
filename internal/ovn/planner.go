@@ -62,7 +62,7 @@ func (p *Planner) EnsureSubnet(_ context.Context, subnet model.Subnet) error {
 	switchName := logicalSwitch(subnet.Name)
 	routerPort := routerPortName(router, subnet.Name)
 	switchPort := switchRouterPortName(switchName, subnet.Name)
-	routerMAC := deterministicMAC(subnet.Gateway)
+	routerMAC := deterministicMAC(subnet)
 	p.ops = append(p.ops,
 		Operation{Command: "ls-add", Flags: []string{"--may-exist"}, Args: []string{switchName}},
 		setOperation("logical_switch", switchName, "external_ids:netloom_owner=netloom", "external_ids:netloom_subnet="+subnet.Name, "external_ids:netloom_vpc="+subnet.VPC),
@@ -380,8 +380,8 @@ func sanitize(value string) string {
 	return out.String()
 }
 
-func deterministicMAC(ip netip.Addr) string {
-	return model.GatewayMAC(ip)
+func deterministicMAC(subnet model.Subnet) string {
+	return model.SubnetGatewayMAC(subnet.VPC, subnet.Name, subnet.Gateway)
 }
 
 func dhcpOptionsUUID(endpoint model.Endpoint, family int) string {
@@ -400,7 +400,7 @@ func dhcpv4OptionsArgs(subnet model.Subnet, endpoint model.Endpoint) []string {
 		"DHCP_Options",
 		"cidr=" + subnet.CIDR.String(),
 		"options:server_id=" + subnet.Gateway.String(),
-		"options:server_mac=" + deterministicMAC(subnet.Gateway),
+		"options:server_mac=" + deterministicMAC(subnet),
 		"options:router=" + subnet.Gateway.String(),
 		fmt.Sprintf("options:lease_time=%d", leaseTime),
 		"external_ids:netloom_owner=netloom",
@@ -417,7 +417,7 @@ func dhcpv6OptionsArgs(subnet model.Subnet, endpoint model.Endpoint) []string {
 	args := []string{
 		"DHCP_Options",
 		"cidr=" + subnet.CIDR.String(),
-		"options:server_id=" + deterministicMAC(subnet.Gateway),
+		"options:server_id=" + deterministicMAC(subnet),
 		"external_ids:netloom_owner=netloom",
 		"external_ids:netloom_subnet=" + subnet.Name,
 		"external_ids:netloom_endpoint=" + endpoint.ID,

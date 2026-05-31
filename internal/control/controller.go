@@ -462,7 +462,7 @@ func validateObjectGraph(state DesiredState) error {
 			return fmt.Errorf("endpoint %q ip %s is excluded by subnet %q", endpoint.ID, endpoint.IP, endpoint.Subnet)
 		}
 		if mac := endpoint.NormalizedMAC(); mac != "" {
-			gatewayMAC := model.GatewayMAC(subnet.Gateway)
+			gatewayMAC := model.SubnetGatewayMAC(subnet.VPC, subnet.Name, subnet.Gateway)
 			if mac == gatewayMAC {
 				return fmt.Errorf("endpoint %q mac %s conflicts with subnet %q gateway mac", endpoint.ID, mac, endpoint.Subnet)
 			}

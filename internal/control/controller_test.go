@@ -487,7 +487,7 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 		{
 			name: "endpoint mac conflicts with subnet gateway",
 			mutate: func(state *DesiredState) {
-				state.Endpoints[0].MAC = "0a:58:0a:0a:00:01"
+				state.Endpoints[0].MAC = model.SubnetGatewayMAC("prod", "apps", netip.MustParseAddr("10.10.0.1"))
 			},
 			wantErr: "conflicts with subnet \"apps\" gateway mac",
 		},

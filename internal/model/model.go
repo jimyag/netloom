@@ -1,6 +1,7 @@
 package model
 
 import (
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"net"
@@ -486,6 +487,11 @@ func GatewayMAC(ip netip.Addr) string {
 	}
 	raw := ip.As16()
 	return fmt.Sprintf("0a:58:%02x:%02x:%02x:%02x", raw[12], raw[13], raw[14], raw[15])
+}
+
+func SubnetGatewayMAC(vpc, subnet string, ip netip.Addr) string {
+	sum := sha256.Sum256([]byte(vpc + "\x00" + subnet + "\x00" + ip.String()))
+	return fmt.Sprintf("0a:58:%02x:%02x:%02x:%02x", sum[0], sum[1], sum[2], sum[3])
 }
 
 func (r RouteTable) Validate() error {

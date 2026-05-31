@@ -484,6 +484,28 @@ func TestGatewayMACMatchesOVNRouterPortMAC(t *testing.T) {
 	}
 }
 
+func TestSubnetGatewayMACIncludesNetworkContext(t *testing.T) {
+	ip := netip.MustParseAddr("10.10.0.1")
+	first := SubnetGatewayMAC("prod", "apps", ip)
+	if first != "0a:58:3e:f3:95:f0" {
+		t.Fatalf("subnet gateway mac = %s", first)
+	}
+	if first == GatewayMAC(ip) {
+		t.Fatalf("subnet gateway mac should not use only gateway ip: %s", first)
+	}
+	if first != SubnetGatewayMAC("prod", "apps", ip) {
+		t.Fatal("subnet gateway mac must be deterministic")
+	}
+	for _, got := range []string{
+		SubnetGatewayMAC("stage", "apps", ip),
+		SubnetGatewayMAC("prod", "dmz", ip),
+	} {
+		if got == first {
+			t.Fatalf("subnet gateway mac collision: %s", got)
+		}
+	}
+}
+
 func TestSecurityGroupRuleValidatesNamedPorts(t *testing.T) {
 	rule := SecurityGroupRule{
 		ID:         "allow-http",

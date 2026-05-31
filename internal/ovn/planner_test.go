@@ -106,7 +106,7 @@ func TestPlannerMapsNetloomObjectsToOVNOperations(t *testing.T) {
 		"set logical_switch_port nl_ls_apps_to_apps_localnet tag=100",
 		"--id=@nl_dhcp_pod_a create DHCP_Options cidr=10.10.0.0/24",
 		"options:server_id=10.10.0.1",
-		"options:server_mac=0a:58:0a:0a:00:01",
+		"options:server_mac=0a:58:3e:f3:95:f0",
 		"options:lease_time=7200",
 		"options:mtu=1400",
 		"lsp-set-dhcpv4-options nl_lp_pod-a",
@@ -295,7 +295,7 @@ func TestPlannerBuildsIPv6DHCPOptions(t *testing.T) {
 		"set logical_router_port nl_lr_prod_to_apps-v6 ipv6_ra_configs:address_mode=dhcpv6_stateful",
 		"lsp-set-dhcpv6-options nl_lp_pod-v6",
 		"--id=@nl_dhcp6_pod_v6 create DHCP_Options cidr=fd00:10::/64",
-		"options:server_id=0a:58:00:00:00:01",
+		"options:server_id=0a:58:85:d4:23:26",
 		"set logical_switch_port nl_lp_pod-v6 dhcpv6_options=@nl_dhcp6_pod_v6",
 	} {
 		if !strings.Contains(joined, expected) {
