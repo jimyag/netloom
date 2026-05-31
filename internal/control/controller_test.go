@@ -355,6 +355,13 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 			wantErr: "duplicate security group name",
 		},
 		{
+			name: "duplicate security group rule",
+			mutate: func(state *DesiredState) {
+				state.SecurityGroups[0].Rules = append(state.SecurityGroups[0].Rules, state.SecurityGroups[0].Rules[0])
+			},
+			wantErr: "security group rule \"allow-client\" is duplicated",
+		},
+		{
 			name: "duplicate cidr group",
 			mutate: func(state *DesiredState) {
 				state.CIDRGroups = append(state.CIDRGroups,

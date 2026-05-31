@@ -250,6 +250,34 @@ func TestSecurityGroupTierValidation(t *testing.T) {
 	}
 }
 
+func TestSecurityGroupRejectsDuplicateRuleIDs(t *testing.T) {
+	group := SecurityGroup{
+		Name: "web",
+		VPC:  "prod",
+		Rules: []SecurityGroupRule{
+			{
+				ID:        "allow-api",
+				Direction: DirectionIngress,
+				Protocol:  ProtocolTCP,
+				Ports:     []PortRange{{From: 443, To: 443}},
+				Action:    ActionAllow,
+			},
+			{
+				ID:        "allow-api",
+				Direction: DirectionEgress,
+				Protocol:  ProtocolTCP,
+				Ports:     []PortRange{{From: 443, To: 443}},
+				Action:    ActionDrop,
+			},
+		},
+	}
+
+	err := group.Validate()
+	if err == nil || !strings.Contains(err.Error(), "security group rule \"allow-api\" is duplicated") {
+		t.Fatalf("error = %v, want duplicate security group rule id validation", err)
+	}
+}
+
 func TestSecurityGroupRulePriorityValidation(t *testing.T) {
 	valid := SecurityGroupRule{
 		ID:        "allow-web",

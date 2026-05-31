@@ -932,10 +932,15 @@ func (s SecurityGroup) Validate() error {
 	if s.Tier < 0 || s.Tier > 1 {
 		return errors.New("security group tier must be between 0 and 1")
 	}
+	seenRules := make(map[string]struct{}, len(s.Rules))
 	for i, rule := range s.Rules {
 		if err := rule.Validate(); err != nil {
 			return fmt.Errorf("security group rule %d: %w", i, err)
 		}
+		if _, ok := seenRules[rule.ID]; ok {
+			return fmt.Errorf("security group rule %q is duplicated", rule.ID)
+		}
+		seenRules[rule.ID] = struct{}{}
 	}
 	return nil
 }
