@@ -298,7 +298,11 @@ func entityCIDRs(entity string, endpoint model.Endpoint, subnetsByVPC map[string
 	case "all":
 		return allCIDRs(), nil
 	case "world":
-		return worldCIDRs(endpoint.VPC, subnetsByVPC)
+		return worldCIDRs(endpoint.VPC, subnetsByVPC, allCIDRs())
+	case "world-ipv4":
+		return worldCIDRs(endpoint.VPC, subnetsByVPC, []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0")})
+	case "world-ipv6":
+		return worldCIDRs(endpoint.VPC, subnetsByVPC, []netip.Prefix{netip.MustParsePrefix("::/0")})
 	case "host":
 		cidrs := gatewayCIDRs(gatewayCIDRsByVPC[endpoint.VPC], func(gateway gatewayCIDR) bool {
 			return true
@@ -329,6 +333,8 @@ func entityCIDRs(entity string, endpoint model.Endpoint, subnetsByVPC map[string
 		}
 		sort.SliceStable(cidrs, func(i, j int) bool { return cidrs[i].String() < cidrs[j].String() })
 		return cidrs, nil
+	case "none":
+		return nil, nil
 	default:
 		return nil, fmt.Errorf("unsupported remote entity %q", entity)
 	}
@@ -349,12 +355,12 @@ func allCIDRs() []netip.Prefix {
 	return []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0"), netip.MustParsePrefix("::/0")}
 }
 
-func worldCIDRs(vpc string, subnetsByVPC map[string][]netip.Prefix) ([]netip.Prefix, error) {
+func worldCIDRs(vpc string, subnetsByVPC map[string][]netip.Prefix, initial []netip.Prefix) ([]netip.Prefix, error) {
 	clusterCIDRs := append([]netip.Prefix(nil), subnetsByVPC[vpc]...)
 	if len(clusterCIDRs) == 0 {
 		return nil, fmt.Errorf("remote entity world requires at least one subnet in vpc %s", vpc)
 	}
-	cidrs := allCIDRs()
+	cidrs := append([]netip.Prefix(nil), initial...)
 	for _, clusterCIDR := range clusterCIDRs {
 		clusterCIDR = clusterCIDR.Masked()
 		var next []netip.Prefix

@@ -1374,6 +1374,100 @@ func TestCompileForEndpointWithContextExpandsWorldEntityOutsideCluster(t *testin
 	}
 }
 
+func TestCompileForEndpointWithContextExpandsWorldFamilyEntities(t *testing.T) {
+	endpoint := model.Endpoint{
+		ID:             "pod-a",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"client"},
+	}
+	program, err := CompileForEndpointWithContext(endpoint, map[string]model.SecurityGroup{
+		"client": {
+			Name: "client",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:             "allow-world-families",
+				Priority:       100,
+				Direction:      model.DirectionEgress,
+				Protocol:       model.ProtocolTCP,
+				RemoteEntities: []string{"world-ipv4", "world-ipv6"},
+				Ports:          []model.PortRange{{From: 443, To: 443}},
+				Action:         model.ActionAllow,
+			}},
+		},
+	}, CompileContext{
+		Subnets: []model.Subnet{
+			{Name: "apps", VPC: "prod", CIDR: netip.MustParsePrefix("10.10.0.0/24"), Gateway: netip.MustParseAddr("10.10.0.1")},
+			{Name: "v6", VPC: "prod", CIDR: netip.MustParsePrefix("fd00:10::/64"), Gateway: netip.MustParseAddr("fd00:10::1")},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(program.Rules) == 0 {
+		t.Fatal("expected world family entities to produce CIDR rules")
+	}
+	assertEntityCIDRsMatchIP(t, program.Rules, "world-ipv4", netip.MustParseAddr("203.0.113.10"), true)
+	assertEntityCIDRsMatchIP(t, program.Rules, "world-ipv4", netip.MustParseAddr("2001:db8::10"), false)
+	assertEntityCIDRsMatchIP(t, program.Rules, "world-ipv4", netip.MustParseAddr("10.10.0.42"), false)
+	assertEntityCIDRsMatchIP(t, program.Rules, "world-ipv6", netip.MustParseAddr("2001:db8::10"), true)
+	assertEntityCIDRsMatchIP(t, program.Rules, "world-ipv6", netip.MustParseAddr("203.0.113.10"), false)
+	assertEntityCIDRsMatchIP(t, program.Rules, "world-ipv6", netip.MustParseAddr("fd00:10::42"), false)
+	for _, rule := range program.Rules {
+		switch rule.RemoteEntity {
+		case "world-ipv4":
+			if !rule.RemoteCIDR.Addr().Is4() {
+				t.Fatalf("world-ipv4 produced non-IPv4 CIDR %s", rule.RemoteCIDR)
+			}
+		case "world-ipv6":
+			if !rule.RemoteCIDR.Addr().Is6() || rule.RemoteCIDR.Addr().Is4() {
+				t.Fatalf("world-ipv6 produced non-IPv6 CIDR %s", rule.RemoteCIDR)
+			}
+		default:
+			t.Fatalf("unexpected remote entity %q", rule.RemoteEntity)
+		}
+	}
+	if len(program.MapEntries) != len(program.Rules) {
+		t.Fatalf("map entries = %d, want %d", len(program.MapEntries), len(program.Rules))
+	}
+}
+
+func TestCompileForEndpointWithContextRemoteEntityNoneProducesNoRules(t *testing.T) {
+	endpoint := model.Endpoint{
+		ID:             "pod-a",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"client"},
+	}
+	program, err := CompileForEndpointWithContext(endpoint, map[string]model.SecurityGroup{
+		"client": {
+			Name: "client",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:             "allow-none",
+				Priority:       100,
+				Direction:      model.DirectionEgress,
+				Protocol:       model.ProtocolTCP,
+				RemoteEntities: []string{"none"},
+				Ports:          []model.PortRange{{From: 443, To: 443}},
+				Action:         model.ActionAllow,
+			}},
+		},
+	}, CompileContext{
+		Subnets: []model.Subnet{{Name: "apps", VPC: "prod", CIDR: netip.MustParsePrefix("10.10.0.0/24"), Gateway: netip.MustParseAddr("10.10.0.1")}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(program.Rules) != 0 || len(program.MapEntries) != 0 {
+		t.Fatalf("none entity produced rules=%d entries=%d, want none", len(program.Rules), len(program.MapEntries))
+	}
+}
+
 func assertEntityCIDRsMatchIP(t *testing.T, rules []Rule, entity string, ip netip.Addr, want bool) {
 	t.Helper()
 	for _, rule := range rules {
