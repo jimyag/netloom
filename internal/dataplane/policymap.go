@@ -67,6 +67,7 @@ type PolicyUpdatePlan struct {
 
 type PolicyStore interface {
 	ReplaceEndpoint(ctx context.Context, endpointID string, entries []PolicyMapEntry) error
+	DeleteEndpoint(ctx context.Context, endpointID string) error
 }
 
 type InMemoryPolicyStore struct {
@@ -118,6 +119,16 @@ func (s *InMemoryPolicyStore) ReplaceEndpoint(_ context.Context, endpointID stri
 		Revision:   revision,
 		Stats:      stats,
 	})
+	return nil
+}
+
+func (s *InMemoryPolicyStore) DeleteEndpoint(_ context.Context, endpointID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	delete(s.endpoints, endpointID)
+	delete(s.lastStats, endpointID)
+	delete(s.revisions, endpointID)
 	return nil
 }
 

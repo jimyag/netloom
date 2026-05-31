@@ -36,6 +36,7 @@ type ReconcileResult struct {
 
 type PolicyStore interface {
 	ReplaceEndpoint(ctx context.Context, endpointID string, entries []dataplane.PolicyMapEntry) error
+	DeleteEndpoint(ctx context.Context, endpointID string) error
 }
 
 type PolicyStatsStore interface {
@@ -73,6 +74,7 @@ type Reconciler struct {
 	attach              tcxAttachFunc
 	conntrack           *dataplane.InMemoryConntrackStore
 	conntrackSignatures map[string]string
+	policyEndpoints     map[string]struct{}
 }
 
 func NewReconciler(store PolicyStore) *Reconciler {
@@ -82,6 +84,7 @@ func NewReconciler(store PolicyStore) *Reconciler {
 		attach:              attachTCXTarget,
 		conntrack:           dataplane.NewInMemoryConntrackStore(),
 		conntrackSignatures: make(map[string]string),
+		policyEndpoints:     make(map[string]struct{}),
 	}
 }
 
@@ -115,6 +118,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, state control.DesiredState, 
 	if err != nil {
 		return ReconcileResult{}, err
 	}
+	if err := r.syncPolicyStore(ctx, programs, options.Store); err != nil {
+		return ReconcileResult{}, err
+	}
 	r.syncConntrackPrograms(programs)
 	result.ConntrackExpired = r.conntrack.SweepIdle(conntrackIdleTimeout(options.ConntrackIdle))
 	if options.TCXInterface != "" || options.TCXWorkload {
@@ -125,6 +131,29 @@ func (r *Reconciler) Reconcile(ctx context.Context, state control.DesiredState, 
 		result.TCX = tcxResult
 	}
 	return result, nil
+}
+
+func (r *Reconciler) syncPolicyStore(ctx context.Context, programs []policy.Program, store PolicyStore) error {
+	if r == nil || store == nil {
+		return nil
+	}
+	desired := make(map[string]struct{}, len(programs))
+	for _, program := range programs {
+		desired[program.EndpointID] = struct{}{}
+	}
+	for endpointID := range r.policyEndpoints {
+		if _, ok := desired[endpointID]; ok {
+			continue
+		}
+		if err := store.DeleteEndpoint(ctx, endpointID); err != nil {
+			return fmt.Errorf("delete stale policy for endpoint %s: %w", endpointID, err)
+		}
+		delete(r.policyEndpoints, endpointID)
+	}
+	for endpointID := range desired {
+		r.policyEndpoints[endpointID] = struct{}{}
+	}
+	return nil
 }
 
 func (r *Reconciler) Close() error {

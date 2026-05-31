@@ -16,6 +16,14 @@ func TestMapNameSanitizesEndpointID(t *testing.T) {
 	}
 }
 
+func TestEBPFPolicyStoreDeleteEndpointRejectsEmptyID(t *testing.T) {
+	store := NewEBPFPolicyStore(16)
+	err := store.DeleteEndpoint(context.Background(), "")
+	if err == nil || !strings.Contains(err.Error(), "endpoint id is required") {
+		t.Fatalf("error = %v, want endpoint id validation", err)
+	}
+}
+
 func TestEBPFPolicyStorePrivileged(t *testing.T) {
 	if os.Getenv("NETLOOM_EBPF_TEST") != "1" {
 		t.Skip("set NETLOOM_EBPF_TEST=1 to create kernel eBPF maps")

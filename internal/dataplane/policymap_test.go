@@ -496,6 +496,29 @@ func TestInMemoryPolicyStoreAppliesIncrementalStats(t *testing.T) {
 	}
 }
 
+func TestInMemoryPolicyStoreDeletesEndpoint(t *testing.T) {
+	store := NewInMemoryPolicyStore()
+	entries := []PolicyMapEntry{{
+		Key:   PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 1, Direction: DirectionIngress},
+		Value: PolicyEntry{Precedence: 10},
+	}}
+	if err := store.ReplaceEndpoint(context.Background(), "pod-a", entries); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeleteEndpoint(context.Background(), "pod-a"); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.Entries("pod-a"); len(got) != 0 {
+		t.Fatalf("entries after delete = %+v, want empty", got)
+	}
+	if revision := store.Revision("pod-a"); revision != 0 {
+		t.Fatalf("revision after delete = %d, want 0", revision)
+	}
+	if stats := store.LastStats("pod-a"); stats != (PolicyUpdateStats{}) {
+		t.Fatalf("stats after delete = %+v, want zero", stats)
+	}
+}
+
 func TestInMemoryPolicyStoreRollsBackOnFailure(t *testing.T) {
 	store := NewInMemoryPolicyStore()
 	oldEntries := []PolicyMapEntry{{

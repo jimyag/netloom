@@ -89,6 +89,28 @@ func (s *EBPFPolicyStore) ReplaceEndpoint(ctx context.Context, endpointID string
 	return nil
 }
 
+func (s *EBPFPolicyStore) DeleteEndpoint(ctx context.Context, endpointID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if endpointID == "" {
+		return fmt.Errorf("endpoint id is required")
+	}
+	if m := s.maps[endpointID]; m != nil {
+		if err := m.Close(); err != nil {
+			return fmt.Errorf("close eBPF policy map for endpoint %s: %w", endpointID, err)
+		}
+	}
+	delete(s.maps, endpointID)
+	delete(s.entries, endpointID)
+	delete(s.lastStats, endpointID)
+	delete(s.revisions, endpointID)
+	return nil
+}
+
 func (s *EBPFPolicyStore) LastStats(endpointID string) PolicyUpdateStats {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -129,6 +129,48 @@ func TestReconcileNodeReportsPolicyDiffStatsAcrossRevisions(t *testing.T) {
 	}
 }
 
+func TestReconcilerDeletesStaleEndpointPolicy(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:             "pod-a",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"web"},
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "drop-http",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("172.30.0.11/32"),
+				Ports:      []model.PortRange{{From: 8080, To: 8080}},
+				Action:     model.ActionDrop,
+			}},
+		}},
+	}
+	store := dataplane.NewInMemoryPolicyStore()
+	reconciler := NewReconciler(store)
+	if _, err := reconciler.Reconcile(context.Background(), state, ReconcileOptions{Node: "node-a"}); err != nil {
+		t.Fatal(err)
+	}
+	if entries := store.Entries("pod-a"); len(entries) != 1 {
+		t.Fatalf("pod-a entries = %d, want 1", len(entries))
+	}
+
+	state.Endpoints = nil
+	if _, err := reconciler.Reconcile(context.Background(), state, ReconcileOptions{Node: "node-a"}); err != nil {
+		t.Fatal(err)
+	}
+	if entries := store.Entries("pod-a"); len(entries) != 0 {
+		t.Fatalf("stale pod-a entries = %+v, want deleted", entries)
+	}
+}
+
 func TestReconcileNodeReportsUnchangedPolicyStats(t *testing.T) {
 	state := control.DesiredState{
 		Endpoints: []model.Endpoint{{
