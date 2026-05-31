@@ -180,8 +180,102 @@ func TestBackendCleanupConvergesChangedNATRule(t *testing.T) {
 			t.Fatalf("nat convergence operation missing %q:\n%s", expected, joined)
 		}
 	}
-	if strings.Count(joined, "--if-exists lr-nat-del nl_lr_prod snat 10.10.0.0/24") < 2 {
-		t.Fatalf("changed nat rule should clear the managed key before each add:\n%s", joined)
+	if got := strings.Count(joined, "--if-exists lr-nat-del nl_lr_prod snat 10.10.0.0/24"); got != 1 {
+		t.Fatalf("changed nat rule delete count = %d, want one lifecycle cleanup before replacement:\n%s", got, joined)
+	}
+}
+
+func TestBackendCleanupDoesNotReapplyUnchangedNATRule(t *testing.T) {
+	recorder := ovn.NewRecorderExecutor()
+	backend := ovn.NewBackend(recorder)
+	state := controlStateWithEndpoint("pod-a")
+	controller := control.NewController(backend, control.NewMemoryBackend())
+	if err := controller.Reconcile(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.Reconcile(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+
+	joined := stringifyOVNOps(recorder.Operations())
+	if strings.Contains(joined, "lr-nat-del") {
+		t.Fatalf("unchanged nat rule should not be deleted:\n%s", joined)
+	}
+	expected := "--may-exist lr-nat-add nl_lr_prod snat 198.51.100.10 10.10.0.0/24"
+	if got := strings.Count(joined, expected); got != 1 {
+		t.Fatalf("unchanged nat rule add count = %d, want one initial add for %q:\n%s", got, expected, joined)
+	}
+}
+
+func TestBackendCleanupDoesNotRecreateUnchangedTranslatedDNATRule(t *testing.T) {
+	recorder := ovn.NewRecorderExecutor()
+	backend := ovn.NewBackend(recorder)
+	state := controlStateWithEndpoint("pod-a")
+	state.NATRules = []model.NATRule{{
+		Name:         "web-translate",
+		VPC:          "prod",
+		Type:         model.ActionDNAT,
+		ExternalIP:   netip.MustParseAddr("198.51.100.80"),
+		TargetIP:     netip.MustParseAddr("10.10.0.10"),
+		Protocol:     model.ProtocolTCP,
+		ExternalPort: 8443,
+		TargetPort:   443,
+	}}
+	controller := control.NewController(backend, control.NewMemoryBackend())
+	if err := controller.Reconcile(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.Reconcile(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+
+	joined := stringifyOVNOps(recorder.Operations())
+	expected := "--id=@nl_nat_web_htranslate create NAT type=dnat external_ip=198.51.100.80 logical_ip=10.10.0.10 external_port_range=8443 logical_port_range=443 protocol=tcp"
+	if got := strings.Count(joined, expected); got != 1 {
+		t.Fatalf("unchanged translated dnat create count = %d, want one initial create:\n%s", got, joined)
+	}
+	if strings.Contains(joined, "lr-nat-del") {
+		t.Fatalf("unchanged translated dnat should not be deleted:\n%s", joined)
+	}
+}
+
+func TestBackendCleanupReplacesChangedTranslatedDNATRule(t *testing.T) {
+	recorder := ovn.NewRecorderExecutor()
+	backend := ovn.NewBackend(recorder)
+	first := controlStateWithEndpoint("pod-a")
+	first.NATRules = []model.NATRule{{
+		Name:         "web-translate",
+		VPC:          "prod",
+		Type:         model.ActionDNAT,
+		ExternalIP:   netip.MustParseAddr("198.51.100.80"),
+		TargetIP:     netip.MustParseAddr("10.10.0.10"),
+		Protocol:     model.ProtocolTCP,
+		ExternalPort: 8443,
+		TargetPort:   443,
+	}}
+	controller := control.NewController(backend, control.NewMemoryBackend())
+	if err := controller.Reconcile(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+
+	second := first
+	second.NATRules[0].TargetIP = netip.MustParseAddr("10.10.0.11")
+	if err := controller.Reconcile(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+
+	joined := stringifyOVNOps(recorder.Operations())
+	for _, expected := range []string{
+		"--if-exists lr-nat-del nl_lr_prod dnat 198.51.100.80",
+		"create NAT type=dnat external_ip=198.51.100.80 logical_ip=10.10.0.10",
+		"create NAT type=dnat external_ip=198.51.100.80 logical_ip=10.10.0.11",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("changed translated dnat operation missing %q:\n%s", expected, joined)
+		}
+	}
+	if got := strings.Count(joined, "--if-exists lr-nat-del nl_lr_prod dnat 198.51.100.80"); got != 1 {
+		t.Fatalf("changed translated dnat delete count = %d, want one lifecycle cleanup:\n%s", got, joined)
 	}
 }
 

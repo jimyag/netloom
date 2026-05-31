@@ -212,7 +212,6 @@ func (p *Planner) EnsureNATRule(_ context.Context, rule model.NATRule) error {
 	defer p.mu.Unlock()
 
 	router := p.routerForVPC(rule.VPC)
-	p.ops = append(p.ops, Operation{Command: "lr-nat-del", Flags: []string{"--if-exists"}, Args: []string{router, natType(rule.Type), natDeleteMatch(rule)}})
 	switch rule.Type {
 	case model.ActionSNAT:
 		p.ops = append(p.ops, Operation{Command: "lr-nat-add", Flags: []string{"--may-exist"}, Args: []string{router, "snat", rule.ExternalIP.String(), rule.MatchCIDR.String()}})

@@ -130,7 +130,6 @@ func TestPlannerMapsNetloomObjectsToOVNOperations(t *testing.T) {
 		"external_ids:netloom_gateway_lan_ip=10.10.0.254",
 		"external_ids:netloom_gateway_distributed=false",
 		"options:chassis=node-a",
-		"--if-exists lr-nat-del nl_lr_prod snat 10.10.0.0/24",
 		"lr-nat-add nl_lr_prod snat 198.51.100.10 10.10.0.0/24",
 		"lb-add nl_lb_web 10.96.0.10:80 10.10.0.10:8080 tcp",
 		"lr-lb-add nl_lr_prod nl_lb_web",
@@ -850,15 +849,10 @@ func TestPlannerBuildsKubeOVNStyleNATOperations(t *testing.T) {
 
 	joined := stringify(planner.Operations())
 	for _, expected := range []string{
-		"--if-exists lr-nat-del nl_lr_prod dnat 198.51.100.20",
 		"lr-nat-add nl_lr_prod dnat 198.51.100.20 10.10.0.10",
-		"--if-exists lr-nat-del nl_lr_prod dnat_and_snat 198.51.100.30",
 		"lr-nat-add nl_lr_prod dnat_and_snat 198.51.100.30 10.10.0.11",
-		"--if-exists lr-nat-del nl_lr_prod dnat_and_snat 198.51.100.31",
 		"lr-nat-add nl_lr_prod dnat_and_snat 198.51.100.31 10.10.0.14 nl_lp_pod-a 0a:58:0a:0a:00:0e",
-		"--if-exists lr-nat-del nl_lr_prod dnat 198.51.100.40",
 		"--portrange --may-exist lr-nat-add nl_lr_prod dnat 198.51.100.40 10.10.0.12 2222",
-		"--if-exists lr-nat-del nl_lr_prod dnat 198.51.100.41",
 		"--id=@nl_nat_web_htranslate create NAT type=dnat external_ip=198.51.100.41 logical_ip=10.10.0.13 external_port_range=8443 logical_port_range=443 protocol=tcp",
 		"external_ids:netloom_nat=web-translate",
 		"add logical_router nl_lr_prod nat @nl_nat_web_htranslate",
@@ -869,6 +863,9 @@ func TestPlannerBuildsKubeOVNStyleNATOperations(t *testing.T) {
 	}
 	if strings.Contains(joined, "nl_natlb_web_translate") {
 		t.Fatalf("translated DNAT must not create load balancer operations:\n%s", joined)
+	}
+	if strings.Contains(joined, "lr-nat-del") {
+		t.Fatalf("planner should not delete NAT during ensure; lifecycle cleanup owns deletion:\n%s", joined)
 	}
 }
 

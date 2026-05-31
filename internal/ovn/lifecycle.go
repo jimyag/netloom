@@ -134,9 +134,6 @@ func cleanupOperations(old, next desiredSnapshot) []Operation {
 		if natRuleSignature(oldRule) == natRuleSignature(nextRule) {
 			continue
 		}
-		if natDeleteKey(oldRule) == natDeleteKey(nextRule) {
-			continue
-		}
 		ops = append(ops, Operation{Command: "lr-nat-del", Flags: []string{"--if-exists"}, Args: []string{
 			logicalRouter(oldRule.VPC),
 			natType(oldRule.Type),
@@ -185,6 +182,19 @@ func cleanupOperations(old, next desiredSnapshot) []Operation {
 		ops = append(ops, Operation{Command: "lr-del", Flags: []string{"--if-exists"}, Args: []string{logicalRouter(key)}})
 	}
 	return ops
+}
+
+func unchangedNATRules(old, next desiredSnapshot) map[string]string {
+	out := make(map[string]string)
+	for _, key := range commonKeys(old.NATRules, next.NATRules) {
+		oldRule := old.NATRules[key]
+		nextRule := next.NATRules[key]
+		signature := natRuleSignature(nextRule)
+		if natRuleSignature(oldRule) == signature {
+			out[nextRule.Name] = signature
+		}
+	}
+	return out
 }
 
 func commonKeys[T any](old, next map[string]T) []string {
