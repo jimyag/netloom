@@ -2,6 +2,7 @@ package ovn
 
 import (
 	"fmt"
+	"net/netip"
 	"sort"
 	"strings"
 
@@ -45,17 +46,19 @@ func snapshotDesired(state topology.State) desiredSnapshot {
 		out.VPCs[name] = vpc
 	}
 	for name, subnet := range state.Subnets {
-		out.Subnets[name] = subnet
+		out.Subnets[name] = cloneSnapshotSubnet(subnet)
 	}
 	for id, endpoint := range state.Endpoints {
-		out.Endpoints[id] = endpoint
+		out.Endpoints[id] = cloneSnapshotEndpoint(endpoint)
 	}
 	for _, table := range state.RouteTables {
 		for _, route := range table.Routes {
+			route = cloneSnapshotRoute(route)
 			out.Routes[routeKey(table.VPC, route)] = routeRecord{VPC: table.VPC, Route: route}
 		}
 	}
 	for _, route := range state.PolicyRoutes {
+		route = cloneSnapshotPolicyRoute(route)
 		match := policyRouteMatch(route.Match)
 		out.PolicyRoutes[policyRouteKey(route)] = policyRouteRecord{Route: route, Match: match}
 	}
@@ -66,9 +69,50 @@ func snapshotDesired(state topology.State) desiredSnapshot {
 		out.NATRules[name] = rule
 	}
 	for name, lb := range state.LoadBalancers {
-		out.LoadBalancers[name] = lb
+		out.LoadBalancers[name] = cloneSnapshotLoadBalancer(lb)
 	}
 	return out
+}
+
+func cloneSnapshotSubnet(subnet model.Subnet) model.Subnet {
+	subnet.ExcludeCIDRs = append([]netip.Prefix(nil), subnet.ExcludeCIDRs...)
+	subnet.DHCP.DNSServers = append([]netip.Addr(nil), subnet.DHCP.DNSServers...)
+	subnet.DHCP.SearchDomains = append([]string(nil), subnet.DHCP.SearchDomains...)
+	return subnet
+}
+
+func cloneSnapshotEndpoint(endpoint model.Endpoint) model.Endpoint {
+	endpoint.SecurityGroups = append([]string(nil), endpoint.SecurityGroups...)
+	endpoint.NamedPorts = append([]model.NamedPort(nil), endpoint.NamedPorts...)
+	if endpoint.Labels != nil {
+		labels := make(model.Labels, len(endpoint.Labels))
+		for key, value := range endpoint.Labels {
+			labels[key] = value
+		}
+		endpoint.Labels = labels
+	}
+	return endpoint
+}
+
+func cloneSnapshotRoute(route model.Route) model.Route {
+	route.NextHops = append([]netip.Addr(nil), route.NextHops...)
+	return route
+}
+
+func cloneSnapshotPolicyRoute(route model.PolicyRoute) model.PolicyRoute {
+	route.Match.DstPorts = append([]model.PortRange(nil), route.Match.DstPorts...)
+	route.Action.NextHops = append([]netip.Addr(nil), route.Action.NextHops...)
+	return route
+}
+
+func cloneSnapshotLoadBalancer(lb model.LoadBalancer) model.LoadBalancer {
+	lb.Ports = append([]model.LoadBalancerPort(nil), lb.Ports...)
+	for i := range lb.Ports {
+		lb.Ports[i].Backends = append([]model.LoadBalancerBackend(nil), lb.Ports[i].Backends...)
+	}
+	lb.Subnets = append([]string(nil), lb.Subnets...)
+	lb.SelectionFields = append([]string(nil), lb.SelectionFields...)
+	return lb
 }
 
 func cleanupOperations(old, next desiredSnapshot) []Operation {
@@ -192,6 +236,19 @@ func unchangedNATRules(old, next desiredSnapshot) map[string]string {
 		signature := natRuleSignature(nextRule)
 		if natRuleSignature(oldRule) == signature {
 			out[nextRule.Name] = signature
+		}
+	}
+	return out
+}
+
+func unchangedLoadBalancers(old, next desiredSnapshot) map[string]string {
+	out := make(map[string]string)
+	for _, key := range commonKeys(old.LoadBalancers, next.LoadBalancers) {
+		oldLB := old.LoadBalancers[key]
+		nextLB := next.LoadBalancers[key]
+		signature := loadBalancerSignature(nextLB)
+		if loadBalancerSignature(oldLB) == signature {
+			out[nextLB.Name] = signature
 		}
 	}
 	return out
@@ -329,6 +386,29 @@ func policyRouteNextHops(action model.RouteAction) string {
 	}
 	sort.Strings(values)
 	return strings.Join(values, ",")
+}
+
+func loadBalancerSignature(lb model.LoadBalancer) string {
+	frontends := lb.Frontends()
+	frontendParts := make([]string, 0, len(frontends))
+	for _, frontend := range frontends {
+		frontendParts = append(frontendParts, strings.Join([]string{
+			frontend.Name,
+			loadBalancerFrontendVIP(frontend),
+			string(frontend.Protocol),
+			loadBalancerFrontendBackends(frontend),
+		}, "|"))
+	}
+	sort.Strings(frontendParts)
+	subnets := append([]string(nil), lb.Subnets...)
+	sort.Strings(subnets)
+	return strings.Join([]string{
+		lb.VPC,
+		strings.Join(frontendParts, "||"),
+		strings.Join(loadBalancerOptions(lb), "|"),
+		loadBalancerHealthCheckSignature(lb),
+		strings.Join(subnets, ","),
+	}, "###")
 }
 
 func natType(action model.Action) string {

@@ -15,6 +15,7 @@ type Backend struct {
 	last     desiredSnapshot
 	history  []Operation
 	skipNAT  map[string]string
+	skipLB   map[string]string
 }
 
 const operationHistoryLimit = 4096
@@ -57,13 +58,19 @@ func (b *Backend) EnsureNATRule(ctx context.Context, rule model.NATRule) error {
 }
 
 func (b *Backend) EnsureLoadBalancer(ctx context.Context, lb model.LoadBalancer) error {
-	return b.apply(ctx, func() error { return b.planner.EnsureLoadBalancer(ctx, lb) })
+	return b.apply(ctx, func() error {
+		if b.skipUnchangedLoadBalancerLocked(lb) {
+			return nil
+		}
+		return b.planner.EnsureLoadBalancer(ctx, lb)
+	})
 }
 
 func (b *Backend) BeginTopologyReconcile(context.Context, topology.State) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.skipNAT = nil
+	b.skipLB = nil
 	return nil
 }
 
@@ -74,6 +81,7 @@ func (b *Backend) CleanupTopology(ctx context.Context, state topology.State) err
 	next := snapshotDesired(state)
 	ops := cleanupOperations(b.last, next)
 	b.skipNAT = unchangedNATRules(b.last, next)
+	b.skipLB = unchangedLoadBalancers(b.last, next)
 	b.last = next
 	b.planner.SyncLoadBalancerHealthChecks(next.LoadBalancers)
 
@@ -98,6 +106,14 @@ func (b *Backend) skipUnchangedNATRuleLocked(rule model.NATRule) bool {
 	}
 	signature, ok := b.skipNAT[rule.Name]
 	return ok && signature == natRuleSignature(rule)
+}
+
+func (b *Backend) skipUnchangedLoadBalancerLocked(lb model.LoadBalancer) bool {
+	if len(b.skipLB) == 0 {
+		return false
+	}
+	signature, ok := b.skipLB[lb.Name]
+	return ok && signature == loadBalancerSignature(lb)
 }
 
 func (b *Backend) Operations() []Operation {

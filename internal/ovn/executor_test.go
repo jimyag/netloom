@@ -156,6 +156,112 @@ func TestBackendCleanupConvergesChangedLoadBalancerBindings(t *testing.T) {
 	}
 }
 
+func TestBackendCleanupDoesNotReapplyUnchangedLoadBalancer(t *testing.T) {
+	recorder := ovn.NewRecorderExecutor()
+	backend := ovn.NewBackend(recorder)
+	state := controlStateWithEndpoint("pod-a")
+	controller := control.NewController(backend, control.NewMemoryBackend())
+	if err := controller.Reconcile(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.Reconcile(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+
+	joined := stringifyOVNOps(recorder.Operations())
+	for _, expected := range []string{
+		"--if-exists lb-del nl_lb_web 10.96.0.10:80",
+		"--may-exist lb-add nl_lb_web 10.96.0.10:80 10.10.0.10:8080 tcp",
+		"--may-exist lr-lb-add nl_lr_prod nl_lb_web",
+		"--may-exist ls-lb-add nl_ls_apps nl_lb_web",
+	} {
+		if got := strings.Count(joined, expected); got != 1 {
+			t.Fatalf("unchanged load balancer op %q count = %d, want one initial apply:\n%s", expected, got, joined)
+		}
+	}
+}
+
+func TestBackendCleanupReappliesChangedLoadBalancerBackends(t *testing.T) {
+	recorder := ovn.NewRecorderExecutor()
+	backend := ovn.NewBackend(recorder)
+	first := controlStateWithEndpoint("pod-a")
+	controller := control.NewController(backend, control.NewMemoryBackend())
+	if err := controller.Reconcile(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+
+	second := first
+	second.LoadBalancers[0].Ports[0].Backends = []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.12"), Port: 8080}}
+	if err := controller.Reconcile(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+
+	joined := stringifyOVNOps(recorder.Operations())
+	for _, expected := range []string{
+		"--may-exist lb-add nl_lb_web 10.96.0.10:80 10.10.0.10:8080 tcp",
+		"--may-exist lb-add nl_lb_web 10.96.0.10:80 10.10.0.12:8080 tcp",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("changed load balancer backend operation missing %q:\n%s", expected, joined)
+		}
+	}
+	if got := strings.Count(joined, "--if-exists lb-del nl_lb_web 10.96.0.10:80"); got != 2 {
+		t.Fatalf("changed load balancer frontend delete count = %d, want initial and changed apply:\n%s", got, joined)
+	}
+}
+
+func TestBackendSnapshotIsNotMutatedByCallerAfterReconcile(t *testing.T) {
+	recorder := ovn.NewRecorderExecutor()
+	backend := ovn.NewBackend(recorder)
+	first := controlStateWithEndpoint("pod-a")
+	controller := control.NewController(backend, control.NewMemoryBackend())
+	if err := controller.Reconcile(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+
+	second := first
+	second.RouteTables = []model.RouteTable{{
+		Name: "default",
+		VPC:  "prod",
+		Routes: []model.Route{{
+			Destination: netip.MustParsePrefix("0.0.0.0/0"),
+			NextHops:    []netip.Addr{netip.MustParseAddr("10.10.0.254")},
+		}},
+	}}
+	second.PolicyRoutes = []model.PolicyRoute{{
+		Name:     "force-private",
+		VPC:      "prod",
+		Priority: 100,
+		Match: model.RouteMatch{
+			Source:      netip.MustParsePrefix("10.10.0.0/24"),
+			Destination: netip.MustParsePrefix("172.16.0.0/16"),
+		},
+		Action: model.RouteAction{Type: model.ActionReroute, NextHops: []netip.Addr{netip.MustParseAddr("10.10.0.253")}},
+	}}
+	if err := controller.Reconcile(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+
+	third := second
+	third.RouteTables[0].Routes[0].NextHops[0] = netip.MustParseAddr("10.10.0.252")
+	third.PolicyRoutes[0].Action.NextHops[0] = netip.MustParseAddr("10.10.0.252")
+	third.LoadBalancers[0].Ports[0].Backends[0].IP = netip.MustParseAddr("10.10.0.12")
+	if err := controller.Reconcile(context.Background(), third); err != nil {
+		t.Fatal(err)
+	}
+
+	joined := stringifyOVNOps(recorder.Operations())
+	for _, expected := range []string{
+		"--if-exists lr-route-del nl_lr_prod 0.0.0.0/0",
+		"--if-exists lr-policy-del nl_lr_prod 100",
+		"--may-exist lb-add nl_lb_web 10.96.0.10:80 10.10.0.12:8080 tcp",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("snapshot mutation regression operation missing %q:\n%s", expected, joined)
+		}
+	}
+}
+
 func TestBackendCleanupConvergesChangedNATRule(t *testing.T) {
 	recorder := ovn.NewRecorderExecutor()
 	backend := ovn.NewBackend(recorder)
