@@ -17,6 +17,7 @@ type Backend struct {
 	skipNAT  map[string]string
 	skipLB   map[string]string
 	skipPR   map[string]string
+	seen     bool
 }
 
 const operationHistoryLimit = 4096
@@ -87,10 +88,14 @@ func (b *Backend) CleanupTopology(ctx context.Context, state topology.State) err
 
 	next := snapshotDesired(state)
 	ops := cleanupOperations(b.last, next)
+	if !b.seen {
+		ops = append([]Operation{gcStaleNATRulesOperation(next.NATRules)}, ops...)
+	}
 	b.skipNAT = unchangedNATRules(b.last, next)
 	b.skipLB = unchangedLoadBalancers(b.last, next)
 	b.skipPR = unchangedPolicyRoutes(b.last, next)
 	b.last = next
+	b.seen = true
 	b.planner.SyncLoadBalancerHealthChecks(next.LoadBalancers)
 
 	if len(ops) == 0 {

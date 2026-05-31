@@ -468,3 +468,14 @@ func natDeleteOperations(rule model.NATRule) []Operation {
 		},
 	}}
 }
+
+func gcStaleNATRulesOperation(rules map[string]model.NATRule) Operation {
+	keep := make([]string, 0, len(rules))
+	for _, rule := range rules {
+		if natUsesManagedRecord(rule) {
+			keep = append(keep, rule.Name)
+		}
+	}
+	sort.Strings(keep)
+	return Operation{Command: "gc-stale-nat-rules", Args: keep}
+}

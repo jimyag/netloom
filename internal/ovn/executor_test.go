@@ -507,6 +507,36 @@ func TestBackendCleanupChangedPortDNATDoesNotDeleteSiblingExternalIPRules(t *tes
 	}
 }
 
+func TestBackendFirstReconcileCleansStaleManagedNATRules(t *testing.T) {
+	recorder := ovn.NewRecorderExecutor()
+	backend := ovn.NewBackend(recorder)
+	state := controlStateWithEndpoint("pod-a")
+	state.NATRules = []model.NATRule{{
+		Name:         "web",
+		VPC:          "prod",
+		Type:         model.ActionDNAT,
+		ExternalIP:   netip.MustParseAddr("198.51.100.80"),
+		TargetIP:     netip.MustParseAddr("10.10.0.10"),
+		Protocol:     model.ProtocolTCP,
+		ExternalPort: 8443,
+		TargetPort:   8443,
+	}}
+	controller := control.NewController(backend, control.NewMemoryBackend())
+	if err := controller.Reconcile(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+
+	joined := stringifyOVNOps(recorder.Operations())
+	if !strings.Contains(joined, "gc-stale-nat-rules web") {
+		t.Fatalf("first reconcile should clean stale managed NAT rules while keeping desired names:\n%s", joined)
+	}
+	staleGC := strings.Index(joined, "gc-stale-nat-rules web")
+	createGC := strings.Index(joined, "gc-nat-rule web")
+	if createGC < 0 || staleGC > createGC {
+		t.Fatalf("stale NAT cleanup should run before per-rule create GC:\n%s", joined)
+	}
+}
+
 func TestBackendCleanupConvergesChangedPolicyRoute(t *testing.T) {
 	recorder := ovn.NewRecorderExecutor()
 	backend := ovn.NewBackend(recorder)
@@ -1044,6 +1074,59 @@ esac
 	}
 	if !strings.Contains(calls[3], "set\nlogical_router\nnl_lr_prod") {
 		t.Fatalf("trailing regular operation should still execute:\n%s", calls[3])
+	}
+}
+
+func TestNBCTLExecutorDestroysOnlyStaleManagedNATRules(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args")
+	binary := filepath.Join(dir, "ovn-nbctl")
+	script := fmt.Sprintf(`#!/bin/sh
+printf '%%s\n' '---' >> %q
+printf '%%s\n' "$@" >> %q
+case "$*" in
+  *"--columns=_uuid,external_ids find NAT"*)
+    printf 'nat-keep,"{netloom_owner=netloom,netloom_nat=web}"\n'
+    printf 'nat-stale,"{netloom_owner=netloom,netloom_nat=old}"\n'
+    printf 'nat-missing,"{netloom_owner=netloom}"\n'
+    ;;
+esac
+`, argsFile, argsFile)
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	executor := ovn.NewNBCTLExecutor(binary, "--db=unix:/tmp/ovnnb.sock")
+	err := executor.Execute(context.Background(), []ovn.Operation{
+		{Command: "gc-stale-nat-rules", Args: []string{"web"}},
+		{Command: "set", Args: []string{"logical_router", "nl_lr_prod", "external_ids:netloom_owner=netloom"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := strings.Split(strings.TrimPrefix(strings.TrimSpace(string(raw)), "---\n"), "\n---\n")
+	if len(calls) != 3 {
+		t.Fatalf("calls = %d, want find, stale destroy, trailing set:\n%s", len(calls), raw)
+	}
+	if !strings.Contains(calls[0], "--columns=_uuid,external_ids\nfind\nNAT") ||
+		!strings.Contains(calls[0], "external_ids:netloom_owner=netloom") {
+		t.Fatalf("first call should find managed NAT records with external IDs:\n%s", calls[0])
+	}
+	if !strings.Contains(calls[1], "destroy\nNAT\nnat-stale") {
+		t.Fatalf("stale managed NAT should be destroyed:\n%s", raw)
+	}
+	if strings.Contains(string(raw), "destroy\nNAT\nnat-keep") {
+		t.Fatalf("desired managed NAT must not be destroyed:\n%s", raw)
+	}
+	if strings.Contains(string(raw), "destroy\nNAT\nnat-missing") {
+		t.Fatalf("managed NAT without netloom_nat identity must not be destroyed:\n%s", raw)
+	}
+	if !strings.Contains(calls[2], "set\nlogical_router\nnl_lr_prod") {
+		t.Fatalf("trailing regular operation should still execute:\n%s", calls[2])
 	}
 }
 

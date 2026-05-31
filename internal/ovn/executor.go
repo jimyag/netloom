@@ -142,7 +142,7 @@ func firstSpecialOperation(ops []Operation) int {
 
 func isSpecialOperation(op Operation) bool {
 	switch op.Command {
-	case "gc-dhcp-options", "gc-load-balancer-health-checks", "gc-nat-rule":
+	case "gc-dhcp-options", "gc-load-balancer-health-checks", "gc-nat-rule", "gc-stale-nat-rules":
 		return true
 	default:
 		return false
@@ -169,9 +169,62 @@ func (e *NBCTLExecutor) executeSpecial(ctx context.Context, op Operation) error 
 			"external_ids:netloom_owner=netloom",
 			"external_ids:netloom_nat="+op.Args[0],
 		)
+	case "gc-stale-nat-rules":
+		return e.destroyStaleNATRules(ctx, op.Args)
 	default:
 		return fmt.Errorf("unsupported special operation %q", op.Command)
 	}
+}
+
+func (e *NBCTLExecutor) destroyStaleNATRules(ctx context.Context, keep []string) error {
+	keepSet := make(map[string]struct{}, len(keep))
+	for _, name := range keep {
+		keepSet[name] = struct{}{}
+	}
+	args := append([]string(nil), e.BaseArgs...)
+	args = append(args, "--format=csv", "--data=bare", "--no-headings", "--columns=_uuid,external_ids", "find", "NAT", "external_ids:netloom_owner=netloom")
+	output, err := e.outputCommand(ctx, args)
+	if err != nil {
+		return err
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+		uuid, natName, ok := parseNATGCRow(line)
+		if !ok {
+			continue
+		}
+		if _, keep := keepSet[natName]; keep {
+			continue
+		}
+		destroyArgs := append([]string(nil), e.BaseArgs...)
+		destroyArgs = append(destroyArgs, "--if-exists", "destroy", "NAT", uuid)
+		if err := e.runCommand(ctx, destroyArgs); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func parseNATGCRow(line string) (string, string, bool) {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return "", "", false
+	}
+	uuid, externalIDs, ok := strings.Cut(line, ",")
+	if !ok {
+		return "", "", false
+	}
+	uuid = strings.Trim(strings.TrimSpace(uuid), `"`)
+	externalIDs = strings.TrimSpace(externalIDs)
+	externalIDs = strings.Trim(externalIDs, `"{} `)
+	for _, field := range strings.Split(externalIDs, ",") {
+		key, value, ok := strings.Cut(strings.TrimSpace(field), "=")
+		if !ok || strings.Trim(key, `"{} `) != "netloom_nat" {
+			continue
+		}
+		natName := strings.Trim(value, `"{} `)
+		return uuid, natName, uuid != "" && natName != ""
+	}
+	return "", "", false
 }
 
 func (e *NBCTLExecutor) destroyMatchingRecords(ctx context.Context, table string, matches ...string) error {
@@ -253,6 +306,14 @@ func validateOperation(op Operation) error {
 func validateSpecialOperation(op Operation) error {
 	if len(op.Flags) != 0 {
 		return fmt.Errorf("special operation %q must not set flags", op.Command)
+	}
+	if op.Command == "gc-stale-nat-rules" {
+		for _, arg := range op.Args {
+			if arg == "" {
+				return fmt.Errorf("special operation %q contains empty keep name", op.Command)
+			}
+		}
+		return nil
 	}
 	if len(op.Args) != 1 || op.Args[0] == "" {
 		return fmt.Errorf("special operation %q requires one non-empty argument", op.Command)
