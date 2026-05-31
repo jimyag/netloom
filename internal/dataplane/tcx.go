@@ -396,6 +396,9 @@ func IPv4L4ACLRulesFromProgramForDirection(program policy.Program, direction mod
 	if len(rules) == 0 {
 		return nil, fmt.Errorf("program %s has no IPv4 L4 %s ACL rules for TCX", program.EndpointID, direction)
 	}
+	if !hasEnforcingIPv4TCXRule(rules) {
+		return nil, fmt.Errorf("program %s has no enforcing IPv4 L4 %s ACL rules for TCX", program.EndpointID, direction)
+	}
 	return rules, nil
 }
 
@@ -414,6 +417,9 @@ func IPv4L4ACLRulesFromProgramsForDirection(programs []policy.Program, direction
 	if len(rules) == 0 {
 		return nil, fmt.Errorf("programs have no IPv4 L4 %s ACL rules for TCX", direction)
 	}
+	if !hasEnforcingIPv4TCXRule(rules) {
+		return nil, fmt.Errorf("programs have no enforcing IPv4 L4 %s ACL rules for TCX", direction)
+	}
 	return rules, nil
 }
 
@@ -429,6 +435,9 @@ func IPv6L4ACLRulesFromProgramForDirection(program policy.Program, direction mod
 	}
 	if len(rules) == 0 {
 		return nil, fmt.Errorf("program %s has no IPv6 L4 %s ACL rules for TCX", program.EndpointID, direction)
+	}
+	if !hasEnforcingIPv6TCXRule(rules) {
+		return nil, fmt.Errorf("program %s has no enforcing IPv6 L4 %s ACL rules for TCX", program.EndpointID, direction)
 	}
 	return rules, nil
 }
@@ -448,7 +457,28 @@ func IPv6L4ACLRulesFromProgramsForDirection(programs []policy.Program, direction
 	if len(rules) == 0 {
 		return nil, fmt.Errorf("programs have no IPv6 L4 %s ACL rules for TCX", direction)
 	}
+	if !hasEnforcingIPv6TCXRule(rules) {
+		return nil, fmt.Errorf("programs have no enforcing IPv6 L4 %s ACL rules for TCX", direction)
+	}
 	return rules, nil
+}
+
+func hasEnforcingIPv4TCXRule(rules []IPv4L4ACLRule) bool {
+	for _, rule := range rules {
+		if rule.Action == TCXDrop {
+			return true
+		}
+	}
+	return false
+}
+
+func hasEnforcingIPv6TCXRule(rules []IPv6L4ACLRule) bool {
+	for _, rule := range rules {
+		if rule.Action == TCXDrop {
+			return true
+		}
+	}
+	return false
 }
 
 func ValidateIPv4L4ACLProgramSupport(program policy.Program) error {

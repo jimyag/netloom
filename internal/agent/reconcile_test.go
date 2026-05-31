@@ -481,6 +481,44 @@ func TestReconcileNodeWithTCXInterfaceAllowsNoEligiblePolicy(t *testing.T) {
 	}
 }
 
+func TestReconcileNodeWithTCXInterfaceTreatsAllowOnlyPolicyAsNotEligible(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:             "pod-a",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"web"},
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "allow-web",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("172.30.0.11/32"),
+				Ports:      []model.PortRange{{From: 8080, To: 8080}},
+				Action:     model.ActionAllow,
+			}},
+		}},
+	}
+
+	result, err := ReconcileNodeWithOptions(context.Background(), state, ReconcileOptions{
+		Node:         "node-a",
+		Store:        dataplane.NewInMemoryPolicyStore(),
+		TCXInterface: "lo",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Entries != 1 || result.TCXEligible != 0 || result.TCX != "not-attached" {
+		t.Fatalf("result = %+v, want policy stored but allow-only TCX not attached", result)
+	}
+}
+
 func TestReconcileNodeWithTCXRejectsRemoteEndpointPolicy(t *testing.T) {
 	state := control.DesiredState{
 		Endpoints: []model.Endpoint{
@@ -591,24 +629,25 @@ func TestReconcilerKeepsAndReplacesTCXAttachments(t *testing.T) {
 		t.Fatalf("expected unchanged reconcile to keep attachments, attaches=%d closes=%d", attaches, closes)
 	}
 	state.SecurityGroups[0].Rules[0].Action = model.ActionAllow
-	if _, err := reconciler.Reconcile(context.Background(), state, options); err != nil {
+	result, err = reconciler.Reconcile(context.Background(), state, options)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if attaches != 4 || closes != 2 {
-		t.Fatalf("expected policy change to replace both attachments, attaches=%d closes=%d", attaches, closes)
+	if result.TCX != "not-attached" || attaches != 2 || closes != 2 {
+		t.Fatalf("expected allow-only policy change to close attachments, result=%+v attaches=%d closes=%d", result, attaches, closes)
 	}
 	state.Endpoints = state.Endpoints[:1]
 	if _, err := reconciler.Reconcile(context.Background(), state, options); err != nil {
 		t.Fatal(err)
 	}
-	if attaches != 4 || closes != 3 {
-		t.Fatalf("expected stale attachment to close and remaining attachment to stay, attaches=%d closes=%d", attaches, closes)
+	if attaches != 2 || closes != 2 {
+		t.Fatalf("expected no stale attachment left to close, attaches=%d closes=%d", attaches, closes)
 	}
 	if err := reconciler.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if closes != 4 {
-		t.Fatalf("final closes = %d, want 4", closes)
+	if closes != 2 {
+		t.Fatalf("final closes = %d, want 2", closes)
 	}
 }
 
@@ -1201,7 +1240,7 @@ func TestReconcileNodeCompilesRemoteServiceRule(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Entries != 1 || result.TCXEligible != 1 {
+	if result.Entries != 1 || result.TCXEligible != 0 {
 		t.Fatalf("unexpected result: %+v", result)
 	}
 	decision := dataplane.Evaluate(store.Entries("pod-client"), dataplane.Packet{
@@ -1248,7 +1287,7 @@ func TestReconcileNodeCompilesFQDNRulesFromDNSRecords(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Entries != 1 || result.TCXEligible != 1 {
+	if result.Entries != 1 || result.TCXEligible != 0 {
 		t.Fatalf("unexpected result: %+v", result)
 	}
 	entries := store.Entries("pod-a")
@@ -1307,7 +1346,7 @@ func TestReconcileNodeCompilesCIDRGroupRules(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Entries != 2 || result.TCXEligible != 1 {
+	if result.Entries != 2 || result.TCXEligible != 0 {
 		t.Fatalf("unexpected result: %+v", result)
 	}
 	entries := store.Entries("pod-a")
@@ -1366,7 +1405,7 @@ func TestReconcileNodeCompilesHostEntityFromGateways(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Entries != 1 || result.TCXEligible != 1 {
+	if result.Entries != 1 || result.TCXEligible != 0 {
 		t.Fatalf("unexpected result: %+v", result)
 	}
 	entries := store.Entries("pod-a")
@@ -1427,7 +1466,7 @@ func TestReconcileNodeCompilesRemoteNodeEntityFromGateways(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Entries != 1 || result.TCXEligible != 1 {
+	if result.Entries != 1 || result.TCXEligible != 0 {
 		t.Fatalf("unexpected result: %+v", result)
 	}
 	entries := store.Entries("pod-a")

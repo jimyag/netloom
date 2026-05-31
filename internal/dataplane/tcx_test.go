@@ -113,6 +113,25 @@ func TestIPv4L4ACLRulesFromProgramRejectsRemoteEndpointIdentityMatch(t *testing.
 	}
 }
 
+func TestIPv4L4ACLRulesFromProgramRejectsAllowOnlyPolicy(t *testing.T) {
+	program := policy.Program{
+		EndpointID: "pod-a",
+		Rules: []policy.Rule{{
+			ID:         "allow-web",
+			Direction:  model.DirectionIngress,
+			Protocol:   model.ProtocolTCP,
+			RemoteCIDR: netip.MustParsePrefix("172.30.0.11/32"),
+			Ports:      []model.PortRange{{From: 8080, To: 8080}},
+			Action:     model.ActionAllow,
+		}},
+	}
+
+	_, err := IPv4L4ACLRulesFromProgram(program)
+	if err == nil || !strings.Contains(err.Error(), "no enforcing IPv4 L4 ingress ACL rules") {
+		t.Fatalf("error = %v, want allow-only TCX policy to be non-enforcing", err)
+	}
+}
+
 func TestIPv4L4ACLRulesFromProgramProjectsExactEgressPolicy(t *testing.T) {
 	program := policy.Program{
 		EndpointID: "pod-a",
@@ -309,19 +328,19 @@ func TestIPv4L4ACLRulesFromProgramProjectsICMPCIDRPolicy(t *testing.T) {
 	}
 }
 
-func TestIPv4L4ACLRulesFromProgramProjectsICMPTypeAndCode(t *testing.T) {
+func TestIPv4L4ACLRulesFromProgramProjectsICMPDropTypeAndCode(t *testing.T) {
 	icmpType := uint8(8)
 	icmpCode := uint8(0)
 	program := policy.Program{
 		EndpointID: "pod-a",
 		Rules: []policy.Rule{{
-			ID:         "allow-echo",
+			ID:         "drop-echo",
 			Direction:  model.DirectionIngress,
 			Protocol:   model.ProtocolICMP,
 			RemoteCIDR: netip.MustParsePrefix("172.30.0.0/24"),
 			ICMPType:   &icmpType,
 			ICMPCode:   &icmpCode,
-			Action:     model.ActionAllow,
+			Action:     model.ActionDrop,
 		}},
 	}
 	rules, err := IPv4L4ACLRulesFromProgram(program)
@@ -331,7 +350,7 @@ func TestIPv4L4ACLRulesFromProgramProjectsICMPTypeAndCode(t *testing.T) {
 	if len(rules) != 1 {
 		t.Fatalf("rules = %d, want 1", len(rules))
 	}
-	if rules[0].Protocol != 1 || rules[0].DestPort != 0x0800 || rules[0].DestPortPrefixBits != 16 || rules[0].Action != TCXPass {
+	if rules[0].Protocol != 1 || rules[0].DestPort != 0x0800 || rules[0].DestPortPrefixBits != 16 || rules[0].Action != TCXDrop {
 		t.Fatalf("unexpected ICMP type/code rule: %+v", rules[0])
 	}
 }
@@ -454,19 +473,19 @@ func TestIPv6L4ACLRulesFromProgramProjectsPortRangePolicy(t *testing.T) {
 	}
 }
 
-func TestIPv6L4ACLRulesFromProgramProjectsICMPv6TypeAndCode(t *testing.T) {
+func TestIPv6L4ACLRulesFromProgramProjectsICMPv6DropTypeAndCode(t *testing.T) {
 	icmpType := uint8(128)
 	icmpCode := uint8(0)
 	program := policy.Program{
 		EndpointID: "pod-a",
 		Rules: []policy.Rule{{
-			ID:         "allow-v6-echo",
+			ID:         "drop-v6-echo",
 			Direction:  model.DirectionIngress,
 			Protocol:   model.ProtocolICMP,
 			RemoteCIDR: netip.MustParsePrefix("fd00:10::/64"),
 			ICMPType:   &icmpType,
 			ICMPCode:   &icmpCode,
-			Action:     model.ActionAllow,
+			Action:     model.ActionDrop,
 		}},
 	}
 	rules, err := IPv6L4ACLRulesFromProgram(program)
@@ -476,7 +495,7 @@ func TestIPv6L4ACLRulesFromProgramProjectsICMPv6TypeAndCode(t *testing.T) {
 	if len(rules) != 1 {
 		t.Fatalf("rules = %d, want 1", len(rules))
 	}
-	if rules[0].Protocol != 58 || rules[0].DestPort != 0x8000 || rules[0].DestPortPrefixBits != 16 || rules[0].Action != TCXPass {
+	if rules[0].Protocol != 58 || rules[0].DestPort != 0x8000 || rules[0].DestPortPrefixBits != 16 || rules[0].Action != TCXDrop {
 		t.Fatalf("unexpected ICMPv6 type/code rule: %+v", rules[0])
 	}
 }
@@ -728,7 +747,7 @@ func TestIPv6L4ACLRulesFromProgramsKeepsHigherPrecedenceDuplicateKey(t *testing.
 	}
 }
 
-func TestIPv4L4ACLRulesFromProgramTreatsLogActionAsPass(t *testing.T) {
+func TestIPv4L4ACLRulesFromProgramTreatsLogOnlyPolicyAsNotEnforcing(t *testing.T) {
 	program := policy.Program{
 		EndpointID: "pod-a",
 		Rules: []policy.Rule{{
@@ -740,15 +759,9 @@ func TestIPv4L4ACLRulesFromProgramTreatsLogActionAsPass(t *testing.T) {
 			Action:     model.ActionLog,
 		}},
 	}
-	rules, err := IPv4L4ACLRulesFromProgram(program)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(rules) != 1 {
-		t.Fatalf("rules = %d, want 1", len(rules))
-	}
-	if rules[0].Action != TCXPass {
-		t.Fatalf("tcx action = %d, want pass", rules[0].Action)
+	_, err := IPv4L4ACLRulesFromProgram(program)
+	if err == nil || !strings.Contains(err.Error(), "no enforcing IPv4 L4 ingress ACL rules") {
+		t.Fatalf("error = %v, want log-only TCX policy to be non-enforcing", err)
 	}
 }
 
