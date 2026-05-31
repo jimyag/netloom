@@ -73,10 +73,11 @@ func runSelfTest(ctx context.Context, executor ovn.Executor) (SelfTestResult, er
 			},
 		}},
 		Gateways: []model.Gateway{{
-			Name:  "gw-a",
-			VPC:   "default",
-			Node:  "node-a",
-			LANIP: netip.MustParseAddr("10.244.0.254"),
+			Name:       "gw-a",
+			VPC:        "default",
+			Node:       "node-a",
+			ExternalIF: "eth0",
+			LANIP:      netip.MustParseAddr("10.244.0.254"),
 		}},
 		NATRules: []model.NATRule{{
 			Name:       "egress-snat",

@@ -1474,9 +1474,9 @@ func TestCompileForEndpointWithContextExpandsRemoteEntities(t *testing.T) {
 			{Name: "other", VPC: "dev", CIDR: netip.MustParsePrefix("192.0.2.0/24"), Gateway: netip.MustParseAddr("192.0.2.1")},
 		},
 		Gateways: []model.Gateway{
-			{Name: "gw-a", VPC: "prod", Node: "node-a", LANIP: netip.MustParseAddr("10.10.0.254")},
-			{Name: "gw-v6", VPC: "prod", Node: "node-b", LANIP: netip.MustParseAddr("fd00:10::fe")},
-			{Name: "gw-dev", VPC: "dev", Node: "node-c", LANIP: netip.MustParseAddr("192.0.2.254")},
+			{Name: "gw-a", VPC: "prod", Node: "node-a", ExternalIF: "eth0", LANIP: netip.MustParseAddr("10.10.0.254")},
+			{Name: "gw-v6", VPC: "prod", Node: "node-b", ExternalIF: "eth1", LANIP: netip.MustParseAddr("fd00:10::fe")},
+			{Name: "gw-dev", VPC: "dev", Node: "node-c", ExternalIF: "eth0", LANIP: netip.MustParseAddr("192.0.2.254")},
 		},
 	})
 	if err != nil {
@@ -1566,10 +1566,10 @@ func TestCompileForEndpointWithContextExpandsRemoteNodeEntity(t *testing.T) {
 		},
 	}, CompileContext{
 		Gateways: []model.Gateway{
-			{Name: "gw-local", VPC: "prod", Node: "node-a", LANIP: netip.MustParseAddr("10.10.0.254")},
-			{Name: "gw-remote", VPC: "prod", Node: "node-b", LANIP: netip.MustParseAddr("10.10.0.253")},
-			{Name: "gw-remote-v6", VPC: "prod", Node: "node-c", LANIP: netip.MustParseAddr("fd00:10::fe")},
-			{Name: "gw-other", VPC: "dev", Node: "node-d", LANIP: netip.MustParseAddr("192.0.2.254")},
+			{Name: "gw-local", VPC: "prod", Node: "node-a", ExternalIF: "eth0", LANIP: netip.MustParseAddr("10.10.0.254")},
+			{Name: "gw-remote", VPC: "prod", Node: "node-b", ExternalIF: "eth0", LANIP: netip.MustParseAddr("10.10.0.253")},
+			{Name: "gw-remote-v6", VPC: "prod", Node: "node-c", ExternalIF: "eth1", LANIP: netip.MustParseAddr("fd00:10::fe")},
+			{Name: "gw-other", VPC: "dev", Node: "node-d", ExternalIF: "eth0", LANIP: netip.MustParseAddr("192.0.2.254")},
 		},
 	})
 	if err != nil {
@@ -1622,7 +1622,7 @@ func TestCompileForEndpointWithContextRejectsRemoteNodeEntityWithoutRemoteGatewa
 		},
 	}, CompileContext{
 		Gateways: []model.Gateway{
-			{Name: "gw-local", VPC: "prod", Node: "node-a", LANIP: netip.MustParseAddr("10.10.0.254")},
+			{Name: "gw-local", VPC: "prod", Node: "node-a", ExternalIF: "eth0", LANIP: netip.MustParseAddr("10.10.0.254")},
 		},
 	})
 	if err == nil || !strings.Contains(err.Error(), "remote-node requires at least one gateway on a different node") {

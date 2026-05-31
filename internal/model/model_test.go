@@ -59,10 +59,11 @@ func TestCoreNetworkResourcesValidateRequiredFields(t *testing.T) {
 			name: "gateway",
 			valid: func() error {
 				return Gateway{
-					Name:  "gw-a",
-					VPC:   "prod",
-					Node:  "node-a",
-					LANIP: netip.MustParseAddr("10.10.0.254"),
+					Name:       "gw-a",
+					VPC:        "prod",
+					Node:       "node-a",
+					ExternalIF: "eth0",
+					LANIP:      netip.MustParseAddr("10.10.0.254"),
 				}.Validate()
 			},
 			invalid: func() error {
@@ -613,6 +614,18 @@ func TestSubnetGatewayMACIncludesNetworkContext(t *testing.T) {
 		if got == first {
 			t.Fatalf("subnet gateway mac collision: %s", got)
 		}
+	}
+}
+
+func TestGatewayRequiresExternalInterface(t *testing.T) {
+	gateway := Gateway{
+		Name:  "gw-a",
+		VPC:   "prod",
+		Node:  "node-a",
+		LANIP: netip.MustParseAddr("10.10.0.254"),
+	}
+	if err := gateway.Validate(); err == nil || !strings.Contains(err.Error(), "gateway external_if is required") {
+		t.Fatalf("error = %v, want missing external_if validation", err)
 	}
 }
 

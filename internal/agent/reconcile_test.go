@@ -1450,10 +1450,11 @@ func TestReconcileNodeCompilesHostEntityFromGateways(t *testing.T) {
 			SecurityGroups: []string{"client"},
 		}},
 		Gateways: []model.Gateway{{
-			Name:  "gw-a",
-			VPC:   "prod",
-			Node:  "node-a",
-			LANIP: netip.MustParseAddr("10.10.0.254"),
+			Name:       "gw-a",
+			VPC:        "prod",
+			Node:       "node-a",
+			ExternalIF: "eth0",
+			LANIP:      netip.MustParseAddr("10.10.0.254"),
 		}},
 		SecurityGroups: []model.SecurityGroup{{
 			Name: "client",
@@ -1504,16 +1505,18 @@ func TestReconcileNodeCompilesRemoteNodeEntityFromGateways(t *testing.T) {
 		}},
 		Gateways: []model.Gateway{
 			{
-				Name:  "gw-local",
-				VPC:   "prod",
-				Node:  "node-a",
-				LANIP: netip.MustParseAddr("10.10.0.254"),
+				Name:       "gw-local",
+				VPC:        "prod",
+				Node:       "node-a",
+				ExternalIF: "eth0",
+				LANIP:      netip.MustParseAddr("10.10.0.254"),
 			},
 			{
-				Name:  "gw-remote",
-				VPC:   "prod",
-				Node:  "node-b",
-				LANIP: netip.MustParseAddr("10.10.0.253"),
+				Name:       "gw-remote",
+				VPC:        "prod",
+				Node:       "node-b",
+				ExternalIF: "eth0",
+				LANIP:      netip.MustParseAddr("10.10.0.253"),
 			},
 		},
 		SecurityGroups: []model.SecurityGroup{{

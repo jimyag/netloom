@@ -71,7 +71,7 @@ func TestMemoryBackendClonesInputsAndTopologyState(t *testing.T) {
 		Subnets:       map[string]model.Subnet{"apps": subnet},
 		Endpoints:     map[string]model.Endpoint{"pod-a": endpoint},
 		RouteTables:   map[string]model.RouteTable{"default": routeTable},
-		Gateways:      map[string]model.Gateway{"gw-a": {Name: "gw-a", VPC: "prod", Node: "node-a", LANIP: netip.MustParseAddr("10.10.0.254")}},
+		Gateways:      map[string]model.Gateway{"gw-a": {Name: "gw-a", VPC: "prod", Node: "node-a", ExternalIF: "eth0", LANIP: netip.MustParseAddr("10.10.0.254")}},
 		NATRules:      map[string]model.NATRule{"egress": {Name: "egress", VPC: "prod", Type: model.ActionSNAT, MatchCIDR: netip.MustParsePrefix("10.10.0.0/24"), ExternalIP: netip.MustParseAddr("198.51.100.10")}},
 		LoadBalancers: map[string]model.LoadBalancer{"web": lb},
 	}); err != nil {

@@ -723,13 +723,27 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 			name: "gateway lan ip conflicts with another gateway",
 			mutate: func(state *DesiredState) {
 				state.Gateways = append(state.Gateways, model.Gateway{
-					Name:  "gw-b",
-					VPC:   "prod",
-					Node:  "node-b",
-					LANIP: netip.MustParseAddr("10.10.0.254"),
+					Name:       "gw-b",
+					VPC:        "prod",
+					Node:       "node-b",
+					ExternalIF: "eth0",
+					LANIP:      netip.MustParseAddr("10.10.0.254"),
 				})
 			},
 			wantErr: "gateway \"gw-b\" conflicts with \"gw-a\" on lan ip 10.10.0.254 in vpc prod",
+		},
+		{
+			name: "gateway external interface conflicts on node",
+			mutate: func(state *DesiredState) {
+				state.Gateways = append(state.Gateways, model.Gateway{
+					Name:       "gw-b",
+					VPC:        "prod",
+					Node:       "node-a",
+					ExternalIF: "eth0",
+					LANIP:      netip.MustParseAddr("10.10.0.253"),
+				})
+			},
+			wantErr: "gateway \"gw-b\" conflicts with \"gw-a\" on external_if eth0 on node node-a",
 		},
 		{
 			name: "remote entity host without gateway",
@@ -1356,10 +1370,11 @@ func validObjectGraphState() DesiredState {
 			SecurityGroups: []string{"web"},
 		}},
 		Gateways: []model.Gateway{{
-			Name:  "gw-a",
-			VPC:   "prod",
-			Node:  "node-a",
-			LANIP: netip.MustParseAddr("10.10.0.254"),
+			Name:       "gw-a",
+			VPC:        "prod",
+			Node:       "node-a",
+			ExternalIF: "eth0",
+			LANIP:      netip.MustParseAddr("10.10.0.254"),
 		}},
 		LoadBalancers: []model.LoadBalancer{{
 			Name: "web",

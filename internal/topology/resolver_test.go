@@ -609,7 +609,7 @@ func TestResolveAllowPolicyRouteContinuesToStaticRoute(t *testing.T) {
 			Action: model.RouteAction{Type: model.ActionDrop},
 		}},
 		Gateways: map[string]model.Gateway{
-			"gw-a": {Name: "gw-a", VPC: "prod", Node: "node-a", LANIP: netip.MustParseAddr("10.10.0.254")},
+			"gw-a": {Name: "gw-a", VPC: "prod", Node: "node-a", ExternalIF: "eth0", LANIP: netip.MustParseAddr("10.10.0.254")},
 		},
 		NATRules: map[string]model.NATRule{
 			"snat": {
@@ -658,8 +658,8 @@ func TestResolvePolicyRouteSNATUsesNextHopGateway(t *testing.T) {
 			},
 		}},
 		Gateways: map[string]model.Gateway{
-			"gw-a": {Name: "gw-a", VPC: "prod", Node: "node-a", LANIP: netip.MustParseAddr("10.10.0.254")},
-			"gw-b": {Name: "gw-b", VPC: "prod", Node: "node-b", LANIP: netip.MustParseAddr("10.10.0.253")},
+			"gw-a": {Name: "gw-a", VPC: "prod", Node: "node-a", ExternalIF: "eth0", LANIP: netip.MustParseAddr("10.10.0.254")},
+			"gw-b": {Name: "gw-b", VPC: "prod", Node: "node-b", ExternalIF: "eth0", LANIP: netip.MustParseAddr("10.10.0.253")},
 		},
 		NATRules: map[string]model.NATRule{
 			"egress": {
@@ -768,7 +768,7 @@ func TestResolveLongestPrefixStaticRouteAndSNATGateway(t *testing.T) {
 			},
 		},
 		Gateways: map[string]model.Gateway{
-			"gw-a": {Name: "gw-a", VPC: "prod", Node: "node-a", LANIP: netip.MustParseAddr("10.10.0.254")},
+			"gw-a": {Name: "gw-a", VPC: "prod", Node: "node-a", ExternalIF: "eth0", LANIP: netip.MustParseAddr("10.10.0.254")},
 		},
 		NATRules: map[string]model.NATRule{
 			"snat": {

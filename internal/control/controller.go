@@ -525,6 +525,7 @@ func validateObjectGraph(state DesiredState) error {
 
 	gateways := make(map[string]model.Gateway, len(state.Gateways))
 	gatewayIPs := make(map[string]string, len(state.Gateways))
+	gatewayInterfaces := make(map[string]string, len(state.Gateways))
 	for _, gateway := range state.Gateways {
 		if err := gateway.Validate(); err != nil {
 			return err
@@ -548,6 +549,11 @@ func validateObjectGraph(state DesiredState) error {
 		if previous := gatewayIPs[ipKey]; previous != "" {
 			return fmt.Errorf("gateway %q conflicts with %q on lan ip %s in vpc %s", gateway.Name, previous, gateway.LANIP, gateway.VPC)
 		}
+		ifKey := gateway.Node + "|" + gateway.ExternalIF
+		if previous := gatewayInterfaces[ifKey]; previous != "" {
+			return fmt.Errorf("gateway %q conflicts with %q on external_if %s on node %s", gateway.Name, previous, gateway.ExternalIF, gateway.Node)
+		}
+		gatewayInterfaces[ifKey] = gateway.Name
 		gatewayIPs[ipKey] = gateway.Name
 		gateways[gateway.Name] = gateway
 	}

@@ -661,6 +661,9 @@ func (g Gateway) Validate() error {
 	if g.Node == "" {
 		return errors.New("gateway node is required")
 	}
+	if strings.TrimSpace(g.ExternalIF) == "" {
+		return errors.New("gateway external_if is required")
+	}
 	if !g.LANIP.IsValid() {
 		return errors.New("gateway lan ip is required")
 	}
