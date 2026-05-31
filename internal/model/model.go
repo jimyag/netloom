@@ -787,6 +787,7 @@ func (l LoadBalancer) Validate() error {
 		}
 		seenFrontends[key] = struct{}{}
 		healthyBackends := 0
+		seenBackends := make(map[string]struct{}, len(frontend.Backends))
 		for j, backend := range frontend.Backends {
 			if err := backend.Validate(); err != nil {
 				return fmt.Errorf("load balancer frontend %d backend %d: %w", i, j, err)
@@ -794,6 +795,11 @@ func (l LoadBalancer) Validate() error {
 			if backend.IP.Is4() != l.VIP.Is4() {
 				return fmt.Errorf("load balancer frontend %d backend %d ip family must match vip", i, j)
 			}
+			backendKey := netip.AddrPortFrom(backend.IP, backend.Port).String()
+			if _, ok := seenBackends[backendKey]; ok {
+				return fmt.Errorf("load balancer frontend %d backend %s is duplicated", i, backendKey)
+			}
+			seenBackends[backendKey] = struct{}{}
 			if backend.IsHealthy() {
 				healthyBackends++
 			}
@@ -802,10 +808,15 @@ func (l LoadBalancer) Validate() error {
 			return fmt.Errorf("load balancer frontend %d must have at least one healthy backend", i)
 		}
 	}
+	seenSubnets := make(map[string]struct{}, len(l.Subnets))
 	for i, subnet := range l.Subnets {
 		if subnet == "" {
 			return fmt.Errorf("load balancer subnet %d is empty", i)
 		}
+		if _, ok := seenSubnets[subnet]; ok {
+			return fmt.Errorf("load balancer subnet %q is duplicated", subnet)
+		}
+		seenSubnets[subnet] = struct{}{}
 	}
 	return nil
 }

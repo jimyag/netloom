@@ -1428,6 +1428,36 @@ func TestLoadBalancerValidateServiceVIP(t *testing.T) {
 			wantErr: "at least one healthy backend",
 		},
 		{
+			name: "duplicate backend",
+			lb: LoadBalancer{
+				Name: "web",
+				VPC:  "prod",
+				VIP:  netip.MustParseAddr("10.96.0.10"),
+				Ports: []LoadBalancerPort{{
+					Port: 80,
+					Backends: []LoadBalancerBackend{
+						{IP: netip.MustParseAddr("10.10.0.10"), Port: 8080},
+						{IP: netip.MustParseAddr("10.10.0.10"), Port: 8080},
+					},
+				}},
+			},
+			wantErr: "backend 10.10.0.10:8080 is duplicated",
+		},
+		{
+			name: "duplicate subnet",
+			lb: LoadBalancer{
+				Name:    "web",
+				VPC:     "prod",
+				VIP:     netip.MustParseAddr("10.96.0.10"),
+				Subnets: []string{"apps", "apps"},
+				Ports: []LoadBalancerPort{{
+					Port:     80,
+					Backends: backends,
+				}},
+			},
+			wantErr: "subnet \"apps\" is duplicated",
+		},
+		{
 			name: "disabled health check with options",
 			lb: LoadBalancer{
 				Name: "web",
