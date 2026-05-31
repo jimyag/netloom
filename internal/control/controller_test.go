@@ -1354,6 +1354,31 @@ func TestControllerRejectsDuplicatePolicyRouteNames(t *testing.T) {
 	}
 }
 
+func TestControllerAllowsSamePolicyRouteNameAcrossVPCs(t *testing.T) {
+	state := DesiredState{
+		VPCs: []model.VPC{{Name: "prod"}, {Name: "dev"}},
+		PolicyRoutes: []model.PolicyRoute{
+			{
+				Name:     "private",
+				VPC:      "prod",
+				Priority: 100,
+				Match:    model.RouteMatch{Destination: netip.MustParsePrefix("172.16.0.0/16")},
+				Action:   model.RouteAction{Type: model.ActionDrop},
+			},
+			{
+				Name:     "private",
+				VPC:      "dev",
+				Priority: 100,
+				Match:    model.RouteMatch{Destination: netip.MustParsePrefix("172.16.0.0/16")},
+				Action:   model.RouteAction{Type: model.ActionDrop},
+			},
+		},
+	}
+	if err := NewController(NewMemoryBackend(), NewMemoryBackend()).Reconcile(context.Background(), state); err != nil {
+		t.Fatalf("same policy route name in different vpcs should validate: %v", err)
+	}
+}
+
 func TestControllerReconcileRemovesStaleMemoryState(t *testing.T) {
 	backend := NewMemoryBackend()
 	controller := NewController(backend, backend)

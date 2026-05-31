@@ -981,10 +981,11 @@ func validatePolicyRoutes(routes []model.PolicyRoute) error {
 		if err := route.Validate(); err != nil {
 			return err
 		}
-		if _, ok := names[route.Name]; ok {
-			return fmt.Errorf("duplicate policy route name %q", route.Name)
+		nameKey := route.VPC + "\x00" + route.Name
+		if _, ok := names[nameKey]; ok {
+			return fmt.Errorf("duplicate policy route name %q in vpc %q", route.Name, route.VPC)
 		}
-		names[route.Name] = struct{}{}
+		names[nameKey] = struct{}{}
 		for _, existing := range records {
 			if existing.vpc == route.VPC && existing.priority == route.Priority && routeMatchesOverlap(existing.match, route.Match) {
 				return fmt.Errorf("policy route %q conflicts with %q on overlapping priority %d match %s in vpc %s", route.Name, existing.name, route.Priority, routeMatchKey(route.Match), route.VPC)
