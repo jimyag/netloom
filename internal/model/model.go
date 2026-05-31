@@ -1136,6 +1136,9 @@ func (r SecurityGroupRule) Validate() error {
 		}
 		seenEntities[entity] = struct{}{}
 	}
+	if _, ok := seenEntities["none"]; ok && len(seenEntities) > 1 {
+		return errors.New("remote entity none must not be combined with other remote entities")
+	}
 	if len(r.ExceptCIDRs) > 0 && !r.RemoteCIDR.IsValid() {
 		return errors.New("except cidrs require remote cidr")
 	}

@@ -240,8 +240,10 @@ expands to the current VPC's subnet CIDRs from desired state, `private` expands
 to RFC1918 plus ULA ranges, `host` expands to the current VPC gateway LAN IPs
 as `/32` or `/128` CIDRs, `remote-node` expands to same-VPC gateway LAN IPs
 whose gateway node differs from the protected endpoint's node, and `none`
-intentionally expands to no rules. The expanded entries use the same CIDR
-fallback and TCX projection path as direct CIDR rules.
+intentionally expands to no rules. Because `none` is a no-match sentinel, it
+must be used alone and validation rejects combinations with other entities. The
+expanded entries use the same CIDR fallback and TCX projection path as direct
+CIDR rules.
 
 CIDR groups follow Cilium's `CIDRGroupRef` and `CIDRSet` idea for reusable
 external CIDR sets. Netloom models those sets as desired-state `cidr_groups`; a

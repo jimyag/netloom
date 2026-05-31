@@ -800,7 +800,7 @@ func TestSecurityGroupRuleValidatesRemoteEntities(t *testing.T) {
 		Priority:       100,
 		Direction:      DirectionEgress,
 		Protocol:       ProtocolTCP,
-		RemoteEntities: []string{"world", "world-ipv4", "world-ipv6", "host", "remote-node", "none"},
+		RemoteEntities: []string{"all", "world", "world-ipv4", "world-ipv6", "host", "remote-node"},
 		Ports:          []PortRange{{From: 443, To: 443}},
 		Action:         ActionAllow,
 	}
@@ -811,6 +811,11 @@ func TestSecurityGroupRuleValidatesRemoteEntities(t *testing.T) {
 	rule.RemoteEntities = []string{"world", "world"}
 	if err := rule.Validate(); err == nil || !strings.Contains(err.Error(), "duplicated") {
 		t.Fatalf("error = %v, want duplicate remote entity validation", err)
+	}
+
+	rule.RemoteEntities = []string{"none", "world"}
+	if err := rule.Validate(); err == nil || !strings.Contains(err.Error(), "none must not be combined") {
+		t.Fatalf("error = %v, want none exclusivity validation", err)
 	}
 
 	rule.RemoteEntities = []string{"internet"}
