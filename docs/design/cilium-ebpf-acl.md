@@ -277,7 +277,9 @@ observer or proxy to refresh FQDN-derived CIDR entries without rewriting the mai
 topology document. This is the state update half of Cilium's DNS proxy model;
 the `internal/dnsobserver` package parses DNS wire responses, including
 compressed names and `A`/`AAAA`/`CNAME` records from answer, authority, and
-additional sections, into that same observation record shape. The
+additional sections, into that same observation record shape. CNAME aliases use
+the shortest TTL across the CNAME chain and terminal address record, matching
+the cache lifetime that should govern FQDN-derived policy entries. The
 `netloom-dns-observer` command wraps that parser as a
 sidecar-friendly bridge: it accepts newline-delimited base64 or hex DNS
 responses, or one raw DNS response, and atomically merges the derived records

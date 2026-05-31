@@ -55,6 +55,33 @@ func TestRecordsFromResponseProjectsCNAMEAnswersToAlias(t *testing.T) {
 	}
 }
 
+func TestRecordsFromResponseUsesShortestCNAMEChainTTLForAlias(t *testing.T) {
+	observedAt := time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)
+	packet := dnsResponse(
+		dnsQuestion("api.example.com", dnsTypeA),
+		dnsAnswerPtr(12, dnsTypeCNAME, 15, dnsName("edge.example.com")),
+		dnsAnswerName("edge.example.com", dnsTypeCNAME, 30, dnsName("service.example.com")),
+		dnsAnswerName("service.example.com", dnsTypeA, 120, []byte{203, 0, 113, 20}),
+	)
+
+	records, err := RecordsFromResponse(packet, observedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 3 {
+		t.Fatalf("records = %d, want alias, intermediate, and canonical records: %+v", len(records), records)
+	}
+	if records[0].Name != "api.example.com" || records[0].TTLSeconds != 15 || !records[0].ObservedAt.Equal(observedAt) {
+		t.Fatalf("alias record = %+v, want shortest CNAME chain TTL", records[0])
+	}
+	if records[1].Name != "edge.example.com" || records[1].TTLSeconds != 30 {
+		t.Fatalf("intermediate record = %+v, want intermediate CNAME TTL", records[1])
+	}
+	if records[2].Name != "service.example.com" || records[2].TTLSeconds != 120 {
+		t.Fatalf("canonical record = %+v, want address TTL", records[2])
+	}
+}
+
 func TestRecordsFromResponseParsesAdditionalAddressRecords(t *testing.T) {
 	observedAt := time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)
 	packet := dnsResponseWithSections(

@@ -23,6 +23,11 @@ type rrset struct {
 	ttl uint32
 }
 
+type cnameRecord struct {
+	target string
+	ttl    uint32
+}
+
 func RecordsFromResponse(packet []byte, observedAt time.Time) ([]model.DNSRecord, error) {
 	if len(packet) < 12 {
 		return nil, fmt.Errorf("dns response too short")
@@ -49,7 +54,7 @@ func RecordsFromResponse(packet []byte, observedAt time.Time) ([]model.DNSRecord
 	}
 
 	records := make(map[string]rrset)
-	cnames := make(map[string]string)
+	cnames := make(map[string]cnameRecord)
 	for _, section := range []struct {
 		name  string
 		count int
@@ -68,29 +73,32 @@ func RecordsFromResponse(packet []byte, observedAt time.Time) ([]model.DNSRecord
 	}
 	for alias, target := range cnames {
 		seen := map[string]struct{}{alias: {}}
+		chainTTL := target.ttl
 		for {
-			rrs, ok := records[target]
+			rrs, ok := records[target.target]
 			if ok {
+				ttl := minDNSTTL(chainTTL, rrs.ttl)
 				for _, ip := range rrs.ips {
-					appendRecord(records, alias, ip, rrs.ttl)
+					appendRecord(records, alias, ip, ttl)
 				}
 				break
 			}
-			next, ok := cnames[target]
+			next, ok := cnames[target.target]
 			if !ok {
 				break
 			}
-			if _, ok := seen[next]; ok {
+			if _, ok := seen[next.target]; ok {
 				break
 			}
-			seen[next] = struct{}{}
+			seen[next.target] = struct{}{}
+			chainTTL = minDNSTTL(chainTTL, next.ttl)
 			target = next
 		}
 	}
 	return dnsRecords(records, observedAt), nil
 }
 
-func parseResourceRecord(packet []byte, offset int, section string, index int, records map[string]rrset, cnames map[string]string) (int, error) {
+func parseResourceRecord(packet []byte, offset int, section string, index int, records map[string]rrset, cnames map[string]cnameRecord) (int, error) {
 	name, next, err := readName(packet, offset)
 	if err != nil {
 		return 0, fmt.Errorf("read %s %d name: %w", section, index, err)
@@ -129,7 +137,7 @@ func parseResourceRecord(packet []byte, offset int, section string, index int, r
 		if err != nil {
 			return 0, fmt.Errorf("read %s %d cname target: %w", section, index, err)
 		}
-		cnames[name] = canonicalName(target)
+		cnames[name] = cnameRecord{target: canonicalName(target), ttl: ttl}
 	}
 	return next, nil
 }
@@ -192,6 +200,16 @@ func appendRecord(records map[string]rrset, name string, ip netip.Addr, ttl uint
 		set.ttl = ttl
 	}
 	records[name] = set
+}
+
+func minDNSTTL(left, right uint32) uint32 {
+	if left == 0 || right == 0 {
+		return 0
+	}
+	if left < right {
+		return left
+	}
+	return right
 }
 
 func dnsRecords(records map[string]rrset, observedAt time.Time) []model.DNSRecord {
