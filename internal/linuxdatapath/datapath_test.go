@@ -518,6 +518,36 @@ func TestManagedPolicyRuleIncludesProtocolMarker(t *testing.T) {
 	}
 }
 
+func TestPlanManagedPolicyRuleSyncRespectsCleanupStale(t *testing.T) {
+	options := Options{PolicyTableBase: 22000, PolicyTableSize: 64}
+	desired := []*netlink.Rule{
+		{Priority: 9800, Table: 22000, Family: unix.AF_INET, Protocol: linuxPolicyRuleProtocolID},
+		{Priority: 9700, Table: linuxMainRouteTable, Family: unix.AF_INET, Protocol: linuxPolicyRuleProtocolID},
+	}
+	existing := []netlink.Rule{
+		{Priority: 9800, Table: 22000, Family: unix.AF_INET, Protocol: linuxPolicyRuleProtocolID},
+		{Priority: 9900, Table: 22001, Family: unix.AF_INET, Protocol: linuxPolicyRuleProtocolID},
+		{Priority: 9600, Table: linuxMainRouteTable, Family: unix.AF_INET},
+	}
+
+	plan := planManagedPolicyRuleSync(existing, desired, options)
+	if len(plan.Delete) != 0 {
+		t.Fatalf("cleanup disabled delete = %+v, want none", plan.Delete)
+	}
+	if len(plan.Add) != 1 || policyRuleKey(*plan.Add[0]) != policyRuleKey(*desired[1]) {
+		t.Fatalf("cleanup disabled add = %+v, want only missing desired main-table marker rule", plan.Add)
+	}
+
+	options.CleanupStale = true
+	plan = planManagedPolicyRuleSync(existing, desired, options)
+	if len(plan.Delete) != 1 || plan.Delete[0].Table != 22001 {
+		t.Fatalf("cleanup enabled delete = %+v, want stale managed table rule", plan.Delete)
+	}
+	if len(plan.Add) != 1 || policyRuleKey(*plan.Add[0]) != policyRuleKey(*desired[1]) {
+		t.Fatalf("cleanup enabled add = %+v, want only missing desired main-table marker rule", plan.Add)
+	}
+}
+
 func TestAllocatePolicyRouteTablesKeepsExistingNamesStable(t *testing.T) {
 	options := Options{PolicyTableBase: 22000, PolicyTableSize: 1024}
 	routes := []model.PolicyRoute{

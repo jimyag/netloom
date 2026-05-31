@@ -240,8 +240,10 @@ func applyPolicyRoutesNetlink(root *netlink.Handle, state control.DesiredState, 
 			return 0, fmt.Errorf("sync policy route table %d: %w", table, err)
 		}
 	}
-	if err := cleanupStalePolicyRouteTables(root, desiredRoutes, options); err != nil {
-		return 0, err
+	if options.CleanupStale {
+		if err := cleanupStalePolicyRouteTables(root, desiredRoutes, options); err != nil {
+			return 0, err
+		}
 	}
 	if err := syncManagedPolicyRules(root, desiredRules, options); err != nil {
 		return 0, err
@@ -309,40 +311,73 @@ func policyRouteTableOffset(name string, size int) int {
 }
 
 func syncManagedPolicyRules(root *netlink.Handle, desired []*netlink.Rule, options Options) error {
-	desiredSet := make(map[string]*netlink.Rule, len(desired))
-	for _, rule := range desired {
-		desiredSet[policyRuleKey(*rule)] = rule
-	}
-	existingSet := make(map[string]struct{}, len(desired))
+	var existing []netlink.Rule
 	for _, family := range netlinkPolicyRuleFamilies() {
 		rules, err := root.RuleList(family)
 		if err != nil {
 			return fmt.Errorf("list policy rules family %d: %w", family, err)
 		}
-		for _, rule := range rules {
-			if !managedPolicyRule(rule, options) {
-				continue
-			}
-			key := policyRuleKey(rule)
-			if _, ok := desiredSet[key]; ok {
-				existingSet[key] = struct{}{}
-				continue
-			}
+		existing = append(existing, rules...)
+	}
+	plan := planManagedPolicyRuleSync(existing, desired, options)
+	for _, rule := range plan.Delete {
+		ruleCopy := *rule
+		if err := root.RuleDel(&ruleCopy); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("delete stale policy rule family %d table %d priority %d: %w", rule.Family, rule.Table, rule.Priority, err)
+		}
+	}
+	for _, rule := range plan.Add {
+		if err := root.RuleAdd(rule); err != nil && !errors.Is(err, os.ErrExist) && !errors.Is(err, unix.EEXIST) {
+			return fmt.Errorf("add policy rule table %d priority %d: %w", rule.Table, rule.Priority, err)
+		}
+	}
+	return nil
+}
+
+type managedPolicyRuleSyncPlan struct {
+	Add    []*netlink.Rule
+	Delete []*netlink.Rule
+}
+
+func planManagedPolicyRuleSync(existing []netlink.Rule, desired []*netlink.Rule, options Options) managedPolicyRuleSyncPlan {
+	desiredSet := make(map[string]*netlink.Rule, len(desired))
+	for _, rule := range desired {
+		desiredSet[policyRuleKey(*rule)] = rule
+	}
+	existingSet := make(map[string]struct{}, len(desired))
+	var plan managedPolicyRuleSyncPlan
+	for i := range existing {
+		rule := existing[i]
+		if !managedPolicyRule(rule, options) {
+			continue
+		}
+		key := policyRuleKey(rule)
+		if _, ok := desiredSet[key]; ok {
+			existingSet[key] = struct{}{}
+			continue
+		}
+		if options.CleanupStale {
 			ruleCopy := rule
-			if err := root.RuleDel(&ruleCopy); err != nil && !errors.Is(err, os.ErrNotExist) {
-				return fmt.Errorf("delete stale policy rule family %d table %d priority %d: %w", family, rule.Table, rule.Priority, err)
-			}
+			plan.Delete = append(plan.Delete, &ruleCopy)
 		}
 	}
 	for key, rule := range desiredSet {
 		if _, ok := existingSet[key]; ok {
 			continue
 		}
-		if err := root.RuleAdd(rule); err != nil && !errors.Is(err, os.ErrExist) && !errors.Is(err, unix.EEXIST) {
-			return fmt.Errorf("add policy rule table %d priority %d: %w", rule.Table, rule.Priority, err)
-		}
+		plan.Add = append(plan.Add, rule)
 	}
-	return nil
+	sortPolicyRuleSyncPlan(&plan)
+	return plan
+}
+
+func sortPolicyRuleSyncPlan(plan *managedPolicyRuleSyncPlan) {
+	sort.SliceStable(plan.Add, func(i, j int) bool {
+		return policyRuleKey(*plan.Add[i]) < policyRuleKey(*plan.Add[j])
+	})
+	sort.SliceStable(plan.Delete, func(i, j int) bool {
+		return policyRuleKey(*plan.Delete[i]) < policyRuleKey(*plan.Delete[j])
+	})
 }
 
 func netlinkPolicyRuleFamilies() []int {
