@@ -73,7 +73,7 @@ func TestMemoryBackendClonesInputsAndTopologyState(t *testing.T) {
 		RouteTables:   map[string]model.RouteTable{"default": routeTable},
 		Gateways:      map[string]model.Gateway{"gw-a": {Name: "gw-a", VPC: "prod", Node: "node-a", ExternalIF: "eth0", LANIP: netip.MustParseAddr("10.10.0.254")}},
 		NATRules:      map[string]model.NATRule{"egress": {Name: "egress", VPC: "prod", Type: model.ActionSNAT, MatchCIDR: netip.MustParsePrefix("10.10.0.0/24"), ExternalIP: netip.MustParseAddr("198.51.100.10")}},
-		LoadBalancers: map[string]model.LoadBalancer{"web": lb},
+		LoadBalancers: map[string]model.LoadBalancer{loadBalancerKey("prod", "web"): lb},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +100,7 @@ func TestMemoryBackendClonesInputsAndTopologyState(t *testing.T) {
 	if got := state.PolicyRoutes[0].Action.NextHops[0]; got != netip.MustParseAddr("10.10.0.253") {
 		t.Fatalf("stored policy route next hop = %s, want original", got)
 	}
-	if got := state.LoadBalancers["web"].Ports[0].Backends[0].IP; got != netip.MustParseAddr("10.10.0.10") {
+	if got := state.LoadBalancers[loadBalancerKey("prod", "web")].Ports[0].Backends[0].IP; got != netip.MustParseAddr("10.10.0.10") {
 		t.Fatalf("stored load balancer backend = %s, want original", got)
 	}
 
@@ -108,7 +108,7 @@ func TestMemoryBackendClonesInputsAndTopologyState(t *testing.T) {
 	state.Endpoints["pod-a"].Labels["app"] = "returned"
 	state.RouteTables["default"].Routes[0].NextHops[0] = netip.MustParseAddr("10.10.0.251")
 	state.PolicyRoutes[0].Action.NextHops[0] = netip.MustParseAddr("10.10.0.251")
-	state.LoadBalancers["web"].Ports[0].Backends[0].IP = netip.MustParseAddr("10.10.0.13")
+	state.LoadBalancers[loadBalancerKey("prod", "web")].Ports[0].Backends[0].IP = netip.MustParseAddr("10.10.0.13")
 
 	state = backend.TopologyState()
 	if got := state.Subnets["apps"].DHCP.DNSServers[0]; got != netip.MustParseAddr("10.96.0.10") {
@@ -123,7 +123,7 @@ func TestMemoryBackendClonesInputsAndTopologyState(t *testing.T) {
 	if got := state.PolicyRoutes[0].Action.NextHops[0]; got != netip.MustParseAddr("10.10.0.253") {
 		t.Fatalf("returned policy route mutation leaked into backend: %s", got)
 	}
-	if got := state.LoadBalancers["web"].Ports[0].Backends[0].IP; got != netip.MustParseAddr("10.10.0.10") {
+	if got := state.LoadBalancers[loadBalancerKey("prod", "web")].Ports[0].Backends[0].IP; got != netip.MustParseAddr("10.10.0.10") {
 		t.Fatalf("returned load balancer mutation leaked into backend: %s", got)
 	}
 }

@@ -107,10 +107,10 @@ func TestBackendCleanupEmitsDeletesForStaleDesiredObjects(t *testing.T) {
 		"gc-dhcp-options pod-a",
 		"--if-exists lsp-del nl_lp_pod-a",
 		"--if-exists lr-nat-del nl_lr_prod snat 10.10.0.0/24",
-		"gc-load-balancer-health-checks web",
-		"--if-exists lr-lb-del nl_lr_prod nl_lb_web_tcp",
-		"--if-exists ls-lb-del nl_ls_apps nl_lb_web_tcp",
-		"--if-exists lb-del nl_lb_web_tcp",
+		"gc-load-balancer-health-checks web prod",
+		"--if-exists lr-lb-del nl_lr_prod nl_lb_prod_web_tcp",
+		"--if-exists ls-lb-del nl_ls_apps nl_lb_prod_web_tcp",
+		"--if-exists lb-del nl_lb_prod_web_tcp",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("cleanup operations missing %q:\n%s", expected, joined)
@@ -150,15 +150,15 @@ func TestBackendCleanupConvergesChangedLoadBalancerBindings(t *testing.T) {
 
 	joined := stringifyOVNOps(recorder.Operations())
 	for _, expected := range []string{
-		"--may-exist lb-add nl_lb_web_tcp 10.96.0.20:80 10.10.0.12:8080 tcp",
-		"--if-exists lb-del nl_lb_web_tcp 10.96.0.10:80",
-		"--if-exists ls-lb-del nl_ls_dmz nl_lb_web_tcp",
+		"--may-exist lb-add nl_lb_prod_web_tcp 10.96.0.20:80 10.10.0.12:8080 tcp",
+		"--if-exists lb-del nl_lb_prod_web_tcp 10.96.0.10:80",
+		"--if-exists ls-lb-del nl_ls_dmz nl_lb_prod_web_tcp",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("load balancer convergence operation missing %q:\n%s", expected, joined)
 		}
 	}
-	if strings.Contains(joined, "--if-exists lb-del nl_lb_web_tcp\n") {
+	if strings.Contains(joined, "--if-exists lb-del nl_lb_prod_web_tcp\n") {
 		t.Fatalf("changed load balancer must not delete the whole LB object:\n%s", joined)
 	}
 }
@@ -187,18 +187,18 @@ func TestBackendCleanupRemovesStaleLoadBalancerProtocolRows(t *testing.T) {
 
 	joined := stringifyOVNOps(recorder.Operations())
 	for _, expected := range []string{
-		"--may-exist lb-add nl_lb_web_tcp 10.96.0.10:80 10.10.0.10:8080 tcp",
-		"--may-exist lb-add nl_lb_web_udp 10.96.0.10:53 10.10.0.10:5353 udp",
-		"clear load_balancer nl_lb_web_udp health_check",
-		"--if-exists lr-lb-del nl_lr_prod nl_lb_web_udp",
-		"--if-exists ls-lb-del nl_ls_apps nl_lb_web_udp",
-		"--if-exists lb-del nl_lb_web_udp",
+		"--may-exist lb-add nl_lb_prod_web_tcp 10.96.0.10:80 10.10.0.10:8080 tcp",
+		"--may-exist lb-add nl_lb_prod_web_udp 10.96.0.10:53 10.10.0.10:5353 udp",
+		"clear load_balancer nl_lb_prod_web_udp health_check",
+		"--if-exists lr-lb-del nl_lr_prod nl_lb_prod_web_udp",
+		"--if-exists ls-lb-del nl_ls_apps nl_lb_prod_web_udp",
+		"--if-exists lb-del nl_lb_prod_web_udp",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("load balancer protocol cleanup operation missing %q:\n%s", expected, joined)
 		}
 	}
-	if strings.Contains(joined, "--if-exists lb-del nl_lb_web_tcp\n") {
+	if strings.Contains(joined, "--if-exists lb-del nl_lb_prod_web_tcp\n") {
 		t.Fatalf("removing udp frontend must not delete tcp LB row:\n%s", joined)
 	}
 }
@@ -217,7 +217,7 @@ func TestBackendCleanupFailureDoesNotAdvanceSnapshot(t *testing.T) {
 	if err := controller.Reconcile(context.Background(), second); err == nil {
 		t.Fatal("expected cleanup failure")
 	}
-	if got := executor.Count("lr-lb-del", "nl_lr_prod", "nl_lb_web_tcp"); got != 1 {
+	if got := executor.Count("lr-lb-del", "nl_lr_prod", "nl_lb_prod_web_tcp"); got != 1 {
 		t.Fatalf("failed cleanup lr-lb-del count = %d, want 1", got)
 	}
 
@@ -225,7 +225,7 @@ func TestBackendCleanupFailureDoesNotAdvanceSnapshot(t *testing.T) {
 	if err := controller.Reconcile(context.Background(), second); err != nil {
 		t.Fatal(err)
 	}
-	if got := executor.Count("lr-lb-del", "nl_lr_prod", "nl_lb_web_tcp"); got != 2 {
+	if got := executor.Count("lr-lb-del", "nl_lr_prod", "nl_lb_prod_web_tcp"); got != 2 {
 		t.Fatalf("cleanup retry lr-lb-del count = %d, want failed attempt plus retry", got)
 	}
 }
@@ -244,9 +244,9 @@ func TestBackendCleanupDoesNotReapplyUnchangedLoadBalancer(t *testing.T) {
 
 	joined := stringifyOVNOps(recorder.Operations())
 	for _, expected := range []string{
-		"--may-exist lb-add nl_lb_web_tcp 10.96.0.10:80 10.10.0.10:8080 tcp",
-		"--may-exist lr-lb-add nl_lr_prod nl_lb_web_tcp",
-		"--may-exist ls-lb-add nl_ls_apps nl_lb_web_tcp",
+		"--may-exist lb-add nl_lb_prod_web_tcp 10.96.0.10:80 10.10.0.10:8080 tcp",
+		"--may-exist lr-lb-add nl_lr_prod nl_lb_prod_web_tcp",
+		"--may-exist ls-lb-add nl_ls_apps nl_lb_prod_web_tcp",
 	} {
 		if got := strings.Count(joined, expected); got != 1 {
 			t.Fatalf("unchanged load balancer op %q count = %d, want one initial apply:\n%s", expected, got, joined)
@@ -274,9 +274,9 @@ func TestBackendDoesNotReapplyLoadBalancerWhenOnlyPortNameChanges(t *testing.T) 
 
 	joined := stringifyOVNOps(recorder.Operations())
 	for _, expected := range []string{
-		"--may-exist lb-add nl_lb_web_tcp 10.96.0.10:80 10.10.0.10:8080 tcp",
-		"--may-exist lr-lb-add nl_lr_prod nl_lb_web_tcp",
-		"--may-exist ls-lb-add nl_ls_apps nl_lb_web_tcp",
+		"--may-exist lb-add nl_lb_prod_web_tcp 10.96.0.10:80 10.10.0.10:8080 tcp",
+		"--may-exist lr-lb-add nl_lr_prod nl_lb_prod_web_tcp",
+		"--may-exist ls-lb-add nl_ls_apps nl_lb_prod_web_tcp",
 	} {
 		if got := strings.Count(joined, expected); got != 1 {
 			t.Fatalf("port-name-only load balancer op %q count = %d, want one initial apply:\n%s", expected, got, joined)
@@ -320,8 +320,8 @@ func TestBackendDoesNotReapplyHealthCheckedLoadBalancerWhenPortsReordered(t *tes
 
 	joined := stringifyOVNOps(recorder.Operations())
 	for _, expected := range []string{
-		"--may-exist lb-add nl_lb_web_tcp 10.96.0.10:80 10.10.0.10:8080 tcp",
-		"--may-exist lb-add nl_lb_web_tcp 10.96.0.10:9090 10.10.0.10:9091 tcp",
+		"--may-exist lb-add nl_lb_prod_web_tcp 10.96.0.10:80 10.10.0.10:8080 tcp",
+		"--may-exist lb-add nl_lb_prod_web_tcp 10.96.0.10:9090 10.10.0.10:9091 tcp",
 	} {
 		if got := strings.Count(joined, expected); got != 1 {
 			t.Fatalf("load balancer op %q count = %d, want one initial apply:\n%s", expected, got, joined)
@@ -354,13 +354,13 @@ func TestBackendReappliesLoadBalancerWhenDefaultHealthCheckEnabled(t *testing.T)
 	if got := strings.Count(joined, "ensure-load-balancer-health-check"); got != 1 {
 		t.Fatalf("health check ensure count = %d, want one enable apply:\n%s", got, joined)
 	}
-	if !strings.Contains(joined, "ensure-load-balancer-health-check nl_lb_web_tcp web prod vip=10.96.0.10:80") {
+	if !strings.Contains(joined, "ensure-load-balancer-health-check nl_lb_prod_web_tcp web prod vip=10.96.0.10:80") {
 		t.Fatalf("default health check ensure missing:\n%s", joined)
 	}
-	if got := strings.Count(joined, "--may-exist lb-add nl_lb_web_tcp 10.96.0.10:80 10.10.0.10:8080 tcp"); got != 2 {
+	if got := strings.Count(joined, "--may-exist lb-add nl_lb_prod_web_tcp 10.96.0.10:80 10.10.0.10:8080 tcp"); got != 2 {
 		t.Fatalf("load balancer frontend apply count = %d, want initial and health-check enable apply:\n%s", got, joined)
 	}
-	if strings.Contains(joined, "--if-exists lb-del nl_lb_web_tcp 10.96.0.10:80") {
+	if strings.Contains(joined, "--if-exists lb-del nl_lb_prod_web_tcp 10.96.0.10:80") {
 		t.Fatalf("health-check-only update should not delete unchanged LB VIP:\n%s", joined)
 	}
 }
@@ -382,14 +382,14 @@ func TestBackendCleanupReappliesChangedLoadBalancerBackends(t *testing.T) {
 
 	joined := stringifyOVNOps(recorder.Operations())
 	for _, expected := range []string{
-		"--may-exist lb-add nl_lb_web_tcp 10.96.0.10:80 10.10.0.10:8080 tcp",
-		"--may-exist lb-add nl_lb_web_tcp 10.96.0.10:80 10.10.0.12:8080 tcp",
+		"--may-exist lb-add nl_lb_prod_web_tcp 10.96.0.10:80 10.10.0.10:8080 tcp",
+		"--may-exist lb-add nl_lb_prod_web_tcp 10.96.0.10:80 10.10.0.12:8080 tcp",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("changed load balancer backend operation missing %q:\n%s", expected, joined)
 		}
 	}
-	if got := strings.Count(joined, "--if-exists lb-del nl_lb_web_tcp 10.96.0.10:80"); got != 1 {
+	if got := strings.Count(joined, "--if-exists lb-del nl_lb_prod_web_tcp 10.96.0.10:80"); got != 1 {
 		t.Fatalf("changed load balancer frontend delete count = %d, want one lifecycle diff delete:\n%s", got, joined)
 	}
 }
@@ -438,7 +438,7 @@ func TestBackendSnapshotIsNotMutatedByCallerAfterReconcile(t *testing.T) {
 	for _, expected := range []string{
 		"--if-exists lr-route-del nl_lr_prod 0.0.0.0/0",
 		"--if-exists lr-policy-del nl_lr_prod 100",
-		"--may-exist lb-add nl_lb_web_tcp 10.96.0.10:80 10.10.0.12:8080 tcp",
+		"--may-exist lb-add nl_lb_prod_web_tcp 10.96.0.10:80 10.10.0.12:8080 tcp",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("snapshot mutation regression operation missing %q:\n%s", expected, joined)
@@ -1235,9 +1235,9 @@ esac
 
 	executor := ovn.NewNBCTLExecutor(binary, "--db=unix:/tmp/ovnnb.sock")
 	err := executor.Execute(context.Background(), []ovn.Operation{
-		{Command: "clear", Args: []string{"load_balancer", "nl_lb_web_tcp", "health_check"}},
-		{Command: "gc-load-balancer-health-checks", Args: []string{"web"}},
-		{Command: "lb-del", Flags: []string{"--if-exists"}, Args: []string{"nl_lb_web_tcp"}},
+		{Command: "clear", Args: []string{"load_balancer", "nl_lb_prod_web_tcp", "health_check"}},
+		{Command: "gc-load-balancer-health-checks", Args: []string{"web", "prod"}},
+		{Command: "lb-del", Flags: []string{"--if-exists"}, Args: []string{"nl_lb_prod_web_tcp"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1250,7 +1250,7 @@ esac
 	if len(calls) != 5 {
 		t.Fatalf("calls = %d, want clear, find, two destroys, lb-del:\n%s", len(calls), raw)
 	}
-	if !strings.Contains(calls[0], "clear\nload_balancer\nnl_lb_web_tcp\nhealth_check") {
+	if !strings.Contains(calls[0], "clear\nload_balancer\nnl_lb_prod_web_tcp\nhealth_check") {
 		t.Fatalf("first call should clear health check references before GC:\n%s", calls[0])
 	}
 	if !strings.Contains(calls[1], "--columns=_uuid\nfind\nLoad_Balancer_Health_Check") ||
@@ -1261,7 +1261,7 @@ esac
 		!strings.Contains(calls[3], "destroy\nLoad_Balancer_Health_Check\nhc-b") {
 		t.Fatalf("matching LB health checks should be destroyed:\n%s", raw)
 	}
-	if !strings.Contains(calls[4], "lb-del\nnl_lb_web_tcp") {
+	if !strings.Contains(calls[4], "lb-del\nnl_lb_prod_web_tcp") {
 		t.Fatalf("final call should delete load balancer:\n%s", calls[4])
 	}
 }
@@ -1285,7 +1285,7 @@ esac
 	err := executor.Execute(context.Background(), []ovn.Operation{{
 		Command: "ensure-load-balancer-health-check",
 		Args: []string{
-			"nl_lb_web_tcp",
+			"nl_lb_prod_web_tcp",
 			"web",
 			"prod",
 			"vip=10.96.0.10:80",
@@ -1321,7 +1321,7 @@ esac
 	if !strings.Contains(calls[2], "destroy\nLoad_Balancer_Health_Check\nhc-duplicate") {
 		t.Fatalf("third call should destroy duplicate health check:\n%s", calls[2])
 	}
-	if !strings.Contains(calls[3], "add\nload_balancer\nnl_lb_web_tcp\nhealth_check\nhc-existing") {
+	if !strings.Contains(calls[3], "add\nload_balancer\nnl_lb_prod_web_tcp\nhealth_check\nhc-existing") {
 		t.Fatalf("final call should attach existing health check:\n%s", calls[3])
 	}
 }
@@ -1345,7 +1345,7 @@ esac
 	err := executor.Execute(context.Background(), []ovn.Operation{{
 		Command: "ensure-load-balancer-health-check",
 		Args: []string{
-			"nl_lb_web_tcp",
+			"nl_lb_prod_web_tcp",
 			"web",
 			"prod",
 			"vip=10.96.0.10:80",
@@ -1373,7 +1373,7 @@ esac
 		!strings.Contains(calls[1], "vip=10.96.0.10:80") {
 		t.Fatalf("second call should create missing health check:\n%s", calls[1])
 	}
-	if !strings.Contains(calls[2], "add\nload_balancer\nnl_lb_web_tcp\nhealth_check\nhc-new") {
+	if !strings.Contains(calls[2], "add\nload_balancer\nnl_lb_prod_web_tcp\nhealth_check\nhc-new") {
 		t.Fatalf("final call should attach created health check:\n%s", calls[2])
 	}
 }
@@ -1396,7 +1396,7 @@ esac
 	executor := ovn.NewNBCTLExecutor(binary, "--db=unix:/tmp/ovnnb.sock")
 	err := executor.Execute(context.Background(), []ovn.Operation{{
 		Command: "gc-stale-load-balancer-health-checks",
-		Args:    []string{"web", "10.96.0.10:80"},
+		Args:    []string{"web", "prod", "10.96.0.10:80"},
 	}})
 	if err != nil {
 		t.Fatal(err)

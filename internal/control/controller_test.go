@@ -116,7 +116,7 @@ func TestControllerReconcileSeparatesTopologyFromPolicy(t *testing.T) {
 	if got := backend.PolicyRoutes[0].Name; got != "force-private" {
 		t.Fatalf("first policy route = %s, want force-private", got)
 	}
-	if _, ok := backend.LoadBalancers["web-vip"]; !ok {
+	if _, ok := backend.LoadBalancers[loadBalancerKey("prod", "web-vip")]; !ok {
 		t.Fatalf("load balancer was not reconciled: %+v", backend.LoadBalancers)
 	}
 }
@@ -489,7 +489,7 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 			wantErr: "references unknown remote service",
 		},
 		{
-			name: "remote service vpc mismatch",
+			name: "remote service only exists in another vpc",
 			mutate: func(state *DesiredState) {
 				state.VPCs = append(state.VPCs, model.VPC{Name: "other"})
 				state.Subnets = append(state.Subnets, model.Subnet{
@@ -505,7 +505,7 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 				state.SecurityGroups[0].Rules[0].Direction = model.DirectionEgress
 				state.SecurityGroups[0].Rules[0].RemoteService = "web"
 			},
-			wantErr: "references remote service",
+			wantErr: "references unknown remote service",
 		},
 		{
 			name: "remote service protocol mismatch",
@@ -1512,6 +1512,88 @@ func TestControllerAllowsSameCIDRGroupNameAcrossVPCs(t *testing.T) {
 	}
 	if got := backend.PolicyProgram["pod-b"].Rules[0].RemoteCIDR; got != netip.MustParsePrefix("203.0.113.0/24") {
 		t.Fatalf("pod-b cidr group cidr = %s, want dev cidr group", got)
+	}
+}
+
+func TestControllerAllowsSameLoadBalancerNameAcrossVPCs(t *testing.T) {
+	backend := NewMemoryBackend()
+	state := DesiredState{
+		VPCs: []model.VPC{{Name: "prod"}, {Name: "dev"}},
+		Subnets: []model.Subnet{
+			{Name: "apps", VPC: "prod", CIDR: netip.MustParsePrefix("10.10.0.0/24"), Gateway: netip.MustParseAddr("10.10.0.1")},
+			{Name: "apps-dev", VPC: "dev", CIDR: netip.MustParsePrefix("10.20.0.0/24"), Gateway: netip.MustParseAddr("10.20.0.1")},
+		},
+		Endpoints: []model.Endpoint{
+			{ID: "pod-a", VPC: "prod", Subnet: "apps", IP: netip.MustParseAddr("10.10.0.10"), Node: "node-a", SecurityGroups: []string{"client"}},
+			{ID: "pod-b", VPC: "dev", Subnet: "apps-dev", IP: netip.MustParseAddr("10.20.0.10"), Node: "node-a", SecurityGroups: []string{"client"}},
+		},
+		LoadBalancers: []model.LoadBalancer{
+			{
+				Name: "web",
+				VPC:  "prod",
+				VIP:  netip.MustParseAddr("10.96.0.10"),
+				Ports: []model.LoadBalancerPort{{
+					Port:     80,
+					Protocol: model.ProtocolTCP,
+					Backends: []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.11"), Port: 8080}},
+				}},
+				Subnets: []string{"apps"},
+			},
+			{
+				Name: "web",
+				VPC:  "dev",
+				VIP:  netip.MustParseAddr("10.97.0.10"),
+				Ports: []model.LoadBalancerPort{{
+					Port:     8080,
+					Protocol: model.ProtocolTCP,
+					Backends: []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.20.0.11"), Port: 8080}},
+				}},
+				Subnets: []string{"apps-dev"},
+			},
+		},
+		SecurityGroups: []model.SecurityGroup{
+			{
+				Name: "client",
+				VPC:  "prod",
+				Rules: []model.SecurityGroupRule{{
+					ID:            "prod-web",
+					Priority:      100,
+					Direction:     model.DirectionEgress,
+					Protocol:      model.ProtocolTCP,
+					Ports:         []model.PortRange{{From: 80, To: 80}},
+					RemoteService: "web",
+					Action:        model.ActionAllow,
+				}},
+			},
+			{
+				Name: "client",
+				VPC:  "dev",
+				Rules: []model.SecurityGroupRule{{
+					ID:            "dev-web",
+					Priority:      100,
+					Direction:     model.DirectionEgress,
+					Protocol:      model.ProtocolTCP,
+					Ports:         []model.PortRange{{From: 8080, To: 8080}},
+					RemoteService: "web",
+					Action:        model.ActionAllow,
+				}},
+			},
+		},
+	}
+	if err := NewController(backend, backend).Reconcile(context.Background(), state); err != nil {
+		t.Fatalf("same load balancer name in different vpcs should validate: %v", err)
+	}
+	if got := backend.PolicyProgram["pod-a"].Rules[0].RemoteCIDR; got != netip.MustParsePrefix("10.96.0.10/32") {
+		t.Fatalf("pod-a remote service cidr = %s, want prod service VIP", got)
+	}
+	if got := backend.PolicyProgram["pod-b"].Rules[0].RemoteCIDR; got != netip.MustParsePrefix("10.97.0.10/32") {
+		t.Fatalf("pod-b remote service cidr = %s, want dev service VIP", got)
+	}
+	if _, ok := backend.LoadBalancers[loadBalancerKey("prod", "web")]; !ok {
+		t.Fatalf("prod load balancer missing from memory backend: %+v", backend.LoadBalancers)
+	}
+	if _, ok := backend.LoadBalancers[loadBalancerKey("dev", "web")]; !ok {
+		t.Fatalf("dev load balancer missing from memory backend: %+v", backend.LoadBalancers)
 	}
 }
 

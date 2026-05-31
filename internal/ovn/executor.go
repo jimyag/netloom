@@ -163,6 +163,7 @@ func (e *NBCTLExecutor) executeSpecial(ctx context.Context, op Operation) error 
 		return e.destroyMatchingRecords(ctx, "Load_Balancer_Health_Check",
 			"external_ids:netloom_owner=netloom",
 			"external_ids:netloom_load_balancer="+op.Args[0],
+			"external_ids:netloom_vpc="+op.Args[1],
 		)
 	case "ensure-load-balancer-health-check":
 		return e.ensureLoadBalancerHealthCheck(ctx, op.Args)
@@ -253,11 +254,12 @@ func (e *NBCTLExecutor) destroyLoadBalancerHealthCheck(ctx context.Context, uuid
 
 func (e *NBCTLExecutor) destroyStaleLoadBalancerHealthChecks(ctx context.Context, args []string) error {
 	loadBalancer := args[0]
-	keep := make(map[string]struct{}, len(args)-1)
-	for _, vip := range args[1:] {
+	vpc := args[1]
+	keep := make(map[string]struct{}, len(args)-2)
+	for _, vip := range args[2:] {
 		keep[vip] = struct{}{}
 	}
-	rows, err := e.loadBalancerHealthCheckRows(ctx, loadBalancer)
+	rows, err := e.loadBalancerHealthCheckRows(ctx, loadBalancer, vpc)
 	if err != nil {
 		return err
 	}
@@ -277,11 +279,12 @@ type loadBalancerHealthCheckRow struct {
 	vip  string
 }
 
-func (e *NBCTLExecutor) loadBalancerHealthCheckRows(ctx context.Context, loadBalancer string) ([]loadBalancerHealthCheckRow, error) {
+func (e *NBCTLExecutor) loadBalancerHealthCheckRows(ctx context.Context, loadBalancer, vpc string) ([]loadBalancerHealthCheckRow, error) {
 	args := append([]string(nil), e.BaseArgs...)
 	args = append(args, "--format=csv", "--data=bare", "--no-headings", "--columns=_uuid,vip", "find", "Load_Balancer_Health_Check",
 		"external_ids:netloom_owner=netloom",
 		"external_ids:netloom_load_balancer="+loadBalancer,
+		"external_ids:netloom_vpc="+vpc,
 	)
 	output, err := e.outputCommand(ctx, args)
 	if err != nil {
@@ -633,13 +636,19 @@ func validateSpecialOperation(op Operation) error {
 		return nil
 	}
 	if op.Command == "gc-stale-load-balancer-health-checks" {
-		if len(op.Args) == 0 || op.Args[0] == "" {
-			return fmt.Errorf("special operation %q requires load balancer name", op.Command)
+		if len(op.Args) < 2 || op.Args[0] == "" || op.Args[1] == "" {
+			return fmt.Errorf("special operation %q requires load balancer name and vpc", op.Command)
 		}
-		for _, arg := range op.Args[1:] {
+		for _, arg := range op.Args[2:] {
 			if arg == "" {
 				return fmt.Errorf("special operation %q contains empty keep vip", op.Command)
 			}
+		}
+		return nil
+	}
+	if op.Command == "gc-load-balancer-health-checks" {
+		if len(op.Args) != 2 || op.Args[0] == "" || op.Args[1] == "" {
+			return fmt.Errorf("special operation %q requires load balancer name and vpc", op.Command)
 		}
 		return nil
 	}

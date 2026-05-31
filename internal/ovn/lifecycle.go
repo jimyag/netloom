@@ -198,7 +198,7 @@ func cleanupOperations(old, next desiredSnapshot) []Operation {
 		for _, name := range names {
 			ops = append(ops, Operation{Command: "clear", Args: []string{"load_balancer", name, "health_check"}})
 		}
-		ops = append(ops, gcLoadBalancerHealthChecksOperation(lb.Name))
+		ops = append(ops, gcLoadBalancerHealthChecksOperation(lb.Name, lb.VPC))
 		for _, name := range names {
 			ops = append(ops, Operation{Command: "lr-lb-del", Flags: []string{"--if-exists"}, Args: []string{logicalRouter(lb.VPC), name}})
 			for _, subnet := range lb.Subnets {
@@ -217,7 +217,7 @@ func cleanupOperations(old, next desiredSnapshot) []Operation {
 			ops = append(ops, Operation{Command: "clear", Args: []string{"load_balancer", name, "health_check"}})
 		}
 		if len(removedNames) > 0 {
-			ops = append(ops, gcLoadBalancerHealthChecksOperation(oldLB.Name))
+			ops = append(ops, gcLoadBalancerHealthChecksOperation(oldLB.Name, oldLB.VPC))
 		}
 		if oldLB.VPC != nextLB.VPC {
 			for _, name := range oldNames {
@@ -227,7 +227,7 @@ func cleanupOperations(old, next desiredSnapshot) []Operation {
 		oldVIPsByProtocol := loadBalancerVIPsByProtocol(oldLB)
 		nextVIPsByProtocol := loadBalancerVIPsByProtocol(nextLB)
 		for _, protocol := range sortedLoadBalancerProtocols(oldVIPsByProtocol) {
-			name := loadBalancerProtocolName(oldLB.Name, protocol)
+			name := loadBalancerProtocolName(oldLB.VPC, oldLB.Name, protocol)
 			for _, vip := range removedStrings(oldVIPsByProtocol[protocol], nextVIPsByProtocol[protocol]) {
 				ops = append(ops, Operation{Command: "lb-del", Flags: []string{"--if-exists"}, Args: []string{name, vip}})
 			}
@@ -235,7 +235,7 @@ func cleanupOperations(old, next desiredSnapshot) []Operation {
 		oldFrontendSignatures := loadBalancerFrontendSignaturesByProtocol(oldLB)
 		nextFrontendSignatures := loadBalancerFrontendSignaturesByProtocol(nextLB)
 		for _, protocol := range sortedProtocolKeys(oldFrontendSignatures) {
-			name := loadBalancerProtocolName(oldLB.Name, protocol)
+			name := loadBalancerProtocolName(oldLB.VPC, oldLB.Name, protocol)
 			for _, vip := range commonStringKeys(oldFrontendSignatures[protocol], nextFrontendSignatures[protocol]) {
 				if oldFrontendSignatures[protocol][vip] != nextFrontendSignatures[protocol][vip] {
 					ops = append(ops, Operation{Command: "lb-del", Flags: []string{"--if-exists"}, Args: []string{name, vip}})
@@ -364,7 +364,7 @@ func stringInSlice(needle string, values []string) bool {
 }
 
 func loadBalancerProtocolNames(lb model.LoadBalancer) []string {
-	return loadBalancerProtocolNamesFromFrontends(lb.Name, loadBalancerFrontendsByProtocol(lb))
+	return loadBalancerProtocolNamesFromFrontends(lb.VPC, lb.Name, loadBalancerFrontendsByProtocol(lb))
 }
 
 func loadBalancerVIPsByProtocol(lb model.LoadBalancer) map[model.Protocol][]string {

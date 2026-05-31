@@ -267,7 +267,7 @@ func (p *Planner) EnsureLoadBalancer(_ context.Context, lb model.LoadBalancer) e
 	router := p.routerForVPC(lb.VPC)
 	frontendsByProtocol := loadBalancerFrontendsByProtocol(lb)
 	for _, protocol := range sortedLoadBalancerProtocols(frontendsByProtocol) {
-		name := loadBalancerProtocolName(lb.Name, protocol)
+		name := loadBalancerProtocolName(lb.VPC, lb.Name, protocol)
 		for _, frontend := range frontendsByProtocol[protocol] {
 			p.ops = append(p.ops,
 				Operation{Command: "lb-add", Flags: []string{"--may-exist"}, Args: []string{name, loadBalancerFrontendVIP(frontend), loadBalancerFrontendBackends(frontend), string(frontend.Protocol)}},
@@ -349,12 +349,12 @@ func logicalPort(endpoint string) string {
 	return "nl_lp_" + sanitize(endpoint)
 }
 
-func loadBalancerName(name string) string {
-	return "nl_lb_" + sanitize(name)
+func loadBalancerName(vpc, name string) string {
+	return "nl_lb_" + sanitize(vpc) + "_" + sanitize(name)
 }
 
-func loadBalancerProtocolName(name string, protocol model.Protocol) string {
-	return loadBalancerName(name) + "_" + sanitize(string(protocol))
+func loadBalancerProtocolName(vpc, name string, protocol model.Protocol) string {
+	return loadBalancerName(vpc, name) + "_" + sanitize(string(protocol))
 }
 
 func namedUUID(name string) string {
@@ -559,34 +559,35 @@ func loadBalancerOptions(lb model.LoadBalancer) []string {
 }
 
 func (p *Planner) loadBalancerHealthCheckOperations(lb model.LoadBalancer, frontendsByProtocol map[model.Protocol][]model.LoadBalancerFrontend) []Operation {
-	names := loadBalancerProtocolNamesFromFrontends(lb.Name, frontendsByProtocol)
+	names := loadBalancerProtocolNamesFromFrontends(lb.VPC, lb.Name, frontendsByProtocol)
+	key := loadBalancerStateKey(lb)
 	if !lb.HealthCheck.Enabled {
-		delete(p.loadBalancerHealthChecks, lb.Name)
+		delete(p.loadBalancerHealthChecks, key)
 		ops := make([]Operation, 0, len(names)+1)
 		for _, name := range names {
 			ops = append(ops, Operation{Command: "clear", Args: []string{"load_balancer", name, "health_check"}})
 		}
-		return append(ops, gcLoadBalancerHealthChecksOperation(lb.Name))
+		return append(ops, gcLoadBalancerHealthChecksOperation(lb.Name, lb.VPC))
 	}
 	signature := loadBalancerHealthCheckSignature(lb)
-	if p.loadBalancerHealthChecks[lb.Name] == signature {
+	if p.loadBalancerHealthChecks[key] == signature {
 		return nil
 	}
-	p.loadBalancerHealthChecks[lb.Name] = signature
+	p.loadBalancerHealthChecks[key] = signature
 	ops := make([]Operation, 0, len(names)+1+len(lb.Frontends())*2)
 	for _, name := range names {
 		ops = append(ops, Operation{Command: "clear", Args: []string{"load_balancer", name, "health_check"}})
 	}
 	keepVIPs := make([]string, 0, len(lb.Frontends()))
 	for _, protocol := range sortedLoadBalancerProtocols(frontendsByProtocol) {
-		name := loadBalancerProtocolName(lb.Name, protocol)
+		name := loadBalancerProtocolName(lb.VPC, lb.Name, protocol)
 		for _, frontend := range frontendsByProtocol[protocol] {
 			vip := loadBalancerFrontendVIP(frontend)
 			keepVIPs = append(keepVIPs, vip)
 			ops = append(ops, ensureLoadBalancerHealthCheckOperation(name, lb.Name, lb.VPC, loadBalancerHealthCheckArgs(lb, frontend)))
 		}
 	}
-	ops = append(ops, gcStaleLoadBalancerHealthChecksOperation(lb.Name, keepVIPs))
+	ops = append(ops, gcStaleLoadBalancerHealthChecksOperation(lb.Name, lb.VPC, keepVIPs))
 	return ops
 }
 
@@ -609,11 +610,11 @@ func sortedLoadBalancerProtocols[T any](frontendsByProtocol map[model.Protocol][
 	return protocols
 }
 
-func loadBalancerProtocolNamesFromFrontends(lbName string, frontendsByProtocol map[model.Protocol][]model.LoadBalancerFrontend) []string {
+func loadBalancerProtocolNamesFromFrontends(vpc, lbName string, frontendsByProtocol map[model.Protocol][]model.LoadBalancerFrontend) []string {
 	protocols := sortedLoadBalancerProtocols(frontendsByProtocol)
 	names := make([]string, 0, len(protocols))
 	for _, protocol := range protocols {
-		names = append(names, loadBalancerProtocolName(lbName, protocol))
+		names = append(names, loadBalancerProtocolName(vpc, lbName, protocol))
 	}
 	return names
 }
@@ -622,17 +623,21 @@ func gcDHCPOptionsOperation(endpoint string) Operation {
 	return Operation{Command: "gc-dhcp-options", Args: []string{endpoint}}
 }
 
-func gcLoadBalancerHealthChecksOperation(loadBalancer string) Operation {
-	return Operation{Command: "gc-load-balancer-health-checks", Args: []string{loadBalancer}}
+func gcLoadBalancerHealthChecksOperation(loadBalancer, vpc string) Operation {
+	return Operation{Command: "gc-load-balancer-health-checks", Args: []string{loadBalancer, vpc}}
 }
 
 func ensureLoadBalancerHealthCheckOperation(ovnLoadBalancer, loadBalancer, vpc string, args []string) Operation {
 	return Operation{Command: "ensure-load-balancer-health-check", Args: append([]string{ovnLoadBalancer, loadBalancer, vpc}, args[1:]...)}
 }
 
-func gcStaleLoadBalancerHealthChecksOperation(loadBalancer string, keepVIPs []string) Operation {
-	args := append([]string{loadBalancer}, keepVIPs...)
+func gcStaleLoadBalancerHealthChecksOperation(loadBalancer, vpc string, keepVIPs []string) Operation {
+	args := append([]string{loadBalancer, vpc}, keepVIPs...)
 	return Operation{Command: "gc-stale-load-balancer-health-checks", Args: args}
+}
+
+func loadBalancerStateKey(lb model.LoadBalancer) string {
+	return lb.VPC + "\x00" + lb.Name
 }
 
 func loadBalancerHealthCheckSignature(lb model.LoadBalancer) string {

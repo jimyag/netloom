@@ -88,7 +88,7 @@ func (m *MemoryBackend) EnsureNATRule(_ context.Context, rule model.NATRule) err
 func (m *MemoryBackend) EnsureLoadBalancer(_ context.Context, lb model.LoadBalancer) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.LoadBalancers[lb.Name] = cloneLoadBalancer(lb)
+	m.LoadBalancers[loadBalancerKey(lb.VPC, lb.Name)] = cloneLoadBalancer(lb)
 	return nil
 }
 

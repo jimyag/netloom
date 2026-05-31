@@ -46,7 +46,7 @@ func TestDesiredStateDrivesTopologyRoutesAndEBPFStyleACL(t *testing.T) {
 	if gateway, ok := memoryBackend.Gateways["gw-a"]; !ok || gateway.Node != "node-a" || gateway.LANIP.String() != "10.10.0.254" {
 		t.Fatalf("gateway gw-a was not reconciled, got: %+v", memoryBackend.Gateways)
 	}
-	if lb, ok := memoryBackend.LoadBalancers["web"]; !ok || lb.VIP.String() != "10.96.0.10" || len(lb.Frontends()) != 2 {
+	if lb, ok := memoryBackend.LoadBalancers["prod\x00web"]; !ok || lb.VIP.String() != "10.96.0.10" || len(lb.Frontends()) != 2 {
 		t.Fatalf("load balancer web was not reconciled, got: %+v", memoryBackend.LoadBalancers)
 	}
 	if len(memoryBackend.PolicyRoutes) != 1 {

@@ -287,6 +287,10 @@ func cidrGroupKey(vpc, name string) string {
 	return vpc + "\x00" + name
 }
 
+func loadBalancerKey(vpc, name string) string {
+	return vpc + "\x00" + name
+}
+
 func validateNATRules(rules []model.NATRule) error {
 	names := make(map[string]struct{}, len(rules))
 	type snatRule struct {
@@ -386,8 +390,9 @@ func validateObjectGraph(state DesiredState) error {
 		if err := lb.Validate(); err != nil {
 			return err
 		}
-		if _, ok := loadBalancers[lb.Name]; ok {
-			return fmt.Errorf("duplicate load balancer name %q", lb.Name)
+		key := loadBalancerKey(lb.VPC, lb.Name)
+		if _, ok := loadBalancers[key]; ok {
+			return fmt.Errorf("duplicate load balancer name %q in vpc %q", lb.Name, lb.VPC)
 		}
 		if _, ok := vpcs[lb.VPC]; !ok {
 			return fmt.Errorf("load balancer %q references unknown vpc %q", lb.Name, lb.VPC)
@@ -411,7 +416,7 @@ func validateObjectGraph(state DesiredState) error {
 				}
 			}
 		}
-		loadBalancers[lb.Name] = lb
+		loadBalancers[key] = lb
 	}
 	for _, group := range state.CIDRGroups {
 		if err := group.Validate(); err != nil {
@@ -452,12 +457,9 @@ func validateObjectGraph(state DesiredState) error {
 				}
 			}
 			if rule.RemoteService != "" {
-				service, ok := loadBalancers[rule.RemoteService]
+				service, ok := loadBalancers[loadBalancerKey(group.VPC, rule.RemoteService)]
 				if !ok {
 					return fmt.Errorf("security group rule %q references unknown remote service %q", rule.ID, rule.RemoteService)
-				}
-				if service.VPC != group.VPC {
-					return fmt.Errorf("security group rule %q references remote service %q in vpc %q, want %q", rule.ID, rule.RemoteService, service.VPC, group.VPC)
 				}
 				if !loadBalancerHasMatchingFrontendProtocol(service, rule.Protocol) {
 					return fmt.Errorf("security group rule %q references remote service %q without matching %s frontend", rule.ID, rule.RemoteService, effectiveProtocol(rule.Protocol))
@@ -915,10 +917,11 @@ func validateLoadBalancers(loadBalancers []model.LoadBalancer) error {
 		if err := lb.Validate(); err != nil {
 			return err
 		}
-		if _, ok := names[lb.Name]; ok {
-			return fmt.Errorf("duplicate load balancer name %q", lb.Name)
+		nameKey := loadBalancerKey(lb.VPC, lb.Name)
+		if _, ok := names[nameKey]; ok {
+			return fmt.Errorf("duplicate load balancer name %q in vpc %q", lb.Name, lb.VPC)
 		}
-		names[lb.Name] = struct{}{}
+		names[nameKey] = struct{}{}
 
 		for _, frontend := range lb.Frontends() {
 			key := fmt.Sprintf("%s|%s|%s|%d", lb.VPC, frontend.VIP, frontend.Protocol, frontend.Port)
@@ -1089,7 +1092,7 @@ func desiredTopologyState(state DesiredState) topology.State {
 	}
 	loadBalancers := make(map[string]model.LoadBalancer, len(state.LoadBalancers))
 	for _, lb := range state.LoadBalancers {
-		loadBalancers[lb.Name] = lb
+		loadBalancers[loadBalancerKey(lb.VPC, lb.Name)] = lb
 	}
 	return topology.State{
 		VPCs:          vpcs,
