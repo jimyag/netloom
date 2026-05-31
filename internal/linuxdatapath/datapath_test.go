@@ -2,6 +2,7 @@ package linuxdatapath
 
 import (
 	"context"
+	"fmt"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -213,11 +214,14 @@ func TestPlanProgramsLinuxPolicyRoutes(t *testing.T) {
 		t.Fatalf("policy routes = %d, want 2", result.PolicyRoutes)
 	}
 	joined := stringifyOps(ops)
+	tables := mustPolicyTables(t, state.PolicyRoutes, Options{PolicyTableBase: 20000, PolicyTableSize: 1024})
+	httpsTable := tables["https-via-fw"]
+	dropTable := tables["drop-lab"]
 	for _, expected := range []string{
-		"ip route replace 172.16.0.0/16 via 10.10.0.253 dev eth9 table 20000",
-		"ip rule add priority 9800 from 10.10.0.0/24 to 172.16.0.0/16 ipproto tcp dport 443 table 20000 protocol 186",
-		"ip route replace blackhole 198.51.100.0/24 table 20001",
-		"ip rule add priority 9900 from 10.10.0.0/24 to 198.51.100.0/24 table 20001 protocol 186",
+		fmt.Sprintf("ip route replace 172.16.0.0/16 via 10.10.0.253 dev eth9 table %d", httpsTable),
+		fmt.Sprintf("ip rule add priority 9800 from 10.10.0.0/24 to 172.16.0.0/16 ipproto tcp dport 443 table %d protocol 186", httpsTable),
+		fmt.Sprintf("ip route replace blackhole 198.51.100.0/24 table %d", dropTable),
+		fmt.Sprintf("ip rule add priority 9900 from 10.10.0.0/24 to 198.51.100.0/24 table %d protocol 186", dropTable),
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("policy route ops missing %q:\n%s", expected, joined)
@@ -270,10 +274,12 @@ func TestPlanProgramsAllowPolicyRouteToMainTable(t *testing.T) {
 		t.Fatalf("policy routes = %d, want 2", result.PolicyRoutes)
 	}
 	joined := stringifyOps(ops)
+	tables := mustPolicyTables(t, state.PolicyRoutes, Options{PolicyTableBase: 20000, PolicyTableSize: 1024})
+	dropTable := tables["drop-lab"]
 	for _, expected := range []string{
 		"ip rule add priority 9700 from 10.10.0.0/24 to 198.51.100.10/32 ipproto tcp dport 443 table 254 protocol 186",
-		"ip route replace blackhole 198.51.100.0/24 table 20000",
-		"ip rule add priority 9900 from 10.10.0.0/24 to 198.51.100.0/24 table 20000 protocol 186",
+		fmt.Sprintf("ip route replace blackhole 198.51.100.0/24 table %d", dropTable),
+		fmt.Sprintf("ip rule add priority 9900 from 10.10.0.0/24 to 198.51.100.0/24 table %d protocol 186", dropTable),
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("allow policy route ops missing %q:\n%s", expected, joined)
@@ -321,10 +327,12 @@ func TestPlanProgramsIPv6LinuxPolicyRoute(t *testing.T) {
 		t.Fatalf("policy routes = %d, want 1", result.PolicyRoutes)
 	}
 	joined := stringifyOps(ops)
+	tables := mustPolicyTables(t, state.PolicyRoutes, Options{PolicyTableBase: 20000, PolicyTableSize: 1024})
+	table := tables["v6-via-fw"]
 	for _, expected := range []string{
 		"ip addr replace fd00:10::10/128 dev nl0",
-		"ip route replace ::/0 via fd00:10::fe dev eth9 table 20000",
-		"ip rule add priority 9800 from fd00:10::/64 ipproto ipv6-icmp table 20000 protocol 186",
+		fmt.Sprintf("ip route replace ::/0 via fd00:10::fe dev eth9 table %d", table),
+		fmt.Sprintf("ip rule add priority 9800 from fd00:10::/64 ipproto ipv6-icmp table %d protocol 186", table),
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("IPv6 policy route ops missing %q:\n%s", expected, joined)
@@ -371,9 +379,11 @@ func TestPlanProgramsECMPPolicyRoute(t *testing.T) {
 		t.Fatalf("policy routes = %d, want 1", result.PolicyRoutes)
 	}
 	joined := stringifyOps(ops)
+	tables := mustPolicyTables(t, state.PolicyRoutes, Options{PolicyTableBase: 20000, PolicyTableSize: 1024})
+	table := tables["centralized-egress"]
 	for _, expected := range []string{
-		"ip route replace 0.0.0.0/0 nexthop via 10.10.0.253 dev eth9 nexthop via 10.10.0.254 dev eth9 table 20000",
-		"ip rule add priority 9800 from 10.10.0.0/24 table 20000 protocol 186",
+		fmt.Sprintf("ip route replace 0.0.0.0/0 nexthop via 10.10.0.253 dev eth9 nexthop via 10.10.0.254 dev eth9 table %d", table),
+		fmt.Sprintf("ip rule add priority 9800 from 10.10.0.0/24 table %d protocol 186", table),
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("ECMP policy route ops missing %q:\n%s", expected, joined)
@@ -532,6 +542,49 @@ func TestAllocatePolicyRouteTablesKeepsExistingNamesStable(t *testing.T) {
 	}
 }
 
+func TestPlanPolicyRouteTablesRemainStableAfterPriorityInsertion(t *testing.T) {
+	baseState := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:     "pod-a",
+			VPC:    "prod",
+			Subnet: "apps",
+			IP:     netip.MustParseAddr("10.10.0.10"),
+			Node:   "node-a",
+		}},
+		PolicyRoutes: []model.PolicyRoute{
+			testReroutePolicyRoute("web", 200),
+			testReroutePolicyRoute("db", 100),
+		},
+	}
+	insertedState := baseState
+	insertedState.PolicyRoutes = append([]model.PolicyRoute{testReroutePolicyRoute("api", 300)}, baseState.PolicyRoutes...)
+	options := Options{
+		Node:            "node-a",
+		LocalDevice:     "nl0",
+		UnderlayDevice:  "eth9",
+		PolicyTableBase: 22000,
+		PolicyTableSize: 1024,
+	}
+
+	baseOps, _, err := Plan(context.Background(), baseState, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	insertedOps, _, err := Plan(context.Background(), insertedState, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tables := mustPolicyTables(t, baseState.PolicyRoutes, options)
+	baseJoined := stringifyOps(baseOps)
+	insertedJoined := stringifyOps(insertedOps)
+	for _, name := range []string{"web", "db"} {
+		expected := fmt.Sprintf("table %d", tables[name])
+		if !strings.Contains(baseJoined, expected) || !strings.Contains(insertedJoined, expected) {
+			t.Fatalf("policy route %s did not keep table %d after insertion:\nbase:\n%s\ninserted:\n%s", name, tables[name], baseJoined, insertedJoined)
+		}
+	}
+}
+
 func TestAllocatePolicyRouteTablesRejectsExhaustedRange(t *testing.T) {
 	_, err := allocatePolicyRouteTables([]model.PolicyRoute{
 		testReroutePolicyRoute("web", 200),
@@ -685,6 +738,15 @@ func testReroutePolicyRoute(name string, priority int) model.PolicyRoute {
 		},
 		Action: model.RouteAction{Type: model.ActionReroute, NextHops: []netip.Addr{netip.MustParseAddr("10.10.0.253")}},
 	}
+}
+
+func mustPolicyTables(t *testing.T, routes []model.PolicyRoute, options Options) map[string]int {
+	t.Helper()
+	tables, err := allocatePolicyRouteTables(routes, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tables
 }
 
 func TestNetlinkPolicyRuleEncodesIPv6Family(t *testing.T) {

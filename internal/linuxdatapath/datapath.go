@@ -182,34 +182,31 @@ func Plan(ctx context.Context, state control.DesiredState, options Options) ([]O
 }
 
 func planPolicyRoutes(state control.DesiredState, node, device string, tableBase, tableSize int, cleanup bool) ([]Operation, int, error) {
-	if len(state.PolicyRoutes) == 0 {
-		if cleanup {
-			return []Operation{planPolicyRouteCleanup(tableBase, tableSize)}, 0, nil
-		}
-		return nil, 0, nil
-	}
 	localVPCs := localVPCSet(state.Endpoints, node)
 	routes := append([]model.PolicyRoute(nil), state.PolicyRoutes...)
 	sortPolicyRoutes(routes)
+	applicable, err := applicablePolicyRoutes(routes, localVPCs)
+	if err != nil {
+		return nil, 0, err
+	}
 
 	var ops []Operation
 	if cleanup {
 		ops = append(ops, planPolicyRouteCleanup(tableBase, tableSize))
 	}
+	if len(applicable) == 0 {
+		return ops, 0, nil
+	}
+	tables, err := allocatePolicyRouteTables(applicable, Options{PolicyTableBase: tableBase, PolicyTableSize: tableSize})
+	if err != nil {
+		return nil, 0, err
+	}
 	applied := 0
-	tableOffset := 0
-	for _, route := range routes {
-		if _, ok := localVPCs[route.VPC]; !ok {
-			continue
-		}
-		if err := route.Validate(); err != nil {
-			return nil, 0, fmt.Errorf("policy route %s: %w", route.Name, err)
-		}
+	for _, route := range applicable {
 		table := linuxMainRouteTable
 		rulePriority := linuxPolicyRulePriority(route.Priority)
 		if route.Action.Type != model.ActionAllow {
-			table = tableBase + tableOffset
-			tableOffset++
+			table = tables[route.Name]
 			destination := linuxPolicyRouteDestination(route)
 			if route.Action.Type == model.ActionDrop {
 				ops = append(ops, Operation{
