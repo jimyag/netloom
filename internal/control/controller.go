@@ -964,7 +964,13 @@ func validateRouteTables(tables []model.RouteTable) error {
 
 func validatePolicyRoutes(routes []model.PolicyRoute) error {
 	names := make(map[string]struct{}, len(routes))
-	matches := make(map[string]string, len(routes))
+	type policyRouteRecord struct {
+		name     string
+		vpc      string
+		priority int
+		match    model.RouteMatch
+	}
+	var records []policyRouteRecord
 	for _, route := range routes {
 		if err := route.Validate(); err != nil {
 			return err
@@ -973,13 +979,49 @@ func validatePolicyRoutes(routes []model.PolicyRoute) error {
 			return fmt.Errorf("duplicate policy route name %q", route.Name)
 		}
 		names[route.Name] = struct{}{}
-		key := fmt.Sprintf("%s|%d|%s", route.VPC, route.Priority, routeMatchKey(route.Match))
-		if prev := matches[key]; prev != "" {
-			return fmt.Errorf("policy route %q conflicts with %q on priority %d match %s in vpc %s", route.Name, prev, route.Priority, routeMatchKey(route.Match), route.VPC)
+		for _, existing := range records {
+			if existing.vpc == route.VPC && existing.priority == route.Priority && routeMatchesOverlap(existing.match, route.Match) {
+				return fmt.Errorf("policy route %q conflicts with %q on overlapping priority %d match %s in vpc %s", route.Name, existing.name, route.Priority, routeMatchKey(route.Match), route.VPC)
+			}
 		}
-		matches[key] = route.Name
+		records = append(records, policyRouteRecord{name: route.Name, vpc: route.VPC, priority: route.Priority, match: route.Match})
 	}
 	return nil
+}
+
+func routeMatchesOverlap(left, right model.RouteMatch) bool {
+	return prefixesMayOverlap(left.Source, right.Source) &&
+		prefixesMayOverlap(left.Destination, right.Destination) &&
+		protocolsMayOverlap(left.Protocol, right.Protocol) &&
+		portRangesMayOverlap(left.DstPorts, right.DstPorts)
+}
+
+func prefixesMayOverlap(left, right netip.Prefix) bool {
+	if !left.IsValid() || !right.IsValid() {
+		return true
+	}
+	return prefixesOverlap(left, right)
+}
+
+func protocolsMayOverlap(left, right model.Protocol) bool {
+	if left == "" || left == model.ProtocolAny || right == "" || right == model.ProtocolAny {
+		return true
+	}
+	return left == right
+}
+
+func portRangesMayOverlap(left, right []model.PortRange) bool {
+	if len(left) == 0 || len(right) == 0 {
+		return true
+	}
+	for _, leftPort := range left {
+		for _, rightPort := range right {
+			if leftPort.From <= rightPort.To && rightPort.From <= leftPort.To {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func routeMatchKey(match model.RouteMatch) string {

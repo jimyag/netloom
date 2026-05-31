@@ -1168,6 +1168,92 @@ func TestControllerRejectsConflictingPolicyRoutes(t *testing.T) {
 	}
 }
 
+func TestControllerRejectsOverlappingPolicyRoutesAtSamePriority(t *testing.T) {
+	state := DesiredState{
+		VPCs: []model.VPC{{Name: "prod"}},
+		Subnets: []model.Subnet{{
+			Name:    "apps",
+			VPC:     "prod",
+			CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway: netip.MustParseAddr("10.10.0.1"),
+		}},
+		PolicyRoutes: []model.PolicyRoute{
+			{
+				Name:     "drop-private",
+				VPC:      "prod",
+				Priority: 100,
+				Match: model.RouteMatch{
+					Source:      netip.MustParsePrefix("10.10.0.0/24"),
+					Destination: netip.MustParsePrefix("172.16.0.0/16"),
+					Protocol:    model.ProtocolTCP,
+					DstPorts:    []model.PortRange{{From: 443, To: 443}},
+				},
+				Action: model.RouteAction{Type: model.ActionDrop},
+			},
+			{
+				Name:     "allow-api",
+				VPC:      "prod",
+				Priority: 100,
+				Match: model.RouteMatch{
+					Source:      netip.MustParsePrefix("10.10.0.20/32"),
+					Destination: netip.MustParsePrefix("172.16.10.10/32"),
+					Protocol:    model.ProtocolTCP,
+					DstPorts:    []model.PortRange{{From: 443, To: 443}},
+				},
+				Action: model.RouteAction{Type: model.ActionAllow},
+			},
+		},
+	}
+	err := NewController(NewMemoryBackend(), NewMemoryBackend()).Reconcile(context.Background(), state)
+	if err == nil {
+		t.Fatal("expected same-priority overlapping policy routes to fail")
+	}
+	if !strings.Contains(err.Error(), "overlapping priority 100") || !strings.Contains(err.Error(), "allow-api") {
+		t.Fatalf("error %q does not describe overlapping policy route conflict", err)
+	}
+}
+
+func TestControllerAllowsDisjointPolicyRoutesAtSamePriority(t *testing.T) {
+	state := DesiredState{
+		VPCs: []model.VPC{{Name: "prod"}},
+		Subnets: []model.Subnet{{
+			Name:    "apps",
+			VPC:     "prod",
+			CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway: netip.MustParseAddr("10.10.0.1"),
+		}},
+		PolicyRoutes: []model.PolicyRoute{
+			{
+				Name:     "api",
+				VPC:      "prod",
+				Priority: 100,
+				Match: model.RouteMatch{
+					Source:      netip.MustParsePrefix("10.10.0.0/25"),
+					Destination: netip.MustParsePrefix("172.16.0.0/16"),
+					Protocol:    model.ProtocolTCP,
+					DstPorts:    []model.PortRange{{From: 443, To: 443}},
+				},
+				Action: model.RouteAction{Type: model.ActionAllow},
+			},
+			{
+				Name:     "metrics",
+				VPC:      "prod",
+				Priority: 100,
+				Match: model.RouteMatch{
+					Source:      netip.MustParsePrefix("10.10.0.128/25"),
+					Destination: netip.MustParsePrefix("172.16.0.0/16"),
+					Protocol:    model.ProtocolTCP,
+					DstPorts:    []model.PortRange{{From: 9090, To: 9090}},
+				},
+				Action: model.RouteAction{Type: model.ActionDrop},
+			},
+		},
+	}
+	if err := NewController(NewMemoryBackend(), NewMemoryBackend()).Reconcile(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestControllerRejectsDuplicatePolicyRouteNames(t *testing.T) {
 	state := DesiredState{
 		VPCs: []model.VPC{{Name: "prod"}},
