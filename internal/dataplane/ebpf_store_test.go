@@ -11,8 +11,31 @@ import (
 
 func TestMapNameSanitizesEndpointID(t *testing.T) {
 	got := mapName("pod/a:b")
-	if got != "nl_pol_pod_a_b" {
-		t.Fatalf("map name = %q, want nl_pol_pod_a_b", got)
+	if len(got) != 15 {
+		t.Fatalf("map name length = %d, want 15", len(got))
+	}
+	if !strings.HasPrefix(got, "nlp") {
+		t.Fatalf("map name = %q, want nlp prefix", got)
+	}
+}
+
+func TestMapNameAvoidsSanitizeAndTruncationCollisions(t *testing.T) {
+	cases := []struct {
+		left  string
+		right string
+	}{
+		{left: "pod/a:b", right: "pod_a_b"},
+		{left: "very-long-endpoint-name-a", right: "very-long-endpoint-name-b"},
+	}
+	for _, tc := range cases {
+		left := mapName(tc.left)
+		right := mapName(tc.right)
+		if left == right {
+			t.Fatalf("map names collide for %q and %q: %q", tc.left, tc.right, left)
+		}
+		if len(left) > 15 || len(right) > 15 {
+			t.Fatalf("map names exceed eBPF limit: %q/%d %q/%d", left, len(left), right, len(right))
+		}
 	}
 }
 

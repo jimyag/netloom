@@ -2,8 +2,9 @@ package dataplane
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
-	"regexp"
 	"sync"
 	"unsafe"
 
@@ -146,13 +147,8 @@ func (s *EBPFPolicyStore) Close() error {
 	return firstErr
 }
 
-var invalidMapNameChars = regexp.MustCompile(`[^A-Za-z0-9_.-]`)
-
 func mapName(endpointID string) string {
-	const prefix = "nl_pol_"
-	name := invalidMapNameChars.ReplaceAllString(endpointID, "_")
-	if len(name) > 15-len(prefix) {
-		name = name[:15-len(prefix)]
-	}
-	return prefix + name
+	const prefix = "nlp"
+	sum := sha256.Sum256([]byte(endpointID))
+	return prefix + hex.EncodeToString(sum[:])[:12]
 }
