@@ -273,8 +273,11 @@ func expandRule(endpoint model.Endpoint, securityGroup model.SecurityGroup, rule
 	if hasRemoteEndpointSelector(rule) {
 		return expandEndpointSelectorRule(endpoint, base, rule, endpointsBySelector)
 	}
-	if rule.RemoteGroup == "" || membersByGroup == nil {
+	if rule.RemoteGroup == "" {
 		return []Rule{base}, nil
+	}
+	if membersByGroup == nil {
+		return nil, fmt.Errorf("rule %s remote_group has no endpoint context", rule.ID)
 	}
 	members, ok := membersByGroup[rule.RemoteGroup]
 	if !ok {

@@ -541,6 +541,36 @@ func TestCompileForEndpointResolvesEgressNamedPortFromRemoteGroup(t *testing.T) 
 	}
 }
 
+func TestCompileForEndpointRejectsRemoteGroupWithoutEndpointContext(t *testing.T) {
+	endpoint := model.Endpoint{
+		ID:             "pod-a",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"web"},
+	}
+	_, err := CompileForEndpoint(endpoint, map[string]model.SecurityGroup{
+		"web": {
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:          "allow-client",
+				Priority:    100,
+				Direction:   model.DirectionIngress,
+				Protocol:    model.ProtocolTCP,
+				RemoteGroup: "clients",
+				Ports:       []model.PortRange{{From: 8080, To: 8080}},
+				Action:      model.ActionAllow,
+			}},
+		},
+		"clients": {Name: "clients", VPC: "prod"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "remote_group has no endpoint context") {
+		t.Fatalf("error = %v, want missing endpoint context", err)
+	}
+}
+
 func TestCompileForEndpointRejectsUnresolvableNamedPort(t *testing.T) {
 	endpoint := model.Endpoint{
 		ID:             "pod-a",
@@ -1270,6 +1300,7 @@ func TestCompileForEndpointWithStateRejectsUnknownRemoteGroup(t *testing.T) {
 			VPC:  "prod",
 			Rules: []model.SecurityGroupRule{{
 				ID:          "allow-missing",
+				Priority:    100,
 				Direction:   model.DirectionIngress,
 				Protocol:    model.ProtocolTCP,
 				RemoteGroup: "missing",
