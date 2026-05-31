@@ -228,6 +228,7 @@ type ConntrackKey struct {
 	RemoteIP       netip.Addr
 	Direction      uint8
 	Protocol       uint8
+	SourcePort     uint16
 	DestPort       uint16
 }
 
@@ -454,6 +455,7 @@ func conntrackKey(endpointID string, packet Packet) ConntrackKey {
 		RemoteIP:       packet.RemoteIP,
 		Direction:      packet.Direction,
 		Protocol:       packet.Protocol,
+		SourcePort:     packet.SourcePort,
 		DestPort:       packet.DestPort,
 	}
 }
@@ -469,6 +471,7 @@ func reverseConntrackKey(endpointID string, packet Packet) ConntrackKey {
 		RemoteIP:       packet.RemoteIP,
 		Direction:      reverseDirection(packet.Direction),
 		Protocol:       packet.Protocol,
+		SourcePort:     packet.DestPort,
 		DestPort:       port,
 	}
 }

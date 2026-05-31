@@ -401,10 +401,62 @@ func TestEvaluateStatefulAllowsReverseFlowFromConntrack(t *testing.T) {
 		RemoteIdentity: 100,
 		Direction:      DirectionEgress,
 		Protocol:       6,
+		SourcePort:     443,
 		DestPort:       55000,
 	}, conntrack)
 	if reverse.Verdict != VerdictAllow || !reverse.Conntrack {
 		t.Fatalf("reverse decision = %+v, want conntrack allow", reverse)
+	}
+}
+
+func TestEvaluateStatefulKeepsConntrackSourcePortsSeparate(t *testing.T) {
+	entries := []PolicyMapEntry{{
+		Key: PolicyKey{
+			PrefixLen:      StaticPrefixBits + 24,
+			RemoteIdentity: 100,
+			Direction:      DirectionIngress,
+			Protocol:       6,
+			DestPortBE:     hostToNetwork16(443),
+		},
+		Value: PolicyEntry{
+			L4PrefixLen: 24,
+			Precedence:  100,
+			Stateful:    1,
+		},
+	}}
+	conntrack := NewInMemoryConntrackStore()
+
+	allowed := EvaluateStateful("pod-a", entries, Packet{
+		SourcePort:     55000,
+		RemoteIdentity: 100,
+		Direction:      DirectionIngress,
+		Protocol:       6,
+		DestPort:       443,
+	}, conntrack)
+	if allowed.Verdict != VerdictAllow || !allowed.Established {
+		t.Fatalf("allowed decision = %+v, want stateful allow", allowed)
+	}
+
+	reverseDifferentLocalPort := EvaluateStateful("pod-a", nil, Packet{
+		RemoteIdentity: 100,
+		Direction:      DirectionEgress,
+		Protocol:       6,
+		SourcePort:     8443,
+		DestPort:       55000,
+	}, conntrack)
+	if reverseDifferentLocalPort.Verdict != VerdictDrop || reverseDifferentLocalPort.Conntrack {
+		t.Fatalf("reverse different local port decision = %+v, want no conntrack match", reverseDifferentLocalPort)
+	}
+
+	reverseSameLocalPort := EvaluateStateful("pod-a", nil, Packet{
+		RemoteIdentity: 100,
+		Direction:      DirectionEgress,
+		Protocol:       6,
+		SourcePort:     443,
+		DestPort:       55000,
+	}, conntrack)
+	if reverseSameLocalPort.Verdict != VerdictAllow || !reverseSameLocalPort.Conntrack {
+		t.Fatalf("reverse same local port decision = %+v, want conntrack allow", reverseSameLocalPort)
 	}
 }
 
@@ -676,6 +728,7 @@ func TestPolicyRecorderTracksConntrackDecisions(t *testing.T) {
 		RemoteIdentity: 100,
 		Direction:      DirectionEgress,
 		Protocol:       6,
+		SourcePort:     443,
 		DestPort:       55000,
 	}, conntrack, recorder)
 	metrics := recorder.Metrics("pod-a")
