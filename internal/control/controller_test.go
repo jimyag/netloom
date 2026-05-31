@@ -556,6 +556,20 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 			wantErr: "duplicate gateway name",
 		},
 		{
+			name: "gateway outside vpc subnet",
+			mutate: func(state *DesiredState) {
+				state.Gateways[0].LANIP = netip.MustParseAddr("10.20.0.254")
+			},
+			wantErr: "gateway \"gw-a\" lan ip 10.20.0.254 is outside vpc \"prod\" subnets",
+		},
+		{
+			name: "gateway excluded by subnet",
+			mutate: func(state *DesiredState) {
+				state.Subnets[0].ExcludeCIDRs = []netip.Prefix{netip.MustParsePrefix("10.10.0.248/29")}
+			},
+			wantErr: "gateway \"gw-a\" lan ip 10.10.0.254 is excluded by subnet \"apps\"",
+		},
+		{
 			name: "load balancer unknown subnet",
 			mutate: func(state *DesiredState) {
 				state.LoadBalancers[0].Subnets = []string{"missing"}

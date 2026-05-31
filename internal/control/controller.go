@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"fmt"
+	"net/netip"
 	"sort"
 	"strings"
 
@@ -500,6 +501,13 @@ func validateObjectGraph(state DesiredState) error {
 		if _, ok := vpcs[gateway.VPC]; !ok {
 			return fmt.Errorf("gateway %q references unknown vpc %q", gateway.Name, gateway.VPC)
 		}
+		subnet, ok := subnetContainingAddress(subnets, gateway.VPC, gateway.LANIP)
+		if !ok {
+			return fmt.Errorf("gateway %q lan ip %s is outside vpc %q subnets", gateway.Name, gateway.LANIP, gateway.VPC)
+		}
+		if subnet.Excludes(gateway.LANIP) {
+			return fmt.Errorf("gateway %q lan ip %s is excluded by subnet %q", gateway.Name, gateway.LANIP, subnet.Name)
+		}
 		gateways[gateway.Name] = struct{}{}
 	}
 
@@ -533,6 +541,15 @@ func validateObjectGraph(state DesiredState) error {
 		}
 	}
 	return nil
+}
+
+func subnetContainingAddress(subnets map[string]model.Subnet, vpc string, addr netip.Addr) (model.Subnet, bool) {
+	for _, subnet := range subnets {
+		if subnet.VPC == vpc && subnet.CIDR.Contains(addr) {
+			return subnet, true
+		}
+	}
+	return model.Subnet{}, false
 }
 
 func validateLoadBalancers(loadBalancers []model.LoadBalancer) error {

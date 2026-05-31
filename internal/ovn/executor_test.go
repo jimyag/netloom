@@ -841,6 +841,7 @@ func TestBackendCleanupDeletesLocalnetPortWithSubnet(t *testing.T) {
 
 	second := first
 	second.Subnets = nil
+	second.Gateways = nil
 	second.Endpoints = nil
 	second.NATRules = nil
 	second.LoadBalancers = nil

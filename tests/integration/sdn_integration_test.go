@@ -40,7 +40,7 @@ func TestDesiredStateDrivesTopologyRoutesAndEBPFStyleACL(t *testing.T) {
 		t.Fatalf("subnet dhcp was not reconciled, got: %+v", subnet.DHCP)
 	} else if len(subnet.DHCP.DNSServers) != 1 || subnet.DHCP.DNSServers[0] != netip.MustParseAddr("10.96.0.10") || subnet.DHCP.DomainName != "svc.cluster.local" {
 		t.Fatalf("subnet dhcp dns options were not reconciled, got: %+v", subnet.DHCP)
-	} else if len(subnet.ExcludeCIDRs) != 1 || subnet.ExcludeCIDRs[0].String() != "10.10.0.128/25" {
+	} else if len(subnet.ExcludeCIDRs) != 1 || subnet.ExcludeCIDRs[0].String() != "10.10.0.16/28" {
 		t.Fatalf("subnet exclude cidrs were not reconciled, got: %+v", subnet.ExcludeCIDRs)
 	}
 	if gateway, ok := memoryBackend.Gateways["gw-a"]; !ok || gateway.Node != "node-a" || gateway.LANIP.String() != "10.10.0.254" {
@@ -334,7 +334,7 @@ func mustAddr(t *testing.T, raw string) netip.Addr {
 
 const integrationStateJSON = `{
   "vpcs": [{"name": "prod"}],
-  "subnets": [{"name": "apps", "vpc": "prod", "cidr": "10.10.0.0/24", "gateway": "10.10.0.1", "exclude_cidrs": ["10.10.0.128/25"], "provider_network": "physnet-a", "vlan": 100, "dhcp": {"enabled": true, "lease_time": 7200, "mtu": 1400, "dns_servers": ["10.96.0.10"], "domain_name": "svc.cluster.local", "search_domains": ["cluster.local", "svc.cluster.local"]}}],
+  "subnets": [{"name": "apps", "vpc": "prod", "cidr": "10.10.0.0/24", "gateway": "10.10.0.1", "exclude_cidrs": ["10.10.0.16/28"], "provider_network": "physnet-a", "vlan": 100, "dhcp": {"enabled": true, "lease_time": 7200, "mtu": 1400, "dns_servers": ["10.96.0.10"], "domain_name": "svc.cluster.local", "search_domains": ["cluster.local", "svc.cluster.local"]}}],
   "endpoints": [
     {"id": "pod-a", "vpc": "prod", "subnet": "apps", "ip": "10.10.0.10", "mac": "0A:58:0A:0A:00:0A", "node": "node-a", "security_groups": ["platform-client", "client"], "labels": {"app": "client", "env": "prod"}},
     {"id": "pod-b", "vpc": "prod", "subnet": "apps", "ip": "10.10.0.11", "node": "node-b", "security_groups": ["server"], "labels": {"app": "server", "env": "prod"}}
