@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
 
@@ -849,6 +850,50 @@ func TestReconcileNodeRejectsUnknownSecurityGroup(t *testing.T) {
 	_, err := ReconcileNode(context.Background(), state, "node-a", dataplane.NewInMemoryPolicyStore())
 	if err == nil {
 		t.Fatal("expected unknown security group to fail")
+	}
+}
+
+func TestReconcileNodeRejectsDuplicateSecurityGroups(t *testing.T) {
+	state := control.DesiredState{
+		SecurityGroups: []model.SecurityGroup{
+			{Name: "web", VPC: "prod"},
+			{Name: "web", VPC: "prod"},
+		},
+	}
+	_, err := ReconcileNode(context.Background(), state, "node-a", dataplane.NewInMemoryPolicyStore())
+	if err == nil {
+		t.Fatal("expected duplicate security groups to fail")
+	}
+	if !strings.Contains(err.Error(), "duplicate security group name") {
+		t.Fatalf("error %q does not mention duplicate security group name", err)
+	}
+}
+
+func TestReconcileNodeRejectsDuplicateEndpoints(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{
+			{
+				ID:     "pod-a",
+				VPC:    "prod",
+				Subnet: "apps",
+				IP:     netip.MustParseAddr("10.10.0.10"),
+				Node:   "node-a",
+			},
+			{
+				ID:     "pod-a",
+				VPC:    "prod",
+				Subnet: "apps",
+				IP:     netip.MustParseAddr("10.10.0.11"),
+				Node:   "node-a",
+			},
+		},
+	}
+	_, err := ReconcileNode(context.Background(), state, "node-a", dataplane.NewInMemoryPolicyStore())
+	if err == nil {
+		t.Fatal("expected duplicate endpoints to fail")
+	}
+	if !strings.Contains(err.Error(), "duplicate endpoint id") {
+		t.Fatalf("error %q does not mention duplicate endpoint id", err)
 	}
 }
 

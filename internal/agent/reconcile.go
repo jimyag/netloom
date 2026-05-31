@@ -205,6 +205,10 @@ func prepareReconcile(ctx context.Context, state control.DesiredState, options R
 		return ReconcileResult{}, nil, nil, fmt.Errorf("policy store is required")
 	}
 
+	if err := validateAgentState(state); err != nil {
+		return ReconcileResult{}, nil, nil, err
+	}
+
 	groups := make(map[string]model.SecurityGroup, len(state.SecurityGroups))
 	for _, group := range state.SecurityGroups {
 		if err := group.Validate(); err != nil {
@@ -281,6 +285,30 @@ func prepareReconcile(ctx context.Context, state control.DesiredState, options R
 		targets = tcxTargets(options, tcxPrograms)
 	}
 	return result, targets, localPrograms, nil
+}
+
+func validateAgentState(state control.DesiredState) error {
+	groups := make(map[string]struct{}, len(state.SecurityGroups))
+	for _, group := range state.SecurityGroups {
+		if err := group.Validate(); err != nil {
+			return err
+		}
+		if _, ok := groups[group.Name]; ok {
+			return fmt.Errorf("duplicate security group name %q", group.Name)
+		}
+		groups[group.Name] = struct{}{}
+	}
+	endpoints := make(map[string]struct{}, len(state.Endpoints))
+	for _, endpoint := range state.Endpoints {
+		if err := endpoint.Validate(); err != nil {
+			return err
+		}
+		if _, ok := endpoints[endpoint.ID]; ok {
+			return fmt.Errorf("duplicate endpoint id %q", endpoint.ID)
+		}
+		endpoints[endpoint.ID] = struct{}{}
+	}
+	return nil
 }
 
 func tcxTargets(options ReconcileOptions, programs []policy.Program) []tcxTarget {
