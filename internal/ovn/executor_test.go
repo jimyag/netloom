@@ -613,6 +613,38 @@ func TestBackendFirstReconcileCleansStaleManagedNATRules(t *testing.T) {
 	}
 }
 
+func TestBackendFirstReconcileCleansStaleManagedPolicyRoutes(t *testing.T) {
+	recorder := ovn.NewRecorderExecutor()
+	backend := ovn.NewBackend(recorder)
+	state := controlStateWithEndpoint("pod-a")
+	state.PolicyRoutes = []model.PolicyRoute{{
+		Name:     "https-via-fw",
+		VPC:      "prod",
+		Priority: 100,
+		Match: model.RouteMatch{
+			Source:      netip.MustParsePrefix("10.10.0.0/24"),
+			Destination: netip.MustParsePrefix("172.16.0.0/16"),
+			Protocol:    model.ProtocolTCP,
+			DstPorts:    []model.PortRange{{From: 443, To: 443}},
+		},
+		Action: model.RouteAction{Type: model.ActionReroute, NextHops: []netip.Addr{netip.MustParseAddr("10.10.0.253")}},
+	}}
+	controller := control.NewController(backend, control.NewMemoryBackend())
+	if err := controller.Reconcile(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+
+	joined := stringifyOVNOps(recorder.Operations())
+	if !strings.Contains(joined, "gc-stale-policy-routes prod https-via-fw") {
+		t.Fatalf("first reconcile should clean stale managed policy routes while keeping desired names:\n%s", joined)
+	}
+	staleGC := strings.Index(joined, "gc-stale-policy-routes prod https-via-fw")
+	tag := strings.Index(joined, "tag-policy-route prod https-via-fw 100")
+	if tag < 0 || staleGC > tag {
+		t.Fatalf("stale policy route cleanup should run before desired policy tagging:\n%s", joined)
+	}
+}
+
 func TestBackendCleanupConvergesChangedPolicyRoute(t *testing.T) {
 	recorder := ovn.NewRecorderExecutor()
 	backend := ovn.NewBackend(recorder)
@@ -1204,6 +1236,109 @@ esac
 	}
 	if !strings.Contains(calls[2], "set\nlogical_router\nnl_lr_prod") {
 		t.Fatalf("trailing regular operation should still execute:\n%s", calls[2])
+	}
+}
+
+func TestNBCTLExecutorTagsSingleHopPolicyRoutesByRouterPolicyMatch(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args")
+	binary := filepath.Join(dir, "ovn-nbctl")
+	script := fmt.Sprintf(`#!/bin/sh
+printf '%%s\n' '---' >> %q
+printf '%%s\n' "$@" >> %q
+case "$*" in
+  *"get logical_router nl_lr_prod policies"*) printf '[policy-a, policy-b]\n' ;;
+  *"get Logical_Router_Policy policy-a priority"*) printf '100\n' ;;
+  *"get Logical_Router_Policy policy-a match"*) printf '"ip4.src == 10.10.0.0/24 && tcp && tcp.dst == 443"\n' ;;
+  *"get Logical_Router_Policy policy-b priority"*) printf '100\n' ;;
+  *"get Logical_Router_Policy policy-b match"*) printf '"ip4.src == 10.20.0.0/24"\n' ;;
+esac
+`, argsFile, argsFile)
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	executor := ovn.NewNBCTLExecutor(binary, "--db=unix:/tmp/ovnnb.sock")
+	err := executor.Execute(context.Background(), []ovn.Operation{
+		{Command: "lr-policy-add", Flags: []string{"--may-exist"}, Args: []string{"nl_lr_prod", "100", "ip4.src == 10.10.0.0/24 && tcp && tcp.dst == 443", "reroute", "10.10.0.253"}},
+		{Command: "tag-policy-route", Args: []string{"prod", "https-via-fw", "100", "ip4.src == 10.10.0.0/24 && tcp && tcp.dst == 443"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := strings.Split(strings.TrimPrefix(strings.TrimSpace(string(raw)), "---\n"), "\n---\n")
+	if len(calls) != 7 {
+		t.Fatalf("calls = %d, want add, router policies, two identity reads per policy, matching set:\n%s", len(calls), raw)
+	}
+	if !strings.Contains(calls[0], "--may-exist\nlr-policy-add\nnl_lr_prod\n100") {
+		t.Fatalf("first call should add policy before tagging:\n%s", calls[0])
+	}
+	if !strings.Contains(calls[1], "get\nlogical_router\nnl_lr_prod\npolicies") {
+		t.Fatalf("second call should read router policy UUIDs:\n%s", calls[1])
+	}
+	if !strings.Contains(string(raw), "set\nLogical_Router_Policy\npolicy-a") ||
+		!strings.Contains(string(raw), "external_ids:netloom_policy_route=https-via-fw") ||
+		!strings.Contains(string(raw), "external_ids:netloom_vpc=prod") {
+		t.Fatalf("matching policy should be tagged with netloom ownership:\n%s", raw)
+	}
+	if strings.Contains(string(raw), "set\nLogical_Router_Policy\npolicy-b") {
+		t.Fatalf("non-matching router policy must not be tagged:\n%s", raw)
+	}
+}
+
+func TestNBCTLExecutorDestroysOnlyStaleManagedPolicyRoutes(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args")
+	binary := filepath.Join(dir, "ovn-nbctl")
+	script := fmt.Sprintf(`#!/bin/sh
+printf '%%s\n' '---' >> %q
+printf '%%s\n' "$@" >> %q
+case "$*" in
+  *"--columns=_uuid,external_ids find Logical_Router_Policy"*)
+    printf 'policy-keep,"{netloom_owner=netloom,netloom_policy_route=https-via-fw,netloom_vpc=prod}"\n'
+    printf 'policy-stale,"{netloom_owner=netloom,netloom_policy_route=old-fw,netloom_vpc=prod}"\n'
+    printf 'policy-missing,"{netloom_owner=netloom,netloom_vpc=prod}"\n'
+    ;;
+esac
+`, argsFile, argsFile)
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	executor := ovn.NewNBCTLExecutor(binary, "--db=unix:/tmp/ovnnb.sock")
+	err := executor.Execute(context.Background(), []ovn.Operation{
+		{Command: "gc-stale-policy-routes", Args: []string{"prod", "https-via-fw"}},
+		{Command: "set", Args: []string{"logical_router", "nl_lr_prod", "external_ids:netloom_owner=netloom"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := strings.Split(strings.TrimPrefix(strings.TrimSpace(string(raw)), "---\n"), "\n---\n")
+	if len(calls) != 4 {
+		t.Fatalf("calls = %d, want find, stale remove, stale destroy, trailing set:\n%s", len(calls), raw)
+	}
+	if !strings.Contains(calls[0], "--columns=_uuid,external_ids\nfind\nLogical_Router_Policy") ||
+		!strings.Contains(calls[0], "external_ids:netloom_owner=netloom") {
+		t.Fatalf("first call should find managed logical router policies:\n%s", calls[0])
+	}
+	if !strings.Contains(calls[1], "remove\nlogical_router\nnl_lr_prod\npolicies\npolicy-stale") ||
+		!strings.Contains(calls[2], "destroy\nLogical_Router_Policy\npolicy-stale") {
+		t.Fatalf("stale managed policy should be removed from router and destroyed:\n%s", raw)
+	}
+	if strings.Contains(string(raw), "destroy\nLogical_Router_Policy\npolicy-keep") ||
+		strings.Contains(string(raw), "destroy\nLogical_Router_Policy\npolicy-missing") {
+		t.Fatalf("desired or unidentified policies must not be destroyed:\n%s", raw)
+	}
+	if !strings.Contains(calls[3], "set\nlogical_router\nnl_lr_prod") {
+		t.Fatalf("trailing regular operation should still execute:\n%s", calls[3])
 	}
 }
 

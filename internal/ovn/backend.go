@@ -89,7 +89,7 @@ func (b *Backend) CleanupTopology(ctx context.Context, state topology.State) err
 	next := snapshotDesired(state)
 	ops := cleanupOperations(b.last, next)
 	if !b.seen {
-		ops = append([]Operation{gcStaleNATRulesOperation(next.NATRules)}, ops...)
+		ops = append([]Operation{gcStaleNATRulesOperation(next.NATRules), gcStalePolicyRoutesOperation(next.PolicyRoutes)}, ops...)
 	}
 	skipNAT := unchangedNATRules(b.last, next)
 	skipLB := unchangedLoadBalancers(b.last, next)

@@ -172,7 +172,10 @@ func (p *Planner) EnsurePolicyRoute(_ context.Context, route model.PolicyRoute) 
 	if action == model.ActionReroute {
 		nextHops := route.Action.RerouteNextHops()
 		if len(nextHops) == 1 {
-			p.ops = append(p.ops, Operation{Command: "lr-policy-add", Flags: []string{"--may-exist"}, Args: []string{router, fmt.Sprint(route.Priority), match, "reroute", nextHops[0].String()}})
+			p.ops = append(p.ops,
+				Operation{Command: "lr-policy-add", Flags: []string{"--may-exist"}, Args: []string{router, fmt.Sprint(route.Priority), match, "reroute", nextHops[0].String()}},
+				tagPolicyRouteOperation(route, match),
+			)
 			return nil
 		}
 		uuid := namedUUID("nl_lrp_" + sanitize(route.Name))
@@ -183,7 +186,10 @@ func (p *Planner) EnsurePolicyRoute(_ context.Context, route model.PolicyRoute) 
 		)
 		return nil
 	}
-	p.ops = append(p.ops, Operation{Command: "lr-policy-add", Flags: []string{"--may-exist"}, Args: []string{router, fmt.Sprint(route.Priority), match, string(action)}})
+	p.ops = append(p.ops,
+		Operation{Command: "lr-policy-add", Flags: []string{"--may-exist"}, Args: []string{router, fmt.Sprint(route.Priority), match, string(action)}},
+		tagPolicyRouteOperation(route, match),
+	)
 	return nil
 }
 

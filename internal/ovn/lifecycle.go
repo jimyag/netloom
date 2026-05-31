@@ -594,3 +594,26 @@ func gcStaleNATRulesOperation(rules map[string]model.NATRule) Operation {
 	sort.Strings(keep)
 	return Operation{Command: "gc-stale-nat-rules", Args: keep}
 }
+
+func tagPolicyRouteOperation(route model.PolicyRoute, match string) Operation {
+	return Operation{Command: "tag-policy-route", Args: []string{
+		route.VPC,
+		route.Name,
+		fmt.Sprint(route.Priority),
+		match,
+	}}
+}
+
+func gcStalePolicyRoutesOperation(routes map[string]policyRouteRecord) Operation {
+	keep := make([]string, 0, len(routes)*2)
+	keys := make([]string, 0, len(routes))
+	for key := range routes {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		route := routes[key].Route
+		keep = append(keep, route.VPC, route.Name)
+	}
+	return Operation{Command: "gc-stale-policy-routes", Args: keep}
+}

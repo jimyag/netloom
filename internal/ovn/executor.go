@@ -142,7 +142,7 @@ func firstSpecialOperation(ops []Operation) int {
 
 func isSpecialOperation(op Operation) bool {
 	switch op.Command {
-	case "gc-dhcp-options", "gc-load-balancer-health-checks", "gc-nat-rule", "gc-stale-nat-rules":
+	case "gc-dhcp-options", "gc-load-balancer-health-checks", "gc-nat-rule", "gc-stale-nat-rules", "tag-policy-route", "gc-stale-policy-routes":
 		return true
 	default:
 		return false
@@ -171,9 +171,104 @@ func (e *NBCTLExecutor) executeSpecial(ctx context.Context, op Operation) error 
 		)
 	case "gc-stale-nat-rules":
 		return e.destroyStaleNATRules(ctx, op.Args)
+	case "tag-policy-route":
+		return e.tagPolicyRoute(ctx, op.Args[0], op.Args[1], op.Args[2], op.Args[3])
+	case "gc-stale-policy-routes":
+		return e.destroyStalePolicyRoutes(ctx, op.Args)
 	default:
 		return fmt.Errorf("unsupported special operation %q", op.Command)
 	}
+}
+
+func (e *NBCTLExecutor) tagPolicyRoute(ctx context.Context, vpc, name, priority, match string) error {
+	router := logicalRouter(vpc)
+	uuids, err := e.routerPolicyUUIDs(ctx, router)
+	if err != nil {
+		return err
+	}
+	for _, uuid := range uuids {
+		policyPriority, policyMatch, err := e.logicalRouterPolicyIdentity(ctx, uuid)
+		if err != nil {
+			return err
+		}
+		if policyPriority != priority || policyMatch != match {
+			continue
+		}
+		args := append([]string(nil), e.BaseArgs...)
+		args = append(args, "set", "Logical_Router_Policy", uuid,
+			"external_ids:netloom_owner=netloom",
+			"external_ids:netloom_policy_route="+name,
+			"external_ids:netloom_vpc="+vpc,
+		)
+		if err := e.runCommand(ctx, args); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (e *NBCTLExecutor) routerPolicyUUIDs(ctx context.Context, router string) ([]string, error) {
+	args := append([]string(nil), e.BaseArgs...)
+	args = append(args, "--if-exists", "get", "logical_router", router, "policies")
+	output, err := e.outputCommand(ctx, args)
+	if err != nil {
+		return nil, err
+	}
+	return parseOVNSet(string(output)), nil
+}
+
+func (e *NBCTLExecutor) logicalRouterPolicyIdentity(ctx context.Context, uuid string) (string, string, error) {
+	priorityArgs := append([]string(nil), e.BaseArgs...)
+	priorityArgs = append(priorityArgs, "--if-exists", "get", "Logical_Router_Policy", uuid, "priority")
+	priorityOutput, err := e.outputCommand(ctx, priorityArgs)
+	if err != nil {
+		return "", "", err
+	}
+	matchArgs := append([]string(nil), e.BaseArgs...)
+	matchArgs = append(matchArgs, "--if-exists", "get", "Logical_Router_Policy", uuid, "match")
+	matchOutput, err := e.outputCommand(ctx, matchArgs)
+	if err != nil {
+		return "", "", err
+	}
+	return strings.TrimSpace(string(priorityOutput)), trimOVNString(string(matchOutput)), nil
+}
+
+func (e *NBCTLExecutor) destroyStalePolicyRoutes(ctx context.Context, keep []string) error {
+	keepSet := make(map[string]struct{}, len(keep)/2)
+	for i := 0; i+1 < len(keep); i += 2 {
+		keepSet[keep[i]+"\x00"+keep[i+1]] = struct{}{}
+	}
+	args := append([]string(nil), e.BaseArgs...)
+	args = append(args, "--format=csv", "--data=bare", "--no-headings", "--columns=_uuid,external_ids", "find", "Logical_Router_Policy", "external_ids:netloom_owner=netloom")
+	output, err := e.outputCommand(ctx, args)
+	if err != nil {
+		return err
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+		uuid, externalIDs, ok := parseExternalIDsCSVRow(line)
+		if !ok {
+			continue
+		}
+		vpc := externalIDs["netloom_vpc"]
+		name := externalIDs["netloom_policy_route"]
+		if vpc == "" || name == "" {
+			continue
+		}
+		if _, keep := keepSet[vpc+"\x00"+name]; keep {
+			continue
+		}
+		removeArgs := append([]string(nil), e.BaseArgs...)
+		removeArgs = append(removeArgs, "remove", "logical_router", logicalRouter(vpc), "policies", uuid)
+		if err := e.runCommand(ctx, removeArgs); err != nil {
+			return err
+		}
+		destroyArgs := append([]string(nil), e.BaseArgs...)
+		destroyArgs = append(destroyArgs, "--if-exists", "destroy", "Logical_Router_Policy", uuid)
+		if err := e.runCommand(ctx, destroyArgs); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (e *NBCTLExecutor) destroyStaleNATRules(ctx context.Context, keep []string) error {
@@ -205,26 +300,65 @@ func (e *NBCTLExecutor) destroyStaleNATRules(ctx context.Context, keep []string)
 }
 
 func parseNATGCRow(line string) (string, string, bool) {
+	uuid, externalIDs, ok := parseExternalIDsCSVRow(line)
+	if !ok {
+		return "", "", false
+	}
+	natName := externalIDs["netloom_nat"]
+	return uuid, natName, uuid != "" && natName != ""
+}
+
+func parseExternalIDsCSVRow(line string) (string, map[string]string, bool) {
 	line = strings.TrimSpace(line)
 	if line == "" {
-		return "", "", false
+		return "", nil, false
 	}
 	uuid, externalIDs, ok := strings.Cut(line, ",")
 	if !ok {
-		return "", "", false
+		return "", nil, false
 	}
 	uuid = strings.Trim(strings.TrimSpace(uuid), `"`)
 	externalIDs = strings.TrimSpace(externalIDs)
 	externalIDs = strings.Trim(externalIDs, `"{} `)
+	out := make(map[string]string)
 	for _, field := range strings.Split(externalIDs, ",") {
 		key, value, ok := strings.Cut(strings.TrimSpace(field), "=")
-		if !ok || strings.Trim(key, `"{} `) != "netloom_nat" {
+		if !ok {
 			continue
 		}
-		natName := strings.Trim(value, `"{} `)
-		return uuid, natName, uuid != "" && natName != ""
+		key = strings.Trim(key, `"{} `)
+		value = strings.Trim(value, `"{} `)
+		if key != "" {
+			out[key] = value
+		}
 	}
-	return "", "", false
+	return uuid, out, uuid != ""
+}
+
+func parseOVNSet(value string) []string {
+	value = strings.TrimSpace(value)
+	value = strings.Trim(value, "[]")
+	if value == "" {
+		return nil
+	}
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.Trim(strings.TrimSpace(part), `"`)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+func trimOVNString(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) >= 2 && value[0] == '"' && value[len(value)-1] == '"' {
+		value = strings.Trim(value, `"`)
+		value = strings.ReplaceAll(value, `\"`, `"`)
+	}
+	return value
 }
 
 func (e *NBCTLExecutor) destroyMatchingRecords(ctx context.Context, table string, matches ...string) error {
@@ -311,6 +445,28 @@ func validateSpecialOperation(op Operation) error {
 		for _, arg := range op.Args {
 			if arg == "" {
 				return fmt.Errorf("special operation %q contains empty keep name", op.Command)
+			}
+		}
+		return nil
+	}
+	if op.Command == "tag-policy-route" {
+		if len(op.Args) != 4 {
+			return fmt.Errorf("special operation %q requires vpc, name, priority, and match", op.Command)
+		}
+		for _, arg := range op.Args {
+			if arg == "" {
+				return fmt.Errorf("special operation %q contains empty argument", op.Command)
+			}
+		}
+		return nil
+	}
+	if op.Command == "gc-stale-policy-routes" {
+		if len(op.Args)%2 != 0 {
+			return fmt.Errorf("special operation %q requires vpc/name keep pairs", op.Command)
+		}
+		for _, arg := range op.Args {
+			if arg == "" {
+				return fmt.Errorf("special operation %q contains empty keep argument", op.Command)
 			}
 		}
 		return nil

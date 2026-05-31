@@ -741,7 +741,7 @@ func TestPlannerBuildsPolicyRouteOperation(t *testing.T) {
 		t.Fatal(err)
 	}
 	match := stringify(planner.Operations())
-	for _, expected := range []string{"lr-policy-add nl_lr_prod 100", "ip4.src == 10.10.0.0/24", "ip4.dst == 172.16.0.0/16", "tcp", "tcp.dst == 443"} {
+	for _, expected := range []string{"lr-policy-add nl_lr_prod 100", "ip4.src == 10.10.0.0/24", "ip4.dst == 172.16.0.0/16", "tcp", "tcp.dst == 443", "tag-policy-route prod fw 100"} {
 		if !strings.Contains(match, expected) {
 			t.Fatalf("match %q missing %q", match, expected)
 		}
@@ -774,6 +774,7 @@ func TestPlannerBuildsAllowPolicyRouteOperation(t *testing.T) {
 		"allow",
 		"ip4.dst == 198.51.100.10/32",
 		"tcp.dst == 443",
+		"tag-policy-route prod allow-api 300",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("allow policy route operation missing %q:\n%s", expected, joined)
