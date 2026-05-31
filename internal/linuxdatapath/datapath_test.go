@@ -843,6 +843,32 @@ func TestHostVethNameIsStableAndShort(t *testing.T) {
 	}
 }
 
+func TestNetNSNamesEncodeEndpointIDsWithoutCollisions(t *testing.T) {
+	tests := map[string]string{
+		"pod.1":          "nl-pod_d1",
+		"pod_1":          "nl-pod__1",
+		"pod/1":          "nl-pod_s1",
+		"pod:1":          "nl-pod_c1",
+		"pod 1":          "nl-pod_w1",
+		"pod-1":          "nl-pod-1",
+		"pod\U0001f6001": "nl-pod_x01f6001",
+	}
+	seen := make(map[string]string, len(tests))
+	for endpointID, want := range tests {
+		got := netnsName(endpointID, "nl")
+		if got != want {
+			t.Fatalf("netnsName(%q) = %q, want %q", endpointID, got, want)
+		}
+		if prev := seen[got]; prev != "" {
+			t.Fatalf("endpoint IDs %q and %q collided on netns name %q", prev, endpointID, got)
+		}
+		seen[got] = endpointID
+	}
+	if got := netnsName("", "nl"); got != "nl-" {
+		t.Fatalf("empty endpoint prefix = %q, want cleanup prefix nl-", got)
+	}
+}
+
 func TestListManagedNetNSFiltersByPrefix(t *testing.T) {
 	dir := t.TempDir()
 	for _, name := range []string{"nl-pod-a", "nl-pod-b", "other-pod", "nlx-pod"} {

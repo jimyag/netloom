@@ -435,8 +435,30 @@ func shortName(prefix, value string) string {
 }
 
 func sanitize(value string) string {
-	replacer := strings.NewReplacer("/", "_", ":", "_", ".", "_", " ", "_")
-	return replacer.Replace(value)
+	var out strings.Builder
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z',
+			r >= 'A' && r <= 'Z',
+			r >= '0' && r <= '9',
+			r == '-':
+			out.WriteRune(r)
+		case r == '_':
+			out.WriteString("__")
+		case r == '.':
+			out.WriteString("_d")
+		case r == '/':
+			out.WriteString("_s")
+		case r == ':':
+			out.WriteString("_c")
+		case r == ' ':
+			out.WriteString("_w")
+		default:
+			out.WriteString("_x")
+			out.WriteString(fmt.Sprintf("%06x", r))
+		}
+	}
+	return out.String()
 }
 
 func resolveNode(ctx context.Context, node string, underlays map[string]netip.Addr) (netip.Addr, error) {
