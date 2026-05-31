@@ -1784,6 +1784,61 @@ func TestCompileForEndpointWithContextExpandsWorldEntityOutsideCluster(t *testin
 	}
 }
 
+func TestCompileForEndpointWithContextExpandsAllEntity(t *testing.T) {
+	endpoint := model.Endpoint{
+		ID:             "pod-a",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"client"},
+	}
+	program, err := CompileForEndpointWithContext(endpoint, map[string]model.SecurityGroup{
+		"client": {
+			Name: "client",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:             "allow-all",
+				Priority:       100,
+				Direction:      model.DirectionEgress,
+				Protocol:       model.ProtocolTCP,
+				RemoteEntities: []string{"all"},
+				Ports:          []model.PortRange{{From: 443, To: 443}},
+				Action:         model.ActionAllow,
+			}},
+		},
+	}, CompileContext{
+		Subnets: []model.Subnet{
+			{Name: "apps", VPC: "prod", CIDR: netip.MustParsePrefix("10.10.0.0/24"), Gateway: netip.MustParseAddr("10.10.0.1")},
+			{Name: "v6", VPC: "prod", CIDR: netip.MustParsePrefix("fd00:10::/64"), Gateway: netip.MustParseAddr("fd00:10::1")},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantCIDRs := map[netip.Prefix]bool{
+		netip.MustParsePrefix("0.0.0.0/0"): false,
+		netip.MustParsePrefix("::/0"):      false,
+	}
+	for _, rule := range program.Rules {
+		if rule.RemoteEntity != "all" {
+			t.Fatalf("remote entity = %q, want all", rule.RemoteEntity)
+		}
+		if _, ok := wantCIDRs[rule.RemoteCIDR]; !ok {
+			t.Fatalf("all entity produced unexpected CIDR %s", rule.RemoteCIDR)
+		}
+		wantCIDRs[rule.RemoteCIDR] = true
+	}
+	for cidr, seen := range wantCIDRs {
+		if !seen {
+			t.Fatalf("all entity missing CIDR %s from rules %+v", cidr, program.Rules)
+		}
+	}
+	if len(program.MapEntries) != len(program.Rules) {
+		t.Fatalf("map entries = %d, want %d", len(program.MapEntries), len(program.Rules))
+	}
+}
+
 func TestCompileForEndpointWithContextExpandsWorldFamilyEntities(t *testing.T) {
 	endpoint := model.Endpoint{
 		ID:             "pod-a",
