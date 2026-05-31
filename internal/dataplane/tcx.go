@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"math"
 	"net"
 	"net/netip"
 	"time"
@@ -110,6 +111,7 @@ type IPv4L4ACLRule struct {
 	DestPort           uint16
 	DestPortPrefixBits uint8
 	Action             int32
+	Precedence         uint32
 }
 
 type IPv6L4Key struct {
@@ -128,6 +130,7 @@ type IPv6L4ACLRule struct {
 	DestPort           uint16
 	DestPortPrefixBits uint8
 	Action             int32
+	Precedence         uint32
 }
 
 func NewConstantTCXProgram(action int32) (*ebpf.Program, error) {
@@ -504,39 +507,31 @@ func appendIPv4L4ACLRulesFromProgram(rules *[]IPv4L4ACLRule, seen map[IPv4L4Key]
 		}
 		if protocol == 1 && len(rule.Ports) == 0 {
 			icmpValue, icmpPrefixBits := icmpTCXMatch(rule)
-			key := ipv4L4RuleKey(sourceCIDR, protocol, icmpValue, icmpPrefixBits)
-			if duplicate, err := seenTCXActionConflict(seen, key, action); duplicate || err != nil {
-				if err != nil {
-					return fmt.Errorf("rule %s: %w", rule.ID, err)
-				}
-				continue
-			}
-			*rules = append(*rules, IPv4L4ACLRule{
+			if err := appendIPv4ProjectedRule(rules, seen, IPv4L4ACLRule{
 				Source:             sourceCIDR.Addr(),
 				SourceCIDR:         sourceCIDR,
 				Protocol:           protocol,
 				DestPort:           icmpValue,
 				DestPortPrefixBits: icmpPrefixBits,
 				Action:             action,
-			})
+				Precedence:         tcxRulePrecedence(rule),
+			}); err != nil {
+				return fmt.Errorf("rule %s: %w", rule.ID, err)
+			}
 			continue
 		}
 		if len(rule.Ports) == 0 {
-			key := ipv4L4RuleKey(sourceCIDR, protocol, 0, 0)
-			if duplicate, err := seenTCXActionConflict(seen, key, action); duplicate || err != nil {
-				if err != nil {
-					return fmt.Errorf("rule %s: %w", rule.ID, err)
-				}
-				continue
-			}
-			*rules = append(*rules, IPv4L4ACLRule{
+			if err := appendIPv4ProjectedRule(rules, seen, IPv4L4ACLRule{
 				Source:             sourceCIDR.Addr(),
 				SourceCIDR:         sourceCIDR,
 				Protocol:           protocol,
 				DestPort:           0,
 				DestPortPrefixBits: 0,
 				Action:             action,
-			})
+				Precedence:         tcxRulePrecedence(rule),
+			}); err != nil {
+				return fmt.Errorf("rule %s: %w", rule.ID, err)
+			}
 			continue
 		}
 		for _, port := range rule.Ports {
@@ -544,21 +539,17 @@ func appendIPv4L4ACLRulesFromProgram(rules *[]IPv4L4ACLRule, seen map[IPv4L4Key]
 				return fmt.Errorf("rule %s: %w", rule.ID, err)
 			}
 			for _, block := range splitTCXPortRange(port.From, port.To) {
-				key := ipv4L4RuleKey(sourceCIDR, protocol, block.port, block.prefixBits)
-				if duplicate, err := seenTCXActionConflict(seen, key, action); duplicate || err != nil {
-					if err != nil {
-						return fmt.Errorf("rule %s: %w", rule.ID, err)
-					}
-					continue
-				}
-				*rules = append(*rules, IPv4L4ACLRule{
+				if err := appendIPv4ProjectedRule(rules, seen, IPv4L4ACLRule{
 					Source:             sourceCIDR.Addr(),
 					SourceCIDR:         sourceCIDR,
 					Protocol:           protocol,
 					DestPort:           block.port,
 					DestPortPrefixBits: block.prefixBits,
 					Action:             action,
-				})
+					Precedence:         tcxRulePrecedence(rule),
+				}); err != nil {
+					return fmt.Errorf("rule %s: %w", rule.ID, err)
+				}
 			}
 		}
 	}
@@ -596,39 +587,31 @@ func appendIPv6L4ACLRulesFromProgram(rules *[]IPv6L4ACLRule, seen map[IPv6L4Key]
 		}
 		if protocol == 58 && len(rule.Ports) == 0 {
 			icmpValue, icmpPrefixBits := icmpTCXMatch(rule)
-			key := ipv6L4RuleKey(sourceCIDR, protocol, icmpValue, icmpPrefixBits)
-			if duplicate, err := seenTCXActionConflict(seen, key, action); duplicate || err != nil {
-				if err != nil {
-					return fmt.Errorf("rule %s: %w", rule.ID, err)
-				}
-				continue
-			}
-			*rules = append(*rules, IPv6L4ACLRule{
+			if err := appendIPv6ProjectedRule(rules, seen, IPv6L4ACLRule{
 				Source:             sourceCIDR.Addr(),
 				SourceCIDR:         sourceCIDR,
 				Protocol:           protocol,
 				DestPort:           icmpValue,
 				DestPortPrefixBits: icmpPrefixBits,
 				Action:             action,
-			})
+				Precedence:         tcxRulePrecedence(rule),
+			}); err != nil {
+				return fmt.Errorf("rule %s: %w", rule.ID, err)
+			}
 			continue
 		}
 		if len(rule.Ports) == 0 {
-			key := ipv6L4RuleKey(sourceCIDR, protocol, 0, 0)
-			if duplicate, err := seenTCXActionConflict(seen, key, action); duplicate || err != nil {
-				if err != nil {
-					return fmt.Errorf("rule %s: %w", rule.ID, err)
-				}
-				continue
-			}
-			*rules = append(*rules, IPv6L4ACLRule{
+			if err := appendIPv6ProjectedRule(rules, seen, IPv6L4ACLRule{
 				Source:             sourceCIDR.Addr(),
 				SourceCIDR:         sourceCIDR,
 				Protocol:           protocol,
 				DestPort:           0,
 				DestPortPrefixBits: 0,
 				Action:             action,
-			})
+				Precedence:         tcxRulePrecedence(rule),
+			}); err != nil {
+				return fmt.Errorf("rule %s: %w", rule.ID, err)
+			}
 			continue
 		}
 		for _, port := range rule.Ports {
@@ -636,37 +619,131 @@ func appendIPv6L4ACLRulesFromProgram(rules *[]IPv6L4ACLRule, seen map[IPv6L4Key]
 				return fmt.Errorf("rule %s: %w", rule.ID, err)
 			}
 			for _, block := range splitTCXPortRange(port.From, port.To) {
-				key := ipv6L4RuleKey(sourceCIDR, protocol, block.port, block.prefixBits)
-				if duplicate, err := seenTCXActionConflict(seen, key, action); duplicate || err != nil {
-					if err != nil {
-						return fmt.Errorf("rule %s: %w", rule.ID, err)
-					}
-					continue
-				}
-				*rules = append(*rules, IPv6L4ACLRule{
+				if err := appendIPv6ProjectedRule(rules, seen, IPv6L4ACLRule{
 					Source:             sourceCIDR.Addr(),
 					SourceCIDR:         sourceCIDR,
 					Protocol:           protocol,
 					DestPort:           block.port,
 					DestPortPrefixBits: block.prefixBits,
 					Action:             action,
-				})
+					Precedence:         tcxRulePrecedence(rule),
+				}); err != nil {
+					return fmt.Errorf("rule %s: %w", rule.ID, err)
+				}
 			}
 		}
 	}
 	return nil
 }
 
-func seenTCXActionConflict[K comparable](seen map[K]int32, key K, action int32) (bool, error) {
-	existing, ok := seen[key]
-	if !ok {
-		seen[key] = action
-		return false, nil
+func appendIPv4ProjectedRule(rules *[]IPv4L4ACLRule, seen map[IPv4L4Key]int32, candidate IPv4L4ACLRule) error {
+	current := *rules
+	out := current[:0]
+	for i, existing := range current {
+		if ipv4L4RuleKey(existing.SourceCIDR, existing.Protocol, existing.DestPort, existing.DestPortPrefixBits) ==
+			ipv4L4RuleKey(candidate.SourceCIDR, candidate.Protocol, candidate.DestPort, candidate.DestPortPrefixBits) &&
+			existing.Precedence == candidate.Precedence && existing.Action != candidate.Action {
+			return fmt.Errorf("conflicting TCX ACL actions for identical match key")
+		}
+		if ipv4RuleCovers(existing, candidate) && existing.Precedence >= candidate.Precedence {
+			*rules = append(out, current[i:]...)
+			return nil
+		}
+		if ipv4RuleCovers(candidate, existing) && candidate.Precedence > existing.Precedence {
+			delete(seen, ipv4L4RuleKey(existing.SourceCIDR, existing.Protocol, existing.DestPort, existing.DestPortPrefixBits))
+			continue
+		}
+		out = append(out, existing)
 	}
-	if existing != action {
-		return false, fmt.Errorf("conflicting TCX ACL actions for identical match key")
+	*rules = append(out, candidate)
+	seen[ipv4L4RuleKey(candidate.SourceCIDR, candidate.Protocol, candidate.DestPort, candidate.DestPortPrefixBits)] = candidate.Action
+	return nil
+}
+
+func appendIPv6ProjectedRule(rules *[]IPv6L4ACLRule, seen map[IPv6L4Key]int32, candidate IPv6L4ACLRule) error {
+	current := *rules
+	out := current[:0]
+	for i, existing := range current {
+		if ipv6L4RuleKey(existing.SourceCIDR, existing.Protocol, existing.DestPort, existing.DestPortPrefixBits) ==
+			ipv6L4RuleKey(candidate.SourceCIDR, candidate.Protocol, candidate.DestPort, candidate.DestPortPrefixBits) &&
+			existing.Precedence == candidate.Precedence && existing.Action != candidate.Action {
+			return fmt.Errorf("conflicting TCX ACL actions for identical match key")
+		}
+		if ipv6RuleCovers(existing, candidate) && existing.Precedence >= candidate.Precedence {
+			*rules = append(out, current[i:]...)
+			return nil
+		}
+		if ipv6RuleCovers(candidate, existing) && candidate.Precedence > existing.Precedence {
+			delete(seen, ipv6L4RuleKey(existing.SourceCIDR, existing.Protocol, existing.DestPort, existing.DestPortPrefixBits))
+			continue
+		}
+		out = append(out, existing)
 	}
-	return true, nil
+	*rules = append(out, candidate)
+	seen[ipv6L4RuleKey(candidate.SourceCIDR, candidate.Protocol, candidate.DestPort, candidate.DestPortPrefixBits)] = candidate.Action
+	return nil
+}
+
+func ipv4RuleCovers(candidate, selected IPv4L4ACLRule) bool {
+	return candidate.Protocol == selected.Protocol &&
+		prefixCovers(candidate.SourceCIDR, selected.SourceCIDR) &&
+		portPrefixCovers(candidate.DestPort, candidate.DestPortPrefixBits, selected.DestPort, selected.DestPortPrefixBits)
+}
+
+func ipv6RuleCovers(candidate, selected IPv6L4ACLRule) bool {
+	return candidate.Protocol == selected.Protocol &&
+		prefixCovers(candidate.SourceCIDR, selected.SourceCIDR) &&
+		portPrefixCovers(candidate.DestPort, candidate.DestPortPrefixBits, selected.DestPort, selected.DestPortPrefixBits)
+}
+
+func prefixCovers(candidate, selected netip.Prefix) bool {
+	candidate = candidate.Masked()
+	selected = selected.Masked()
+	return candidate.IsValid() &&
+		selected.IsValid() &&
+		candidate.Addr().Is4() == selected.Addr().Is4() &&
+		candidate.Bits() <= selected.Bits() &&
+		candidate.Contains(selected.Addr())
+}
+
+func portPrefixCovers(candidatePort uint16, candidateBits uint8, selectedPort uint16, selectedBits uint8) bool {
+	if candidateBits > selectedBits {
+		return false
+	}
+	if candidateBits == 0 {
+		return true
+	}
+	mask := uint16(0xffff << (16 - candidateBits))
+	return candidatePort&mask == selectedPort&mask
+}
+
+func tcxRulePrecedence(rule policy.Rule) uint32 {
+	if rule.Tier <= 0 && (rule.Action == model.ActionDrop || rule.Action == model.ActionReject) {
+		return math.MaxUint32
+	}
+	tier := rule.Tier
+	if tier < 0 {
+		tier = 0
+	}
+	if tier > 1 {
+		tier = 1
+	}
+	priority := rule.Priority
+	if priority < 0 {
+		priority = 0
+	}
+	if priority > model.SecurityGroupPriorityMax {
+		priority = model.SecurityGroupPriorityMax
+	}
+	priorityScore := 0
+	if priority != 0 {
+		priorityScore = model.SecurityGroupPriorityMax - priority + 1
+	}
+	precedence := uint32(1-tier) << 31
+	if rule.Action == model.ActionDrop || rule.Action == model.ActionReject {
+		precedence |= 1 << 30
+	}
+	return precedence | uint32(priorityScore)
 }
 
 func validateIPv4L4ACLRuleSupport(rule policy.Rule) error {

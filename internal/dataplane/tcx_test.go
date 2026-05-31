@@ -127,6 +127,84 @@ func TestIPv4L4ACLRulesFromProgramProjectsExactEgressPolicy(t *testing.T) {
 	}
 }
 
+func TestIPv4L4ACLRulesFromProgramPrunesLowerPrecedenceNarrowRule(t *testing.T) {
+	program := policy.Program{
+		EndpointID: "pod-a",
+		Rules: []policy.Rule{
+			{
+				ID:         "deny-nodeports",
+				Tier:       1,
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("172.30.0.0/24"),
+				Ports:      []model.PortRange{{From: 30000, To: 32767}},
+				Action:     model.ActionDrop,
+			},
+			{
+				ID:         "allow-one-nodeport",
+				Tier:       1,
+				Priority:   200,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("172.30.0.11/32"),
+				Ports:      []model.PortRange{{From: 30080, To: 30080}},
+				Action:     model.ActionAllow,
+			},
+		},
+	}
+	rules, err := IPv4L4ACLRulesFromProgram(program)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, rule := range rules {
+		if rule.Action != TCXDrop {
+			t.Fatalf("rules = %+v, lower-precedence narrow allow would shadow broad deny in LPM", rules)
+		}
+	}
+}
+
+func TestIPv4L4ACLRulesFromProgramKeepsHigherPrecedenceNarrowRule(t *testing.T) {
+	program := policy.Program{
+		EndpointID: "pod-a",
+		Rules: []policy.Rule{
+			{
+				ID:         "allow-nodeports",
+				Tier:       1,
+				Priority:   300,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("172.30.0.0/24"),
+				Ports:      []model.PortRange{{From: 30000, To: 32767}},
+				Action:     model.ActionAllow,
+			},
+			{
+				ID:         "deny-one-nodeport",
+				Tier:       1,
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("172.30.0.11/32"),
+				Ports:      []model.PortRange{{From: 30080, To: 30080}},
+				Action:     model.ActionDrop,
+			},
+		},
+	}
+	rules, err := IPv4L4ACLRulesFromProgram(program)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hasNarrowDrop bool
+	for _, rule := range rules {
+		if rule.SourceCIDR == netip.MustParsePrefix("172.30.0.11/32") && rule.DestPort == 30080 && rule.Action == TCXDrop {
+			hasNarrowDrop = true
+		}
+	}
+	if !hasNarrowDrop {
+		t.Fatalf("rules = %+v, want higher-precedence narrow drop preserved", rules)
+	}
+}
+
 func TestIPv4L4ACLRulesFromProgramProjectsPortRangePolicy(t *testing.T) {
 	program := policy.Program{
 		EndpointID: "pod-a",
@@ -540,7 +618,7 @@ func TestIPv4L4ACLRulesFromProgramsDeduplicatesRules(t *testing.T) {
 	}
 }
 
-func TestIPv4L4ACLRulesFromProgramsRejectsConflictingDuplicateKey(t *testing.T) {
+func TestIPv4L4ACLRulesFromProgramsKeepsHigherPrecedenceDuplicateKey(t *testing.T) {
 	drop := policy.Program{
 		EndpointID: "pod-a",
 		Rules: []policy.Rule{{
@@ -563,9 +641,12 @@ func TestIPv4L4ACLRulesFromProgramsRejectsConflictingDuplicateKey(t *testing.T) 
 			Action:     model.ActionAllow,
 		}},
 	}
-	_, err := IPv4L4ACLRulesFromPrograms([]policy.Program{drop, allow})
-	if err == nil || !strings.Contains(err.Error(), "conflicting TCX ACL actions") {
-		t.Fatalf("error = %v, want conflicting TCX ACL actions", err)
+	rules, err := IPv4L4ACLRulesFromPrograms([]policy.Program{drop, allow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 1 || rules[0].Action != TCXDrop {
+		t.Fatalf("rules = %+v, want higher-precedence drop only", rules)
 	}
 }
 
@@ -592,7 +673,7 @@ func TestIPv6L4ACLRulesFromProgramsDeduplicatesRules(t *testing.T) {
 	}
 }
 
-func TestIPv6L4ACLRulesFromProgramsRejectsConflictingDuplicateKey(t *testing.T) {
+func TestIPv6L4ACLRulesFromProgramsKeepsHigherPrecedenceDuplicateKey(t *testing.T) {
 	drop := policy.Program{
 		EndpointID: "pod-a",
 		Rules: []policy.Rule{{
@@ -615,9 +696,12 @@ func TestIPv6L4ACLRulesFromProgramsRejectsConflictingDuplicateKey(t *testing.T) 
 			Action:     model.ActionAllow,
 		}},
 	}
-	_, err := IPv6L4ACLRulesFromPrograms([]policy.Program{drop, allow})
-	if err == nil || !strings.Contains(err.Error(), "conflicting TCX ACL actions") {
-		t.Fatalf("error = %v, want conflicting TCX ACL actions", err)
+	rules, err := IPv6L4ACLRulesFromPrograms([]policy.Program{drop, allow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 1 || rules[0].Action != TCXDrop {
+		t.Fatalf("rules = %+v, want higher-precedence drop only", rules)
 	}
 }
 
