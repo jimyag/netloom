@@ -539,6 +539,9 @@ func (r Route) Validate() error {
 		}
 		return nil
 	}
+	if r.NextHop.IsValid() && len(r.NextHops) > 0 {
+		return errors.New("route must use either next_hop or next_hops, not both")
+	}
 	nextHops := r.RouteNextHops()
 	if len(nextHops) == 0 {
 		return errors.New("route next hop is required when route is not blackhole")
@@ -583,6 +586,9 @@ func (r PolicyRoute) Validate() error {
 	}
 	if !slices.Contains([]Action{ActionAllow, ActionDrop, ActionReroute}, r.Action.Type) {
 		return fmt.Errorf("unsupported policy route action %q", r.Action.Type)
+	}
+	if r.Action.NextHop.IsValid() && len(r.Action.NextHops) > 0 {
+		return errors.New("policy route reroute action must use either next_hop or next_hops, not both")
 	}
 	nextHops := r.Action.RerouteNextHops()
 	if r.Action.Type == ActionReroute && len(nextHops) == 0 {

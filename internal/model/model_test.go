@@ -310,6 +310,12 @@ func TestPolicyRouteRequiresNextHopForReroute(t *testing.T) {
 		t.Fatalf("reroute next hops = %v", got)
 	}
 
+	route.Action.NextHop = netip.MustParseAddr("10.10.0.252")
+	if err := route.Validate(); err == nil || !strings.Contains(err.Error(), "either next_hop or next_hops") {
+		t.Fatalf("error = %v, want next_hop/next_hops exclusivity validation", err)
+	}
+	route.Action.NextHop = netip.Addr{}
+
 	route.Match.Protocol = ProtocolAny
 	if err := route.Validate(); err == nil {
 		t.Fatal("expected dst ports without transport protocol to fail")
@@ -346,10 +352,17 @@ func TestRouteSupportsECMPNextHops(t *testing.T) {
 		t.Fatalf("route next hops = %v, want ECMP next hops", got)
 	}
 
-	route.NextHop = netip.MustParseAddr("10.10.0.253")
+	route.NextHop = netip.MustParseAddr("10.10.0.252")
 	err := route.Validate()
+	if err == nil || !strings.Contains(err.Error(), "either next_hop or next_hops") {
+		t.Fatalf("error = %v, want next_hop/next_hops exclusivity validation", err)
+	}
+
+	route.NextHop = netip.Addr{}
+	route.NextHops = append(route.NextHops, netip.MustParseAddr("10.10.0.253"))
+	err = route.Validate()
 	if err == nil {
-		t.Fatal("expected duplicate next hop to fail")
+		t.Fatal("expected duplicate ECMP next hop to fail")
 	}
 	if !strings.Contains(err.Error(), "duplicated") {
 		t.Fatalf("error %q does not mention duplicate next hop", err)
