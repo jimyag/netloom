@@ -355,6 +355,21 @@ func TestIPv4L4ACLRulesFromProgramProjectsICMPDropTypeAndCode(t *testing.T) {
 	}
 }
 
+func TestIPv4L4ACLTCXProgramBypassesICMPFragmentationNeeded(t *testing.T) {
+	instructions := ipv4L4ACLTCXInstructions(1, 26)
+	seenICMPLoad := false
+	for _, ins := range instructions {
+		if ins.Symbol() == "load_icmp" {
+			seenICMPLoad = true
+			continue
+		}
+		if seenICMPLoad && ins.Constant == 0x0304 && ins.Reference() == "pass" {
+			return
+		}
+	}
+	t.Fatalf("TCX instructions do not bypass ICMP fragmentation-needed before policy lookup:\n%s", instructions)
+}
+
 func TestIPv4L4ACLRulesFromProgramRejectsICMPPorts(t *testing.T) {
 	program := policy.Program{
 		EndpointID: "pod-a",

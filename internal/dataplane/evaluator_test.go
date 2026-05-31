@@ -138,6 +138,45 @@ func TestEvaluatePreservesRejectVerdict(t *testing.T) {
 	}
 }
 
+func TestEvaluateAllowsIPv4FragmentationNeededForPMTU(t *testing.T) {
+	entries := []PolicyMapEntry{{
+		Key: PolicyKey{
+			PrefixLen:      StaticPrefixBits + 24,
+			RemoteIdentity: 0,
+			Direction:      DirectionIngress,
+			Protocol:       1,
+			DestPortBE:     hostToNetwork16(0x0304),
+		},
+		Value: PolicyEntry{
+			Deny:        1,
+			L4PrefixLen: 24,
+			Precedence:  math.MaxUint32,
+		},
+	}}
+
+	decision := Evaluate(entries, Packet{
+		RemoteIP:  netip.MustParseAddr("192.0.2.10"),
+		Direction: DirectionIngress,
+		Protocol:  1,
+		ICMPType:  3,
+		ICMPCode:  4,
+	})
+	if decision.Verdict != VerdictAllow || decision.Match != nil {
+		t.Fatalf("fragmentation-needed decision = %+v, want unconditional PMTU allow", decision)
+	}
+
+	otherUnreachable := Evaluate(entries, Packet{
+		RemoteIP:  netip.MustParseAddr("192.0.2.10"),
+		Direction: DirectionIngress,
+		Protocol:  1,
+		ICMPType:  3,
+		ICMPCode:  1,
+	})
+	if otherUnreachable.Verdict != VerdictDrop {
+		t.Fatalf("other ICMP unreachable decision = %+v, want policy drop", otherUnreachable)
+	}
+}
+
 func TestEvaluateMatchesPortPrefix(t *testing.T) {
 	entries := []PolicyMapEntry{{
 		Key: PolicyKey{
