@@ -4,6 +4,7 @@ import (
 	"context"
 	"math"
 	"net/netip"
+	"strings"
 	"testing"
 
 	"github.com/jimyag/netloom/internal/model"
@@ -295,6 +296,9 @@ func TestPolicyBackendHonorsLowerSecurityGroupRulePriority(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(entries) != 1 {
+		t.Fatalf("encoded entries = %d, want highest-priority entry for duplicate key", len(entries))
+	}
 	decision := Evaluate(entries, Packet{
 		RemoteIP:  netip.MustParseAddr("192.0.2.10"),
 		Direction: DirectionEgress,
@@ -303,6 +307,54 @@ func TestPolicyBackendHonorsLowerSecurityGroupRulePriority(t *testing.T) {
 	})
 	if decision.Match == nil || decision.Match.Value.RuleCookie != stableCookie("allow-primary") {
 		t.Fatalf("decision = %+v, want lower numeric priority allow-primary", decision)
+	}
+
+	store := NewInMemoryPolicyStore()
+	backend := NewPolicyBackend(store)
+	if err := backend.ApplyEndpointProgram(context.Background(), program); err != nil {
+		t.Fatal(err)
+	}
+	stored := store.Entries("pod-a")
+	if len(stored) != 1 || stored[0].Value.RuleCookie != stableCookie("allow-primary") {
+		t.Fatalf("stored entries = %+v, want only highest-priority allow-primary", stored)
+	}
+}
+
+func TestEncodeProgramRejectsSamePriorityDuplicateKeyConflict(t *testing.T) {
+	program := policy.Program{
+		EndpointID: "pod-a",
+		MapEntries: []policy.MapEntry{
+			{
+				Key: policy.MapKey{
+					RemoteIdentity: 100,
+					Direction:      model.DirectionIngress,
+					Protocol:       model.ProtocolTCP,
+					DestPort:       443,
+					L4PrefixBits:   24,
+				},
+				Value:  policy.MapValue{Precedence: 100},
+				RuleID: "allow-api",
+			},
+			{
+				Key: policy.MapKey{
+					RemoteIdentity: 100,
+					Direction:      model.DirectionIngress,
+					Protocol:       model.ProtocolTCP,
+					DestPort:       443,
+					L4PrefixBits:   24,
+				},
+				Value:  policy.MapValue{Deny: true, Precedence: 100},
+				RuleID: "drop-api",
+			},
+		},
+	}
+
+	_, err := EncodeProgram(program)
+	if err == nil {
+		t.Fatal("expected duplicate key conflict to fail")
+	}
+	if got := err.Error(); !strings.Contains(got, "conflicting policy map entries") {
+		t.Fatalf("error = %q, want conflicting policy map entries", got)
 	}
 }
 

@@ -177,7 +177,7 @@ func EncodeProgram(program policy.Program) ([]PolicyMapEntry, error) {
 		}
 		entries = append(entries, encoded)
 	}
-	return entries, nil
+	return canonicalPolicyMapEntries(entries)
 }
 
 func EncodeEntry(entry policy.MapEntry) (PolicyMapEntry, error) {
@@ -264,6 +264,41 @@ func stableCookie(value string) uint32 {
 		out *= 16777619
 	}
 	return out
+}
+
+func canonicalPolicyMapEntries(entries []PolicyMapEntry) ([]PolicyMapEntry, error) {
+	byKey := make(map[PolicyKey]PolicyMapEntry, len(entries))
+	for _, entry := range entries {
+		existing, ok := byKey[entry.Key]
+		if !ok || betterPolicyMapEntry(entry, existing) {
+			byKey[entry.Key] = entry
+			continue
+		}
+		if samePolicyMapPriority(entry, existing) && entry.Value != existing.Value {
+			return nil, fmt.Errorf("conflicting policy map entries for identical key")
+		}
+	}
+	out := make([]PolicyMapEntry, 0, len(byKey))
+	for _, entry := range byKey {
+		out = append(out, entry)
+	}
+	sortEntries(out)
+	return out, nil
+}
+
+func betterPolicyMapEntry(candidate, selected PolicyMapEntry) bool {
+	if candidate.Value.Precedence != selected.Value.Precedence {
+		return candidate.Value.Precedence > selected.Value.Precedence
+	}
+	if candidate.Value.L4PrefixLen != selected.Value.L4PrefixLen {
+		return candidate.Value.L4PrefixLen > selected.Value.L4PrefixLen
+	}
+	return false
+}
+
+func samePolicyMapPriority(left, right PolicyMapEntry) bool {
+	return left.Value.Precedence == right.Value.Precedence &&
+		left.Value.L4PrefixLen == right.Value.L4PrefixLen
 }
 
 func PlanPolicyUpdate(oldEntries, newEntries []PolicyMapEntry) PolicyUpdatePlan {
