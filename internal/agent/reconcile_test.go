@@ -481,6 +481,54 @@ func TestReconcileNodeWithTCXInterfaceAllowsNoEligiblePolicy(t *testing.T) {
 	}
 }
 
+func TestReconcileNodeWithTCXRejectsRemoteEndpointPolicy(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{
+			{
+				ID:             "pod-a",
+				VPC:            "prod",
+				Subnet:         "apps",
+				IP:             netip.MustParseAddr("10.10.0.10"),
+				Node:           "node-a",
+				SecurityGroups: []string{"web"},
+			},
+			{
+				ID:             "pod-b",
+				VPC:            "prod",
+				Subnet:         "apps",
+				IP:             netip.MustParseAddr("10.10.0.11"),
+				Node:           "node-b",
+				SecurityGroups: []string{"client"},
+			},
+		},
+		SecurityGroups: []model.SecurityGroup{
+			{
+				Name: "web",
+				VPC:  "prod",
+				Rules: []model.SecurityGroupRule{{
+					ID:          "drop-client",
+					Priority:    100,
+					Direction:   model.DirectionIngress,
+					Protocol:    model.ProtocolTCP,
+					RemoteGroup: "client",
+					Ports:       []model.PortRange{{From: 8080, To: 8080}},
+					Action:      model.ActionDrop,
+				}},
+			},
+			{Name: "client", VPC: "prod"},
+		},
+	}
+
+	_, err := ReconcileNodeWithOptions(context.Background(), state, ReconcileOptions{
+		Node:         "node-a",
+		Store:        dataplane.NewInMemoryPolicyStore(),
+		TCXInterface: "lo",
+	})
+	if err == nil || !strings.Contains(err.Error(), "remote endpoint identity match") {
+		t.Fatalf("error = %v, want explicit remote endpoint identity TCX rejection", err)
+	}
+}
+
 func TestReconcilerKeepsAndReplacesTCXAttachments(t *testing.T) {
 	state := control.DesiredState{
 		Endpoints: []model.Endpoint{
@@ -1012,7 +1060,7 @@ func TestReconcileNodeExpandsRemoteGroupMembership(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Entries != 1 || result.TCXEligible != 1 {
+	if result.Entries != 1 || result.TCXEligible != 0 {
 		t.Fatalf("unexpected result: %+v", result)
 	}
 	entries := store.Entries("pod-a")
@@ -1086,7 +1134,7 @@ func TestReconcileNodeExpandsRemoteEndpointSelector(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Entries != 1 || result.TCXEligible != 1 {
+	if result.Entries != 1 || result.TCXEligible != 0 {
 		t.Fatalf("unexpected result: %+v", result)
 	}
 	entries := store.Entries("pod-web")

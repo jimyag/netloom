@@ -90,6 +90,29 @@ func TestIPv4L4ACLRulesFromProgramProjectsExactIngressPolicy(t *testing.T) {
 	}
 }
 
+func TestIPv4L4ACLRulesFromProgramRejectsRemoteEndpointIdentityMatch(t *testing.T) {
+	program := policy.Program{
+		EndpointID: "pod-a",
+		Rules: []policy.Rule{{
+			ID:             "drop-client",
+			Direction:      model.DirectionIngress,
+			Protocol:       model.ProtocolTCP,
+			RemoteCIDR:     netip.MustParsePrefix("172.30.0.11/32"),
+			RemoteEndpoint: "pod-b",
+			Ports:          []model.PortRange{{From: 8080, To: 8080}},
+			Action:         model.ActionDrop,
+		}},
+	}
+
+	_, err := IPv4L4ACLRulesFromProgram(program)
+	if err == nil || !strings.Contains(err.Error(), "remote endpoint identity match") {
+		t.Fatalf("error = %v, want explicit remote endpoint identity rejection", err)
+	}
+	if err := ValidateL4ACLProgramSupport(program); err == nil || !strings.Contains(err.Error(), "remote endpoint identity match") {
+		t.Fatalf("support error = %v, want explicit remote endpoint identity rejection", err)
+	}
+}
+
 func TestIPv4L4ACLRulesFromProgramProjectsExactEgressPolicy(t *testing.T) {
 	program := policy.Program{
 		EndpointID: "pod-a",
