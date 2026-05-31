@@ -142,7 +142,7 @@ func firstSpecialOperation(ops []Operation) int {
 
 func isSpecialOperation(op Operation) bool {
 	switch op.Command {
-	case "gc-dhcp-options", "gc-load-balancer-health-checks":
+	case "gc-dhcp-options", "gc-load-balancer-health-checks", "gc-nat-rule":
 		return true
 	default:
 		return false
@@ -163,6 +163,11 @@ func (e *NBCTLExecutor) executeSpecial(ctx context.Context, op Operation) error 
 		return e.destroyMatchingRecords(ctx, "Load_Balancer_Health_Check",
 			"external_ids:netloom_owner=netloom",
 			"external_ids:netloom_load_balancer="+op.Args[0],
+		)
+	case "gc-nat-rule":
+		return e.destroyMatchingRecords(ctx, "NAT",
+			"external_ids:netloom_owner=netloom",
+			"external_ids:netloom_nat="+op.Args[0],
 		)
 	default:
 		return fmt.Errorf("unsupported special operation %q", op.Command)

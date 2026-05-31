@@ -216,7 +216,7 @@ func (p *Planner) EnsureNATRule(_ context.Context, rule model.NATRule) error {
 	case model.ActionSNAT:
 		p.ops = append(p.ops, Operation{Command: "lr-nat-add", Flags: []string{"--may-exist"}, Args: []string{router, "snat", rule.ExternalIP.String(), rule.MatchCIDR.String()}})
 	case model.ActionDNAT:
-		if natUsesDirectPortTranslation(rule) {
+		if natUsesManagedRecord(rule) {
 			uuid := namedUUID("nl_nat_" + sanitize(rule.Name))
 			p.ops = append(p.ops,
 				Operation{Command: "create", Flags: []string{"--id=" + uuid}, Args: natPortTranslationArgs(rule)},
@@ -482,11 +482,10 @@ func loadBalancerFrontendBackends(frontend model.LoadBalancerFrontend) string {
 	return strings.Join(backends, ",")
 }
 
-func natUsesDirectPortTranslation(rule model.NATRule) bool {
+func natUsesManagedRecord(rule model.NATRule) bool {
 	return rule.Type == model.ActionDNAT &&
 		rule.ExternalPort != 0 &&
-		rule.TargetPort != 0 &&
-		rule.ExternalPort != rule.TargetPort
+		rule.TargetPort != 0
 }
 
 func natPortTranslationArgs(rule model.NATRule) []string {

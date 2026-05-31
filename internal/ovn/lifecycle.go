@@ -165,12 +165,7 @@ func cleanupOperations(old, next desiredSnapshot) []Operation {
 	}
 	for _, key := range staleKeys(old.NATRules, next.NATRules) {
 		rule := old.NATRules[key]
-		ops = append(ops, natCleanupOperations(rule)...)
-		ops = append(ops, Operation{Command: "lr-nat-del", Flags: []string{"--if-exists"}, Args: []string{
-			logicalRouter(rule.VPC),
-			natType(rule.Type),
-			natDeleteMatch(rule),
-		}})
+		ops = append(ops, natDeleteOperations(rule)...)
 	}
 	for _, key := range commonKeys(old.NATRules, next.NATRules) {
 		oldRule := old.NATRules[key]
@@ -178,11 +173,7 @@ func cleanupOperations(old, next desiredSnapshot) []Operation {
 		if natRuleSignature(oldRule) == natRuleSignature(nextRule) {
 			continue
 		}
-		ops = append(ops, Operation{Command: "lr-nat-del", Flags: []string{"--if-exists"}, Args: []string{
-			logicalRouter(oldRule.VPC),
-			natType(oldRule.Type),
-			natDeleteMatch(oldRule),
-		}})
+		ops = append(ops, natDeleteOperations(oldRule)...)
 	}
 	for _, key := range staleKeys(old.LoadBalancers, next.LoadBalancers) {
 		lb := old.LoadBalancers[key]
@@ -463,6 +454,17 @@ func natRuleSignature(rule model.NATRule) string {
 	)
 }
 
-func natCleanupOperations(rule model.NATRule) []Operation {
-	return nil
+func natDeleteOperations(rule model.NATRule) []Operation {
+	if natUsesManagedRecord(rule) {
+		return []Operation{{Command: "gc-nat-rule", Args: []string{rule.Name}}}
+	}
+	return []Operation{{
+		Command: "lr-nat-del",
+		Flags:   []string{"--if-exists"},
+		Args: []string{
+			logicalRouter(rule.VPC),
+			natType(rule.Type),
+			natDeleteMatch(rule),
+		},
+	}}
 }
