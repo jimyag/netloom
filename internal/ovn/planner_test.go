@@ -111,7 +111,7 @@ func TestPlannerMapsNetloomObjectsToOVNOperations(t *testing.T) {
 		"lsp-add-localnet-port nl_ls_apps nl_ls_apps_to_apps_localnet physnet-a",
 		"external_ids:netloom_provider_network=physnet-a",
 		"set logical_switch_port nl_ls_apps_to_apps_localnet tag=100",
-		"--id=@nl_dhcp_pod_a create DHCP_Options cidr=10.10.0.0/24",
+		"--id=@nl_dhcp_pod_ha create DHCP_Options cidr=10.10.0.0/24",
 		"options:server_id=10.10.0.1",
 		"options:server_mac=0a:58:3e:f3:95:f0",
 		"options:dns_server=[\"10.96.0.10\",\"fd00:96::10\"]",
@@ -121,7 +121,7 @@ func TestPlannerMapsNetloomObjectsToOVNOperations(t *testing.T) {
 		"options:mtu=1400",
 		"lsp-set-dhcpv4-options nl_lp_pod-a",
 		"lsp-set-dhcpv6-options nl_lp_pod-a",
-		"set logical_switch_port nl_lp_pod-a dhcpv4_options=@nl_dhcp_pod_a",
+		"set logical_switch_port nl_lp_pod-a dhcpv4_options=@nl_dhcp_pod_ha",
 		"external_ids:netloom_owner=netloom",
 		"external_ids:netloom_vpc=prod",
 		"lr-route-add nl_lr_prod 0.0.0.0/0 10.10.0.254",
@@ -311,12 +311,12 @@ func TestPlannerBuildsIPv6DHCPOptions(t *testing.T) {
 	for _, expected := range []string{
 		"set logical_router_port nl_lr_prod_to_apps-v6 ipv6_ra_configs:address_mode=dhcpv6_stateful",
 		"lsp-set-dhcpv6-options nl_lp_pod-v6",
-		"--id=@nl_dhcp6_pod_v6 create DHCP_Options cidr=fd00:10::/64",
+		"--id=@nl_dhcp6_pod_hv6 create DHCP_Options cidr=fd00:10::/64",
 		"options:server_id=0a:58:85:d4:23:26",
 		"options:dns_server=[\"fd00:96::10\"]",
 		"options:domain_name=svc.cluster.local",
 		"options:domain_search_list=[\"cluster.local\"]",
-		"set logical_switch_port nl_lp_pod-v6 dhcpv6_options=@nl_dhcp6_pod_v6",
+		"set logical_switch_port nl_lp_pod-v6 dhcpv6_options=@nl_dhcp6_pod_hv6",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("IPv6 DHCP operation missing %q:\n%s", expected, joined)
@@ -750,11 +750,11 @@ func TestPlannerBuildsECMPPolicyRouteOperation(t *testing.T) {
 	joined := stringify(planner.Operations())
 	for _, expected := range []string{
 		"--if-exists lr-policy-del nl_lr_prod 110 ip4.src == 10.10.0.0/24",
-		"--id=@nl_lrp_centralized_egress create Logical_Router_Policy priority=110",
+		"--id=@nl_lrp_centralized_hegress create Logical_Router_Policy priority=110",
 		"action=reroute",
 		"nexthops=[\"10.10.0.253\",\"10.10.0.254\"]",
 		"external_ids:netloom_policy_route=centralized-egress",
-		"add logical_router nl_lr_prod policies @nl_lrp_centralized_egress",
+		"add logical_router nl_lr_prod policies @nl_lrp_centralized_hegress",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("ECMP policy route operations missing %q:\n%s", expected, joined)
@@ -787,7 +787,7 @@ func TestPlannerECMPPolicyRouteNamedUUIDAvoidsEscapedNameCollisions(t *testing.T
 	}
 	joined := stringify(planner.Operations())
 	for _, expected := range []string{
-		"--id=@nl_lrp_pod_1 create Logical_Router_Policy",
+		"--id=@nl_lrp_pod_h1 create Logical_Router_Policy",
 		"--id=@nl_lrp_pod__1 create Logical_Router_Policy",
 	} {
 		if !strings.Contains(joined, expected) {
@@ -859,9 +859,9 @@ func TestPlannerBuildsKubeOVNStyleNATOperations(t *testing.T) {
 		"--if-exists lr-nat-del nl_lr_prod dnat 198.51.100.40",
 		"--portrange --may-exist lr-nat-add nl_lr_prod dnat 198.51.100.40 10.10.0.12 2222",
 		"--if-exists lr-nat-del nl_lr_prod dnat 198.51.100.41",
-		"--id=@nl_nat_web_translate create NAT type=dnat external_ip=198.51.100.41 logical_ip=10.10.0.13 external_port_range=8443 logical_port_range=443 protocol=tcp",
+		"--id=@nl_nat_web_htranslate create NAT type=dnat external_ip=198.51.100.41 logical_ip=10.10.0.13 external_port_range=8443 logical_port_range=443 protocol=tcp",
 		"external_ids:netloom_nat=web-translate",
-		"add logical_router nl_lr_prod nat @nl_nat_web_translate",
+		"add logical_router nl_lr_prod nat @nl_nat_web_htranslate",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("OVN operations missing %q:\n%s", expected, joined)

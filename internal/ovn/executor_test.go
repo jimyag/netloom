@@ -212,8 +212,8 @@ func TestBackendCleanupRemovesTranslatedDNATRule(t *testing.T) {
 
 	joined := stringifyOVNOps(recorder.Operations())
 	for _, expected := range []string{
-		"--id=@nl_nat_web_translate create NAT type=dnat external_ip=198.51.100.80 logical_ip=10.10.0.10 external_port_range=8443 logical_port_range=443 protocol=tcp",
-		"add logical_router nl_lr_prod nat @nl_nat_web_translate",
+		"--id=@nl_nat_web_htranslate create NAT type=dnat external_ip=198.51.100.80 logical_ip=10.10.0.10 external_port_range=8443 logical_port_range=443 protocol=tcp",
+		"add logical_router nl_lr_prod nat @nl_nat_web_htranslate",
 		"--if-exists lr-nat-del nl_lr_prod dnat 198.51.100.80",
 	} {
 		if !strings.Contains(joined, expected) {

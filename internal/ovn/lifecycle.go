@@ -57,7 +57,7 @@ func snapshotDesired(state topology.State) desiredSnapshot {
 	}
 	for _, route := range state.PolicyRoutes {
 		match := policyRouteMatch(route.Match)
-		out.PolicyRoutes[policyRouteKey(route.VPC, route.Priority, match)] = policyRouteRecord{Route: route, Match: match}
+		out.PolicyRoutes[policyRouteKey(route)] = policyRouteRecord{Route: route, Match: match}
 	}
 	for name, gateway := range state.Gateways {
 		out.Gateways[name] = gateway
@@ -296,13 +296,14 @@ func deleteStaticRouteNextHopOperation(record routeRecord, nextHop string) Opera
 	}}
 }
 
-func policyRouteKey(vpc string, priority int, match string) string {
-	return fmt.Sprintf("%s|%d|%s", vpc, priority, match)
+func policyRouteKey(route model.PolicyRoute) string {
+	return route.VPC + "\x00" + route.Name
 }
 
 func policyRouteSignature(route model.PolicyRoute) string {
-	return fmt.Sprintf("%s|%d|%s|%s|%s",
+	return fmt.Sprintf("%s|%s|%d|%s|%s|%s",
 		route.VPC,
+		route.Name,
 		route.Priority,
 		policyRouteMatch(route.Match),
 		route.Action.Type,

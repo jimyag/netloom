@@ -333,8 +333,7 @@ func loadBalancerName(name string) string {
 }
 
 func namedUUID(name string) string {
-	replacer := strings.NewReplacer("-", "_")
-	return "@" + replacer.Replace(name)
+	return "@" + strings.ReplaceAll(name, "-", "_h")
 }
 
 func routerPortName(router, subnet string) string {
