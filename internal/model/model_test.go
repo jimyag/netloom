@@ -343,6 +343,30 @@ func TestPolicyRouteRequiresNextHopForReroute(t *testing.T) {
 	}
 }
 
+func TestPolicyRouteRejectsNextHopsForNonRerouteActions(t *testing.T) {
+	for _, action := range []Action{ActionAllow, ActionDrop} {
+		route := PolicyRoute{
+			Name:     "non-reroute",
+			VPC:      "prod",
+			Priority: 100,
+			Match: RouteMatch{
+				Destination: netip.MustParsePrefix("172.16.0.0/16"),
+			},
+			Action: RouteAction{
+				Type:     action,
+				NextHops: []netip.Addr{netip.MustParseAddr("10.10.0.254")},
+			},
+		}
+		err := route.Validate()
+		if err == nil {
+			t.Fatalf("expected %s policy route with next hops to fail", action)
+		}
+		if !strings.Contains(err.Error(), "only supported for reroute") {
+			t.Fatalf("error %q does not mention reroute-only next hops", err)
+		}
+	}
+}
+
 func TestRouteRejectsMixedIPFamilies(t *testing.T) {
 	route := Route{
 		Destination: netip.MustParsePrefix("fd00:10::/64"),

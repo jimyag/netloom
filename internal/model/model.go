@@ -593,6 +593,9 @@ func (r PolicyRoute) Validate() error {
 	if r.Action.Type == ActionReroute && len(nextHops) == 0 {
 		return errors.New("policy route reroute action requires next hop")
 	}
+	if r.Action.Type != ActionReroute && len(nextHops) > 0 {
+		return errors.New("policy route next hops are only supported for reroute action")
+	}
 	if err := r.Match.Validate(); err != nil {
 		return fmt.Errorf("policy route match: %w", err)
 	}
