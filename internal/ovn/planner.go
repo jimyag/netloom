@@ -561,6 +561,9 @@ func gcLoadBalancerHealthChecksOperation(loadBalancer string) Operation {
 }
 
 func loadBalancerHealthCheckSignature(lb model.LoadBalancer) string {
+	if !lb.HealthCheck.Enabled {
+		return "disabled"
+	}
 	var parts []string
 	for _, frontend := range lb.Frontends() {
 		parts = append(parts, strings.Join(loadBalancerHealthCheckArgs(lb, frontend), "|"))

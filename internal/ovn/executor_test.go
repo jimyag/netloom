@@ -181,6 +181,33 @@ func TestBackendCleanupDoesNotReapplyUnchangedLoadBalancer(t *testing.T) {
 	}
 }
 
+func TestBackendReappliesLoadBalancerWhenDefaultHealthCheckEnabled(t *testing.T) {
+	recorder := ovn.NewRecorderExecutor()
+	backend := ovn.NewBackend(recorder)
+	first := controlStateWithEndpoint("pod-a")
+	controller := control.NewController(backend, control.NewMemoryBackend())
+	if err := controller.Reconcile(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+
+	second := first
+	second.LoadBalancers[0].HealthCheck = model.LoadBalancerHealthCheck{Enabled: true}
+	if err := controller.Reconcile(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+
+	joined := stringifyOVNOps(recorder.Operations())
+	if got := strings.Count(joined, "create Load_Balancer_Health_Check"); got != 1 {
+		t.Fatalf("health check create count = %d, want one enable apply:\n%s", got, joined)
+	}
+	if !strings.Contains(joined, "--id=@nl_lbhc_web_tcp_80 create Load_Balancer_Health_Check vip=10.96.0.10:80") {
+		t.Fatalf("default health check create missing:\n%s", joined)
+	}
+	if got := strings.Count(joined, "--may-exist lb-add nl_lb_web 10.96.0.10:80 10.10.0.10:8080 tcp"); got != 2 {
+		t.Fatalf("load balancer frontend apply count = %d, want initial and health-check enable apply:\n%s", got, joined)
+	}
+}
+
 func TestBackendCleanupReappliesChangedLoadBalancerBackends(t *testing.T) {
 	recorder := ovn.NewRecorderExecutor()
 	backend := ovn.NewBackend(recorder)
