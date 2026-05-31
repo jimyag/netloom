@@ -16,6 +16,7 @@ type Backend struct {
 	history  []Operation
 	skipNAT  map[string]string
 	skipLB   map[string]string
+	skipPR   map[string]string
 }
 
 const operationHistoryLimit = 4096
@@ -41,7 +42,12 @@ func (b *Backend) EnsureRouteTable(ctx context.Context, table model.RouteTable) 
 }
 
 func (b *Backend) EnsurePolicyRoute(ctx context.Context, route model.PolicyRoute) error {
-	return b.apply(ctx, func() error { return b.planner.EnsurePolicyRoute(ctx, route) })
+	return b.apply(ctx, func() error {
+		if b.skipUnchangedPolicyRouteLocked(route) {
+			return nil
+		}
+		return b.planner.EnsurePolicyRoute(ctx, route)
+	})
 }
 
 func (b *Backend) EnsureGateway(ctx context.Context, gateway model.Gateway) error {
@@ -71,6 +77,7 @@ func (b *Backend) BeginTopologyReconcile(context.Context, topology.State) error 
 	defer b.mu.Unlock()
 	b.skipNAT = nil
 	b.skipLB = nil
+	b.skipPR = nil
 	return nil
 }
 
@@ -82,6 +89,7 @@ func (b *Backend) CleanupTopology(ctx context.Context, state topology.State) err
 	ops := cleanupOperations(b.last, next)
 	b.skipNAT = unchangedNATRules(b.last, next)
 	b.skipLB = unchangedLoadBalancers(b.last, next)
+	b.skipPR = unchangedPolicyRoutes(b.last, next)
 	b.last = next
 	b.planner.SyncLoadBalancerHealthChecks(next.LoadBalancers)
 
@@ -114,6 +122,14 @@ func (b *Backend) skipUnchangedLoadBalancerLocked(lb model.LoadBalancer) bool {
 	}
 	signature, ok := b.skipLB[lb.Name]
 	return ok && signature == loadBalancerSignature(lb)
+}
+
+func (b *Backend) skipUnchangedPolicyRouteLocked(route model.PolicyRoute) bool {
+	if len(b.skipPR) == 0 {
+		return false
+	}
+	signature, ok := b.skipPR[policyRouteKey(route)]
+	return ok && signature == policyRouteSignature(route)
 }
 
 func (b *Backend) Operations() []Operation {

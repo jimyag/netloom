@@ -495,8 +495,42 @@ func TestBackendCleanupDoesNotDeleteUnchangedPolicyRoute(t *testing.T) {
 	if strings.Contains(joined, "lr-policy-del nl_lr_prod 300") {
 		t.Fatalf("unchanged allow policy route should not be deleted:\n%s", joined)
 	}
-	if got := strings.Count(joined, "--may-exist lr-policy-add nl_lr_prod 300"); got != 2 {
-		t.Fatalf("policy route add count = %d, want one idempotent add per reconcile:\n%s", got, joined)
+	if got := strings.Count(joined, "--may-exist lr-policy-add nl_lr_prod 300"); got != 1 {
+		t.Fatalf("unchanged policy route add count = %d, want one initial apply:\n%s", got, joined)
+	}
+}
+
+func TestBackendCleanupDoesNotRecreateUnchangedECMPPolicyRoute(t *testing.T) {
+	recorder := ovn.NewRecorderExecutor()
+	backend := ovn.NewBackend(recorder)
+	state := controlStateWithEndpoint("pod-a")
+	state.PolicyRoutes = []model.PolicyRoute{{
+		Name:     "centralized-egress",
+		VPC:      "prod",
+		Priority: 300,
+		Match:    model.RouteMatch{Source: netip.MustParsePrefix("10.10.0.0/24")},
+		Action: model.RouteAction{
+			Type: model.ActionReroute,
+			NextHops: []netip.Addr{
+				netip.MustParseAddr("10.10.0.253"),
+				netip.MustParseAddr("10.10.0.254"),
+			},
+		},
+	}}
+	controller := control.NewController(backend, control.NewMemoryBackend())
+	if err := controller.Reconcile(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.Reconcile(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+
+	joined := stringifyOVNOps(recorder.Operations())
+	if got := strings.Count(joined, "create Logical_Router_Policy priority=300"); got != 1 {
+		t.Fatalf("unchanged ECMP policy route create count = %d, want one initial apply:\n%s", got, joined)
+	}
+	if got := strings.Count(joined, "lr-policy-del nl_lr_prod 300 ip4.src == 10.10.0.0/24"); got != 1 {
+		t.Fatalf("unchanged ECMP policy route delete count = %d, want one initial planner guard:\n%s", got, joined)
 	}
 }
 

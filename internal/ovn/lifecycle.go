@@ -254,6 +254,19 @@ func unchangedLoadBalancers(old, next desiredSnapshot) map[string]string {
 	return out
 }
 
+func unchangedPolicyRoutes(old, next desiredSnapshot) map[string]string {
+	out := make(map[string]string)
+	for _, key := range commonKeys(old.PolicyRoutes, next.PolicyRoutes) {
+		oldRoute := old.PolicyRoutes[key].Route
+		nextRoute := next.PolicyRoutes[key].Route
+		signature := policyRouteSignature(nextRoute)
+		if policyRouteSignature(oldRoute) == signature {
+			out[key] = signature
+		}
+	}
+	return out
+}
+
 func commonKeys[T any](old, next map[string]T) []string {
 	keys := make([]string, 0)
 	for key := range old {
