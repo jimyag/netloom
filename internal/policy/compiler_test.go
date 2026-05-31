@@ -1109,6 +1109,75 @@ func TestCompileForEndpointWithContextRemoteServiceAnyProtocolHonorsExplicitPort
 	}
 }
 
+func TestCompileForEndpointWithContextRejectsRemoteServiceWithoutMatchingFrontend(t *testing.T) {
+	endpoint := model.Endpoint{
+		ID:             "pod-client",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"client"},
+	}
+	tests := []struct {
+		name  string
+		rule  model.SecurityGroupRule
+		ports []model.LoadBalancerPort
+	}{
+		{
+			name: "protocol mismatch",
+			rule: model.SecurityGroupRule{
+				ID:            "egress-web-service",
+				Priority:      100,
+				Direction:     model.DirectionEgress,
+				Protocol:      model.ProtocolTCP,
+				RemoteService: "web",
+				Action:        model.ActionAllow,
+			},
+			ports: []model.LoadBalancerPort{{
+				Port:     53,
+				Protocol: model.ProtocolUDP,
+				Backends: []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.21"), Port: 53}},
+			}},
+		},
+		{
+			name: "explicit port mismatch",
+			rule: model.SecurityGroupRule{
+				ID:            "egress-web-service",
+				Priority:      100,
+				Direction:     model.DirectionEgress,
+				Protocol:      model.ProtocolAny,
+				RemoteService: "web",
+				Ports:         []model.PortRange{{From: 443, To: 443}},
+				Action:        model.ActionAllow,
+			},
+			ports: []model.LoadBalancerPort{{
+				Port:     80,
+				Protocol: model.ProtocolTCP,
+				Backends: []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.20"), Port: 8080}},
+			}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := CompileForEndpointWithContext(endpoint, map[string]model.SecurityGroup{
+				"client": {
+					Name:  "client",
+					VPC:   "prod",
+					Rules: []model.SecurityGroupRule{tt.rule},
+				},
+			}, CompileContext{Services: []model.LoadBalancer{{
+				Name:  "web",
+				VPC:   "prod",
+				VIP:   netip.MustParseAddr("10.96.0.10"),
+				Ports: tt.ports,
+			}}})
+			if err == nil || !strings.Contains(err.Error(), "no matching frontend") {
+				t.Fatalf("error = %v, want no matching frontend", err)
+			}
+		})
+	}
+}
+
 func TestCompileForEndpointWithContextRejectsUnknownRemoteService(t *testing.T) {
 	endpoint := model.Endpoint{
 		ID:             "pod-client",

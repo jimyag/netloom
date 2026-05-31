@@ -519,6 +519,9 @@ func expandServiceRule(base Rule, services map[string]model.LoadBalancer) ([]Rul
 		seen[key] = struct{}{}
 		out = append(out, expanded)
 	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("rule %s remote service %s has no matching frontend", base.ID, base.RemoteService)
+	}
 	return out, nil
 }
 
