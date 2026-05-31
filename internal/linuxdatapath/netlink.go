@@ -41,6 +41,7 @@ func applyLocalNetlink(ctx context.Context, state control.DesiredState, options 
 		return Result{}, err
 	}
 	defer root.Close()
+	result.CleanupPlanned = options.CleanupStale
 
 	localLink, err := root.LinkByName(options.LocalDevice)
 	if err != nil {
@@ -49,6 +50,14 @@ func applyLocalNetlink(ctx context.Context, state control.DesiredState, options 
 	if err := root.LinkSetUp(localLink); err != nil {
 		return Result{}, fmt.Errorf("set %s up: %w", options.LocalDevice, err)
 	}
+	var underlay netlink.Link
+	if hasRemoteEndpoints(state.Endpoints, options.Node) || options.CleanupStale {
+		underlay, err = root.LinkByName(options.UnderlayDevice)
+		if err != nil {
+			return Result{}, fmt.Errorf("lookup underlay device %s: %w", options.UnderlayDevice, err)
+		}
+	}
+	desiredRemoteRoutes := make(map[string]struct{})
 	for _, endpoint := range state.Endpoints {
 		if err := ctx.Err(); err != nil {
 			return Result{}, err
@@ -64,14 +73,16 @@ func applyLocalNetlink(ctx context.Context, state control.DesiredState, options 
 		if err != nil {
 			return Result{}, fmt.Errorf("resolve underlay for node %s: %w", endpoint.Node, err)
 		}
-		underlay, err := root.LinkByName(options.UnderlayDevice)
-		if err != nil {
-			return Result{}, fmt.Errorf("lookup underlay device %s: %w", options.UnderlayDevice, err)
-		}
-		if err := replaceRoute(root, endpoint.IP, addrPrefixBits(endpoint.IP), nextHop, underlay.Attrs().Index, 0); err != nil {
+		desiredRemoteRoutes[endpointPrefix(endpoint.IP)] = struct{}{}
+		if err := replaceRemoteEndpointRoute(root, endpoint.IP, nextHop, underlay.Attrs().Index); err != nil {
 			return Result{}, fmt.Errorf("route %s via %s: %w", endpoint.IP, nextHop, err)
 		}
 		result.RemoteRoutes++
+	}
+	if options.CleanupStale {
+		if err := cleanupStaleRemoteRoutes(root, desiredRemoteRoutes, underlay.Attrs().Index); err != nil {
+			return Result{}, err
+		}
 	}
 	policyRoutes, err := applyPolicyRoutesNetlink(root, state, options)
 	if err != nil {
@@ -98,6 +109,14 @@ func applyNetNSNetlink(ctx context.Context, state control.DesiredState, options 
 			return Result{}, err
 		}
 	}
+	var underlay netlink.Link
+	if hasRemoteEndpoints(state.Endpoints, options.Node) || options.CleanupStale {
+		underlay, err = root.LinkByName(options.UnderlayDevice)
+		if err != nil {
+			return Result{}, fmt.Errorf("lookup underlay device %s: %w", options.UnderlayDevice, err)
+		}
+	}
+	desiredRemoteRoutes := make(map[string]struct{})
 	for _, endpoint := range state.Endpoints {
 		if err := ctx.Err(); err != nil {
 			return Result{}, err
@@ -113,14 +132,16 @@ func applyNetNSNetlink(ctx context.Context, state control.DesiredState, options 
 		if err != nil {
 			return Result{}, fmt.Errorf("resolve underlay for node %s: %w", endpoint.Node, err)
 		}
-		underlay, err := root.LinkByName(options.UnderlayDevice)
-		if err != nil {
-			return Result{}, fmt.Errorf("lookup underlay device %s: %w", options.UnderlayDevice, err)
-		}
-		if err := replaceRoute(root, endpoint.IP, addrPrefixBits(endpoint.IP), nextHop, underlay.Attrs().Index, 0); err != nil {
+		desiredRemoteRoutes[endpointPrefix(endpoint.IP)] = struct{}{}
+		if err := replaceRemoteEndpointRoute(root, endpoint.IP, nextHop, underlay.Attrs().Index); err != nil {
 			return Result{}, fmt.Errorf("route %s via %s: %w", endpoint.IP, nextHop, err)
 		}
 		result.RemoteRoutes++
+	}
+	if options.CleanupStale {
+		if err := cleanupStaleRemoteRoutes(root, desiredRemoteRoutes, underlay.Attrs().Index); err != nil {
+			return Result{}, err
+		}
 	}
 	policyRoutes, err := applyPolicyRoutesNetlink(root, state, options)
 	if err != nil {
@@ -334,6 +355,63 @@ func managedPolicyTable(table int, options Options) bool {
 
 func managedPolicyRule(rule netlink.Rule, options Options) bool {
 	return managedPolicyTable(rule.Table, options) || int(rule.Protocol) == linuxPolicyRuleProtocolID
+}
+
+func hasRemoteEndpoints(endpoints []model.Endpoint, node string) bool {
+	for _, endpoint := range endpoints {
+		if endpoint.Node != node {
+			return true
+		}
+	}
+	return false
+}
+
+func replaceRemoteEndpointRoute(handle *netlink.Handle, dst netip.Addr, gw netip.Addr, linkIndex int) error {
+	route, err := remoteEndpointNetlinkRoute(dst, gw, linkIndex)
+	if err != nil {
+		return err
+	}
+	return handle.RouteReplace(route)
+}
+
+func remoteEndpointNetlinkRoute(dst netip.Addr, gw netip.Addr, linkIndex int) (*netlink.Route, error) {
+	dstNet, err := ipNet(dst, addrPrefixBits(dst))
+	if err != nil {
+		return nil, err
+	}
+	route := &netlink.Route{
+		Table:     linuxMainRouteTable,
+		LinkIndex: linkIndex,
+		Dst:       dstNet,
+		Protocol:  linuxRemoteRouteProtocolID,
+	}
+	if gw.IsValid() {
+		route.Gw = addrIP(gw)
+	}
+	return route, nil
+}
+
+func cleanupStaleRemoteRoutes(root *netlink.Handle, desired map[string]struct{}, linkIndex int) error {
+	for _, family := range []int{netlink.FAMILY_V4, netlink.FAMILY_V6} {
+		routes, err := root.RouteListFiltered(family, &netlink.Route{
+			Table:     linuxMainRouteTable,
+			LinkIndex: linkIndex,
+			Protocol:  linuxRemoteRouteProtocolID,
+		}, netlink.RT_FILTER_TABLE|netlink.RT_FILTER_OIF|netlink.RT_FILTER_PROTOCOL)
+		if err != nil {
+			return fmt.Errorf("list stale remote routes: %w", err)
+		}
+		for i := range routes {
+			route := routes[i]
+			if _, ok := desired[ipNetString(route.Dst)]; ok {
+				continue
+			}
+			if err := root.RouteDel(&route); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("delete stale remote route %s: %w", ipNetString(route.Dst), err)
+			}
+		}
+	}
+	return nil
 }
 
 func policyRouteNetlinkRoute(route model.PolicyRoute, table, linkIndex int) (*netlink.Route, error) {

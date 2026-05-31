@@ -51,7 +51,7 @@ func TestPlanProgramsLocalAddressesAndRemoteRoutes(t *testing.T) {
 	want := []Operation{
 		{Command: "ip", Args: []string{"link", "set", "nl0", "up"}},
 		{Command: "ip", Args: []string{"addr", "replace", "10.10.0.10/32", "dev", "nl0"}},
-		{Command: "ip", Args: []string{"route", "replace", "10.10.0.11/32", "via", "172.30.0.12", "dev", "eth9"}},
+		{Command: "ip", Args: []string{"route", "replace", "10.10.0.11/32", "via", "172.30.0.12", "dev", "eth9", "proto", "187"}},
 	}
 	if !reflect.DeepEqual(ops, want) {
 		t.Fatalf("ops = %#v, want %#v", ops, want)
@@ -110,10 +110,57 @@ func TestPlanNetNSProgramsVethAndNamespace(t *testing.T) {
 		"ip netns add nl-pod-a",
 		"ip netns exec nl-pod-a ip addr replace 10.10.0.10/32 dev eth0",
 		"ip netns exec nl-pod-a ip route replace default via 169.254.1.1 dev eth0 onlink",
-		"ip route replace 10.10.0.11/32 via 172.30.0.12 dev eth0",
+		"ip route replace 10.10.0.11/32 via 172.30.0.12 dev eth0 proto 187",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("ops missing %q:\n%s", expected, joined)
+		}
+	}
+}
+
+func TestPlanRemoteRouteCleanupDeletesOnlyManagedStaleRoutes(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{
+			{
+				ID:     "pod-a",
+				VPC:    "prod",
+				Subnet: "apps",
+				IP:     netip.MustParseAddr("10.10.0.10"),
+				Node:   "node-a",
+			},
+			{
+				ID:     "pod-b",
+				VPC:    "prod",
+				Subnet: "apps",
+				IP:     netip.MustParseAddr("10.10.0.11"),
+				Node:   "node-b",
+			},
+		},
+	}
+	ops, result, err := Plan(context.Background(), state, Options{
+		Node:           "node-a",
+		LocalDevice:    "nl0",
+		UnderlayDevice: "eth9",
+		NodeUnderlays: map[string]netip.Addr{
+			"node-b": netip.MustParseAddr("172.30.0.12"),
+		},
+		CleanupStale: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.CleanupPlanned {
+		t.Fatal("cleanup was not marked as planned")
+	}
+	joined := stringifyOps(ops)
+	for _, expected := range []string{
+		"ip route replace 10.10.0.11/32 via 172.30.0.12 dev eth9 proto 187",
+		"ip $family -o route show proto 187 dev eth9",
+		" 10.10.0.11/32 ",
+		"ip $family route del \"$dst\" dev eth9 proto 187",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("managed remote route cleanup missing %q:\n%s", expected, joined)
 		}
 	}
 }
@@ -549,6 +596,33 @@ func TestRouteEquivalentDetectsNextHopChanges(t *testing.T) {
 	}
 	if !routeEquivalent(*first, *clone) {
 		t.Fatalf("identical routes should be equivalent: %#v %#v", first, clone)
+	}
+}
+
+func TestRemoteEndpointNetlinkRouteCarriesProtocolMarker(t *testing.T) {
+	route, err := remoteEndpointNetlinkRoute(netip.MustParseAddr("10.10.0.11"), netip.MustParseAddr("172.30.0.12"), 9)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if route.Table != linuxMainRouteTable || route.LinkIndex != 9 || route.Dst.String() != "10.10.0.11/32" || route.Gw.String() != "172.30.0.12" {
+		t.Fatalf("unexpected remote route: %+v", route)
+	}
+	if int(route.Protocol) != linuxRemoteRouteProtocolID {
+		t.Fatalf("remote route protocol = %d, want %d", route.Protocol, linuxRemoteRouteProtocolID)
+	}
+}
+
+func TestRemoteEndpointPrefixesExcludeLocalEndpoints(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{
+			{ID: "pod-a", IP: netip.MustParseAddr("10.10.0.10"), Node: "node-a"},
+			{ID: "pod-b", IP: netip.MustParseAddr("10.10.0.11"), Node: "node-b"},
+			{ID: "pod-v6", IP: netip.MustParseAddr("fd00:10::11"), Node: "node-b"},
+		},
+	}
+	want := []string{"10.10.0.11/32", "fd00:10::11/128"}
+	if got := remoteEndpointPrefixes(state, "node-a"); !reflect.DeepEqual(got, want) {
+		t.Fatalf("remote endpoint prefixes = %#v, want %#v", got, want)
 	}
 }
 

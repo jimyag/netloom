@@ -51,8 +51,9 @@ type Result struct {
 type CommandExecutor struct{}
 
 const (
-	linuxMainRouteTable       = 254
-	linuxPolicyRuleProtocolID = 186
+	linuxMainRouteTable        = 254
+	linuxPolicyRuleProtocolID  = 186
+	linuxRemoteRouteProtocolID = 187
 )
 
 func (CommandExecutor) Execute(ctx context.Context, op Operation) error {
@@ -128,14 +129,13 @@ func Plan(ctx context.Context, state control.DesiredState, options Options) ([]O
 		policyTableSize = 1024
 	}
 
-	result := Result{Device: localDevice, Mode: mode}
+	result := Result{Device: localDevice, Mode: mode, CleanupPlanned: options.CleanupStale}
 	var ops []Operation
 	if mode == "local" {
 		ops = append(ops, Operation{Command: "ip", Args: []string{"link", "set", localDevice, "up"}})
 	}
 	if mode == "netns" {
 		result.Device = "netns"
-		result.CleanupPlanned = options.CleanupStale
 		ops = append(ops,
 			shellOperation("sysctl -w net.ipv4.ip_forward=1 >/dev/null"),
 			shellOperation("sysctl -w net.ipv4.conf.all.rp_filter=0 >/dev/null"),
@@ -158,15 +158,19 @@ func Plan(ctx context.Context, state control.DesiredState, options Options) ([]O
 			result.LocalAddresses++
 			continue
 		}
+		prefix := endpoint.IP.String() + "/" + strconv.Itoa(addrPrefixBits(endpoint.IP))
 		nextHop, err := resolveNode(ctx, endpoint.Node, options.NodeUnderlays)
 		if err != nil {
 			return nil, Result{}, fmt.Errorf("resolve underlay for node %s: %w", endpoint.Node, err)
 		}
 		ops = append(ops, Operation{
 			Command: "ip",
-			Args:    []string{"route", "replace", endpoint.IP.String() + "/" + strconv.Itoa(addrPrefixBits(endpoint.IP)), "via", nextHop.String(), "dev", underlayDevice},
+			Args:    []string{"route", "replace", prefix, "via", nextHop.String(), "dev", underlayDevice, "proto", strconv.Itoa(linuxRemoteRouteProtocolID)},
 		})
 		result.RemoteRoutes++
+	}
+	if options.CleanupStale {
+		ops = append(ops, planRemoteRouteCleanup(state, options.Node, underlayDevice))
 	}
 	policyOps, policyRoutes, err := planPolicyRoutes(state, options.Node, underlayDevice, policyTableBase, policyTableSize, options.CleanupStale)
 	if err != nil {
@@ -242,6 +246,28 @@ func planPolicyRouteCleanup(tableBase, tableSize int) Operation {
 	end := strconv.Itoa(tableBase + tableSize)
 	protocol := strconv.Itoa(linuxPolicyRuleProtocolID)
 	return shellOperation("ip rule show | awk -v start=" + start + " -v end=" + end + " -v proto=" + protocol + " '{ managed=0; for (i=1; i<=NF; i++) { if (($i == \"lookup\" || $i == \"table\") && $(i+1) >= start && $(i+1) < end) managed=1; if (($i == \"proto\" || $i == \"protocol\") && $(i+1) == proto) managed=1 } if (managed) print }' | while read -r rule; do priority=${rule%%:*}; table=$(printf '%s\\n' \"$rule\" | awk '{ for (i=1; i<=NF; i++) if (($i == \"lookup\" || $i == \"table\")) { print $(i+1); exit } }'); ip rule del priority \"$priority\" table \"$table\" 2>/dev/null || true; done")
+}
+
+func planRemoteRouteCleanup(state control.DesiredState, node, device string) Operation {
+	keep := keepSet(remoteEndpointPrefixes(state, node))
+	protocol := strconv.Itoa(linuxRemoteRouteProtocolID)
+	script := "for family in '' '-6'; do ip $family -o route show proto " + protocol + " dev " + device + " 2>/dev/null | awk '{print $1}' | while read -r dst; do case '" + keep + "' in *\" $dst \"*) ;; *) ip $family route del \"$dst\" dev " + device + " proto " + protocol + " 2>/dev/null || true ;; esac; done; done"
+	return shellOperation(script)
+}
+
+func remoteEndpointPrefixes(state control.DesiredState, node string) []string {
+	var prefixes []string
+	for _, endpoint := range state.Endpoints {
+		if endpoint.Node == node {
+			continue
+		}
+		prefixes = append(prefixes, endpointPrefix(endpoint.IP))
+	}
+	return prefixes
+}
+
+func endpointPrefix(ip netip.Addr) string {
+	return ip.String() + "/" + strconv.Itoa(addrPrefixBits(ip))
 }
 
 func localVPCSet(endpoints []model.Endpoint, node string) map[string]struct{} {
