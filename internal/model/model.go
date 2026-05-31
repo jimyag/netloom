@@ -276,6 +276,9 @@ func (s Subnet) Validate() error {
 	if !s.Gateway.IsValid() {
 		return errors.New("subnet gateway is required")
 	}
+	if s.Gateway.IsUnspecified() {
+		return errors.New("subnet gateway must not be unspecified")
+	}
 	if !s.CIDR.Contains(s.Gateway) {
 		return fmt.Errorf("subnet gateway %s is outside cidr %s", s.Gateway, s.CIDR)
 	}
@@ -331,6 +334,9 @@ func (d DHCPOptions) Validate() error {
 		if !server.IsValid() {
 			return fmt.Errorf("dhcp dns server %d is invalid", i)
 		}
+		if server.IsUnspecified() {
+			return fmt.Errorf("dhcp dns server %d must not be unspecified", i)
+		}
 	}
 	if d.DomainName != "" {
 		if err := validateDNSName(d.DomainName, false); err != nil {
@@ -357,6 +363,9 @@ func (e Endpoint) Validate() error {
 	}
 	if !e.IP.IsValid() {
 		return errors.New("endpoint ip is required")
+	}
+	if e.IP.IsUnspecified() {
+		return errors.New("endpoint ip must not be unspecified")
 	}
 	if strings.TrimSpace(e.MAC) != "" {
 		if _, err := net.ParseMAC(e.MAC); err != nil {
@@ -559,6 +568,9 @@ func (r Route) Validate() error {
 		if !nextHop.IsValid() {
 			return errors.New("route next hop is invalid")
 		}
+		if nextHop.IsUnspecified() {
+			return errors.New("route next hop must not be unspecified")
+		}
 		if nextHop.Is4() != r.Destination.Addr().Is4() {
 			return errors.New("route next hop family must match destination")
 		}
@@ -608,6 +620,9 @@ func (r PolicyRoute) Validate() error {
 		for i, nextHop := range nextHops {
 			if !nextHop.IsValid() {
 				return fmt.Errorf("policy route reroute next hop %d is invalid", i)
+			}
+			if nextHop.IsUnspecified() {
+				return fmt.Errorf("policy route reroute next hop %d must not be unspecified", i)
 			}
 			if nextHop.Is4() != familyIs4 {
 				return errors.New("policy route reroute next hops must use the same IP family")
@@ -678,6 +693,9 @@ func (g Gateway) Validate() error {
 	if !g.LANIP.IsValid() {
 		return errors.New("gateway lan ip is required")
 	}
+	if g.LANIP.IsUnspecified() {
+		return errors.New("gateway lan ip must not be unspecified")
+	}
 	return nil
 }
 
@@ -693,6 +711,9 @@ func (n NATRule) Validate() error {
 	}
 	if !n.ExternalIP.IsValid() {
 		return errors.New("nat external ip is required")
+	}
+	if n.ExternalIP.IsUnspecified() {
+		return errors.New("nat external ip must not be unspecified")
 	}
 	if n.Protocol == "" {
 		n.Protocol = ProtocolAny
@@ -725,6 +746,9 @@ func (n NATRule) Validate() error {
 		if !n.TargetIP.IsValid() {
 			return errors.New("dnat target ip is required")
 		}
+		if n.TargetIP.IsUnspecified() {
+			return errors.New("dnat target ip must not be unspecified")
+		}
 		if n.ExternalIP.Is4() != n.TargetIP.Is4() {
 			return errors.New("dnat external ip family must match target ip")
 		}
@@ -741,6 +765,9 @@ func (n NATRule) Validate() error {
 	case ActionDNATSNAT:
 		if !n.TargetIP.IsValid() {
 			return errors.New("dnat_and_snat target ip is required")
+		}
+		if n.TargetIP.IsUnspecified() {
+			return errors.New("dnat_and_snat target ip must not be unspecified")
 		}
 		if n.ExternalIP.Is4() != n.TargetIP.Is4() {
 			return errors.New("dnat_and_snat external ip family must match target ip")
@@ -786,6 +813,9 @@ func (l LoadBalancer) Validate() error {
 	}
 	if !l.VIP.IsValid() {
 		return errors.New("load balancer vip is required")
+	}
+	if l.VIP.IsUnspecified() {
+		return errors.New("load balancer vip must not be unspecified")
 	}
 	if len(l.Ports) == 0 {
 		return errors.New("load balancer ports are required")
@@ -955,6 +985,9 @@ func (h LoadBalancerHealthCheck) Validate() error {
 func (b LoadBalancerBackend) Validate() error {
 	if !b.IP.IsValid() {
 		return errors.New("backend ip is required")
+	}
+	if b.IP.IsUnspecified() {
+		return errors.New("backend ip must not be unspecified")
 	}
 	if b.Port == 0 {
 		return errors.New("backend port is required")
@@ -1250,6 +1283,9 @@ func (r DNSRecord) Validate() error {
 	for i, ip := range r.IPs {
 		if !ip.IsValid() {
 			return fmt.Errorf("dns record ip %d is invalid", i)
+		}
+		if ip.IsUnspecified() {
+			return fmt.Errorf("dns record ip %d must not be unspecified", i)
 		}
 		if _, ok := seenIPs[ip]; ok {
 			return fmt.Errorf("dns record ip %s is duplicated", ip)

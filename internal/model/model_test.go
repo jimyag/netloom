@@ -147,6 +147,156 @@ func TestSubnetProviderNetworkVLANValidation(t *testing.T) {
 	}
 }
 
+func TestModelRejectsUnspecifiedConcreteAddresses(t *testing.T) {
+	tests := []struct {
+		name    string
+		valid   func() error
+		wantErr string
+	}{
+		{
+			name: "subnet gateway",
+			valid: func() error {
+				return Subnet{
+					Name:    "apps",
+					VPC:     "prod",
+					CIDR:    netip.MustParsePrefix("0.0.0.0/24"),
+					Gateway: netip.MustParseAddr("0.0.0.0"),
+				}.Validate()
+			},
+			wantErr: "subnet gateway must not be unspecified",
+		},
+		{
+			name: "dhcp dns server",
+			valid: func() error {
+				return DHCPOptions{
+					Enabled:    true,
+					DNSServers: []netip.Addr{netip.MustParseAddr("0.0.0.0")},
+				}.Validate()
+			},
+			wantErr: "dhcp dns server 0 must not be unspecified",
+		},
+		{
+			name: "endpoint ip",
+			valid: func() error {
+				return Endpoint{
+					ID:     "pod-a",
+					VPC:    "prod",
+					Subnet: "apps",
+					IP:     netip.MustParseAddr("0.0.0.0"),
+					Node:   "node-a",
+				}.Validate()
+			},
+			wantErr: "endpoint ip must not be unspecified",
+		},
+		{
+			name: "route next hop",
+			valid: func() error {
+				return Route{
+					Destination: netip.MustParsePrefix("198.51.100.0/24"),
+					NextHops:    []netip.Addr{netip.MustParseAddr("0.0.0.0")},
+				}.Validate()
+			},
+			wantErr: "route next hop must not be unspecified",
+		},
+		{
+			name: "policy route next hop",
+			valid: func() error {
+				return PolicyRoute{
+					Name:     "egress",
+					VPC:      "prod",
+					Priority: 100,
+					Match:    RouteMatch{Destination: netip.MustParsePrefix("198.51.100.0/24")},
+					Action:   RouteAction{Type: ActionReroute, NextHops: []netip.Addr{netip.MustParseAddr("0.0.0.0")}},
+				}.Validate()
+			},
+			wantErr: "policy route reroute next hop 0 must not be unspecified",
+		},
+		{
+			name: "gateway lan ip",
+			valid: func() error {
+				return Gateway{
+					Name:       "gw-a",
+					VPC:        "prod",
+					Node:       "node-a",
+					ExternalIF: "eth0",
+					LANIP:      netip.MustParseAddr("0.0.0.0"),
+				}.Validate()
+			},
+			wantErr: "gateway lan ip must not be unspecified",
+		},
+		{
+			name: "nat external ip",
+			valid: func() error {
+				return NATRule{
+					Name:       "egress",
+					VPC:        "prod",
+					Type:       ActionSNAT,
+					MatchCIDR:  netip.MustParsePrefix("10.10.0.0/24"),
+					ExternalIP: netip.MustParseAddr("0.0.0.0"),
+				}.Validate()
+			},
+			wantErr: "nat external ip must not be unspecified",
+		},
+		{
+			name: "dnat target ip",
+			valid: func() error {
+				return NATRule{
+					Name:       "web",
+					VPC:        "prod",
+					Type:       ActionDNAT,
+					ExternalIP: netip.MustParseAddr("198.51.100.10"),
+					TargetIP:   netip.MustParseAddr("0.0.0.0"),
+				}.Validate()
+			},
+			wantErr: "dnat target ip must not be unspecified",
+		},
+		{
+			name: "load balancer vip",
+			valid: func() error {
+				return LoadBalancer{
+					Name: "web",
+					VPC:  "prod",
+					VIP:  netip.MustParseAddr("0.0.0.0"),
+					Ports: []LoadBalancerPort{{
+						Port:     80,
+						Protocol: ProtocolTCP,
+						Backends: []LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.10"), Port: 8080}},
+					}},
+				}.Validate()
+			},
+			wantErr: "load balancer vip must not be unspecified",
+		},
+		{
+			name: "load balancer backend",
+			valid: func() error {
+				return LoadBalancerBackend{IP: netip.MustParseAddr("0.0.0.0"), Port: 8080}.Validate()
+			},
+			wantErr: "backend ip must not be unspecified",
+		},
+		{
+			name: "dns record ip",
+			valid: func() error {
+				return DNSRecord{
+					Name: "api.example.com",
+					IPs:  []netip.Addr{netip.MustParseAddr("0.0.0.0")},
+				}.Validate()
+			},
+			wantErr: "dns record ip 0 must not be unspecified",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.valid()
+			if err == nil {
+				t.Fatal("expected validation to fail")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error %q does not contain %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestSubnetDHCPValidation(t *testing.T) {
 	subnet := Subnet{
 		Name:    "apps",
