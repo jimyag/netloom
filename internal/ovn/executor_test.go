@@ -873,6 +873,54 @@ esac
 	}
 }
 
+func TestNBCTLExecutorDestroysLoadBalancerHealthChecksMatchedByExternalIDs(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args")
+	binary := filepath.Join(dir, "ovn-nbctl")
+	script := fmt.Sprintf(`#!/bin/sh
+printf '%%s\n' '---' >> %q
+printf '%%s\n' "$@" >> %q
+case "$*" in
+  *"--columns=_uuid find Load_Balancer_Health_Check"*) printf 'hc-a\nhc-b\n' ;;
+esac
+`, argsFile, argsFile)
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	executor := ovn.NewNBCTLExecutor(binary, "--db=unix:/tmp/ovnnb.sock")
+	err := executor.Execute(context.Background(), []ovn.Operation{
+		{Command: "clear", Args: []string{"load_balancer", "nl_lb_web", "health_check"}},
+		{Command: "gc-load-balancer-health-checks", Args: []string{"web"}},
+		{Command: "lb-del", Flags: []string{"--if-exists"}, Args: []string{"nl_lb_web"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := strings.Split(strings.TrimPrefix(strings.TrimSpace(string(raw)), "---\n"), "\n---\n")
+	if len(calls) != 5 {
+		t.Fatalf("calls = %d, want clear, find, two destroys, lb-del:\n%s", len(calls), raw)
+	}
+	if !strings.Contains(calls[0], "clear\nload_balancer\nnl_lb_web\nhealth_check") {
+		t.Fatalf("first call should clear health check references before GC:\n%s", calls[0])
+	}
+	if !strings.Contains(calls[1], "--columns=_uuid\nfind\nLoad_Balancer_Health_Check") ||
+		!strings.Contains(calls[1], "external_ids:netloom_load_balancer=web") {
+		t.Fatalf("second call should find LB health checks by ownership:\n%s", calls[1])
+	}
+	if !strings.Contains(calls[2], "destroy\nLoad_Balancer_Health_Check\nhc-a") ||
+		!strings.Contains(calls[3], "destroy\nLoad_Balancer_Health_Check\nhc-b") {
+		t.Fatalf("matching LB health checks should be destroyed:\n%s", raw)
+	}
+	if !strings.Contains(calls[4], "lb-del\nnl_lb_web") {
+		t.Fatalf("final call should delete load balancer:\n%s", calls[4])
+	}
+}
+
 func TestNBCTLExecutorAppliesDefaultCommandTimeout(t *testing.T) {
 	dir := t.TempDir()
 	binary := filepath.Join(dir, "ovn-nbctl")
