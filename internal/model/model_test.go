@@ -775,6 +775,15 @@ func TestDNSRecordValidation(t *testing.T) {
 	}).Validate(); err == nil {
 		t.Fatal("expected observed_at without ttl to fail")
 	}
+	if err := (DNSRecord{
+		Name: "api.example.com",
+		IPs: []netip.Addr{
+			netip.MustParseAddr("203.0.113.10"),
+			netip.MustParseAddr("203.0.113.10"),
+		},
+	}).Validate(); err == nil || !strings.Contains(err.Error(), "duplicated") {
+		t.Fatalf("error = %v, want duplicate dns record ip validation", err)
+	}
 }
 
 func TestCIDRGroupValidation(t *testing.T) {

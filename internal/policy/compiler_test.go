@@ -1266,6 +1266,49 @@ func TestCompileForEndpointWithContextSkipsExpiredDNSRecords(t *testing.T) {
 	}
 }
 
+func TestCompileForEndpointWithContextDeduplicatesDNSRecordIPs(t *testing.T) {
+	endpoint := model.Endpoint{
+		ID:             "pod-a",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"client"},
+	}
+	program, err := CompileForEndpointWithContext(endpoint, map[string]model.SecurityGroup{
+		"client": {
+			Name: "client",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:          "allow-api",
+				Priority:    100,
+				Direction:   model.DirectionEgress,
+				Protocol:    model.ProtocolTCP,
+				RemoteFQDNs: []model.FQDNSelector{{MatchName: "api.example.com"}},
+				Ports:       []model.PortRange{{From: 443, To: 443}},
+				Action:      model.ActionAllow,
+			}},
+		},
+	}, CompileContext{DNSRecords: []model.DNSRecord{
+		{Name: "api.example.com", IPs: []netip.Addr{netip.MustParseAddr("203.0.113.10")}},
+		{Name: "API.EXAMPLE.COM.", IPs: []netip.Addr{netip.MustParseAddr("203.0.113.10"), netip.MustParseAddr("203.0.113.20")}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(program.Rules) != 2 || len(program.MapEntries) != 2 {
+		t.Fatalf("rules=%d entries=%d, want deduped DNS IPs only", len(program.Rules), len(program.MapEntries))
+	}
+	gotCIDRs := []string{program.Rules[0].RemoteCIDR.String(), program.Rules[1].RemoteCIDR.String()}
+	sort.Strings(gotCIDRs)
+	wantCIDRs := []string{"203.0.113.10/32", "203.0.113.20/32"}
+	for i := range wantCIDRs {
+		if gotCIDRs[i] != wantCIDRs[i] {
+			t.Fatalf("fqdn cidrs = %v, want %v", gotCIDRs, wantCIDRs)
+		}
+	}
+}
+
 func TestCompileForEndpointWithContextExpandsRemoteCIDRGroup(t *testing.T) {
 	endpoint := model.Endpoint{
 		ID:             "pod-a",

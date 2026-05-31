@@ -770,8 +770,22 @@ func indexDNSRecords(records []model.DNSRecord, now time.Time) (map[string][]net
 		sort.SliceStable(out[name], func(i, j int) bool {
 			return out[name][i].String() < out[name][j].String()
 		})
+		out[name] = dedupeAddrs(out[name])
 	}
 	return out, nil
+}
+
+func dedupeAddrs(addrs []netip.Addr) []netip.Addr {
+	seen := make(map[netip.Addr]struct{}, len(addrs))
+	out := make([]netip.Addr, 0, len(addrs))
+	for _, addr := range addrs {
+		if _, ok := seen[addr]; ok {
+			continue
+		}
+		seen[addr] = struct{}{}
+		out = append(out, addr)
+	}
+	return out
 }
 
 func indexCIDRGroups(vpc string, groups []model.CIDRGroup) (map[string][]netip.Prefix, error) {

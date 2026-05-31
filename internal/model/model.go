@@ -1196,10 +1196,15 @@ func (r DNSRecord) Validate() error {
 	if r.TTLSeconds == 0 && !r.ObservedAt.IsZero() {
 		return errors.New("dns record observed_at requires ttl_seconds")
 	}
+	seenIPs := make(map[netip.Addr]struct{}, len(r.IPs))
 	for i, ip := range r.IPs {
 		if !ip.IsValid() {
 			return fmt.Errorf("dns record ip %d is invalid", i)
 		}
+		if _, ok := seenIPs[ip]; ok {
+			return fmt.Errorf("dns record ip %s is duplicated", ip)
+		}
+		seenIPs[ip] = struct{}{}
 	}
 	return nil
 }
