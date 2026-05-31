@@ -457,10 +457,27 @@ func TestTCXTargetsBuildsOneIngressTargetForNodeInterface(t *testing.T) {
 	}
 }
 
-func TestAttachTCXTargetsRejectsEmptyTargets(t *testing.T) {
-	_, err := attachTCXTargets(context.Background(), nil, 0)
-	if err == nil {
-		t.Fatal("expected empty targets to fail")
+func TestAttachTCXTargetsReportsNotAttachedForEmptyTargets(t *testing.T) {
+	status, err := attachTCXTargets(context.Background(), nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != "not-attached" {
+		t.Fatalf("status = %q, want not-attached", status)
+	}
+}
+
+func TestReconcileNodeWithTCXInterfaceAllowsNoEligiblePolicy(t *testing.T) {
+	result, err := ReconcileNodeWithOptions(context.Background(), control.DesiredState{}, ReconcileOptions{
+		Node:         "node-a",
+		Store:        dataplane.NewInMemoryPolicyStore(),
+		TCXInterface: "lo",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.TCX != "not-attached" || result.TCXEligible != 0 {
+		t.Fatalf("result = %+v, want no eligible TCX policy and not-attached", result)
 	}
 }
 

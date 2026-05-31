@@ -359,6 +359,9 @@ func tcxTargets(options ReconcileOptions, programs []policy.Program) []tcxTarget
 	if options.TCXInterface == "" {
 		return nil
 	}
+	if len(programs) == 0 {
+		return nil
+	}
 	return []tcxTarget{{
 		ifName:          options.TCXInterface,
 		attach:          ebpf.AttachTCXIngress,
@@ -382,7 +385,7 @@ func tcxEligibleProgramForDirection(program policy.Program, direction model.Dire
 
 func attachTCXTargets(ctx context.Context, targets []tcxTarget, hold time.Duration) (string, error) {
 	if len(targets) == 0 {
-		return "", fmt.Errorf("no TCX policy targets")
+		return "not-attached", nil
 	}
 	attachments := make([]tcxAttachmentHandle, 0, len(targets))
 	defer func() {
