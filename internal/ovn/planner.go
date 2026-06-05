@@ -61,8 +61,8 @@ func (p *Planner) EnsureSubnet(_ context.Context, subnet model.Subnet) error {
 	defer p.mu.Unlock()
 
 	router := p.routerForVPC(subnet.VPC)
-	p.subnets[subnet.Name] = subnet
-	switchName := logicalSwitch(subnet.Name)
+	p.subnets[subnetStateKey(subnet.VPC, subnet.Name)] = subnet
+	switchName := logicalSwitch(subnet.VPC, subnet.Name)
 	routerPort := routerPortName(router, subnet.Name)
 	switchPort := switchRouterPortName(switchName, subnet.Name)
 	routerMAC := deterministicMAC(subnet)
@@ -104,13 +104,13 @@ func (p *Planner) EnsureEndpoint(_ context.Context, endpoint model.Endpoint) err
 
 	port := logicalPort(endpoint.ID)
 	p.ops = append(p.ops,
-		Operation{Command: "lsp-add", Flags: []string{"--may-exist"}, Args: []string{logicalSwitch(endpoint.Subnet), port}},
+		Operation{Command: "lsp-add", Flags: []string{"--may-exist"}, Args: []string{logicalSwitch(endpoint.VPC, endpoint.Subnet), port}},
 		Operation{Command: "lsp-set-addresses", Args: []string{port, endpointAddress(endpoint)}},
 		setOperation("logical_switch_port", port, "external_ids:netloom_owner=netloom", "external_ids:netloom_endpoint="+endpoint.ID, "external_ids:netloom_node="+endpoint.Node, "external_ids:netloom_vpc="+endpoint.VPC, "external_ids:netloom_subnet="+endpoint.Subnet),
 		Operation{Command: "lsp-set-dhcpv4-options", Args: []string{port}},
 		Operation{Command: "lsp-set-dhcpv6-options", Args: []string{port}},
 	)
-	subnet, hasSubnet := p.subnets[endpoint.Subnet]
+	subnet, hasSubnet := p.subnets[subnetStateKey(endpoint.VPC, endpoint.Subnet)]
 	if hasSubnet {
 		p.ops = append(p.ops, gcDHCPOptionsOperation(endpoint.ID))
 	}
@@ -284,7 +284,7 @@ func (p *Planner) EnsureLoadBalancer(_ context.Context, lb model.LoadBalancer) e
 			p.ops = append(p.ops, Operation{Command: "remove", Args: []string{"load_balancer", name, "options", "affinity_timeout"}})
 		}
 		for _, subnet := range lb.Subnets {
-			p.ops = append(p.ops, Operation{Command: "ls-lb-add", Flags: []string{"--may-exist"}, Args: []string{logicalSwitch(subnet), name}})
+			p.ops = append(p.ops, Operation{Command: "ls-lb-add", Flags: []string{"--may-exist"}, Args: []string{logicalSwitch(lb.VPC, subnet), name}})
 		}
 	}
 	p.ops = append(p.ops, p.loadBalancerHealthCheckOperations(lb, frontendsByProtocol)...)
@@ -344,8 +344,8 @@ func logicalRouter(vpc string) string {
 	return ovnIdentifier("nl_lr_" + sanitize(vpc))
 }
 
-func logicalSwitch(subnet string) string {
-	return ovnIdentifier("nl_ls_" + sanitize(subnet))
+func logicalSwitch(vpc, subnet string) string {
+	return ovnIdentifier("nl_ls_" + sanitize(vpc) + "_" + sanitize(subnet))
 }
 
 func logicalPort(endpoint string) string {
@@ -662,6 +662,10 @@ func gcStaleLoadBalancerHealthChecksOperation(loadBalancer, vpc string, keepVIPs
 
 func loadBalancerStateKey(lb model.LoadBalancer) string {
 	return lb.VPC + "\x00" + lb.Name
+}
+
+func subnetStateKey(vpc, name string) string {
+	return vpc + "\x00" + name
 }
 
 func loadBalancerHealthCheckSignature(lb model.LoadBalancer) string {

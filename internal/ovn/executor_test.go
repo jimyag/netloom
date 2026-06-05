@@ -109,7 +109,7 @@ func TestBackendCleanupEmitsDeletesForStaleDesiredObjects(t *testing.T) {
 		"--if-exists lr-nat-del nl_lr_prod snat 10.10.0.0/24",
 		"gc-load-balancer-health-checks web prod",
 		"--if-exists lr-lb-del nl_lr_prod nl_lb_prod_web_tcp",
-		"--if-exists ls-lb-del nl_ls_apps nl_lb_prod_web_tcp",
+		"--if-exists ls-lb-del nl_ls_prod_apps nl_lb_prod_web_tcp",
 		"--if-exists lb-del nl_lb_prod_web_tcp",
 	} {
 		if !strings.Contains(joined, expected) {
@@ -152,7 +152,7 @@ func TestBackendCleanupConvergesChangedLoadBalancerBindings(t *testing.T) {
 	for _, expected := range []string{
 		"--may-exist lb-add nl_lb_prod_web_tcp 10.96.0.20:80 10.10.0.12:8080 tcp",
 		"--if-exists lb-del nl_lb_prod_web_tcp 10.96.0.10:80",
-		"--if-exists ls-lb-del nl_ls_dmz nl_lb_prod_web_tcp",
+		"--if-exists ls-lb-del nl_ls_prod_dmz nl_lb_prod_web_tcp",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("load balancer convergence operation missing %q:\n%s", expected, joined)
@@ -191,7 +191,7 @@ func TestBackendCleanupRemovesStaleLoadBalancerProtocolRows(t *testing.T) {
 		"--may-exist lb-add nl_lb_prod_web_udp 10.96.0.10:53 10.10.0.10:5353 udp",
 		"clear load_balancer nl_lb_prod_web_udp health_check",
 		"--if-exists lr-lb-del nl_lr_prod nl_lb_prod_web_udp",
-		"--if-exists ls-lb-del nl_ls_apps nl_lb_prod_web_udp",
+		"--if-exists ls-lb-del nl_ls_prod_apps nl_lb_prod_web_udp",
 		"--if-exists lb-del nl_lb_prod_web_udp",
 	} {
 		if !strings.Contains(joined, expected) {
@@ -246,7 +246,7 @@ func TestBackendCleanupDoesNotReapplyUnchangedLoadBalancer(t *testing.T) {
 	for _, expected := range []string{
 		"--may-exist lb-add nl_lb_prod_web_tcp 10.96.0.10:80 10.10.0.10:8080 tcp",
 		"--may-exist lr-lb-add nl_lr_prod nl_lb_prod_web_tcp",
-		"--may-exist ls-lb-add nl_ls_apps nl_lb_prod_web_tcp",
+		"--may-exist ls-lb-add nl_ls_prod_apps nl_lb_prod_web_tcp",
 	} {
 		if got := strings.Count(joined, expected); got != 1 {
 			t.Fatalf("unchanged load balancer op %q count = %d, want one initial apply:\n%s", expected, got, joined)
@@ -276,7 +276,7 @@ func TestBackendDoesNotReapplyLoadBalancerWhenOnlyPortNameChanges(t *testing.T) 
 	for _, expected := range []string{
 		"--may-exist lb-add nl_lb_prod_web_tcp 10.96.0.10:80 10.10.0.10:8080 tcp",
 		"--may-exist lr-lb-add nl_lr_prod nl_lb_prod_web_tcp",
-		"--may-exist ls-lb-add nl_ls_apps nl_lb_prod_web_tcp",
+		"--may-exist ls-lb-add nl_ls_prod_apps nl_lb_prod_web_tcp",
 	} {
 		if got := strings.Count(joined, expected); got != 1 {
 			t.Fatalf("port-name-only load balancer op %q count = %d, want one initial apply:\n%s", expected, got, joined)
@@ -1083,8 +1083,8 @@ func TestBackendCleanupDeletesLocalnetPortWithSubnet(t *testing.T) {
 
 	joined := stringifyOVNOps(recorder.Operations())
 	for _, expected := range []string{
-		"--if-exists lsp-del nl_ls_apps_to_apps_localnet",
-		"--if-exists ls-del nl_ls_apps",
+		"--if-exists lsp-del nl_ls_prod_apps_to_apps_localnet",
+		"--if-exists ls-del nl_ls_prod_apps",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("cleanup operations missing %q:\n%s", expected, joined)

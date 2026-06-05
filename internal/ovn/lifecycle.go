@@ -45,8 +45,8 @@ func snapshotDesired(state topology.State) desiredSnapshot {
 	for name, vpc := range state.VPCs {
 		out.VPCs[name] = vpc
 	}
-	for name, subnet := range state.Subnets {
-		out.Subnets[name] = cloneSnapshotSubnet(subnet)
+	for _, subnet := range state.Subnets {
+		out.Subnets[subnetStateKey(subnet.VPC, subnet.Name)] = cloneSnapshotSubnet(subnet)
 	}
 	for id, endpoint := range state.Endpoints {
 		out.Endpoints[id] = cloneSnapshotEndpoint(endpoint)
@@ -131,7 +131,8 @@ func cleanupOperations(old, next desiredSnapshot) []Operation {
 	var ops []Operation
 	for _, key := range staleKeys(old.Endpoints, next.Endpoints) {
 		port := logicalPort(key)
-		if subnet, ok := old.Subnets[old.Endpoints[key].Subnet]; ok && subnet.DHCP.Enabled {
+		oldEndpoint := old.Endpoints[key]
+		if subnet, ok := old.Subnets[subnetStateKey(oldEndpoint.VPC, oldEndpoint.Subnet)]; ok && subnet.DHCP.Enabled {
 			ops = append(ops,
 				Operation{Command: "lsp-set-dhcpv4-options", Args: []string{port}},
 				Operation{Command: "lsp-set-dhcpv6-options", Args: []string{port}},
@@ -143,7 +144,7 @@ func cleanupOperations(old, next desiredSnapshot) []Operation {
 	for _, key := range staleKeys(old.Subnets, next.Subnets) {
 		subnet := old.Subnets[key]
 		router := logicalRouter(subnet.VPC)
-		switchName := logicalSwitch(subnet.Name)
+		switchName := logicalSwitch(subnet.VPC, subnet.Name)
 		ops = append(ops,
 			Operation{Command: "lsp-del", Flags: []string{"--if-exists"}, Args: []string{localnetPortName(switchName, subnet.Name)}},
 			Operation{Command: "lsp-del", Flags: []string{"--if-exists"}, Args: []string{switchRouterPortName(switchName, subnet.Name)}},
@@ -202,7 +203,7 @@ func cleanupOperations(old, next desiredSnapshot) []Operation {
 		for _, name := range names {
 			ops = append(ops, Operation{Command: "lr-lb-del", Flags: []string{"--if-exists"}, Args: []string{logicalRouter(lb.VPC), name}})
 			for _, subnet := range lb.Subnets {
-				ops = append(ops, Operation{Command: "ls-lb-del", Flags: []string{"--if-exists"}, Args: []string{logicalSwitch(subnet), name}})
+				ops = append(ops, Operation{Command: "ls-lb-del", Flags: []string{"--if-exists"}, Args: []string{logicalSwitch(lb.VPC, subnet), name}})
 			}
 			ops = append(ops, Operation{Command: "lb-del", Flags: []string{"--if-exists"}, Args: []string{name}})
 		}
@@ -245,7 +246,7 @@ func cleanupOperations(old, next desiredSnapshot) []Operation {
 		removedSubnets := removedStrings(oldLB.Subnets, nextLB.Subnets)
 		for _, subnet := range removedSubnets {
 			for _, name := range oldNames {
-				ops = append(ops, Operation{Command: "ls-lb-del", Flags: []string{"--if-exists"}, Args: []string{logicalSwitch(subnet), name}})
+				ops = append(ops, Operation{Command: "ls-lb-del", Flags: []string{"--if-exists"}, Args: []string{logicalSwitch(oldLB.VPC, subnet), name}})
 			}
 		}
 		for _, name := range removedNames {
@@ -256,7 +257,7 @@ func cleanupOperations(old, next desiredSnapshot) []Operation {
 				if stringInSlice(subnet, removedSubnets) {
 					continue
 				}
-				ops = append(ops, Operation{Command: "ls-lb-del", Flags: []string{"--if-exists"}, Args: []string{logicalSwitch(subnet), name}})
+				ops = append(ops, Operation{Command: "ls-lb-del", Flags: []string{"--if-exists"}, Args: []string{logicalSwitch(oldLB.VPC, subnet), name}})
 			}
 			ops = append(ops, Operation{Command: "lb-del", Flags: []string{"--if-exists"}, Args: []string{name}})
 		}

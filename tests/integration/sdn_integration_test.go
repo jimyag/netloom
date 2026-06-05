@@ -32,7 +32,7 @@ func TestDesiredStateDrivesTopologyRoutesAndEBPFStyleACL(t *testing.T) {
 	if _, ok := memoryBackend.VPCs["prod"]; !ok {
 		t.Fatalf("vpc prod was not reconciled: %+v", memoryBackend.VPCs)
 	}
-	if subnet, ok := memoryBackend.Subnets["apps"]; !ok || subnet.Gateway.String() != "10.10.0.1" {
+	if subnet, ok := memoryBackend.Subnets["prod\x00apps"]; !ok || subnet.Gateway.String() != "10.10.0.1" {
 		t.Fatalf("subnet apps was not reconciled with gateway, got: %+v", memoryBackend.Subnets)
 	} else if subnet.ProviderNetwork != "physnet-a" || subnet.VLAN != 100 {
 		t.Fatalf("subnet provider network was not reconciled, got: %+v", subnet)

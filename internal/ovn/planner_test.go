@@ -107,11 +107,11 @@ func TestPlannerMapsNetloomObjectsToOVNOperations(t *testing.T) {
 	joined := stringify(planner.Operations())
 	for _, expected := range []string{
 		"--may-exist lr-add nl_lr_prod",
-		"--may-exist ls-add nl_ls_apps",
-		"--if-exists lsp-del nl_ls_apps_to_apps_localnet",
-		"lsp-add-localnet-port nl_ls_apps nl_ls_apps_to_apps_localnet physnet-a",
+		"--may-exist ls-add nl_ls_prod_apps",
+		"--if-exists lsp-del nl_ls_prod_apps_to_apps_localnet",
+		"lsp-add-localnet-port nl_ls_prod_apps nl_ls_prod_apps_to_apps_localnet physnet-a",
 		"external_ids:netloom_provider_network=physnet-a",
-		"set logical_switch_port nl_ls_apps_to_apps_localnet tag=100",
+		"set logical_switch_port nl_ls_prod_apps_to_apps_localnet tag=100",
 		"--id=@nl_dhcp_pod_ha create DHCP_Options cidr=10.10.0.0/24",
 		"options:server_id=10.10.0.1",
 		"options:server_mac=0a:58:3e:f3:95:f0",
@@ -134,8 +134,8 @@ func TestPlannerMapsNetloomObjectsToOVNOperations(t *testing.T) {
 		"lr-nat-add nl_lr_prod snat 198.51.100.10 10.10.0.0/24",
 		"lb-add nl_lb_prod_web_tcp 10.96.0.10:80 10.10.0.10:8080 tcp",
 		"lr-lb-add nl_lr_prod nl_lb_prod_web_tcp",
-		"ls-lb-add nl_ls_apps nl_lb_prod_web_tcp",
-		"lsp-add nl_ls_apps nl_lp_pod-a",
+		"ls-lb-add nl_ls_prod_apps nl_lb_prod_web_tcp",
+		"lsp-add nl_ls_prod_apps nl_lp_pod-a",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("OVN operations missing %q:\n%s", expected, joined)
@@ -143,6 +143,39 @@ func TestPlannerMapsNetloomObjectsToOVNOperations(t *testing.T) {
 	}
 	if strings.Contains(joined, "acl") {
 		t.Fatalf("OVN planner must not generate ACL operations; got:\n%s", joined)
+	}
+}
+
+func TestPlannerScopesLogicalSwitchesByVPC(t *testing.T) {
+	planner := ovn.NewPlanner()
+	state := control.DesiredState{
+		VPCs: []model.VPC{{Name: "prod"}, {Name: "dev"}},
+		Subnets: []model.Subnet{
+			{Name: "apps", VPC: "prod", CIDR: netip.MustParsePrefix("10.10.0.0/24"), Gateway: netip.MustParseAddr("10.10.0.1")},
+			{Name: "apps", VPC: "dev", CIDR: netip.MustParsePrefix("10.20.0.0/24"), Gateway: netip.MustParseAddr("10.20.0.1")},
+		},
+		Endpoints: []model.Endpoint{
+			{ID: "pod-a", VPC: "prod", Subnet: "apps", IP: netip.MustParseAddr("10.10.0.10"), Node: "node-a"},
+			{ID: "pod-b", VPC: "dev", Subnet: "apps", IP: netip.MustParseAddr("10.20.0.10"), Node: "node-a"},
+		},
+	}
+	if err := control.NewController(planner, control.NewMemoryBackend()).Reconcile(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+
+	joined := stringify(planner.Operations())
+	for _, expected := range []string{
+		"--may-exist ls-add nl_ls_prod_apps",
+		"--may-exist ls-add nl_ls_dev_apps",
+		"--may-exist lsp-add nl_ls_prod_apps nl_lp_pod-a",
+		"--may-exist lsp-add nl_ls_dev_apps nl_lp_pod-b",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("OVN operations missing %q:\n%s", expected, joined)
+		}
+	}
+	if strings.Contains(joined, "ls-add nl_ls_apps\n") {
+		t.Fatalf("logical switch names must include VPC to avoid subnet collisions:\n%s", joined)
 	}
 }
 
@@ -195,8 +228,8 @@ func TestPlannerScopesLoadBalancerRowsByVPC(t *testing.T) {
 		"--may-exist lb-add nl_lb_dev_web_tcp 10.97.0.10:80 10.20.0.10:8080 tcp",
 		"--may-exist lr-lb-add nl_lr_prod nl_lb_prod_web_tcp",
 		"--may-exist lr-lb-add nl_lr_dev nl_lb_dev_web_tcp",
-		"--may-exist ls-lb-add nl_ls_apps nl_lb_prod_web_tcp",
-		"--may-exist ls-lb-add nl_ls_apps-dev nl_lb_dev_web_tcp",
+		"--may-exist ls-lb-add nl_ls_prod_apps nl_lb_prod_web_tcp",
+		"--may-exist ls-lb-add nl_ls_dev_apps-dev nl_lb_dev_web_tcp",
 		"ensure-load-balancer-health-check nl_lb_prod_web_tcp web prod vip=10.96.0.10:80",
 		"ensure-load-balancer-health-check nl_lb_dev_web_tcp web dev vip=10.97.0.10:80",
 		"gc-stale-load-balancer-health-checks web prod 10.96.0.10:80",
@@ -264,7 +297,7 @@ func TestPlannerDeletesLocalnetWhenProviderNetworkDisabled(t *testing.T) {
 	}
 
 	joined := stringify(planner.Operations())
-	if !strings.Contains(joined, "--if-exists lsp-del nl_ls_apps_to_apps_localnet") {
+	if !strings.Contains(joined, "--if-exists lsp-del nl_ls_prod_apps_to_apps_localnet") {
 		t.Fatalf("provider network disable should delete localnet port:\n%s", joined)
 	}
 	if strings.Contains(joined, "lsp-add-localnet-port") {
@@ -352,8 +385,8 @@ func TestPlannerEncodesOVNNamesWithoutCollisions(t *testing.T) {
 
 	joined := stringify(planner.Operations())
 	for _, expected := range []string{
-		"lsp-add nl_ls_apps nl_lp_pod_d1",
-		"lsp-add nl_ls_apps nl_lp_pod__1",
+		"lsp-add nl_ls_prod_apps nl_lp_pod_d1",
+		"lsp-add nl_ls_prod_apps nl_lp_pod__1",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("OVN name encoding missing %q:\n%s", expected, joined)
@@ -599,7 +632,7 @@ func TestPlannerBuildsLoadBalancerOperations(t *testing.T) {
 		"external_ids:netloom_load_balancer=web",
 		"gc-stale-load-balancer-health-checks web prod 10.96.0.10:80",
 		"--may-exist lr-lb-add nl_lr_prod nl_lb_prod_web_tcp",
-		"--may-exist ls-lb-add nl_ls_apps nl_lb_prod_web_tcp",
+		"--may-exist ls-lb-add nl_ls_prod_apps nl_lb_prod_web_tcp",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("OVN operations missing %q:\n%s", expected, joined)
@@ -684,8 +717,8 @@ func TestPlannerSplitsMultiProtocolLoadBalancerOperations(t *testing.T) {
 		"--may-exist lb-add nl_lb_prod_web_udp 10.96.0.10:53 10.10.0.10:5353 udp",
 		"--may-exist lr-lb-add nl_lr_prod nl_lb_prod_web_tcp",
 		"--may-exist lr-lb-add nl_lr_prod nl_lb_prod_web_udp",
-		"--may-exist ls-lb-add nl_ls_apps nl_lb_prod_web_tcp",
-		"--may-exist ls-lb-add nl_ls_apps nl_lb_prod_web_udp",
+		"--may-exist ls-lb-add nl_ls_prod_apps nl_lb_prod_web_tcp",
+		"--may-exist ls-lb-add nl_ls_prod_apps nl_lb_prod_web_udp",
 		"ensure-load-balancer-health-check nl_lb_prod_web_tcp web prod vip=10.96.0.10:80",
 		"ensure-load-balancer-health-check nl_lb_prod_web_udp web prod vip=10.96.0.10:53",
 	} {

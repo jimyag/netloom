@@ -68,7 +68,7 @@ func TestMemoryBackendClonesInputsAndTopologyState(t *testing.T) {
 
 	if err := backend.CleanupTopology(context.Background(), topology.State{
 		VPCs:          map[string]model.VPC{"prod": {Name: "prod"}},
-		Subnets:       map[string]model.Subnet{"apps": subnet},
+		Subnets:       map[string]model.Subnet{subnetKey("prod", "apps"): subnet},
 		Endpoints:     map[string]model.Endpoint{"pod-a": endpoint},
 		RouteTables:   map[string]model.RouteTable{routeTableKey("prod", "default"): routeTable},
 		Gateways:      map[string]model.Gateway{"gw-a": {Name: "gw-a", VPC: "prod", Node: "node-a", ExternalIF: "eth0", LANIP: netip.MustParseAddr("10.10.0.254")}},
@@ -88,7 +88,7 @@ func TestMemoryBackendClonesInputsAndTopologyState(t *testing.T) {
 	lb.Ports[0].Backends[0].IP = netip.MustParseAddr("10.10.0.12")
 
 	state := backend.TopologyState()
-	if got := state.Subnets["apps"].DHCP.DNSServers[0]; got != netip.MustParseAddr("10.96.0.10") {
+	if got := state.Subnets[subnetKey("prod", "apps")].DHCP.DNSServers[0]; got != netip.MustParseAddr("10.96.0.10") {
 		t.Fatalf("stored subnet dns = %s, want original", got)
 	}
 	if got := state.Endpoints["pod-a"].Labels["app"]; got != "web" {
@@ -104,14 +104,14 @@ func TestMemoryBackendClonesInputsAndTopologyState(t *testing.T) {
 		t.Fatalf("stored load balancer backend = %s, want original", got)
 	}
 
-	state.Subnets["apps"].DHCP.DNSServers[0] = netip.MustParseAddr("10.96.0.12")
+	state.Subnets[subnetKey("prod", "apps")].DHCP.DNSServers[0] = netip.MustParseAddr("10.96.0.12")
 	state.Endpoints["pod-a"].Labels["app"] = "returned"
 	state.RouteTables[routeTableKey("prod", "default")].Routes[0].NextHops[0] = netip.MustParseAddr("10.10.0.251")
 	state.PolicyRoutes[0].Action.NextHops[0] = netip.MustParseAddr("10.10.0.251")
 	state.LoadBalancers[loadBalancerKey("prod", "web")].Ports[0].Backends[0].IP = netip.MustParseAddr("10.10.0.13")
 
 	state = backend.TopologyState()
-	if got := state.Subnets["apps"].DHCP.DNSServers[0]; got != netip.MustParseAddr("10.96.0.10") {
+	if got := state.Subnets[subnetKey("prod", "apps")].DHCP.DNSServers[0]; got != netip.MustParseAddr("10.96.0.10") {
 		t.Fatalf("returned subnet mutation leaked into backend: %s", got)
 	}
 	if got := state.Endpoints["pod-a"].Labels["app"]; got != "web" {

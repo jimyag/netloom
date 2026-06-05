@@ -83,7 +83,7 @@ func TestDockerMultiNodeLab(t *testing.T) {
 		}
 	}
 	nbState := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "show")
-	for _, expected := range []string{"nl_lr_default", "nl_ls_apps", "nl_lr_file", "nl_ls_fileapps"} {
+	for _, expected := range []string{"nl_lr_default", "nl_ls_default_apps", "nl_lr_file", "nl_ls_file_fileapps"} {
 		if !strings.Contains(nbState, expected) {
 			t.Fatalf("OVN NB state missing %q:\n%s", expected, nbState)
 		}
@@ -98,11 +98,11 @@ func TestDockerMultiNodeLab(t *testing.T) {
 	if !strings.Contains(gatewayOptions, "chassis=node-a") {
 		t.Fatalf("OVN centralized gateway options missing chassis pin:\n%s", gatewayOptions)
 	}
-	localnetOptions := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "lsp-get-options", "nl_ls_fileapps_to_fileapps_localnet")
+	localnetOptions := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "lsp-get-options", "nl_ls_file_fileapps_to_fileapps_localnet")
 	if !strings.Contains(localnetOptions, "network_name=physnet-a") {
 		t.Fatalf("OVN localnet options missing provider network:\n%s", localnetOptions)
 	}
-	localnetTag := strings.TrimSpace(run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "lsp-get-tag", "nl_ls_fileapps_to_fileapps_localnet"))
+	localnetTag := strings.TrimSpace(run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "lsp-get-tag", "nl_ls_file_fileapps_to_fileapps_localnet"))
 	if localnetTag != "100" {
 		t.Fatalf("OVN localnet tag = %q, want 100", localnetTag)
 	}
@@ -154,14 +154,14 @@ func TestDockerMultiNodeLab(t *testing.T) {
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "for i in $(seq 1 15); do routes=$(ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock lr-route-list nl_lr_file); echo \"$routes\" | grep -q '10.245.0.251' && ! echo \"$routes\" | grep -q '10.245.0.254' && exit 0; sleep 1; done; cat /tmp/netloom-controller-watch.log; ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock lr-route-list nl_lr_file; exit 1")
 	updateControllerWatch = "cat >" + controllerWatchPath + " <<'EOF'\n" + desiredStateWithoutProviderNetworkJSON() + "\nEOF"
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", updateControllerWatch)
-	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "for i in $(seq 1 15); do ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock lsp-list nl_ls_fileapps | grep -q nl_ls_fileapps_to_fileapps_localnet || exit 0; sleep 1; done; cat /tmp/netloom-controller-watch.log; ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock lsp-list nl_ls_fileapps; exit 1")
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "for i in $(seq 1 15); do ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock lsp-list nl_ls_file_fileapps | grep -q nl_ls_file_fileapps_to_fileapps_localnet || exit 0; sleep 1; done; cat /tmp/netloom-controller-watch.log; ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock lsp-list nl_ls_file_fileapps; exit 1")
 	updateControllerWatch = "cat >" + controllerWatchPath + " <<'EOF'\n" + desiredStateWithoutDHCPJSON() + "\nEOF"
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", updateControllerWatch)
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "for i in $(seq 1 15); do options=$(ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock lsp-get-dhcpv4-options nl_lp_file-pod-a); [ -z \"$options\" ] || [ \"$options\" = \"[]\" ] && exit 0; sleep 1; done; cat /tmp/netloom-controller-watch.log; ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock lsp-get-dhcpv4-options nl_lp_file-pod-a; exit 1")
 	updateControllerWatch = "cat >" + controllerWatchPath + " <<'EOF'\n" + desiredStateWithoutEndpointNATJSON() + "\nEOF"
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", updateControllerWatch)
-	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "for i in $(seq 1 15); do ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock lsp-list nl_ls_fileapps | grep -q nl_lp_file-pod-a || exit 0; sleep 1; done; cat /tmp/netloom-controller-watch.log; ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock lsp-list nl_ls_fileapps; exit 1")
-	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock lsp-list nl_ls_fileapps | grep -q nl_ls_fileapps_to_fileapps_localnet || { cat /tmp/netloom-controller-watch.log; ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock lsp-list nl_ls_fileapps; exit 1; }")
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "for i in $(seq 1 15); do ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock lsp-list nl_ls_file_fileapps | grep -q nl_lp_file-pod-a || exit 0; sleep 1; done; cat /tmp/netloom-controller-watch.log; ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock lsp-list nl_ls_file_fileapps; exit 1")
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock lsp-list nl_ls_file_fileapps | grep -q nl_ls_file_fileapps_to_fileapps_localnet || { cat /tmp/netloom-controller-watch.log; ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock lsp-list nl_ls_file_fileapps; exit 1; }")
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock dhcp-options-list | grep -q netloom_endpoint=file-pod-a && { cat /tmp/netloom-controller-watch.log; ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock dhcp-options-list; exit 1; } || exit 0")
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock lr-nat-list nl_lr_file | grep -q 198.51.100.20 && { cat /tmp/netloom-controller-watch.log; exit 1; } || exit 0")
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock lb-list | grep -q nl_lb_file-web_tcp && { cat /tmp/netloom-controller-watch.log; ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock lb-list; exit 1; } || exit 0")

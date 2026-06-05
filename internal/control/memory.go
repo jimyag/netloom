@@ -46,7 +46,7 @@ func (m *MemoryBackend) EnsureVPC(_ context.Context, vpc model.VPC) error {
 func (m *MemoryBackend) EnsureSubnet(_ context.Context, subnet model.Subnet) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.Subnets[subnet.Name] = cloneSubnet(subnet)
+	m.Subnets[subnetKey(subnet.VPC, subnet.Name)] = cloneSubnet(subnet)
 	return nil
 }
 

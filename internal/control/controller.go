@@ -299,6 +299,10 @@ func routeTableKey(vpc, name string) string {
 	return vpc + "\x00" + name
 }
 
+func subnetKey(vpc, name string) string {
+	return vpc + "\x00" + name
+}
+
 func validateNATRules(rules []model.NATRule) error {
 	names := make(map[string]struct{}, len(rules))
 	type snatRule struct {
@@ -378,8 +382,9 @@ func validateObjectGraph(state DesiredState) error {
 		if err := subnet.Validate(); err != nil {
 			return err
 		}
-		if _, ok := subnets[subnet.Name]; ok {
-			return fmt.Errorf("duplicate subnet name %q", subnet.Name)
+		key := subnetKey(subnet.VPC, subnet.Name)
+		if _, ok := subnets[key]; ok {
+			return fmt.Errorf("duplicate subnet name %q in vpc %q", subnet.Name, subnet.VPC)
 		}
 		if _, ok := vpcs[subnet.VPC]; !ok {
 			return fmt.Errorf("subnet %q references unknown vpc %q", subnet.Name, subnet.VPC)
@@ -389,7 +394,7 @@ func validateObjectGraph(state DesiredState) error {
 				return fmt.Errorf("subnet %q cidr %s overlaps with subnet %q cidr %s in vpc %q", subnet.Name, subnet.CIDR, existing.Name, existing.CIDR, subnet.VPC)
 			}
 		}
-		subnets[subnet.Name] = subnet
+		subnets[key] = subnet
 	}
 
 	securityGroups := make(map[string]model.SecurityGroup, len(state.SecurityGroups))
@@ -407,7 +412,7 @@ func validateObjectGraph(state DesiredState) error {
 			return fmt.Errorf("load balancer %q references unknown vpc %q", lb.Name, lb.VPC)
 		}
 		for _, subnetName := range lb.Subnets {
-			subnet, ok := subnets[subnetName]
+			subnet, ok := subnets[subnetKey(lb.VPC, subnetName)]
 			if !ok {
 				return fmt.Errorf("load balancer %q references unknown subnet %q", lb.Name, subnetName)
 			}
@@ -493,7 +498,7 @@ func validateObjectGraph(state DesiredState) error {
 		if _, ok := vpcs[endpoint.VPC]; !ok {
 			return fmt.Errorf("endpoint %q references unknown vpc %q", endpoint.ID, endpoint.VPC)
 		}
-		subnet, ok := subnets[endpoint.Subnet]
+		subnet, ok := subnets[subnetKey(endpoint.VPC, endpoint.Subnet)]
 		if !ok {
 			return fmt.Errorf("endpoint %q references unknown subnet %q", endpoint.ID, endpoint.Subnet)
 		}
@@ -514,7 +519,7 @@ func validateObjectGraph(state DesiredState) error {
 			if mac == gatewayMAC {
 				return fmt.Errorf("endpoint %q mac %s conflicts with subnet %q gateway mac", endpoint.ID, mac, endpoint.Subnet)
 			}
-			macKey := endpoint.Subnet + "|" + mac
+			macKey := subnetKey(endpoint.VPC, endpoint.Subnet) + "|" + mac
 			if previous := endpointMACs[macKey]; previous != "" {
 				return fmt.Errorf("endpoint %q conflicts with %q on mac %s in subnet %s", endpoint.ID, previous, mac, endpoint.Subnet)
 			}
@@ -1082,7 +1087,7 @@ func desiredTopologyState(state DesiredState) topology.State {
 	}
 	subnets := make(map[string]model.Subnet, len(state.Subnets))
 	for _, subnet := range state.Subnets {
-		subnets[subnet.Name] = subnet
+		subnets[subnetKey(subnet.VPC, subnet.Name)] = subnet
 	}
 	endpoints := make(map[string]model.Endpoint, len(state.Endpoints))
 	for _, endpoint := range state.Endpoints {

@@ -591,7 +591,7 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 				})
 				state.Endpoints[0].Subnet = "other-apps"
 			},
-			wantErr: "references subnet \"other-apps\" in vpc \"other\"",
+			wantErr: "references unknown subnet \"other-apps\"",
 		},
 		{
 			name: "endpoint outside subnet",
@@ -821,7 +821,7 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 				})
 				state.LoadBalancers[0].Subnets = []string{"other-apps"}
 			},
-			wantErr: "references subnet \"other-apps\" in vpc \"other\"",
+			wantErr: "references unknown subnet \"other-apps\"",
 		},
 		{
 			name: "load balancer backend outside subnet",
@@ -1466,6 +1466,30 @@ func TestControllerAllowsSamePolicyRouteNameAcrossVPCs(t *testing.T) {
 	}
 	if err := NewController(NewMemoryBackend(), NewMemoryBackend()).Reconcile(context.Background(), state); err != nil {
 		t.Fatalf("same policy route name in different vpcs should validate: %v", err)
+	}
+}
+
+func TestControllerAllowsSameSubnetNameAcrossVPCs(t *testing.T) {
+	backend := NewMemoryBackend()
+	state := DesiredState{
+		VPCs: []model.VPC{{Name: "prod"}, {Name: "dev"}},
+		Subnets: []model.Subnet{
+			{Name: "apps", VPC: "prod", CIDR: netip.MustParsePrefix("10.10.0.0/24"), Gateway: netip.MustParseAddr("10.10.0.1")},
+			{Name: "apps", VPC: "dev", CIDR: netip.MustParsePrefix("10.20.0.0/24"), Gateway: netip.MustParseAddr("10.20.0.1")},
+		},
+		Endpoints: []model.Endpoint{
+			{ID: "pod-a", VPC: "prod", Subnet: "apps", IP: netip.MustParseAddr("10.10.0.10"), Node: "node-a"},
+			{ID: "pod-b", VPC: "dev", Subnet: "apps", IP: netip.MustParseAddr("10.20.0.10"), Node: "node-a"},
+		},
+	}
+	if err := NewController(backend, backend).Reconcile(context.Background(), state); err != nil {
+		t.Fatalf("same subnet name in different vpcs should validate: %v", err)
+	}
+	if got := backend.Subnets[subnetKey("prod", "apps")].Gateway; got != netip.MustParseAddr("10.10.0.1") {
+		t.Fatalf("prod subnet gateway = %s, want 10.10.0.1", got)
+	}
+	if got := backend.Subnets[subnetKey("dev", "apps")].Gateway; got != netip.MustParseAddr("10.20.0.1") {
+		t.Fatalf("dev subnet gateway = %s, want 10.20.0.1", got)
 	}
 }
 
