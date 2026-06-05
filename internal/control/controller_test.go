@@ -300,6 +300,30 @@ func TestControllerRejectsConflictingLoadBalancers(t *testing.T) {
 	}
 }
 
+func TestControllerAllowsSameNATRuleNameAcrossVPCs(t *testing.T) {
+	backend := NewMemoryBackend()
+	state := DesiredState{
+		VPCs: []model.VPC{{Name: "prod"}, {Name: "dev"}},
+		Subnets: []model.Subnet{
+			{Name: "apps", VPC: "prod", CIDR: netip.MustParsePrefix("10.10.0.0/24"), Gateway: netip.MustParseAddr("10.10.0.1")},
+			{Name: "apps-dev", VPC: "dev", CIDR: netip.MustParsePrefix("10.20.0.0/24"), Gateway: netip.MustParseAddr("10.20.0.1")},
+		},
+		NATRules: []model.NATRule{
+			{Name: "egress", VPC: "prod", Type: model.ActionSNAT, MatchCIDR: netip.MustParsePrefix("10.10.0.0/24"), ExternalIP: netip.MustParseAddr("198.51.100.10")},
+			{Name: "egress", VPC: "dev", Type: model.ActionSNAT, MatchCIDR: netip.MustParsePrefix("10.20.0.0/24"), ExternalIP: netip.MustParseAddr("203.0.113.10")},
+		},
+	}
+	if err := NewController(backend, backend).Reconcile(context.Background(), state); err != nil {
+		t.Fatalf("same NAT rule name in different vpcs should validate: %v", err)
+	}
+	if _, ok := backend.NATRules[natRuleKey("prod", "egress")]; !ok {
+		t.Fatalf("prod NAT rule missing from memory backend: %+v", backend.NATRules)
+	}
+	if _, ok := backend.NATRules[natRuleKey("dev", "egress")]; !ok {
+		t.Fatalf("dev NAT rule missing from memory backend: %+v", backend.NATRules)
+	}
+}
+
 func TestControllerRejectsNATAndLoadBalancerVIPConflicts(t *testing.T) {
 	baseState := DesiredState{
 		VPCs: []model.VPC{{Name: "prod"}},

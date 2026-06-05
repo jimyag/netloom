@@ -571,7 +571,7 @@ func natRuleSignature(rule model.NATRule) string {
 
 func natDeleteOperations(rule model.NATRule) []Operation {
 	if natUsesManagedRecord(rule) {
-		return []Operation{{Command: "gc-nat-rule", Args: []string{rule.Name}}}
+		return []Operation{gcNATRuleOperation(rule)}
 	}
 	return []Operation{{
 		Command: "lr-nat-del",
@@ -585,14 +585,23 @@ func natDeleteOperations(rule model.NATRule) []Operation {
 }
 
 func gcStaleNATRulesOperation(rules map[string]model.NATRule) Operation {
-	keep := make([]string, 0, len(rules))
-	for _, rule := range rules {
+	keep := make([]string, 0, len(rules)*2)
+	keys := make([]string, 0, len(rules))
+	for key := range rules {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		rule := rules[key]
 		if natUsesManagedRecord(rule) {
-			keep = append(keep, rule.Name)
+			keep = append(keep, rule.VPC, rule.Name)
 		}
 	}
-	sort.Strings(keep)
 	return Operation{Command: "gc-stale-nat-rules", Args: keep}
+}
+
+func gcNATRuleOperation(rule model.NATRule) Operation {
+	return Operation{Command: "gc-nat-rule", Args: []string{rule.Name, rule.VPC}}
 }
 
 func tagPolicyRouteOperation(route model.PolicyRoute, match string) Operation {

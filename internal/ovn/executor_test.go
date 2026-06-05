@@ -520,14 +520,14 @@ func TestBackendCleanupDoesNotRecreateUnchangedTranslatedDNATRule(t *testing.T) 
 	}
 
 	joined := stringifyOVNOps(recorder.Operations())
-	if !strings.Contains(joined, "gc-nat-rule web-translate\n--id=@nl_nat_web_htranslate create NAT") {
+	if !strings.Contains(joined, "gc-nat-rule web-translate prod\n--id=@nl_nat_prod_web_htranslate create NAT") {
 		t.Fatalf("translated dnat should GC existing managed NAT before create:\n%s", joined)
 	}
-	expected := "--id=@nl_nat_web_htranslate create NAT type=dnat external_ip=198.51.100.80 logical_ip=10.10.0.10 external_port_range=8443 logical_port_range=443 protocol=tcp"
+	expected := "--id=@nl_nat_prod_web_htranslate create NAT type=dnat external_ip=198.51.100.80 logical_ip=10.10.0.10 external_port_range=8443 logical_port_range=443 protocol=tcp"
 	if got := strings.Count(joined, expected); got != 1 {
 		t.Fatalf("unchanged translated dnat create count = %d, want one initial create:\n%s", got, joined)
 	}
-	if got := strings.Count(joined, "gc-nat-rule web-translate"); got != 1 {
+	if got := strings.Count(joined, "gc-nat-rule web-translate prod"); got != 1 {
 		t.Fatalf("unchanged translated dnat GC count = %d, want one initial GC before create:\n%s", got, joined)
 	}
 	if strings.Contains(joined, "lr-nat-del") {
@@ -562,7 +562,7 @@ func TestBackendCleanupReplacesChangedTranslatedDNATRule(t *testing.T) {
 
 	joined := stringifyOVNOps(recorder.Operations())
 	for _, expected := range []string{
-		"gc-nat-rule web-translate",
+		"gc-nat-rule web-translate prod",
 		"create NAT type=dnat external_ip=198.51.100.80 logical_ip=10.10.0.10",
 		"create NAT type=dnat external_ip=198.51.100.80 logical_ip=10.10.0.11",
 	} {
@@ -570,7 +570,7 @@ func TestBackendCleanupReplacesChangedTranslatedDNATRule(t *testing.T) {
 			t.Fatalf("changed translated dnat operation missing %q:\n%s", expected, joined)
 		}
 	}
-	if got := strings.Count(joined, "gc-nat-rule web-translate"); got != 3 {
+	if got := strings.Count(joined, "gc-nat-rule web-translate prod"); got != 3 {
 		t.Fatalf("changed translated dnat GC count = %d, want initial create, lifecycle cleanup, and replacement create GC:\n%s", got, joined)
 	}
 	if strings.Contains(joined, "lr-nat-del nl_lr_prod dnat 198.51.100.80") {
@@ -605,7 +605,7 @@ func TestBackendCleanupReplacesChangedTranslatedFloatingIPRule(t *testing.T) {
 
 	joined := stringifyOVNOps(recorder.Operations())
 	for _, expected := range []string{
-		"gc-nat-rule fip-translate",
+		"gc-nat-rule fip-translate prod",
 		"create NAT type=dnat_and_snat external_ip=198.51.100.80 logical_ip=10.10.0.10 external_port_range=8443 logical_port_range=443 protocol=tcp",
 		"create NAT type=dnat_and_snat external_ip=198.51.100.80 logical_ip=10.10.0.10 external_port_range=8443 logical_port_range=444 protocol=tcp",
 	} {
@@ -613,7 +613,7 @@ func TestBackendCleanupReplacesChangedTranslatedFloatingIPRule(t *testing.T) {
 			t.Fatalf("changed translated floating ip operation missing %q:\n%s", expected, joined)
 		}
 	}
-	if got := strings.Count(joined, "gc-nat-rule fip-translate"); got != 3 {
+	if got := strings.Count(joined, "gc-nat-rule fip-translate prod"); got != 3 {
 		t.Fatalf("changed translated floating ip GC count = %d, want initial create, lifecycle cleanup, and replacement create GC:\n%s", got, joined)
 	}
 	if strings.Contains(joined, "lr-nat-del nl_lr_prod dnat_and_snat 198.51.100.80") {
@@ -648,9 +648,9 @@ func TestBackendCleanupRemovesTranslatedDNATRule(t *testing.T) {
 
 	joined := stringifyOVNOps(recorder.Operations())
 	for _, expected := range []string{
-		"--id=@nl_nat_web_htranslate create NAT type=dnat external_ip=198.51.100.80 logical_ip=10.10.0.10 external_port_range=8443 logical_port_range=443 protocol=tcp",
-		"add logical_router nl_lr_prod nat @nl_nat_web_htranslate",
-		"gc-nat-rule web-translate",
+		"--id=@nl_nat_prod_web_htranslate create NAT type=dnat external_ip=198.51.100.80 logical_ip=10.10.0.10 external_port_range=8443 logical_port_range=443 protocol=tcp",
+		"add logical_router nl_lr_prod nat @nl_nat_prod_web_htranslate",
+		"gc-nat-rule web-translate prod",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("translated DNAT cleanup operation missing %q:\n%s", expected, joined)
@@ -699,7 +699,7 @@ func TestBackendCleanupChangedPortDNATDoesNotDeleteSiblingExternalIPRules(t *tes
 	if strings.Contains(joined, "lr-nat-del nl_lr_prod dnat 198.51.100.80") {
 		t.Fatalf("changed port DNAT should not delete sibling DNAT rules sharing the external IP:\n%s", joined)
 	}
-	if got := strings.Count(joined, "gc-nat-rule web"); got != 3 {
+	if got := strings.Count(joined, "gc-nat-rule web prod"); got != 3 {
 		t.Fatalf("changed port DNAT GC count = %d, want initial create, lifecycle cleanup, and replacement create GC:\n%s", got, joined)
 	}
 	if got := strings.Count(joined, "external_ids:netloom_nat=ssh"); got != 1 {
@@ -727,11 +727,11 @@ func TestBackendFirstReconcileCleansStaleManagedNATRules(t *testing.T) {
 	}
 
 	joined := stringifyOVNOps(recorder.Operations())
-	if !strings.Contains(joined, "gc-stale-nat-rules web") {
+	if !strings.Contains(joined, "gc-stale-nat-rules prod web") {
 		t.Fatalf("first reconcile should clean stale managed NAT rules while keeping desired names:\n%s", joined)
 	}
-	staleGC := strings.Index(joined, "gc-stale-nat-rules web")
-	createGC := strings.Index(joined, "gc-nat-rule web")
+	staleGC := strings.Index(joined, "gc-stale-nat-rules prod web")
+	createGC := strings.Index(joined, "gc-nat-rule web prod")
 	if createGC < 0 || staleGC > createGC {
 		t.Fatalf("stale NAT cleanup should run before per-rule create GC:\n%s", joined)
 	}
@@ -1436,7 +1436,7 @@ esac
 
 	executor := ovn.NewNBCTLExecutor(binary, "--db=unix:/tmp/ovnnb.sock")
 	err := executor.Execute(context.Background(), []ovn.Operation{
-		{Command: "gc-nat-rule", Args: []string{"web"}},
+		{Command: "gc-nat-rule", Args: []string{"web", "prod"}},
 		{Command: "set", Args: []string{"logical_router", "nl_lr_prod", "external_ids:netloom_owner=netloom"}},
 	})
 	if err != nil {
@@ -1451,7 +1451,8 @@ esac
 		t.Fatalf("calls = %d, want find, two destroys, trailing set:\n%s", len(calls), raw)
 	}
 	if !strings.Contains(calls[0], "--columns=_uuid\nfind\nNAT") ||
-		!strings.Contains(calls[0], "external_ids:netloom_nat=web") {
+		!strings.Contains(calls[0], "external_ids:netloom_nat=web") ||
+		!strings.Contains(calls[0], "external_ids:netloom_vpc=prod") {
 		t.Fatalf("first call should find NAT records by ownership:\n%s", calls[0])
 	}
 	if !strings.Contains(calls[1], "destroy\nNAT\nnat-a") ||
@@ -1472,8 +1473,9 @@ printf '%%s\n' '---' >> %q
 printf '%%s\n' "$@" >> %q
 case "$*" in
   *"--columns=_uuid,external_ids find NAT"*)
-    printf 'nat-keep,"{netloom_owner=netloom,netloom_nat=web}"\n'
-    printf 'nat-stale,"{netloom_owner=netloom,netloom_nat=old}"\n'
+    printf 'nat-keep,"{netloom_owner=netloom,netloom_nat=web,netloom_vpc=prod}"\n'
+    printf 'nat-other-vpc,"{netloom_owner=netloom,netloom_nat=web,netloom_vpc=dev}"\n'
+    printf 'nat-stale,"{netloom_owner=netloom,netloom_nat=old,netloom_vpc=prod}"\n'
     printf 'nat-missing,"{netloom_owner=netloom}"\n'
     ;;
 esac
@@ -1484,7 +1486,7 @@ esac
 
 	executor := ovn.NewNBCTLExecutor(binary, "--db=unix:/tmp/ovnnb.sock")
 	err := executor.Execute(context.Background(), []ovn.Operation{
-		{Command: "gc-stale-nat-rules", Args: []string{"web"}},
+		{Command: "gc-stale-nat-rules", Args: []string{"prod", "web"}},
 		{Command: "set", Args: []string{"logical_router", "nl_lr_prod", "external_ids:netloom_owner=netloom"}},
 	})
 	if err != nil {
@@ -1495,15 +1497,16 @@ esac
 		t.Fatal(err)
 	}
 	calls := strings.Split(strings.TrimPrefix(strings.TrimSpace(string(raw)), "---\n"), "\n---\n")
-	if len(calls) != 3 {
+	if len(calls) != 4 {
 		t.Fatalf("calls = %d, want find, stale destroy, trailing set:\n%s", len(calls), raw)
 	}
 	if !strings.Contains(calls[0], "--columns=_uuid,external_ids\nfind\nNAT") ||
 		!strings.Contains(calls[0], "external_ids:netloom_owner=netloom") {
 		t.Fatalf("first call should find managed NAT records with external IDs:\n%s", calls[0])
 	}
-	if !strings.Contains(calls[1], "destroy\nNAT\nnat-stale") {
-		t.Fatalf("stale managed NAT should be destroyed:\n%s", raw)
+	if !strings.Contains(calls[1], "destroy\nNAT\nnat-other-vpc") ||
+		!strings.Contains(calls[2], "destroy\nNAT\nnat-stale") {
+		t.Fatalf("other-vpc same-name and stale managed NAT should be destroyed:\n%s", raw)
 	}
 	if strings.Contains(string(raw), "destroy\nNAT\nnat-keep") {
 		t.Fatalf("desired managed NAT must not be destroyed:\n%s", raw)
@@ -1511,8 +1514,8 @@ esac
 	if strings.Contains(string(raw), "destroy\nNAT\nnat-missing") {
 		t.Fatalf("managed NAT without netloom_nat identity must not be destroyed:\n%s", raw)
 	}
-	if !strings.Contains(calls[2], "set\nlogical_router\nnl_lr_prod") {
-		t.Fatalf("trailing regular operation should still execute:\n%s", calls[2])
+	if !strings.Contains(calls[3], "set\nlogical_router\nnl_lr_prod") {
+		t.Fatalf("trailing regular operation should still execute:\n%s", calls[3])
 	}
 }
 

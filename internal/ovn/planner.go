@@ -230,9 +230,9 @@ func (p *Planner) EnsureNATRule(_ context.Context, rule model.NATRule) error {
 		p.ops = append(p.ops, Operation{Command: "lr-nat-add", Flags: []string{"--may-exist"}, Args: []string{router, "snat", rule.ExternalIP.String(), rule.MatchCIDR.String()}})
 	case model.ActionDNAT:
 		if natUsesManagedRecord(rule) {
-			uuid := namedUUID("nl_nat_" + sanitize(rule.Name))
+			uuid := natRuleNamedUUID(rule)
 			p.ops = append(p.ops,
-				Operation{Command: "gc-nat-rule", Args: []string{rule.Name}},
+				gcNATRuleOperation(rule),
 				Operation{Command: "create", Flags: []string{"--id=" + uuid}, Args: natPortTranslationArgs(rule)},
 				Operation{Command: "add", Args: []string{"logical_router", router, "nat", uuid}},
 			)
@@ -246,9 +246,9 @@ func (p *Planner) EnsureNATRule(_ context.Context, rule model.NATRule) error {
 		p.ops = append(p.ops, op)
 	case model.ActionDNATSNAT:
 		if natUsesManagedRecord(rule) {
-			uuid := namedUUID("nl_nat_" + sanitize(rule.Name))
+			uuid := natRuleNamedUUID(rule)
 			p.ops = append(p.ops,
-				Operation{Command: "gc-nat-rule", Args: []string{rule.Name}},
+				gcNATRuleOperation(rule),
 				Operation{Command: "create", Flags: []string{"--id=" + uuid}, Args: natPortTranslationArgs(rule)},
 				Operation{Command: "add", Args: []string{"logical_router", router, "nat", uuid}},
 			)
@@ -366,6 +366,10 @@ func namedUUID(name string) string {
 
 func policyRouteNamedUUID(route model.PolicyRoute) string {
 	return namedUUID("nl_lrp_" + sanitize(route.VPC) + "_" + sanitize(route.Name))
+}
+
+func natRuleNamedUUID(rule model.NATRule) string {
+	return namedUUID("nl_nat_" + sanitize(rule.VPC) + "_" + sanitize(rule.Name))
 }
 
 func routerPortName(router, subnet string) string {

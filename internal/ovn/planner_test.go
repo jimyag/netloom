@@ -1157,24 +1157,24 @@ func TestPlannerBuildsKubeOVNStyleNATOperations(t *testing.T) {
 		"lr-nat-add nl_lr_prod dnat 198.51.100.20 10.10.0.10",
 		"lr-nat-add nl_lr_prod dnat_and_snat 198.51.100.30 10.10.0.11",
 		"lr-nat-add nl_lr_prod dnat_and_snat 198.51.100.31 10.10.0.14 nl_lp_pod-a 0a:58:0a:0a:00:0e",
-		"gc-nat-rule ssh",
-		"--id=@nl_nat_ssh create NAT type=dnat external_ip=198.51.100.40 logical_ip=10.10.0.12 external_port_range=2222 logical_port_range=2222 protocol=tcp",
+		"gc-nat-rule ssh prod",
+		"--id=@nl_nat_prod_ssh create NAT type=dnat external_ip=198.51.100.40 logical_ip=10.10.0.12 external_port_range=2222 logical_port_range=2222 protocol=tcp",
 		"external_ids:netloom_nat=ssh",
-		"add logical_router nl_lr_prod nat @nl_nat_ssh",
-		"gc-nat-rule web-translate",
-		"--id=@nl_nat_web_htranslate create NAT type=dnat external_ip=198.51.100.41 logical_ip=10.10.0.13 external_port_range=8443 logical_port_range=443 protocol=tcp",
+		"add logical_router nl_lr_prod nat @nl_nat_prod_ssh",
+		"gc-nat-rule web-translate prod",
+		"--id=@nl_nat_prod_web_htranslate create NAT type=dnat external_ip=198.51.100.41 logical_ip=10.10.0.13 external_port_range=8443 logical_port_range=443 protocol=tcp",
 		"external_ids:netloom_nat=web-translate",
-		"add logical_router nl_lr_prod nat @nl_nat_web_htranslate",
-		"gc-nat-rule fip-translate",
-		"--id=@nl_nat_fip_htranslate create NAT type=dnat_and_snat external_ip=198.51.100.42 logical_ip=10.10.0.15 external_port_range=9443 logical_port_range=443 protocol=tcp",
+		"add logical_router nl_lr_prod nat @nl_nat_prod_web_htranslate",
+		"gc-nat-rule fip-translate prod",
+		"--id=@nl_nat_prod_fip_htranslate create NAT type=dnat_and_snat external_ip=198.51.100.42 logical_ip=10.10.0.15 external_port_range=9443 logical_port_range=443 protocol=tcp",
 		"external_ids:netloom_nat=fip-translate",
-		"add logical_router nl_lr_prod nat @nl_nat_fip_htranslate",
-		"gc-nat-rule distributed-fip-translate",
-		"--id=@nl_nat_distributed_hfip_htranslate create NAT type=dnat_and_snat external_ip=198.51.100.43 logical_ip=10.10.0.16 external_port_range=5353 logical_port_range=53 protocol=udp",
+		"add logical_router nl_lr_prod nat @nl_nat_prod_fip_htranslate",
+		"gc-nat-rule distributed-fip-translate prod",
+		"--id=@nl_nat_prod_distributed_hfip_htranslate create NAT type=dnat_and_snat external_ip=198.51.100.43 logical_ip=10.10.0.16 external_port_range=5353 logical_port_range=53 protocol=udp",
 		"logical_port=nl_lp_pod-dns",
 		"external_mac=0a:58:0a:0a:00:10",
 		"external_ids:netloom_nat=distributed-fip-translate",
-		"add logical_router nl_lr_prod nat @nl_nat_distributed_hfip_htranslate",
+		"add logical_router nl_lr_prod nat @nl_nat_prod_distributed_hfip_htranslate",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("OVN operations missing %q:\n%s", expected, joined)
@@ -1185,6 +1185,55 @@ func TestPlannerBuildsKubeOVNStyleNATOperations(t *testing.T) {
 	}
 	if strings.Contains(joined, "lr-nat-del") {
 		t.Fatalf("planner should not delete NAT during ensure; lifecycle cleanup owns deletion:\n%s", joined)
+	}
+}
+
+func TestPlannerScopesManagedNATRulesByVPC(t *testing.T) {
+	planner := ovn.NewPlanner()
+	for _, rule := range []model.NATRule{
+		{
+			Name:         "web",
+			VPC:          "prod",
+			Type:         model.ActionDNAT,
+			ExternalIP:   netip.MustParseAddr("198.51.100.80"),
+			TargetIP:     netip.MustParseAddr("10.10.0.10"),
+			Protocol:     model.ProtocolTCP,
+			ExternalPort: 8443,
+			TargetPort:   443,
+		},
+		{
+			Name:         "web",
+			VPC:          "dev",
+			Type:         model.ActionDNAT,
+			ExternalIP:   netip.MustParseAddr("203.0.113.80"),
+			TargetIP:     netip.MustParseAddr("10.20.0.10"),
+			Protocol:     model.ProtocolTCP,
+			ExternalPort: 8443,
+			TargetPort:   443,
+		},
+	} {
+		if err := planner.EnsureNATRule(context.Background(), rule); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	joined := stringify(planner.Operations())
+	for _, expected := range []string{
+		"gc-nat-rule web prod",
+		"gc-nat-rule web dev",
+		"--id=@nl_nat_prod_web create NAT type=dnat external_ip=198.51.100.80 logical_ip=10.10.0.10 external_port_range=8443 logical_port_range=443 protocol=tcp",
+		"--id=@nl_nat_dev_web create NAT type=dnat external_ip=203.0.113.80 logical_ip=10.20.0.10 external_port_range=8443 logical_port_range=443 protocol=tcp",
+		"add logical_router nl_lr_prod nat @nl_nat_prod_web",
+		"add logical_router nl_lr_dev nat @nl_nat_dev_web",
+		"external_ids:netloom_vpc=prod",
+		"external_ids:netloom_vpc=dev",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("OVN managed NAT operation missing %q:\n%s", expected, joined)
+		}
+	}
+	if strings.Contains(joined, "gc-nat-rule web\n") || strings.Contains(joined, "@nl_nat_web ") {
+		t.Fatalf("managed NAT operations must be VPC scoped:\n%s", joined)
 	}
 }
 

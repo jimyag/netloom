@@ -81,7 +81,7 @@ func (m *MemoryBackend) EnsureGateway(_ context.Context, gateway model.Gateway) 
 func (m *MemoryBackend) EnsureNATRule(_ context.Context, rule model.NATRule) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.NATRules[rule.Name] = rule
+	m.NATRules[natRuleKey(rule.VPC, rule.Name)] = rule
 	return nil
 }
 

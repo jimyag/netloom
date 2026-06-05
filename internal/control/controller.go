@@ -291,6 +291,10 @@ func loadBalancerKey(vpc, name string) string {
 	return vpc + "\x00" + name
 }
 
+func natRuleKey(vpc, name string) string {
+	return vpc + "\x00" + name
+}
+
 func validateNATRules(rules []model.NATRule) error {
 	names := make(map[string]struct{}, len(rules))
 	type snatRule struct {
@@ -305,10 +309,11 @@ func validateNATRules(rules []model.NATRule) error {
 		if err := rule.Validate(); err != nil {
 			return err
 		}
-		if _, ok := names[rule.Name]; ok {
-			return fmt.Errorf("duplicate nat rule name %q", rule.Name)
+		nameKey := natRuleKey(rule.VPC, rule.Name)
+		if _, ok := names[nameKey]; ok {
+			return fmt.Errorf("duplicate nat rule name %q in vpc %q", rule.Name, rule.VPC)
 		}
-		names[rule.Name] = struct{}{}
+		names[nameKey] = struct{}{}
 
 		if rule.Type == model.ActionSNAT {
 			for _, existing := range snatRules {
@@ -1088,7 +1093,7 @@ func desiredTopologyState(state DesiredState) topology.State {
 	}
 	natRules := make(map[string]model.NATRule, len(state.NATRules))
 	for _, rule := range state.NATRules {
-		natRules[rule.Name] = rule
+		natRules[natRuleKey(rule.VPC, rule.Name)] = rule
 	}
 	loadBalancers := make(map[string]model.LoadBalancer, len(state.LoadBalancers))
 	for _, lb := range state.LoadBalancers {

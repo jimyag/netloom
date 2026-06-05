@@ -173,6 +173,7 @@ func (e *NBCTLExecutor) executeSpecial(ctx context.Context, op Operation) error 
 		return e.destroyMatchingRecords(ctx, "NAT",
 			"external_ids:netloom_owner=netloom",
 			"external_ids:netloom_nat="+op.Args[0],
+			"external_ids:netloom_vpc="+op.Args[1],
 		)
 	case "gc-stale-nat-rules":
 		return e.destroyStaleNATRules(ctx, op.Args)
@@ -422,9 +423,9 @@ func (e *NBCTLExecutor) destroyStalePolicyRoutes(ctx context.Context, keep []str
 }
 
 func (e *NBCTLExecutor) destroyStaleNATRules(ctx context.Context, keep []string) error {
-	keepSet := make(map[string]struct{}, len(keep))
-	for _, name := range keep {
-		keepSet[name] = struct{}{}
+	keepSet := make(map[string]struct{}, len(keep)/2)
+	for i := 0; i+1 < len(keep); i += 2 {
+		keepSet[managedNATKey(keep[i], keep[i+1])] = struct{}{}
 	}
 	args := append([]string(nil), e.BaseArgs...)
 	args = append(args, "--format=csv", "--data=bare", "--no-headings", "--columns=_uuid,external_ids", "find", "NAT", "external_ids:netloom_owner=netloom")
@@ -433,11 +434,11 @@ func (e *NBCTLExecutor) destroyStaleNATRules(ctx context.Context, keep []string)
 		return err
 	}
 	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
-		uuid, natName, ok := parseNATGCRow(line)
+		uuid, natKey, ok := parseNATGCRow(line)
 		if !ok {
 			continue
 		}
-		if _, keep := keepSet[natName]; keep {
+		if _, keep := keepSet[natKey]; keep {
 			continue
 		}
 		destroyArgs := append([]string(nil), e.BaseArgs...)
@@ -455,7 +456,12 @@ func parseNATGCRow(line string) (string, string, bool) {
 		return "", "", false
 	}
 	natName := externalIDs["netloom_nat"]
-	return uuid, natName, uuid != "" && natName != ""
+	vpc := externalIDs["netloom_vpc"]
+	return uuid, managedNATKey(vpc, natName), uuid != "" && vpc != "" && natName != ""
+}
+
+func managedNATKey(vpc, name string) string {
+	return vpc + "\x00" + name
 }
 
 func parseExternalIDsCSVRow(line string) (string, map[string]string, bool) {
@@ -592,10 +598,19 @@ func validateSpecialOperation(op Operation) error {
 		return fmt.Errorf("special operation %q must not set flags", op.Command)
 	}
 	if op.Command == "gc-stale-nat-rules" {
+		if len(op.Args)%2 != 0 {
+			return fmt.Errorf("special operation %q requires vpc/name keep pairs", op.Command)
+		}
 		for _, arg := range op.Args {
 			if arg == "" {
-				return fmt.Errorf("special operation %q contains empty keep name", op.Command)
+				return fmt.Errorf("special operation %q contains empty keep argument", op.Command)
 			}
+		}
+		return nil
+	}
+	if op.Command == "gc-nat-rule" {
+		if len(op.Args) != 2 || op.Args[0] == "" || op.Args[1] == "" {
+			return fmt.Errorf("special operation %q requires nat rule name and vpc", op.Command)
 		}
 		return nil
 	}
