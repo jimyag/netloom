@@ -133,7 +133,7 @@ func TestMemoryBackendClonesPolicyPrograms(t *testing.T) {
 	icmpType := uint8(8)
 	icmpCode := uint8(0)
 	program := policy.Program{
-		EndpointID: "pod-a",
+		EndpointID: model.EndpointKey("prod", "pod-a"),
 		MapEntries: []policy.MapEntry{{
 			RuleID:     "allow-web",
 			RemoteCIDR: netip.MustParsePrefix("10.10.0.0/24"),
@@ -154,7 +154,7 @@ func TestMemoryBackendClonesPolicyPrograms(t *testing.T) {
 	*program.Rules[0].ICMPType = 3
 	program.MapEntries[0].RuleID = "mutated"
 
-	stored := backend.PolicyProgram["pod-a"]
+	stored := backend.PolicyProgram[model.EndpointKey("prod", "pod-a")]
 	if got := stored.Rules[0].Ports[0].From; got != 80 {
 		t.Fatalf("stored policy port = %d, want original", got)
 	}

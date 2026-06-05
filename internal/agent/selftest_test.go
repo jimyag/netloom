@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/jimyag/netloom/internal/dataplane"
+	"github.com/jimyag/netloom/internal/model"
 )
 
 func TestRunSelfTestCompilesAndEvaluatesPolicy(t *testing.T) {
@@ -13,7 +14,7 @@ func TestRunSelfTestCompilesAndEvaluatesPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.EndpointID != "selftest-pod" {
+	if result.EndpointID != model.EndpointKey("default", "selftest-pod") {
 		t.Fatalf("endpoint id = %s, want selftest-pod", result.EndpointID)
 	}
 	if result.Entries < 2 {

@@ -722,8 +722,8 @@ func TestCompileForEndpointWithStateExpandsRemoteGroupMembers(t *testing.T) {
 		t.Fatalf("rules = %d, want one expanded remote-group member", len(program.Rules))
 	}
 	rule := program.Rules[0]
-	if rule.RemoteEndpoint != "pod-b" {
-		t.Fatalf("remote endpoint = %s, want pod-b", rule.RemoteEndpoint)
+	if rule.RemoteEndpoint != model.EndpointKey("prod", "pod-b") {
+		t.Fatalf("remote endpoint = %s, want prod-scoped pod-b", rule.RemoteEndpoint)
 	}
 	if rule.RemoteCIDR != netip.MustParsePrefix("10.10.0.11/32") {
 		t.Fatalf("remote cidr = %s, want 10.10.0.11/32", rule.RemoteCIDR)
@@ -731,7 +731,7 @@ func TestCompileForEndpointWithStateExpandsRemoteGroupMembers(t *testing.T) {
 	if len(program.MapEntries) != 1 {
 		t.Fatalf("map entries = %d, want 1", len(program.MapEntries))
 	}
-	if program.MapEntries[0].Key.RemoteIdentity != EndpointIdentity("pod-b") {
+	if program.MapEntries[0].Key.RemoteIdentity != EndpointIdentity(model.EndpointKey("prod", "pod-b")) {
 		t.Fatalf("remote identity = %d, want endpoint identity", program.MapEntries[0].Key.RemoteIdentity)
 	}
 	if program.MapEntries[0].RemoteCIDR != netip.MustParsePrefix("10.10.0.11/32") {
@@ -739,6 +739,64 @@ func TestCompileForEndpointWithStateExpandsRemoteGroupMembers(t *testing.T) {
 	}
 	if !program.MapEntries[0].Value.RequireIdentity {
 		t.Fatal("remote group member entry should require endpoint identity as well as CIDR")
+	}
+}
+
+func TestCompileForEndpointScopesProgramAndRemoteEndpointIdentityByVPC(t *testing.T) {
+	target := model.Endpoint{
+		ID:             "pod-a",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"web"},
+	}
+	peer := model.Endpoint{
+		ID:             "pod-b",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.11"),
+		Node:           "node-b",
+		SecurityGroups: []string{"clients"},
+	}
+	shadowPeer := model.Endpoint{
+		ID:             "pod-b",
+		VPC:            "dev",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.20.0.11"),
+		Node:           "node-b",
+		SecurityGroups: []string{"clients"},
+	}
+	program, err := CompileForEndpointWithState(target, map[string]model.SecurityGroup{
+		"web": {
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:          "allow-clients",
+				Priority:    100,
+				Direction:   model.DirectionIngress,
+				Protocol:    model.ProtocolTCP,
+				RemoteGroup: "clients",
+				Ports:       []model.PortRange{{From: 8080, To: 8080}},
+				Action:      model.ActionAllow,
+			}},
+		},
+		"clients": {Name: "clients", VPC: "prod"},
+	}, []model.Endpoint{target, peer, shadowPeer})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if program.EndpointID != model.EndpointKey("prod", "pod-a") {
+		t.Fatalf("program endpoint id = %q, want VPC-scoped key", program.EndpointID)
+	}
+	if len(program.MapEntries) != 1 {
+		t.Fatalf("map entries = %d, want only prod peer", len(program.MapEntries))
+	}
+	if got, want := program.MapEntries[0].Key.RemoteIdentity, EndpointIdentity(model.EndpointKey("prod", "pod-b")); got != want {
+		t.Fatalf("remote identity = %d, want %d", got, want)
+	}
+	if dev := EndpointIdentity(model.EndpointKey("dev", "pod-b")); dev == program.MapEntries[0].Key.RemoteIdentity {
+		t.Fatalf("prod and dev endpoint identities collided: %d", dev)
 	}
 }
 
@@ -792,11 +850,11 @@ func TestCompileForEndpointWithContextExpandsRemoteEndpointSelector(t *testing.T
 		t.Fatalf("program rules=%d entries=%d, want one selector match", len(program.Rules), len(program.MapEntries))
 	}
 	rule := program.Rules[0]
-	if rule.RemoteEndpoint != "pod-client" || rule.RemoteCIDR.String() != "10.10.0.10/32" {
+	if rule.RemoteEndpoint != model.EndpointKey("prod", "pod-client") || rule.RemoteCIDR.String() != "10.10.0.10/32" {
 		t.Fatalf("selector remote = endpoint %s cidr %s, want pod-client /32", rule.RemoteEndpoint, rule.RemoteCIDR)
 	}
 	entry := program.MapEntries[0]
-	if entry.Key.RemoteIdentity != EndpointIdentity("pod-client") || entry.Key.DestPort != 9090 {
+	if entry.Key.RemoteIdentity != EndpointIdentity(model.EndpointKey("prod", "pod-client")) || entry.Key.DestPort != 9090 {
 		t.Fatalf("selector entry = %+v, want pod-client identity and named port 9090", entry.Key)
 	}
 }
@@ -841,7 +899,7 @@ func TestCompileForEndpointWithContextResolvesEgressNamedPortFromRemoteEndpointS
 		t.Fatalf("map entries = %d, want one selector named-port entry", len(program.MapEntries))
 	}
 	entry := program.MapEntries[0]
-	if entry.Key.RemoteIdentity != EndpointIdentity("pod-api") || entry.Key.DestPort != 8080 {
+	if entry.Key.RemoteIdentity != EndpointIdentity(model.EndpointKey("prod", "pod-api")) || entry.Key.DestPort != 8080 {
 		t.Fatalf("selector egress named port entry = %+v, want pod-api tcp/8080", entry.Key)
 	}
 }
@@ -910,10 +968,10 @@ func TestCompileForEndpointWithContextExpandsRemoteEndpointExpressions(t *testin
 	if len(program.Rules) != 1 || len(program.MapEntries) != 1 {
 		t.Fatalf("program rules=%d entries=%d, want only prod expression match", len(program.Rules), len(program.MapEntries))
 	}
-	if program.Rules[0].RemoteEndpoint != "pod-client" || program.Rules[0].RemoteCIDR.String() != "10.10.0.10/32" {
+	if program.Rules[0].RemoteEndpoint != model.EndpointKey("prod", "pod-client") || program.Rules[0].RemoteCIDR.String() != "10.10.0.10/32" {
 		t.Fatalf("expression selector remote = endpoint %s cidr %s, want pod-client /32", program.Rules[0].RemoteEndpoint, program.Rules[0].RemoteCIDR)
 	}
-	if program.MapEntries[0].Key.RemoteIdentity != EndpointIdentity("pod-client") || program.MapEntries[0].Key.DestPort != 9443 {
+	if program.MapEntries[0].Key.RemoteIdentity != EndpointIdentity(model.EndpointKey("prod", "pod-client")) || program.MapEntries[0].Key.DestPort != 9443 {
 		t.Fatalf("expression selector entry = %+v, want pod-client identity and named port 9443", program.MapEntries[0].Key)
 	}
 }

@@ -102,10 +102,10 @@ func TestBackendCleanupEmitsDeletesForStaleDesiredObjects(t *testing.T) {
 
 	joined := stringifyOVNOps(recorder.Operations())
 	for _, expected := range []string{
-		"lsp-set-dhcpv4-options nl_lp_pod-a",
-		"lsp-set-dhcpv6-options nl_lp_pod-a",
-		"gc-dhcp-options pod-a",
-		"--if-exists lsp-del nl_lp_pod-a",
+		"lsp-set-dhcpv4-options nl_lp_prod_pod-a",
+		"lsp-set-dhcpv6-options nl_lp_prod_pod-a",
+		"gc-dhcp-options pod-a prod",
+		"--if-exists lsp-del nl_lp_prod_pod-a",
 		"--if-exists lr-nat-del nl_lr_prod snat 10.10.0.0/24",
 		"gc-load-balancer-health-checks web prod",
 		"--if-exists lr-lb-del nl_lr_prod nl_lb_prod_web_tcp",
@@ -116,9 +116,9 @@ func TestBackendCleanupEmitsDeletesForStaleDesiredObjects(t *testing.T) {
 			t.Fatalf("cleanup operations missing %q:\n%s", expected, joined)
 		}
 	}
-	clear := strings.Index(joined, "lsp-set-dhcpv4-options nl_lp_pod-a")
-	gc := strings.Index(joined, "gc-dhcp-options pod-a")
-	del := strings.Index(joined, "--if-exists lsp-del nl_lp_pod-a")
+	clear := strings.Index(joined, "lsp-set-dhcpv4-options nl_lp_prod_pod-a")
+	gc := strings.Index(joined, "gc-dhcp-options pod-a prod")
+	del := strings.Index(joined, "--if-exists lsp-del nl_lp_prod_pod-a")
 	if clear < 0 || gc < 0 || del < 0 || !(clear < gc && gc < del) {
 		t.Fatalf("endpoint DHCP cleanup should clear references, GC options, then delete port:\n%s", joined)
 	}
@@ -1187,9 +1187,9 @@ esac
 
 	executor := ovn.NewNBCTLExecutor(binary, "--db=unix:/tmp/ovnnb.sock")
 	err := executor.Execute(context.Background(), []ovn.Operation{
-		{Command: "set", Args: []string{"logical_switch_port", "nl_lp_pod-a", "dhcpv4_options=[]"}},
-		{Command: "gc-dhcp-options", Args: []string{"pod-a"}},
-		{Command: "lsp-del", Flags: []string{"--if-exists"}, Args: []string{"nl_lp_pod-a"}},
+		{Command: "set", Args: []string{"logical_switch_port", "nl_lp_prod_pod-a", "dhcpv4_options=[]"}},
+		{Command: "gc-dhcp-options", Args: []string{"pod-a", "prod"}},
+		{Command: "lsp-del", Flags: []string{"--if-exists"}, Args: []string{"nl_lp_prod_pod-a"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1202,18 +1202,19 @@ esac
 	if len(calls) != 5 {
 		t.Fatalf("calls = %d, want clear, find, two destroys, lsp-del:\n%s", len(calls), raw)
 	}
-	if !strings.Contains(calls[0], "set\nlogical_switch_port\nnl_lp_pod-a") {
+	if !strings.Contains(calls[0], "set\nlogical_switch_port\nnl_lp_prod_pod-a") {
 		t.Fatalf("first call should clear references before GC:\n%s", calls[0])
 	}
 	if !strings.Contains(calls[1], "--columns=_uuid\nfind\nDHCP_Options") ||
-		!strings.Contains(calls[1], "external_ids:netloom_endpoint=pod-a") {
+		!strings.Contains(calls[1], "external_ids:netloom_endpoint=pod-a") ||
+		!strings.Contains(calls[1], "external_ids:netloom_vpc=prod") {
 		t.Fatalf("second call should find DHCP options by ownership:\n%s", calls[1])
 	}
 	if !strings.Contains(calls[2], "destroy\nDHCP_Options\nuuid-a") ||
 		!strings.Contains(calls[3], "destroy\nDHCP_Options\nuuid-b") {
 		t.Fatalf("matching DHCP options should be destroyed:\n%s", raw)
 	}
-	if !strings.Contains(calls[4], "lsp-del\nnl_lp_pod-a") {
+	if !strings.Contains(calls[4], "lsp-del\nnl_lp_prod_pod-a") {
 		t.Fatalf("final call should delete logical switch port:\n%s", calls[4])
 	}
 }

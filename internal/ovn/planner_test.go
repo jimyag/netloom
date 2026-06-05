@@ -112,7 +112,7 @@ func TestPlannerMapsNetloomObjectsToOVNOperations(t *testing.T) {
 		"lsp-add-localnet-port nl_ls_prod_apps nl_ls_prod_apps_to_apps_localnet physnet-a",
 		"external_ids:netloom_provider_network=physnet-a",
 		"set logical_switch_port nl_ls_prod_apps_to_apps_localnet tag=100",
-		"--id=@nl_dhcp_pod_ha create DHCP_Options cidr=10.10.0.0/24",
+		"--id=@nl_dhcp_prod_pod_ha create DHCP_Options cidr=10.10.0.0/24",
 		"options:server_id=10.10.0.1",
 		"options:server_mac=0a:58:3e:f3:95:f0",
 		"options:dns_server=[\"10.96.0.10\",\"fd00:96::10\"]",
@@ -120,9 +120,9 @@ func TestPlannerMapsNetloomObjectsToOVNOperations(t *testing.T) {
 		"options:domain_search_list=[\"cluster.local\",\"svc.cluster.local\"]",
 		"options:lease_time=7200",
 		"options:mtu=1400",
-		"lsp-set-dhcpv4-options nl_lp_pod-a",
-		"lsp-set-dhcpv6-options nl_lp_pod-a",
-		"set logical_switch_port nl_lp_pod-a dhcpv4_options=@nl_dhcp_pod_ha",
+		"lsp-set-dhcpv4-options nl_lp_prod_pod-a",
+		"lsp-set-dhcpv6-options nl_lp_prod_pod-a",
+		"set logical_switch_port nl_lp_prod_pod-a dhcpv4_options=@nl_dhcp_prod_pod_ha",
 		"external_ids:netloom_owner=netloom",
 		"external_ids:netloom_vpc=prod",
 		"lr-route-add nl_lr_prod 0.0.0.0/0 10.10.0.254",
@@ -135,7 +135,7 @@ func TestPlannerMapsNetloomObjectsToOVNOperations(t *testing.T) {
 		"lb-add nl_lb_prod_web_tcp 10.96.0.10:80 10.10.0.10:8080 tcp",
 		"lr-lb-add nl_lr_prod nl_lb_prod_web_tcp",
 		"ls-lb-add nl_ls_prod_apps nl_lb_prod_web_tcp",
-		"lsp-add nl_ls_prod_apps nl_lp_pod-a",
+		"lsp-add nl_ls_prod_apps nl_lp_prod_pod-a",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("OVN operations missing %q:\n%s", expected, joined)
@@ -156,7 +156,7 @@ func TestPlannerScopesLogicalSwitchesByVPC(t *testing.T) {
 		},
 		Endpoints: []model.Endpoint{
 			{ID: "pod-a", VPC: "prod", Subnet: "apps", IP: netip.MustParseAddr("10.10.0.10"), Node: "node-a"},
-			{ID: "pod-b", VPC: "dev", Subnet: "apps", IP: netip.MustParseAddr("10.20.0.10"), Node: "node-a"},
+			{ID: "pod-a", VPC: "dev", Subnet: "apps", IP: netip.MustParseAddr("10.20.0.10"), Node: "node-a"},
 		},
 	}
 	if err := control.NewController(planner, control.NewMemoryBackend()).Reconcile(context.Background(), state); err != nil {
@@ -167,8 +167,8 @@ func TestPlannerScopesLogicalSwitchesByVPC(t *testing.T) {
 	for _, expected := range []string{
 		"--may-exist ls-add nl_ls_prod_apps",
 		"--may-exist ls-add nl_ls_dev_apps",
-		"--may-exist lsp-add nl_ls_prod_apps nl_lp_pod-a",
-		"--may-exist lsp-add nl_ls_dev_apps nl_lp_pod-b",
+		"--may-exist lsp-add nl_ls_prod_apps nl_lp_prod_pod-a",
+		"--may-exist lsp-add nl_ls_dev_apps nl_lp_dev_pod-a",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("OVN operations missing %q:\n%s", expected, joined)
@@ -326,13 +326,13 @@ func TestPlannerClearsEndpointDHCPWhenSubnetDHCPDisabled(t *testing.T) {
 	}
 
 	joined := stringify(planner.Operations())
-	if !strings.Contains(joined, "lsp-set-dhcpv4-options nl_lp_pod-a") {
+	if !strings.Contains(joined, "lsp-set-dhcpv4-options nl_lp_prod_pod-a") {
 		t.Fatalf("endpoint DHCPv4 clear operation missing:\n%s", joined)
 	}
-	if !strings.Contains(joined, "lsp-set-dhcpv6-options nl_lp_pod-a") {
+	if !strings.Contains(joined, "lsp-set-dhcpv6-options nl_lp_prod_pod-a") {
 		t.Fatalf("endpoint DHCPv6 clear operation missing:\n%s", joined)
 	}
-	if !strings.Contains(joined, "gc-dhcp-options pod-a") {
+	if !strings.Contains(joined, "gc-dhcp-options pod-a prod") {
 		t.Fatalf("disabled DHCP should GC stale endpoint DHCP options:\n%s", joined)
 	}
 	if strings.Contains(joined, "create DHCP_Options") || strings.Contains(joined, "dhcpv4_options=@") || strings.Contains(joined, "dhcpv6_options=@") {
@@ -362,7 +362,7 @@ func TestPlannerGCDHCPOptionsBeforeRecreate(t *testing.T) {
 	}
 
 	joined := stringify(planner.Operations())
-	gc := strings.Index(joined, "gc-dhcp-options pod-a")
+	gc := strings.Index(joined, "gc-dhcp-options pod-a prod")
 	create := strings.Index(joined, "create DHCP_Options")
 	if gc < 0 || create < 0 {
 		t.Fatalf("expected DHCP GC and recreate operations:\n%s", joined)
@@ -385,8 +385,8 @@ func TestPlannerEncodesOVNNamesWithoutCollisions(t *testing.T) {
 
 	joined := stringify(planner.Operations())
 	for _, expected := range []string{
-		"lsp-add nl_ls_prod_apps nl_lp_pod_d1",
-		"lsp-add nl_ls_prod_apps nl_lp_pod__1",
+		"lsp-add nl_ls_prod_apps nl_lp_prod_pod_d1",
+		"lsp-add nl_ls_prod_apps nl_lp_prod_pod__1",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("OVN name encoding missing %q:\n%s", expected, joined)
@@ -463,8 +463,8 @@ func TestPlannerBuildsStaticEndpointMACAddress(t *testing.T) {
 
 	joined := stringify(planner.Operations())
 	for _, expected := range []string{
-		"lsp-set-addresses nl_lp_pod-a 0a:58:0a:0a:00:0a 10.10.0.10",
-		"lsp-set-port-security nl_lp_pod-a 0a:58:0a:0a:00:0a 10.10.0.10",
+		"lsp-set-addresses nl_lp_prod_pod-a 0a:58:0a:0a:00:0a 10.10.0.10",
+		"lsp-set-port-security nl_lp_prod_pod-a 0a:58:0a:0a:00:0a 10.10.0.10",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("OVN operations missing %q:\n%s", expected, joined)
@@ -503,13 +503,13 @@ func TestPlannerBuildsIPv6DHCPOptions(t *testing.T) {
 	joined := stringify(planner.Operations())
 	for _, expected := range []string{
 		"set logical_router_port nl_lr_prod_to_apps-v6 ipv6_ra_configs:address_mode=dhcpv6_stateful",
-		"lsp-set-dhcpv6-options nl_lp_pod-v6",
-		"--id=@nl_dhcp6_pod_hv6 create DHCP_Options cidr=fd00:10::/64",
+		"lsp-set-dhcpv6-options nl_lp_prod_pod-v6",
+		"--id=@nl_dhcp6_prod_pod_hv6 create DHCP_Options cidr=fd00:10::/64",
 		"options:server_id=0a:58:85:d4:23:26",
 		"options:dns_server=[\"fd00:96::10\"]",
 		"options:domain_name=svc.cluster.local",
 		"options:domain_search_list=[\"cluster.local\"]",
-		"set logical_switch_port nl_lp_pod-v6 dhcpv6_options=@nl_dhcp6_pod_hv6",
+		"set logical_switch_port nl_lp_prod_pod-v6 dhcpv6_options=@nl_dhcp6_prod_pod_hv6",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("IPv6 DHCP operation missing %q:\n%s", expected, joined)
@@ -547,7 +547,7 @@ func TestPlannerClearsIPv6DHCPRAWhenSubnetDHCPDisabled(t *testing.T) {
 	if !strings.Contains(joined, "remove logical_router_port nl_lr_prod_to_apps-v6 ipv6_ra_configs address_mode") {
 		t.Fatalf("disabled IPv6 DHCP should clear RA address mode:\n%s", joined)
 	}
-	if !strings.Contains(joined, "lsp-set-dhcpv6-options nl_lp_pod-v6") {
+	if !strings.Contains(joined, "lsp-set-dhcpv6-options nl_lp_prod_pod-v6") {
 		t.Fatalf("disabled IPv6 DHCP should clear endpoint DHCPv6 options:\n%s", joined)
 	}
 	if strings.Contains(joined, "dhcpv6_options=@") || strings.Contains(joined, "create DHCP_Options") {
@@ -1134,7 +1134,7 @@ func TestPlannerBuildsKubeOVNStyleNATOperations(t *testing.T) {
 			Type:        model.ActionDNATSNAT,
 			ExternalIP:  netip.MustParseAddr("198.51.100.31"),
 			TargetIP:    netip.MustParseAddr("10.10.0.14"),
-			LogicalPort: "nl_lp_pod-a",
+			LogicalPort: "nl_lp_prod_pod-a",
 			ExternalMAC: "0a:58:0a:0a:00:0e",
 		},
 		{
@@ -1189,7 +1189,7 @@ func TestPlannerBuildsKubeOVNStyleNATOperations(t *testing.T) {
 	for _, expected := range []string{
 		"lr-nat-add nl_lr_prod dnat 198.51.100.20 10.10.0.10",
 		"lr-nat-add nl_lr_prod dnat_and_snat 198.51.100.30 10.10.0.11",
-		"lr-nat-add nl_lr_prod dnat_and_snat 198.51.100.31 10.10.0.14 nl_lp_pod-a 0a:58:0a:0a:00:0e",
+		"lr-nat-add nl_lr_prod dnat_and_snat 198.51.100.31 10.10.0.14 nl_lp_prod_pod-a 0a:58:0a:0a:00:0e",
 		"gc-nat-rule ssh prod",
 		"--id=@nl_nat_prod_ssh create NAT type=dnat external_ip=198.51.100.40 logical_ip=10.10.0.12 external_port_range=2222 logical_port_range=2222 protocol=tcp",
 		"external_ids:netloom_nat=ssh",

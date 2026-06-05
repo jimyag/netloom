@@ -121,7 +121,7 @@ func CompileForEndpointWithContext(endpoint model.Endpoint, groups map[string]mo
 	if err != nil {
 		return Program{}, err
 	}
-	program := Program{EndpointID: endpoint.ID}
+	program := Program{EndpointID: model.EndpointKey(endpoint.VPC, endpoint.ID)}
 	attachedGroups := make([]model.SecurityGroup, 0, len(endpoint.SecurityGroups))
 	for _, groupName := range endpoint.SecurityGroups {
 		group, ok := groups[groupName]
@@ -306,11 +306,11 @@ func hasRemoteEndpointSelector(rule model.SecurityGroupRule) bool {
 func expandEndpointMembers(endpoint model.Endpoint, base Rule, rule model.SecurityGroupRule, members []model.Endpoint) ([]Rule, error) {
 	out := make([]Rule, 0, len(members))
 	for _, member := range members {
-		if member.ID == endpoint.ID {
+		if model.EndpointKey(member.VPC, member.ID) == model.EndpointKey(endpoint.VPC, endpoint.ID) {
 			continue
 		}
 		expanded := base
-		expanded.RemoteEndpoint = member.ID
+		expanded.RemoteEndpoint = model.EndpointKey(member.VPC, member.ID)
 		if len(rule.NamedPorts) > 0 && rule.Direction == model.DirectionEgress {
 			ports, err := resolveNamedPorts(rule.Ports, rule.NamedPorts, rule.Protocol, member)
 			if err != nil {

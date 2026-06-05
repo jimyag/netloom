@@ -77,10 +77,10 @@ func TestReconcileNodeAppliesOnlyLocalEndpointPolicies(t *testing.T) {
 	if result.TCX != "not-requested" {
 		t.Fatalf("tcx = %s, want not-requested", result.TCX)
 	}
-	if entries := store.Entries("pod-a"); len(entries) != 1 {
+	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 1 {
 		t.Fatalf("pod-a entries = %d, want 1", len(entries))
 	}
-	if entries := store.Entries("pod-b"); len(entries) != 0 {
+	if entries := store.Entries(model.EndpointKey("prod", "pod-b")); len(entries) != 0 {
 		t.Fatalf("pod-b entries = %d, want 0", len(entries))
 	}
 }
@@ -126,7 +126,7 @@ func TestReconcileNodeReportsPolicyDiffStatsAcrossRevisions(t *testing.T) {
 	if len(events) != 2 {
 		t.Fatalf("events = %d, want 2", len(events))
 	}
-	if events[1].EndpointID != "pod-a" || !events[1].Success || events[1].PreviousRevision != 1 || events[1].Revision != 2 || events[1].Stats.Updated != 1 || events[1].Stats.Revision != 2 {
+	if events[1].EndpointID != model.EndpointKey("prod", "pod-a") || !events[1].Success || events[1].PreviousRevision != 1 || events[1].Revision != 2 || events[1].Stats.Updated != 1 || events[1].Stats.Revision != 2 {
 		t.Fatalf("second event = %+v, want pod-a update revision 2", events[1])
 	}
 }
@@ -160,7 +160,7 @@ func TestReconcilerDeletesStaleEndpointPolicy(t *testing.T) {
 	if _, err := reconciler.Reconcile(context.Background(), state, ReconcileOptions{Node: "node-a"}); err != nil {
 		t.Fatal(err)
 	}
-	if entries := store.Entries("pod-a"); len(entries) != 1 {
+	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 1 {
 		t.Fatalf("pod-a entries = %d, want 1", len(entries))
 	}
 
@@ -168,7 +168,7 @@ func TestReconcilerDeletesStaleEndpointPolicy(t *testing.T) {
 	if _, err := reconciler.Reconcile(context.Background(), state, ReconcileOptions{Node: "node-a"}); err != nil {
 		t.Fatal(err)
 	}
-	if entries := store.Entries("pod-a"); len(entries) != 0 {
+	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 0 {
 		t.Fatalf("stale pod-a entries = %+v, want deleted", entries)
 	}
 }
@@ -729,7 +729,7 @@ func TestReconcilerClosesTCXAttachmentsWhenPolicyNoLongerEligible(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.TCX != "attached:"+linuxdatapath.HostVethName("pod-a")+":egress:policy-l4" || attaches != 1 || closes != 0 {
+	if result.TCX != "attached:"+linuxdatapath.HostVethName(model.EndpointKey("prod", "pod-a"))+":egress:policy-l4" || attaches != 1 || closes != 0 {
 		t.Fatalf("unexpected first reconcile result=%+v attaches=%d closes=%d", result, attaches, closes)
 	}
 
@@ -784,7 +784,7 @@ func TestReconcilerClearsConntrackWhenPolicyChangesOrEndpointIsRemoved(t *testin
 		t.Fatal(err)
 	}
 	reconciler.ConntrackStore().Add(dataplane.ConntrackKey{
-		EndpointID:     "pod-a",
+		EndpointID:     model.EndpointKey("prod", "pod-a"),
 		RemoteIdentity: 100,
 		Direction:      dataplane.DirectionEgress,
 		Protocol:       6,
@@ -803,7 +803,7 @@ func TestReconcilerClearsConntrackWhenPolicyChangesOrEndpointIsRemoved(t *testin
 	}
 
 	reconciler.ConntrackStore().Add(dataplane.ConntrackKey{
-		EndpointID:     "pod-a",
+		EndpointID:     model.EndpointKey("prod", "pod-a"),
 		RemoteIdentity: 100,
 		Direction:      dataplane.DirectionEgress,
 		Protocol:       6,
@@ -861,7 +861,7 @@ func TestReconcilerClearsConntrackForNonTCXPolicyChange(t *testing.T) {
 	}
 
 	reconciler.ConntrackStore().Add(dataplane.ConntrackKey{
-		EndpointID:     "pod-a",
+		EndpointID:     model.EndpointKey("prod", "pod-a"),
 		RemoteIdentity: 100,
 		Direction:      dataplane.DirectionEgress,
 		Protocol:       6,
@@ -906,7 +906,7 @@ func TestReconcilerExpiresIdleConntrack(t *testing.T) {
 		t.Fatal(err)
 	}
 	reconciler.ConntrackStore().Add(dataplane.ConntrackKey{
-		EndpointID:     "pod-a",
+		EndpointID:     model.EndpointKey("prod", "pod-a"),
 		RemoteIdentity: 100,
 		Direction:      dataplane.DirectionEgress,
 		Protocol:       6,
@@ -1095,10 +1095,10 @@ func TestReconcileNodeAllowsSameSecurityGroupNameAcrossVPCs(t *testing.T) {
 	if _, err := ReconcileNode(context.Background(), state, "node-a", store); err != nil {
 		t.Fatalf("same security group name in different vpcs should validate: %v", err)
 	}
-	if entries := store.Entries("pod-a"); len(entries) != 1 || entries[0].RemoteCIDR != netip.MustParsePrefix("198.51.100.10/32") {
+	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 1 || entries[0].RemoteCIDR != netip.MustParsePrefix("198.51.100.10/32") {
 		t.Fatalf("pod-a entries = %+v, want prod security group entry", entries)
 	}
-	if entries := store.Entries("pod-b"); len(entries) != 1 || entries[0].RemoteCIDR != netip.MustParsePrefix("203.0.113.10/32") {
+	if entries := store.Entries(model.EndpointKey("dev", "pod-b")); len(entries) != 1 || entries[0].RemoteCIDR != netip.MustParsePrefix("203.0.113.10/32") {
 		t.Fatalf("pod-b entries = %+v, want dev security group entry", entries)
 	}
 }
@@ -1230,10 +1230,10 @@ func TestReconcileNodeAllowsSameCIDRGroupNameAcrossVPCs(t *testing.T) {
 	if _, err := ReconcileNode(context.Background(), state, "node-a", store); err != nil {
 		t.Fatalf("same cidr group name in different vpcs should validate: %v", err)
 	}
-	if entries := store.Entries("pod-a"); len(entries) != 1 || entries[0].RemoteCIDR != netip.MustParsePrefix("198.51.100.0/24") {
+	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 1 || entries[0].RemoteCIDR != netip.MustParsePrefix("198.51.100.0/24") {
 		t.Fatalf("pod-a entries = %+v, want prod cidr group entry", entries)
 	}
-	if entries := store.Entries("pod-b"); len(entries) != 1 || entries[0].RemoteCIDR != netip.MustParsePrefix("203.0.113.0/24") {
+	if entries := store.Entries(model.EndpointKey("dev", "pod-b")); len(entries) != 1 || entries[0].RemoteCIDR != netip.MustParsePrefix("203.0.113.0/24") {
 		t.Fatalf("pod-b entries = %+v, want dev cidr group entry", entries)
 	}
 }
@@ -1283,11 +1283,11 @@ func TestReconcileNodeExpandsRemoteGroupMembership(t *testing.T) {
 	if result.Entries != 1 || result.TCXEligible != 1 {
 		t.Fatalf("unexpected result: %+v", result)
 	}
-	entries := store.Entries("pod-a")
+	entries := store.Entries(model.EndpointKey("prod", "pod-a"))
 	if len(entries) != 1 {
 		t.Fatalf("entries = %d, want 1", len(entries))
 	}
-	if entries[0].Key.RemoteIdentity != policy.EndpointIdentity("pod-b") {
+	if entries[0].Key.RemoteIdentity != policy.EndpointIdentity(model.EndpointKey("prod", "pod-b")) {
 		t.Fatalf("remote identity = %d, want pod-b identity", entries[0].Key.RemoteIdentity)
 	}
 
@@ -1299,7 +1299,7 @@ func TestReconcileNodeExpandsRemoteGroupMembership(t *testing.T) {
 	if result.Entries != 0 || result.TCXEligible != 0 {
 		t.Fatalf("expected empty remote group to remove entries, got %+v", result)
 	}
-	if entries := store.Entries("pod-a"); len(entries) != 0 {
+	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 0 {
 		t.Fatalf("entries after member removal = %d, want 0", len(entries))
 	}
 }
@@ -1357,9 +1357,9 @@ func TestReconcileNodeExpandsRemoteEndpointSelector(t *testing.T) {
 	if result.Entries != 1 || result.TCXEligible != 0 {
 		t.Fatalf("unexpected result: %+v", result)
 	}
-	entries := store.Entries("pod-web")
+	entries := store.Entries(model.EndpointKey("prod", "pod-web"))
 	decision := dataplane.Evaluate(entries, dataplane.Packet{
-		RemoteIdentity: policy.EndpointIdentity("pod-client"),
+		RemoteIdentity: policy.EndpointIdentity(model.EndpointKey("prod", "pod-client")),
 		Direction:      dataplane.DirectionIngress,
 		Protocol:       6,
 		RemoteIP:       netip.MustParseAddr("10.10.0.10"),
@@ -1369,7 +1369,7 @@ func TestReconcileNodeExpandsRemoteEndpointSelector(t *testing.T) {
 		t.Fatalf("expected selector-derived ingress allow, got %+v", decision)
 	}
 	devDecision := dataplane.Evaluate(entries, dataplane.Packet{
-		RemoteIdentity: policy.EndpointIdentity("pod-dev-client"),
+		RemoteIdentity: policy.EndpointIdentity(model.EndpointKey("prod", "pod-dev-client")),
 		Direction:      dataplane.DirectionIngress,
 		Protocol:       6,
 		RemoteIP:       netip.MustParseAddr("10.10.0.11"),
@@ -1424,7 +1424,7 @@ func TestReconcileNodeCompilesRemoteServiceRule(t *testing.T) {
 	if result.Entries != 1 || result.TCXEligible != 0 {
 		t.Fatalf("unexpected result: %+v", result)
 	}
-	decision := dataplane.Evaluate(store.Entries("pod-client"), dataplane.Packet{
+	decision := dataplane.Evaluate(store.Entries(model.EndpointKey("prod", "pod-client")), dataplane.Packet{
 		Direction: dataplane.DirectionEgress,
 		Protocol:  6,
 		RemoteIP:  netip.MustParseAddr("10.96.0.10"),
@@ -1471,7 +1471,7 @@ func TestReconcileNodeCompilesFQDNRulesFromDNSRecords(t *testing.T) {
 	if result.Entries != 1 || result.TCXEligible != 0 {
 		t.Fatalf("unexpected result: %+v", result)
 	}
-	entries := store.Entries("pod-a")
+	entries := store.Entries(model.EndpointKey("prod", "pod-a"))
 	if len(entries) != 1 {
 		t.Fatalf("entries = %d, want 1", len(entries))
 	}
@@ -1530,7 +1530,7 @@ func TestReconcileNodeCompilesCIDRGroupRules(t *testing.T) {
 	if result.Entries != 2 || result.TCXEligible != 0 {
 		t.Fatalf("unexpected result: %+v", result)
 	}
-	entries := store.Entries("pod-a")
+	entries := store.Entries(model.EndpointKey("prod", "pod-a"))
 	decision := dataplane.Evaluate(entries, dataplane.Packet{
 		Direction: dataplane.DirectionEgress,
 		Protocol:  6,
@@ -1590,7 +1590,7 @@ func TestReconcileNodeCompilesHostEntityFromGateways(t *testing.T) {
 	if result.Entries != 1 || result.TCXEligible != 0 {
 		t.Fatalf("unexpected result: %+v", result)
 	}
-	entries := store.Entries("pod-a")
+	entries := store.Entries(model.EndpointKey("prod", "pod-a"))
 	if len(entries) != 1 || entries[0].RemoteCIDR.String() != "10.10.0.254/32" {
 		t.Fatalf("entries = %+v, want host gateway /32", entries)
 	}
@@ -1653,7 +1653,7 @@ func TestReconcileNodeCompilesRemoteNodeEntityFromGateways(t *testing.T) {
 	if result.Entries != 1 || result.TCXEligible != 0 {
 		t.Fatalf("unexpected result: %+v", result)
 	}
-	entries := store.Entries("pod-a")
+	entries := store.Entries(model.EndpointKey("prod", "pod-a"))
 	if len(entries) != 1 || entries[0].RemoteCIDR.String() != "10.10.0.253/32" {
 		t.Fatalf("entries = %+v, want remote node gateway /32", entries)
 	}

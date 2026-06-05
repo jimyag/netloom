@@ -48,8 +48,8 @@ func snapshotDesired(state topology.State) desiredSnapshot {
 	for _, subnet := range state.Subnets {
 		out.Subnets[subnetStateKey(subnet.VPC, subnet.Name)] = cloneSnapshotSubnet(subnet)
 	}
-	for id, endpoint := range state.Endpoints {
-		out.Endpoints[id] = cloneSnapshotEndpoint(endpoint)
+	for _, endpoint := range state.Endpoints {
+		out.Endpoints[model.EndpointKey(endpoint.VPC, endpoint.ID)] = cloneSnapshotEndpoint(endpoint)
 	}
 	for _, table := range state.RouteTables {
 		for _, route := range table.Routes {
@@ -130,14 +130,14 @@ func cloneBoolPtr(value *bool) *bool {
 func cleanupOperations(old, next desiredSnapshot) []Operation {
 	var ops []Operation
 	for _, key := range staleKeys(old.Endpoints, next.Endpoints) {
-		port := logicalPort(key)
 		oldEndpoint := old.Endpoints[key]
+		port := logicalPort(oldEndpoint.VPC, oldEndpoint.ID)
 		if subnet, ok := old.Subnets[subnetStateKey(oldEndpoint.VPC, oldEndpoint.Subnet)]; ok && subnet.DHCP.Enabled {
 			ops = append(ops,
 				Operation{Command: "lsp-set-dhcpv4-options", Args: []string{port}},
 				Operation{Command: "lsp-set-dhcpv6-options", Args: []string{port}},
 			)
-			ops = append(ops, gcDHCPOptionsOperation(key))
+			ops = append(ops, gcDHCPOptionsOperation(oldEndpoint.ID, oldEndpoint.VPC))
 		}
 		ops = append(ops, Operation{Command: "lsp-del", Flags: []string{"--if-exists"}, Args: []string{port}})
 	}

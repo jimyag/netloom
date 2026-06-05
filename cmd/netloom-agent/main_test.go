@@ -135,7 +135,7 @@ func TestWithDNSObservationsMergesObservedRecords(t *testing.T) {
 	if result.Entries != 1 {
 		t.Fatalf("entries = %d, want observed FQDN policy entry", result.Entries)
 	}
-	entries := store.Entries("pod-a")
+	entries := store.Entries(model.EndpointKey("prod", "pod-a"))
 	if len(entries) != 1 || entries[0].RemoteCIDR.String() != "203.0.113.10/32" {
 		t.Fatalf("policy entries = %+v, want observed FQDN CIDR", entries)
 	}

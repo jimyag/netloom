@@ -53,7 +53,7 @@ func (m *MemoryBackend) EnsureSubnet(_ context.Context, subnet model.Subnet) err
 func (m *MemoryBackend) EnsureEndpoint(_ context.Context, endpoint model.Endpoint) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.Endpoints[endpoint.ID] = cloneEndpoint(endpoint)
+	m.Endpoints[model.EndpointKey(endpoint.VPC, endpoint.ID)] = cloneEndpoint(endpoint)
 	return nil
 }
 
@@ -126,7 +126,7 @@ func (m *MemoryBackend) CleanupPolicy(_ context.Context, state DesiredState) err
 
 	keep := make(map[string]struct{}, len(state.Endpoints))
 	for _, endpoint := range state.Endpoints {
-		keep[endpoint.ID] = struct{}{}
+		keep[model.EndpointKey(endpoint.VPC, endpoint.ID)] = struct{}{}
 	}
 	for endpointID := range m.PolicyProgram {
 		if _, ok := keep[endpointID]; !ok {

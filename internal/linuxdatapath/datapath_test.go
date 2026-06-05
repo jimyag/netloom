@@ -108,9 +108,9 @@ func TestPlanNetNSProgramsVethAndNamespace(t *testing.T) {
 	joined := stringifyOps(ops)
 	for _, expected := range []string{
 		"ip_forward=1",
-		"ip netns add nl-pod-a",
-		"ip netns exec nl-pod-a ip addr replace 10.10.0.10/32 dev eth0",
-		"ip netns exec nl-pod-a ip route replace default via 169.254.1.1 dev eth0 onlink",
+		"ip netns add nl-prod_x000000pod-a",
+		"ip netns exec nl-prod_x000000pod-a ip addr replace 10.10.0.10/32 dev eth0",
+		"ip netns exec nl-prod_x000000pod-a ip route replace default via 169.254.1.1 dev eth0 onlink",
 		"ip route replace 10.10.0.11/32 via 172.30.0.12 dev eth0 proto 187",
 	} {
 		if !strings.Contains(joined, expected) {
@@ -938,7 +938,7 @@ func TestPlanNetNSCleanupDeletesStaleNamespaces(t *testing.T) {
 		t.Fatal("cleanup was not marked as planned")
 	}
 	joined := stringifyOps(ops)
-	for _, expected := range []string{"ip netns list", "grep '^nl-'", " nl-pod-a ", "ip netns del"} {
+	for _, expected := range []string{"ip netns list", "grep '^nl-'", " nl-prod_x000000pod-a ", "ip netns del"} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("cleanup ops missing %q:\n%s", expected, joined)
 		}

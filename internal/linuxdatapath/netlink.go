@@ -122,7 +122,7 @@ func applyNetNSNetlink(ctx context.Context, state control.DesiredState, options 
 			return Result{}, err
 		}
 		if endpoint.Node == options.Node {
-			if err := ensureNetNSWorkload(root, endpoint.ID, endpoint.IP, options.WorkloadIF, options.HostGateway, options.NetNSPrefix); err != nil {
+			if err := ensureNetNSWorkload(root, model.EndpointKey(endpoint.VPC, endpoint.ID), endpoint.IP, options.WorkloadIF, options.HostGateway, options.NetNSPrefix); err != nil {
 				return Result{}, fmt.Errorf("ensure workload %s: %w", endpoint.ID, err)
 			}
 			result.LocalAddresses++
@@ -799,7 +799,7 @@ func cleanupStaleNamespaces(state control.DesiredState, node, prefix string) err
 	keep := make(map[string]struct{})
 	for _, endpoint := range state.Endpoints {
 		if endpoint.Node == node {
-			keep[netnsName(endpoint.ID, prefix)] = struct{}{}
+			keep[netnsName(model.EndpointKey(endpoint.VPC, endpoint.ID), prefix)] = struct{}{}
 		}
 	}
 	names, err := listManagedNetNS(prefix)

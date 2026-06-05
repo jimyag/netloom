@@ -52,10 +52,10 @@ func TestDesiredStateDrivesTopologyRoutesAndEBPFStyleACL(t *testing.T) {
 	if len(memoryBackend.PolicyRoutes) != 1 {
 		t.Fatalf("policy routes = %d, want 1", len(memoryBackend.PolicyRoutes))
 	}
-	if program, ok := memoryBackend.PolicyProgram["pod-b"]; !ok || len(program.Rules) != 2 {
+	if program, ok := memoryBackend.PolicyProgram[model.EndpointKey("prod", "pod-b")]; !ok || len(program.Rules) != 2 {
 		t.Fatalf("security group rules for pod-b were not compiled, got: %+v", memoryBackend.PolicyProgram)
 	}
-	clientProgram, ok := memoryBackend.PolicyProgram["pod-a"]
+	clientProgram, ok := memoryBackend.PolicyProgram[model.EndpointKey("prod", "pod-a")]
 	if !ok || len(clientProgram.Rules) != 13 {
 		t.Fatalf("egress rules for pod-a were not compiled, got: %+v", memoryBackend.PolicyProgram)
 	}
@@ -79,8 +79,8 @@ func TestDesiredStateDrivesTopologyRoutesAndEBPFStyleACL(t *testing.T) {
 		"external_ids:netloom_gateway_lan_ip=10.10.0.254",
 		"external_ids:netloom_gateway_distributed=false",
 		"options:chassis=node-a",
-		"lsp-set-addresses nl_lp_pod-a 0a:58:0a:0a:00:0a 10.10.0.10",
-		"lsp-set-port-security nl_lp_pod-a 0a:58:0a:0a:00:0a 10.10.0.10",
+		"lsp-set-addresses nl_lp_prod_pod-a 0a:58:0a:0a:00:0a 10.10.0.10",
+		"lsp-set-port-security nl_lp_prod_pod-a 0a:58:0a:0a:00:0a 10.10.0.10",
 	} {
 		if !strings.Contains(ovnOps, expected) {
 			t.Fatalf("OVN gateway operations missing %q:\n%s", expected, ovnOps)
@@ -175,7 +175,7 @@ func TestDesiredStateDrivesTopologyRoutesAndEBPFStyleACL(t *testing.T) {
 	if result.Endpoints != 1 || result.Entries == 0 || result.TCXEligible != 1 {
 		t.Fatalf("unexpected agent result: %+v", result)
 	}
-	entries := store.Entries("pod-b")
+	entries := store.Entries(model.EndpointKey("prod", "pod-b"))
 	if len(entries) == 0 {
 		t.Fatal("expected pod-b policy entries")
 	}
@@ -241,7 +241,7 @@ func TestDesiredStateDrivesTopologyRoutesAndEBPFStyleACL(t *testing.T) {
 		t.Fatalf("expected egress tcp/8443 inside cidr-group except range to drop, got %+v", cidrGroupExceptDrop)
 	}
 	selectorAllow := dataplane.Evaluate(clientEntries, dataplane.Packet{
-		RemoteIdentity: policy.EndpointIdentity("pod-b"),
+		RemoteIdentity: policy.EndpointIdentity(model.EndpointKey("prod", "pod-b")),
 		Direction:      dataplane.DirectionEgress,
 		Protocol:       6,
 		RemoteIP:       mustAddr(t, "10.10.0.11"),

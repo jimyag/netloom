@@ -233,10 +233,10 @@ func prepareReconcile(ctx context.Context, state control.DesiredState, options R
 			return ReconcileResult{}, nil, nil, err
 		}
 		if err := backend.ApplyEndpointProgram(ctx, program); err != nil {
-			return ReconcileResult{}, nil, nil, fmt.Errorf("apply policy program for endpoint %s: %w", endpoint.ID, err)
+			return ReconcileResult{}, nil, nil, fmt.Errorf("apply policy program for endpoint %s in vpc %s: %w", endpoint.ID, endpoint.VPC, err)
 		}
 		if statsStore, ok := options.Store.(PolicyStatsStore); ok {
-			stats := statsStore.LastStats(endpoint.ID)
+			stats := statsStore.LastStats(program.EndpointID)
 			result.PolicyAdded += stats.Added
 			result.PolicyUpdated += stats.Updated
 			result.PolicyDeleted += stats.Deleted
@@ -311,10 +311,11 @@ func validateAgentState(state control.DesiredState) error {
 		if err := endpoint.Validate(); err != nil {
 			return err
 		}
-		if _, ok := endpoints[endpoint.ID]; ok {
-			return fmt.Errorf("duplicate endpoint id %q", endpoint.ID)
+		key := model.EndpointKey(endpoint.VPC, endpoint.ID)
+		if _, ok := endpoints[key]; ok {
+			return fmt.Errorf("duplicate endpoint id %q in vpc %q", endpoint.ID, endpoint.VPC)
 		}
-		endpoints[endpoint.ID] = struct{}{}
+		endpoints[key] = struct{}{}
 	}
 	loadBalancers := make(map[string]struct{}, len(state.LoadBalancers))
 	for _, lb := range state.LoadBalancers {

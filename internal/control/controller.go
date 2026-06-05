@@ -496,8 +496,9 @@ func validateObjectGraph(state DesiredState) error {
 		if err := endpoint.Validate(); err != nil {
 			return err
 		}
-		if _, ok := endpoints[endpoint.ID]; ok {
-			return fmt.Errorf("duplicate endpoint id %q", endpoint.ID)
+		key := model.EndpointKey(endpoint.VPC, endpoint.ID)
+		if _, ok := endpoints[key]; ok {
+			return fmt.Errorf("duplicate endpoint id %q in vpc %q", endpoint.ID, endpoint.VPC)
 		}
 		if _, ok := vpcs[endpoint.VPC]; !ok {
 			return fmt.Errorf("endpoint %q references unknown vpc %q", endpoint.ID, endpoint.VPC)
@@ -539,7 +540,7 @@ func validateObjectGraph(state DesiredState) error {
 			return fmt.Errorf("endpoint %q conflicts with %q on ip %s in vpc %s", endpoint.ID, previous, endpoint.IP, endpoint.VPC)
 		}
 		endpointIPs[ipKey] = endpoint.ID
-		endpoints[endpoint.ID] = endpoint
+		endpoints[key] = endpoint
 	}
 	if err := validateSecurityGroupNamedPortReferences(state.SecurityGroups, state.Endpoints, securityGroups); err != nil {
 		return err
@@ -1096,7 +1097,7 @@ func desiredTopologyState(state DesiredState) topology.State {
 	}
 	endpoints := make(map[string]model.Endpoint, len(state.Endpoints))
 	for _, endpoint := range state.Endpoints {
-		endpoints[endpoint.ID] = endpoint
+		endpoints[model.EndpointKey(endpoint.VPC, endpoint.ID)] = endpoint
 	}
 	routeTables := make(map[string]model.RouteTable, len(state.RouteTables))
 	for _, table := range state.RouteTables {

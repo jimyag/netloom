@@ -110,7 +110,7 @@ func TestControllerReconcileSeparatesTopologyFromPolicy(t *testing.T) {
 	if len(backend.VPCs) != 1 || len(backend.Subnets) != 1 || len(backend.Endpoints) != 1 {
 		t.Fatalf("topology objects were not reconciled: %+v", backend)
 	}
-	if got := len(backend.PolicyProgram["pod-a"].Rules); got != 1 {
+	if got := len(backend.PolicyProgram[model.EndpointKey("prod", "pod-a")].Rules); got != 1 {
 		t.Fatalf("compiled policy rules = %d, want 1", got)
 	}
 	if got := backend.PolicyRoutes[0].Name; got != "force-private" {
@@ -1493,6 +1493,30 @@ func TestControllerAllowsSameGatewayNameAcrossVPCs(t *testing.T) {
 	}
 }
 
+func TestControllerAllowsSameEndpointIDAcrossVPCs(t *testing.T) {
+	backend := NewMemoryBackend()
+	state := DesiredState{
+		VPCs: []model.VPC{{Name: "prod"}, {Name: "dev"}},
+		Subnets: []model.Subnet{
+			{Name: "apps", VPC: "prod", CIDR: netip.MustParsePrefix("10.10.0.0/24"), Gateway: netip.MustParseAddr("10.10.0.1")},
+			{Name: "apps", VPC: "dev", CIDR: netip.MustParsePrefix("10.20.0.0/24"), Gateway: netip.MustParseAddr("10.20.0.1")},
+		},
+		Endpoints: []model.Endpoint{
+			{ID: "pod-a", VPC: "prod", Subnet: "apps", IP: netip.MustParseAddr("10.10.0.10"), Node: "node-a"},
+			{ID: "pod-a", VPC: "dev", Subnet: "apps", IP: netip.MustParseAddr("10.20.0.10"), Node: "node-a"},
+		},
+	}
+	if err := NewController(backend, backend).Reconcile(context.Background(), state); err != nil {
+		t.Fatalf("same endpoint id in different vpcs should validate: %v", err)
+	}
+	if got := backend.Endpoints[model.EndpointKey("prod", "pod-a")].IP; got != netip.MustParseAddr("10.10.0.10") {
+		t.Fatalf("prod endpoint ip = %s, want 10.10.0.10", got)
+	}
+	if got := backend.Endpoints[model.EndpointKey("dev", "pod-a")].IP; got != netip.MustParseAddr("10.20.0.10") {
+		t.Fatalf("dev endpoint ip = %s, want 10.20.0.10", got)
+	}
+}
+
 func TestControllerAllowsSameSubnetNameAcrossVPCs(t *testing.T) {
 	backend := NewMemoryBackend()
 	state := DesiredState{
@@ -1561,10 +1585,10 @@ func TestControllerAllowsSameSecurityGroupNameAcrossVPCs(t *testing.T) {
 	if err := NewController(backend, backend).Reconcile(context.Background(), state); err != nil {
 		t.Fatalf("same security group name in different vpcs should validate: %v", err)
 	}
-	if got := backend.PolicyProgram["pod-a"].Rules[0].RemoteCIDR; got != netip.MustParsePrefix("198.51.100.10/32") {
+	if got := backend.PolicyProgram[model.EndpointKey("prod", "pod-a")].Rules[0].RemoteCIDR; got != netip.MustParsePrefix("198.51.100.10/32") {
 		t.Fatalf("pod-a security group cidr = %s, want prod group", got)
 	}
-	if got := backend.PolicyProgram["pod-b"].Rules[0].RemoteCIDR; got != netip.MustParsePrefix("203.0.113.10/32") {
+	if got := backend.PolicyProgram[model.EndpointKey("dev", "pod-b")].Rules[0].RemoteCIDR; got != netip.MustParsePrefix("203.0.113.10/32") {
 		t.Fatalf("pod-b security group cidr = %s, want dev group", got)
 	}
 }
@@ -1617,10 +1641,10 @@ func TestControllerAllowsSameCIDRGroupNameAcrossVPCs(t *testing.T) {
 	if err := NewController(backend, backend).Reconcile(context.Background(), state); err != nil {
 		t.Fatalf("same cidr group name in different vpcs should validate: %v", err)
 	}
-	if got := backend.PolicyProgram["pod-a"].Rules[0].RemoteCIDR; got != netip.MustParsePrefix("198.51.100.0/24") {
+	if got := backend.PolicyProgram[model.EndpointKey("prod", "pod-a")].Rules[0].RemoteCIDR; got != netip.MustParsePrefix("198.51.100.0/24") {
 		t.Fatalf("pod-a cidr group cidr = %s, want prod cidr group", got)
 	}
-	if got := backend.PolicyProgram["pod-b"].Rules[0].RemoteCIDR; got != netip.MustParsePrefix("203.0.113.0/24") {
+	if got := backend.PolicyProgram[model.EndpointKey("dev", "pod-b")].Rules[0].RemoteCIDR; got != netip.MustParsePrefix("203.0.113.0/24") {
 		t.Fatalf("pod-b cidr group cidr = %s, want dev cidr group", got)
 	}
 }
@@ -1693,10 +1717,10 @@ func TestControllerAllowsSameLoadBalancerNameAcrossVPCs(t *testing.T) {
 	if err := NewController(backend, backend).Reconcile(context.Background(), state); err != nil {
 		t.Fatalf("same load balancer name in different vpcs should validate: %v", err)
 	}
-	if got := backend.PolicyProgram["pod-a"].Rules[0].RemoteCIDR; got != netip.MustParsePrefix("10.96.0.10/32") {
+	if got := backend.PolicyProgram[model.EndpointKey("prod", "pod-a")].Rules[0].RemoteCIDR; got != netip.MustParsePrefix("10.96.0.10/32") {
 		t.Fatalf("pod-a remote service cidr = %s, want prod service VIP", got)
 	}
-	if got := backend.PolicyProgram["pod-b"].Rules[0].RemoteCIDR; got != netip.MustParsePrefix("10.97.0.10/32") {
+	if got := backend.PolicyProgram[model.EndpointKey("dev", "pod-b")].Rules[0].RemoteCIDR; got != netip.MustParsePrefix("10.97.0.10/32") {
 		t.Fatalf("pod-b remote service cidr = %s, want dev service VIP", got)
 	}
 	if _, ok := backend.LoadBalancers[loadBalancerKey("prod", "web")]; !ok {

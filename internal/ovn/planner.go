@@ -102,7 +102,7 @@ func (p *Planner) EnsureEndpoint(_ context.Context, endpoint model.Endpoint) err
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	port := logicalPort(endpoint.ID)
+	port := logicalPort(endpoint.VPC, endpoint.ID)
 	p.ops = append(p.ops,
 		Operation{Command: "lsp-add", Flags: []string{"--may-exist"}, Args: []string{logicalSwitch(endpoint.VPC, endpoint.Subnet), port}},
 		Operation{Command: "lsp-set-addresses", Args: []string{port, endpointAddress(endpoint)}},
@@ -112,7 +112,7 @@ func (p *Planner) EnsureEndpoint(_ context.Context, endpoint model.Endpoint) err
 	)
 	subnet, hasSubnet := p.subnets[subnetStateKey(endpoint.VPC, endpoint.Subnet)]
 	if hasSubnet {
-		p.ops = append(p.ops, gcDHCPOptionsOperation(endpoint.ID))
+		p.ops = append(p.ops, gcDHCPOptionsOperation(endpoint.ID, endpoint.VPC))
 	}
 	if endpoint.NormalizedMAC() != "" {
 		p.ops = append(p.ops, Operation{Command: "lsp-set-port-security", Args: []string{port, endpointAddress(endpoint)}})
@@ -348,8 +348,8 @@ func logicalSwitch(vpc, subnet string) string {
 	return ovnIdentifier("nl_ls_" + sanitize(vpc) + "_" + sanitize(subnet))
 }
 
-func logicalPort(endpoint string) string {
-	return ovnIdentifier("nl_lp_" + sanitize(endpoint))
+func logicalPort(vpc, endpoint string) string {
+	return ovnIdentifier("nl_lp_" + sanitize(vpc) + "_" + sanitize(endpoint))
 }
 
 func loadBalancerName(vpc, name string) string {
@@ -435,9 +435,9 @@ func deterministicMAC(subnet model.Subnet) string {
 
 func dhcpOptionsUUID(endpoint model.Endpoint, family int) string {
 	if family == 6 {
-		return namedUUID("nl_dhcp6_" + sanitize(endpoint.ID))
+		return namedUUID("nl_dhcp6_" + sanitize(endpoint.VPC) + "_" + sanitize(endpoint.ID))
 	}
-	return namedUUID("nl_dhcp_" + sanitize(endpoint.ID))
+	return namedUUID("nl_dhcp_" + sanitize(endpoint.VPC) + "_" + sanitize(endpoint.ID))
 }
 
 func dhcpv4OptionsArgs(subnet model.Subnet, endpoint model.Endpoint) []string {
@@ -455,6 +455,7 @@ func dhcpv4OptionsArgs(subnet model.Subnet, endpoint model.Endpoint) []string {
 		"external_ids:netloom_owner=netloom",
 		"external_ids:netloom_subnet=" + subnet.Name,
 		"external_ids:netloom_endpoint=" + endpoint.ID,
+		"external_ids:netloom_vpc=" + endpoint.VPC,
 	}
 	if subnet.DHCP.MTU != 0 {
 		args = append(args, fmt.Sprintf("options:mtu=%d", subnet.DHCP.MTU))
@@ -471,6 +472,7 @@ func dhcpv6OptionsArgs(subnet model.Subnet, endpoint model.Endpoint) []string {
 		"external_ids:netloom_owner=netloom",
 		"external_ids:netloom_subnet=" + subnet.Name,
 		"external_ids:netloom_endpoint=" + endpoint.ID,
+		"external_ids:netloom_vpc=" + endpoint.VPC,
 	}
 	args = append(args, dhcpDNSOptions(subnet)...)
 	return args
@@ -643,8 +645,8 @@ func loadBalancerProtocolNamesFromFrontends(vpc, lbName string, frontendsByProto
 	return names
 }
 
-func gcDHCPOptionsOperation(endpoint string) Operation {
-	return Operation{Command: "gc-dhcp-options", Args: []string{endpoint}}
+func gcDHCPOptionsOperation(endpoint, vpc string) Operation {
+	return Operation{Command: "gc-dhcp-options", Args: []string{endpoint, vpc}}
 }
 
 func gcLoadBalancerHealthChecksOperation(loadBalancer, vpc string) Operation {

@@ -71,7 +71,8 @@ func RunSelfTest(ctx context.Context) (SelfTestResult, error) {
 	if err := backend.ApplyEndpointProgram(ctx, program); err != nil {
 		return SelfTestResult{}, err
 	}
-	entries := store.Entries(endpoint.ID)
+	endpointKey := program.EndpointID
+	entries := store.Entries(endpointKey)
 	var allowedIdentity, deniedIdentity uint32
 	for _, entry := range program.MapEntries {
 		switch entry.RuleID {
@@ -86,14 +87,14 @@ func RunSelfTest(ctx context.Context) (SelfTestResult, error) {
 	}
 
 	recorder := dataplane.NewPolicyRecorder()
-	allowed := dataplane.EvaluateObserved(endpoint.ID, entries, dataplane.Packet{
+	allowed := dataplane.EvaluateObserved(endpointKey, entries, dataplane.Packet{
 		RemoteIdentity: allowedIdentity,
 		RemoteIP:       netip.MustParseAddr("10.244.1.10"),
 		Direction:      dataplane.DirectionIngress,
 		Protocol:       6,
 		DestPort:       443,
 	}, recorder)
-	denied := dataplane.EvaluateObserved(endpoint.ID, entries, dataplane.Packet{
+	denied := dataplane.EvaluateObserved(endpointKey, entries, dataplane.Packet{
 		RemoteIdentity: deniedIdentity,
 		RemoteIP:       netip.MustParseAddr("10.244.2.10"),
 		Direction:      dataplane.DirectionIngress,
@@ -167,11 +168,11 @@ func RunSelfTest(ctx context.Context) (SelfTestResult, error) {
 	}
 
 	return SelfTestResult{
-		EndpointID:   endpoint.ID,
+		EndpointID:   endpointKey,
 		Entries:      len(entries),
 		Allowed:      allowed.Verdict,
 		Denied:       denied.Verdict,
-		PolicyStats:  recorder.Metrics(endpoint.ID),
+		PolicyStats:  recorder.Metrics(endpointKey),
 		DropEvents:   len(recorder.DropEvents()),
 		PolicyEvents: len(recorder.PolicyEvents()),
 		TCX:          tcxStatus,

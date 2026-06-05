@@ -116,7 +116,7 @@ func TestPolicyBackendReplacesEndpointEntries(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	entries := store.Entries("pod-a")
+	entries := store.Entries(model.EndpointKey("prod", "pod-a"))
 	if len(entries) != 1 {
 		t.Fatalf("entries = %d, want 1", len(entries))
 	}
@@ -315,7 +315,7 @@ func TestPolicyBackendHonorsLowerSecurityGroupRulePriority(t *testing.T) {
 	if err := backend.ApplyEndpointProgram(context.Background(), program); err != nil {
 		t.Fatal(err)
 	}
-	stored := store.Entries("pod-a")
+	stored := store.Entries(model.EndpointKey("prod", "pod-a"))
 	if len(stored) != 1 || stored[0].Value.RuleCookie != stableCookie("allow-primary") {
 		t.Fatalf("stored entries = %+v, want only highest-priority allow-primary", stored)
 	}
@@ -393,7 +393,7 @@ func TestPolicyBackendPreservesRejectAction(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	entries := store.Entries("pod-a")
+	entries := store.Entries(model.EndpointKey("prod", "pod-a"))
 	if len(entries) != 1 {
 		t.Fatalf("entries = %d, want 1", len(entries))
 	}

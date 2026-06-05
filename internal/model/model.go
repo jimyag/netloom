@@ -83,6 +83,10 @@ type Endpoint struct {
 	Labels         Labels      `json:"labels"`
 }
 
+func EndpointKey(vpc, id string) string {
+	return vpc + "\x00" + id
+}
+
 type RouteTable struct {
 	Name   string  `json:"name"`
 	VPC    string  `json:"vpc"`

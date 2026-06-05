@@ -148,7 +148,7 @@ func Plan(ctx context.Context, state control.DesiredState, options Options) ([]O
 	for _, endpoint := range state.Endpoints {
 		if endpoint.Node == options.Node {
 			if mode == "netns" {
-				ops = append(ops, planNetNSWorkload(endpoint.ID, endpoint.IP, workloadIF, hostGateway, options.NetNSPrefix)...)
+				ops = append(ops, planNetNSWorkload(model.EndpointKey(endpoint.VPC, endpoint.ID), endpoint.IP, workloadIF, hostGateway, options.NetNSPrefix)...)
 			} else {
 				ops = append(ops, Operation{
 					Command: "ip",
@@ -385,7 +385,7 @@ func planNetNSCleanup(state control.DesiredState, node, prefix string) Operation
 	var keep []string
 	for _, endpoint := range state.Endpoints {
 		if endpoint.Node == node {
-			keep = append(keep, netnsName(endpoint.ID, prefix))
+			keep = append(keep, netnsName(model.EndpointKey(endpoint.VPC, endpoint.ID), prefix))
 		}
 	}
 	return shellOperation("for ns in $(ip netns list | awk '{print $1}' | grep '^" + shellQuote(netnsName("", prefix)) + "' || true); do case '" + keepSet(keep) + "' in *\" $ns \"*) ;; *) ip netns del \"$ns\" ;; esac; done")

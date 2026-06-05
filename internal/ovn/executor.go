@@ -158,6 +158,7 @@ func (e *NBCTLExecutor) executeSpecial(ctx context.Context, op Operation) error 
 		return e.destroyMatchingRecords(ctx, "DHCP_Options",
 			"external_ids:netloom_owner=netloom",
 			"external_ids:netloom_endpoint="+op.Args[0],
+			"external_ids:netloom_vpc="+op.Args[1],
 		)
 	case "gc-load-balancer-health-checks":
 		return e.destroyMatchingRecords(ctx, "Load_Balancer_Health_Check",
@@ -611,6 +612,12 @@ func validateSpecialOperation(op Operation) error {
 	if op.Command == "gc-nat-rule" {
 		if len(op.Args) != 2 || op.Args[0] == "" || op.Args[1] == "" {
 			return fmt.Errorf("special operation %q requires nat rule name and vpc", op.Command)
+		}
+		return nil
+	}
+	if op.Command == "gc-dhcp-options" {
+		if len(op.Args) != 2 || op.Args[0] == "" || op.Args[1] == "" {
+			return fmt.Errorf("special operation %q requires endpoint id and vpc", op.Command)
 		}
 		return nil
 	}
