@@ -62,8 +62,8 @@ func snapshotDesired(state topology.State) desiredSnapshot {
 		match := policyRouteMatch(route.Match)
 		out.PolicyRoutes[policyRouteKey(route)] = policyRouteRecord{Route: route, Match: match}
 	}
-	for name, gateway := range state.Gateways {
-		out.Gateways[name] = gateway
+	for _, gateway := range state.Gateways {
+		out.Gateways[gatewayStateKey(gateway.VPC, gateway.Name)] = gateway
 	}
 	for name, rule := range state.NATRules {
 		out.NATRules[name] = rule

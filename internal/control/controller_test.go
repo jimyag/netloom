@@ -1469,6 +1469,30 @@ func TestControllerAllowsSamePolicyRouteNameAcrossVPCs(t *testing.T) {
 	}
 }
 
+func TestControllerAllowsSameGatewayNameAcrossVPCs(t *testing.T) {
+	backend := NewMemoryBackend()
+	state := DesiredState{
+		VPCs: []model.VPC{{Name: "prod"}, {Name: "dev"}},
+		Subnets: []model.Subnet{
+			{Name: "apps", VPC: "prod", CIDR: netip.MustParsePrefix("10.10.0.0/24"), Gateway: netip.MustParseAddr("10.10.0.1")},
+			{Name: "apps", VPC: "dev", CIDR: netip.MustParsePrefix("10.20.0.0/24"), Gateway: netip.MustParseAddr("10.20.0.1")},
+		},
+		Gateways: []model.Gateway{
+			{Name: "gw", VPC: "prod", Node: "node-a", ExternalIF: "eth0", LANIP: netip.MustParseAddr("10.10.0.254")},
+			{Name: "gw", VPC: "dev", Node: "node-b", ExternalIF: "eth0", LANIP: netip.MustParseAddr("10.20.0.254")},
+		},
+	}
+	if err := NewController(backend, backend).Reconcile(context.Background(), state); err != nil {
+		t.Fatalf("same gateway name in different vpcs should validate: %v", err)
+	}
+	if got := backend.Gateways[gatewayKey("prod", "gw")].LANIP; got != netip.MustParseAddr("10.10.0.254") {
+		t.Fatalf("prod gateway lan ip = %s, want 10.10.0.254", got)
+	}
+	if got := backend.Gateways[gatewayKey("dev", "gw")].LANIP; got != netip.MustParseAddr("10.20.0.254") {
+		t.Fatalf("dev gateway lan ip = %s, want 10.20.0.254", got)
+	}
+}
+
 func TestControllerAllowsSameSubnetNameAcrossVPCs(t *testing.T) {
 	backend := NewMemoryBackend()
 	state := DesiredState{

@@ -303,6 +303,10 @@ func subnetKey(vpc, name string) string {
 	return vpc + "\x00" + name
 }
 
+func gatewayKey(vpc, name string) string {
+	return vpc + "\x00" + name
+}
+
 func validateNATRules(rules []model.NATRule) error {
 	names := make(map[string]struct{}, len(rules))
 	type snatRule struct {
@@ -548,8 +552,9 @@ func validateObjectGraph(state DesiredState) error {
 		if err := gateway.Validate(); err != nil {
 			return err
 		}
-		if _, ok := gateways[gateway.Name]; ok {
-			return fmt.Errorf("duplicate gateway name %q", gateway.Name)
+		key := gatewayKey(gateway.VPC, gateway.Name)
+		if _, ok := gateways[key]; ok {
+			return fmt.Errorf("duplicate gateway name %q in vpc %q", gateway.Name, gateway.VPC)
 		}
 		if _, ok := vpcs[gateway.VPC]; !ok {
 			return fmt.Errorf("gateway %q references unknown vpc %q", gateway.Name, gateway.VPC)
@@ -573,7 +578,7 @@ func validateObjectGraph(state DesiredState) error {
 		}
 		gatewayInterfaces[ifKey] = gateway.Name
 		gatewayIPs[ipKey] = gateway.Name
-		gateways[gateway.Name] = gateway
+		gateways[key] = gateway
 	}
 	if err := validateSecurityGroupRemoteEntities(state.SecurityGroups, state.Endpoints, securityGroups, gateways, subnets); err != nil {
 		return err
@@ -1099,7 +1104,7 @@ func desiredTopologyState(state DesiredState) topology.State {
 	}
 	gateways := make(map[string]model.Gateway, len(state.Gateways))
 	for _, gateway := range state.Gateways {
-		gateways[gateway.Name] = gateway
+		gateways[gatewayKey(gateway.VPC, gateway.Name)] = gateway
 	}
 	natRules := make(map[string]model.NATRule, len(state.NATRules))
 	for _, rule := range state.NATRules {

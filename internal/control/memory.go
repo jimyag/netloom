@@ -74,7 +74,7 @@ func (m *MemoryBackend) EnsurePolicyRoute(_ context.Context, route model.PolicyR
 func (m *MemoryBackend) EnsureGateway(_ context.Context, gateway model.Gateway) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.Gateways[gateway.Name] = gateway
+	m.Gateways[gatewayKey(gateway.VPC, gateway.Name)] = gateway
 	return nil
 }
 

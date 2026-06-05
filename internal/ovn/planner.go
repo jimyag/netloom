@@ -668,6 +668,10 @@ func subnetStateKey(vpc, name string) string {
 	return vpc + "\x00" + name
 }
 
+func gatewayStateKey(vpc, name string) string {
+	return vpc + "\x00" + name
+}
+
 func loadBalancerHealthCheckSignature(lb model.LoadBalancer) string {
 	if !lb.HealthCheck.Enabled {
 		return "disabled"

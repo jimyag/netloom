@@ -43,7 +43,7 @@ func TestDesiredStateDrivesTopologyRoutesAndEBPFStyleACL(t *testing.T) {
 	} else if len(subnet.ExcludeCIDRs) != 1 || subnet.ExcludeCIDRs[0].String() != "10.10.0.16/28" {
 		t.Fatalf("subnet exclude cidrs were not reconciled, got: %+v", subnet.ExcludeCIDRs)
 	}
-	if gateway, ok := memoryBackend.Gateways["gw-a"]; !ok || gateway.Node != "node-a" || gateway.LANIP.String() != "10.10.0.254" {
+	if gateway, ok := memoryBackend.Gateways["prod\x00gw-a"]; !ok || gateway.Node != "node-a" || gateway.LANIP.String() != "10.10.0.254" {
 		t.Fatalf("gateway gw-a was not reconciled, got: %+v", memoryBackend.Gateways)
 	}
 	if lb, ok := memoryBackend.LoadBalancers["prod\x00web"]; !ok || lb.VIP.String() != "10.96.0.10" || len(lb.Frontends()) != 2 {
