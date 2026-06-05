@@ -311,7 +311,7 @@ func portRangesContain(ports []model.PortRange, port uint16) bool {
 func resolveRouteTables(tables map[string]model.RouteTable, packet Packet) (Decision, bool) {
 	var selected *model.Route
 	selectedName := ""
-	for tableName, table := range tables {
+	for _, table := range tables {
 		if table.VPC != packet.VPC {
 			continue
 		}
@@ -322,7 +322,7 @@ func resolveRouteTables(tables map[string]model.RouteTable, packet Packet) (Deci
 			}
 			if selected == nil || route.Destination.Bits() > selected.Destination.Bits() {
 				selected = route
-				selectedName = tableName
+				selectedName = table.Name
 			}
 		}
 	}

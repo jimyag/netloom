@@ -1170,6 +1170,44 @@ func TestControllerRejectsDuplicateRouteTableNames(t *testing.T) {
 	}
 }
 
+func TestControllerAllowsSameRouteTableNameAcrossVPCs(t *testing.T) {
+	backend := NewMemoryBackend()
+	state := DesiredState{
+		VPCs: []model.VPC{{Name: "prod"}, {Name: "dev"}},
+		Subnets: []model.Subnet{
+			{Name: "apps", VPC: "prod", CIDR: netip.MustParsePrefix("10.10.0.0/24"), Gateway: netip.MustParseAddr("10.10.0.1")},
+			{Name: "apps-dev", VPC: "dev", CIDR: netip.MustParsePrefix("10.20.0.0/24"), Gateway: netip.MustParseAddr("10.20.0.1")},
+		},
+		RouteTables: []model.RouteTable{
+			{
+				Name: "main",
+				VPC:  "prod",
+				Routes: []model.Route{{
+					Destination: netip.MustParsePrefix("0.0.0.0/0"),
+					NextHops:    []netip.Addr{netip.MustParseAddr("10.10.0.254")},
+				}},
+			},
+			{
+				Name: "main",
+				VPC:  "dev",
+				Routes: []model.Route{{
+					Destination: netip.MustParsePrefix("0.0.0.0/0"),
+					NextHops:    []netip.Addr{netip.MustParseAddr("10.20.0.254")},
+				}},
+			},
+		},
+	}
+	if err := NewController(backend, backend).Reconcile(context.Background(), state); err != nil {
+		t.Fatalf("same route table name in different vpcs should validate: %v", err)
+	}
+	if _, ok := backend.RouteTables[routeTableKey("prod", "main")]; !ok {
+		t.Fatalf("prod route table missing from memory backend: %+v", backend.RouteTables)
+	}
+	if _, ok := backend.RouteTables[routeTableKey("dev", "main")]; !ok {
+		t.Fatalf("dev route table missing from memory backend: %+v", backend.RouteTables)
+	}
+}
+
 func TestControllerRejectsOverlappingSubnetsInSameVPC(t *testing.T) {
 	state := DesiredState{
 		VPCs: []model.VPC{{Name: "prod"}, {Name: "dev"}},

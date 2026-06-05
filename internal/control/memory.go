@@ -60,7 +60,7 @@ func (m *MemoryBackend) EnsureEndpoint(_ context.Context, endpoint model.Endpoin
 func (m *MemoryBackend) EnsureRouteTable(_ context.Context, table model.RouteTable) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.RouteTables[table.Name] = cloneRouteTable(table)
+	m.RouteTables[routeTableKey(table.VPC, table.Name)] = cloneRouteTable(table)
 	return nil
 }
 

@@ -295,6 +295,10 @@ func natRuleKey(vpc, name string) string {
 	return vpc + "\x00" + name
 }
 
+func routeTableKey(vpc, name string) string {
+	return vpc + "\x00" + name
+}
+
 func validateNATRules(rules []model.NATRule) error {
 	names := make(map[string]struct{}, len(rules))
 	type snatRule struct {
@@ -974,10 +978,11 @@ func validateRouteTables(tables []model.RouteTable) error {
 		if err := table.Validate(); err != nil {
 			return err
 		}
-		if _, ok := names[table.Name]; ok {
-			return fmt.Errorf("duplicate route table name %q", table.Name)
+		nameKey := routeTableKey(table.VPC, table.Name)
+		if _, ok := names[nameKey]; ok {
+			return fmt.Errorf("duplicate route table name %q in vpc %q", table.Name, table.VPC)
 		}
-		names[table.Name] = struct{}{}
+		names[nameKey] = struct{}{}
 		for _, route := range table.Routes {
 			key := table.VPC + "|" + route.Destination.String()
 			if prev := destinations[key]; prev != "" {
@@ -1085,7 +1090,7 @@ func desiredTopologyState(state DesiredState) topology.State {
 	}
 	routeTables := make(map[string]model.RouteTable, len(state.RouteTables))
 	for _, table := range state.RouteTables {
-		routeTables[table.Name] = table
+		routeTables[routeTableKey(table.VPC, table.Name)] = table
 	}
 	gateways := make(map[string]model.Gateway, len(state.Gateways))
 	for _, gateway := range state.Gateways {
