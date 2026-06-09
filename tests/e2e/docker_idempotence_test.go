@@ -608,6 +608,52 @@ func TestDockerControllerReplaySameResourceNamesAcrossVPCs(t *testing.T) {
 	}
 }
 
+func TestDockerControllerSameResourceNamesAcrossVPCsIncludeRoutes(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip long e2e test in short mode")
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker is not installed")
+	}
+
+	composeFile := filepath.Join("testdata", "..", "docker-compose.yaml")
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+
+	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
+	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
+	run(t, ctx, "docker", "compose", "-f", composeFile, "up", "-d", "--quiet-pull", "--force-recreate")
+	t.Cleanup(func() {
+		downCtx, downCancel := context.WithTimeout(context.Background(), time.Minute)
+		defer downCancel()
+		run(t, downCtx, "docker", "compose", "-f", composeFile, "down", "-v")
+	})
+	waitForOVN(t, ctx, composeFile)
+
+	statePath := "/tmp/netloom-state-dual-vpc-same-name-routes.json"
+	stateScript := "cat >" + statePath + " <<'EOF'\n" + desiredDualVPCSameNameStateJSON() + "\nEOF\n"
+	stateCommand := stateScript + "NETLOOM_STATE_FILE=" + statePath + " NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller"
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", stateCommand)
+
+	fileRoutes := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "lr-route-list", "nl_lr_file")
+	blueRoutes := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "lr-route-list", "nl_lr_blue")
+
+	fileHops := parseRouteNextHopsFromList(t, fileRoutes, "0.0.0.0/0")
+	blueHops := parseRouteNextHopsFromList(t, blueRoutes, "0.0.0.0/0")
+	if !routeListContainsHops(fileHops, []string{"10.245.0.254"}) {
+		t.Fatalf("file route table missing expected nexthop for default route: %v\n%s", fileHops, fileRoutes)
+	}
+	if !routeListContainsHops(blueHops, []string{"10.246.0.254"}) {
+		t.Fatalf("blue route table missing expected nexthop for default route: %v\n%s", blueHops, blueRoutes)
+	}
+	if routeListContainsHops(fileHops, []string{"10.246.0.254"}) {
+		t.Fatalf("file route table should not contain blue default nexthop, got %v", fileHops)
+	}
+	if routeListContainsHops(blueHops, []string{"10.245.0.254"}) {
+		t.Fatalf("blue route table should not contain file default nexthop, got %v", blueHops)
+	}
+}
+
 func TestDockerControllerStateReplayDetectsManagedOVNLeaks(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skip long e2e test in short mode")
