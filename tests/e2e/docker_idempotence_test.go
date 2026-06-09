@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"runtime"
 	"strings"
 	"testing"
@@ -492,6 +493,121 @@ func TestDockerControllerStateReplayDetectsManagedOVNLeaks(t *testing.T) {
 	}
 }
 
+func TestDockerControllerRouteTableECMPDeltaIsIncremental(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip long e2e test in short mode")
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker is not installed")
+	}
+
+	composeFile := filepath.Join("testdata", "..", "docker-compose.yaml")
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+
+	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
+	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
+	run(t, ctx, "docker", "compose", "-f", composeFile, "up", "-d", "--quiet-pull", "--force-recreate")
+	t.Cleanup(func() {
+		downCtx, downCancel := context.WithTimeout(context.Background(), time.Minute)
+		defer downCancel()
+		run(t, downCtx, "docker", "compose", "-f", composeFile, "down", "-v")
+	})
+	waitForOVN(t, ctx, composeFile)
+
+	baseState := "/tmp/netloom-state-route-base.json"
+	toECMPState := "/tmp/netloom-state-route-ecmp.json"
+	backToSingleState := "/tmp/netloom-state-route-single.json"
+	controllerStatePath := "/tmp/netloom-state-route-current.json"
+	controllerLogPath := "/tmp/netloom-controller-route-watch.log"
+	controllerPIDPath := "/tmp/netloom-controller-route-watch.pid"
+	writeFile := func(path, contents string) {
+		run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "cat >"+path+" <<'EOF'\n"+contents+"\nEOF")
+	}
+	writeFile(baseState, desiredStateWithStaticRouteFromECMPToSingleJSON())
+	writeFile(toECMPState, desiredStateWithStaticRouteToECMPJSON())
+	writeFile(backToSingleState, desiredStateWithStaticRouteFromECMPToSingleJSON())
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "cp", baseState, controllerStatePath)
+
+	startControllerWatch := "cat /dev/null > " + controllerLogPath + "; (NETLOOM_STATE_FILE=" + controllerStatePath + " NETLOOM_RECONCILE_INTERVAL_MS=250 NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller >" + controllerLogPath + " 2>&1 &) ; echo $! > " + controllerPIDPath
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", startControllerWatch)
+	waitForControllerWatch := func(expected string) {
+		for i := 0; i < 20; i++ {
+			output := runAllowFailure(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "grep -Fq '"+expected+"' "+controllerLogPath+" && exit 0 || exit 1")
+			if output.exitCode == 0 {
+				return
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+		logOutput := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "cat", controllerLogPath)
+		t.Fatalf("controller watch did not emit %q in time:\n%s", expected, logOutput)
+	}
+	waitForControllerWatch("reconciled desired state")
+
+	waitForRouteNextHops := func(expected, forbidden []string) string {
+		deadline := time.Now().Add(30 * time.Second)
+		for time.Now().Before(deadline) {
+			listOutput := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "lr-route-list", "nl_lr_file")
+			nextHops := parseRouteNextHopsFromList(t, listOutput, "0.0.0.0/0")
+			if routeListHasOnlyHops(nextHops, expected) && !routeListContainsAnyHops(nextHops, forbidden) {
+				return listOutput
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+		currentRouteOutput := runAllowFailure(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "lr-route-list", "nl_lr_file")
+		t.Fatalf("route state did not converge to expected next hops %v with no stale hops %v:\n%s", expected, forbidden, currentRouteOutput.output)
+		return ""
+	}
+
+	baseRouteOutput := waitForRouteNextHops([]string{"10.245.0.252"}, nil)
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "cp", toECMPState, controllerStatePath)
+	ecmpRouteOutput := waitForRouteNextHops([]string{"10.245.0.251", "10.245.0.252"}, nil)
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "cp", backToSingleState, controllerStatePath)
+	afterSingleRouteOutput := waitForRouteNextHops([]string{"10.245.0.252"}, []string{"10.245.0.251", "10.245.0.253"})
+
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cleanupCancel()
+		runAllowFailure(t, cleanupCtx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "pid=$(cat "+controllerPIDPath+" 2>/dev/null || true); [ -n \"$pid\" ] && kill -9 \"$pid\" || true; rm -f "+controllerPIDPath)
+	})
+
+	baseNextHops := parseRouteNextHopsFromList(t, baseRouteOutput, "0.0.0.0/0")
+	if len(baseNextHops) != 1 || baseNextHops[0] != "10.245.0.252" {
+		t.Fatalf("base state expected single next hop 10.245.0.252 for 0.0.0.0/0, got %#v", baseNextHops)
+	}
+
+	afterAddNextHops := parseRouteNextHopsFromList(t, ecmpRouteOutput, "0.0.0.0/0")
+	if len(afterAddNextHops) != 2 {
+		t.Fatalf("ECMP state expected two nexthops for 0.0.0.0/0, got %#v", afterAddNextHops)
+	}
+	if !routeListContainsHops(afterAddNextHops, []string{"10.245.0.251", "10.245.0.252"}) {
+		t.Fatalf("route ECMP state should contain both nexthops, got:\n%s", ecmpRouteOutput)
+	}
+
+	afterSingleNextHops := parseRouteNextHopsFromList(t, afterSingleRouteOutput, "0.0.0.0/0")
+	if len(afterSingleNextHops) != 1 || afterSingleNextHops[0] != "10.245.0.252" {
+		t.Fatalf("single state expected one nexthop 10.245.0.252 for 0.0.0.0/0, got %#v", afterSingleNextHops)
+	}
+	if !routeListContainsHops(afterSingleNextHops, []string{"10.245.0.252"}) {
+		t.Fatalf("route single-hop state should contain 10.245.0.252, got:\n%s", afterSingleRouteOutput)
+	}
+	if routeListContainsHops(afterSingleNextHops, []string{"10.245.0.251", "10.245.0.253"}) {
+		t.Fatalf("route single-hop state should not contain stale nexthops, got:\n%s", afterSingleRouteOutput)
+	}
+}
+
+func routeListHasOnlyHops(got []string, expected []string) bool {
+	if len(got) != len(expected) {
+		return false
+	}
+	for _, hop := range expected {
+		if !routeListContainsHops(got, []string{hop}) {
+			return false
+		}
+	}
+	return true
+}
+
 func activeManagedRows(t *testing.T, ctx context.Context, composeFile, table string, filters ...string) []string {
 	t.Helper()
 	column := "name"
@@ -508,6 +624,59 @@ func activeManagedRows(t *testing.T, ctx context.Context, composeFile, table str
 		t.Fatalf("failed to list managed %s rows: %s", table, result.output)
 	}
 	return strings.Fields(strings.TrimSpace(result.output))
+}
+
+func staticRouteNextHopsForPrefix(t *testing.T, ctx context.Context, composeFile, router, destination string) []string {
+	t.Helper()
+	listOutput := runAllowFailure(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "lr-route-list", router)
+	if listOutput.exitCode != 0 {
+		t.Fatalf("failed to list routes for router %q: %s", router, listOutput.output)
+	}
+	return parseRouteNextHopsFromList(t, listOutput.output, destination)
+}
+
+func parseRouteNextHopsFromList(t *testing.T, routeListOutput, destination string) []string {
+	t.Helper()
+	lines := strings.Split(routeListOutput, "\n")
+	nextSet := make(map[string]struct{})
+	for _, line := range lines {
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) < 2 || fields[0] != destination {
+			continue
+		}
+		nextSet[fields[1]] = struct{}{}
+	}
+	nextHops := make([]string, 0, len(nextSet))
+	for nextHop := range nextSet {
+		nextHops = append(nextHops, nextHop)
+	}
+	sort.Strings(nextHops)
+	return nextHops
+}
+
+func routeListContainsHops(nextHops []string, expected []string) bool {
+	for _, expectedHop := range expected {
+		found := false
+		for _, nextHop := range nextHops {
+			if nextHop == expectedHop {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+func routeListContainsAnyHops(nextHops []string, expected []string) bool {
+	for _, hop := range expected {
+		if routeListContainsHops(nextHops, []string{hop}) {
+			return true
+		}
+	}
+	return false
 }
 
 func desiredDualVPCStateJSON() string {
