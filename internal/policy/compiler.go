@@ -73,6 +73,7 @@ type CompileContext struct {
 	Services   []model.LoadBalancer
 	DNSRecords []model.DNSRecord
 	CIDRGroups []model.CIDRGroup
+	IdentityResolver
 	Now        time.Time
 }
 
