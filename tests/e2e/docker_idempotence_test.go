@@ -643,6 +643,122 @@ func TestDockerControllerReplayDoesNotChangeOVNStateAcrossVPCs(t *testing.T) {
 	}
 }
 
+func TestDockerControllerReplaysRecoverOnDualVPCRestart(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip long e2e test in short mode")
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker is not installed")
+	}
+
+	composeFile := filepath.Join("testdata", "..", "docker-compose.yaml")
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+
+	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
+	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
+	run(t, ctx, "docker", "compose", "-f", composeFile, "up", "-d", "--quiet-pull", "--force-recreate")
+	t.Cleanup(func() {
+		downCtx, downCancel := context.WithTimeout(context.Background(), time.Minute)
+		defer downCancel()
+		run(t, downCtx, "docker", "compose", "-f", composeFile, "down", "-v")
+	})
+	waitForOVN(t, ctx, composeFile)
+
+	statePath := "/tmp/netloom-state-dual-vpc-watch.json"
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "cat >"+statePath+" <<'EOF'\n"+desiredDualVPCStateJSON()+"\nEOF")
+
+	controllerLogPath := "/tmp/netloom-controller-dual-vpc-watch.log"
+	controllerPIDPath := "/tmp/netloom-controller-dual-vpc-watch.pid"
+	controllerRun := "cat /dev/null > " + controllerLogPath + "; (NETLOOM_STATE_FILE=" + statePath + " NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock NETLOOM_RECONCILE_INTERVAL_MS=250 /netloom/bin/netloom-controller >" + controllerLogPath + " 2>&1 &) ; echo $! > " + controllerPIDPath
+	startControllerWatch := func() {
+		run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", controllerRun)
+	}
+	stopControllerWatch := func() {
+		runAllowFailure(t, context.Background(), "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "pid=$(cat "+controllerPIDPath+" 2>/dev/null || true); [ -n \"$pid\" ] && kill -9 \"$pid\" || true; rm -f "+controllerPIDPath)
+	}
+	waitForControllerWatch := func(expected string) {
+		for i := 0; i < 20; i++ {
+			output := runAllowFailure(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "grep -Fq '"+expected+"' "+controllerLogPath+" && exit 0 || exit 1")
+			if output.exitCode == 0 {
+				return
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+		logOutput := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "cat", controllerLogPath)
+		t.Fatalf("controller watch did not emit %q in time:\n%s", expected, logOutput)
+	}
+	snapshot := func() map[string]map[string]int {
+		return map[string]map[string]int{
+			"file": {
+				"logical_router":     len(activeManagedRows(t, ctx, composeFile, "logical_router", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
+				"logical_switch":     len(activeManagedRows(t, ctx, composeFile, "logical_switch", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
+				"logical_switch_port": len(activeManagedRows(t, ctx, composeFile, "logical_switch_port", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
+				"nat":                len(activeManagedRows(t, ctx, composeFile, "NAT", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
+				"load_balancer":      len(activeManagedRows(t, ctx, composeFile, "load_balancer", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
+			},
+			"blue": {
+				"logical_router":     len(activeManagedRows(t, ctx, composeFile, "logical_router", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue")),
+				"logical_switch":     len(activeManagedRows(t, ctx, composeFile, "logical_switch", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue")),
+				"logical_switch_port": len(activeManagedRows(t, ctx, composeFile, "logical_switch_port", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue")),
+				"nat":                len(activeManagedRows(t, ctx, composeFile, "NAT", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue")),
+				"load_balancer":      len(activeManagedRows(t, ctx, composeFile, "load_balancer", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue")),
+			},
+		}
+	}
+
+	startControllerWatch()
+	waitForControllerWatch("reconciled desired state")
+	baseSnapshot := snapshot()
+
+	fileEndpoint := endpointExternalIDForOVN("file", "shared-pod")
+	blueEndpoint := endpointExternalIDForOVN("blue", "shared-pod")
+	filePorts := activeManagedRows(t, ctx, composeFile, "logical_switch_port", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file", "external_ids:netloom_endpoint="+fileEndpoint)
+	bluePorts := activeManagedRows(t, ctx, composeFile, "logical_switch_port", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue", "external_ids:netloom_endpoint="+blueEndpoint)
+	if len(filePorts) != 1 || len(bluePorts) != 1 {
+		t.Fatalf("expected both endpoints before churn, got filePorts=%v bluePorts=%v", filePorts, bluePorts)
+	}
+
+	stopControllerWatch()
+
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock --if-exists lsp-del "+filePorts[0])
+	waitForNoRows := func(vpc string) {
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			ports := activeManagedRows(t, ctx, composeFile, "logical_switch_port", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc="+vpc, "external_ids:netloom_endpoint="+map[string]string{"file": fileEndpoint, "blue": blueEndpoint}[vpc])
+			if len(ports) == 0 {
+				return
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+		t.Fatalf("expected file endpoint port to disappear before restart; current=%v", activeManagedRows(t, ctx, composeFile, "logical_switch_port", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file", "external_ids:netloom_endpoint="+fileEndpoint))
+	}
+	waitForNoRows("file")
+
+	startControllerWatch()
+	waitForControllerWatch("reconciled desired state")
+
+	afterWatchPorts := map[string][]string{
+		"file": activeManagedRows(t, ctx, composeFile, "logical_switch_port", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file", "external_ids:netloom_endpoint="+fileEndpoint),
+		"blue": activeManagedRows(t, ctx, composeFile, "logical_switch_port", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue", "external_ids:netloom_endpoint="+blueEndpoint),
+	}
+	if len(afterWatchPorts["file"]) != 1 {
+		t.Fatalf("file endpoint port should be recreated after restart: %v", afterWatchPorts["file"])
+	}
+	if len(afterWatchPorts["blue"]) != 1 {
+		t.Fatalf("blue endpoint port should remain after restart: %v", afterWatchPorts["blue"])
+	}
+
+	current := snapshot()
+	if !reflect.DeepEqual(baseSnapshot, current) {
+		t.Fatalf("OVN snapshot changed after restart recovery.\nbase=%+v\ncurrent=%+v", baseSnapshot, current)
+	}
+
+	t.Cleanup(func() {
+		stopControllerWatch()
+	})
+}
+
 func TestDockerControllerRouteTableECMPDeltaIsIncremental(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skip long e2e test in short mode")
