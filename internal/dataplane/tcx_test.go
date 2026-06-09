@@ -710,6 +710,29 @@ func TestAttachTCXL4RulesForDirectionReturnsErrorWhenSecondAttachFails(t *testin
 	}
 }
 
+func TestAttachTCXL4RulesForDirectionReturnsAttachFailure(t *testing.T) {
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Skipf("cannot adjust memlock for TCX attach test: %v", err)
+	}
+	originalAttach := attachTCX
+	attachTCX = func(opts link.TCXOptions) (link.Link, error) {
+		return nil, errors.New("mocked attach failure")
+	}
+	t.Cleanup(func() {
+		attachTCX = originalAttach
+	})
+
+	_, err := AttachTCXIPv4L4RulesForDirection(context.Background(), "lo",
+		[]IPv4L4ACLRule{{Action: TCXDrop, Protocol: 6, SourceCIDR: netip.MustParsePrefix("172.30.0.11/32"), DestPort: 8080}},
+		ebpf.AttachTCXIngress, model.DirectionIngress)
+	if err == nil {
+		t.Fatal("expected dual-stack attach failure")
+	}
+	if !strings.Contains(err.Error(), "mocked attach failure") {
+		t.Fatalf("error = %v, want mocked attach failure", err)
+	}
+}
+
 func TestNewConstantTCXProgramReturnsVerifierError(t *testing.T) {
 	originalProgram := newTCXProgram
 	newTCXProgram = func(*ebpf.ProgramSpec) (*ebpf.Program, error) {
