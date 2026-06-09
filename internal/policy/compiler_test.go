@@ -4,6 +4,7 @@ import (
 	"net/netip"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -798,6 +799,79 @@ func TestCompileForEndpointScopesProgramAndRemoteEndpointIdentityByVPC(t *testin
 	if dev := EndpointIdentity(model.EndpointKey("dev", "pod-b")); dev == program.MapEntries[0].Key.RemoteIdentity {
 		t.Fatalf("prod and dev endpoint identities collided: %d", dev)
 	}
+}
+
+func TestCompileForEndpointUsesIdentityResolverForRemoteIdentities(t *testing.T) {
+	resolver := &countingResolver{
+		cache: make(map[string]uint32),
+		calls: make(map[string]int),
+	}
+	target := model.Endpoint{
+		ID:             "pod-a",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"web"},
+	}
+	peer := model.Endpoint{
+		ID:             "pod-b",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.11"),
+		Node:           "node-b",
+		SecurityGroups: []string{"clients"},
+	}
+	program, err := CompileForEndpointWithContext(target, map[string]model.SecurityGroup{
+		"web": {
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:          "allow-clients",
+				Priority:    100,
+				Direction:   model.DirectionIngress,
+				Protocol:    model.ProtocolTCP,
+				RemoteGroup: "clients",
+				Ports:       []model.PortRange{{From: 8080, To: 8080}},
+				Action:      model.ActionAllow,
+			}},
+		},
+		"clients": {Name: "clients", VPC: "prod"},
+	}, CompileContext{
+		Endpoints:        []model.Endpoint{target, peer},
+		IdentityResolver: resolver,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	remoteIdentity := resolver.cache["endpoint:"+model.EndpointKey("prod", "pod-b")]
+	if remoteIdentity == 0 {
+		t.Fatalf("resolver never produced identity for remote endpoint")
+	}
+	if got := program.MapEntries[0].Key.RemoteIdentity; got != remoteIdentity {
+		t.Fatalf("remote identity = %d, want resolver produced %d", got, remoteIdentity)
+	}
+	if got := resolver.calls["endpoint:"+model.EndpointKey("prod", "pod-b")]; got != 1 {
+		t.Fatalf("identity resolver called %d times for remote endpoint, want 1", got)
+	}
+}
+
+type countingResolver struct {
+	mu    sync.Mutex
+	cache map[string]uint32
+	calls map[string]int
+}
+
+func (r *countingResolver) Identity(value string) uint32 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls[value]++
+	if id, ok := r.cache[value]; ok {
+		return id
+	}
+	id := stableIdentity(value)
+	r.cache[value] = id
+	return id
 }
 
 func TestCompileForEndpointWithContextExpandsRemoteEndpointSelector(t *testing.T) {

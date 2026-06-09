@@ -8,13 +8,11 @@ type IdentityResolver interface {
 
 type IdentityCache struct {
 	mu      sync.Mutex
-	next    uint32
 	entries map[string]uint32
 }
 
 func NewIdentityCache() *IdentityCache {
 	return &IdentityCache{
-		next:    1,
 		entries: make(map[string]uint32),
 	}
 }
@@ -27,8 +25,7 @@ func (c *IdentityCache) Identity(value string) uint32 {
 		return id
 	}
 
-	id := c.next
-	c.next++
+	id := stableIdentity(value)
 	c.entries[value] = id
 	return id
 }

@@ -167,6 +167,48 @@ func TestDockerControllerConcurrentReconcilesAreStable(t *testing.T) {
 	}
 }
 
+func TestDockerControllerReconcileSupportsSameEndpointIDAcrossVPCs(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip long e2e test in short mode")
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker is not installed")
+	}
+
+	composeFile := filepath.Join("testdata", "..", "docker-compose.yaml")
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+
+	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
+	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
+	run(t, ctx, "docker", "compose", "-f", composeFile, "up", "-d", "--quiet-pull", "--force-recreate")
+	t.Cleanup(func() {
+		downCtx, downCancel := context.WithTimeout(context.Background(), time.Minute)
+		defer downCancel()
+		run(t, downCtx, "docker", "compose", "-f", composeFile, "down", "-v")
+	})
+	waitForOVN(t, ctx, composeFile)
+
+	statePath := "/tmp/netloom-state-dual-vpc.json"
+	stateScript := "cat >" + statePath + " <<'EOF'\n" + desiredDualVPCStateJSON() + "\nEOF\n"
+	stateCommand := stateScript + "NETLOOM_STATE_FILE=" + statePath + " NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller"
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", stateCommand)
+
+	fileEndpoint := endpointExternalIDForOVN("file", "shared-pod")
+	blueEndpoint := endpointExternalIDForOVN("blue", "shared-pod")
+	filePorts := activeManagedRows(t, ctx, composeFile, "logical_switch_port", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file", "external_ids:netloom_endpoint="+fileEndpoint)
+	bluePorts := activeManagedRows(t, ctx, composeFile, "logical_switch_port", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue", "external_ids:netloom_endpoint="+blueEndpoint)
+	if len(filePorts) != 1 {
+		t.Fatalf("expected one logical switch port for file shared-pod, got %d (%v)", len(filePorts), filePorts)
+	}
+	if len(bluePorts) != 1 {
+		t.Fatalf("expected one logical switch port for blue shared-pod, got %d (%v)", len(bluePorts), bluePorts)
+	}
+	if filePorts[0] == bluePorts[0] {
+		t.Fatalf("expected VPC-scoped endpoints to produce distinct logical switch port names: %s", filePorts[0])
+	}
+}
+
 func TestDockerControllerStateReplayDetectsManagedOVNLeaks(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skip long e2e test in short mode")
@@ -195,7 +237,7 @@ func TestDockerControllerStateReplayDetectsManagedOVNLeaks(t *testing.T) {
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", stateCommand)
 
 	beforeManagedRows := map[string]int{
-		"NAT":                 len(activeManagedRows(t, ctx, composeFile, "NAT", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
+		"NAT":                   len(activeManagedRows(t, ctx, composeFile, "NAT", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
 		"Logical_Router_Policy": len(activeManagedRows(t, ctx, composeFile, "Logical_Router_Policy", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
 	}
 	staleManagedNAT := "ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock --id=@stale_managed_nat create NAT type=snat external_ip=198.51.100.220 logical_ip=10.10.0.220 external_ids:netloom_owner=netloom external_ids:netloom_nat=stale-leak external_ids:netloom_vpc=file -- add logical_router nl_lr_file nat @stale_managed_nat"
@@ -208,7 +250,7 @@ func TestDockerControllerStateReplayDetectsManagedOVNLeaks(t *testing.T) {
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", stateCommand)
 
 	afterManagedRows := map[string]int{
-		"NAT":                 len(activeManagedRows(t, ctx, composeFile, "NAT", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
+		"NAT":                   len(activeManagedRows(t, ctx, composeFile, "NAT", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
 		"Logical_Router_Policy": len(activeManagedRows(t, ctx, composeFile, "Logical_Router_Policy", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
 	}
 	if beforeManagedRows["NAT"] != afterManagedRows["NAT"] {
@@ -249,4 +291,25 @@ func activeManagedRows(t *testing.T, ctx context.Context, composeFile, table str
 		t.Fatalf("failed to list managed %s rows: %s", table, result.output)
 	}
 	return strings.Fields(strings.TrimSpace(result.output))
+}
+
+func desiredDualVPCStateJSON() string {
+	return `{
+  "vpcs": [
+    {"name": "file"},
+    {"name": "blue"}
+  ],
+  "subnets": [
+    {"name": "fileapps", "vpc": "file", "cidr": "10.245.0.0/24", "gateway": "10.245.0.1"},
+    {"name": "blueapps", "vpc": "blue", "cidr": "10.246.0.0/24", "gateway": "10.246.0.1"}
+  ],
+  "endpoints": [
+    {"id": "shared-pod", "vpc": "file", "subnet": "fileapps", "ip": "10.245.0.10", "node": "node-a", "security_groups": ["file-allow"]},
+    {"id": "shared-pod", "vpc": "blue", "subnet": "blueapps", "ip": "10.246.0.10", "node": "node-a", "security_groups": ["blue-allow"]}
+  ],
+  "security_groups": [
+    {"name": "file-allow", "vpc": "file", "rules": [{"id": "allow", "priority": 100, "direction": "ingress", "protocol": "any", "remote_cidr": "0.0.0.0/0", "action": "allow"}]},
+    {"name": "blue-allow", "vpc": "blue", "rules": [{"id": "allow", "priority": 100, "direction": "ingress", "protocol": "any", "remote_cidr": "0.0.0.0/0", "action": "allow"}]}
+  ]
+}`
 }
