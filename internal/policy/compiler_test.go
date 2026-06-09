@@ -123,6 +123,76 @@ func TestCompileForEndpointUsesKubeOVNStyleLowerRulePriorityFirst(t *testing.T) 
 	}
 }
 
+func TestCompileForEndpointPropagatesStatefulPolicyToMapEntries(t *testing.T) {
+	endpoint := model.Endpoint{
+		ID:             "pod-a",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"web"},
+	}
+	groups := map[string]model.SecurityGroup{
+		"web": {
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{
+				{
+					ID:         "allow-stateful",
+					Priority:   100,
+					Direction:  model.DirectionIngress,
+					Protocol:   model.ProtocolTCP,
+					RemoteCIDR: netip.MustParsePrefix("10.10.1.0/24"),
+					Ports:      []model.PortRange{{From: 53, To: 53}},
+					Action:     model.ActionAllow,
+					Stateful:   true,
+				},
+				{
+					ID:         "allow-stateless",
+					Priority:   101,
+					Direction:  model.DirectionIngress,
+					Protocol:   model.ProtocolTCP,
+					RemoteCIDR: netip.MustParsePrefix("10.10.2.0/24"),
+					Ports:      []model.PortRange{{From: 53, To: 53}},
+					Action:     model.ActionAllow,
+					Stateful:   false,
+				},
+			},
+		},
+	}
+
+	program, err := CompileForEndpoint(endpoint, groups)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(program.MapEntries) != 2 {
+		t.Fatalf("compiled map entries = %d, want 2", len(program.MapEntries))
+	}
+
+	foundStateful := false
+	foundStateless := false
+	for _, entry := range program.MapEntries {
+		switch entry.RuleID {
+		case "allow-stateful":
+			foundStateful = true
+			if !entry.Value.Stateful {
+				t.Fatalf("rule %s should be stateful", entry.RuleID)
+			}
+		case "allow-stateless":
+			foundStateless = true
+			if entry.Value.Stateful {
+				t.Fatalf("rule %s should not be stateful", entry.RuleID)
+			}
+		}
+	}
+	if !foundStateful {
+		t.Fatal("stateful rule entry not found")
+	}
+	if !foundStateless {
+		t.Fatal("stateless rule entry not found")
+	}
+}
+
 func TestCompileForEndpointSupportsCiliumStyleDefaultAllowMode(t *testing.T) {
 	defaultAllow := false
 	endpoint := model.Endpoint{
