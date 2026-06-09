@@ -779,6 +779,39 @@ func TestDockerControllerStateReplayDetectsManagedOVNLeaks(t *testing.T) {
 	if strings.TrimSpace(unmanagedNATRows.output) == "" {
 		t.Fatalf("expected unmanaged leak row to remain for leakage validation")
 	}
+
+	for i := 0; i < 3; i++ {
+		replayOutput := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", stateCommand)
+		if !strings.Contains(replayOutput, "reconciled desired state") {
+			t.Fatalf("managed leak cleanup replay iteration %d failed:\n%s", i, replayOutput)
+		}
+		afterReplayManagedRows := map[string]int{
+			"NAT":                   len(activeManagedRows(t, ctx, composeFile, "NAT", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
+			"Logical_Router_Policy": len(activeManagedRows(t, ctx, composeFile, "Logical_Router_Policy", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
+			"Load_Balancer_Health_Check": len(activeManagedRows(t, ctx, composeFile, "Load_Balancer_Health_Check", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file", "external_ids:netloom_load_balancer=file-web")),
+		}
+		for table, beforeCount := range beforeManagedRows {
+			if afterReplayManagedRows[table] != beforeCount {
+				t.Fatalf("managed resource count changed after replay iteration %d for table %s: before=%d after=%d", i, table, beforeCount, afterReplayManagedRows[table])
+			}
+		}
+		replayedManagedNATRows := runAllowFailure(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "--bare", "--no-heading", "--columns=_uuid", "find", "NAT", "external_ids:netloom_owner=netloom", "external_ids:netloom_nat=stale-leak", "external_ids:netloom_vpc=file")
+		if strings.TrimSpace(replayedManagedNATRows.output) != "" {
+			t.Fatalf("stale managed NAT row should be cleaned after replay iteration %d: %s", i, replayedManagedNATRows.output)
+		}
+		replayedManagedPolicyRows := runAllowFailure(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "--bare", "--no-heading", "--columns=_uuid", "find", "Logical_Router_Policy", "external_ids:netloom_owner=netloom", "external_ids:netloom_policy_route=stale-leak", "external_ids:netloom_vpc=file")
+		if strings.TrimSpace(replayedManagedPolicyRows.output) != "" {
+			t.Fatalf("stale managed policy row should be cleaned after replay iteration %d: %s", i, replayedManagedPolicyRows.output)
+		}
+		replayedManagedLBHCRows := runAllowFailure(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "--bare", "--no-heading", "--columns=_uuid", "find", "Load_Balancer_Health_Check", "external_ids:netloom_owner=netloom", "external_ids:netloom_load_balancer=file-web", "external_ids:netloom_vpc=file", "vip=10.96.0.99")
+		if strings.TrimSpace(replayedManagedLBHCRows.output) != "" {
+			t.Fatalf("stale managed LB health check row should be cleaned after replay iteration %d: %s", i, replayedManagedLBHCRows.output)
+		}
+		replayedUnmanagedNATRows := runAllowFailure(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "--bare", "--no-heading", "--columns=_uuid", "find", "NAT", "external_ids:notes=netloom-unmanaged-leak", "external_ids:owner=manual")
+		if strings.TrimSpace(replayedUnmanagedNATRows.output) == "" {
+			t.Fatalf("unmanaged leak row should remain after replay iteration %d", i)
+		}
+	}
 }
 
 func TestDockerControllerStateReplayDetectsManagedOVNLeaksAcrossVPCs(t *testing.T) {
