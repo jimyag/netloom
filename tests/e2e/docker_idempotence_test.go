@@ -227,6 +227,114 @@ func TestDockerControllerConcurrentReconcilesAreStable(t *testing.T) {
 	}
 }
 
+func TestDockerControllerConcurrentReconcilesAreStableAcrossVPCs(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip long e2e test in short mode")
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker is not installed")
+	}
+
+	composeFile := filepath.Join("testdata", "..", "docker-compose.yaml")
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+
+	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
+	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
+	run(t, ctx, "docker", "compose", "-f", composeFile, "up", "-d", "--quiet-pull", "--force-recreate")
+	t.Cleanup(func() {
+		downCtx, downCancel := context.WithTimeout(context.Background(), time.Minute)
+		defer downCancel()
+		run(t, downCtx, "docker", "compose", "-f", composeFile, "down", "-v")
+	})
+	waitForOVN(t, ctx, composeFile)
+
+	baseStatePath := "/tmp/netloom-state-dual-concurrent-base.json"
+	reconcileStatePath := "/tmp/netloom-state-dual-concurrent.json"
+	baseWriteScript := "cat >" + baseStatePath + " <<'EOF'\n" + desiredDualVPCStateJSON() + "\nEOF\n"
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", baseWriteScript)
+	atomicallyRefreshState := "tmp=$(mktemp /tmp/netloom-state-dual-concurrent-XXXXXXXXXXXX.tmp) && cp " + baseStatePath + " \"$tmp\" && mv \"$tmp\" " + reconcileStatePath
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "cp "+baseStatePath+" "+reconcileStatePath)
+	watchLog := "/tmp/netloom-controller-dual-vpc-concurrent-watch.log"
+	watchCommand := atomicallyRefreshState + "\n" + "NETLOOM_STATE_FILE=" + reconcileStatePath + " NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock NETLOOM_RECONCILE_INTERVAL_MS=300 /netloom/bin/netloom-controller >" + watchLog + " 2>&1"
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", watchCommand+" &")
+	waitForControllerWatch := func(expected string) {
+		for i := 0; i < 20; i++ {
+			output := runAllowFailure(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "grep -Fq '"+expected+"' "+watchLog+" && exit 0 || exit 1")
+			if output.exitCode == 0 {
+				return
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+		logOutput := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "cat", watchLog)
+		t.Fatalf("controller watch did not emit %q in time:\n%s", expected, logOutput)
+	}
+	waitForControllerWatch("reconciled desired state")
+
+	fileEndpoint := endpointExternalIDForOVN("file", "shared-pod")
+	blueEndpoint := endpointExternalIDForOVN("blue", "shared-pod")
+	snapshot := func() map[string]map[string]int {
+		return map[string]map[string]int{
+			"file": {
+				"logical_router":        len(activeManagedRows(t, ctx, composeFile, "logical_router", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
+				"logical_switch":        len(activeManagedRows(t, ctx, composeFile, "logical_switch", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
+				"logical_switch_port":    len(activeManagedRows(t, ctx, composeFile, "logical_switch_port", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file", "external_ids:netloom_endpoint="+fileEndpoint)),
+				"nat":                   len(activeManagedRows(t, ctx, composeFile, "NAT", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
+				"load_balancer":         len(activeManagedRows(t, ctx, composeFile, "load_balancer", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
+				"logical_router_policy":  len(activeManagedRows(t, ctx, composeFile, "Logical_Router_Policy", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
+			},
+			"blue": {
+				"logical_router":        len(activeManagedRows(t, ctx, composeFile, "logical_router", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue")),
+				"logical_switch":        len(activeManagedRows(t, ctx, composeFile, "logical_switch", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue")),
+				"logical_switch_port":    len(activeManagedRows(t, ctx, composeFile, "logical_switch_port", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue", "external_ids:netloom_endpoint="+blueEndpoint)),
+				"nat":                   len(activeManagedRows(t, ctx, composeFile, "NAT", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue")),
+				"load_balancer":         len(activeManagedRows(t, ctx, composeFile, "load_balancer", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue")),
+				"logical_router_policy":  len(activeManagedRows(t, ctx, composeFile, "Logical_Router_Policy", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue")),
+			},
+		}
+	}
+
+	before := snapshot()
+	reconcilerCount := runtime.NumCPU() * 3
+	if reconcilerCount < 6 {
+		reconcilerCount = 6
+	}
+	writerErrors := make(chan error, reconcilerCount)
+	for i := 0; i < reconcilerCount; i++ {
+		reconcileDelay := time.Duration(i%3) * 100 * time.Millisecond
+		go func(delay time.Duration) {
+			time.Sleep(delay)
+			for j := 0; j < 4; j++ {
+				output := runAllowFailure(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", atomicallyRefreshState)
+				if output.exitCode != 0 {
+					writerErrors <- fmt.Errorf("state refresh failed: %s", output.output)
+					return
+				}
+				time.Sleep(100 * time.Millisecond)
+			}
+			writerErrors <- nil
+		}(reconcileDelay)
+	}
+
+	for i := 0; i < reconcilerCount; i++ {
+		if err := <-writerErrors; err != nil {
+			t.Fatalf("concurrent reconcile trigger failed: %v", err)
+		}
+	}
+	waitForControllerWatch("reconciled desired state")
+
+	after := snapshot()
+	if !reflect.DeepEqual(before, after) {
+		t.Fatalf("OVN snapshot changed after concurrent dual-vpc reconcile triggers.\nbefore=%+v\nafter=%+v", before, after)
+	}
+	filePorts := activeManagedRows(t, ctx, composeFile, "logical_switch_port", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file", "external_ids:netloom_endpoint="+fileEndpoint)
+	bluePorts := activeManagedRows(t, ctx, composeFile, "logical_switch_port", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue", "external_ids:netloom_endpoint="+blueEndpoint)
+	if len(filePorts) != 1 || len(bluePorts) != 1 {
+		t.Fatalf("expected one endpoint port per vpc after concurrent reconcile, got file=%v blue=%v", filePorts, bluePorts)
+	}
+
+}
+
 func TestDockerControllerWatchRecoversFromRestart(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skip long e2e test in short mode")
