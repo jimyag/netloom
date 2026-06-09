@@ -522,6 +522,38 @@ func TestDockerControllerSupportsSameResourceNamesAcrossVPCs(t *testing.T) {
 	if fileL4lb == blueL4lb {
 		t.Fatalf("expected VPC-scoped load balancer names to differ, both=%s", fileL4lb)
 	}
+
+	fileNAT := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "lr-nat-list", "nl_lr_file")
+	blueNAT := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "lr-nat-list", "nl_lr_blue")
+	if !strings.Contains(fileNAT, "198.51.100.50") {
+		t.Fatalf("file router NAT should include 198.51.100.50, output:\n%s", fileNAT)
+	}
+	if !strings.Contains(blueNAT, "198.51.101.50") {
+		t.Fatalf("blue router NAT should include 198.51.101.50, output:\n%s", blueNAT)
+	}
+	if strings.Contains(fileNAT, "198.51.101.50") {
+		t.Fatalf("file router NAT should not include blue NAT external IP, output:\n%s", fileNAT)
+	}
+	if strings.Contains(blueNAT, "198.51.100.50") {
+		t.Fatalf("blue router NAT should not include file NAT external IP, output:\n%s", blueNAT)
+	}
+
+	fileRoutes := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "lr-route-list", "nl_lr_file")
+	blueRoutes := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "lr-route-list", "nl_lr_blue")
+	fileHops := parseRouteNextHopsFromList(t, fileRoutes, "0.0.0.0/0")
+	blueHops := parseRouteNextHopsFromList(t, blueRoutes, "0.0.0.0/0")
+	if !routeListContainsHops(fileHops, []string{"10.245.0.254"}) {
+		t.Fatalf("file route table missing expected default nexthop 10.245.0.254: %v\n%s", fileHops, fileRoutes)
+	}
+	if !routeListContainsHops(blueHops, []string{"10.246.0.254"}) {
+		t.Fatalf("blue route table missing expected default nexthop 10.246.0.254: %v\n%s", blueHops, blueRoutes)
+	}
+	if routeListContainsHops(fileHops, []string{"10.246.0.254"}) {
+		t.Fatalf("file route table should not contain blue default nexthop, got %v", fileHops)
+	}
+	if routeListContainsHops(blueHops, []string{"10.245.0.254"}) {
+		t.Fatalf("blue route table should not contain file default nexthop, got %v", blueHops)
+	}
 }
 
 func TestDockerControllerReplaySameResourceNamesAcrossVPCs(t *testing.T) {
