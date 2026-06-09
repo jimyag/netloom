@@ -17,6 +17,8 @@ type Backend struct {
 	skipNAT  map[string]string
 	skipLB   map[string]string
 	skipPR   map[string]string
+	skipRT   map[string]string
+	skipEP   map[string]string
 	seen     bool
 }
 
@@ -24,6 +26,21 @@ const operationHistoryLimit = 4096
 
 func NewBackend(executor Executor) *Backend {
 	return &Backend{planner: NewPlanner(), executor: executor}
+}
+
+func (b *Backend) RestoreTopologyState(state topology.State) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	next := snapshotDesired(state)
+	b.last = next
+	b.skipNAT = unchangedNATRules(next, next)
+	b.skipLB = unchangedLoadBalancers(next, next)
+	b.skipPR = unchangedPolicyRoutes(next, next)
+	b.skipRT = unchangedRoutes(next, next)
+	b.skipEP = unchangedEndpoints(next, next)
+	b.seen = true
+	b.planner.SyncLoadBalancerHealthChecks(next.LoadBalancers)
 }
 
 func (b *Backend) EnsureVPC(ctx context.Context, vpc model.VPC) error {
@@ -35,11 +52,21 @@ func (b *Backend) EnsureSubnet(ctx context.Context, subnet model.Subnet) error {
 }
 
 func (b *Backend) EnsureEndpoint(ctx context.Context, endpoint model.Endpoint) error {
-	return b.apply(ctx, func() error { return b.planner.EnsureEndpoint(ctx, endpoint) })
+	return b.apply(ctx, func() error {
+		if b.skipUnchangedEndpointLocked(endpoint) {
+			return nil
+		}
+		return b.planner.EnsureEndpoint(ctx, endpoint)
+	})
 }
 
 func (b *Backend) EnsureRouteTable(ctx context.Context, table model.RouteTable) error {
-	return b.apply(ctx, func() error { return b.planner.EnsureRouteTable(ctx, table) })
+	return b.apply(ctx, func() error {
+		if b.skipUnchangedRouteTableLocked(table) {
+			return nil
+		}
+		return b.planner.EnsureRouteTable(ctx, table)
+	})
 }
 
 func (b *Backend) EnsurePolicyRoute(ctx context.Context, route model.PolicyRoute) error {
@@ -79,6 +106,8 @@ func (b *Backend) BeginTopologyReconcile(context.Context, topology.State) error 
 	b.skipNAT = nil
 	b.skipLB = nil
 	b.skipPR = nil
+	b.skipRT = nil
+	b.skipEP = nil
 	return nil
 }
 
@@ -94,6 +123,8 @@ func (b *Backend) CleanupTopology(ctx context.Context, state topology.State) err
 	skipNAT := unchangedNATRules(b.last, next)
 	skipLB := unchangedLoadBalancers(b.last, next)
 	skipPR := unchangedPolicyRoutes(b.last, next)
+	skipRT := unchangedRoutes(b.last, next)
+	skipEP := unchangedEndpoints(b.last, next)
 
 	if len(ops) > 0 {
 		if b.executor == nil {
@@ -108,6 +139,8 @@ func (b *Backend) CleanupTopology(ctx context.Context, state topology.State) err
 	b.skipNAT = skipNAT
 	b.skipLB = skipLB
 	b.skipPR = skipPR
+	b.skipRT = skipRT
+	b.skipEP = skipEP
 	b.last = next
 	b.seen = true
 	b.planner.SyncLoadBalancerHealthChecks(next.LoadBalancers)
@@ -118,7 +151,7 @@ func (b *Backend) skipUnchangedNATRuleLocked(rule model.NATRule) bool {
 	if len(b.skipNAT) == 0 {
 		return false
 	}
-	signature, ok := b.skipNAT[rule.Name]
+	signature, ok := b.skipNAT[natRuleStateKey(rule.VPC, rule.Name)]
 	return ok && signature == natRuleSignature(rule)
 }
 
@@ -126,7 +159,7 @@ func (b *Backend) skipUnchangedLoadBalancerLocked(lb model.LoadBalancer) bool {
 	if len(b.skipLB) == 0 {
 		return false
 	}
-	signature, ok := b.skipLB[lb.Name]
+	signature, ok := b.skipLB[loadBalancerStateKey(lb)]
 	return ok && signature == loadBalancerSignature(lb)
 }
 
@@ -136,6 +169,28 @@ func (b *Backend) skipUnchangedPolicyRouteLocked(route model.PolicyRoute) bool {
 	}
 	signature, ok := b.skipPR[policyRouteKey(route)]
 	return ok && signature == policyRouteSignature(route)
+}
+
+func (b *Backend) skipUnchangedRouteTableLocked(table model.RouteTable) bool {
+	if len(b.skipRT) == 0 || len(table.Routes) == 0 {
+		return false
+	}
+	for _, route := range table.Routes {
+		record := routeRecord{VPC: table.VPC, Route: route}
+		signature, ok := b.skipRT[routeKey(table.VPC, route)]
+		if !ok || signature != routeSignature(record) {
+			return false
+		}
+	}
+	return true
+}
+
+func (b *Backend) skipUnchangedEndpointLocked(endpoint model.Endpoint) bool {
+	if len(b.skipEP) == 0 {
+		return false
+	}
+	signature, ok := b.skipEP[model.EndpointKey(endpoint.VPC, endpoint.ID)]
+	return ok && signature == endpointSignature(endpoint, subnetForEndpoint(b.last.Subnets, endpoint))
 }
 
 func (b *Backend) Operations() []Operation {
@@ -175,4 +230,8 @@ func (b *Backend) recordOperationsLocked(ops []Operation) {
 	if len(b.history) > operationHistoryLimit {
 		b.history = append([]Operation(nil), b.history[len(b.history)-operationHistoryLimit:]...)
 	}
+}
+
+func natRuleStateKey(vpc, name string) string {
+	return vpc + "\x00" + name
 }

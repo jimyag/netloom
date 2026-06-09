@@ -615,6 +615,23 @@ func TestDockerControllerReplaySameResourceNamesAcrossVPCs(t *testing.T) {
 	if fileL4lb == blueL4lb {
 		t.Fatalf("expected VPC-specific LB names to differ during replay, both=%s", fileL4lb)
 	}
+	checkNATIsolation := func() {
+		fileNAT := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "lr-nat-list", "nl_lr_file")
+		blueNAT := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "lr-nat-list", "nl_lr_blue")
+		if !strings.Contains(fileNAT, "198.51.100.50") {
+			t.Fatalf("file router NAT should include 198.51.100.50, output:\n%s", fileNAT)
+		}
+		if !strings.Contains(blueNAT, "198.51.101.50") {
+			t.Fatalf("blue router NAT should include 198.51.101.50, output:\n%s", blueNAT)
+		}
+		if strings.Contains(fileNAT, "198.51.101.50") {
+			t.Fatalf("file router NAT should not include blue NAT external IP, output:\n%s", fileNAT)
+		}
+		if strings.Contains(blueNAT, "198.51.100.50") {
+			t.Fatalf("blue router NAT should not include file NAT external IP, output:\n%s", blueNAT)
+		}
+	}
+	checkNATIsolation()
 
 	reconcile := func() {
 		output := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", stateCommand)
@@ -637,6 +654,7 @@ func TestDockerControllerReplaySameResourceNamesAcrossVPCs(t *testing.T) {
 		if currentFilePorts[0] == currentBluePorts[0] {
 			t.Fatalf("endpoint port names should remain VPC-scoped and distinct at iteration %d: %s", i, currentFilePorts[0])
 		}
+		checkNATIsolation()
 	}
 }
 

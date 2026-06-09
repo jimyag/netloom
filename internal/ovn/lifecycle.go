@@ -66,11 +66,11 @@ func snapshotDesired(state topology.State) desiredSnapshot {
 	for _, gateway := range state.Gateways {
 		out.Gateways[gatewayStateKey(gateway.VPC, gateway.Name)] = gateway
 	}
-	for name, rule := range state.NATRules {
-		out.NATRules[name] = rule
+	for _, rule := range state.NATRules {
+		out.NATRules[natRuleStateKey(rule.VPC, rule.Name)] = rule
 	}
-	for name, lb := range state.LoadBalancers {
-		out.LoadBalancers[name] = cloneSnapshotLoadBalancer(lb)
+	for _, lb := range state.LoadBalancers {
+		out.LoadBalancers[loadBalancerStateKey(lb)] = cloneSnapshotLoadBalancer(lb)
 	}
 	return out
 }
@@ -297,7 +297,7 @@ func unchangedNATRules(old, next desiredSnapshot) map[string]string {
 		nextRule := next.NATRules[key]
 		signature := natRuleSignature(nextRule)
 		if natRuleSignature(oldRule) == signature {
-			out[nextRule.Name] = signature
+			out[natRuleStateKey(nextRule.VPC, nextRule.Name)] = signature
 		}
 	}
 	return out
@@ -310,7 +310,7 @@ func unchangedLoadBalancers(old, next desiredSnapshot) map[string]string {
 		nextLB := next.LoadBalancers[key]
 		signature := loadBalancerSignature(nextLB)
 		if loadBalancerSignature(oldLB) == signature {
-			out[nextLB.Name] = signature
+			out[loadBalancerStateKey(nextLB)] = signature
 		}
 	}
 	return out
