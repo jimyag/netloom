@@ -115,6 +115,86 @@ func TestRouteCleanupFromSingleToECMPPreservesExistingIPv6Hop(t *testing.T) {
 	}
 }
 
+func TestRouteCleanupFromECMPReorderedNextHops(t *testing.T) {
+	oldState := topology.State{
+		RouteTables: map[string]model.RouteTable{
+			"main": {
+				Name: "main",
+				VPC:  "prod",
+				Routes: []model.Route{{
+					Destination: netip.MustParsePrefix("10.10.0.0/16"),
+					NextHops: []netip.Addr{
+						netip.MustParseAddr("10.10.0.254"),
+						netip.MustParseAddr("10.10.0.253"),
+					},
+				}},
+			},
+		},
+	}
+	nextState := topology.State{
+		RouteTables: map[string]model.RouteTable{
+			"main": {
+				Name: "main",
+				VPC:  "prod",
+				Routes: []model.Route{{
+					Destination: netip.MustParsePrefix("10.10.0.0/16"),
+					NextHops: []netip.Addr{
+						netip.MustParseAddr("10.10.0.253"),
+						netip.MustParseAddr("10.10.0.254"),
+					},
+				}},
+			},
+		},
+	}
+
+	old := snapshotDesired(oldState).Routes[routeKey("prod", oldState.RouteTables["main"].Routes[0])]
+	next := snapshotDesired(nextState).Routes[routeKey("prod", nextState.RouteTables["main"].Routes[0])]
+	ops := routeUpdateCleanupOperations(old, next)
+	if len(ops) != 0 {
+		t.Fatalf("route cleanup ops = %v, want 0 for reordered next hops", ops)
+	}
+}
+
+func TestRouteCleanupFromECMPIPv6ReorderedNextHops(t *testing.T) {
+	oldState := topology.State{
+		RouteTables: map[string]model.RouteTable{
+			"main": {
+				Name: "main",
+				VPC:  "prod",
+				Routes: []model.Route{{
+					Destination: netip.MustParsePrefix("2001:db8::/32"),
+					NextHops: []netip.Addr{
+						netip.MustParseAddr("2001:db8::254"),
+						netip.MustParseAddr("2001:db8::253"),
+					},
+				}},
+			},
+		},
+	}
+	nextState := topology.State{
+		RouteTables: map[string]model.RouteTable{
+			"main": {
+				Name: "main",
+				VPC:  "prod",
+				Routes: []model.Route{{
+					Destination: netip.MustParsePrefix("2001:db8::/32"),
+					NextHops: []netip.Addr{
+						netip.MustParseAddr("2001:db8::253"),
+						netip.MustParseAddr("2001:db8::254"),
+					},
+				}},
+			},
+		},
+	}
+
+	old := snapshotDesired(oldState).Routes[routeKey("prod", oldState.RouteTables["main"].Routes[0])]
+	next := snapshotDesired(nextState).Routes[routeKey("prod", nextState.RouteTables["main"].Routes[0])]
+	ops := routeUpdateCleanupOperations(old, next)
+	if len(ops) != 0 {
+		t.Fatalf("ipv6 route cleanup ops = %v, want 0 for reordered next hops", ops)
+	}
+}
+
 func TestRouteCleanupFromECMPToSinglePreservesExistingHop(t *testing.T) {
 	oldState := topology.State{
 		RouteTables: map[string]model.RouteTable{
