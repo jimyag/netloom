@@ -728,6 +728,27 @@ func TestNewConstantTCXProgramReturnsVerifierError(t *testing.T) {
 	}
 }
 
+func TestRunTCXVerdictReturnsVerifierError(t *testing.T) {
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Skipf("cannot adjust memlock for TCX verify test: %v", err)
+	}
+	originalProgram := newTCXProgram
+	newTCXProgram = func(*ebpf.ProgramSpec) (*ebpf.Program, error) {
+		return nil, errors.New("mocked verifier rejection")
+	}
+	t.Cleanup(func() {
+		newTCXProgram = originalProgram
+	})
+
+	_, err := RunTCXVerdict(context.Background(), "lo", TCXPass, 0)
+	if err == nil {
+		t.Fatal("expected verifier failure")
+	}
+	if !strings.Contains(err.Error(), "mocked verifier rejection") {
+		t.Fatalf("error = %v, want mocked verifier rejection", err)
+	}
+}
+
 func TestIPv4L4ACLUsesLPMTrieMapSpec(t *testing.T) {
 	spec := ipv4L4ACLMapSpec(1)
 	if spec.Type != ebpf.LPMTrie {
