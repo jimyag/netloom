@@ -58,6 +58,17 @@ func TestRunSelfTestAcceptsCustomVpcScope(t *testing.T) {
 	}
 }
 
+func TestRunSelfTestTcxAttachFailureIsSurfaceable(t *testing.T) {
+	t.Setenv("NETLOOM_TCX_SELFTEST_IFACE", "not-a-real-interface")
+	_, err := RunSelfTest(context.Background())
+	if err == nil {
+		t.Fatal("expected tcx selftest to fail for missing interface")
+	}
+	if !strings.Contains(err.Error(), "tcx selftest:") {
+		t.Fatalf("selftest attach error should be wrapped as tcx selftest: %v", err)
+	}
+}
+
 func TestCompileTCXPolicySelfTestUsesPolicyCompiler(t *testing.T) {
 	port := uint16(8080)
 	program, err := compileTCXPolicySelfTest(netip.MustParseAddr("172.30.0.11"), 6, &port, dataplane.TCXDrop)
