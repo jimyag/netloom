@@ -416,6 +416,90 @@ func TestDockerControllerSupportsSameResourceNamesAcrossVPCs(t *testing.T) {
 	}
 }
 
+func TestDockerControllerReplaySameResourceNamesAcrossVPCs(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip long e2e test in short mode")
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker is not installed")
+	}
+
+	composeFile := filepath.Join("testdata", "..", "docker-compose.yaml")
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+
+	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
+	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
+	run(t, ctx, "docker", "compose", "-f", composeFile, "up", "-d", "--quiet-pull", "--force-recreate")
+	t.Cleanup(func() {
+		downCtx, downCancel := context.WithTimeout(context.Background(), time.Minute)
+		defer downCancel()
+		run(t, downCtx, "docker", "compose", "-f", composeFile, "down", "-v")
+	})
+	waitForOVN(t, ctx, composeFile)
+
+	statePath := "/tmp/netloom-state-dual-vpc-same-name-replay.json"
+	stateScript := "cat >" + statePath + " <<'EOF'\n" + desiredDualVPCSameNameStateJSON() + "\nEOF\n"
+	stateCommand := stateScript + "NETLOOM_STATE_FILE=" + statePath + " NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller"
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", stateCommand)
+
+	fileEndpoint := endpointExternalIDForOVN("file", "shared-pod")
+	blueEndpoint := endpointExternalIDForOVN("blue", "shared-pod")
+	snapshot := func() map[string]map[string]int {
+		return map[string]map[string]int{
+			"file": {
+				"logical_router":        len(activeManagedRows(t, ctx, composeFile, "logical_router", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
+				"logical_switch":        len(activeManagedRows(t, ctx, composeFile, "logical_switch", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
+				"logical_switch_port":    len(activeManagedRows(t, ctx, composeFile, "logical_switch_port", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file", "external_ids:netloom_endpoint="+fileEndpoint)),
+				"nat":                   len(activeManagedRows(t, ctx, composeFile, "NAT", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
+				"load_balancer":         len(activeManagedRows(t, ctx, composeFile, "load_balancer", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
+				"logical_router_policy":  len(activeManagedRows(t, ctx, composeFile, "Logical_Router_Policy", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
+			},
+			"blue": {
+				"logical_router":        len(activeManagedRows(t, ctx, composeFile, "logical_router", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue")),
+				"logical_switch":        len(activeManagedRows(t, ctx, composeFile, "logical_switch", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue")),
+				"logical_switch_port":    len(activeManagedRows(t, ctx, composeFile, "logical_switch_port", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue", "external_ids:netloom_endpoint="+blueEndpoint)),
+				"nat":                   len(activeManagedRows(t, ctx, composeFile, "NAT", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue")),
+				"load_balancer":         len(activeManagedRows(t, ctx, composeFile, "load_balancer", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue")),
+				"logical_router_policy":  len(activeManagedRows(t, ctx, composeFile, "Logical_Router_Policy", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue")),
+			},
+		}
+	}
+	base := snapshot()
+
+	fileL4lb := findLoadBalancerForVIP(t, ctx, composeFile, "file", "cross-vpc-web", "10.96.0.20")
+	blueL4lb := findLoadBalancerForVIP(t, ctx, composeFile, "blue", "cross-vpc-web", "10.96.0.20")
+	if fileL4lb == "" || blueL4lb == "" {
+		t.Fatalf("expected initial VPC-specific LB for shared VIP, file=%s blue=%s", fileL4lb, blueL4lb)
+	}
+	if fileL4lb == blueL4lb {
+		t.Fatalf("expected VPC-specific LB names to differ during replay, both=%s", fileL4lb)
+	}
+
+	reconcile := func() {
+		output := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", stateCommand)
+		if !strings.Contains(output, "reconciled desired state") {
+			t.Fatalf("reconcile failed:\n%s", output)
+		}
+	}
+
+	for i := 0; i < 8; i++ {
+		reconcile()
+		current := snapshot()
+		if !reflect.DeepEqual(base, current) {
+			t.Fatalf("resource counts drift on same-name replay iteration %d.\nbase=%+v\ncurrent=%+v", i, base, current)
+		}
+		currentFilePorts := activeManagedRows(t, ctx, composeFile, "logical_switch_port", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file", "external_ids:netloom_endpoint="+fileEndpoint)
+		currentBluePorts := activeManagedRows(t, ctx, composeFile, "logical_switch_port", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue", "external_ids:netloom_endpoint="+blueEndpoint)
+		if len(currentFilePorts) != 1 || len(currentBluePorts) != 1 {
+			t.Fatalf("expected one endpoint port per vpc after iteration %d: file=%v blue=%v", i, currentFilePorts, currentBluePorts)
+		}
+		if currentFilePorts[0] == currentBluePorts[0] {
+			t.Fatalf("endpoint port names should remain VPC-scoped and distinct at iteration %d: %s", i, currentFilePorts[0])
+		}
+	}
+}
+
 func TestDockerControllerStateReplayDetectsManagedOVNLeaks(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skip long e2e test in short mode")
