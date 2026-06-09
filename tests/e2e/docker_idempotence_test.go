@@ -1769,6 +1769,84 @@ func TestDockerWorkloadPolicyPriorityConflict(t *testing.T) {
 	}
 }
 
+func TestDockerControllerReconcileIPv6VPC(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip long e2e test in short mode")
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker is not installed")
+	}
+
+	composeFile := filepath.Join("testdata", "..", "docker-compose.yaml")
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+
+	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
+	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
+	run(t, ctx, "docker", "compose", "-f", composeFile, "up", "-d", "--quiet-pull", "--force-recreate")
+	t.Cleanup(func() {
+		downCtx, downCancel := context.WithTimeout(context.Background(), time.Minute)
+		defer downCancel()
+		run(t, downCtx, "docker", "compose", "-f", composeFile, "down", "-v")
+	})
+	waitForOVN(t, ctx, composeFile)
+
+	statePath := "/tmp/netloom-state-ipv6.json"
+	stateCommand := "cat >/tmp/netloom-state-ipv6.json <<'EOF'\n" + desiredStateIPv6JSON() + "\nEOF\n"
+	reconcileOutput := run(
+		t,
+		ctx,
+		"docker",
+		"compose",
+		"-f",
+		composeFile,
+		"exec",
+		"-T",
+		"ovn-central",
+		"sh",
+		"-c",
+		stateCommand+"NETLOOM_STATE_FILE="+statePath+" NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller",
+	)
+	if !strings.Contains(reconcileOutput, "reconciled desired state") {
+		t.Fatalf("ipv6 desired-state reconcile did not succeed:\n%s", reconcileOutput)
+	}
+
+	endpointID := endpointExternalIDForOVN("ipv6", "ipv6-pod-a")
+	ports := activeManagedRows(t, ctx, composeFile, "logical_switch_port", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=ipv6", "external_ids:netloom_endpoint="+endpointID)
+	if len(ports) != 1 {
+		t.Fatalf("expected one IPv6 logical switch port for endpoint %q, got %v", endpointID, ports)
+	}
+	addressOutput := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "lsp-get-addresses", ports[0])
+	if !strings.Contains(addressOutput, "fd00:10:10::10") {
+		t.Fatalf("lsp address output missing expected IPv6 endpoint address:\n%s", addressOutput)
+	}
+	if strings.Contains(addressOutput, "10.") {
+		t.Fatalf("lsp address output should be IPv6-only:\n%s", addressOutput)
+	}
+
+	routers := activeManagedRows(t, ctx, composeFile, "logical_router", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=ipv6")
+	if len(routers) != 1 {
+		t.Fatalf("expected one ipv6 logical router for vpc ipv6, got %v", routers)
+	}
+	switches := activeManagedRows(t, ctx, composeFile, "logical_switch", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=ipv6")
+	if len(switches) != 1 {
+		t.Fatalf("expected one ipv6 logical switch for vpc ipv6, got %v", switches)
+	}
+
+	routeOutput := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "lr-route-list", routers[0])
+	if strings.Contains(routeOutput, "0.0.0.0/0") {
+		t.Fatalf("unexpected IPv4 default route leaked into IPv6-only VPC:\n%s", routeOutput)
+	}
+	natOutput := activeManagedRows(t, ctx, composeFile, "NAT", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=ipv6")
+	if len(natOutput) != 0 {
+		t.Fatalf("unexpected managed NAT rows found for ipv6-only VPC: %v", natOutput)
+	}
+	lbOutput := activeManagedRows(t, ctx, composeFile, "load_balancer", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=ipv6")
+	if len(lbOutput) != 0 {
+		t.Fatalf("unexpected managed load_balancer rows found for ipv6-only VPC: %v", lbOutput)
+	}
+}
+
 func routeListHasOnlyHops(got []string, expected []string) bool {
 	if len(got) != len(expected) {
 		return false
@@ -1932,5 +2010,14 @@ func desiredDualVPCSameNameStateJSON() string {
     {"name": "shared-allow", "vpc": "file", "rules": [{"id": "allow-http", "priority": 100, "direction": "ingress", "protocol": "tcp", "remote_cidr": "0.0.0.0/0", "ports": [{"from": 80, "to": 80}], "action": "allow"}]},
     {"name": "shared-allow", "vpc": "blue", "rules": [{"id": "allow-http", "priority": 100, "direction": "ingress", "protocol": "tcp", "remote_cidr": "0.0.0.0/0", "ports": [{"from": 80, "to": 80}], "action": "allow"}]}
   ]
+}`
+}
+
+func desiredStateIPv6JSON() string {
+	return `{
+  "vpcs": [{"name": "ipv6"}],
+  "subnets": [{"name": "appsv6", "vpc": "ipv6", "cidr": "fd00:10:10::/64", "gateway": "fd00:10:10::1"}],
+  "endpoints": [{"id": "ipv6-pod-a", "vpc": "ipv6", "subnet": "appsv6", "ip": "fd00:10:10::10", "node": "node-a", "security_groups": ["ipv6-allow"]}],
+  "security_groups": [{"name": "ipv6-allow", "vpc": "ipv6", "rules": [{"id": "allow-all", "priority": 100, "direction": "ingress", "protocol": "any", "remote_cidr": "::/0", "action": "allow"}]}]
 }`
 }
