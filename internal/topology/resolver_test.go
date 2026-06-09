@@ -35,8 +35,28 @@ func TestResolveDirectEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if decision.Destination != "pod-b" || decision.Action != model.ActionAllow {
-		t.Fatalf("decision = %+v, want direct allow to pod-b", decision)
+	if decision.Destination != model.EndpointKey("prod", "pod-b") || decision.Action != model.ActionAllow {
+		t.Fatalf("decision = %+v, want direct allow to prod/pod-b", decision)
+	}
+}
+
+func TestResolveDirectEndpointIsVPCAware(t *testing.T) {
+	state := State{
+		Endpoints: map[string]model.Endpoint{
+			"pod-b": {ID: "shared", VPC: "prod", IP: netip.MustParseAddr("10.10.0.20")},
+			"pod-c": {ID: "shared", VPC: "dev", IP: netip.MustParseAddr("10.10.0.20")},
+		},
+	}
+	decision, err := Resolve(state, Packet{
+		VPC:    "prod",
+		Source: netip.MustParseAddr("10.10.1.10"),
+		Dest:   netip.MustParseAddr("10.10.0.20"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Destination != model.EndpointKey("prod", "shared") || decision.Action != model.ActionAllow {
+		t.Fatalf("decision = %+v, want direct allow to prod/shared", decision)
 	}
 }
 
@@ -362,7 +382,7 @@ func TestResolveDNATToEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if decision.MatchedBy != "nat/web" || decision.Destination != "pod-a" || decision.Translated != netip.MustParseAddr("10.10.0.10") {
+	if decision.MatchedBy != "nat/web" || decision.Destination != model.EndpointKey("prod", "pod-a") || decision.Translated != netip.MustParseAddr("10.10.0.10") {
 		t.Fatalf("decision = %+v, want DNAT to pod-a", decision)
 	}
 }
@@ -445,7 +465,7 @@ func TestResolvePortDNATTranslatesTargetPort(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if decision.MatchedBy != "nat/web-https" || decision.Destination != "web" || decision.Translated != netip.MustParseAddr("10.10.0.20") || decision.TranslatedPort != 443 {
+	if decision.MatchedBy != "nat/web-https" || decision.Destination != model.EndpointKey("prod", "web") || decision.Translated != netip.MustParseAddr("10.10.0.20") || decision.TranslatedPort != 443 {
 		t.Fatalf("decision = %+v, want DNAT target port translation", decision)
 	}
 }
@@ -473,7 +493,7 @@ func TestResolveFloatingIPToEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if decision.MatchedBy != "nat/fip" || decision.Destination != "pod-a" || decision.Translated != netip.MustParseAddr("10.10.0.10") {
+	if decision.MatchedBy != "nat/fip" || decision.Destination != model.EndpointKey("prod", "pod-a") || decision.Translated != netip.MustParseAddr("10.10.0.10") {
 		t.Fatalf("decision = %+v, want floating IP to pod-a", decision)
 	}
 }
@@ -506,7 +526,7 @@ func TestResolveFloatingIPPortTranslation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if decision.MatchedBy != "nat/fip-https" || decision.Destination != "pod-a" || decision.Translated != netip.MustParseAddr("10.10.0.10") || decision.TranslatedPort != 443 {
+	if decision.MatchedBy != "nat/fip-https" || decision.Destination != model.EndpointKey("prod", "pod-a") || decision.Translated != netip.MustParseAddr("10.10.0.10") || decision.TranslatedPort != 443 {
 		t.Fatalf("decision = %+v, want floating IP target port translation", decision)
 	}
 }
@@ -554,6 +574,68 @@ func TestResolvePolicyRouteBeatsStaticRoute(t *testing.T) {
 	}
 	if decision.MatchedBy != "policy-route/private-via-fw" {
 		t.Fatalf("matched by = %s, want policy route", decision.MatchedBy)
+	}
+}
+
+func TestResolvePolicyRouteIsVPCAware(t *testing.T) {
+	state := State{
+		PolicyRoutes: []model.PolicyRoute{
+			{
+				Name:     "drop-lab",
+				VPC:      "prod",
+				Priority: 100,
+				Match: model.RouteMatch{
+					Destination: netip.MustParsePrefix("198.51.100.0/24"),
+					Protocol:    model.ProtocolAny,
+				},
+				Action: model.RouteAction{Type: model.ActionDrop},
+			},
+			{
+				Name:     "allow-dev-via-fw",
+				VPC:      "dev",
+				Priority: 200,
+				Match: model.RouteMatch{
+					Destination: netip.MustParsePrefix("198.51.100.0/24"),
+					Protocol:    model.ProtocolAny,
+				},
+				Action: model.RouteAction{Type: model.ActionAllow},
+			},
+		},
+		RouteTables: map[string]model.RouteTable{
+			"main": {
+				Name: "main",
+				VPC:  "prod",
+				Routes: []model.Route{{
+					Destination: netip.MustParsePrefix("198.51.100.0/24"),
+					NextHops:    []netip.Addr{netip.MustParseAddr("10.10.0.254")},
+				}},
+			},
+		},
+		Gateways: map[string]model.Gateway{
+			"gw-a": {Name: "gw-a", VPC: "prod", Node: "node-a", ExternalIF: "eth0", LANIP: netip.MustParseAddr("10.10.0.254")},
+		},
+		NATRules: map[string]model.NATRule{
+			"snat": {
+				Name:       "snat",
+				VPC:        "prod",
+				Type:       model.ActionSNAT,
+				MatchCIDR:  netip.MustParsePrefix("10.10.0.0/24"),
+				ExternalIP: netip.MustParseAddr("203.0.113.10"),
+			},
+		},
+	}
+	decision, err := Resolve(state, Packet{
+		VPC:      "prod",
+		Source:   netip.MustParseAddr("10.10.0.10"),
+		Dest:     netip.MustParseAddr("198.51.100.10"),
+		Protocol: model.ProtocolTCP,
+		DestPort: 443,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Action != model.ActionDrop || decision.MatchedBy != "policy-route/drop-lab" {
+		t.Fatalf("decision = %+v, want prod policy route drop", decision)
 	}
 }
 
