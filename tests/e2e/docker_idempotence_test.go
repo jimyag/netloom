@@ -167,6 +167,78 @@ func TestDockerControllerConcurrentReconcilesAreStable(t *testing.T) {
 	}
 }
 
+func TestDockerControllerWatchRecoversFromRestart(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip long e2e test in short mode")
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker is not installed")
+	}
+
+	composeFile := filepath.Join("testdata", "..", "docker-compose.yaml")
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+
+	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
+	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
+	run(t, ctx, "docker", "compose", "-f", composeFile, "up", "-d", "--quiet-pull", "--force-recreate")
+	t.Cleanup(func() {
+		downCtx, downCancel := context.WithTimeout(context.Background(), time.Minute)
+		defer downCancel()
+		run(t, downCtx, "docker", "compose", "-f", composeFile, "down", "-v")
+	})
+	waitForOVN(t, ctx, composeFile)
+
+	statePath := "/tmp/netloom-state-restart.json"
+	controllerPIDFile := "/tmp/netloom-controller-watch-restart.pid"
+	stateScript := "cat >" + statePath + " <<'EOF'\n" + desiredStateJSON() + "\nEOF\n"
+	stateCommand := stateScript + "NETLOOM_STATE_FILE=" + statePath + " NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller"
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", stateCommand)
+
+	endpointID := endpointExternalIDForOVN("file", "file-pod-a")
+	initialPort := strings.TrimSpace(findLogicalPortByEndpointID(t, ctx, composeFile, endpointID))
+	if initialPort == "" {
+		t.Fatalf("missing logical_switch_port for initial endpoint %s", endpointID)
+	}
+
+	watchLog := "/tmp/netloom-controller-watch-restart.log"
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "cat /dev/null > "+watchLog+" && "+stateScript+"\n"+"NETLOOM_STATE_FILE="+statePath+" NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock NETLOOM_RECONCILE_INTERVAL_MS=300 /netloom/bin/netloom-controller >"+watchLog+" 2>&1 &")
+	waitForControllerWatch := func(expected string) {
+		for i := 0; i < 20; i++ {
+			output := runAllowFailure(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "grep -Fq '"+expected+"' "+watchLog+" && exit 0 || exit 1")
+			if output.exitCode == 0 {
+				return
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+		logOutput := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "cat", watchLog)
+		t.Fatalf("controller watch did not emit %q in time:\n%s", expected, logOutput)
+	}
+	startControllerWatch := func() {
+		run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "cat /dev/null > "+watchLog+"; (NETLOOM_STATE_FILE="+statePath+" NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock NETLOOM_RECONCILE_INTERVAL_MS=300 /netloom/bin/netloom-controller >"+watchLog+" 2>&1 &) ; echo $! > "+controllerPIDFile)
+	}
+	stopControllerWatch := func() {
+		runAllowFailure(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "pid=$(cat "+controllerPIDFile+" 2>/dev/null || true); [ -n \"$pid\" ] && kill -9 \"$pid\" || true; rm -f "+controllerPIDFile)
+	}
+
+	startControllerWatch()
+	waitForControllerWatch("reconciled desired state")
+
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock destroy logical_switch_port "+initialPort)
+	stopControllerWatch()
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "cat /dev/null > "+watchLog)
+	startControllerWatch()
+	waitForControllerWatch("reconciled desired state")
+
+	recoveredPort := strings.TrimSpace(findLogicalPortByEndpointID(t, ctx, composeFile, endpointID))
+	if recoveredPort == "" {
+		recoveredWatchLog := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "cat", watchLog)
+		t.Fatalf("endpoint port not recovered after restart.\nwatch log:\n%s", recoveredWatchLog)
+	}
+
+	stopControllerWatch()
+}
+
 func TestDockerControllerReconcileSupportsSameEndpointIDAcrossVPCs(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skip long e2e test in short mode")
