@@ -576,6 +576,16 @@ func desiredStateWithStaticRouteToECMPJSON() string {
 }`
 }
 
+func desiredStateWithStaticRouteToECMPIPv6JSON() string {
+	return `{
+  "vpcs": [{"name": "ipv6"}],
+  "subnets": [{"name": "appsv6", "vpc": "ipv6", "cidr": "fd00:10:10::/64", "gateway": "fd00:10:10::1"}],
+  "endpoints": [{"id": "ipv6-pod-a", "vpc": "ipv6", "subnet": "appsv6", "ip": "fd00:10:10::10", "node": "node-a", "security_groups": ["ipv6-allow"]}],
+  "route_tables": [{"name": "main", "vpc": "ipv6", "routes": [{"destination": "::/0", "next_hops": ["fd00:10:10::252", "fd00:10:10::251"]}]}],
+  "security_groups": [{"name": "ipv6-allow", "vpc": "ipv6", "rules": [{"id": "allow-all", "priority": 100, "direction": "ingress", "protocol": "any", "remote_cidr": "::/0", "action": "allow"}]}]
+}`
+}
+
 func desiredStateWithStaticRouteFromECMPToSingleJSON() string {
 	return `{
   "vpcs": [{"name": "file"}],

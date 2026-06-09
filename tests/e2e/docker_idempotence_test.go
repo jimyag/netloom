@@ -1722,6 +1722,97 @@ func TestDockerControllerRouteTableECMPDeltaIsOrderInsensitive(t *testing.T) {
 	}
 }
 
+func TestDockerControllerRouteTableECMPDeltaIsOrderInsensitiveIPv6(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip long e2e test in short mode")
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker is not installed")
+	}
+
+	composeFile := filepath.Join("testdata", "..", "docker-compose.yaml")
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+
+	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
+	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
+	run(t, ctx, "docker", "compose", "-f", composeFile, "up", "-d", "--quiet-pull", "--force-recreate")
+	t.Cleanup(func() {
+		downCtx, downCancel := context.WithTimeout(context.Background(), time.Minute)
+		defer downCancel()
+		run(t, downCtx, "docker", "compose", "-f", composeFile, "down", "-v")
+	})
+	waitForOVN(t, ctx, composeFile)
+
+	ecmpState := "/tmp/netloom-state-route-ecmp-v6.json"
+	reorderedECMPState := "/tmp/netloom-state-route-ecmp-v6-reordered.json"
+	baseState := desiredStateWithStaticRouteToECMPIPv6JSON()
+	reorderedState := strings.Replace(
+		baseState,
+		"\"next_hops\": [\"fd00:10:10::252\", \"fd00:10:10::251\"]",
+		"\"next_hops\": [\"fd00:10:10::251\", \"fd00:10:10::252\"]",
+		1,
+	)
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "cat >"+ecmpState+" <<'EOF'\n"+baseState+"\nEOF")
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "cat >"+reorderedECMPState+" <<'EOF'\n"+reorderedState+"\nEOF")
+
+	runRouteReconcile := func(path string) {
+		command := "NETLOOM_STATE_FILE=" + path + " NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller"
+		output := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", command)
+		if !strings.Contains(output, "reconciled desired state") {
+			t.Fatalf("controller reconcile on %s did not succeed: %s", path, output)
+		}
+	}
+
+	waitForNexthops := func(expected []string) []string {
+		deadline := time.Now().Add(30 * time.Second)
+		for time.Now().Before(deadline) {
+			listOutput := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "lr-route-list", "nl_lr_ipv6")
+			nextHops := parseRouteNextHopsFromList(t, listOutput, "::/0")
+			if routeListHasOnlyHops(nextHops, expected) {
+				return nextHops
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+		currentRouteOutput := runAllowFailure(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "lr-route-list", "nl_lr_ipv6")
+		t.Fatalf("route state did not converge to %v: %s", expected, currentRouteOutput.output)
+		return nil
+	}
+	waitForStaticRow := func(destination, nextHop string) string {
+		deadline := time.Now().Add(20 * time.Second)
+		for time.Now().Before(deadline) {
+			uuid := staticRouteUUIDForPrefixAndNexthop(t, ctx, composeFile, destination, nextHop)
+			if uuid != "" {
+				return uuid
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+		return ""
+	}
+
+	runRouteReconcile(ecmpState)
+	baseHops := waitForNexthops([]string{"fd00:10:10::251", "fd00:10:10::252"})
+	base252 := waitForStaticRow("::/0", "fd00:10:10::252")
+	base251 := waitForStaticRow("::/0", "fd00:10:10::251")
+	if base252 == "" || base251 == "" {
+		t.Fatalf("missing baseline ECMP rows: hops=%v", baseHops)
+	}
+
+	runRouteReconcile(reorderedECMPState)
+	reorderedHops := waitForNexthops([]string{"fd00:10:10::251", "fd00:10:10::252"})
+	reordered252 := waitForStaticRow("::/0", "fd00:10:10::252")
+	reordered251 := waitForStaticRow("::/0", "fd00:10:10::251")
+	if reordered252 == "" || reordered251 == "" {
+		t.Fatalf("missing reordered ECMP rows: hops=%v", reorderedHops)
+	}
+	if reordered252 != base252 {
+		t.Fatalf("fd00:10:10::252 static route row changed after reorder: before=%q after=%q", base252, reordered252)
+	}
+	if reordered251 != base251 {
+		t.Fatalf("fd00:10:10::251 static route row changed after reorder: before=%q after=%q", base251, reordered251)
+	}
+}
+
 func TestDockerWorkloadPolicyPriorityConflict(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skip long e2e test in short mode")
@@ -2064,7 +2155,26 @@ func activeManagedRows(t *testing.T, ctx context.Context, composeFile, table str
 
 func staticRouteUUIDForPrefixAndNexthop(t *testing.T, ctx context.Context, composeFile, ipPrefix, nextHop string) string {
 	t.Helper()
-	result := runAllowFailure(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "--bare", "--no-heading", "--columns=_uuid", "find", "Logical_Router_Static_Route", "ip_prefix="+ipPrefix, "nexthop="+nextHop)
+	result := runAllowFailure(
+		t,
+		ctx,
+		"docker",
+		"compose",
+		"-f",
+		composeFile,
+		"exec",
+		"-T",
+		"ovn-central",
+		"ovn-nbctl",
+		"--db=unix:/var/run/ovn/ovnnb_db.sock",
+		"--bare",
+		"--no-heading",
+		"--columns=_uuid",
+		"find",
+		"Logical_Router_Static_Route",
+		fmt.Sprintf("ip_prefix=%q", ipPrefix),
+		fmt.Sprintf("nexthop=%q", nextHop),
+	)
 	if result.exitCode != 0 {
 		t.Fatalf("failed to get static route row uuid for prefix %q via %q: %s", ipPrefix, nextHop, result.output)
 	}
