@@ -445,25 +445,32 @@ func TestDockerControllerStateReplayDetectsManagedOVNLeaks(t *testing.T) {
 	beforeManagedRows := map[string]int{
 		"NAT":                   len(activeManagedRows(t, ctx, composeFile, "NAT", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
 		"Logical_Router_Policy": len(activeManagedRows(t, ctx, composeFile, "Logical_Router_Policy", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
+		"Load_Balancer_Health_Check": len(activeManagedRows(t, ctx, composeFile, "Load_Balancer_Health_Check", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file", "external_ids:netloom_load_balancer=file-web")),
 	}
 	staleManagedNAT := "ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock --id=@stale_managed_nat create NAT type=snat external_ip=198.51.100.220 logical_ip=10.10.0.220 external_ids:netloom_owner=netloom external_ids:netloom_nat=stale-leak external_ids:netloom_vpc=file -- add logical_router nl_lr_file nat @stale_managed_nat"
 	staleManagedPolicy := "ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock --id=@stale_managed_policy create Logical_Router_Policy priority=250 match='ip' action=drop external_ids:netloom_owner=netloom external_ids:netloom_policy_route=stale-leak external_ids:netloom_vpc=file -- add logical_router nl_lr_file policies @stale_managed_policy"
 	unmanagedNAT := "ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock --id=@stale_unmanaged_nat create NAT type=snat external_ip=198.51.100.221 logical_ip=10.10.0.221 external_ids:notes=netloom-unmanaged-leak external_ids:owner=manual -- add logical_router nl_lr_file nat @stale_unmanaged_nat"
+	staleManagedLBHC := "ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock --id=@stale_managed_lbhc create Load_Balancer_Health_Check vip=10.96.0.99 options:interval=5 options:timeout=20 options:success_count=3 options:failure_count=3 external_ids:netloom_owner=netloom external_ids:netloom_load_balancer=file-web external_ids:netloom_vpc=file"
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", staleManagedNAT)
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", staleManagedPolicy)
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", unmanagedNAT)
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", staleManagedLBHC)
 
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", stateCommand)
 
 	afterManagedRows := map[string]int{
 		"NAT":                   len(activeManagedRows(t, ctx, composeFile, "NAT", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
 		"Logical_Router_Policy": len(activeManagedRows(t, ctx, composeFile, "Logical_Router_Policy", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
+		"Load_Balancer_Health_Check": len(activeManagedRows(t, ctx, composeFile, "Load_Balancer_Health_Check", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file", "external_ids:netloom_load_balancer=file-web")),
 	}
 	if beforeManagedRows["NAT"] != afterManagedRows["NAT"] {
 		t.Fatalf("managed NAT count changed after leak cleanup: before=%d after=%d", beforeManagedRows["NAT"], afterManagedRows["NAT"])
 	}
 	if beforeManagedRows["Logical_Router_Policy"] != afterManagedRows["Logical_Router_Policy"] {
 		t.Fatalf("managed policy route count changed after leak cleanup: before=%d after=%d", beforeManagedRows["Logical_Router_Policy"], afterManagedRows["Logical_Router_Policy"])
+	}
+	if beforeManagedRows["Load_Balancer_Health_Check"] != afterManagedRows["Load_Balancer_Health_Check"] {
+		t.Fatalf("managed LB health check count changed after leak cleanup: before=%d after=%d", beforeManagedRows["Load_Balancer_Health_Check"], afterManagedRows["Load_Balancer_Health_Check"])
 	}
 
 	staleManagedNATRows := runAllowFailure(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "--bare", "--no-heading", "--columns=_uuid", "find", "NAT", "external_ids:netloom_owner=netloom", "external_ids:netloom_nat=stale-leak", "external_ids:netloom_vpc=file")
@@ -473,6 +480,10 @@ func TestDockerControllerStateReplayDetectsManagedOVNLeaks(t *testing.T) {
 	staleManagedPolicyRows := runAllowFailure(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "--bare", "--no-heading", "--columns=_uuid", "find", "Logical_Router_Policy", "external_ids:netloom_owner=netloom", "external_ids:netloom_policy_route=stale-leak", "external_ids:netloom_vpc=file")
 	if strings.TrimSpace(staleManagedPolicyRows.output) != "" {
 		t.Fatalf("stale managed policy row should be cleaned: %s", staleManagedPolicyRows.output)
+	}
+	staleManagedLBHCRows := runAllowFailure(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "--bare", "--no-heading", "--columns=_uuid", "find", "Load_Balancer_Health_Check", "external_ids:netloom_owner=netloom", "external_ids:netloom_load_balancer=file-web", "external_ids:netloom_vpc=file", "vip=10.96.0.99")
+	if strings.TrimSpace(staleManagedLBHCRows.output) != "" {
+		t.Fatalf("stale managed LB health check row should be cleaned: %s", staleManagedLBHCRows.output)
 	}
 
 	unmanagedNATRows := runAllowFailure(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "--bare", "--no-heading", "--columns=_uuid", "find", "NAT", "external_ids:notes=netloom-unmanaged-leak", "external_ids:owner=manual")
@@ -485,7 +496,7 @@ func activeManagedRows(t *testing.T, ctx context.Context, composeFile, table str
 	t.Helper()
 	column := "name"
 	switch table {
-	case "NAT", "Logical_Router_Policy":
+	case "NAT", "Logical_Router_Policy", "Load_Balancer_Health_Check":
 		column = "_uuid"
 	default:
 		column = "name"
