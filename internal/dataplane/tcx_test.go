@@ -793,6 +793,32 @@ func TestRunTCXVerdictReturnsAttachError(t *testing.T) {
 	}
 }
 
+func TestNewMapBackedTCXProgramReturnsVerifierError(t *testing.T) {
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Skipf("cannot adjust memlock for map-backed tcx verify test: %v", err)
+	}
+	verdictMap, err := NewVerdictMap(TCXPass)
+	if err != nil {
+		t.Fatalf("prepare verdict map: %v", err)
+	}
+	defer verdictMap.Close()
+
+	originalProgram := newTCXProgram
+	newTCXProgram = func(*ebpf.ProgramSpec) (*ebpf.Program, error) {
+		return nil, errors.New("mocked verifier rejection")
+	}
+	t.Cleanup(func() {
+		newTCXProgram = originalProgram
+	})
+	_, err = NewMapBackedTCXProgram(verdictMap)
+	if err == nil {
+		t.Fatal("expected map-backed tcx verifier failure")
+	}
+	if !strings.Contains(err.Error(), "mocked verifier rejection") {
+		t.Fatalf("error = %v, want mocked verifier rejection", err)
+	}
+}
+
 func TestNewIPv4L4ACLMapReturnsCreationError(t *testing.T) {
 	originalMap := newTCXMap
 	newTCXMap = func(*ebpf.MapSpec) (*ebpf.Map, error) {
@@ -805,6 +831,29 @@ func TestNewIPv4L4ACLMapReturnsCreationError(t *testing.T) {
 	if err == nil {
 		aclMap.Close()
 		t.Fatal("expected IPv4 L4 ACL map creation failure")
+	}
+	if !strings.Contains(err.Error(), "mocked map creation failure") {
+		t.Fatalf("error = %v, want mocked map creation failure", err)
+	}
+}
+
+func TestNewIPv6L4ACLMapFromRulesReturnsCreationError(t *testing.T) {
+	originalMap := newTCXMap
+	newTCXMap = func(*ebpf.MapSpec) (*ebpf.Map, error) {
+		return nil, errors.New("mocked map creation failure")
+	}
+	t.Cleanup(func() {
+		newTCXMap = originalMap
+	})
+	aclMap, err := NewIPv6L4ACLMapFromRules([]IPv6L4ACLRule{{
+		SourceCIDR: netip.MustParsePrefix("fd00:10::20/128"),
+		Protocol:   6,
+		DestPort:   8080,
+		Action:     TCXDrop,
+	}})
+	if err == nil {
+		aclMap.Close()
+		t.Fatal("expected IPv6 L4 ACL map creation failure")
 	}
 	if !strings.Contains(err.Error(), "mocked map creation failure") {
 		t.Fatalf("error = %v, want mocked map creation failure", err)
