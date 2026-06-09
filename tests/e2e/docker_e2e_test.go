@@ -152,6 +152,12 @@ func TestDockerMultiNodeLab(t *testing.T) {
 	updateControllerWatch = "cat >" + controllerWatchPath + " <<'EOF'\n" + desiredStateWithUpdatedStaticRouteJSON() + "\nEOF"
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", updateControllerWatch)
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "for i in $(seq 1 15); do routes=$(ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock lr-route-list nl_lr_file); echo \"$routes\" | grep -q '10.245.0.251' && ! echo \"$routes\" | grep -q '10.245.0.254' && exit 0; sleep 1; done; cat /tmp/netloom-controller-watch.log; ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock lr-route-list nl_lr_file; exit 1")
+	updateControllerWatch = "cat >" + controllerWatchPath + " <<'EOF'\n" + desiredStateWithStaticRouteToECMPJSON() + "\nEOF"
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", updateControllerWatch)
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "for i in $(seq 1 15); do routes=$(ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock lr-route-list nl_lr_file); echo \"$routes\" | grep -q '10.245.0.251' && echo \"$routes\" | grep -q '10.245.0.252' && exit 0; sleep 1; done; cat /tmp/netloom-controller-watch.log; ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock lr-route-list nl_lr_file; exit 1")
+	updateControllerWatch = "cat >" + controllerWatchPath + " <<'EOF'\n" + desiredStateWithStaticRouteFromECMPToSingleJSON() + "\nEOF"
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", updateControllerWatch)
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "for i in $(seq 1 15); do routes=$(ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock lr-route-list nl_lr_file); echo \"$routes\" | grep -q '10.245.0.252' && ! echo \"$routes\" | grep -q '10.245.0.251' && exit 0; sleep 1; done; cat /tmp/netloom-controller-watch.log; ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock lr-route-list nl_lr_file; exit 1")
 	updateControllerWatch = "cat >" + controllerWatchPath + " <<'EOF'\n" + desiredStateWithoutProviderNetworkJSON() + "\nEOF"
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", updateControllerWatch)
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "for i in $(seq 1 15); do ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock lsp-list nl_ls_file_fileapps | grep -q nl_ls_file_fileapps_to_fileapps_localnet || exit 0; sleep 1; done; cat /tmp/netloom-controller-watch.log; ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock lsp-list nl_ls_file_fileapps; exit 1")
@@ -494,6 +500,44 @@ func desiredStateWithUpdatedStaticRouteJSON() string {
   "subnets": [{"name": "fileapps", "vpc": "file", "cidr": "10.245.0.0/24", "gateway": "10.245.0.1", "provider_network": "physnet-a", "vlan": 100, "dhcp": {"enabled": true, "lease_time": 7200, "mtu": 1400}}],
   "endpoints": [{"id": "file-pod-a", "vpc": "file", "subnet": "fileapps", "ip": "10.245.0.10", "node": "node-a", "security_groups": ["web"]}],
   "route_tables": [{"name": "main", "vpc": "file", "routes": [{"destination": "0.0.0.0/0", "next_hops": ["10.245.0.251"]}]}],
+  "policy_routes": [{"name": "https-via-fw", "vpc": "file", "priority": 100, "match": {"source": "10.245.0.0/24", "destination": "172.16.0.0/16", "protocol": "tcp", "dst_ports": [{"from": 443, "to": 443}]}, "action": {"type": "reroute", "next_hops": ["10.245.0.252"]}}],
+  "gateways": [{"name": "gw-file", "vpc": "file", "node": "node-a", "external_if": "eth0", "lan_ip": "10.245.0.254"}],
+  "nat_rules": [
+    {"name": "egress", "vpc": "file", "type": "snat", "match_cidr": "10.245.0.0/24", "external_ip": "198.51.100.50"},
+    {"name": "web-dnat", "vpc": "file", "type": "dnat", "external_ip": "198.51.100.21", "target_ip": "10.245.0.10"},
+    {"name": "web-fip", "vpc": "file", "type": "dnat_and_snat", "external_ip": "198.51.100.22", "target_ip": "10.245.0.10"},
+    {"name": "ssh-port", "vpc": "file", "type": "dnat", "external_ip": "198.51.100.23", "target_ip": "10.245.0.10", "protocol": "tcp", "external_port": 2222, "target_port": 2222}
+  ],
+  "load_balancers": [{"name": "file-web", "vpc": "file", "vip": "10.96.0.20", "ports": [{"name": "http", "port": 80, "protocol": "tcp", "backends": [{"ip": "10.245.0.11", "port": 8080}]}], "subnets": ["fileapps"]}],
+  "security_groups": [{"name": "web", "vpc": "file", "rules": [{"id": "allow-web", "priority": 100, "direction": "ingress", "protocol": "tcp", "remote_cidr": "172.30.0.11/32", "ports": [{"from": 8080, "to": 8080}], "action": "allow", "stateful": true}]}]
+}`
+}
+
+func desiredStateWithStaticRouteToECMPJSON() string {
+	return `{
+  "vpcs": [{"name": "file"}],
+  "subnets": [{"name": "fileapps", "vpc": "file", "cidr": "10.245.0.0/24", "gateway": "10.245.0.1", "provider_network": "physnet-a", "vlan": 100, "dhcp": {"enabled": true, "lease_time": 7200, "mtu": 1400}}],
+  "endpoints": [{"id": "file-pod-a", "vpc": "file", "subnet": "fileapps", "ip": "10.245.0.10", "node": "node-a", "security_groups": ["web"]}],
+  "route_tables": [{"name": "main", "vpc": "file", "routes": [{"destination": "0.0.0.0/0", "next_hops": ["10.245.0.251", "10.245.0.252"]}]}],
+  "policy_routes": [{"name": "https-via-fw", "vpc": "file", "priority": 100, "match": {"source": "10.245.0.0/24", "destination": "172.16.0.0/16", "protocol": "tcp", "dst_ports": [{"from": 443, "to": 443}]}, "action": {"type": "reroute", "next_hops": ["10.245.0.252"]}}],
+  "gateways": [{"name": "gw-file", "vpc": "file", "node": "node-a", "external_if": "eth0", "lan_ip": "10.245.0.254"}],
+  "nat_rules": [
+    {"name": "egress", "vpc": "file", "type": "snat", "match_cidr": "10.245.0.0/24", "external_ip": "198.51.100.50"},
+    {"name": "web-dnat", "vpc": "file", "type": "dnat", "external_ip": "198.51.100.21", "target_ip": "10.245.0.10"},
+    {"name": "web-fip", "vpc": "file", "type": "dnat_and_snat", "external_ip": "198.51.100.22", "target_ip": "10.245.0.10"},
+    {"name": "ssh-port", "vpc": "file", "type": "dnat", "external_ip": "198.51.100.23", "target_ip": "10.245.0.10", "protocol": "tcp", "external_port": 2222, "target_port": 2222}
+  ],
+  "load_balancers": [{"name": "file-web", "vpc": "file", "vip": "10.96.0.20", "ports": [{"name": "http", "port": 80, "protocol": "tcp", "backends": [{"ip": "10.245.0.11", "port": 8080}]}], "subnets": ["fileapps"]}],
+  "security_groups": [{"name": "web", "vpc": "file", "rules": [{"id": "allow-web", "priority": 100, "direction": "ingress", "protocol": "tcp", "remote_cidr": "172.30.0.11/32", "ports": [{"from": 8080, "to": 8080}], "action": "allow", "stateful": true}]}]
+}`
+}
+
+func desiredStateWithStaticRouteFromECMPToSingleJSON() string {
+	return `{
+  "vpcs": [{"name": "file"}],
+  "subnets": [{"name": "fileapps", "vpc": "file", "cidr": "10.245.0.0/24", "gateway": "10.245.0.1", "provider_network": "physnet-a", "vlan": 100, "dhcp": {"enabled": true, "lease_time": 7200, "mtu": 1400}}],
+  "endpoints": [{"id": "file-pod-a", "vpc": "file", "subnet": "fileapps", "ip": "10.245.0.10", "node": "node-a", "security_groups": ["web"]}],
+  "route_tables": [{"name": "main", "vpc": "file", "routes": [{"destination": "0.0.0.0/0", "next_hops": ["10.245.0.252"]}]}],
   "policy_routes": [{"name": "https-via-fw", "vpc": "file", "priority": 100, "match": {"source": "10.245.0.0/24", "destination": "172.16.0.0/16", "protocol": "tcp", "dst_ports": [{"from": 443, "to": 443}]}, "action": {"type": "reroute", "next_hops": ["10.245.0.252"]}}],
   "gateways": [{"name": "gw-file", "vpc": "file", "node": "node-a", "external_if": "eth0", "lan_ip": "10.245.0.254"}],
   "nat_rules": [
