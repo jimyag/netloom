@@ -121,3 +121,71 @@ func TestDockerAgentSelftestTCXAttachFailureIsSurfaceable(t *testing.T) {
 		t.Fatalf("tcx attach failure output missing tcx selftest context:\n%s", output.output)
 	}
 }
+
+func TestDockerAgentSelftestTCXAttachFailureAndRecovery(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip long e2e test in short mode")
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker is not installed")
+	}
+
+	composeFile := filepath.Join("testdata", "..", "docker-compose.yaml")
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+
+	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
+	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
+	run(t, ctx, "docker", "compose", "-f", composeFile, "up", "-d", "--quiet-pull", "--force-recreate")
+	t.Cleanup(func() {
+		downCtx, downCancel := context.WithTimeout(context.Background(), time.Minute)
+		defer downCancel()
+		run(t, downCtx, "docker", "compose", "-f", composeFile, "down", "-v")
+	})
+	waitForOVN(t, ctx, composeFile)
+
+	failureOutput := runAllowFailure(
+		t,
+		ctx,
+		"docker",
+		"compose",
+		"-f",
+		composeFile,
+		"exec",
+		"-T",
+		"-e",
+		"NETLOOM_TCX_SELFTEST_IFACE=not-a-real-interface",
+		"node-b",
+		"/netloom/bin/netloom-agent",
+	)
+	if failureOutput.exitCode == 0 {
+		t.Fatalf("expected tcx selftest to fail with bad interface, output:\n%s", failureOutput.output)
+	}
+	if !strings.Contains(failureOutput.output, "tcx selftest:") {
+		t.Fatalf("tcx attach failure output missing tcx selftest context:\n%s", failureOutput.output)
+	}
+
+	tcxIface, _ := tcxSelftestInterface(t, ctx, composeFile, "node-b")
+	recoveredOutput := run(
+		t,
+		ctx,
+		"docker",
+		"compose",
+		"-f",
+		composeFile,
+		"exec",
+		"-T",
+		"-e",
+		"NETLOOM_TCX_SELFTEST_IFACE="+tcxIface,
+		"-e",
+		"NETLOOM_SELFTEST_VPC=blue",
+		"node-b",
+		"/netloom/bin/netloom-agent",
+	)
+	if !strings.Contains(recoveredOutput, "ready for node policy") {
+		t.Fatalf("agent selftest did not recover after attach failure: %s", recoveredOutput)
+	}
+	if !strings.Contains(recoveredOutput, "endpoint=blue") {
+		t.Fatalf("agent selftest recovered output did not include expected vpc endpoint:\n%s", recoveredOutput)
+	}
+}
