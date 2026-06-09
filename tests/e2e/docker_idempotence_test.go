@@ -578,6 +578,71 @@ func TestDockerControllerStateReplayDetectsManagedOVNLeaksAcrossVPCs(t *testing.
 	}
 }
 
+func TestDockerControllerReplayDoesNotChangeOVNStateAcrossVPCs(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip long e2e test in short mode")
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker is not installed")
+	}
+
+	composeFile := filepath.Join("testdata", "..", "docker-compose.yaml")
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+
+	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
+	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
+	run(t, ctx, "docker", "compose", "-f", composeFile, "up", "-d", "--quiet-pull", "--force-recreate")
+	t.Cleanup(func() {
+		downCtx, downCancel := context.WithTimeout(context.Background(), time.Minute)
+		defer downCancel()
+		run(t, downCtx, "docker", "compose", "-f", composeFile, "down", "-v")
+	})
+	waitForOVN(t, ctx, composeFile)
+
+	stateScript := "cat >/tmp/netloom-state-replay-dual-vpc.json <<'EOF'\n" + desiredDualVPCStateJSON() + "\nEOF\n"
+	runCommand := stateScript + "NETLOOM_STATE_FILE=/tmp/netloom-state-replay-dual-vpc.json NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller"
+
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", runCommand)
+
+	fileEndpoint := endpointExternalIDForOVN("file", "shared-pod")
+	blueEndpoint := endpointExternalIDForOVN("blue", "shared-pod")
+
+	snapshot := func() map[string]map[string]int {
+		return map[string]map[string]int{
+			"file": {
+				"logical_router":      len(activeManagedRows(t, ctx, composeFile, "logical_router", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
+				"logical_switch":      len(activeManagedRows(t, ctx, composeFile, "logical_switch", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
+				"logical_switch_port":  len(activeManagedRows(t, ctx, composeFile, "logical_switch_port", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file", "external_ids:netloom_endpoint="+fileEndpoint)),
+				"nat":                 len(activeManagedRows(t, ctx, composeFile, "NAT", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
+				"load_balancer":       len(activeManagedRows(t, ctx, composeFile, "load_balancer", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
+				"policy_routes":       len(activeManagedRows(t, ctx, composeFile, "Logical_Router_Policy", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
+			},
+			"blue": {
+				"logical_router":      len(activeManagedRows(t, ctx, composeFile, "logical_router", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue")),
+				"logical_switch":      len(activeManagedRows(t, ctx, composeFile, "logical_switch", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue")),
+				"logical_switch_port":  len(activeManagedRows(t, ctx, composeFile, "logical_switch_port", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue", "external_ids:netloom_endpoint="+blueEndpoint)),
+				"nat":                 len(activeManagedRows(t, ctx, composeFile, "NAT", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue")),
+				"load_balancer":       len(activeManagedRows(t, ctx, composeFile, "load_balancer", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue")),
+				"policy_routes":       len(activeManagedRows(t, ctx, composeFile, "Logical_Router_Policy", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue")),
+			},
+		}
+	}
+	baseSnapshot := snapshot()
+
+	for i := 0; i < 8; i++ {
+		output := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", runCommand)
+		if !strings.Contains(output, "reconciled desired state") {
+			t.Fatalf("replay iteration %d failed:\n%s", i, output)
+		}
+
+		current := snapshot()
+		if !reflect.DeepEqual(baseSnapshot, current) {
+			t.Fatalf("OVN state changed on replay iteration %d.\nbase=%+v\ncurrent=%+v", i, baseSnapshot, current)
+		}
+	}
+}
+
 func TestDockerControllerRouteTableECMPDeltaIsIncremental(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skip long e2e test in short mode")
