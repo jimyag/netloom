@@ -1383,6 +1383,156 @@ func TestDockerControllerRouteTableECMPDeltaIsIdempotentForOneShotReconcile(t *t
 	}
 }
 
+func TestDockerWorkloadPolicyPriorityConflict(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip long e2e test in short mode")
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker is not installed")
+	}
+
+	composeFile := filepath.Join("testdata", "..", "docker-compose.yaml")
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+
+	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
+	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
+	run(t, ctx, "docker", "compose", "-f", composeFile, "up", "-d", "--quiet-pull", "--force-recreate")
+	t.Cleanup(func() {
+		downCtx, downCancel := context.WithTimeout(context.Background(), time.Minute)
+		defer downCancel()
+		run(t, downCtx, "docker", "compose", "-f", composeFile, "down", "-v")
+	})
+	waitForOVN(t, ctx, composeFile)
+	ensureIPNetNS := func(service string) {
+		hasNetNS := runAllowFailure(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", service, "ip", "netns", "list")
+		if hasNetNS.exitCode == 0 {
+			return
+		}
+		installOutput := runAllowFailure(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", service, "sh", "-c", "apk add --no-cache iproute2")
+		if installOutput.exitCode != 0 {
+			t.Skipf("node %s does not support ip netns and iproute2 install failed:\n%s", service, strings.TrimSpace(installOutput.output))
+		}
+		hasNetNS = runAllowFailure(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", service, "ip", "netns", "list")
+		if hasNetNS.exitCode != 0 {
+			t.Skipf("node %s still does not support ip netns after install:\n%s", service, strings.TrimSpace(hasNetNS.output))
+		}
+	}
+	for _, service := range []string{"node-a", "node-b"} {
+		ensureIPNetNS(service)
+	}
+
+	statePath := "/tmp/netloom-workload-priority-state.json"
+	stateForNode := func(stateJSON, node string) string {
+		return "cat >" + statePath + " <<'EOF'\n" + stateJSON + "\nEOF\n" +
+			"NETLOOM_STATE_FILE=" + statePath +
+			" NETLOOM_NODE_NAME=" + node +
+			" NETLOOM_POLICY_STORE=ebpf" +
+			" NETLOOM_LINUX_DATAPATH=1" +
+			" NETLOOM_LINUX_DATAPATH_MODE=netns" +
+			" NETLOOM_NODE_UNDERLAYS=node-a=172.30.0.11,node-b=172.30.0.12 " +
+			"/netloom/bin/netloom-agent"
+	}
+
+	nodeAWorkloadDenyOutput := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-a", "sh", "-c", stateForNode(desiredWorkloadPolicyPriorityDenyWinsStateJSON(), "node-a"))
+	if !strings.Contains(nodeAWorkloadDenyOutput, "reconciled node policy") {
+		t.Fatalf("node-a deny-state reconcile did not succeed:\n%s", nodeAWorkloadDenyOutput)
+	}
+	nodeBWorkloadDenyOutput := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "sh", "-c", stateForNode(desiredWorkloadPolicyPriorityDenyWinsStateJSON(), "node-b"))
+	if !strings.Contains(nodeBWorkloadDenyOutput, "reconciled node policy") {
+		t.Fatalf("node-b deny-state reconcile did not succeed:\n%s", nodeBWorkloadDenyOutput)
+	}
+
+	resolveWorkloadNamespace := func(node, endpointID string) string {
+		expected := workloadNamespace("file", endpointID)
+		legacy := "nl-" + endpointID
+		var lastOutput string
+		for i := 0; i < 120; i++ {
+			result := runAllowFailure(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", node, "ip", "netns", "list")
+			lastOutput = result.output
+			if result.exitCode == 0 {
+				for _, line := range strings.Split(strings.TrimSpace(result.output), "\n") {
+					fields := strings.Fields(line)
+					if len(fields) == 0 {
+						continue
+					}
+					namespace := fields[0]
+					if namespace == expected || namespace == legacy || (strings.HasPrefix(namespace, "nl-") && strings.HasSuffix(namespace, endpointID)) {
+						return namespace
+					}
+				}
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+		t.Fatalf("namespace for endpoint %q was not found on %s, namespaces now:\n%s", endpointID, node, strings.TrimSpace(lastOutput))
+		return ""
+	}
+
+	srcNS := resolveWorkloadNamespace("node-a", "file-pod-a")
+	dstNS := resolveWorkloadNamespace("node-b", "file-pod-b")
+
+	run(
+		t,
+		ctx,
+		"docker",
+		"compose",
+		"-f",
+		composeFile,
+		"exec",
+		"-T",
+		"node-b",
+		"sh",
+		"-c",
+		"ip netns exec "+dstNS+" sh -c 'while true; do printf ok | nc -l -p 8081 >/tmp/netloom-workload-priority-server.log 2>&1; done >/dev/null 2>&1 &'",
+	)
+	time.Sleep(700 * time.Millisecond)
+
+	denyProbe := runAllowFailure(
+		t,
+		ctx,
+		"docker",
+		"compose",
+		"-f",
+		composeFile,
+		"exec",
+		"-T",
+		"node-a",
+		"sh",
+		"-c",
+		"for i in $(seq 1 20); do ip netns exec "+srcNS+" sh -c 'printf hi | nc -w 1 10.245.0.11 8081' >/tmp/netloom-workload-priority-deny.log 2>&1 || exit 0; sleep 1; done; cat /tmp/netloom-workload-priority-deny.log; exit 1",
+	)
+	if denyProbe.exitCode != 0 {
+		t.Fatalf("policy priority expected deny state to block traffic, but probe succeeded: %s", denyProbe.output)
+	}
+
+	nodeAWorkloadAllowOutput := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-a", "sh", "-c", stateForNode(desiredWorkloadPolicyPriorityAllowWinsStateJSON(), "node-a"))
+	if !strings.Contains(nodeAWorkloadAllowOutput, "reconciled node policy") {
+		t.Fatalf("node-a allow-state reconcile did not succeed:\n%s", nodeAWorkloadAllowOutput)
+	}
+	nodeBWorkloadAllowOutput := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "sh", "-c", stateForNode(desiredWorkloadPolicyPriorityAllowWinsStateJSON(), "node-b"))
+	if !strings.Contains(nodeBWorkloadAllowOutput, "reconciled node policy") {
+		t.Fatalf("node-b allow-state reconcile did not succeed:\n%s", nodeBWorkloadAllowOutput)
+	}
+
+	allowProbe := runAllowFailure(
+		t,
+		ctx,
+		"docker",
+		"compose",
+		"-f",
+		composeFile,
+		"exec",
+		"-T",
+		"node-a",
+		"sh",
+		"-c",
+		"for i in $(seq 1 20); do ip netns exec "+srcNS+" sh -c 'printf hi | nc -w 1 10.245.0.11 8081' >/tmp/netloom-workload-priority-allow.log 2>&1 && exit 0; sleep 1; done; cat /tmp/netloom-workload-priority-allow.log; exit 1",
+	)
+	if allowProbe.exitCode != 0 {
+		t.Fatalf("policy priority expected allow state to pass traffic, probe output: %s", allowProbe.output)
+	}
+}
+
 func routeListHasOnlyHops(got []string, expected []string) bool {
 	if len(got) != len(expected) {
 		return false
