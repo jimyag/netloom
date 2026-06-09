@@ -189,3 +189,77 @@ func TestDockerAgentSelftestTCXAttachFailureAndRecovery(t *testing.T) {
 		t.Fatalf("agent selftest recovered output did not include expected vpc endpoint:\n%s", recoveredOutput)
 	}
 }
+
+func TestDockerAgentStateWatchRecoversFromRestart(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip long e2e test in short mode")
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker is not installed")
+	}
+
+	composeFile := filepath.Join("testdata", "..", "docker-compose.yaml")
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+
+	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
+	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
+	run(t, ctx, "docker", "compose", "-f", composeFile, "up", "-d", "--quiet-pull", "--force-recreate")
+	t.Cleanup(func() {
+		downCtx, downCancel := context.WithTimeout(context.Background(), time.Minute)
+		defer downCancel()
+		run(t, downCtx, "docker", "compose", "-f", composeFile, "down", "-v")
+	})
+
+	statePath := "/tmp/netloom-agent-restart-watch-state.json"
+	stateAWrite := "cat >" + statePath + " <<'EOF'\n" + desiredWorkloadPolicyDropStateJSON() + "\nEOF\n"
+	stateBWrite := "cat >" + statePath + " <<'EOF'\n" + desiredWorkloadCleanupStateJSON() + "\nEOF\n"
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "sh", "-c", stateAWrite)
+
+	agentWatchLog := "/tmp/netloom-agent-watch-restart.log"
+	agentPIDFile := "/tmp/netloom-agent-watch-restart.pid"
+	agentWatchCommand := "NETLOOM_STATE_FILE=" + statePath + " NETLOOM_NODE_NAME=node-b NETLOOM_POLICY_STORE=ebpf NETLOOM_RECONCILE_INTERVAL_MS=500 /netloom/bin/netloom-agent >" + agentWatchLog + " 2>&1"
+	shortCtx := func() (context.Context, context.CancelFunc) {
+		return context.WithTimeout(context.Background(), 30*time.Second)
+	}
+	startWatch := func() {
+		opCtx, cancel := shortCtx()
+		run(t, opCtx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "sh", "-c", "cat /dev/null > "+agentWatchLog+"; ("+agentWatchCommand+" &) ; echo $! > "+agentPIDFile)
+		cancel()
+	}
+	stopWatch := func() {
+		opCtx, cancel := shortCtx()
+		runAllowFailure(t, opCtx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "sh", "-c", "pid=$(cat "+agentPIDFile+" 2>/dev/null || true); [ -n \"$pid\" ] && kill -9 \"$pid\" || true; rm -f "+agentPIDFile)
+		cancel()
+	}
+	waitForWatch := func(expected string) {
+		for i := 0; i < 30; i++ {
+			opCtx, cancel := shortCtx()
+			output := runAllowFailure(t, opCtx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "sh", "-c", "grep -Fq '"+expected+"' "+agentWatchLog+" && exit 0 || exit 1")
+			cancel()
+			if output.exitCode == 0 {
+				return
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+		opCtx, cancel := shortCtx()
+		logOutput := run(t, opCtx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "cat", agentWatchLog)
+		cancel()
+		t.Fatalf("agent watch did not emit %q in time:\n%s", expected, logOutput)
+	}
+
+	startWatch()
+	t.Cleanup(stopWatch)
+	waitForWatch("reconciled node policy")
+	waitForWatch("store=ebpf")
+	waitForWatch("endpoints=2")
+
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "sh", "-c", stateBWrite)
+	waitForWatch("endpoints=1")
+
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "sh", "-c", "cat /dev/null > "+agentWatchLog)
+	stopWatch()
+	startWatch()
+	waitForWatch("reconciled node policy")
+	waitForWatch("endpoints=1")
+}
