@@ -1847,6 +1847,88 @@ func TestDockerControllerReconcileIPv6VPC(t *testing.T) {
 	}
 }
 
+func TestDockerControllerReconcileDualStackVPC(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip long e2e test in short mode")
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker is not installed")
+	}
+
+	composeFile := filepath.Join("testdata", "..", "docker-compose.yaml")
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+
+	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
+	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
+	run(t, ctx, "docker", "compose", "-f", composeFile, "up", "-d", "--quiet-pull", "--force-recreate")
+	t.Cleanup(func() {
+		downCtx, downCancel := context.WithTimeout(context.Background(), time.Minute)
+		defer downCancel()
+		run(t, downCtx, "docker", "compose", "-f", composeFile, "down", "-v")
+	})
+	waitForOVN(t, ctx, composeFile)
+
+	statePath := "/tmp/netloom-state-dual-stack.json"
+	reconcileOutput := run(
+		t,
+		ctx,
+		"docker",
+		"compose",
+		"-f",
+		composeFile,
+		"exec",
+		"-T",
+		"ovn-central",
+		"sh",
+		"-c",
+		"cat >"+statePath+" <<'EOF'\n"+desiredStateDualStackJSON()+"\nEOF\nNETLOOM_STATE_FILE="+statePath+" NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller",
+	)
+	if !strings.Contains(reconcileOutput, "reconciled desired state") {
+		t.Fatalf("dual-stack desired-state reconcile did not succeed:\n%s", reconcileOutput)
+	}
+
+	v4EndpointID := endpointExternalIDForOVN("dual", "dual-pod-v4")
+	v6EndpointID := endpointExternalIDForOVN("dual", "dual-pod-v6")
+	v4Ports := activeManagedRows(t, ctx, composeFile, "logical_switch_port", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=dual", "external_ids:netloom_endpoint="+v4EndpointID)
+	v6Ports := activeManagedRows(t, ctx, composeFile, "logical_switch_port", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=dual", "external_ids:netloom_endpoint="+v6EndpointID)
+	if len(v4Ports) != 1 {
+		t.Fatalf("expected one IPv4 logical switch port for dual-v4 endpoint %q, got %v", v4EndpointID, v4Ports)
+	}
+	if len(v6Ports) != 1 {
+		t.Fatalf("expected one IPv6 logical switch port for dual-v6 endpoint %q, got %v", v6EndpointID, v6Ports)
+	}
+
+	v4AddressOutput := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "lsp-get-addresses", v4Ports[0])
+	if !strings.Contains(v4AddressOutput, "10.245.0.10") {
+		t.Fatalf("expected IPv4 endpoint address 10.245.0.10, output:\n%s", v4AddressOutput)
+	}
+	if strings.Contains(v4AddressOutput, "fd00:") {
+		t.Fatalf("unexpected IPv6 address on IPv4 endpoint logical port:\n%s", v4AddressOutput)
+	}
+
+	v6AddressOutput := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "lsp-get-addresses", v6Ports[0])
+	if !strings.Contains(v6AddressOutput, "fd00:20:20::10") {
+		t.Fatalf("expected IPv6 endpoint address fd00:20:20::10, output:\n%s", v6AddressOutput)
+	}
+	if strings.Contains(v6AddressOutput, "10.") {
+		t.Fatalf("unexpected IPv4 address on IPv6 endpoint logical port:\n%s", v6AddressOutput)
+	}
+
+	routers := activeManagedRows(t, ctx, composeFile, "logical_router", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=dual")
+	if len(routers) != 1 {
+		t.Fatalf("expected one dual-stack logical router, got %v", routers)
+	}
+	switches := activeManagedRows(t, ctx, composeFile, "logical_switch", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=dual")
+	if len(switches) != 2 {
+		t.Fatalf("expected two dual-stack logical switches (v4/v6), got %v", switches)
+	}
+	nat := activeManagedRows(t, ctx, composeFile, "NAT", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=dual")
+	if len(nat) != 0 {
+		t.Fatalf("unexpected managed NAT rows for dual-stack VPC without NAT rules: %v", nat)
+	}
+}
+
 func routeListHasOnlyHops(got []string, expected []string) bool {
 	if len(got) != len(expected) {
 		return false
@@ -2019,5 +2101,20 @@ func desiredStateIPv6JSON() string {
   "subnets": [{"name": "appsv6", "vpc": "ipv6", "cidr": "fd00:10:10::/64", "gateway": "fd00:10:10::1"}],
   "endpoints": [{"id": "ipv6-pod-a", "vpc": "ipv6", "subnet": "appsv6", "ip": "fd00:10:10::10", "node": "node-a", "security_groups": ["ipv6-allow"]}],
   "security_groups": [{"name": "ipv6-allow", "vpc": "ipv6", "rules": [{"id": "allow-all", "priority": 100, "direction": "ingress", "protocol": "any", "remote_cidr": "::/0", "action": "allow"}]}]
+}`
+}
+
+func desiredStateDualStackJSON() string {
+	return `{
+  "vpcs": [{"name": "dual"}],
+  "subnets": [
+    {"name": "apps-v4", "vpc": "dual", "cidr": "10.245.0.0/24", "gateway": "10.245.0.1"},
+    {"name": "apps-v6", "vpc": "dual", "cidr": "fd00:20:20::/64", "gateway": "fd00:20:20::1"}
+  ],
+  "endpoints": [
+    {"id": "dual-pod-v4", "vpc": "dual", "subnet": "apps-v4", "ip": "10.245.0.10", "node": "node-a", "security_groups": ["dual-allow"]},
+    {"id": "dual-pod-v6", "vpc": "dual", "subnet": "apps-v6", "ip": "fd00:20:20::10", "node": "node-a", "security_groups": ["dual-allow"]}
+  ],
+  "security_groups": [{"name": "dual-allow", "vpc": "dual", "rules": [{"id": "allow-all", "priority": 100, "direction": "ingress", "protocol": "any", "remote_cidr": "0.0.0.0/0", "action": "allow"}, {"id": "allow-all-v6", "priority": 100, "direction": "ingress", "protocol": "any", "remote_cidr": "::/0", "action": "allow"}]}]
 }`
 }
