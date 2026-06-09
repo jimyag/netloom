@@ -772,6 +772,27 @@ func TestRunTCXVerdictReturnsVerifierError(t *testing.T) {
 	}
 }
 
+func TestRunTCXVerdictReturnsAttachError(t *testing.T) {
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Skipf("cannot adjust memlock for TCX attach test: %v", err)
+	}
+	originalAttach := attachTCX
+	attachTCX = func(opts link.TCXOptions) (link.Link, error) {
+		return nil, errors.New("mocked attach failure")
+	}
+	t.Cleanup(func() {
+		attachTCX = originalAttach
+	})
+
+	_, err := RunTCXVerdict(context.Background(), "lo", TCXPass, 0)
+	if err == nil {
+		t.Fatal("expected attach failure")
+	}
+	if !strings.Contains(err.Error(), "mocked attach failure") {
+		t.Fatalf("error = %v, want mocked attach failure", err)
+	}
+}
+
 func TestIPv4L4ACLUsesLPMTrieMapSpec(t *testing.T) {
 	spec := ipv4L4ACLMapSpec(1)
 	if spec.Type != ebpf.LPMTrie {
