@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jimyag/netloom/internal/dataplane"
@@ -21,22 +22,31 @@ type SelfTestResult struct {
 	PolicyStats  dataplane.PolicyMetrics
 	DropEvents   int
 	PolicyEvents int
+	TraceEvents  int
 	TCX          string
 }
 
+func selftestVPC() string {
+	if value := strings.TrimSpace(os.Getenv("NETLOOM_SELFTEST_VPC")); value != "" {
+		return value
+	}
+	return "default"
+}
+
 func RunSelfTest(ctx context.Context) (SelfTestResult, error) {
+	vpc := selftestVPC()
 	endpoint := model.Endpoint{
 		ID:             "selftest-pod",
-		VPC:            "default",
+		VPC:            vpc,
 		Subnet:         "default-subnet",
 		IP:             netip.MustParseAddr("10.244.0.10"),
 		Node:           "selftest-node",
 		SecurityGroups: []string{"web"},
 	}
-	program, err := policy.CompileForEndpoint(endpoint, map[string]model.SecurityGroup{
+	program, err := policy.CompileForEndpointWithContext(endpoint, map[string]model.SecurityGroup{
 		"web": {
 			Name: "web",
-			VPC:  "default",
+			VPC:  vpc,
 			Rules: []model.SecurityGroupRule{
 				{
 					ID:         "allow-https",
@@ -61,6 +71,8 @@ func RunSelfTest(ctx context.Context) (SelfTestResult, error) {
 				},
 			},
 		},
+	}, policy.CompileContext{
+		IdentityResolver: policy.NewIdentityCache(),
 	})
 	if err != nil {
 		return SelfTestResult{}, err
@@ -107,6 +119,29 @@ func RunSelfTest(ctx context.Context) (SelfTestResult, error) {
 	}
 	if denied.Verdict != dataplane.VerdictDrop {
 		return SelfTestResult{}, fmt.Errorf("expected denied range packet to be dropped, got %s", denied.Verdict)
+	}
+	conntrack := dataplane.NewInMemoryConntrackStore()
+	statefulAllowed := dataplane.EvaluateStatefulObserved(endpointKey, entries, dataplane.Packet{
+		RemoteIdentity: allowedIdentity,
+		RemoteIP:       netip.MustParseAddr("10.244.1.10"),
+		Direction:      dataplane.DirectionIngress,
+		Protocol:       6,
+		SourcePort:     55500,
+		DestPort:       443,
+	}, conntrack, recorder)
+	if statefulAllowed.Verdict != dataplane.VerdictAllow || !statefulAllowed.Established {
+		return SelfTestResult{}, fmt.Errorf("expected stateful allow packet to establish conntrack, got %+v", statefulAllowed)
+	}
+	statefulReply := dataplane.EvaluateStatefulObserved(endpointKey, nil, dataplane.Packet{
+		RemoteIdentity: allowedIdentity,
+		RemoteIP:       netip.MustParseAddr("10.244.1.10"),
+		Direction:      dataplane.DirectionEgress,
+		Protocol:       6,
+		SourcePort:     443,
+		DestPort:       55500,
+	}, conntrack, recorder)
+	if statefulReply.Verdict != dataplane.VerdictAllow || !statefulReply.Conntrack {
+		return SelfTestResult{}, fmt.Errorf("expected stateful reverse packet to match conntrack, got %+v", statefulReply)
 	}
 
 	tcxStatus := "not-requested"
@@ -175,6 +210,7 @@ func RunSelfTest(ctx context.Context) (SelfTestResult, error) {
 		PolicyStats:  recorder.Metrics(endpointKey),
 		DropEvents:   len(recorder.DropEvents()),
 		PolicyEvents: len(recorder.PolicyEvents()),
+		TraceEvents:  len(recorder.TraceEvents()),
 		TCX:          tcxStatus,
 	}, nil
 }
@@ -218,9 +254,10 @@ func compileTCXPolicySelfTest(source netip.Addr, protocol uint8, port *uint16, a
 	if action == dataplane.TCXDrop {
 		modelAction = model.ActionDrop
 	}
+	vpc := selftestVPC()
 	endpoint := model.Endpoint{
 		ID:             "tcx-policy-selftest-pod",
-		VPC:            "default",
+		VPC:            vpc,
 		Subnet:         "default-subnet",
 		IP:             netip.MustParseAddr("10.244.0.10"),
 		Node:           "selftest-node",
@@ -230,10 +267,10 @@ func compileTCXPolicySelfTest(source netip.Addr, protocol uint8, port *uint16, a
 	if port != nil {
 		ports = []model.PortRange{{From: *port, To: *port}}
 	}
-	return policy.CompileForEndpoint(endpoint, map[string]model.SecurityGroup{
+	return policy.CompileForEndpointWithContext(endpoint, map[string]model.SecurityGroup{
 		"tcx-policy": {
 			Name: "tcx-policy",
-			VPC:  "default",
+			VPC:  vpc,
 			Rules: []model.SecurityGroupRule{
 				{
 					ID:         "tcx-policy-l4",
@@ -246,6 +283,8 @@ func compileTCXPolicySelfTest(source netip.Addr, protocol uint8, port *uint16, a
 				},
 			},
 		},
+	}, policy.CompileContext{
+		IdentityResolver: policy.NewIdentityCache(),
 	})
 }
 

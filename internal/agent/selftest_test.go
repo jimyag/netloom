@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"net/netip"
+	"strings"
 	"testing"
 
 	"github.com/jimyag/netloom/internal/dataplane"
@@ -26,16 +27,33 @@ func TestRunSelfTestCompilesAndEvaluatesPolicy(t *testing.T) {
 	if result.Denied != dataplane.VerdictDrop {
 		t.Fatalf("denied verdict = %s, want drop", result.Denied)
 	}
-	if result.PolicyStats.Allowed != 1 || result.PolicyStats.Dropped != 1 || result.PolicyStats.DenyDrops != 1 || result.PolicyStats.Logged != 2 {
-		t.Fatalf("policy stats = %+v, want one allow and one deny drop", result.PolicyStats)
+	if result.PolicyStats.Allowed != 3 || result.PolicyStats.Dropped != 1 || result.PolicyStats.Conntrack != 1 || result.PolicyStats.Established != 1 || result.PolicyStats.DenyDrops != 1 || result.PolicyStats.Logged != 3 {
+		t.Fatalf("policy stats = %+v, want allowed=3 dropped=1 conntrack=1 established=1 deny_drops=1 logged=3", result.PolicyStats)
 	}
 	if result.DropEvents != 1 {
 		t.Fatalf("drop events = %d, want 1", result.DropEvents)
 	}
-	if result.PolicyEvents != 2 {
-		t.Fatalf("policy events = %d, want 2", result.PolicyEvents)
+	if result.PolicyEvents != 3 {
+		t.Fatalf("policy events = %d, want 3", result.PolicyEvents)
+	}
+	if result.TraceEvents != 4 {
+		t.Fatalf("trace events = %d, want 4", result.TraceEvents)
 	}
 	if result.TCX != "not-requested" {
+		t.Fatalf("tcx status = %s, want not-requested", result.TCX)
+	}
+}
+
+func TestRunSelfTestAcceptsCustomVpcScope(t *testing.T) {
+	t.Setenv("NETLOOM_SELFTEST_VPC", "blue")
+	result, err := RunSelfTest(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.EndpointID != model.EndpointKey("blue", "selftest-pod") {
+		t.Fatalf("endpoint id = %s, want blue-scoped selftest-pod", result.EndpointID)
+	}
+	if !strings.Contains(result.TCX, "not-requested") {
 		t.Fatalf("tcx status = %s, want not-requested", result.TCX)
 	}
 }
