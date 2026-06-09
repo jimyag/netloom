@@ -793,6 +793,42 @@ func TestRunTCXVerdictReturnsAttachError(t *testing.T) {
 	}
 }
 
+func TestNewIPv4L4ACLMapReturnsCreationError(t *testing.T) {
+	originalMap := newTCXMap
+	newTCXMap = func(*ebpf.MapSpec) (*ebpf.Map, error) {
+		return nil, errors.New("mocked map creation failure")
+	}
+	t.Cleanup(func() {
+		newTCXMap = originalMap
+	})
+	aclMap, err := NewIPv4L4ACLMap(netip.MustParseAddr("172.30.0.11"), 6, 8080, TCXDrop)
+	if err == nil {
+		aclMap.Close()
+		t.Fatal("expected IPv4 L4 ACL map creation failure")
+	}
+	if !strings.Contains(err.Error(), "mocked map creation failure") {
+		t.Fatalf("error = %v, want mocked map creation failure", err)
+	}
+}
+
+func TestNewIPv4SourceACLMapReturnsCreationError(t *testing.T) {
+	originalMap := newTCXMap
+	newTCXMap = func(*ebpf.MapSpec) (*ebpf.Map, error) {
+		return nil, errors.New("mocked map creation failure")
+	}
+	t.Cleanup(func() {
+		newTCXMap = originalMap
+	})
+	aclMap, err := NewIPv4SourceACLMap(netip.MustParseAddr("172.30.0.11"), TCXDrop)
+	if err == nil {
+		aclMap.Close()
+		t.Fatal("expected IPv4 source ACL map creation failure")
+	}
+	if !strings.Contains(err.Error(), "mocked map creation failure") {
+		t.Fatalf("error = %v, want mocked map creation failure", err)
+	}
+}
+
 func TestIPv4L4ACLUsesLPMTrieMapSpec(t *testing.T) {
 	spec := ipv4L4ACLMapSpec(1)
 	if spec.Type != ebpf.LPMTrie {
