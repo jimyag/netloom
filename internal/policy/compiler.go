@@ -147,7 +147,7 @@ func CompileForEndpointWithContext(endpoint model.Endpoint, groups map[string]mo
 			}
 			for _, compiledRule := range compiledRules {
 				program.Rules = append(program.Rules, compiledRule)
-				entries, err := compileMapEntries(compiledRule, resolver)
+				entries, err := compileMapEntries(compiledRule, endpoint.VPC, resolver)
 				if err != nil {
 					return Program{}, err
 				}
@@ -186,7 +186,7 @@ func appendDefaultAllowRules(program *Program, groups []model.SecurityGroup) err
 			Action:    model.ActionAllow,
 		}
 		program.Rules = append(program.Rules, rule)
-		entries, err := compileMapEntries(rule, nil)
+		entries, err := compileMapEntries(rule, "", nil)
 		if err != nil {
 			return err
 		}
@@ -931,7 +931,7 @@ func indexGatewayCIDRsByVPC(gateways []model.Gateway) (map[string][]gatewayCIDR,
 	return out, nil
 }
 
-func compileMapEntries(rule Rule, resolver IdentityResolver) ([]MapEntry, error) {
+func compileMapEntries(rule Rule, localVPC string, resolver IdentityResolver) ([]MapEntry, error) {
 	portPrefixes, err := l4PortPrefixes(rule)
 	if err != nil {
 		return nil, fmt.Errorf("rule %s: %w", rule.ID, err)
@@ -941,7 +941,7 @@ func compileMapEntries(rule Rule, resolver IdentityResolver) ([]MapEntry, error)
 	for _, port := range portPrefixes {
 		entries = append(entries, MapEntry{
 			Key: MapKey{
-				RemoteIdentity: remoteIdentity(rule, resolver),
+				RemoteIdentity: remoteIdentity(localVPC, rule, resolver),
 				Direction:      rule.Direction,
 				Protocol:       normalizedProtocol(rule.Protocol),
 				DestPort:       port.port,
@@ -1052,21 +1052,25 @@ func log2(value uint32) uint32 {
 	return out
 }
 
-func remoteIdentity(rule Rule, resolver IdentityResolver) uint32 {
+func remoteIdentity(localVPC string, rule Rule, resolver IdentityResolver) uint32 {
 	if resolver == nil {
 		resolver = NewIdentityCache()
 	}
+	if localVPC == "" {
+		localVPC = "_global"
+	}
+	scope := localVPC + "\x00"
 	switch {
 	case rule.RemoteEndpoint != "":
 		return resolver.Identity("endpoint:" + rule.RemoteEndpoint)
 	case rule.RemoteEntity != "":
-		return resolver.Identity("entity:" + rule.RemoteEntity + ":" + rule.RemoteCIDR.String())
+		return resolver.Identity("entity:" + scope + rule.RemoteEntity + ":" + rule.RemoteCIDR.String())
 	case rule.RemoteService != "":
-		return resolver.Identity("service:" + rule.RemoteService + ":" + rule.RemoteCIDR.String())
+		return resolver.Identity("service:" + scope + rule.RemoteService + ":" + rule.RemoteCIDR.String())
 	case rule.RemoteCIDR.IsValid():
-		return resolver.Identity("cidr:" + rule.RemoteCIDR.String())
+		return resolver.Identity("cidr:" + scope + rule.RemoteCIDR.String())
 	case rule.RemoteGroup != "":
-		return resolver.Identity("sg:" + rule.RemoteGroup)
+		return resolver.Identity("sg:" + scope + rule.RemoteGroup)
 	default:
 		return 0
 	}

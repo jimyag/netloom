@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/jimyag/netloom/internal/model"
 	"github.com/jimyag/netloom/internal/policy"
@@ -147,15 +148,24 @@ type DesiredState struct {
 }
 
 type Controller struct {
-	topology TopologyBackend
-	policy   PolicyBackend
+	topology         TopologyBackend
+	policy           PolicyBackend
+	mu               sync.Mutex
+	identityResolver policy.IdentityResolver
 }
 
-func NewController(topology TopologyBackend, policy PolicyBackend) *Controller {
-	return &Controller{topology: topology, policy: policy}
+func NewController(topology TopologyBackend, policyBackend PolicyBackend) *Controller {
+	return &Controller{
+		topology:         topology,
+		policy:           policyBackend,
+		identityResolver: policy.NewIdentityCache(),
+	}
 }
 
 func (c *Controller) Reconcile(ctx context.Context, state DesiredState) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	if err := validateObjectGraph(state); err != nil {
 		return err
 	}
@@ -243,16 +253,21 @@ func (c *Controller) Reconcile(ctx context.Context, state DesiredState) error {
 			return err
 		}
 		groups := securityGroupsForVPC(state.SecurityGroups, endpoint.VPC)
+		resolver := c.identityResolver
+		if resolver == nil {
+			resolver = policy.NewIdentityCache()
+		}
 		if err := c.topology.EnsureEndpoint(ctx, endpoint); err != nil {
 			return fmt.Errorf("ensure endpoint %s: %w", endpoint.ID, err)
 		}
 		program, err := policy.CompileForEndpointWithContext(endpoint, groups, policy.CompileContext{
-			Endpoints:  state.Endpoints,
-			Subnets:    state.Subnets,
-			Gateways:   state.Gateways,
-			Services:   state.LoadBalancers,
-			DNSRecords: state.DNSRecords,
-			CIDRGroups: state.CIDRGroups,
+			Endpoints:        state.Endpoints,
+			Subnets:          state.Subnets,
+			Gateways:         state.Gateways,
+			Services:         state.LoadBalancers,
+			DNSRecords:       state.DNSRecords,
+			CIDRGroups:       state.CIDRGroups,
+			IdentityResolver: resolver,
 		})
 		if err != nil {
 			return err

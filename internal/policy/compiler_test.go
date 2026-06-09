@@ -856,6 +856,84 @@ func TestCompileForEndpointUsesIdentityResolverForRemoteIdentities(t *testing.T)
 	}
 }
 
+func TestCompileForEndpointUsesVpcScopedIdentityKeysForRemoteCIDRs(t *testing.T) {
+	resolver := &countingResolver{
+		cache: make(map[string]uint32),
+		calls: make(map[string]int),
+	}
+	prodTarget := model.Endpoint{
+		ID:             "pod-a",
+		VPC:            "file",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"web"},
+	}
+	blueTarget := model.Endpoint{
+		ID:             "pod-a",
+		VPC:            "blue",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.20.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"web"},
+	}
+	fileCidr := netip.MustParsePrefix("10.10.0.0/24")
+	blueCidr := netip.MustParsePrefix("10.20.0.0/24")
+	prodGroups := map[string]model.SecurityGroup{
+		"web": {
+			Name: "web",
+			VPC:  "file",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "allow-cidr",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: fileCidr,
+				Ports:      []model.PortRange{{From: 8080, To: 8080}},
+				Action:     model.ActionAllow,
+			}},
+		},
+	}
+	blueGroups := map[string]model.SecurityGroup{
+		"web": {
+			Name: "web",
+			VPC:  "blue",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "allow-cidr",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: blueCidr,
+				Ports:      []model.PortRange{{From: 8080, To: 8080}},
+				Action:     model.ActionAllow,
+			}},
+		},
+	}
+	prodProgram, err := CompileForEndpointWithContext(prodTarget, prodGroups, CompileContext{IdentityResolver: resolver})
+	if err != nil {
+		t.Fatal(err)
+	}
+	blueProgram, err := CompileForEndpointWithContext(blueTarget, blueGroups, CompileContext{IdentityResolver: resolver})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prodProgram.MapEntries) != 1 {
+		t.Fatalf("prod entries = %d, want 1", len(prodProgram.MapEntries))
+	}
+	if len(blueProgram.MapEntries) != 1 {
+		t.Fatalf("blue entries = %d, want 1", len(blueProgram.MapEntries))
+	}
+	if prodProgram.MapEntries[0].Key.RemoteIdentity == blueProgram.MapEntries[0].Key.RemoteIdentity {
+		t.Fatalf("remote identity collision across VPCs: got shared identity %d", prodProgram.MapEntries[0].Key.RemoteIdentity)
+	}
+	if got := resolver.calls["cidr:file\x00"+fileCidr.String()]; got != 1 {
+		t.Fatalf("identity resolver called %d times for file cidr scope, want 1", got)
+	}
+	if got := resolver.calls["cidr:blue\x00"+blueCidr.String()]; got != 1 {
+		t.Fatalf("identity resolver called %d times for blue cidr scope, want 1", got)
+	}
+}
+
 type countingResolver struct {
 	mu    sync.Mutex
 	cache map[string]uint32
