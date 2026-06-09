@@ -2,12 +2,46 @@ package control
 
 import (
 	"context"
+	"fmt"
 	"net/netip"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/jimyag/netloom/internal/model"
+	"github.com/jimyag/netloom/internal/policy"
+	"github.com/jimyag/netloom/internal/topology"
 )
+
+type countingIdentityResolver struct {
+	mu     sync.Mutex
+	inner  policy.IdentityResolver
+	misses map[string]int
+}
+
+func newCountingIdentityResolver() *countingIdentityResolver {
+	return &countingIdentityResolver{
+		inner:  policy.NewIdentityCache(),
+		misses: make(map[string]int),
+	}
+}
+
+func (c *countingIdentityResolver) Identity(value string) uint32 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, ok := c.misses[value]; !ok {
+		c.misses[value] = 1
+	}
+	return c.inner.Identity(value)
+}
+
+func (c *countingIdentityResolver) missesFor(value string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.misses[value]
+}
 
 func TestControllerReconcileSeparatesTopologyFromPolicy(t *testing.T) {
 	backend := NewMemoryBackend()
@@ -119,6 +153,155 @@ func TestControllerReconcileSeparatesTopologyFromPolicy(t *testing.T) {
 	if _, ok := backend.LoadBalancers[loadBalancerKey("prod", "web-vip")]; !ok {
 		t.Fatalf("load balancer was not reconciled: %+v", backend.LoadBalancers)
 	}
+}
+
+func TestControllerReconcileSharesIdentityResolverAcrossEndpoints(t *testing.T) {
+	state := DesiredState{
+		VPCs: []model.VPC{{Name: "prod"}},
+		Subnets: []model.Subnet{{
+			Name:    "apps",
+			VPC:     "prod",
+			CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway: netip.MustParseAddr("10.10.0.1"),
+		}},
+		SecurityGroups: []model.SecurityGroup{
+			{
+				Name: "web",
+				VPC:  "prod",
+				Rules: []model.SecurityGroupRule{{
+					ID:          "allow-clients",
+					Priority:    100,
+					Direction:   model.DirectionIngress,
+					Protocol:    model.ProtocolTCP,
+					RemoteGroup: "clients",
+					Ports:       []model.PortRange{{From: 8080, To: 8080}},
+					Action:      model.ActionAllow,
+				}},
+			},
+			{
+				Name: "clients",
+				VPC:  "prod",
+			},
+		},
+		Endpoints: []model.Endpoint{
+			{
+				ID:             "pod-a",
+				VPC:            "prod",
+				Subnet:         "apps",
+				IP:             netip.MustParseAddr("10.10.0.10"),
+				Node:           "node-a",
+				SecurityGroups: []string{"web"},
+			},
+			{
+				ID:             "pod-b",
+				VPC:            "prod",
+				Subnet:         "apps",
+				IP:             netip.MustParseAddr("10.10.0.11"),
+				Node:           "node-a",
+				SecurityGroups: []string{"web"},
+			},
+			{
+				ID:             "pod-c",
+				VPC:            "prod",
+				Subnet:         "apps",
+				IP:             netip.MustParseAddr("10.10.0.12"),
+				Node:           "node-a",
+				SecurityGroups: []string{"clients"},
+			},
+		},
+	}
+	backend := NewMemoryBackend()
+	resolver := newCountingIdentityResolver()
+	controller := NewController(backend, backend)
+	controller.identityResolver = resolver
+	if err := controller.Reconcile(context.Background(), state); err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+	identityKey := "endpoint:" + model.EndpointKey("prod", "pod-c")
+	if got := resolver.missesFor(identityKey); got != 1 {
+		t.Fatalf("identity(%q) misses = %d, want 1 with shared resolver", identityKey, got)
+	}
+	if _, ok := backend.PolicyProgram[model.EndpointKey("prod", "pod-a")]; !ok {
+		t.Fatalf("pod-a policy missing: %+v", backend.PolicyProgram)
+	}
+	if _, ok := backend.PolicyProgram[model.EndpointKey("prod", "pod-b")]; !ok {
+		t.Fatalf("pod-b policy missing: %+v", backend.PolicyProgram)
+	}
+}
+
+func TestControllerSerializesConcurrentReconciles(t *testing.T) {
+	backend := NewMemoryBackend()
+	guard := &concurrentTopologyGuard{
+		TopologyBackend:          backend,
+		TopologyLifecycleBackend: backend,
+		sleep:                    20 * time.Millisecond,
+	}
+	controller := NewController(guard, NewMemoryBackend())
+
+	state := DesiredState{
+		VPCs: []model.VPC{{Name: "prod"}},
+		Subnets: []model.Subnet{{
+			Name:    "apps",
+			VPC:     "prod",
+			CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway: netip.MustParseAddr("10.10.0.1"),
+		}},
+		Endpoints: []model.Endpoint{{
+			ID:             "pod-a",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{},
+		}},
+	}
+
+	start := make(chan struct{})
+	const workers = 4
+	errCh := make(chan error, workers)
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for i := 0; i < workers; i++ {
+		go func() {
+			defer wg.Done()
+			<-start
+			errCh <- controller.Reconcile(context.Background(), state)
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		if err != nil {
+			t.Fatalf("concurrent reconcile should be serialized and succeed: %v", err)
+		}
+	}
+
+	topology := backend.TopologyState()
+	if len(topology.VPCs) != 1 || len(topology.Subnets) != 1 || len(topology.Endpoints) != 1 {
+		t.Fatalf("unexpected topology state after concurrent reconcile: %+v", topology)
+	}
+}
+
+type concurrentTopologyGuard struct {
+	TopologyBackend
+	TopologyLifecycleBackend
+	inProgress int32
+	sleep      time.Duration
+}
+
+func (g *concurrentTopologyGuard) BeginTopologyReconcile(ctx context.Context, state topology.State) error {
+	if !atomic.CompareAndSwapInt32(&g.inProgress, 0, 1) {
+		return fmt.Errorf("concurrent topology reconcile detected")
+	}
+	time.Sleep(g.sleep)
+	return g.TopologyLifecycleBackend.BeginTopologyReconcile(ctx, state)
+}
+
+func (g *concurrentTopologyGuard) CleanupTopology(ctx context.Context, state topology.State) error {
+	defer atomic.StoreInt32(&g.inProgress, 0)
+	return g.TopologyLifecycleBackend.CleanupTopology(ctx, state)
 }
 
 func TestControllerRejectsConflictingNATRules(t *testing.T) {
@@ -1783,6 +1966,78 @@ func TestControllerReconcileRemovesStaleMemoryState(t *testing.T) {
 	}
 	if len(backend.Subnets) != 1 {
 		t.Fatalf("desired subnet should remain: %+v", backend.Subnets)
+	}
+}
+
+func TestControllerReconcileRecoversAfterRestartWithStaleState(t *testing.T) {
+	backend := NewMemoryBackend()
+
+	bootstrapState := validObjectGraphState()
+	if err := NewController(backend, backend).Reconcile(context.Background(), bootstrapState); err != nil {
+		t.Fatalf("bootstrap reconcile failed: %v", err)
+	}
+
+	backend.Endpoints[model.EndpointKey("prod", "zombie-pod")] = model.Endpoint{
+		ID:             "zombie-pod",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.12"),
+		Node:           "node-a",
+		SecurityGroups: []string{"web"},
+	}
+	backend.PolicyProgram[model.EndpointKey("prod", "zombie-pod")] = policy.Program{
+		EndpointID: model.EndpointKey("prod", "zombie-pod"),
+		Rules:      []policy.Rule{{RemoteCIDR: netip.MustParsePrefix("10.10.0.0/24"), Action: model.ActionAllow, Direction: model.DirectionIngress}},
+	}
+	backend.NATRules[natRuleKey("prod", "stale-nat")] = model.NATRule{
+		Name:       "stale-nat",
+		VPC:        "prod",
+		Type:       model.ActionSNAT,
+		MatchCIDR:  netip.MustParsePrefix("10.10.0.128/25"),
+		ExternalIP: netip.MustParseAddr("198.51.100.99"),
+	}
+	backend.LoadBalancers[loadBalancerKey("prod", "stale-lb")] = model.LoadBalancer{
+		Name: "stale-lb",
+		VPC:  "prod",
+		VIP:  netip.MustParseAddr("10.96.0.99"),
+		Ports: []model.LoadBalancerPort{{Port: 80, Protocol: model.ProtocolTCP, Backends: []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.11"), Port: 8080}}}},
+	}
+	backend.PolicyRoutes = append(backend.PolicyRoutes, model.PolicyRoute{
+		Name:     "stale-route",
+		VPC:      "prod",
+		Priority: 100,
+		Match:    model.RouteMatch{Destination: netip.MustParsePrefix("10.20.0.0/24"), Protocol: model.ProtocolTCP},
+		Action:   model.RouteAction{Type: model.ActionAllow},
+	})
+
+	restored := NewController(backend, backend)
+	if err := restored.Reconcile(context.Background(), bootstrapState); err != nil {
+		t.Fatalf("reconcile after restart failed: %v", err)
+	}
+
+	if got := len(backend.Endpoints); got != 1 {
+		t.Fatalf("endpoints = %d, want 1", got)
+	}
+	if _, ok := backend.Endpoints[model.EndpointKey("prod", "zombie-pod")]; ok {
+		t.Fatalf("zombie endpoint should have been removed after restart recovery: %+v", backend.Endpoints)
+	}
+	if _, ok := backend.PolicyProgram[model.EndpointKey("prod", "zombie-pod")]; ok {
+		t.Fatalf("zombie policy program should have been removed after restart recovery: %+v", backend.PolicyProgram)
+	}
+	if _, ok := backend.PolicyProgram[model.EndpointKey("prod", "pod-a")]; !ok {
+		t.Fatalf("bootstrap endpoint policy should remain: %+v", backend.PolicyProgram)
+	}
+	if got := len(backend.NATRules); got != 0 {
+		t.Fatalf("nat rules = %d, want 0", got)
+	}
+	if _, ok := backend.LoadBalancers[loadBalancerKey("prod", "stale-lb")]; ok {
+		t.Fatalf("stale load balancer should have been removed: %+v", backend.LoadBalancers)
+	}
+	if len(backend.PolicyRoutes) != 0 {
+		t.Fatalf("policy routes = %d, want 0", len(backend.PolicyRoutes))
+	}
+	if got := len(backend.LoadBalancers); got != 1 {
+		t.Fatalf("load balancers = %d, want 1", got)
 	}
 }
 
