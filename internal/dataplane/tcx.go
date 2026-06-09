@@ -25,6 +25,10 @@ const (
 	ipv6L4LookupPrefixLen = int32(176)
 )
 
+var attachTCX = link.AttachTCX
+var newTCXMap = ebpf.NewMap
+var newTCXProgram = ebpf.NewProgram
+
 type TCXSelfTestResult struct {
 	Interface string
 	Direction string
@@ -137,7 +141,7 @@ func NewConstantTCXProgram(action int32) (*ebpf.Program, error) {
 	if action != TCXPass && action != TCXDrop {
 		return nil, fmt.Errorf("unsupported tcx action %d", action)
 	}
-	return ebpf.NewProgram(&ebpf.ProgramSpec{
+	return newTCXProgram(&ebpf.ProgramSpec{
 		Name:    "netloom_tcx_const",
 		Type:    ebpf.SchedCLS,
 		License: "MIT",
@@ -152,7 +156,7 @@ func NewVerdictMap(action int32) (*ebpf.Map, error) {
 	if action != TCXPass && action != TCXDrop {
 		return nil, fmt.Errorf("unsupported tcx action %d", action)
 	}
-	verdictMap, err := ebpf.NewMap(&ebpf.MapSpec{
+	verdictMap, err := newTCXMap(&ebpf.MapSpec{
 		Name:       "netloom_tcx_verdict",
 		Type:       ebpf.Array,
 		KeySize:    4,
@@ -172,7 +176,7 @@ func NewVerdictMap(action int32) (*ebpf.Map, error) {
 }
 
 func NewMapBackedTCXProgram(verdictMap *ebpf.Map) (*ebpf.Program, error) {
-	return ebpf.NewProgram(&ebpf.ProgramSpec{
+	return newTCXProgram(&ebpf.ProgramSpec{
 		Name:    "netloom_tcx_map",
 		Type:    ebpf.SchedCLS,
 		License: "MIT",
@@ -199,7 +203,7 @@ func NewIPv4SourceACLMap(source netip.Addr, action int32) (*ebpf.Map, error) {
 	if action != TCXPass && action != TCXDrop {
 		return nil, fmt.Errorf("unsupported tcx action %d", action)
 	}
-	aclMap, err := ebpf.NewMap(&ebpf.MapSpec{
+	aclMap, err := newTCXMap(&ebpf.MapSpec{
 		Name:       "netloom_tcx_src4",
 		Type:       ebpf.Hash,
 		KeySize:    4,
@@ -219,7 +223,7 @@ func NewIPv4SourceACLMap(source netip.Addr, action int32) (*ebpf.Map, error) {
 }
 
 func NewIPv4SourceACLTCXProgram(aclMap *ebpf.Map) (*ebpf.Program, error) {
-	return ebpf.NewProgram(&ebpf.ProgramSpec{
+	return newTCXProgram(&ebpf.ProgramSpec{
 		Name:    "netloom_tcx_src4",
 		Type:    ebpf.SchedCLS,
 		License: "MIT",
@@ -255,7 +259,7 @@ func NewIPv4L4ACLMapFromRules(rules []IPv4L4ACLRule) (*ebpf.Map, error) {
 	if len(rules) == 0 {
 		return nil, fmt.Errorf("at least one IPv4 L4 ACL rule is required")
 	}
-	aclMap, err := ebpf.NewMap(ipv4L4ACLMapSpec(len(rules)))
+	aclMap, err := newTCXMap(ipv4L4ACLMapSpec(len(rules)))
 	if err != nil {
 		return nil, err
 	}
@@ -272,7 +276,7 @@ func NewIPv6L4ACLMapFromRules(rules []IPv6L4ACLRule) (*ebpf.Map, error) {
 	if len(rules) == 0 {
 		return nil, fmt.Errorf("at least one IPv6 L4 ACL rule is required")
 	}
-	aclMap, err := ebpf.NewMap(ipv6L4ACLMapSpec(len(rules)))
+	aclMap, err := newTCXMap(ipv6L4ACLMapSpec(len(rules)))
 	if err != nil {
 		return nil, err
 	}
@@ -941,7 +945,7 @@ func NewIPv4L4ACLTCXProgramForDirection(aclMap *ebpf.Map, direction model.Direct
 		return nil, err
 	}
 	instructions := ipv4L4ACLTCXInstructions(aclMap.FD(), peerOffset)
-	return ebpf.NewProgram(&ebpf.ProgramSpec{
+	return newTCXProgram(&ebpf.ProgramSpec{
 		Name:         "netloom_tcx_l4",
 		Type:         ebpf.SchedCLS,
 		License:      "MIT",
@@ -997,7 +1001,7 @@ func NewIPv6L4ACLTCXProgramForDirection(aclMap *ebpf.Map, direction model.Direct
 		return nil, err
 	}
 	instructions := ipv6L4ACLTCXInstructions(aclMap.FD(), peerOffset)
-	return ebpf.NewProgram(&ebpf.ProgramSpec{
+	return newTCXProgram(&ebpf.ProgramSpec{
 		Name:         "netloom_tcx_l4_v6",
 		Type:         ebpf.SchedCLS,
 		License:      "MIT",
@@ -1095,7 +1099,7 @@ func AttachTCXWithAnchor(ctx context.Context, ifName string, program *ebpf.Progr
 	if err != nil {
 		return nil, err
 	}
-	return link.AttachTCX(link.TCXOptions{
+	return attachTCX(link.TCXOptions{
 		Interface: iface.Index,
 		Program:   program,
 		Attach:    attach,
@@ -1138,7 +1142,7 @@ func RunTCXVerdict(ctx context.Context, ifName string, action int32, hold time.D
 	return TCXSelfTestResult{
 		Interface: ifName,
 		Direction: "ingress",
-		Action:    TCXPass,
+		Action:    action,
 		Mode:      "verdict",
 	}, nil
 }

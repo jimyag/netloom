@@ -2,15 +2,22 @@ package dataplane
 
 import (
 	"context"
+	"errors"
 	"net/netip"
 	"os"
 	"strings"
 	"testing"
 
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/rlimit"
 	"github.com/jimyag/netloom/internal/model"
 	"github.com/jimyag/netloom/internal/policy"
+)
+
+var (
+	testEndpointA = model.EndpointKey("prod", "pod-a")
+	testEndpointB = model.EndpointKey("prod", "pod-b")
 )
 
 func TestNewConstantTCXProgramRejectsUnknownAction(t *testing.T) {
@@ -44,7 +51,7 @@ func TestNewIPv4L4ACLMapRejectsMissingFields(t *testing.T) {
 
 func TestIPv4L4ACLRulesFromProgramProjectsExactIngressPolicy(t *testing.T) {
 	program := policy.Program{
-		EndpointID: "pod-a",
+		EndpointID: testEndpointA,
 		Rules: []policy.Rule{
 			{
 				ID:         "drop-web",
@@ -92,13 +99,13 @@ func TestIPv4L4ACLRulesFromProgramProjectsExactIngressPolicy(t *testing.T) {
 
 func TestIPv4L4ACLRulesFromProgramProjectsRemoteEndpointIdentityCIDR(t *testing.T) {
 	program := policy.Program{
-		EndpointID: "pod-a",
+		EndpointID: testEndpointA,
 		Rules: []policy.Rule{{
 			ID:             "drop-client",
 			Direction:      model.DirectionIngress,
 			Protocol:       model.ProtocolTCP,
 			RemoteCIDR:     netip.MustParsePrefix("172.30.0.11/32"),
-			RemoteEndpoint: "pod-b",
+			RemoteEndpoint: testEndpointB,
 			Ports:          []model.PortRange{{From: 8080, To: 8080}},
 			Action:         model.ActionDrop,
 		}},
@@ -121,7 +128,7 @@ func TestIPv4L4ACLRulesFromProgramProjectsRemoteEndpointIdentityCIDR(t *testing.
 
 func TestIPv4L4ACLRulesFromProgramRejectsAllowOnlyPolicy(t *testing.T) {
 	program := policy.Program{
-		EndpointID: "pod-a",
+		EndpointID: testEndpointA,
 		Rules: []policy.Rule{{
 			ID:         "allow-web",
 			Direction:  model.DirectionIngress,
@@ -140,7 +147,7 @@ func TestIPv4L4ACLRulesFromProgramRejectsAllowOnlyPolicy(t *testing.T) {
 
 func TestIPv4L4ACLRulesFromProgramProjectsExactEgressPolicy(t *testing.T) {
 	program := policy.Program{
-		EndpointID: "pod-a",
+		EndpointID: testEndpointA,
 		Rules: []policy.Rule{
 			{
 				ID:         "skip-ingress",
@@ -177,7 +184,7 @@ func TestIPv4L4ACLRulesFromProgramProjectsExactEgressPolicy(t *testing.T) {
 
 func TestIPv4L4ACLRulesFromProgramProjectsRejectAsDrop(t *testing.T) {
 	program := policy.Program{
-		EndpointID: "pod-a",
+		EndpointID: testEndpointA,
 		Rules: []policy.Rule{{
 			ID:         "reject-web",
 			Direction:  model.DirectionIngress,
@@ -202,7 +209,7 @@ func TestIPv4L4ACLRulesFromProgramProjectsRejectAsDrop(t *testing.T) {
 
 func TestIPv4L4ACLRulesFromProgramPrunesLowerPrecedenceNarrowRule(t *testing.T) {
 	program := policy.Program{
-		EndpointID: "pod-a",
+		EndpointID: testEndpointA,
 		Rules: []policy.Rule{
 			{
 				ID:         "deny-nodeports",
@@ -239,7 +246,7 @@ func TestIPv4L4ACLRulesFromProgramPrunesLowerPrecedenceNarrowRule(t *testing.T) 
 
 func TestIPv4L4ACLRulesFromProgramKeepsHigherPrecedenceNarrowRule(t *testing.T) {
 	program := policy.Program{
-		EndpointID: "pod-a",
+		EndpointID: testEndpointA,
 		Rules: []policy.Rule{
 			{
 				ID:         "allow-nodeports",
@@ -280,7 +287,7 @@ func TestIPv4L4ACLRulesFromProgramKeepsHigherPrecedenceNarrowRule(t *testing.T) 
 
 func TestIPv4L4ACLRulesFromProgramProjectsPortRangePolicy(t *testing.T) {
 	program := policy.Program{
-		EndpointID: "pod-a",
+		EndpointID: testEndpointA,
 		Rules: []policy.Rule{{
 			ID:         "drop-nodeports",
 			Direction:  model.DirectionIngress,
@@ -312,7 +319,7 @@ func TestIPv4L4ACLRulesFromProgramProjectsPortRangePolicy(t *testing.T) {
 
 func TestIPv4L4ACLRulesFromProgramProjectsProtocolOnlyPolicy(t *testing.T) {
 	program := policy.Program{
-		EndpointID: "pod-a",
+		EndpointID: testEndpointA,
 		Rules: []policy.Rule{{
 			ID:         "drop-all-tcp",
 			Direction:  model.DirectionEgress,
@@ -335,7 +342,7 @@ func TestIPv4L4ACLRulesFromProgramProjectsProtocolOnlyPolicy(t *testing.T) {
 
 func TestIPv4L4ACLRulesFromProgramProjectsICMPCIDRPolicy(t *testing.T) {
 	program := policy.Program{
-		EndpointID: "pod-a",
+		EndpointID: testEndpointA,
 		Rules: []policy.Rule{{
 			ID:         "drop-icmp",
 			Direction:  model.DirectionIngress,
@@ -363,7 +370,7 @@ func TestIPv4L4ACLRulesFromProgramProjectsICMPDropTypeAndCode(t *testing.T) {
 	icmpType := uint8(8)
 	icmpCode := uint8(0)
 	program := policy.Program{
-		EndpointID: "pod-a",
+		EndpointID: testEndpointA,
 		Rules: []policy.Rule{{
 			ID:         "drop-echo",
 			Direction:  model.DirectionIngress,
@@ -403,7 +410,7 @@ func TestIPv4L4ACLTCXProgramBypassesICMPFragmentationNeeded(t *testing.T) {
 
 func TestIPv4L4ACLRulesFromProgramRejectsICMPPorts(t *testing.T) {
 	program := policy.Program{
-		EndpointID: "pod-a",
+		EndpointID: testEndpointA,
 		Rules: []policy.Rule{{
 			ID:         "invalid-icmp-port",
 			Direction:  model.DirectionIngress,
@@ -424,7 +431,7 @@ func TestIPv4L4ACLRulesFromProgramRejectsICMPPorts(t *testing.T) {
 
 func TestIPv4L4ACLRulesFromProgramSkipsIPv6CIDR(t *testing.T) {
 	program := policy.Program{
-		EndpointID: "pod-a",
+		EndpointID: testEndpointA,
 		Rules: []policy.Rule{
 			{
 				ID:         "drop-v6",
@@ -458,7 +465,7 @@ func TestIPv4L4ACLRulesFromProgramSkipsIPv6CIDR(t *testing.T) {
 
 func TestIPv6L4ACLRulesFromProgramProjectsExactIngressPolicy(t *testing.T) {
 	program := policy.Program{
-		EndpointID: "pod-a",
+		EndpointID: testEndpointA,
 		Rules: []policy.Rule{
 			{
 				ID:         "drop-v6-web",
@@ -492,7 +499,7 @@ func TestIPv6L4ACLRulesFromProgramProjectsExactIngressPolicy(t *testing.T) {
 
 func TestIPv6L4ACLRulesFromProgramProjectsRejectAsDrop(t *testing.T) {
 	program := policy.Program{
-		EndpointID: "pod-a",
+		EndpointID: testEndpointA,
 		Rules: []policy.Rule{{
 			ID:         "reject-v6-web",
 			Direction:  model.DirectionIngress,
@@ -517,7 +524,7 @@ func TestIPv6L4ACLRulesFromProgramProjectsRejectAsDrop(t *testing.T) {
 
 func TestIPv6L4ACLRulesFromProgramProjectsPortRangePolicy(t *testing.T) {
 	program := policy.Program{
-		EndpointID: "pod-a",
+		EndpointID: testEndpointA,
 		Rules: []policy.Rule{{
 			ID:         "drop-v6-range",
 			Direction:  model.DirectionEgress,
@@ -548,7 +555,7 @@ func TestIPv6L4ACLRulesFromProgramProjectsICMPv6DropTypeAndCode(t *testing.T) {
 	icmpType := uint8(128)
 	icmpCode := uint8(0)
 	program := policy.Program{
-		EndpointID: "pod-a",
+		EndpointID: testEndpointA,
 		Rules: []policy.Rule{{
 			ID:         "drop-v6-echo",
 			Direction:  model.DirectionIngress,
@@ -615,7 +622,7 @@ func TestIPv6L4ACLTCXProgramBypassesICMPv6NeighborDiscovery(t *testing.T) {
 
 func TestIPv6L4ACLRulesFromProgramRejectsICMPv6Ports(t *testing.T) {
 	program := policy.Program{
-		EndpointID: "pod-a",
+		EndpointID: testEndpointA,
 		Rules: []policy.Rule{{
 			ID:         "invalid-v6-icmp-port",
 			Direction:  model.DirectionIngress,
@@ -635,9 +642,89 @@ func TestIPv6L4ACLRulesFromProgramRejectsICMPv6Ports(t *testing.T) {
 }
 
 func TestIPv4L4ACLRulesFromProgramRejectsNoExactRules(t *testing.T) {
-	_, err := IPv4L4ACLRulesFromProgram(policy.Program{EndpointID: "pod-a"})
+	_, err := IPv4L4ACLRulesFromProgram(policy.Program{EndpointID: testEndpointA})
 	if err == nil {
 		t.Fatal("expected empty TCX projection to fail")
+	}
+}
+
+func TestAttachTCXL4RulesForDirectionUsesTailAnchorForIPv6(t *testing.T) {
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Skipf("cannot adjust memlock for TCX attach test: %v", err)
+	}
+	var anchors []bool
+	originalAttach := attachTCX
+	attachTCX = func(opts link.TCXOptions) (link.Link, error) {
+		anchors = append(anchors, opts.Anchor != nil)
+		return nil, nil
+	}
+	t.Cleanup(func() {
+		attachTCX = originalAttach
+	})
+	attachment, err := AttachTCXL4RulesForDirection(context.Background(), "lo",
+		[]IPv4L4ACLRule{{Action: TCXDrop, Protocol: 6, SourceCIDR: netip.MustParsePrefix("172.30.0.11/32"), DestPort: 8080}},
+		[]IPv6L4ACLRule{{Action: TCXDrop, Protocol: 6, SourceCIDR: netip.MustParsePrefix("fd00:10::11/128"), DestPort: 8080}},
+		ebpf.AttachTCXIngress, model.DirectionIngress)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer attachment.Close()
+
+	if len(anchors) != 2 {
+		t.Fatalf("attach calls = %d, want 2", len(anchors))
+	}
+	if anchors[0] {
+		t.Fatalf("first ipv4 attach should not use an anchor")
+	}
+	if !anchors[1] {
+		t.Fatalf("second ipv6 attach should use tail anchor")
+	}
+}
+
+func TestAttachTCXL4RulesForDirectionReturnsErrorWhenSecondAttachFails(t *testing.T) {
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Skipf("cannot adjust memlock for TCX attach test: %v", err)
+	}
+	callCount := 0
+	originalAttach := attachTCX
+	attachTCX = func(opts link.TCXOptions) (link.Link, error) {
+		callCount++
+		if callCount == 1 {
+			return nil, nil
+		}
+		return nil, errors.New("mocked tail attach failure")
+	}
+	t.Cleanup(func() {
+		attachTCX = originalAttach
+	})
+
+	_, err := AttachTCXL4RulesForDirection(context.Background(), "lo",
+		[]IPv4L4ACLRule{{Action: TCXDrop, Protocol: 6, SourceCIDR: netip.MustParsePrefix("172.30.0.11/32"), DestPort: 8080}},
+		[]IPv6L4ACLRule{{Action: TCXDrop, Protocol: 6, SourceCIDR: netip.MustParsePrefix("fd00:10::11/128"), DestPort: 8080}},
+		ebpf.AttachTCXIngress, model.DirectionIngress)
+	if err == nil {
+		t.Fatal("expected dual-stack attach failure")
+	}
+	if callCount != 2 {
+		t.Fatalf("attach calls = %d, want 2", callCount)
+	}
+}
+
+func TestNewConstantTCXProgramReturnsVerifierError(t *testing.T) {
+	originalProgram := newTCXProgram
+	newTCXProgram = func(*ebpf.ProgramSpec) (*ebpf.Program, error) {
+		return nil, errors.New("mocked verifier rejection")
+	}
+	t.Cleanup(func() {
+		newTCXProgram = originalProgram
+	})
+
+	_, err := NewConstantTCXProgram(TCXPass)
+	if err == nil {
+		t.Fatal("expected verifier failure")
+	}
+	if !strings.Contains(err.Error(), "mocked verifier rejection") {
+		t.Fatalf("error = %v, want mocked verifier rejection", err)
 	}
 }
 
@@ -752,7 +839,7 @@ func TestIPv6L4ACLKeyPeerIPUsesNetworkByteOrder(t *testing.T) {
 
 func TestIPv4L4ACLRulesFromProgramsDeduplicatesRules(t *testing.T) {
 	program := policy.Program{
-		EndpointID: "pod-a",
+		EndpointID: testEndpointA,
 		Rules: []policy.Rule{
 			{
 				ID:         "drop-web-a",
@@ -775,7 +862,7 @@ func TestIPv4L4ACLRulesFromProgramsDeduplicatesRules(t *testing.T) {
 
 func TestIPv4L4ACLRulesFromProgramsKeepsHigherPrecedenceDuplicateKey(t *testing.T) {
 	drop := policy.Program{
-		EndpointID: "pod-a",
+		EndpointID: testEndpointA,
 		Rules: []policy.Rule{{
 			ID:         "drop-web",
 			Direction:  model.DirectionIngress,
@@ -786,7 +873,7 @@ func TestIPv4L4ACLRulesFromProgramsKeepsHigherPrecedenceDuplicateKey(t *testing.
 		}},
 	}
 	allow := policy.Program{
-		EndpointID: "pod-b",
+		EndpointID: testEndpointB,
 		Rules: []policy.Rule{{
 			ID:         "allow-web",
 			Direction:  model.DirectionIngress,
@@ -807,7 +894,7 @@ func TestIPv4L4ACLRulesFromProgramsKeepsHigherPrecedenceDuplicateKey(t *testing.
 
 func TestIPv6L4ACLRulesFromProgramsDeduplicatesRules(t *testing.T) {
 	program := policy.Program{
-		EndpointID: "pod-a",
+		EndpointID: testEndpointA,
 		Rules: []policy.Rule{
 			{
 				ID:         "drop-v6-web-a",
@@ -830,7 +917,7 @@ func TestIPv6L4ACLRulesFromProgramsDeduplicatesRules(t *testing.T) {
 
 func TestIPv6L4ACLRulesFromProgramsKeepsHigherPrecedenceDuplicateKey(t *testing.T) {
 	drop := policy.Program{
-		EndpointID: "pod-a",
+		EndpointID: testEndpointA,
 		Rules: []policy.Rule{{
 			ID:         "drop-v6-web",
 			Direction:  model.DirectionIngress,
@@ -841,7 +928,7 @@ func TestIPv6L4ACLRulesFromProgramsKeepsHigherPrecedenceDuplicateKey(t *testing.
 		}},
 	}
 	allow := policy.Program{
-		EndpointID: "pod-b",
+		EndpointID: testEndpointB,
 		Rules: []policy.Rule{{
 			ID:         "allow-v6-web",
 			Direction:  model.DirectionIngress,
@@ -862,7 +949,7 @@ func TestIPv6L4ACLRulesFromProgramsKeepsHigherPrecedenceDuplicateKey(t *testing.
 
 func TestIPv4L4ACLRulesFromProgramTreatsLogOnlyPolicyAsNotEnforcing(t *testing.T) {
 	program := policy.Program{
-		EndpointID: "pod-a",
+		EndpointID: testEndpointA,
 		Rules: []policy.Rule{{
 			ID:         "log-web",
 			Direction:  model.DirectionIngress,
@@ -893,6 +980,25 @@ func TestTCXSelfTestPrivileged(t *testing.T) {
 		t.Fatal(err)
 	}
 	if result.Interface != "lo" || result.Direction != "ingress" || result.Action != TCXPass {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+}
+
+func TestRunTCXVerdictHonorsAction(t *testing.T) {
+	if os.Getenv("NETLOOM_TCX_TEST") != "1" {
+		t.Skip("set NETLOOM_TCX_TEST=1 to load and attach a TCX program")
+	}
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Skipf("cannot adjust memlock rlimit for TCX test: %v", err)
+	}
+	result, err := RunTCXVerdict(context.Background(), "lo", TCXDrop, 0)
+	if err != nil {
+		if isPermissionOrKernelLimit(err) {
+			t.Skipf("TCX attach is not permitted in this environment: %v", err)
+		}
+		t.Fatal(err)
+	}
+	if result.Interface != "lo" || result.Direction != "ingress" || result.Action != TCXDrop || result.Mode != "verdict" {
 		t.Fatalf("unexpected result: %+v", result)
 	}
 }
