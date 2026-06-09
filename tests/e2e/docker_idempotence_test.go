@@ -64,6 +64,65 @@ func TestDockerControllerReconcileIdempotent(t *testing.T) {
 	}
 }
 
+func TestDockerControllerReplayDoesNotChangeOVNState(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip long e2e test in short mode")
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker is not installed")
+	}
+
+	composeFile := filepath.Join("testdata", "..", "docker-compose.yaml")
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+
+	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
+	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
+	run(t, ctx, "docker", "compose", "-f", composeFile, "up", "-d", "--quiet-pull", "--force-recreate")
+	t.Cleanup(func() {
+		downCtx, downCancel := context.WithTimeout(context.Background(), time.Minute)
+		defer downCancel()
+		run(t, downCtx, "docker", "compose", "-f", composeFile, "down", "-v")
+	})
+	waitForOVN(t, ctx, composeFile)
+
+	statePath := "/tmp/netloom-state-replay.json"
+	prepareStateScript := "cat >" + statePath + " <<'EOF'\n" + desiredStateJSON() + "\nEOF\n"
+	applyState := "NETLOOM_STATE_FILE=" + statePath + " NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller"
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", prepareStateScript+applyState)
+
+	endpointID := endpointExternalIDForOVN("file", "file-pod-a")
+	base := describeNetloomOVNInventory(t, ctx, composeFile, endpointID)
+	baseManaged := map[string]int{
+		"load_balancer":  len(activeManagedRows(t, ctx, composeFile, "load_balancer", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
+		"logical_router": len(activeManagedRows(t, ctx, composeFile, "logical_router", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
+		"logical_switch": len(activeManagedRows(t, ctx, composeFile, "logical_switch", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
+		"nat":            len(activeManagedRows(t, ctx, composeFile, "NAT", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
+	}
+
+	for i := 0; i < 12; i++ {
+		output := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", prepareStateScript+applyState)
+		if !strings.Contains(output, "reconciled desired state") {
+			t.Fatalf("replay iteration %d failed:\n%s", i, output)
+		}
+		current := describeNetloomOVNInventory(t, ctx, composeFile, endpointID)
+		if !reflect.DeepEqual(base, current) {
+			t.Fatalf("OVN inventory changed on replay iteration %d.\nbefore=%+v\nafter=%+v", i, base, current)
+		}
+		currentManaged := map[string]int{
+			"load_balancer":  len(activeManagedRows(t, ctx, composeFile, "load_balancer", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
+			"logical_router": len(activeManagedRows(t, ctx, composeFile, "logical_router", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
+			"logical_switch": len(activeManagedRows(t, ctx, composeFile, "logical_switch", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
+			"nat":            len(activeManagedRows(t, ctx, composeFile, "NAT", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
+		}
+		for table, beforeCount := range baseManaged {
+			if currentManaged[table] != beforeCount {
+				t.Fatalf("managed resource count changed at iteration %d for %s: before=%d after=%d", i, table, beforeCount, currentManaged[table])
+			}
+		}
+	}
+}
+
 func TestDockerControllerConcurrentReconcilesAreStable(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skip long e2e test in short mode")
