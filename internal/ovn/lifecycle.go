@@ -1,6 +1,7 @@
 package ovn
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"net/netip"
 	"sort"
@@ -137,7 +138,7 @@ func cleanupOperations(old, next desiredSnapshot) []Operation {
 				Operation{Command: "lsp-set-dhcpv4-options", Args: []string{port}},
 				Operation{Command: "lsp-set-dhcpv6-options", Args: []string{port}},
 			)
-			ops = append(ops, gcDHCPOptionsOperation(oldEndpoint.ID, oldEndpoint.VPC))
+			ops = append(ops, gcDHCPOptionsOperation(oldEndpoint))
 		}
 		ops = append(ops, Operation{Command: "lsp-del", Flags: []string{"--if-exists"}, Args: []string{port}})
 	}
@@ -173,6 +174,10 @@ func cleanupOperations(old, next desiredSnapshot) []Operation {
 		oldRecord := old.PolicyRoutes[key]
 		nextRecord := next.PolicyRoutes[key]
 		if policyRouteSignature(oldRecord.Route) == policyRouteSignature(nextRecord.Route) {
+			continue
+		}
+		if op, ok := policyRouteNexthopsSyncOperation(oldRecord, nextRecord); ok {
+			ops = append(ops, op)
 			continue
 		}
 		ops = append(ops, Operation{Command: "lr-policy-del", Flags: []string{"--if-exists"}, Args: []string{
@@ -228,6 +233,9 @@ func cleanupOperations(old, next desiredSnapshot) []Operation {
 		oldVIPsByProtocol := loadBalancerVIPsByProtocol(oldLB)
 		nextVIPsByProtocol := loadBalancerVIPsByProtocol(nextLB)
 		for _, protocol := range sortedLoadBalancerProtocols(oldVIPsByProtocol) {
+			if _, ok := nextVIPsByProtocol[protocol]; !ok {
+				continue
+			}
 			name := loadBalancerProtocolName(oldLB.VPC, oldLB.Name, protocol)
 			for _, vip := range removedStrings(oldVIPsByProtocol[protocol], nextVIPsByProtocol[protocol]) {
 				ops = append(ops, Operation{Command: "lb-del", Flags: []string{"--if-exists"}, Args: []string{name, vip}})
@@ -236,6 +244,9 @@ func cleanupOperations(old, next desiredSnapshot) []Operation {
 		oldFrontendSignatures := loadBalancerFrontendSignaturesByProtocol(oldLB)
 		nextFrontendSignatures := loadBalancerFrontendSignaturesByProtocol(nextLB)
 		for _, protocol := range sortedProtocolKeys(oldFrontendSignatures) {
+			if _, ok := nextFrontendSignatures[protocol]; !ok {
+				continue
+			}
 			name := loadBalancerProtocolName(oldLB.VPC, oldLB.Name, protocol)
 			for _, vip := range commonStringKeys(oldFrontendSignatures[protocol], nextFrontendSignatures[protocol]) {
 				if oldFrontendSignatures[protocol][vip] != nextFrontendSignatures[protocol][vip] {
@@ -311,7 +322,80 @@ func unchangedPolicyRoutes(old, next desiredSnapshot) map[string]string {
 		oldRoute := old.PolicyRoutes[key].Route
 		nextRoute := next.PolicyRoutes[key].Route
 		signature := policyRouteSignature(nextRoute)
-		if policyRouteSignature(oldRoute) == signature {
+		if policyRouteSignature(oldRoute) == signature || policyRouteCanBeUpdatedByNexthops(oldRoute, nextRoute) {
+			out[key] = signature
+		}
+	}
+	return out
+}
+
+func unchangedRoutes(old, next desiredSnapshot) map[string]string {
+	out := make(map[string]string)
+	for key := range next.Routes {
+		nextRecord, ok := next.Routes[key]
+		if !ok {
+			continue
+		}
+		oldRecord, ok := old.Routes[key]
+		if !ok {
+			continue
+		}
+		if routeSignature(oldRecord) != routeSignature(nextRecord) {
+			continue
+		}
+		out[key] = routeSignature(nextRecord)
+	}
+	return out
+}
+
+func policyRouteCanBeUpdatedByNexthops(oldRoute, nextRoute model.PolicyRoute) bool {
+	if oldRoute.VPC != nextRoute.VPC || oldRoute.Priority != nextRoute.Priority {
+		return false
+	}
+	oldMatch := policyRouteMatch(oldRoute.Match)
+	nextMatch := policyRouteMatch(nextRoute.Match)
+	if oldMatch != nextMatch {
+		return false
+	}
+	if oldRoute.Action.Type != model.ActionReroute || nextRoute.Action.Type != model.ActionReroute {
+		return false
+	}
+	oldNextHops := oldRoute.Action.RerouteNextHops()
+	nextNextHops := nextRoute.Action.RerouteNextHops()
+	if len(oldNextHops) <= 1 || len(nextNextHops) <= 1 {
+		return false
+	}
+	return policyRouteSignature(nextRoute) != policyRouteSignature(oldRoute)
+}
+
+func policyRouteNexthopsSyncOperation(oldRecord, nextRecord policyRouteRecord) (Operation, bool) {
+	if !policyRouteCanBeUpdatedByNexthops(oldRecord.Route, nextRecord.Route) {
+		return Operation{}, false
+	}
+	nextHops := make([]string, 0, len(nextRecord.Route.Action.RerouteNextHops()))
+	for _, nextHop := range nextRecord.Route.Action.RerouteNextHops() {
+		nextHops = append(nextHops, nextHop.String())
+	}
+	sort.Strings(nextHops)
+	return Operation{
+		Command: "sync-policy-route-nexthops",
+		Args: []string{
+			nextRecord.Route.VPC,
+			nextRecord.Route.Name,
+			fmt.Sprint(nextRecord.Route.Priority),
+			nextRecord.Match,
+			ovnStringSetValues(nextHops),
+		},
+	}, true
+}
+
+func unchangedEndpoints(old, next desiredSnapshot) map[string]string {
+	out := make(map[string]string)
+	for _, key := range commonKeys(old.Endpoints, next.Endpoints) {
+		oldEndpoint := old.Endpoints[key]
+		nextEndpoint := next.Endpoints[key]
+		signature := endpointSignature(nextEndpoint, subnetForEndpoint(next.Subnets, nextEndpoint))
+		if endpointSignature(oldEndpoint, subnetForEndpoint(old.Subnets, oldEndpoint)) == signature {
 			out[key] = signature
 		}
 	}
@@ -439,8 +523,45 @@ func routeUpdateCleanupOperations(oldRecord, nextRecord routeRecord) []Operation
 	}
 	oldNextHops := sortedRouteNextHops(oldRecord.Route)
 	nextNextHops := sortedRouteNextHops(nextRecord.Route)
-	if len(oldNextHops) != len(nextNextHops) && (len(oldNextHops) == 1 || len(nextNextHops) == 1) {
+	if len(oldNextHops) == 1 && len(nextNextHops) > 1 {
+		oldNextHop := oldNextHops[0]
+		nextSet := make(map[string]struct{}, len(nextNextHops))
+		for _, nextHop := range nextNextHops {
+			nextSet[nextHop] = struct{}{}
+		}
+		if _, ok := nextSet[oldNextHop]; ok {
+			return nil
+		}
 		return []Operation{deleteStaticRouteDestinationOperation(oldRecord)}
+	}
+	if len(oldNextHops) > 1 && len(nextNextHops) == 1 {
+		nextSet := make(map[string]struct{}, len(nextNextHops))
+		for _, nextHop := range nextNextHops {
+			nextSet[nextHop] = struct{}{}
+		}
+		hasIntersection := false
+		for _, oldNextHop := range oldNextHops {
+			if _, ok := nextSet[oldNextHop]; ok {
+				hasIntersection = true
+				break
+			}
+		}
+		if hasIntersection {
+			// Keep the destination and remove only stale ECMP peers.
+			var ops []Operation
+			for _, oldNextHop := range oldNextHops {
+				if _, keep := nextSet[oldNextHop]; keep {
+					continue
+				}
+				ops = append(ops, deleteStaticRouteNextHopOperation(oldRecord, oldNextHop))
+			}
+			if len(ops) == 0 {
+				return nil
+			}
+			return ops
+		} else {
+			return []Operation{deleteStaticRouteDestinationOperation(oldRecord)}
+		}
 	}
 	if len(oldNextHops) == 1 && len(nextNextHops) == 1 {
 		return []Operation{deleteStaticRouteDestinationOperation(oldRecord)}
@@ -497,6 +618,92 @@ func policyRouteSignature(route model.PolicyRoute) string {
 		route.Action.Type,
 		policyRouteNextHops(route.Action),
 	)
+}
+
+func subnetForEndpoint(subnets map[string]model.Subnet, endpoint model.Endpoint) model.Subnet {
+	subnet := model.Subnet{}
+	if subnetRef, ok := subnets[subnetStateKey(endpoint.VPC, endpoint.Subnet)]; ok {
+		subnet = subnetRef
+	}
+	return subnet
+}
+
+func endpointSignature(endpoint model.Endpoint, subnet model.Subnet) string {
+	securityGroups := append([]string(nil), endpoint.SecurityGroups...)
+	sort.Strings(securityGroups)
+	namedPorts := append([]model.NamedPort(nil), endpoint.NamedPorts...)
+	sort.SliceStable(namedPorts, func(i, j int) bool {
+		left := namedPorts[i]
+		right := namedPorts[j]
+		if left.Name != right.Name {
+			return left.Name < right.Name
+		}
+		if left.Protocol != right.Protocol {
+			return left.Protocol < right.Protocol
+		}
+		return left.Port < right.Port
+	})
+	labels := make([]string, 0, len(endpoint.Labels))
+	for key, value := range endpoint.Labels {
+		labels = append(labels, key+"="+value)
+	}
+	sort.Strings(labels)
+
+	hash := sha256.New()
+	hash.Write([]byte(endpoint.ID))
+	hash.Write([]byte("|"))
+	hash.Write([]byte(endpoint.VPC))
+	hash.Write([]byte("|"))
+	hash.Write([]byte(endpoint.Subnet))
+	hash.Write([]byte("|"))
+	hash.Write([]byte(endpoint.IP.String()))
+	hash.Write([]byte("|"))
+	hash.Write([]byte(endpoint.MAC))
+	hash.Write([]byte("|"))
+	hash.Write([]byte(endpoint.Node))
+	hash.Write([]byte("|"))
+	hash.Write([]byte(subnet.Name))
+	hash.Write([]byte("|"))
+	hash.Write([]byte(subnet.CIDR.String()))
+	hash.Write([]byte("|"))
+	hash.Write([]byte(subnet.Gateway.String()))
+	hash.Write([]byte("|"))
+	hash.Write([]byte(fmt.Sprint(subnet.VLAN)))
+	hash.Write([]byte("|"))
+	hash.Write([]byte(subnet.ProviderNetwork))
+	hash.Write([]byte("|"))
+	hash.Write([]byte(fmt.Sprintf("%t", subnet.DHCP.Enabled)))
+	hash.Write([]byte("|"))
+	hash.Write([]byte(fmt.Sprintf("%d", subnet.DHCP.LeaseTime)))
+	hash.Write([]byte("|"))
+	hash.Write([]byte(fmt.Sprintf("%d", subnet.DHCP.MTU)))
+	hash.Write([]byte("|"))
+	dnsServers := make([]string, 0, len(subnet.DHCP.DNSServers))
+	for _, dnsServer := range subnet.DHCP.DNSServers {
+		dnsServers = append(dnsServers, dnsServer.String())
+	}
+	sort.Strings(dnsServers)
+	hash.Write([]byte(strings.Join(dnsServers, ",")))
+	hash.Write([]byte("|"))
+	hash.Write([]byte(subnet.DHCP.DomainName))
+	hash.Write([]byte("|"))
+	searchDomains := append([]string(nil), subnet.DHCP.SearchDomains...)
+	sort.Strings(searchDomains)
+	hash.Write([]byte(strings.Join(searchDomains, ",")))
+	hash.Write([]byte("|"))
+	hash.Write([]byte(strings.Join(securityGroups, ",")))
+	hash.Write([]byte("|"))
+	for _, namedPort := range namedPorts {
+		hash.Write([]byte(namedPort.Name))
+		hash.Write([]byte("|"))
+		hash.Write([]byte(namedPort.Protocol))
+		hash.Write([]byte("|"))
+		hash.Write([]byte(fmt.Sprint(namedPort.Port)))
+		hash.Write([]byte("|"))
+	}
+	hash.Write([]byte("|"))
+	hash.Write([]byte(strings.Join(labels, ",")))
+	return fmt.Sprintf("%x", hash.Sum(nil))
 }
 
 func policyRouteNextHops(action model.RouteAction) string {
