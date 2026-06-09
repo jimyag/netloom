@@ -596,6 +596,136 @@ func TestDockerControllerRouteTableECMPDeltaIsIncremental(t *testing.T) {
 	}
 }
 
+func TestDockerControllerRouteTableECMPDeltaSurvivesRestart(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip long e2e test in short mode")
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker is not installed")
+	}
+
+	composeFile := filepath.Join("testdata", "..", "docker-compose.yaml")
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+
+	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
+	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
+	run(t, ctx, "docker", "compose", "-f", composeFile, "up", "-d", "--quiet-pull", "--force-recreate")
+	t.Cleanup(func() {
+		downCtx, downCancel := context.WithTimeout(context.Background(), time.Minute)
+		defer downCancel()
+		run(t, downCtx, "docker", "compose", "-f", composeFile, "down", "-v")
+	})
+	waitForOVN(t, ctx, composeFile)
+
+	baseState := "/tmp/netloom-state-route-base.json"
+	ecmpState := "/tmp/netloom-state-route-ecmp.json"
+	singleState := "/tmp/netloom-state-route-single.json"
+	controllerStatePath := "/tmp/netloom-controller-route-watch-restart.json"
+	controllerLogPath := "/tmp/netloom-controller-route-watch-restart.log"
+	controllerPIDPath := "/tmp/netloom-controller-route-watch-restart.pid"
+
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "cat >"+baseState+" <<'EOF'\n"+desiredStateWithStaticRouteFromECMPToSingleJSON()+"\nEOF")
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "cat >"+ecmpState+" <<'EOF'\n"+desiredStateWithStaticRouteToECMPJSON()+"\nEOF")
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "cat >"+singleState+" <<'EOF'\n"+desiredStateWithStaticRouteFromECMPToSingleJSON()+"\nEOF")
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "cp "+baseState+" "+controllerStatePath)
+
+	controllerStateTemplate := "NETLOOM_STATE_FILE=" + controllerStatePath + " NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock NETLOOM_RECONCILE_INTERVAL_MS=300 /netloom/bin/netloom-controller >" + controllerLogPath + " 2>&1"
+	startWatch := func() {
+		run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "cat /dev/null > "+controllerLogPath+"; ("+controllerStateTemplate+" &) ; echo $! > "+controllerPIDPath)
+	}
+	stopWatch := func() {
+		runAllowFailure(t, context.Background(), "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "pid=$(cat "+controllerPIDPath+" 2>/dev/null || true); [ -n \"$pid\" ] && kill -9 \"$pid\" || true; rm -f "+controllerPIDPath)
+	}
+	waitForWatch := func(expected string) {
+		for i := 0; i < 20; i++ {
+			output := runAllowFailure(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "grep -Fq '"+expected+"' "+controllerLogPath+" && exit 0 || exit 1")
+			if output.exitCode == 0 {
+				return
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+		logOutput := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "cat", controllerLogPath)
+		t.Fatalf("controller watch did not emit %q in time:\n%s", expected, logOutput)
+	}
+	waitForRouteState := func(expected, forbidden []string) []string {
+		deadline := time.Now().Add(30 * time.Second)
+		for time.Now().Before(deadline) {
+			listOutput := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "lr-route-list", "nl_lr_file")
+			nextHops := parseRouteNextHopsFromList(t, listOutput, "0.0.0.0/0")
+			if routeListHasOnlyHops(nextHops, expected) && !routeListContainsAnyHops(nextHops, forbidden) {
+				return nextHops
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+		currentRouteOutput := runAllowFailure(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "lr-route-list", "nl_lr_file")
+		t.Fatalf("route state did not converge to expected next hops %v with no stale hops %v:\n%s", expected, forbidden, currentRouteOutput.output)
+		return nil
+	}
+	waitForRouteStaticRowUUID := func(destination, nextHop string) string {
+		for i := 0; i < 20; i++ {
+			routeUUID := staticRouteUUIDForPrefixAndNexthop(t, ctx, composeFile, destination, nextHop)
+			if routeUUID != "" {
+				return routeUUID
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+		current := runAllowFailure(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "find", "Logical_Router_Static_Route")
+		t.Fatalf("expected static route row for %s via %s after reconcile; output:\n%s", destination, nextHop, current.output)
+		return ""
+	}
+
+	startWatch()
+	waitForWatch("reconciled desired state")
+	waitForRouteState([]string{"10.245.0.252"}, nil)
+	baseRouteUUIDFor252 := waitForRouteStaticRowUUID("0.0.0.0/0", "10.245.0.252")
+
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "cp", ecmpState, controllerStatePath)
+	ecmpNextHops := waitForRouteState([]string{"10.245.0.251", "10.245.0.252"}, nil)
+	if len(ecmpNextHops) != 2 {
+		t.Fatalf("expected two next hops in ECMP state, got %#v", ecmpNextHops)
+	}
+	ecmpRowUUIDFor252 := waitForRouteStaticRowUUID("0.0.0.0/0", "10.245.0.252")
+	if ecmpRowUUIDFor252 != baseRouteUUIDFor252 {
+		t.Fatalf("route row for 10.245.0.252 should be preserved across ECMP expansion: before=%q after=%q", baseRouteUUIDFor252, ecmpRowUUIDFor252)
+	}
+	ecmpRowUUIDFor251 := waitForRouteStaticRowUUID("0.0.0.0/0", "10.245.0.251")
+	if ecmpRowUUIDFor251 == "" {
+		t.Fatalf("expected ECMP route row for 10.245.0.251")
+	}
+
+	stopWatch()
+	startWatch()
+	waitForWatch("reconciled desired state")
+	waitForRouteState([]string{"10.245.0.251", "10.245.0.252"}, nil)
+	restartedRowUUIDFor252 := waitForRouteStaticRowUUID("0.0.0.0/0", "10.245.0.252")
+	if restartedRowUUIDFor252 != ecmpRowUUIDFor252 {
+		t.Fatalf("route row for 10.245.0.252 changed across restart: before=%q after=%q", ecmpRowUUIDFor252, restartedRowUUIDFor252)
+	}
+	restartedRowUUIDFor251 := waitForRouteStaticRowUUID("0.0.0.0/0", "10.245.0.251")
+	if restartedRowUUIDFor251 != ecmpRowUUIDFor251 {
+		t.Fatalf("route row for 10.245.0.251 changed across restart: before=%q after=%q", ecmpRowUUIDFor251, restartedRowUUIDFor251)
+	}
+
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "cp", singleState, controllerStatePath)
+	afterSingle := waitForRouteState([]string{"10.245.0.252"}, []string{"10.245.0.251", "10.245.0.253"})
+	if len(afterSingle) != 1 || afterSingle[0] != "10.245.0.252" {
+		t.Fatalf("expected only single-hop 10.245.0.252 after ECMP collapse, got %#v", afterSingle)
+	}
+	singleRouteUUID := waitForRouteStaticRowUUID("0.0.0.0/0", "10.245.0.252")
+	extraRouteUUID := staticRouteUUIDForPrefixAndNexthop(t, ctx, composeFile, "0.0.0.0/0", "10.245.0.251")
+	if extraRouteUUID != "" {
+		t.Fatalf("stale ECMP route row for 10.245.0.251 remained: %q", extraRouteUUID)
+	}
+	if singleRouteUUID != baseRouteUUIDFor252 {
+		t.Fatalf("route row for 10.245.0.252 should be preserved when collapsing ECMP: expected=%q got=%q", baseRouteUUIDFor252, singleRouteUUID)
+	}
+
+	t.Cleanup(func() {
+		stopWatch()
+	})
+}
+
 func routeListHasOnlyHops(got []string, expected []string) bool {
 	if len(got) != len(expected) {
 		return false
@@ -624,6 +754,19 @@ func activeManagedRows(t *testing.T, ctx context.Context, composeFile, table str
 		t.Fatalf("failed to list managed %s rows: %s", table, result.output)
 	}
 	return strings.Fields(strings.TrimSpace(result.output))
+}
+
+func staticRouteUUIDForPrefixAndNexthop(t *testing.T, ctx context.Context, composeFile, ipPrefix, nextHop string) string {
+	t.Helper()
+	result := runAllowFailure(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "--bare", "--no-heading", "--columns=_uuid", "find", "Logical_Router_Static_Route", "ip_prefix="+ipPrefix, "nexthop="+nextHop)
+	if result.exitCode != 0 {
+		t.Fatalf("failed to get static route row uuid for prefix %q via %q: %s", ipPrefix, nextHop, result.output)
+	}
+	uuid := strings.TrimSpace(result.output)
+	if uuid == "" {
+		return ""
+	}
+	return uuid
 }
 
 func staticRouteNextHopsForPrefix(t *testing.T, ctx context.Context, composeFile, router, destination string) []string {
