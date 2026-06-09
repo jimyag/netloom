@@ -726,6 +726,127 @@ func TestDockerControllerRouteTableECMPDeltaSurvivesRestart(t *testing.T) {
 	})
 }
 
+func TestDockerControllerRouteTableECMPDeltaIsIdempotentForOneShotReconcile(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip long e2e test in short mode")
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker is not installed")
+	}
+
+	composeFile := filepath.Join("testdata", "..", "docker-compose.yaml")
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+
+	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
+	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
+	run(t, ctx, "docker", "compose", "-f", composeFile, "up", "-d", "--quiet-pull", "--force-recreate")
+	t.Cleanup(func() {
+		downCtx, downCancel := context.WithTimeout(context.Background(), time.Minute)
+		defer downCancel()
+		run(t, downCtx, "docker", "compose", "-f", composeFile, "down", "-v")
+	})
+	waitForOVN(t, ctx, composeFile)
+
+	baseState := "/tmp/netloom-state-route-baseline.json"
+	ecmpState := "/tmp/netloom-state-route-ecmp-replay.json"
+	singleState := "/tmp/netloom-state-route-single.json"
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "cat >"+baseState+" <<'EOF'\n"+desiredStateWithStaticRouteFromECMPToSingleJSON()+"\nEOF")
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "cat >"+ecmpState+" <<'EOF'\n"+desiredStateWithStaticRouteToECMPJSON()+"\nEOF")
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "cat >"+singleState+" <<'EOF'\n"+desiredStateWithStaticRouteFromECMPToSingleJSON()+"\nEOF")
+
+	runRouteReconcile := func(path string) {
+		command := "NETLOOM_STATE_FILE=" + path + " NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller"
+		output := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", command)
+		if !strings.Contains(output, "reconciled desired state") {
+			t.Fatalf("controller reconcile on %s did not succeed: %s", path, output)
+		}
+	}
+
+	waitForNexthops := func(expected []string) []string {
+		deadline := time.Now().Add(30 * time.Second)
+		for time.Now().Before(deadline) {
+			listOutput := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "lr-route-list", "nl_lr_file")
+			nextHops := parseRouteNextHopsFromList(t, listOutput, "0.0.0.0/0")
+			if routeListHasOnlyHops(nextHops, expected) {
+				return nextHops
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+		currentRouteOutput := runAllowFailure(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "lr-route-list", "nl_lr_file")
+		t.Fatalf("route state did not converge to %v: %s", expected, currentRouteOutput.output)
+		return nil
+	}
+	waitForStaticRow := func(destination, nextHop string) string {
+		deadline := time.Now().Add(20 * time.Second)
+		for time.Now().Before(deadline) {
+			uuid := staticRouteUUIDForPrefixAndNexthop(t, ctx, composeFile, destination, nextHop)
+			if uuid != "" {
+				return uuid
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+		return ""
+	}
+
+	waitForInitialRoute := func() []string {
+		deadline := time.Now().Add(30 * time.Second)
+		for time.Now().Before(deadline) {
+			listOutput := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "lr-route-list", "nl_lr_file")
+			nextHops := parseRouteNextHopsFromList(t, listOutput, "0.0.0.0/0")
+			if len(nextHops) == 1 && nextHops[0] == "10.245.0.252" {
+				return nextHops
+			}
+			if routeListHasOnlyHops(nextHops, []string{"10.245.0.251", "10.245.0.252"}) {
+				return nextHops
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+		currentRouteOutput := runAllowFailure(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "lr-route-list", "nl_lr_file")
+		t.Fatalf("route state did not converge to base single/ecmp state for 0.0.0.0/0: %s", currentRouteOutput.output)
+		return nil
+	}
+
+	runRouteReconcile(baseState)
+	baseRouteState := waitForInitialRoute()
+	if !routeListContainsHops(baseRouteState, []string{"10.245.0.252"}) {
+		t.Fatalf("base route state missing next hop 10.245.0.252: %v", baseRouteState)
+	}
+	base252 := waitForStaticRow("0.0.0.0/0", "10.245.0.252")
+	if base252 == "" {
+		t.Fatalf("missing base route row for 10.245.0.252")
+	}
+
+	runRouteReconcile(ecmpState)
+	waitForNexthops([]string{"10.245.0.251", "10.245.0.252"})
+	ecmp252 := waitForStaticRow("0.0.0.0/0", "10.245.0.252")
+	if ecmp252 != base252 {
+		t.Fatalf("10.245.0.252 static route row changed on ECMP reconcile: before=%q after=%q", base252, ecmp252)
+	}
+
+	runRouteReconcile(ecmpState)
+	replay252 := waitForStaticRow("0.0.0.0/0", "10.245.0.252")
+	if replay252 != ecmp252 {
+		t.Fatalf("ECMP one-shot reconcile is not idempotent: before=%q after=%q", ecmp252, replay252)
+	}
+
+	runRouteReconcile(singleState)
+	finalRouteState := waitForInitialRoute()
+	if !routeListContainsHops(finalRouteState, []string{"10.245.0.252"}) {
+		t.Fatalf("single-state reconcile lost required next hop 10.245.0.252: %v", finalRouteState)
+	}
+	single252 := waitForStaticRow("0.0.0.0/0", "10.245.0.252")
+	if single252 == "" {
+		t.Fatalf("missing single route row for 10.245.0.252")
+	}
+
+	runRouteReconcile(singleState)
+	replayedSingle252 := waitForStaticRow("0.0.0.0/0", "10.245.0.252")
+	if replayedSingle252 != single252 {
+		t.Fatalf("single-state one-shot reconcile is not idempotent: before=%q after=%q", single252, replayedSingle252)
+	}
+}
+
 func routeListHasOnlyHops(got []string, expected []string) bool {
 	if len(got) != len(expected) {
 		return false
@@ -762,11 +883,23 @@ func staticRouteUUIDForPrefixAndNexthop(t *testing.T, ctx context.Context, compo
 	if result.exitCode != 0 {
 		t.Fatalf("failed to get static route row uuid for prefix %q via %q: %s", ipPrefix, nextHop, result.output)
 	}
-	uuid := strings.TrimSpace(result.output)
-	if uuid == "" {
-		return ""
+	for _, line := range strings.Split(strings.TrimSpace(result.output), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if strings.Contains(line, ":") {
+			parts := strings.SplitN(line, ":", 2)
+			if len(parts) == 2 && strings.TrimSpace(parts[0]) == "_uuid" {
+				line = strings.TrimSpace(parts[1])
+			}
+		}
+		fields := strings.Fields(line)
+		if len(fields) >= 1 && fields[0] != "" {
+			return fields[0]
+		}
 	}
-	return uuid
+	return ""
 }
 
 func staticRouteNextHopsForPrefix(t *testing.T, ctx context.Context, composeFile, router, destination string) []string {
