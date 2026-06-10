@@ -14,24 +14,28 @@ import (
 )
 
 type ReconcileResult struct {
-	Node              string
-	Endpoints         int
-	Programs          int
-	Entries           int
-	PolicyAdded       int
-	PolicyUpdated     int
-	PolicyDeleted     int
-	PolicyUnchanged   int
-	PolicyEvents      int
-	PolicyRevisionMax uint64
-	ConntrackExpired  int
-	TCXEligible       int
-	TCX               string
-	Datapath          string
-	LocalIPs          int
-	RemoteRoutes      int
-	PolicyRoutes      int
-	Cleanup           bool
+	Node                       string
+	Endpoints                  int
+	Programs                   int
+	Entries                    int
+	PolicyMapEntries           uint32
+	PolicyMapCapacity          uint32
+	PolicyMapPressureMax       uint32
+	PolicyMapPressureEndpoints int
+	PolicyAdded                int
+	PolicyUpdated              int
+	PolicyDeleted              int
+	PolicyUnchanged            int
+	PolicyEvents               int
+	PolicyRevisionMax          uint64
+	ConntrackExpired           int
+	TCXEligible                int
+	TCX                        string
+	Datapath                   string
+	LocalIPs                   int
+	RemoteRoutes               int
+	PolicyRoutes               int
+	Cleanup                    bool
 }
 
 type PolicyStore interface {
@@ -41,6 +45,14 @@ type PolicyStore interface {
 
 type PolicyStatsStore interface {
 	LastStats(endpointID string) dataplane.PolicyUpdateStats
+}
+
+type PolicyEndpointInventory interface {
+	EndpointIDs(context.Context) ([]string, error)
+}
+
+type PolicyUsageStore interface {
+	PolicyMapUsage(context.Context) ([]dataplane.PolicyMapUsage, error)
 }
 
 type ReconcileOptions struct {
@@ -119,6 +131,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, state control.DesiredState, 
 		return ReconcileResult{}, err
 	}
 	if err := r.syncPolicyStore(ctx, programs, options.Store); err != nil {
+		return ReconcileResult{}, err
+	}
+	if err := populatePolicyMapUsageResult(ctx, options.Store, &result); err != nil {
 		return ReconcileResult{}, err
 	}
 	r.syncConntrackPrograms(programs)
@@ -222,12 +237,13 @@ func prepareReconcile(ctx context.Context, state control.DesiredState, options R
 		}
 		groups := securityGroupsForEndpointVPC(state.SecurityGroups, endpoint.VPC)
 		program, err := policy.CompileForEndpointWithContext(endpoint, groups, policy.CompileContext{
-			Endpoints:  state.Endpoints,
-			Subnets:    state.Subnets,
-			Gateways:   state.Gateways,
-			Services:   state.LoadBalancers,
-			DNSRecords: state.DNSRecords,
-			CIDRGroups: state.CIDRGroups,
+			Endpoints:        state.Endpoints,
+			Subnets:          state.Subnets,
+			Gateways:         state.Gateways,
+			Services:         state.LoadBalancers,
+			DNSRecords:       state.DNSRecords,
+			CIDRGroups:       state.CIDRGroups,
+			IdentityResolver: resolver,
 		})
 		if err != nil {
 			return ReconcileResult{}, nil, nil, err
@@ -267,6 +283,9 @@ func prepareReconcile(ctx context.Context, state control.DesiredState, options R
 		result.RemoteRoutes = linuxResult.RemoteRoutes
 		result.PolicyRoutes = linuxResult.PolicyRoutes
 		result.Cleanup = linuxResult.CleanupPlanned
+	}
+	if err := populatePolicyMapUsageResult(ctx, options.Store, &result); err != nil {
+		return ReconcileResult{}, nil, nil, err
 	}
 	var targets []tcxTarget
 	if options.TCXInterface != "" || options.TCXWorkload {

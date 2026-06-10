@@ -138,6 +138,38 @@ func (s *EBPFPolicyStore) LastStats(endpointID string) PolicyUpdateStats {
 	return s.lastStats[endpointID]
 }
 
+func (s *EBPFPolicyStore) EndpointIDs(_ context.Context) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	endpoints := make(map[string]struct{}, len(s.maps))
+	for endpointID := range s.maps {
+		endpoints[endpointID] = struct{}{}
+	}
+	if s.pinRoot != "" {
+		entries, err := os.ReadDir(s.pinRoot)
+		if err != nil && !os.IsNotExist(err) {
+			return nil, fmt.Errorf("list eBPF map pin root %s: %w", s.pinRoot, err)
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), policyMapMetaFileSuffix) {
+				continue
+			}
+			metadata, err := s.loadMapMetadata(filepath.Join(s.pinRoot, entry.Name()))
+			if err != nil || metadata.EndpointID == "" {
+				continue
+			}
+			endpoints[metadata.EndpointID] = struct{}{}
+		}
+	}
+	ids := make([]string, 0, len(endpoints))
+	for endpointID := range endpoints {
+		ids = append(ids, endpointID)
+	}
+	sort.Strings(ids)
+	return ids, nil
+}
+
 func (s *EBPFPolicyStore) Revision(endpointID string) uint64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()

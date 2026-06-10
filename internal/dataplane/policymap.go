@@ -53,6 +53,21 @@ type PolicyUpdateStats struct {
 	Unchanged int
 }
 
+type PolicyMapUsage struct {
+	EndpointID string
+	Entries    uint32
+	Capacity   uint32
+}
+
+type PolicyMapUsageSummary struct {
+	Entries            uint32
+	Capacity           uint32
+	MaxPressurePercent uint32
+	PressureEndpoints  int
+}
+
+const DefaultPolicyMapPressureThresholdPercent = 80
+
 type PolicyUpdateEvent struct {
 	EndpointID       string
 	PreviousRevision uint64
@@ -180,6 +195,23 @@ func (s *InMemoryPolicyStore) Events() []PolicyUpdateEvent {
 	return append([]PolicyUpdateEvent(nil), s.events...)
 }
 
+func (s *InMemoryPolicyStore) PolicyMapUsage(_ context.Context) ([]PolicyMapUsage, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	usages := make([]PolicyMapUsage, 0, len(s.endpoints))
+	for endpointID, entries := range s.endpoints {
+		usages = append(usages, PolicyMapUsage{
+			EndpointID: endpointID,
+			Entries:    uint32(len(entries)),
+		})
+	}
+	slices.SortFunc(usages, func(a, b PolicyMapUsage) int {
+		return cmp.Compare(a.EndpointID, b.EndpointID)
+	})
+	return usages, nil
+}
+
 func (s *InMemoryPolicyStore) SetFailAfter(operations int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -299,6 +331,32 @@ func stableCookie(value string) uint32 {
 		out *= 16777619
 	}
 	return out
+}
+
+func SummarizePolicyMapUsage(usages []PolicyMapUsage) PolicyMapUsageSummary {
+	var summary PolicyMapUsageSummary
+	for _, usage := range usages {
+		summary.Entries += usage.Entries
+		summary.Capacity += usage.Capacity
+		pressure := policyMapPressurePercent(usage)
+		if pressure > summary.MaxPressurePercent {
+			summary.MaxPressurePercent = pressure
+		}
+		if pressure >= DefaultPolicyMapPressureThresholdPercent {
+			summary.PressureEndpoints++
+		}
+	}
+	return summary
+}
+
+func policyMapPressurePercent(usage PolicyMapUsage) uint32 {
+	if usage.Capacity == 0 {
+		return 0
+	}
+	if usage.Entries >= usage.Capacity {
+		return 100
+	}
+	return uint32((uint64(usage.Entries) * 100) / uint64(usage.Capacity))
 }
 
 func canonicalPolicyMapEntries(entries []PolicyMapEntry) ([]PolicyMapEntry, error) {

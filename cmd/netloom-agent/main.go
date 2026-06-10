@@ -28,7 +28,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Printf("netloom-agent ready for node policy and dataplane reconciliation endpoint=%s entries=%d allow=%s deny=%s policy_allowed=%d policy_dropped=%d policy_logged=%d drop_events=%d policy_events=%d tcx=%s\n", result.EndpointID, result.Entries, result.Allowed, result.Denied, result.PolicyStats.Allowed, result.PolicyStats.Dropped, result.PolicyStats.Logged, result.DropEvents, result.PolicyEvents, result.TCX)
+	fmt.Printf("netloom-agent ready for node policy and dataplane reconciliation endpoint=%s entries=%d allow=%s deny=%s policy_allowed=%d policy_dropped=%d policy_conntrack=%d policy_established=%d policy_logged=%d drop_events=%d policy_events=%d trace_events=%d tcx=%s\n", result.EndpointID, result.Entries, result.Allowed, result.Denied, result.PolicyStats.Allowed, result.PolicyStats.Dropped, result.PolicyStats.Conntrack, result.PolicyStats.Established, result.PolicyStats.Logged, result.DropEvents, result.PolicyEvents, result.TraceEvents, result.TCX)
 }
 
 func runStateFile(ctx context.Context, path string) error {
