@@ -513,6 +513,37 @@ func TestCleanupPolicyRouteUsesNameIdentityAndOldMatch(t *testing.T) {
 	}
 }
 
+func TestCleanupSingleHopPolicyRouteSyncsNexthop(t *testing.T) {
+	oldState := topology.State{
+		PolicyRoutes: []model.PolicyRoute{{
+			Name:     "egress",
+			VPC:      "prod",
+			Priority: 100,
+			Match:    model.RouteMatch{Source: netip.MustParsePrefix("10.10.0.0/24")},
+			Action:   model.RouteAction{Type: model.ActionReroute, NextHops: []netip.Addr{netip.MustParseAddr("10.10.0.253")}},
+		}},
+	}
+	nextState := topology.State{
+		PolicyRoutes: []model.PolicyRoute{{
+			Name:     "egress",
+			VPC:      "prod",
+			Priority: 100,
+			Match:    model.RouteMatch{Source: netip.MustParsePrefix("10.10.0.0/24")},
+			Action:   model.RouteAction{Type: model.ActionReroute, NextHops: []netip.Addr{netip.MustParseAddr("10.10.0.252")}},
+		}},
+	}
+
+	ops := cleanupOperations(snapshotDesired(oldState), snapshotDesired(nextState))
+	joined := stringifyOperations(ops)
+	if strings.Contains(joined, "lr-policy-del nl_lr_prod 100 ip4.src == 10.10.0.0/24") {
+		t.Fatalf("single-hop policy route should sync nexthop in place, not delete:\n%s", joined)
+	}
+	expected := "sync-policy-route-nexthop prod egress 100 ip4.src == 10.10.0.0/24 10.10.0.252"
+	if !strings.Contains(joined, expected) {
+		t.Fatalf("cleanup should emit single-hop nexthop sync op:\n%s", joined)
+	}
+}
+
 func TestSnapshotDesiredClonesLoadBalancerBackendHealthPointers(t *testing.T) {
 	healthy := true
 	state := topology.State{

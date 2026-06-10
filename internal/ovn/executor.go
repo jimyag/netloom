@@ -169,7 +169,7 @@ func firstSpecialOperation(ops []Operation) int {
 
 func isSpecialOperation(op Operation) bool {
 	switch op.Command {
-	case "gc-dhcp-options", "gc-stale-dhcp-options", "gc-load-balancer-health-checks", "ensure-load-balancer-health-check", "gc-stale-load-balancer-health-checks", "gc-nat-rule", "gc-stale-nat-rules", "tag-nat-rule", "tag-policy-route", "gc-stale-policy-routes", "sync-policy-route-nexthops":
+	case "gc-dhcp-options", "gc-stale-dhcp-options", "gc-load-balancer-health-checks", "ensure-load-balancer-health-check", "gc-stale-load-balancer-health-checks", "gc-nat-rule", "gc-stale-nat-rules", "tag-nat-rule", "tag-policy-route", "gc-stale-policy-routes", "sync-policy-route-nexthop", "sync-policy-route-nexthops":
 		return true
 	default:
 		return false
@@ -222,6 +222,8 @@ func (e *NBCTLExecutor) executeSpecial(ctx context.Context, op Operation) error 
 		return e.tagPolicyRoute(ctx, op.Args[0], op.Args[1], op.Args[2], op.Args[3])
 	case "gc-stale-policy-routes":
 		return e.destroyStalePolicyRoutes(ctx, op.Args)
+	case "sync-policy-route-nexthop":
+		return e.syncPolicyRouteNexthop(ctx, op.Args[0], op.Args[1], op.Args[2], op.Args[3], op.Args[4])
 	case "sync-policy-route-nexthops":
 		return e.syncPolicyRouteNexthops(ctx, op.Args[0], op.Args[1], op.Args[2], op.Args[3], op.Args[4])
 	default:
@@ -484,6 +486,37 @@ func (e *NBCTLExecutor) syncPolicyRouteNexthops(ctx context.Context, vpc, name, 
 		}
 		args := append([]string(nil), e.BaseArgs...)
 		args = append(args, "set", "Logical_Router_Policy", uuid, "nexthops="+nextHops)
+		if err := e.runCommand(ctx, args); err != nil {
+			return err
+		}
+		updated = true
+	}
+	return nil
+}
+
+func (e *NBCTLExecutor) syncPolicyRouteNexthop(ctx context.Context, vpc, name, priority, match, nextHop string) error {
+	policyUUIDs, err := e.policyRouteUUIDsByName(ctx, vpc, name)
+	if err != nil {
+		return err
+	}
+	router := logicalRouter(vpc)
+	updated := false
+	for _, uuid := range policyUUIDs {
+		policyPriority, policyMatch, err := e.logicalRouterPolicyIdentity(ctx, uuid)
+		if err != nil {
+			return err
+		}
+		if policyPriority != priority || policyMatch != match {
+			continue
+		}
+		if updated {
+			if err := e.removeAndDestroyPolicyRoute(ctx, router, uuid); err != nil {
+				return err
+			}
+			continue
+		}
+		args := append([]string(nil), e.BaseArgs...)
+		args = append(args, "set", "Logical_Router_Policy", uuid, "nexthop="+nextHop)
 		if err := e.runCommand(ctx, args); err != nil {
 			return err
 		}
@@ -1076,6 +1109,17 @@ func validateSpecialOperation(op Operation) error {
 	if op.Command == "tag-policy-route" {
 		if len(op.Args) != 4 {
 			return fmt.Errorf("special operation %q requires vpc, name, priority, and match", op.Command)
+		}
+		for _, arg := range op.Args {
+			if arg == "" {
+				return fmt.Errorf("special operation %q contains empty argument", op.Command)
+			}
+		}
+		return nil
+	}
+	if op.Command == "sync-policy-route-nexthop" {
+		if len(op.Args) != 5 {
+			return fmt.Errorf("special operation %q requires vpc, name, priority, match, and nexthop", op.Command)
 		}
 		for _, arg := range op.Args {
 			if arg == "" {

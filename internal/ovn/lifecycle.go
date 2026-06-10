@@ -176,6 +176,10 @@ func cleanupOperations(old, next desiredSnapshot) []Operation {
 		if policyRouteSignature(oldRecord.Route) == policyRouteSignature(nextRecord.Route) {
 			continue
 		}
+		if op, ok := policyRouteNexthopSyncOperation(oldRecord, nextRecord); ok {
+			ops = append(ops, op)
+			continue
+		}
 		if op, ok := policyRouteNexthopsSyncOperation(oldRecord, nextRecord); ok {
 			ops = append(ops, op)
 			continue
@@ -322,7 +326,9 @@ func unchangedPolicyRoutes(old, next desiredSnapshot) map[string]string {
 		oldRoute := old.PolicyRoutes[key].Route
 		nextRoute := next.PolicyRoutes[key].Route
 		signature := policyRouteSignature(nextRoute)
-		if policyRouteSignature(oldRoute) == signature || policyRouteCanBeUpdatedByNexthops(oldRoute, nextRoute) {
+		if policyRouteSignature(oldRoute) == signature ||
+			policyRouteCanBeUpdatedByNexthop(oldRoute, nextRoute) ||
+			policyRouteCanBeUpdatedByNexthops(oldRoute, nextRoute) {
 			out[key] = signature
 		}
 	}
@@ -346,6 +352,42 @@ func unchangedRoutes(old, next desiredSnapshot) map[string]string {
 		out[key] = routeSignature(nextRecord)
 	}
 	return out
+}
+
+func policyRouteCanBeUpdatedByNexthop(oldRoute, nextRoute model.PolicyRoute) bool {
+	if oldRoute.VPC != nextRoute.VPC || oldRoute.Priority != nextRoute.Priority {
+		return false
+	}
+	oldMatch := policyRouteMatch(oldRoute.Match)
+	nextMatch := policyRouteMatch(nextRoute.Match)
+	if oldMatch != nextMatch {
+		return false
+	}
+	if oldRoute.Action.Type != model.ActionReroute || nextRoute.Action.Type != model.ActionReroute {
+		return false
+	}
+	oldNextHops := oldRoute.Action.RerouteNextHops()
+	nextNextHops := nextRoute.Action.RerouteNextHops()
+	if len(oldNextHops) != 1 || len(nextNextHops) != 1 {
+		return false
+	}
+	return policyRouteSignature(nextRoute) != policyRouteSignature(oldRoute)
+}
+
+func policyRouteNexthopSyncOperation(oldRecord, nextRecord policyRouteRecord) (Operation, bool) {
+	if !policyRouteCanBeUpdatedByNexthop(oldRecord.Route, nextRecord.Route) {
+		return Operation{}, false
+	}
+	return Operation{
+		Command: "sync-policy-route-nexthop",
+		Args: []string{
+			nextRecord.Route.VPC,
+			nextRecord.Route.Name,
+			fmt.Sprint(nextRecord.Route.Priority),
+			nextRecord.Match,
+			nextRecord.Route.Action.RerouteNextHops()[0].String(),
+		},
+	}, true
 }
 
 func policyRouteCanBeUpdatedByNexthops(oldRoute, nextRoute model.PolicyRoute) bool {

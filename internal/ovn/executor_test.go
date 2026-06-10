@@ -621,7 +621,7 @@ func TestBackendSnapshotIsNotMutatedByCallerAfterReconcile(t *testing.T) {
 	joined := stringifyOVNOps(recorder.Operations())
 	for _, expected := range []string{
 		"--may-exist lr-route-add nl_lr_prod 0.0.0.0/0 10.10.0.252",
-		"--if-exists lr-policy-del nl_lr_prod 100",
+		"sync-policy-route-nexthop prod force-private 100 ip4.dst == 172.16.0.0/16 && ip4.src == 10.10.0.0/24 10.10.0.252",
 		"--may-exist lb-add nl_lb_prod_web_tcp 10.96.0.10:80 10.10.0.12:8080 tcp",
 	} {
 		if !strings.Contains(joined, expected) {
@@ -1074,16 +1074,14 @@ func TestBackendCleanupConvergesChangedPolicyRoute(t *testing.T) {
 
 	joined := stringifyOVNOps(recorder.Operations())
 	for _, expected := range []string{
-		"--if-exists lr-policy-del nl_lr_prod 100",
-		"--may-exist lr-policy-add nl_lr_prod 100",
-		"reroute 10.10.0.252",
+		"sync-policy-route-nexthop prod https-via-fw 100 ip4.dst == 172.16.0.0/16 && ip4.src == 10.10.0.0/24 && tcp && tcp.dst == 443 10.10.0.252",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("policy route convergence operation missing %q:\n%s", expected, joined)
 		}
 	}
-	if strings.Count(joined, "--if-exists lr-policy-del nl_lr_prod 100") != 1 {
-		t.Fatalf("changed policy route should clear the managed key once:\n%s", joined)
+	if strings.Count(joined, "--if-exists lr-policy-del nl_lr_prod 100 ip4.src == 10.10.0.0/24") != 0 {
+		t.Fatalf("changed single-hop policy route should not be deleted, should sync nexthop:\n%s", joined)
 	}
 }
 
@@ -2652,6 +2650,121 @@ esac
 	}
 	if hasPolicyBSet {
 		t.Fatalf("non-matching policy must not be updated:\n%s", raw)
+	}
+}
+
+func TestNBCTLExecutorSyncsSingleHopPolicyRouteNexthop(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args")
+	binary := filepath.Join(dir, "ovn-nbctl")
+	script := fmt.Sprintf(`#!/bin/sh
+printf '%%s\n' '---' >> %q
+printf '%%s\n' "$@" >> %q
+case "$*" in
+  *"find Logical_Router_Policy external_ids:netloom_owner=netloom external_ids:netloom_vpc=prod external_ids:netloom_policy_route=https-via-fw"*) printf 'policy-a\npolicy-b\n' ;;
+  *"get Logical_Router_Policy policy-a priority"*) printf '100\n' ;;
+  *"get Logical_Router_Policy policy-a match"*) printf '"ip4.src == 10.10.0.0/24"\n' ;;
+  *"get Logical_Router_Policy policy-b priority"*) printf '200\n' ;;
+  *"get Logical_Router_Policy policy-b match"*) printf '"ip4.src == 10.20.0.0/24"\n' ;;
+esac
+`, argsFile, argsFile)
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	executor := ovn.NewNBCTLExecutor(binary, "--db=unix:/tmp/ovnnb.sock")
+	err := executor.Execute(context.Background(), []ovn.Operation{{
+		Command: "sync-policy-route-nexthop",
+		Args: []string{
+			"prod",
+			"https-via-fw",
+			"100",
+			"ip4.src == 10.10.0.0/24",
+			"10.10.0.252",
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := strings.Split(strings.TrimPrefix(strings.TrimSpace(string(raw)), "---\n"), "\n---\n")
+	if len(calls) != 6 {
+		t.Fatalf("calls = %d, want find, identity reads, set, and remaining identity reads:\n%s", len(calls), raw)
+	}
+	if !strings.Contains(calls[0], "--columns=_uuid\nfind\nLogical_Router_Policy") {
+		t.Fatalf("first call should find managed policy UUIDs by identity:\n%s", calls[0])
+	}
+	hasPolicyASet := false
+	hasPolicyBSet := false
+	for _, call := range calls {
+		if strings.Contains(call, "set\nLogical_Router_Policy\npolicy-a") {
+			hasPolicyASet = true
+			if !strings.Contains(call, "nexthop=10.10.0.252") {
+				t.Fatalf("matching policy update should include nexthop set:\n%s", call)
+			}
+		}
+		if strings.Contains(call, "set\nLogical_Router_Policy\npolicy-b") {
+			hasPolicyBSet = true
+		}
+	}
+	if !hasPolicyASet {
+		t.Fatalf("final call should update matching single-hop policy route nexthop:\n%s", raw)
+	}
+	if hasPolicyBSet {
+		t.Fatalf("non-matching policy must not be updated:\n%s", raw)
+	}
+}
+
+func TestNBCTLExecutorSyncsCanonicalSingleHopPolicyRouteNexthopAndDestroysDuplicates(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args")
+	binary := filepath.Join(dir, "ovn-nbctl")
+	script := fmt.Sprintf(`#!/bin/sh
+printf '%%s\n' '---' >> %q
+printf '%%s\n' "$@" >> %q
+case "$*" in
+  *"find Logical_Router_Policy external_ids:netloom_owner=netloom external_ids:netloom_vpc=prod external_ids:netloom_policy_route=https-via-fw"*) printf 'policy-a\npolicy-b\n' ;;
+  *"get Logical_Router_Policy policy-a priority"*) printf '100\n' ;;
+  *"get Logical_Router_Policy policy-a match"*) printf '"ip4.src == 10.10.0.0/24"\n' ;;
+  *"get Logical_Router_Policy policy-b priority"*) printf '100\n' ;;
+  *"get Logical_Router_Policy policy-b match"*) printf '"ip4.src == 10.10.0.0/24"\n' ;;
+esac
+`, argsFile, argsFile)
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	executor := ovn.NewNBCTLExecutor(binary, "--db=unix:/tmp/ovnnb.sock")
+	err := executor.Execute(context.Background(), []ovn.Operation{{
+		Command: "sync-policy-route-nexthop",
+		Args: []string{
+			"prod",
+			"https-via-fw",
+			"100",
+			"ip4.src == 10.10.0.0/24",
+			"10.10.0.252",
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	if strings.Count(text, "set\nLogical_Router_Policy\npolicy-a\nnexthop=10.10.0.252") != 1 {
+		t.Fatalf("canonical policy should be updated exactly once:\n%s", raw)
+	}
+	if strings.Contains(text, "set\nLogical_Router_Policy\npolicy-b") {
+		t.Fatalf("duplicate matching policy must not also be updated:\n%s", raw)
+	}
+	if !strings.Contains(text, "remove\nlogical_router\nnl_lr_prod\npolicies\npolicy-b") ||
+		!strings.Contains(text, "destroy\nLogical_Router_Policy\npolicy-b") {
+		t.Fatalf("duplicate matching policy should be removed and destroyed:\n%s", raw)
 	}
 }
 
