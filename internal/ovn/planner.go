@@ -78,6 +78,7 @@ func (p *Planner) EnsureSubnet(_ context.Context, subnet model.Subnet) error {
 		Operation{Command: "lsp-set-options", Args: []string{switchPort, "router-port=" + routerPort}},
 		setOperation("logical_switch_port", switchPort, "external_ids:netloom_owner=netloom", "external_ids:netloom_subnet="+subnet.Name, "external_ids:netloom_role=router"),
 	)
+	p.ops = append(p.ops, logicalSwitchIPAMOperations(switchName, subnet)...)
 	if subnet.DHCP.Enabled && subnet.CIDR.Addr().Is6() {
 		p.ops = append(p.ops, setOperation("logical_router_port", routerPort, "ipv6_ra_configs:address_mode=dhcpv6_stateful"))
 	} else {
@@ -462,6 +463,116 @@ func sanitize(value string) string {
 
 func deterministicMAC(subnet model.Subnet) string {
 	return model.SubnetGatewayMAC(subnet.VPC, subnet.Name, subnet.Gateway)
+}
+
+func logicalSwitchIPAMOperations(switchName string, subnet model.Subnet) []Operation {
+	if subnet.CIDR.Addr().Is4() {
+		ops := []Operation{
+			setOperation("logical_switch", switchName, "other_config:subnet="+subnet.CIDR.String()),
+			Operation{Command: "remove", Args: []string{"logical_switch", switchName, "other_config", "ipv6_prefix"}},
+		}
+		excludeIPs := ovnExcludeIPs(subnet)
+		if excludeIPs == "" {
+			ops = append(ops, Operation{Command: "remove", Args: []string{"logical_switch", switchName, "other_config", "exclude_ips"}})
+			return ops
+		}
+		ops = append(ops, setOperation("logical_switch", switchName, "other_config:exclude_ips="+ovnStringValue(excludeIPs)))
+		return ops
+	}
+	return []Operation{
+		Operation{Command: "remove", Args: []string{"logical_switch", switchName, "other_config", "subnet"}},
+		Operation{Command: "remove", Args: []string{"logical_switch", switchName, "other_config", "exclude_ips"}},
+		setOperation("logical_switch", switchName, "other_config:ipv6_prefix="+subnet.CIDR.Masked().Addr().String()),
+	}
+}
+
+type ovnIPv4Interval struct {
+	start uint32
+	end   uint32
+}
+
+func ovnExcludeIPs(subnet model.Subnet) string {
+	if !subnet.CIDR.Addr().Is4() {
+		return ""
+	}
+	intervals := make([]ovnIPv4Interval, 0, len(subnet.ExcludeCIDRs)+1)
+	intervals = append(intervals, ovnIPv4Interval{
+		start: ipv4AddrUint32(subnet.Gateway),
+		end:   ipv4AddrUint32(subnet.Gateway),
+	})
+	for _, exclude := range subnet.ExcludeCIDRs {
+		exclude = exclude.Masked()
+		if !exclude.Addr().Is4() {
+			continue
+		}
+		intervals = append(intervals, ovnIPv4Interval{
+			start: ipv4AddrUint32(exclude.Addr()),
+			end:   ipv4AddrUint32(prefixLastAddr(exclude)),
+		})
+	}
+	merged := mergeIPv4Intervals(intervals)
+	parts := make([]string, 0, len(merged))
+	for _, interval := range merged {
+		start := uint32IPv4Addr(interval.start).String()
+		if interval.start == interval.end {
+			parts = append(parts, start)
+			continue
+		}
+		parts = append(parts, start+".."+uint32IPv4Addr(interval.end).String())
+	}
+	return strings.Join(parts, " ")
+}
+
+func mergeIPv4Intervals(intervals []ovnIPv4Interval) []ovnIPv4Interval {
+	if len(intervals) == 0 {
+		return nil
+	}
+	sort.Slice(intervals, func(i, j int) bool {
+		if intervals[i].start != intervals[j].start {
+			return intervals[i].start < intervals[j].start
+		}
+		return intervals[i].end < intervals[j].end
+	})
+	merged := make([]ovnIPv4Interval, 0, len(intervals))
+	current := intervals[0]
+	for _, interval := range intervals[1:] {
+		if interval.start <= current.end+1 {
+			if interval.end > current.end {
+				current.end = interval.end
+			}
+			continue
+		}
+		merged = append(merged, current)
+		current = interval
+	}
+	merged = append(merged, current)
+	return merged
+}
+
+func ipv4AddrUint32(addr netip.Addr) uint32 {
+	raw := addr.As4()
+	return uint32(raw[0])<<24 | uint32(raw[1])<<16 | uint32(raw[2])<<8 | uint32(raw[3])
+}
+
+func uint32IPv4Addr(value uint32) netip.Addr {
+	return netip.AddrFrom4([4]byte{
+		byte(value >> 24),
+		byte(value >> 16),
+		byte(value >> 8),
+		byte(value),
+	})
+}
+
+func prefixLastAddr(prefix netip.Prefix) netip.Addr {
+	addr := prefix.Masked().Addr()
+	raw := addr.As4()
+	value := uint32(raw[0])<<24 | uint32(raw[1])<<16 | uint32(raw[2])<<8 | uint32(raw[3])
+	hostBits := 32 - prefix.Bits()
+	if hostBits <= 0 {
+		return addr
+	}
+	mask := (uint32(1) << hostBits) - 1
+	return uint32IPv4Addr(value | mask)
 }
 
 func dhcpOptionsUUID(endpoint model.Endpoint, family int) string {

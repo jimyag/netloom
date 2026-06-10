@@ -67,6 +67,8 @@ func TestDesiredStateDrivesTopologyRoutesAndEBPFStyleACL(t *testing.T) {
 		"--ecmp lr-route-add nl_lr_prod 0.0.0.0/0 10.10.0.253",
 		"--ecmp lr-route-add nl_lr_prod 0.0.0.0/0 10.10.0.254",
 		"tcp.src == 32000",
+		"set logical_switch nl_ls_prod_apps other_config:subnet=10.10.0.0/24",
+		`set logical_switch nl_ls_prod_apps other_config:exclude_ips="10.10.0.1 10.10.0.16..10.10.0.31"`,
 	} {
 		if !strings.Contains(ovnOps, expected) {
 			t.Fatalf("expected OVN ECMP static route operation %q:\n%s", expected, ovnOps)

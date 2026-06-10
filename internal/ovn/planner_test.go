@@ -20,6 +20,7 @@ func TestPlannerMapsNetloomObjectsToOVNOperations(t *testing.T) {
 			VPC:             "prod",
 			CIDR:            netip.MustParsePrefix("10.10.0.0/24"),
 			Gateway:         netip.MustParseAddr("10.10.0.1"),
+			ExcludeCIDRs:    []netip.Prefix{netip.MustParsePrefix("10.10.0.16/28")},
 			ProviderNetwork: "physnet-a",
 			VLAN:            100,
 			DHCP: model.DHCPOptions{
@@ -51,7 +52,7 @@ func TestPlannerMapsNetloomObjectsToOVNOperations(t *testing.T) {
 			VPC:      "prod",
 			Priority: 100,
 			Match: model.RouteMatch{
-				Source:      netip.MustParsePrefix("10.10.0.0/24"),
+				Source:      netip.MustParsePrefix("10.10.0.0/28"),
 				Destination: netip.MustParsePrefix("172.16.0.0/16"),
 				Protocol:    model.ProtocolTCP,
 				DstPorts:    []model.PortRange{{From: 443, To: 443}},
@@ -69,7 +70,7 @@ func TestPlannerMapsNetloomObjectsToOVNOperations(t *testing.T) {
 			Name:       "egress",
 			VPC:        "prod",
 			Type:       model.ActionSNAT,
-			MatchCIDR:  netip.MustParsePrefix("10.10.0.0/24"),
+			MatchCIDR:  netip.MustParsePrefix("10.10.0.0/28"),
 			ExternalIP: netip.MustParseAddr("198.51.100.10"),
 		}},
 		LoadBalancers: []model.LoadBalancer{{
@@ -108,6 +109,8 @@ func TestPlannerMapsNetloomObjectsToOVNOperations(t *testing.T) {
 	for _, expected := range []string{
 		"--may-exist lr-add nl_lr_prod",
 		"--may-exist ls-add nl_ls_prod_apps",
+		"set logical_switch nl_ls_prod_apps other_config:subnet=10.10.0.0/24",
+		`set logical_switch nl_ls_prod_apps other_config:exclude_ips="10.10.0.1 10.10.0.16..10.10.0.31"`,
 		"--if-exists lsp-del nl_ls_prod_apps_to_apps_localnet",
 		"lsp-add-localnet-port nl_ls_prod_apps nl_ls_prod_apps_to_apps_localnet physnet-a",
 		"external_ids:netloom_provider_network=physnet-a",
@@ -131,7 +134,7 @@ func TestPlannerMapsNetloomObjectsToOVNOperations(t *testing.T) {
 		"external_ids:netloom_gateway_lan_ip=10.10.0.254",
 		"external_ids:netloom_gateway_distributed=false",
 		"options:chassis=node-a",
-		"lr-nat-add nl_lr_prod snat 198.51.100.10 10.10.0.0/24",
+		"lr-nat-add nl_lr_prod snat 198.51.100.10 10.10.0.0/28",
 		"lb-add nl_lb_prod_web_tcp 10.96.0.10:80 10.10.0.10:8080 tcp",
 		"lr-lb-add nl_lr_prod nl_lb_prod_web_tcp",
 		"ls-lb-add nl_ls_prod_apps nl_lb_prod_web_tcp",
@@ -176,6 +179,51 @@ func TestPlannerScopesLogicalSwitchesByVPC(t *testing.T) {
 	}
 	if strings.Contains(joined, "ls-add nl_ls_apps\n") {
 		t.Fatalf("logical switch names must include VPC to avoid subnet collisions:\n%s", joined)
+	}
+}
+
+func TestPlannerProgramsIPv6LogicalSwitchIPAMPrefix(t *testing.T) {
+	planner := ovn.NewPlanner()
+	if err := planner.EnsureSubnet(context.Background(), model.Subnet{
+		Name:    "apps-v6",
+		VPC:     "prod",
+		CIDR:    netip.MustParsePrefix("fd00:10::/64"),
+		Gateway: netip.MustParseAddr("fd00:10::1"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	joined := stringify(planner.Operations())
+	for _, expected := range []string{
+		"remove logical_switch nl_ls_prod_apps-v6 other_config subnet",
+		"remove logical_switch nl_ls_prod_apps-v6 other_config exclude_ips",
+		"set logical_switch nl_ls_prod_apps-v6 other_config:ipv6_prefix=fd00:10::",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("IPv6 logical switch IPAM operations missing %q:\n%s", expected, joined)
+		}
+	}
+}
+
+func TestPlannerMergesLogicalSwitchExcludeCIDRRanges(t *testing.T) {
+	planner := ovn.NewPlanner()
+	if err := planner.EnsureSubnet(context.Background(), model.Subnet{
+		Name:    "apps",
+		VPC:     "prod",
+		CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+		Gateway: netip.MustParseAddr("10.10.0.1"),
+		ExcludeCIDRs: []netip.Prefix{
+			netip.MustParsePrefix("10.10.0.16/30"),
+			netip.MustParsePrefix("10.10.0.20/30"),
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	joined := stringify(planner.Operations())
+	expected := `set logical_switch nl_ls_prod_apps other_config:exclude_ips="10.10.0.1 10.10.0.16..10.10.0.23"`
+	if !strings.Contains(joined, expected) {
+		t.Fatalf("merged logical switch exclude range missing %q:\n%s", expected, joined)
 	}
 }
 

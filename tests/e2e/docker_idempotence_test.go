@@ -2067,6 +2067,74 @@ func TestDockerControllerReconcileIPv6VPC(t *testing.T) {
 	}
 }
 
+func TestDockerControllerReconcileSubnetExcludeCIDRs(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip long e2e test in short mode")
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker is not installed")
+	}
+
+	composeFile := filepath.Join("testdata", "..", "docker-compose.yaml")
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+
+	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
+	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
+	run(t, ctx, "docker", "compose", "-f", composeFile, "up", "-d", "--quiet-pull", "--force-recreate")
+	t.Cleanup(func() {
+		downCtx, downCancel := context.WithTimeout(context.Background(), time.Minute)
+		defer downCancel()
+		run(t, downCtx, "docker", "compose", "-f", composeFile, "down", "-v")
+	})
+	waitForOVN(t, ctx, composeFile)
+
+	statePath := "/tmp/netloom-state-exclude-cidrs.json"
+	reconcileOutput := run(
+		t,
+		ctx,
+		"docker",
+		"compose",
+		"-f",
+		composeFile,
+		"exec",
+		"-T",
+		"ovn-central",
+		"sh",
+		"-c",
+		"cat >"+statePath+" <<'EOF'\n"+desiredStateWithExcludeCIDRsJSON()+"\nEOF\nNETLOOM_STATE_FILE="+statePath+" NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller",
+	)
+	if !strings.Contains(reconcileOutput, "reconciled desired state") {
+		t.Fatalf("exclude-cidr desired-state reconcile did not succeed:\n%s", reconcileOutput)
+	}
+
+	otherConfig := run(
+		t,
+		ctx,
+		"docker",
+		"compose",
+		"-f",
+		composeFile,
+		"exec",
+		"-T",
+		"ovn-central",
+		"ovn-nbctl",
+		"--db=unix:/var/run/ovn/ovnnb_db.sock",
+		"get",
+		"logical_switch",
+		"nl_ls_file_fileapps",
+		"other_config",
+	)
+	for _, expected := range []string{
+		`subnet="10.245.0.0/24"`,
+		`exclude_ips="10.245.0.1 10.245.0.16..10.245.0.31"`,
+	} {
+		if !strings.Contains(otherConfig, expected) {
+			t.Fatalf("logical switch other_config missing %q:\n%s", expected, otherConfig)
+		}
+	}
+}
+
 func TestDockerControllerReconcileDualStackVPC(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skip long e2e test in short mode")
@@ -2354,6 +2422,15 @@ func routeListContainsAnyHops(nextHops []string, expected []string) bool {
 		}
 	}
 	return false
+}
+
+func desiredStateWithExcludeCIDRsJSON() string {
+	return `{
+  "vpcs": [{"name": "file"}],
+  "subnets": [{"name": "fileapps", "vpc": "file", "cidr": "10.245.0.0/24", "gateway": "10.245.0.1", "exclude_cidrs": ["10.245.0.16/28"], "provider_network": "physnet-a", "vlan": 100, "dhcp": {"enabled": true, "lease_time": 7200, "mtu": 1400}}],
+  "endpoints": [{"id": "file-pod-a", "vpc": "file", "subnet": "fileapps", "ip": "10.245.0.10", "node": "node-a", "security_groups": ["file-allow"]}],
+  "security_groups": [{"name": "file-allow", "vpc": "file", "rules": [{"id": "allow-all", "priority": 100, "direction": "ingress", "protocol": "any", "remote_cidr": "0.0.0.0/0", "action": "allow"}]}]
+}`
 }
 
 func desiredDualVPCStateJSON() string {
