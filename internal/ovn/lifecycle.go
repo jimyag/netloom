@@ -564,7 +564,7 @@ func routeUpdateCleanupOperations(oldRecord, nextRecord routeRecord) []Operation
 		}
 	}
 	if len(oldNextHops) == 1 && len(nextNextHops) == 1 {
-		return []Operation{deleteStaticRouteDestinationOperation(oldRecord)}
+		return nil
 	}
 	nextSet := make(map[string]struct{}, len(nextNextHops))
 	for _, nextHop := range nextNextHops {
@@ -801,11 +801,27 @@ func gcStaleNATRulesOperation(rules map[string]model.NATRule) Operation {
 	sort.Strings(keys)
 	for _, key := range keys {
 		rule := rules[key]
-		if natUsesManagedRecord(rule) {
-			keep = append(keep, rule.VPC, rule.Name)
-		}
+		keep = append(keep, rule.VPC, rule.Name)
 	}
 	return Operation{Command: "gc-stale-nat-rules", Args: keep}
+}
+
+func gcStaleDHCPOptionsOperation(endpoints map[string]model.Endpoint, subnets map[string]model.Subnet) Operation {
+	keep := make([]string, 0, len(endpoints)*2)
+	keys := make([]string, 0, len(endpoints))
+	for key := range endpoints {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		endpoint := endpoints[key]
+		subnet, ok := subnets[subnetStateKey(endpoint.VPC, endpoint.Subnet)]
+		if !ok || !subnet.DHCP.Enabled {
+			continue
+		}
+		keep = append(keep, endpointExternalID(endpoint.VPC, endpoint.ID), endpoint.VPC)
+	}
+	return Operation{Command: "gc-stale-dhcp-options", Args: keep}
 }
 
 func gcNATRuleOperation(rule model.NATRule) Operation {

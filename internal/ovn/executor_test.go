@@ -83,6 +83,46 @@ func TestBackendPropagatesExecutorFailure(t *testing.T) {
 	}
 }
 
+func TestBackendRetainsPlannedOperationsWhenExecutorFails(t *testing.T) {
+	backend := ovn.NewBackend(failingExecutor{})
+	err := backend.EnsureVPC(context.Background(), model.VPC{Name: "prod"})
+	if err == nil {
+		t.Fatal("expected executor failure")
+	}
+	joined := stringifyOVNOps(backend.Operations())
+	for _, expected := range []string{
+		"--may-exist lr-add nl_lr_prod",
+		"set logical_router nl_lr_prod external_ids:netloom_owner=netloom",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("failed planner state missing %q:\n%s", expected, joined)
+		}
+	}
+}
+
+func TestBackendCapsRecordedOperationHistory(t *testing.T) {
+	recorder := ovn.NewRecorderExecutor()
+	backend := ovn.NewBackend(recorder)
+	for i := 0; i < 2500; i++ {
+		if err := backend.EnsureVPC(context.Background(), model.VPC{Name: fmt.Sprintf("vpc-%d", i)}); err != nil {
+			t.Fatalf("ensure vpc %d: %v", i, err)
+		}
+	}
+	if got := len(recorder.Operations()); got != 5000 {
+		t.Fatalf("recorder ops = %d, want 5000", got)
+	}
+	if got := len(backend.Operations()); got != 4096 {
+		t.Fatalf("backend history ops = %d, want capped 4096", got)
+	}
+	joined := stringifyOVNOps(backend.Operations())
+	if strings.Contains(joined, "nl_lr_vpc-0") {
+		t.Fatalf("capped history should drop oldest operations:\n%s", joined)
+	}
+	if !strings.Contains(joined, "nl_lr_vpc-2499") {
+		t.Fatalf("capped history should retain newest operations:\n%s", joined)
+	}
+}
+
 func TestBackendCleanupEmitsDeletesForStaleDesiredObjects(t *testing.T) {
 	recorder := ovn.NewRecorderExecutor()
 	backend := ovn.NewBackend(recorder)
@@ -104,7 +144,7 @@ func TestBackendCleanupEmitsDeletesForStaleDesiredObjects(t *testing.T) {
 	for _, expected := range []string{
 		"lsp-set-dhcpv4-options nl_lp_prod_pod-a",
 		"lsp-set-dhcpv6-options nl_lp_prod_pod-a",
-		"gc-dhcp-options pod-a prod",
+		"gc-dhcp-options " + endpointExternalID("prod", "pod-a") + " prod",
 		"--if-exists lsp-del nl_lp_prod_pod-a",
 		"--if-exists lr-nat-del nl_lr_prod snat 10.10.0.0/24",
 		"gc-load-balancer-health-checks web prod",
@@ -117,7 +157,7 @@ func TestBackendCleanupEmitsDeletesForStaleDesiredObjects(t *testing.T) {
 		}
 	}
 	clear := strings.Index(joined, "lsp-set-dhcpv4-options nl_lp_prod_pod-a")
-	gc := strings.Index(joined, "gc-dhcp-options pod-a prod")
+	gc := strings.Index(joined, "gc-dhcp-options "+endpointExternalID("prod", "pod-a")+" prod")
 	del := strings.Index(joined, "--if-exists lsp-del nl_lp_prod_pod-a")
 	if clear < 0 || gc < 0 || del < 0 || !(clear < gc && gc < del) {
 		t.Fatalf("endpoint DHCP cleanup should clear references, GC options, then delete port:\n%s", joined)
@@ -186,6 +226,9 @@ func TestBackendCleanupRemovesStaleLoadBalancerProtocolRows(t *testing.T) {
 	}
 
 	joined := stringifyOVNOps(recorder.Operations())
+	forbidden := []string{
+		"--if-exists lb-del nl_lb_prod_web_udp 10.96.0.10:53",
+	}
 	for _, expected := range []string{
 		"--may-exist lb-add nl_lb_prod_web_tcp 10.96.0.10:80 10.10.0.10:8080 tcp",
 		"--may-exist lb-add nl_lb_prod_web_udp 10.96.0.10:53 10.10.0.10:5353 udp",
@@ -196,6 +239,11 @@ func TestBackendCleanupRemovesStaleLoadBalancerProtocolRows(t *testing.T) {
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("load balancer protocol cleanup operation missing %q:\n%s", expected, joined)
+		}
+	}
+	for _, unexpected := range forbidden {
+		if strings.Contains(joined, unexpected) {
+			t.Fatalf("unexpected stale front-end delete for removed protocol: %q\n%s", unexpected, joined)
 		}
 	}
 	if strings.Contains(joined, "--if-exists lb-del nl_lb_prod_web_tcp\n") {
@@ -354,7 +402,7 @@ func TestBackendReappliesLoadBalancerWhenDefaultHealthCheckEnabled(t *testing.T)
 	if got := strings.Count(joined, "ensure-load-balancer-health-check"); got != 1 {
 		t.Fatalf("health check ensure count = %d, want one enable apply:\n%s", got, joined)
 	}
-	if !strings.Contains(joined, "ensure-load-balancer-health-check nl_lb_prod_web_tcp web prod vip=10.96.0.10:80") {
+	if !strings.Contains(joined, "ensure-load-balancer-health-check nl_lb_prod_web_tcp web prod vip=\"10.96.0.10:80\"") {
 		t.Fatalf("default health check ensure missing:\n%s", joined)
 	}
 	if got := strings.Count(joined, "--may-exist lb-add nl_lb_prod_web_tcp 10.96.0.10:80 10.10.0.10:8080 tcp"); got != 2 {
@@ -391,6 +439,142 @@ func TestBackendCleanupReappliesChangedLoadBalancerBackends(t *testing.T) {
 	}
 	if got := strings.Count(joined, "--if-exists lb-del nl_lb_prod_web_tcp 10.96.0.10:80"); got != 1 {
 		t.Fatalf("changed load balancer frontend delete count = %d, want one lifecycle diff delete:\n%s", got, joined)
+	}
+}
+
+func TestBackendReconcileIsIdempotentAcrossUnchangedTopology(t *testing.T) {
+	recorder := ovn.NewRecorderExecutor()
+	backend := ovn.NewBackend(recorder)
+	state := controlStateWithEndpoint("pod-a")
+	controller := control.NewController(backend, control.NewMemoryBackend())
+	if err := controller.Reconcile(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+	baselineLen := len(recorder.Operations())
+	if baselineLen == 0 {
+		t.Fatal("expected first reconcile to produce operations")
+	}
+
+	if err := controller.Reconcile(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+	secondPass := recorder.Operations()[baselineLen:]
+	secondPassOperations := stringifyOVNOps(secondPass)
+	for _, line := range strings.Split(strings.TrimSpace(secondPassOperations), "\n") {
+		cmd := strings.TrimSpace(line)
+		switch {
+		case cmd == "":
+			continue
+		case strings.HasPrefix(cmd, "create "):
+			t.Fatalf("idempotent reconcile should not emit create:\n%s", secondPassOperations)
+		case strings.HasPrefix(cmd, "destroy "):
+			t.Fatalf("idempotent reconcile should not emit destroy:\n%s", secondPassOperations)
+		case strings.HasPrefix(cmd, "lsp-del "):
+			t.Fatalf("idempotent reconcile should not emit unconditional lsp-del:\n%s", secondPassOperations)
+		case strings.HasPrefix(cmd, "ls-del "):
+			t.Fatalf("idempotent reconcile should not emit ls-del:\n%s", secondPassOperations)
+		case strings.HasPrefix(cmd, "lrp-del "):
+			t.Fatalf("idempotent reconcile should not emit lrp-del:\n%s", secondPassOperations)
+		case strings.Contains(cmd, "lr-route-del "):
+			t.Fatalf("idempotent reconcile should not emit lr-route-del:\n%s", secondPassOperations)
+		case strings.Contains(cmd, "lr-nat-del "):
+			t.Fatalf("idempotent reconcile should not emit lr-nat-del:\n%s", secondPassOperations)
+		case strings.Contains(cmd, "lb-del "):
+			t.Fatalf("idempotent reconcile should not emit lb-del:\n%s", secondPassOperations)
+		case strings.Contains(cmd, "lr-lb-del "):
+			t.Fatalf("idempotent reconcile should not emit lr-lb-del:\n%s", secondPassOperations)
+		case strings.Contains(cmd, "ls-lb-del "):
+			t.Fatalf("idempotent reconcile should not emit ls-lb-del:\n%s", secondPassOperations)
+		case strings.HasPrefix(cmd, "gc-"):
+			t.Fatalf("idempotent reconcile should not emit gc command:\n%s", secondPassOperations)
+		case strings.Contains(cmd, "tag-policy-route "):
+			t.Fatalf("idempotent reconcile should not emit route cleanup:\n%s", secondPassOperations)
+		}
+	}
+}
+
+func TestBackendFirstReconcileCleanupGCNotRepeatedOnUnchangedState(t *testing.T) {
+	recorder := ovn.NewRecorderExecutor()
+	backend := ovn.NewBackend(recorder)
+	state := controlStateWithEndpoint("pod-a")
+	state.NATRules = []model.NATRule{{
+		Name:         "web-translate",
+		VPC:          "prod",
+		Type:         model.ActionDNAT,
+		ExternalIP:   netip.MustParseAddr("198.51.100.80"),
+		TargetIP:     netip.MustParseAddr("10.10.0.10"),
+		Protocol:     model.ProtocolTCP,
+		ExternalPort: 8443,
+		TargetPort:   443,
+	}}
+	state.PolicyRoutes = []model.PolicyRoute{{
+		Name:     "egress-egress",
+		VPC:      "prod",
+		Priority: 300,
+		Match: model.RouteMatch{
+			Source:      netip.MustParsePrefix("10.10.0.0/24"),
+			Destination: netip.MustParsePrefix("10.245.0.0/24"),
+			Protocol:    model.ProtocolTCP,
+			DstPorts:    []model.PortRange{{From: 443, To: 443}},
+		},
+		Action: model.RouteAction{Type: model.ActionAllow},
+	}}
+	controller := control.NewController(backend, control.NewMemoryBackend())
+	if err := controller.Reconcile(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+
+	firstPass := stringifyOVNOps(recorder.Operations())
+	if got := strings.Count(firstPass, "gc-stale-nat-rules prod web"); got != 1 {
+		t.Fatalf("first reconcile stale NAT GC count = %d, want 1", got)
+	}
+	if got := strings.Count(firstPass, "gc-stale-policy-routes prod egress-egress"); got != 1 {
+		t.Fatalf("first reconcile stale policy GC count = %d, want 1:\n%s", got, firstPass)
+	}
+	baselineLen := len(recorder.Operations())
+
+	if err := controller.Reconcile(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+	secondPass := stringifyOVNOps(recorder.Operations()[baselineLen:])
+	if strings.Contains(secondPass, "gc-stale-nat-rules") {
+		t.Fatalf("second reconcile must not rerun stale NAT GC:\n%s", secondPass)
+	}
+	if strings.Contains(secondPass, "gc-stale-policy-routes") {
+		t.Fatalf("second reconcile must not rerun stale policy GC:\n%s", secondPass)
+	}
+}
+
+func TestBackendRestoresTopologyStateForWarmRestart(t *testing.T) {
+	recorder := ovn.NewRecorderExecutor()
+	topologyBackend := control.NewMemoryBackend()
+	topologyController := control.NewController(topologyBackend, control.NewMemoryBackend())
+	desired := controlStateWithEndpoint("pod-a")
+	if err := topologyController.Reconcile(context.Background(), desired); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := topologyBackend.TopologyState()
+
+	recovered := ovn.NewBackend(recorder)
+	recovered.RestoreTopologyState(snapshot)
+	recoveredController := control.NewController(recovered, control.NewMemoryBackend())
+	if err := recoveredController.Reconcile(context.Background(), desired); err != nil {
+		t.Fatal(err)
+	}
+
+	joined := stringifyOVNOps(recovered.Operations())
+	for _, forbidden := range []string{
+		"lb-del",
+		"lr-route-del",
+		"lr-policy-del",
+		"lr-nat-del",
+		"ls-del",
+		"lr-del",
+		"gc-",
+	} {
+		if strings.Contains(joined, forbidden) {
+			t.Fatalf("restored topology should not emit destructive cleanup op %q:\n%s", forbidden, joined)
+		}
 	}
 }
 
@@ -436,13 +620,16 @@ func TestBackendSnapshotIsNotMutatedByCallerAfterReconcile(t *testing.T) {
 
 	joined := stringifyOVNOps(recorder.Operations())
 	for _, expected := range []string{
-		"--if-exists lr-route-del nl_lr_prod 0.0.0.0/0",
+		"--may-exist lr-route-add nl_lr_prod 0.0.0.0/0 10.10.0.252",
 		"--if-exists lr-policy-del nl_lr_prod 100",
 		"--may-exist lb-add nl_lb_prod_web_tcp 10.96.0.10:80 10.10.0.12:8080 tcp",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("snapshot mutation regression operation missing %q:\n%s", expected, joined)
 		}
+	}
+	if strings.Contains(joined, "--if-exists lr-route-del nl_lr_prod 0.0.0.0/0") {
+		t.Fatalf("snapshot mutation regression should not reintroduce route delete-before-add churn:\n%s", joined)
 	}
 }
 
@@ -494,6 +681,74 @@ func TestBackendCleanupDoesNotReapplyUnchangedNATRule(t *testing.T) {
 	expected := "--may-exist lr-nat-add nl_lr_prod snat 198.51.100.10 10.10.0.0/24"
 	if got := strings.Count(joined, expected); got != 1 {
 		t.Fatalf("unchanged nat rule add count = %d, want one initial add for %q:\n%s", got, expected, joined)
+	}
+}
+
+func TestBackendCleanupDoesNotReapplyUnchangedNATRuleAcrossVPCs(t *testing.T) {
+	recorder := ovn.NewRecorderExecutor()
+	backend := ovn.NewBackend(recorder)
+	state := controlStateWithEndpoint("pod-a")
+	state.VPCs = append(state.VPCs, model.VPC{Name: "blue"})
+	state.Subnets = append(state.Subnets,
+		model.Subnet{
+			Name:            "shared",
+			VPC:             "blue",
+			CIDR:            netip.MustParsePrefix("10.11.0.0/24"),
+			Gateway:         netip.MustParseAddr("10.11.0.1"),
+			ProviderNetwork: "physnet-a",
+			VLAN:            100,
+			DHCP:            model.DHCPOptions{Enabled: true, LeaseTime: 7200, MTU: 1400},
+		},
+	)
+	state.Endpoints = append(state.Endpoints, model.Endpoint{
+		ID:     "pod-b",
+		VPC:    "blue",
+		Subnet: "shared",
+		IP:     netip.MustParseAddr("10.11.0.10"),
+		Node:   "node-b",
+	})
+	state.Gateways = append(state.Gateways, model.Gateway{
+		Name:       "gw-b",
+		VPC:        "blue",
+		Node:       "node-b",
+		ExternalIF: "eth0",
+		LANIP:      netip.MustParseAddr("10.11.0.254"),
+	})
+	state.NATRules = []model.NATRule{
+		{
+			Name:       "shared-egress",
+			VPC:        "prod",
+			Type:       model.ActionSNAT,
+			MatchCIDR:  netip.MustParsePrefix("10.10.0.0/24"),
+			ExternalIP: netip.MustParseAddr("198.51.100.10"),
+		},
+		{
+			Name:       "shared-egress",
+			VPC:        "blue",
+			Type:       model.ActionSNAT,
+			MatchCIDR:  netip.MustParsePrefix("10.11.0.0/24"),
+			ExternalIP: netip.MustParseAddr("198.51.101.10"),
+		},
+	}
+	controller := control.NewController(backend, control.NewMemoryBackend())
+	if err := controller.Reconcile(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.Reconcile(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+
+	joined := stringifyOVNOps(recorder.Operations())
+	if strings.Contains(joined, "lr-nat-del") {
+		t.Fatalf("unchanged nat rules should not be deleted:\n%s", joined)
+	}
+	prodRule := "--may-exist lr-nat-add nl_lr_prod snat 198.51.100.10 10.10.0.0/24"
+	if got := strings.Count(joined, prodRule); got != 1 {
+		t.Fatalf("prod unchanged nat rule add count = %d, want one initial add:\n%s", got, joined)
+	}
+	blueRule := "--may-exist lr-nat-add nl_lr_blue snat 198.51.101.10 10.11.0.0/24"
+	if got := strings.Count(joined, blueRule); got != 1 {
+		t.Fatalf("blue unchanged nat rule add count = %d, want one initial add:\n%s", got, joined)
 	}
 }
 
@@ -737,6 +992,27 @@ func TestBackendFirstReconcileCleansStaleManagedNATRules(t *testing.T) {
 	}
 }
 
+func TestBackendFirstReconcileCleansStaleDHCPOptions(t *testing.T) {
+	recorder := ovn.NewRecorderExecutor()
+	backend := ovn.NewBackend(recorder)
+	state := controlStateWithEndpoint("pod-a")
+	controller := control.NewController(backend, control.NewMemoryBackend())
+	if err := controller.Reconcile(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+
+	joined := stringifyOVNOps(recorder.Operations())
+	expected := "gc-stale-dhcp-options " + endpointExternalID("prod", "pod-a") + " prod"
+	if !strings.Contains(joined, expected) {
+		t.Fatalf("first reconcile should clean stale DHCP options while keeping desired endpoint rows:\n%s", joined)
+	}
+	staleGC := strings.Index(joined, expected)
+	createGC := strings.Index(joined, "gc-dhcp-options "+endpointExternalID("prod", "pod-a")+" prod")
+	if createGC < 0 || staleGC > createGC {
+		t.Fatalf("stale DHCP cleanup should run before per-endpoint DHCP GC/create:\n%s", joined)
+	}
+}
+
 func TestBackendFirstReconcileCleansStaleManagedPolicyRoutes(t *testing.T) {
 	recorder := ovn.NewRecorderExecutor()
 	backend := ovn.NewBackend(recorder)
@@ -808,6 +1084,46 @@ func TestBackendCleanupConvergesChangedPolicyRoute(t *testing.T) {
 	}
 	if strings.Count(joined, "--if-exists lr-policy-del nl_lr_prod 100") != 1 {
 		t.Fatalf("changed policy route should clear the managed key once:\n%s", joined)
+	}
+}
+
+func TestBackendCleanupConvergesChangedECMPPolicyRouteNexthops(t *testing.T) {
+	recorder := ovn.NewRecorderExecutor()
+	backend := ovn.NewBackend(recorder)
+	state := controlStateWithEndpoint("pod-a")
+	state.PolicyRoutes = []model.PolicyRoute{{
+		Name:     "centralized-egress",
+		VPC:      "prod",
+		Priority: 300,
+		Match:    model.RouteMatch{Source: netip.MustParsePrefix("10.10.0.0/24")},
+		Action: model.RouteAction{
+			Type: model.ActionReroute,
+			NextHops: []netip.Addr{
+				netip.MustParseAddr("10.10.0.253"),
+				netip.MustParseAddr("10.10.0.254"),
+			},
+		},
+	}}
+	controller := control.NewController(backend, control.NewMemoryBackend())
+	if err := controller.Reconcile(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+
+	second := state
+	second.PolicyRoutes[0].Action.NextHops[0] = netip.MustParseAddr("10.10.0.252")
+	if err := controller.Reconcile(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+
+	joined := stringifyOVNOps(recorder.Operations())
+	if strings.Count(joined, "--if-exists lr-policy-del nl_lr_prod 300 ip4.src == 10.10.0.0/24") != 1 {
+		t.Fatalf("changed ECMP policy route should not be deleted, should sync nexthops:\n%s", joined)
+	}
+	if !strings.Contains(joined, "sync-policy-route-nexthops prod centralized-egress 300") {
+		t.Fatalf("changed ECMP policy route convergence operation missing sync op:\n%s", joined)
+	}
+	if !strings.Contains(joined, "[\"10.10.0.252\",\"10.10.0.254\"]") {
+		t.Fatalf("ECMP policy route nexthops set should target 252 and 254:\n%s", joined)
 	}
 }
 
@@ -902,20 +1218,16 @@ func TestBackendCleanupConvergesChangedStaticRoute(t *testing.T) {
 	}
 
 	joined := stringifyOVNOps(recorder.Operations())
-	for _, expected := range []string{
-		"--if-exists lr-route-del nl_lr_prod 0.0.0.0/0",
-		"--may-exist lr-route-add nl_lr_prod 0.0.0.0/0 10.10.0.253",
-	} {
-		if !strings.Contains(joined, expected) {
-			t.Fatalf("static route convergence operation missing %q:\n%s", expected, joined)
-		}
+	expected := "--may-exist lr-route-add nl_lr_prod 0.0.0.0/0 10.10.0.253"
+	if !strings.Contains(joined, expected) {
+		t.Fatalf("static route convergence operation missing %q:\n%s", expected, joined)
 	}
-	if strings.Count(joined, "--if-exists lr-route-del nl_lr_prod 0.0.0.0/0") != 1 {
-		t.Fatalf("changed static route should clear the managed destination once:\n%s", joined)
+	if strings.Contains(joined, "--if-exists lr-route-del nl_lr_prod 0.0.0.0/0") {
+		t.Fatalf("single static route change should use lr-route-add --may-exist update without deleting the destination:\n%s", joined)
 	}
 }
 
-func TestBackendCleanupConvergesChangedStaticRouteToECMP(t *testing.T) {
+func TestBackendCleanupConvergesChangedStaticRouteToECMPByReplacingAll(t *testing.T) {
 	recorder := ovn.NewRecorderExecutor()
 	backend := ovn.NewBackend(recorder)
 	first := controlStateWithEndpoint("pod-a")
@@ -943,14 +1255,90 @@ func TestBackendCleanupConvergesChangedStaticRouteToECMP(t *testing.T) {
 	}
 
 	joined := stringifyOVNOps(recorder.Operations())
+	if strings.Contains(joined, "--if-exists lr-route-del nl_lr_prod 0.0.0.0/0\n") {
+		t.Fatalf("changing single route to ECMP should prefer additive conversion, not full destination delete:\n%s", joined)
+	}
 	for _, expected := range []string{
-		"--if-exists lr-route-del nl_lr_prod 0.0.0.0/0",
 		"--may-exist --ecmp lr-route-add nl_lr_prod 0.0.0.0/0 10.10.0.253",
 		"--may-exist --ecmp lr-route-add nl_lr_prod 0.0.0.0/0 10.10.0.254",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("static ECMP convergence operation missing %q:\n%s", expected, joined)
 		}
+	}
+}
+
+func TestBackendCleanupConvergesSingleRouteToECMPByReplacingHop(t *testing.T) {
+	recorder := ovn.NewRecorderExecutor()
+	backend := ovn.NewBackend(recorder)
+	first := controlStateWithEndpoint("pod-a")
+	first.RouteTables = []model.RouteTable{{
+		Name: "main",
+		VPC:  "prod",
+		Routes: []model.Route{{
+			Destination: netip.MustParsePrefix("0.0.0.0/0"),
+			NextHops:    []netip.Addr{netip.MustParseAddr("10.10.0.254")},
+		}},
+	}}
+	controller := control.NewController(backend, control.NewMemoryBackend())
+	if err := controller.Reconcile(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+
+	second := first
+	second.RouteTables[0].Routes[0].NextHops = []netip.Addr{
+		netip.MustParseAddr("10.10.0.252"),
+	}
+	if err := controller.Reconcile(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+
+	joined := stringifyOVNOps(recorder.Operations())
+	expected := "--may-exist lr-route-add nl_lr_prod 0.0.0.0/0 10.10.0.252"
+	if !strings.Contains(joined, expected) {
+		t.Fatalf("single-to-single replacement route conversion missing %q:\n%s", expected, joined)
+	}
+	if strings.Contains(joined, "--if-exists lr-route-del nl_lr_prod 0.0.0.0/0") {
+		t.Fatalf("single-to-single replacement should not delete the destination before update:\n%s", joined)
+	}
+}
+
+func TestBackendCleanupConvergesECMPRouteToSingleByRemovingStaleNexthop(t *testing.T) {
+	recorder := ovn.NewRecorderExecutor()
+	backend := ovn.NewBackend(recorder)
+	first := controlStateWithEndpoint("pod-a")
+	first.RouteTables = []model.RouteTable{{
+		Name: "main",
+		VPC:  "prod",
+		Routes: []model.Route{{
+			Destination: netip.MustParsePrefix("0.0.0.0/0"),
+			NextHops: []netip.Addr{
+				netip.MustParseAddr("10.10.0.252"),
+				netip.MustParseAddr("10.10.0.253"),
+			},
+		}},
+	}}
+	controller := control.NewController(backend, control.NewMemoryBackend())
+	if err := controller.Reconcile(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+
+	second := first
+	second.RouteTables[0].Routes[0].NextHops = []netip.Addr{netip.MustParseAddr("10.10.0.253")}
+	if err := controller.Reconcile(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+
+	joined := stringifyOVNOps(recorder.Operations())
+	expectedDelete := "--if-exists lr-route-del nl_lr_prod 0.0.0.0/0 10.10.0.252"
+	if !strings.Contains(joined, expectedDelete) {
+		t.Fatalf("stale nexthop delete operation missing %q:\n%s", expectedDelete, joined)
+	}
+	if strings.Contains(joined, "--if-exists lr-route-del nl_lr_prod 0.0.0.0/0\n") {
+		t.Fatalf("ecmp to single route converge should not delete destination once stale nexthops can be removed:\n%s", joined)
+	}
+	if strings.Count(joined, expectedDelete) != 1 {
+		t.Fatalf("stale nexthop delete count = %d, want 1:\n%s", strings.Count(joined, expectedDelete), joined)
 	}
 }
 
@@ -1027,6 +1415,206 @@ func TestBackendCleanupRemovesOnlyStaleECMPNextHop(t *testing.T) {
 	}
 	if strings.Contains(joined, "--if-exists lr-route-del nl_lr_prod 0.0.0.0/0\n") {
 		t.Fatalf("removing one ECMP next hop should not delete the whole destination:\n%s", joined)
+	}
+}
+
+func TestBackendDoesNotReapplyUnchangedStaticRouteTable(t *testing.T) {
+	recorder := ovn.NewRecorderExecutor()
+	backend := ovn.NewBackend(recorder)
+	state := controlStateWithEndpoint("pod-a")
+	state.RouteTables = []model.RouteTable{{
+		Name: "main",
+		VPC:  "prod",
+		Routes: []model.Route{{
+			Destination: netip.MustParsePrefix("0.0.0.0/0"),
+			NextHops:    []netip.Addr{netip.MustParseAddr("10.10.0.254")},
+		}},
+	}}
+	controller := control.NewController(backend, control.NewMemoryBackend())
+	if err := controller.Reconcile(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+	baseline := len(recorder.Operations())
+	if baseline == 0 {
+		t.Fatal("first reconcile should emit operations")
+	}
+
+	if err := controller.Reconcile(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+	joined := stringifyOVNOps(recorder.Operations()[baseline:])
+	forbidden := []string{
+		"--may-exist lr-route-add nl_lr_prod 0.0.0.0/0 10.10.0.254",
+		"--if-exists lr-route-del nl_lr_prod 0.0.0.0/0",
+		"--if-exists lr-route-del nl_lr_prod 0.0.0.0/0 10.10.0.254",
+	}
+	for _, op := range forbidden {
+		if strings.Contains(joined, op) {
+			t.Fatalf("unchanged static route table should not be replayed, found: %q\n%s", op, joined)
+		}
+	}
+}
+
+func TestBackendDoesNotReapplyUnchangedECMPStaticRouteTable(t *testing.T) {
+	recorder := ovn.NewRecorderExecutor()
+	backend := ovn.NewBackend(recorder)
+	state := controlStateWithEndpoint("pod-a")
+	state.RouteTables = []model.RouteTable{{
+		Name: "main",
+		VPC:  "prod",
+		Routes: []model.Route{{
+			Destination: netip.MustParsePrefix("0.0.0.0/0"),
+			NextHops: []netip.Addr{
+				netip.MustParseAddr("10.10.0.252"),
+				netip.MustParseAddr("10.10.0.253"),
+			},
+		}},
+	}}
+	controller := control.NewController(backend, control.NewMemoryBackend())
+	if err := controller.Reconcile(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+	baseline := len(recorder.Operations())
+
+	if err := controller.Reconcile(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+	joined := stringifyOVNOps(recorder.Operations()[baseline:])
+	forbidden := []string{
+		"--may-exist --ecmp lr-route-add nl_lr_prod 0.0.0.0/0 10.10.0.252",
+		"--may-exist --ecmp lr-route-add nl_lr_prod 0.0.0.0/0 10.10.0.253",
+		"--if-exists lr-route-del nl_lr_prod 0.0.0.0/0",
+	}
+	for _, op := range forbidden {
+		if strings.Contains(joined, op) {
+			t.Fatalf("unchanged ECMP static route table should not be replayed, found: %q\n%s", op, joined)
+		}
+	}
+}
+
+func TestBackendDoesNotReapplyReorderedECMPNextHops(t *testing.T) {
+	recorder := ovn.NewRecorderExecutor()
+	backend := ovn.NewBackend(recorder)
+	state := controlStateWithEndpoint("pod-a")
+	state.RouteTables = []model.RouteTable{{
+		Name: "main",
+		VPC:  "prod",
+		Routes: []model.Route{{
+			Destination: netip.MustParsePrefix("0.0.0.0/0"),
+			NextHops: []netip.Addr{
+				netip.MustParseAddr("10.10.0.252"),
+				netip.MustParseAddr("10.10.0.253"),
+			},
+		}},
+	}}
+	controller := control.NewController(backend, control.NewMemoryBackend())
+	if err := controller.Reconcile(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+	baseline := len(recorder.Operations())
+	if baseline == 0 {
+		t.Fatal("first reconcile should emit operations")
+	}
+
+	state.RouteTables[0].Routes[0].NextHops = []netip.Addr{
+		netip.MustParseAddr("10.10.0.253"),
+		netip.MustParseAddr("10.10.0.252"),
+	}
+	if err := controller.Reconcile(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+	joined := stringifyOVNOps(recorder.Operations()[baseline:])
+	forbidden := []string{
+		"--may-exist --ecmp lr-route-add nl_lr_prod 0.0.0.0/0 10.10.0.252",
+		"--may-exist --ecmp lr-route-add nl_lr_prod 0.0.0.0/0 10.10.0.253",
+		"--if-exists lr-route-del nl_lr_prod 0.0.0.0/0 ",
+		"--if-exists lr-route-del nl_lr_prod 0.0.0.0/0 10.10.0.252",
+		"--if-exists lr-route-del nl_lr_prod 0.0.0.0/0 10.10.0.253",
+	}
+	for _, op := range forbidden {
+		if strings.Contains(joined, op) {
+			t.Fatalf("reordered ECMP next hops should be treated unchanged, found: %q\n%s", op, joined)
+		}
+	}
+}
+
+func TestBackendDoesNotReapplyUnchangedIPv6ECMPStaticRouteTable(t *testing.T) {
+	recorder := ovn.NewRecorderExecutor()
+	backend := ovn.NewBackend(recorder)
+	state := controlStateWithEndpoint("pod-a")
+	state.Subnets = append(state.Subnets, model.Subnet{
+		Name:    "vip6",
+		VPC:     "prod",
+		CIDR:    netip.MustParsePrefix("2001:db8::/64"),
+		Gateway: netip.MustParseAddr("2001:db8::1"),
+	})
+	state.RouteTables = []model.RouteTable{{
+		Name: "main",
+		VPC:  "prod",
+		Routes: []model.Route{{
+			Destination: netip.MustParsePrefix("2001:db8::/64"),
+			NextHops: []netip.Addr{
+				netip.MustParseAddr("2001:db8::252"),
+				netip.MustParseAddr("2001:db8::253"),
+			},
+		}},
+	}}
+	controller := control.NewController(backend, control.NewMemoryBackend())
+	if err := controller.Reconcile(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+	baseline := len(recorder.Operations())
+	if baseline == 0 {
+		t.Fatal("first reconcile should emit operations")
+	}
+
+	if err := controller.Reconcile(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+	joined := stringifyOVNOps(recorder.Operations()[baseline:])
+	forbidden := []string{
+		"--may-exist --ecmp lr-route-add nl_lr_prod 2001:db8::/64 2001:db8::252",
+		"--may-exist --ecmp lr-route-add nl_lr_prod 2001:db8::/64 2001:db8::253",
+		"--if-exists lr-route-del nl_lr_prod 2001:db8::/64",
+	}
+	for _, op := range forbidden {
+		if strings.Contains(joined, op) {
+			t.Fatalf("unchanged IPv6 ECMP static route table should not be replayed, found: %q\n%s", op, joined)
+		}
+	}
+}
+
+func TestBackendDeletesRoutesThatAreRemovedFromRouteTable(t *testing.T) {
+	recorder := ovn.NewRecorderExecutor()
+	backend := ovn.NewBackend(recorder)
+	first := controlStateWithEndpoint("pod-a")
+	first.RouteTables = []model.RouteTable{{
+		Name: "main",
+		VPC:  "prod",
+		Routes: []model.Route{{
+			Destination: netip.MustParsePrefix("0.0.0.0/0"),
+			NextHops:    []netip.Addr{netip.MustParseAddr("10.10.0.254")},
+		}},
+	}}
+	controller := control.NewController(backend, control.NewMemoryBackend())
+	if err := controller.Reconcile(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+
+	second := first
+	second.RouteTables = nil
+	if err := controller.Reconcile(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+
+	joined := stringifyOVNOps(recorder.Operations())
+	expected := "--if-exists lr-route-del nl_lr_prod 0.0.0.0/0"
+	if !strings.Contains(joined, expected) {
+		t.Fatalf("route removal should delete stale route entry, expected %q in operations\n%s", expected, joined)
+	}
+
+	if got := strings.Count(joined, expected); got != 1 {
+		t.Fatalf("route removal should emit one stale delete, got %d", got)
 	}
 }
 
@@ -1170,6 +1758,206 @@ func TestNBCTLExecutorSplitsNATAddAfterDelete(t *testing.T) {
 	}
 }
 
+func TestNBCTLExecutorFallsBackFromRangeToPortColumns(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args")
+	binary := filepath.Join(dir, "ovn-nbctl")
+	script := fmt.Sprintf(`#!/bin/sh
+printf '%%s\n' '---' >> %q
+printf '%%s\n' "$@" >> %q
+if printf '%%s\n' "$*" | grep -q 'logical_port_range'; then
+	echo "ovn-nbctl: Error: NAT does not contain a column whose name matches \"logical_port_range\"" >&2
+	exit 1
+fi
+`, argsFile, argsFile)
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	executor := ovn.NewNBCTLExecutor(binary, "--db=unix:/tmp/ovnnb.sock")
+	err := executor.Execute(context.Background(), []ovn.Operation{{
+		Command: "create",
+		Flags:   []string{"--id=nat-ssh"},
+		Args: []string{
+			"NAT",
+			"type=dnat",
+			"external_ip=198.51.100.40",
+			"logical_ip=10.10.0.12",
+			"external_port_range=2222",
+			"logical_port_range=2222",
+			"protocol=tcp",
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := strings.Split(strings.TrimPrefix(strings.TrimSpace(string(raw)), "---\n"), "\n---\n")
+	if len(calls) != 2 {
+		t.Fatalf("calls = %d, want first failed attempt plus fallback retry:\n%s", len(calls), raw)
+	}
+	if !strings.Contains(calls[0], "logical_port_range=2222") {
+		t.Fatalf("first call should use managed NAT range columns:\n%s", calls[0])
+	}
+	if strings.Contains(calls[0], "logical_port=") {
+		t.Fatalf("first call must not already use fallback names:\n%s", calls[0])
+	}
+	if !strings.Contains(calls[1], "external_port=2222") ||
+		!strings.Contains(calls[1], "logical_port=2222") {
+		t.Fatalf("retry call should fall back to legacy NAT column names:\n%s", calls[1])
+	}
+	if strings.Contains(calls[1], "external_port_range=2222") || strings.Contains(calls[1], "logical_port_range=2222") {
+		t.Fatalf("retry call should not contain range column names:\n%s", calls[1])
+	}
+}
+
+func TestNBCTLExecutorFallsBackWhenProtocolIsUnsupported(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args")
+	binary := filepath.Join(dir, "ovn-nbctl")
+	script := fmt.Sprintf(`#!/bin/sh
+printf '%%s\n' '---' >> %q
+printf '%%s\n' "$@" >> %q
+if printf '%%s\n' "$*" | grep -q 'logical_port_range'; then
+	echo "ovn-nbctl: Error: NAT does not contain a column whose name matches \"logical_port_range\"" >&2
+	exit 1
+fi
+if printf '%%s\n' "$*" | grep -q 'protocol='; then
+	echo "ovn-nbctl: Error: column \"protocol\" not found in table NAT" >&2
+	exit 1
+fi
+`, argsFile, argsFile)
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	executor := ovn.NewNBCTLExecutor(binary, "--db=unix:/tmp/ovnnb.sock")
+	err := executor.Execute(context.Background(), []ovn.Operation{{
+		Command: "create",
+		Flags:   []string{"--id=nat-ssh"},
+		Args: []string{
+			"NAT",
+			"type=dnat",
+			"external_ip=198.51.100.40",
+			"logical_ip=10.10.0.12",
+			"external_port_range=2222",
+			"logical_port_range=2222",
+			"protocol=tcp",
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := strings.Split(strings.TrimPrefix(strings.TrimSpace(string(raw)), "---\n"), "\n---\n")
+	if len(calls) != 3 {
+		t.Fatalf("calls = %d, want range fallback then protocol fallback:\n%s", len(calls), raw)
+	}
+	if !strings.Contains(calls[1], "external_port=2222") ||
+		!strings.Contains(calls[1], "logical_port=2222") {
+		t.Fatalf("first retry should convert ranges:\n%s", calls[1])
+	}
+	if !strings.Contains(calls[2], "external_port=2222") ||
+		!strings.Contains(calls[2], "logical_port=2222") {
+		t.Fatalf("second retry should keep translated ports:\n%s", calls[2])
+	}
+	if strings.Contains(calls[2], "protocol=") {
+		t.Fatalf("second retry should drop unsupported protocol:\n%s", calls[2])
+	}
+}
+
+func TestNBCTLExecutorRetriesTransientErrors(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args")
+	stateFile := filepath.Join(dir, "state")
+	binary := filepath.Join(dir, "ovn-nbctl")
+	script := fmt.Sprintf(`#!/bin/sh
+state="%s"
+attempt=0
+if [ -f "$state" ]; then
+  attempt=$(cat "$state")
+fi
+attempt=$((attempt + 1))
+echo "$attempt" > "$state"
+printf '%%s\n' "$attempt" >> %q
+printf '%%s\n' "$@" >> %q
+if [ "$attempt" -eq 1 ]; then
+  echo "ovn-nbctl: Error: database is busy" >&2
+  exit 1
+fi
+`, stateFile, argsFile, argsFile)
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	executor := ovn.NewNBCTLExecutor(binary, "--db=unix:/tmp/ovnnb.sock")
+	executor.Timeout = 5 * time.Second
+	executor.RetryPolicy = ovn.NBCTLRetryPolicy{Attempts: 2, InitialBackoff: 1 * time.Millisecond, MaxBackoff: 1 * time.Millisecond}
+	err := executor.Execute(context.Background(), []ovn.Operation{{Command: "show"}})
+	if err != nil {
+		t.Fatalf("execute returned error: %v", err)
+	}
+	raw, err := os.ReadFile(stateFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(raw)) != "2" {
+		t.Fatalf("retry attempts did not run correctly: %s", raw)
+	}
+	args, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := strings.Split(strings.TrimSpace(string(args)), "\n")
+	if len(calls) != 6 {
+		t.Fatalf("commands = %d, want 2 attempts with 3 output lines each (attempt + 2 args): %v", len(calls), calls)
+	}
+}
+
+func TestNBCTLExecutorStopsRetryingOnNonRetryableErrors(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args")
+	stateFile := filepath.Join(dir, "state")
+	binary := filepath.Join(dir, "ovn-nbctl")
+	script := fmt.Sprintf(`#!/bin/sh
+state="%s"
+attempt=0
+if [ -f "$state" ]; then
+  attempt=$(cat "$state")
+fi
+attempt=$((attempt + 1))
+echo "$attempt" > "$state"
+printf '%%s\n' "$attempt" >> %q
+printf '%%s\n' "$@" >> %q
+echo "ovn-nbctl: Error: table Route already has field no such column" >&2
+exit 1
+`, stateFile, argsFile, argsFile)
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	executor := ovn.NewNBCTLExecutor(binary, "--db=unix:/tmp/ovnnb.sock")
+	executor.Timeout = 5 * time.Second
+	executor.RetryPolicy = ovn.NBCTLRetryPolicy{Attempts: 3, InitialBackoff: 1 * time.Millisecond, MaxBackoff: 1 * time.Millisecond}
+	err := executor.Execute(context.Background(), []ovn.Operation{{Command: "show"}})
+	if err == nil {
+		t.Fatal("expected non-retryable error")
+	}
+	state, readErr := os.ReadFile(stateFile)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if strings.TrimSpace(string(state)) != "1" {
+		t.Fatalf("expected command to run once, got state: %q", strings.TrimSpace(string(state)))
+	}
+}
+
 func TestNBCTLExecutorDestroysRecordsMatchedByExternalIDs(t *testing.T) {
 	dir := t.TempDir()
 	argsFile := filepath.Join(dir, "args")
@@ -1188,7 +1976,7 @@ esac
 	executor := ovn.NewNBCTLExecutor(binary, "--db=unix:/tmp/ovnnb.sock")
 	err := executor.Execute(context.Background(), []ovn.Operation{
 		{Command: "set", Args: []string{"logical_switch_port", "nl_lp_prod_pod-a", "dhcpv4_options=[]"}},
-		{Command: "gc-dhcp-options", Args: []string{"pod-a", "prod"}},
+		{Command: "gc-dhcp-options", Args: []string{endpointExternalID("prod", "pod-a"), "prod"}},
 		{Command: "lsp-del", Flags: []string{"--if-exists"}, Args: []string{"nl_lp_prod_pod-a"}},
 	})
 	if err != nil {
@@ -1206,7 +1994,7 @@ esac
 		t.Fatalf("first call should clear references before GC:\n%s", calls[0])
 	}
 	if !strings.Contains(calls[1], "--columns=_uuid\nfind\nDHCP_Options") ||
-		!strings.Contains(calls[1], "external_ids:netloom_endpoint=pod-a") ||
+		!strings.Contains(calls[1], "external_ids:netloom_endpoint="+endpointExternalID("prod", "pod-a")) ||
 		!strings.Contains(calls[1], "external_ids:netloom_vpc=prod") {
 		t.Fatalf("second call should find DHCP options by ownership:\n%s", calls[1])
 	}
@@ -1216,6 +2004,99 @@ esac
 	}
 	if !strings.Contains(calls[4], "lsp-del\nnl_lp_prod_pod-a") {
 		t.Fatalf("final call should delete logical switch port:\n%s", calls[4])
+	}
+}
+
+func TestNBCTLExecutorDestroysOnlyStaleManagedDHCPOptions(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args")
+	binary := filepath.Join(dir, "ovn-nbctl")
+	keepEndpoint := endpointExternalID("prod", "pod-a")
+	script := fmt.Sprintf(`#!/bin/sh
+printf '%%s\n' '---' >> %q
+printf '%%s\n' "$@" >> %q
+case "$*" in
+  *"--columns=_uuid,external_ids find DHCP_Options"*)
+    printf 'dhcp-keep,{netloom_owner=netloom netloom_endpoint=%s netloom_vpc=prod}\n'
+    printf 'dhcp-other-vpc,{netloom_owner=netloom netloom_endpoint=%s netloom_vpc=dev}\n'
+    printf 'dhcp-stale,{netloom_owner=netloom netloom_endpoint=stale netloom_vpc=prod}\n'
+    printf 'dhcp-missing,{netloom_owner=netloom}\n'
+    ;;
+esac
+`, argsFile, argsFile, keepEndpoint, keepEndpoint)
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	executor := ovn.NewNBCTLExecutor(binary, "--db=unix:/tmp/ovnnb.sock")
+	err := executor.Execute(context.Background(), []ovn.Operation{
+		{Command: "gc-stale-dhcp-options", Args: []string{keepEndpoint, "prod"}},
+		{Command: "set", Args: []string{"logical_switch_port", "nl_lp_prod_pod-a", "dhcpv4_options=[]"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := strings.Split(strings.TrimPrefix(strings.TrimSpace(string(raw)), "---\n"), "\n---\n")
+	if len(calls) != 4 {
+		t.Fatalf("calls = %d, want find, two destroys, trailing set:\n%s", len(calls), raw)
+	}
+	if !strings.Contains(calls[0], "--columns=_uuid,external_ids\nfind\nDHCP_Options") ||
+		!strings.Contains(calls[0], "external_ids:netloom_owner=netloom") {
+		t.Fatalf("first call should find managed DHCP options with external IDs:\n%s", calls[0])
+	}
+	if !strings.Contains(calls[1], "destroy\nDHCP_Options\ndhcp-other-vpc") ||
+		!strings.Contains(calls[2], "destroy\nDHCP_Options\ndhcp-stale") {
+		t.Fatalf("other-vpc same-endpoint and stale managed DHCP options should be destroyed:\n%s", raw)
+	}
+	if strings.Contains(string(raw), "destroy\nDHCP_Options\ndhcp-keep") {
+		t.Fatalf("desired managed DHCP options must not be destroyed:\n%s", raw)
+	}
+	if strings.Contains(string(raw), "destroy\nDHCP_Options\ndhcp-missing") {
+		t.Fatalf("managed DHCP options without endpoint identity must not be destroyed:\n%s", raw)
+	}
+	if !strings.Contains(calls[3], "set\nlogical_switch_port\nnl_lp_prod_pod-a") {
+		t.Fatalf("trailing regular operation should still execute:\n%s", calls[3])
+	}
+}
+
+func TestNBCTLExecutorDestroysDuplicateManagedDHCPOptionsEvenWhenKept(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args")
+	binary := filepath.Join(dir, "ovn-nbctl")
+	keepEndpoint := endpointExternalID("prod", "pod-a")
+	script := fmt.Sprintf(`#!/bin/sh
+printf '%%s\n' '---' >> %q
+printf '%%s\n' "$@" >> %q
+case "$*" in
+  *"--columns=_uuid,external_ids find DHCP_Options"*)
+    printf 'dhcp-keep-a,{netloom_owner=netloom netloom_endpoint=%s netloom_vpc=prod}\n'
+    printf 'dhcp-keep-b,{netloom_owner=netloom netloom_endpoint=%s netloom_vpc=prod}\n'
+    ;;
+esac
+`, argsFile, argsFile, keepEndpoint, keepEndpoint)
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	executor := ovn.NewNBCTLExecutor(binary, "--db=unix:/tmp/ovnnb.sock")
+	err := executor.Execute(context.Background(), []ovn.Operation{{Command: "gc-stale-dhcp-options", Args: []string{keepEndpoint, "prod"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	if strings.Contains(text, "destroy\nDHCP_Options\ndhcp-keep-a") {
+		t.Fatalf("first desired DHCP options row should be retained:\n%s", raw)
+	}
+	if !strings.Contains(text, "destroy\nDHCP_Options\ndhcp-keep-b") {
+		t.Fatalf("duplicate desired DHCP options row should be destroyed:\n%s", raw)
 	}
 }
 
@@ -1289,7 +2170,7 @@ esac
 			"nl_lb_prod_web_tcp",
 			"web",
 			"prod",
-			"vip=10.96.0.10:80",
+			"vip=\"10.96.0.10:80\"",
 			"options:interval=5",
 			"options:timeout=20",
 			"options:success_count=3",
@@ -1349,7 +2230,7 @@ esac
 			"nl_lb_prod_web_tcp",
 			"web",
 			"prod",
-			"vip=10.96.0.10:80",
+			"vip=\"10.96.0.10:80\"",
 			"options:interval=5",
 			"options:timeout=20",
 			"options:success_count=3",
@@ -1367,15 +2248,13 @@ esac
 		t.Fatal(err)
 	}
 	calls := strings.Split(strings.TrimPrefix(strings.TrimSpace(string(raw)), "---\n"), "\n---\n")
-	if len(calls) != 3 {
-		t.Fatalf("calls = %d, want find, create, add:\n%s", len(calls), raw)
+	if len(calls) != 2 {
+		t.Fatalf("calls = %d, want find and create+add:\n%s", len(calls), raw)
 	}
 	if !strings.Contains(calls[1], "create\nLoad_Balancer_Health_Check") ||
-		!strings.Contains(calls[1], "vip=10.96.0.10:80") {
-		t.Fatalf("second call should create missing health check:\n%s", calls[1])
-	}
-	if !strings.Contains(calls[2], "add\nload_balancer\nnl_lb_prod_web_tcp\nhealth_check\nhc-new") {
-		t.Fatalf("final call should attach created health check:\n%s", calls[2])
+		!strings.Contains(calls[1], "vip=\"10.96.0.10:80\"") ||
+		!strings.Contains(calls[1], "--\nadd\nload_balancer\nnl_lb_prod_web_tcp\nhealth_check\n@netloom_lbhc") {
+		t.Fatalf("second call should create and attach missing health check in one transaction:\n%s", calls[1])
 	}
 }
 
@@ -1448,19 +2327,21 @@ esac
 		t.Fatal(err)
 	}
 	calls := strings.Split(strings.TrimPrefix(strings.TrimSpace(string(raw)), "---\n"), "\n---\n")
-	if len(calls) != 4 {
-		t.Fatalf("calls = %d, want find, two destroys, trailing set:\n%s", len(calls), raw)
+	if len(calls) != 6 {
+		t.Fatalf("calls = %d, want find, two removes+destroys, trailing set:\n%s", len(calls), raw)
 	}
 	if !strings.Contains(calls[0], "--columns=_uuid\nfind\nNAT") ||
 		!strings.Contains(calls[0], "external_ids:netloom_nat=web") ||
 		!strings.Contains(calls[0], "external_ids:netloom_vpc=prod") {
 		t.Fatalf("first call should find NAT records by ownership:\n%s", calls[0])
 	}
-	if !strings.Contains(calls[1], "destroy\nNAT\nnat-a") ||
-		!strings.Contains(calls[2], "destroy\nNAT\nnat-b") {
+	if !strings.Contains(calls[1], "remove\nlogical_router\nnl_lr_prod\nnat\nnat-a") ||
+		!strings.Contains(calls[2], "destroy\nNAT\nnat-a") ||
+		!strings.Contains(calls[3], "remove\nlogical_router\nnl_lr_prod\nnat\nnat-b") ||
+		!strings.Contains(calls[4], "destroy\nNAT\nnat-b") {
 		t.Fatalf("matching NAT records should be destroyed:\n%s", raw)
 	}
-	if !strings.Contains(calls[3], "set\nlogical_router\nnl_lr_prod") {
+	if !strings.Contains(calls[5], "set\nlogical_router\nnl_lr_prod") {
 		t.Fatalf("trailing regular operation should still execute:\n%s", calls[3])
 	}
 }
@@ -1474,10 +2355,10 @@ printf '%%s\n' '---' >> %q
 printf '%%s\n' "$@" >> %q
 case "$*" in
   *"--columns=_uuid,external_ids find NAT"*)
-    printf 'nat-keep,"{netloom_owner=netloom,netloom_nat=web,netloom_vpc=prod}"\n'
-    printf 'nat-other-vpc,"{netloom_owner=netloom,netloom_nat=web,netloom_vpc=dev}"\n'
-    printf 'nat-stale,"{netloom_owner=netloom,netloom_nat=old,netloom_vpc=prod}"\n'
-    printf 'nat-missing,"{netloom_owner=netloom}"\n'
+    printf 'nat-keep,{netloom_owner=netloom netloom_nat=web netloom_vpc=prod}\n'
+    printf 'nat-other-vpc,{netloom_owner=netloom netloom_nat=web netloom_vpc=dev}\n'
+    printf 'nat-stale,{netloom_owner=netloom netloom_nat=old netloom_vpc=prod}\n'
+    printf 'nat-missing,{netloom_owner=netloom}\n'
     ;;
 esac
 `, argsFile, argsFile)
@@ -1498,15 +2379,17 @@ esac
 		t.Fatal(err)
 	}
 	calls := strings.Split(strings.TrimPrefix(strings.TrimSpace(string(raw)), "---\n"), "\n---\n")
-	if len(calls) != 4 {
-		t.Fatalf("calls = %d, want find, stale destroy, trailing set:\n%s", len(calls), raw)
+	if len(calls) != 6 {
+		t.Fatalf("calls = %d, want find, stale remove+destroy, trailing set:\n%s", len(calls), raw)
 	}
 	if !strings.Contains(calls[0], "--columns=_uuid,external_ids\nfind\nNAT") ||
 		!strings.Contains(calls[0], "external_ids:netloom_owner=netloom") {
 		t.Fatalf("first call should find managed NAT records with external IDs:\n%s", calls[0])
 	}
-	if !strings.Contains(calls[1], "destroy\nNAT\nnat-other-vpc") ||
-		!strings.Contains(calls[2], "destroy\nNAT\nnat-stale") {
+	if !strings.Contains(calls[1], "remove\nlogical_router\nnl_lr_dev\nnat\nnat-other-vpc") ||
+		!strings.Contains(calls[2], "destroy\nNAT\nnat-other-vpc") ||
+		!strings.Contains(calls[3], "remove\nlogical_router\nnl_lr_prod\nnat\nnat-stale") ||
+		!strings.Contains(calls[4], "destroy\nNAT\nnat-stale") {
 		t.Fatalf("other-vpc same-name and stale managed NAT should be destroyed:\n%s", raw)
 	}
 	if strings.Contains(string(raw), "destroy\nNAT\nnat-keep") {
@@ -1515,8 +2398,100 @@ esac
 	if strings.Contains(string(raw), "destroy\nNAT\nnat-missing") {
 		t.Fatalf("managed NAT without netloom_nat identity must not be destroyed:\n%s", raw)
 	}
-	if !strings.Contains(calls[3], "set\nlogical_router\nnl_lr_prod") {
+	if strings.Contains(string(raw), "remove\nlogical_router\nnl_lr_prod\nnat\nnat-keep") {
+		t.Fatalf("desired managed NAT must not be detached:\n%s", raw)
+	}
+	if strings.Contains(string(raw), "remove\nlogical_router\nnl_lr_prod\nnat\nnat-missing") {
+		t.Fatalf("managed NAT without identity must not be detached:\n%s", raw)
+	}
+	if !strings.Contains(calls[5], "set\nlogical_router\nnl_lr_prod") {
 		t.Fatalf("trailing regular operation should still execute:\n%s", calls[3])
+	}
+}
+
+func TestNBCTLExecutorDestroysDuplicateManagedNATRulesEvenWhenKept(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args")
+	binary := filepath.Join(dir, "ovn-nbctl")
+	script := fmt.Sprintf(`#!/bin/sh
+printf '%%s\n' '---' >> %q
+printf '%%s\n' "$@" >> %q
+case "$*" in
+  *"--columns=_uuid,external_ids find NAT"*)
+    printf 'nat-keep-a,{netloom_owner=netloom netloom_nat=web netloom_vpc=prod}\n'
+    printf 'nat-keep-b,{netloom_owner=netloom netloom_nat=web netloom_vpc=prod}\n'
+    ;;
+esac
+`, argsFile, argsFile)
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	executor := ovn.NewNBCTLExecutor(binary, "--db=unix:/tmp/ovnnb.sock")
+	err := executor.Execute(context.Background(), []ovn.Operation{{Command: "gc-stale-nat-rules", Args: []string{"prod", "web"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	if strings.Contains(text, "destroy\nNAT\nnat-keep-a") {
+		t.Fatalf("first desired managed NAT should be retained:\n%s", raw)
+	}
+	if !strings.Contains(text, "remove\nlogical_router\nnl_lr_prod\nnat\nnat-keep-b") ||
+		!strings.Contains(text, "destroy\nNAT\nnat-keep-b") {
+		t.Fatalf("duplicate desired managed NAT should be removed and destroyed:\n%s", raw)
+	}
+}
+
+func TestNBCTLExecutorTagsPlainNATRulesAndDestroysDuplicates(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args")
+	binary := filepath.Join(dir, "ovn-nbctl")
+	script := fmt.Sprintf(`#!/bin/sh
+printf '%%s\n' '---' >> %q
+printf '%%s\n' "$@" >> %q
+case "$*" in
+  *"find NAT type=snat external_ip=198.51.100.10 logical_ip=10.10.0.0/24"*) printf 'nat-a\nnat-b\n' ;;
+esac
+`, argsFile, argsFile)
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	executor := ovn.NewNBCTLExecutor(binary, "--db=unix:/tmp/ovnnb.sock")
+	err := executor.Execute(context.Background(), []ovn.Operation{{
+		Command: "tag-nat-rule",
+		Args:    []string{"shared-egress", "prod", "snat", "198.51.100.10", "10.10.0.0/24"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := strings.Split(strings.TrimPrefix(strings.TrimSpace(string(raw)), "---\n"), "\n---\n")
+	if len(calls) != 4 {
+		t.Fatalf("calls = %d, want find, set, duplicate remove+destroy:\n%s", len(calls), raw)
+	}
+	if !strings.Contains(calls[0], "--columns=_uuid\nfind\nNAT") ||
+		!strings.Contains(calls[0], "type=snat") ||
+		!strings.Contains(calls[0], "external_ip=198.51.100.10") ||
+		!strings.Contains(calls[0], "logical_ip=10.10.0.0/24") {
+		t.Fatalf("first call should find plain NAT by OVN identity:\n%s", calls[0])
+	}
+	if !strings.Contains(calls[1], "set\nNAT\nnat-a") ||
+		!strings.Contains(calls[1], "external_ids:netloom_owner=netloom") ||
+		!strings.Contains(calls[1], "external_ids:netloom_nat=shared-egress") ||
+		!strings.Contains(calls[1], "external_ids:netloom_vpc=prod") {
+		t.Fatalf("canonical plain NAT should be tagged:\n%s", calls[1])
+	}
+	if !strings.Contains(calls[2], "remove\nlogical_router\nnl_lr_prod\nnat\nnat-b") ||
+		!strings.Contains(calls[3], "destroy\nNAT\nnat-b") {
+		t.Fatalf("duplicate plain NAT should be removed and destroyed:\n%s", raw)
 	}
 }
 
@@ -1571,6 +2546,165 @@ esac
 	}
 }
 
+func TestNBCTLExecutorTagsOnlyOneMatchingPolicyRouteAndDestroysDuplicates(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args")
+	binary := filepath.Join(dir, "ovn-nbctl")
+	script := fmt.Sprintf(`#!/bin/sh
+printf '%%s\n' '---' >> %q
+printf '%%s\n' "$@" >> %q
+case "$*" in
+  *"get logical_router nl_lr_prod policies"*) printf '[policy-a, policy-b]\n' ;;
+  *"get Logical_Router_Policy policy-a priority"*) printf '100\n' ;;
+  *"get Logical_Router_Policy policy-a match"*) printf '"ip4.src == 10.10.0.0/24"\n' ;;
+  *"get Logical_Router_Policy policy-b priority"*) printf '100\n' ;;
+  *"get Logical_Router_Policy policy-b match"*) printf '"ip4.src == 10.10.0.0/24"\n' ;;
+esac
+`, argsFile, argsFile)
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	executor := ovn.NewNBCTLExecutor(binary, "--db=unix:/tmp/ovnnb.sock")
+	err := executor.Execute(context.Background(), []ovn.Operation{{
+		Command: "tag-policy-route",
+		Args:    []string{"prod", "https-via-fw", "100", "ip4.src == 10.10.0.0/24"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	if strings.Count(text, "set\nLogical_Router_Policy\npolicy-a") != 1 {
+		t.Fatalf("expected one canonical tagged policy:\n%s", raw)
+	}
+	if strings.Contains(text, "set\nLogical_Router_Policy\npolicy-b") {
+		t.Fatalf("duplicate matching policy must not also be tagged:\n%s", raw)
+	}
+	if !strings.Contains(text, "remove\nlogical_router\nnl_lr_prod\npolicies\npolicy-b") ||
+		!strings.Contains(text, "destroy\nLogical_Router_Policy\npolicy-b") {
+		t.Fatalf("duplicate matching policy should be removed and destroyed:\n%s", raw)
+	}
+}
+
+func TestNBCTLExecutorSyncsPolicyRouteECMPNexthops(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args")
+	binary := filepath.Join(dir, "ovn-nbctl")
+	script := fmt.Sprintf(`#!/bin/sh
+printf '%%s\n' '---' >> %q
+printf '%%s\n' "$@" >> %q
+case "$*" in
+  *"find Logical_Router_Policy external_ids:netloom_owner=netloom external_ids:netloom_vpc=prod external_ids:netloom_policy_route=https-via-fw"*) printf 'policy-a\npolicy-b\n' ;;
+  *"get Logical_Router_Policy policy-a priority"*) printf '100\n' ;;
+  *"get Logical_Router_Policy policy-a match"*) printf '"ip4.src == 10.10.0.0/24"\n' ;;
+  *"get Logical_Router_Policy policy-b priority"*) printf '200\n' ;;
+  *"get Logical_Router_Policy policy-b match"*) printf '"ip4.src == 10.20.0.0/24"\n' ;;
+esac
+`, argsFile, argsFile)
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	executor := ovn.NewNBCTLExecutor(binary, "--db=unix:/tmp/ovnnb.sock")
+	err := executor.Execute(context.Background(), []ovn.Operation{{
+		Command: "sync-policy-route-nexthops",
+		Args: []string{
+			"prod",
+			"https-via-fw",
+			"100",
+			"ip4.src == 10.10.0.0/24",
+			"[\"10.10.0.252\",\"10.10.0.254\"]",
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := strings.Split(strings.TrimPrefix(strings.TrimSpace(string(raw)), "---\n"), "\n---\n")
+	if len(calls) != 6 {
+		t.Fatalf("calls = %d, want find, identity reads, set, and remaining identity reads:\n%s", len(calls), raw)
+	}
+	if !strings.Contains(calls[0], "--columns=_uuid\nfind\nLogical_Router_Policy") {
+		t.Fatalf("first call should find managed policy UUIDs by identity:\n%s", calls[0])
+	}
+	hasPolicyASet := false
+	hasPolicyBSet := false
+	for _, call := range calls {
+		if strings.Contains(call, "set\nLogical_Router_Policy\npolicy-a") {
+			hasPolicyASet = true
+			if !strings.Contains(call, "nexthops=[\"10.10.0.252\",\"10.10.0.254\"]") {
+				t.Fatalf("matching policy update should include nexthops set:\n%s", call)
+			}
+		}
+		if strings.Contains(call, "set\nLogical_Router_Policy\npolicy-b") {
+			hasPolicyBSet = true
+		}
+	}
+	if !hasPolicyASet {
+		t.Fatalf("final call should update matching ECMP policy nexthops:\n%s", raw)
+	}
+	if hasPolicyBSet {
+		t.Fatalf("non-matching policy must not be updated:\n%s", raw)
+	}
+}
+
+func TestNBCTLExecutorSyncsCanonicalPolicyRouteECMPNexthopsAndDestroysDuplicates(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args")
+	binary := filepath.Join(dir, "ovn-nbctl")
+	script := fmt.Sprintf(`#!/bin/sh
+printf '%%s\n' '---' >> %q
+printf '%%s\n' "$@" >> %q
+case "$*" in
+  *"find Logical_Router_Policy external_ids:netloom_owner=netloom external_ids:netloom_vpc=prod external_ids:netloom_policy_route=https-via-fw"*) printf 'policy-a\npolicy-b\n' ;;
+  *"get Logical_Router_Policy policy-a priority"*) printf '100\n' ;;
+  *"get Logical_Router_Policy policy-a match"*) printf '"ip4.src == 10.10.0.0/24"\n' ;;
+  *"get Logical_Router_Policy policy-b priority"*) printf '100\n' ;;
+  *"get Logical_Router_Policy policy-b match"*) printf '"ip4.src == 10.10.0.0/24"\n' ;;
+esac
+`, argsFile, argsFile)
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	executor := ovn.NewNBCTLExecutor(binary, "--db=unix:/tmp/ovnnb.sock")
+	err := executor.Execute(context.Background(), []ovn.Operation{{
+		Command: "sync-policy-route-nexthops",
+		Args: []string{
+			"prod",
+			"https-via-fw",
+			"100",
+			"ip4.src == 10.10.0.0/24",
+			"[\"10.10.0.252\",\"10.10.0.254\"]",
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	if strings.Count(text, "set\nLogical_Router_Policy\npolicy-a\nnexthops=[\"10.10.0.252\",\"10.10.0.254\"]") != 1 {
+		t.Fatalf("canonical policy should be updated exactly once:\n%s", raw)
+	}
+	if strings.Contains(text, "set\nLogical_Router_Policy\npolicy-b") {
+		t.Fatalf("duplicate matching policy must not also be updated:\n%s", raw)
+	}
+	if !strings.Contains(text, "remove\nlogical_router\nnl_lr_prod\npolicies\npolicy-b") ||
+		!strings.Contains(text, "destroy\nLogical_Router_Policy\npolicy-b") {
+		t.Fatalf("duplicate matching policy should be removed and destroyed:\n%s", raw)
+	}
+}
+
 func TestNBCTLExecutorDestroysOnlyStaleManagedPolicyRoutes(t *testing.T) {
 	dir := t.TempDir()
 	argsFile := filepath.Join(dir, "args")
@@ -1580,9 +2714,9 @@ printf '%%s\n' '---' >> %q
 printf '%%s\n' "$@" >> %q
 case "$*" in
   *"--columns=_uuid,external_ids find Logical_Router_Policy"*)
-    printf 'policy-keep,"{netloom_owner=netloom,netloom_policy_route=https-via-fw,netloom_vpc=prod}"\n'
-    printf 'policy-stale,"{netloom_owner=netloom,netloom_policy_route=old-fw,netloom_vpc=prod}"\n'
-    printf 'policy-missing,"{netloom_owner=netloom,netloom_vpc=prod}"\n'
+    printf 'policy-keep,{netloom_owner=netloom netloom_policy_route=https-via-fw netloom_vpc=prod}\n'
+    printf 'policy-stale,{netloom_owner=netloom netloom_policy_route=old-fw netloom_vpc=prod}\n'
+    printf 'policy-missing,{netloom_owner=netloom netloom_vpc=prod}\n'
     ;;
 esac
 `, argsFile, argsFile)
@@ -1620,6 +2754,43 @@ esac
 	}
 	if !strings.Contains(calls[3], "set\nlogical_router\nnl_lr_prod") {
 		t.Fatalf("trailing regular operation should still execute:\n%s", calls[3])
+	}
+}
+
+func TestNBCTLExecutorDestroysDuplicateManagedPolicyRoutesEvenWhenKept(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args")
+	binary := filepath.Join(dir, "ovn-nbctl")
+	script := fmt.Sprintf(`#!/bin/sh
+printf '%%s\n' '---' >> %q
+printf '%%s\n' "$@" >> %q
+case "$*" in
+  *"--columns=_uuid,external_ids find Logical_Router_Policy"*)
+    printf 'policy-keep-a,{netloom_owner=netloom netloom_policy_route=https-via-fw netloom_vpc=prod}\n'
+    printf 'policy-keep-b,{netloom_owner=netloom netloom_policy_route=https-via-fw netloom_vpc=prod}\n'
+    ;;
+esac
+`, argsFile, argsFile)
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	executor := ovn.NewNBCTLExecutor(binary, "--db=unix:/tmp/ovnnb.sock")
+	err := executor.Execute(context.Background(), []ovn.Operation{{Command: "gc-stale-policy-routes", Args: []string{"prod", "https-via-fw"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	if strings.Contains(text, "destroy\nLogical_Router_Policy\npolicy-keep-a") {
+		t.Fatalf("first desired managed policy should be retained:\n%s", raw)
+	}
+	if !strings.Contains(text, "remove\nlogical_router\nnl_lr_prod\npolicies\npolicy-keep-b") ||
+		!strings.Contains(text, "destroy\nLogical_Router_Policy\npolicy-keep-b") {
+		t.Fatalf("duplicate desired managed policy should be removed and destroyed:\n%s", raw)
 	}
 }
 

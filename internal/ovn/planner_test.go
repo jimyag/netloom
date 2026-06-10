@@ -230,8 +230,8 @@ func TestPlannerScopesLoadBalancerRowsByVPC(t *testing.T) {
 		"--may-exist lr-lb-add nl_lr_dev nl_lb_dev_web_tcp",
 		"--may-exist ls-lb-add nl_ls_prod_apps nl_lb_prod_web_tcp",
 		"--may-exist ls-lb-add nl_ls_dev_apps-dev nl_lb_dev_web_tcp",
-		"ensure-load-balancer-health-check nl_lb_prod_web_tcp web prod vip=10.96.0.10:80",
-		"ensure-load-balancer-health-check nl_lb_dev_web_tcp web dev vip=10.97.0.10:80",
+		"ensure-load-balancer-health-check nl_lb_prod_web_tcp web prod vip=\"10.96.0.10:80\"",
+		"ensure-load-balancer-health-check nl_lb_dev_web_tcp web dev vip=\"10.97.0.10:80\"",
 		"gc-stale-load-balancer-health-checks web prod 10.96.0.10:80",
 		"gc-stale-load-balancer-health-checks web dev 10.97.0.10:80",
 	} {
@@ -332,7 +332,7 @@ func TestPlannerClearsEndpointDHCPWhenSubnetDHCPDisabled(t *testing.T) {
 	if !strings.Contains(joined, "lsp-set-dhcpv6-options nl_lp_prod_pod-a") {
 		t.Fatalf("endpoint DHCPv6 clear operation missing:\n%s", joined)
 	}
-	if !strings.Contains(joined, "gc-dhcp-options pod-a prod") {
+	if !strings.Contains(joined, "gc-dhcp-options "+endpointExternalID("prod", "pod-a")+" prod") {
 		t.Fatalf("disabled DHCP should GC stale endpoint DHCP options:\n%s", joined)
 	}
 	if strings.Contains(joined, "create DHCP_Options") || strings.Contains(joined, "dhcpv4_options=@") || strings.Contains(joined, "dhcpv6_options=@") {
@@ -362,7 +362,7 @@ func TestPlannerGCDHCPOptionsBeforeRecreate(t *testing.T) {
 	}
 
 	joined := stringify(planner.Operations())
-	gc := strings.Index(joined, "gc-dhcp-options pod-a prod")
+	gc := strings.Index(joined, "gc-dhcp-options "+endpointExternalID("prod", "pod-a")+" prod")
 	create := strings.Index(joined, "create DHCP_Options")
 	if gc < 0 || create < 0 {
 		t.Fatalf("expected DHCP GC and recreate operations:\n%s", joined)
@@ -504,7 +504,7 @@ func TestPlannerBuildsIPv6DHCPOptions(t *testing.T) {
 	for _, expected := range []string{
 		"set logical_router_port nl_lr_prod_to_apps-v6 ipv6_ra_configs:address_mode=dhcpv6_stateful",
 		"lsp-set-dhcpv6-options nl_lp_prod_pod-v6",
-		"--id=@nl_dhcp6_prod_pod_hv6 create DHCP_Options cidr=fd00:10::/64",
+		"--id=@nl_dhcp6_prod_pod_hv6 create DHCP_Options cidr=\"fd00:10::/64\"",
 		"options:server_id=0a:58:85:d4:23:26",
 		"options:dns_server=[\"fd00:96::10\"]",
 		"options:domain_name=svc.cluster.local",
@@ -624,7 +624,7 @@ func TestPlannerBuildsLoadBalancerOperations(t *testing.T) {
 		"external_ids:netloom_session_affinity=true",
 		"options:affinity_timeout=7200",
 		"clear load_balancer nl_lb_prod_web_tcp health_check",
-		"ensure-load-balancer-health-check nl_lb_prod_web_tcp web prod vip=10.96.0.10:80",
+		"ensure-load-balancer-health-check nl_lb_prod_web_tcp web prod vip=\"10.96.0.10:80\"",
 		"options:interval=10",
 		"options:timeout=30",
 		"options:success_count=2",
@@ -675,8 +675,8 @@ func TestPlannerBuildsMultiPortLoadBalancerOperations(t *testing.T) {
 	for _, expected := range []string{
 		"--may-exist lb-add nl_lb_prod_web_tcp 10.96.0.10:80 10.10.0.10:8080 tcp",
 		"--may-exist lb-add nl_lb_prod_web_tcp 10.96.0.10:9090 10.10.0.10:9091 tcp",
-		"ensure-load-balancer-health-check nl_lb_prod_web_tcp web prod vip=10.96.0.10:80",
-		"ensure-load-balancer-health-check nl_lb_prod_web_tcp web prod vip=10.96.0.10:9090",
+		"ensure-load-balancer-health-check nl_lb_prod_web_tcp web prod vip=\"10.96.0.10:80\"",
+		"ensure-load-balancer-health-check nl_lb_prod_web_tcp web prod vip=\"10.96.0.10:9090\"",
 		"gc-stale-load-balancer-health-checks web prod 10.96.0.10:80 10.96.0.10:9090",
 	} {
 		if !strings.Contains(joined, expected) {
@@ -719,8 +719,8 @@ func TestPlannerSplitsMultiProtocolLoadBalancerOperations(t *testing.T) {
 		"--may-exist lr-lb-add nl_lr_prod nl_lb_prod_web_udp",
 		"--may-exist ls-lb-add nl_ls_prod_apps nl_lb_prod_web_tcp",
 		"--may-exist ls-lb-add nl_ls_prod_apps nl_lb_prod_web_udp",
-		"ensure-load-balancer-health-check nl_lb_prod_web_tcp web prod vip=10.96.0.10:80",
-		"ensure-load-balancer-health-check nl_lb_prod_web_udp web prod vip=10.96.0.10:53",
+		"ensure-load-balancer-health-check nl_lb_prod_web_tcp web prod vip=\"10.96.0.10:80\"",
+		"ensure-load-balancer-health-check nl_lb_prod_web_udp web prod vip=\"10.96.0.10:53\"",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("OVN operations missing %q:\n%s", expected, joined)
@@ -1188,8 +1188,11 @@ func TestPlannerBuildsKubeOVNStyleNATOperations(t *testing.T) {
 	joined := stringify(planner.Operations())
 	for _, expected := range []string{
 		"lr-nat-add nl_lr_prod dnat 198.51.100.20 10.10.0.10",
+		"tag-nat-rule web prod dnat 198.51.100.20 10.10.0.10",
 		"lr-nat-add nl_lr_prod dnat_and_snat 198.51.100.30 10.10.0.11",
+		"tag-nat-rule fip prod dnat_and_snat 198.51.100.30 10.10.0.11",
 		"lr-nat-add nl_lr_prod dnat_and_snat 198.51.100.31 10.10.0.14 nl_lp_prod_pod-a 0a:58:0a:0a:00:0e",
+		"tag-nat-rule distributed-fip prod dnat_and_snat 198.51.100.31 10.10.0.14",
 		"gc-nat-rule ssh prod",
 		"--id=@nl_nat_prod_ssh create NAT type=dnat external_ip=198.51.100.40 logical_ip=10.10.0.12 external_port_range=2222 logical_port_range=2222 protocol=tcp",
 		"external_ids:netloom_nat=ssh",

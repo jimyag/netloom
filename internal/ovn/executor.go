@@ -8,9 +8,29 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 )
 
 const DefaultNBCTLTimeout = 30 * time.Second
+const (
+	DefaultNBCTLRetryAttempts       = 3
+	DefaultNBCTLRetryInitialBackoff = 50 * time.Millisecond
+	DefaultNBCTLRetryMaxBackoff     = 500 * time.Millisecond
+)
+
+type NBCTLRetryPolicy struct {
+	Attempts       int
+	InitialBackoff time.Duration
+	MaxBackoff     time.Duration
+}
+
+func NewNBCTLRetryPolicy() NBCTLRetryPolicy {
+	return NBCTLRetryPolicy{
+		Attempts:       DefaultNBCTLRetryAttempts,
+		InitialBackoff: DefaultNBCTLRetryInitialBackoff,
+		MaxBackoff:     DefaultNBCTLRetryMaxBackoff,
+	}
+}
 
 type Executor interface {
 	Execute(context.Context, []Operation) error
@@ -43,13 +63,20 @@ type NBCTLExecutor struct {
 	BaseArgs    []string
 	Transaction bool
 	Timeout     time.Duration
+	RetryPolicy NBCTLRetryPolicy
 }
 
 func NewNBCTLExecutor(binary string, baseArgs ...string) *NBCTLExecutor {
 	if binary == "" {
 		binary = "ovn-nbctl"
 	}
-	return &NBCTLExecutor{Binary: binary, BaseArgs: append([]string(nil), baseArgs...), Transaction: true, Timeout: DefaultNBCTLTimeout}
+	return &NBCTLExecutor{
+		Binary:      binary,
+		BaseArgs:    append([]string(nil), baseArgs...),
+		Transaction: true,
+		Timeout:     DefaultNBCTLTimeout,
+		RetryPolicy: NewNBCTLRetryPolicy(),
+	}
 }
 
 func (e *NBCTLExecutor) Execute(ctx context.Context, ops []Operation) error {
@@ -142,7 +169,7 @@ func firstSpecialOperation(ops []Operation) int {
 
 func isSpecialOperation(op Operation) bool {
 	switch op.Command {
-	case "gc-dhcp-options", "gc-load-balancer-health-checks", "ensure-load-balancer-health-check", "gc-stale-load-balancer-health-checks", "gc-nat-rule", "gc-stale-nat-rules", "tag-policy-route", "gc-stale-policy-routes":
+	case "gc-dhcp-options", "gc-stale-dhcp-options", "gc-load-balancer-health-checks", "ensure-load-balancer-health-check", "gc-stale-load-balancer-health-checks", "gc-nat-rule", "gc-stale-nat-rules", "tag-nat-rule", "tag-policy-route", "gc-stale-policy-routes", "sync-policy-route-nexthops":
 		return true
 	default:
 		return false
@@ -160,6 +187,8 @@ func (e *NBCTLExecutor) executeSpecial(ctx context.Context, op Operation) error 
 			"external_ids:netloom_endpoint="+op.Args[0],
 			"external_ids:netloom_vpc="+op.Args[1],
 		)
+	case "gc-stale-dhcp-options":
+		return e.destroyStaleDHCPOptions(ctx, op.Args)
 	case "gc-load-balancer-health-checks":
 		return e.destroyMatchingRecords(ctx, "Load_Balancer_Health_Check",
 			"external_ids:netloom_owner=netloom",
@@ -171,17 +200,30 @@ func (e *NBCTLExecutor) executeSpecial(ctx context.Context, op Operation) error 
 	case "gc-stale-load-balancer-health-checks":
 		return e.destroyStaleLoadBalancerHealthChecks(ctx, op.Args)
 	case "gc-nat-rule":
-		return e.destroyMatchingRecords(ctx, "NAT",
+		uuids, err := e.findUUIDs(ctx, "NAT",
 			"external_ids:netloom_owner=netloom",
 			"external_ids:netloom_nat="+op.Args[0],
 			"external_ids:netloom_vpc="+op.Args[1],
 		)
+		if err != nil {
+			return err
+		}
+		for _, uuid := range uuids {
+			if err := e.destroyManagedNAT(ctx, op.Args[1], uuid); err != nil {
+				return err
+			}
+		}
+		return nil
 	case "gc-stale-nat-rules":
 		return e.destroyStaleNATRules(ctx, op.Args)
+	case "tag-nat-rule":
+		return e.tagNATRule(ctx, op.Args[0], op.Args[1], op.Args[2], op.Args[3], op.Args[4])
 	case "tag-policy-route":
 		return e.tagPolicyRoute(ctx, op.Args[0], op.Args[1], op.Args[2], op.Args[3])
 	case "gc-stale-policy-routes":
 		return e.destroyStalePolicyRoutes(ctx, op.Args)
+	case "sync-policy-route-nexthops":
+		return e.syncPolicyRouteNexthops(ctx, op.Args[0], op.Args[1], op.Args[2], op.Args[3], op.Args[4])
 	default:
 		return fmt.Errorf("unsupported special operation %q", op.Command)
 	}
@@ -195,10 +237,7 @@ func (e *NBCTLExecutor) ensureLoadBalancerHealthCheck(ctx context.Context, field
 	}
 	var uuid string
 	if len(uuids) == 0 {
-		uuid, err = e.createLoadBalancerHealthCheck(ctx, fields[3:])
-		if err != nil {
-			return err
-		}
+		return e.createAndAttachLoadBalancerHealthCheck(ctx, ovnLoadBalancer, fields[3:])
 	} else {
 		uuid = uuids[0]
 		if err := e.setLoadBalancerHealthCheck(ctx, uuid, fields[3:]); err != nil {
@@ -226,19 +265,12 @@ func (e *NBCTLExecutor) loadBalancerHealthCheckUUIDs(ctx context.Context, loadBa
 	)
 }
 
-func (e *NBCTLExecutor) createLoadBalancerHealthCheck(ctx context.Context, fields []string) (string, error) {
+func (e *NBCTLExecutor) createAndAttachLoadBalancerHealthCheck(ctx context.Context, ovnLoadBalancer string, fields []string) error {
 	args := append([]string(nil), e.BaseArgs...)
-	args = append(args, "create", "Load_Balancer_Health_Check")
+	args = append(args, "--id=@netloom_lbhc", "create", "Load_Balancer_Health_Check")
 	args = append(args, fields...)
-	output, err := e.outputCommand(ctx, args)
-	if err != nil {
-		return "", err
-	}
-	uuid := strings.TrimSpace(string(output))
-	if uuid == "" {
-		return "", fmt.Errorf("ovn-nbctl create Load_Balancer_Health_Check returned empty uuid")
-	}
-	return uuid, nil
+	args = append(args, "--", "add", "load_balancer", ovnLoadBalancer, "health_check", "@netloom_lbhc")
+	return e.runCommand(ctx, args)
 }
 
 func (e *NBCTLExecutor) setLoadBalancerHealthCheck(ctx context.Context, uuid string, fields []string) error {
@@ -316,7 +348,7 @@ func (e *NBCTLExecutor) findLoadBalancerHealthChecks(ctx context.Context, matche
 func loadBalancerHealthCheckVIP(fields []string) string {
 	for _, field := range fields {
 		if vip, ok := strings.CutPrefix(field, "vip="); ok {
-			return vip
+			return strings.Trim(vip, `"`)
 		}
 	}
 	return ""
@@ -338,12 +370,19 @@ func (e *NBCTLExecutor) tagPolicyRoute(ctx context.Context, vpc, name, priority,
 	if err != nil {
 		return err
 	}
+	tagged := false
 	for _, uuid := range uuids {
 		policyPriority, policyMatch, err := e.logicalRouterPolicyIdentity(ctx, uuid)
 		if err != nil {
 			return err
 		}
 		if policyPriority != priority || policyMatch != match {
+			continue
+		}
+		if tagged {
+			if err := e.removeAndDestroyPolicyRoute(ctx, router, uuid); err != nil {
+				return err
+			}
 			continue
 		}
 		args := append([]string(nil), e.BaseArgs...)
@@ -355,6 +394,7 @@ func (e *NBCTLExecutor) tagPolicyRoute(ctx context.Context, vpc, name, priority,
 		if err := e.runCommand(ctx, args); err != nil {
 			return err
 		}
+		tagged = true
 	}
 	return nil
 }
@@ -390,6 +430,7 @@ func (e *NBCTLExecutor) destroyStalePolicyRoutes(ctx context.Context, keep []str
 	for i := 0; i+1 < len(keep); i += 2 {
 		keepSet[keep[i]+"\x00"+keep[i+1]] = struct{}{}
 	}
+	seenKeep := make(map[string]struct{}, len(keepSet))
 	args := append([]string(nil), e.BaseArgs...)
 	args = append(args, "--format=csv", "--data=bare", "--no-headings", "--columns=_uuid,external_ids", "find", "Logical_Router_Policy", "external_ids:netloom_owner=netloom")
 	output, err := e.outputCommand(ctx, args)
@@ -406,21 +447,78 @@ func (e *NBCTLExecutor) destroyStalePolicyRoutes(ctx context.Context, keep []str
 		if vpc == "" || name == "" {
 			continue
 		}
-		if _, keep := keepSet[vpc+"\x00"+name]; keep {
-			continue
+		key := vpc + "\x00" + name
+		if _, keep := keepSet[key]; keep {
+			if _, duplicate := seenKeep[key]; !duplicate {
+				seenKeep[key] = struct{}{}
+				continue
+			}
 		}
-		removeArgs := append([]string(nil), e.BaseArgs...)
-		removeArgs = append(removeArgs, "remove", "logical_router", logicalRouter(vpc), "policies", uuid)
-		if err := e.runCommand(ctx, removeArgs); err != nil {
-			return err
-		}
-		destroyArgs := append([]string(nil), e.BaseArgs...)
-		destroyArgs = append(destroyArgs, "--if-exists", "destroy", "Logical_Router_Policy", uuid)
-		if err := e.runCommand(ctx, destroyArgs); err != nil {
+		if err := e.removeAndDestroyPolicyRoute(ctx, logicalRouter(vpc), uuid); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func (e *NBCTLExecutor) syncPolicyRouteNexthops(ctx context.Context, vpc, name, priority, match, nextHops string) error {
+	policyUUIDs, err := e.policyRouteUUIDsByName(ctx, vpc, name)
+	if err != nil {
+		return err
+	}
+	router := logicalRouter(vpc)
+	updated := false
+	for _, uuid := range policyUUIDs {
+		policyPriority, policyMatch, err := e.logicalRouterPolicyIdentity(ctx, uuid)
+		if err != nil {
+			return err
+		}
+		if policyPriority != priority || policyMatch != match {
+			continue
+		}
+		if updated {
+			if err := e.removeAndDestroyPolicyRoute(ctx, router, uuid); err != nil {
+				return err
+			}
+			continue
+		}
+		args := append([]string(nil), e.BaseArgs...)
+		args = append(args, "set", "Logical_Router_Policy", uuid, "nexthops="+nextHops)
+		if err := e.runCommand(ctx, args); err != nil {
+			return err
+		}
+		updated = true
+	}
+	return nil
+}
+
+func (e *NBCTLExecutor) removeAndDestroyPolicyRoute(ctx context.Context, router, uuid string) error {
+	removeArgs := append([]string(nil), e.BaseArgs...)
+	removeArgs = append(removeArgs, "remove", "logical_router", router, "policies", uuid)
+	if err := e.runCommand(ctx, removeArgs); err != nil {
+		return err
+	}
+	destroyArgs := append([]string(nil), e.BaseArgs...)
+	destroyArgs = append(destroyArgs, "--if-exists", "destroy", "Logical_Router_Policy", uuid)
+	return e.runCommand(ctx, destroyArgs)
+}
+
+func (e *NBCTLExecutor) policyRouteUUIDsByName(ctx context.Context, vpc, name string) ([]string, error) {
+	args := append([]string(nil), e.BaseArgs...)
+	args = append(args,
+		"--bare",
+		"--columns=_uuid",
+		"find",
+		"Logical_Router_Policy",
+		"external_ids:netloom_owner=netloom",
+		"external_ids:netloom_vpc="+vpc,
+		"external_ids:netloom_policy_route="+name,
+	)
+	output, err := e.outputCommand(ctx, args)
+	if err != nil {
+		return nil, err
+	}
+	return strings.Fields(strings.TrimSpace(string(output))), nil
 }
 
 func (e *NBCTLExecutor) destroyStaleNATRules(ctx context.Context, keep []string) error {
@@ -428,6 +526,7 @@ func (e *NBCTLExecutor) destroyStaleNATRules(ctx context.Context, keep []string)
 	for i := 0; i+1 < len(keep); i += 2 {
 		keepSet[managedNATKey(keep[i], keep[i+1])] = struct{}{}
 	}
+	seenKeep := make(map[string]struct{}, len(keepSet))
 	args := append([]string(nil), e.BaseArgs...)
 	args = append(args, "--format=csv", "--data=bare", "--no-headings", "--columns=_uuid,external_ids", "find", "NAT", "external_ids:netloom_owner=netloom")
 	output, err := e.outputCommand(ctx, args)
@@ -440,15 +539,105 @@ func (e *NBCTLExecutor) destroyStaleNATRules(ctx context.Context, keep []string)
 			continue
 		}
 		if _, keep := keepSet[natKey]; keep {
+			if _, duplicate := seenKeep[natKey]; !duplicate {
+				seenKeep[natKey] = struct{}{}
+				continue
+			}
+		}
+		parts := strings.SplitN(natKey, "\x00", 2)
+		if len(parts) != 2 {
 			continue
 		}
-		destroyArgs := append([]string(nil), e.BaseArgs...)
-		destroyArgs = append(destroyArgs, "--if-exists", "destroy", "NAT", uuid)
-		if err := e.runCommand(ctx, destroyArgs); err != nil {
+		if err := e.destroyManagedNAT(ctx, parts[0], uuid); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func (e *NBCTLExecutor) tagNATRule(ctx context.Context, name, vpc, natTypeValue, externalIP, logicalIP string) error {
+	uuids, err := e.findUUIDs(ctx, "NAT",
+		"type="+natTypeValue,
+		"external_ip="+externalIP,
+		"logical_ip="+logicalIP,
+	)
+	if err != nil {
+		return err
+	}
+	if len(uuids) == 0 {
+		return nil
+	}
+	args := append([]string(nil), e.BaseArgs...)
+	args = append(args,
+		"set", "NAT", uuids[0],
+		"external_ids:netloom_owner=netloom",
+		"external_ids:netloom_nat="+name,
+		"external_ids:netloom_vpc="+vpc,
+	)
+	if err := e.runCommand(ctx, args); err != nil {
+		return err
+	}
+	for _, duplicate := range uuids[1:] {
+		if err := e.destroyManagedNAT(ctx, vpc, duplicate); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (e *NBCTLExecutor) destroyStaleDHCPOptions(ctx context.Context, keep []string) error {
+	keepSet := make(map[string]struct{}, len(keep)/2)
+	for i := 0; i+1 < len(keep); i += 2 {
+		keepSet[managedDHCPOptionKey(keep[i], keep[i+1])] = struct{}{}
+	}
+	seenKeep := make(map[string]struct{}, len(keepSet))
+	args := append([]string(nil), e.BaseArgs...)
+	args = append(args, "--format=csv", "--data=bare", "--no-headings", "--columns=_uuid,external_ids", "find", "DHCP_Options", "external_ids:netloom_owner=netloom")
+	output, err := e.outputCommand(ctx, args)
+	if err != nil {
+		return err
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+		uuid, dhcpKey, ok := parseDHCPGCRow(line)
+		if !ok {
+			continue
+		}
+		if _, keep := keepSet[dhcpKey]; keep {
+			if _, duplicate := seenKeep[dhcpKey]; !duplicate {
+				seenKeep[dhcpKey] = struct{}{}
+				continue
+			}
+		}
+		if err := e.destroyDHCPOptionsByUUID(ctx, uuid); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (e *NBCTLExecutor) detachNATFromRouter(ctx context.Context, router, uuid string) error {
+	removeArgs := append([]string(nil), e.BaseArgs...)
+	removeArgs = append(removeArgs, "remove", "logical_router", router, "nat", uuid)
+	return e.runCommand(ctx, removeArgs)
+}
+
+func (e *NBCTLExecutor) destroyNATByUUID(ctx context.Context, uuid string) error {
+	destroyArgs := append([]string(nil), e.BaseArgs...)
+	destroyArgs = append(destroyArgs, "--if-exists", "destroy", "NAT", uuid)
+	return e.runCommand(ctx, destroyArgs)
+}
+
+func (e *NBCTLExecutor) destroyDHCPOptionsByUUID(ctx context.Context, uuid string) error {
+	destroyArgs := append([]string(nil), e.BaseArgs...)
+	destroyArgs = append(destroyArgs, "--if-exists", "destroy", "DHCP_Options", uuid)
+	return e.runCommand(ctx, destroyArgs)
+}
+
+func (e *NBCTLExecutor) destroyManagedNAT(ctx context.Context, vpc, uuid string) error {
+	if err := e.detachNATFromRouter(ctx, logicalRouter(vpc), uuid); err != nil {
+		return err
+	}
+	return e.destroyNATByUUID(ctx, uuid)
 }
 
 func parseNATGCRow(line string) (string, string, bool) {
@@ -461,8 +650,22 @@ func parseNATGCRow(line string) (string, string, bool) {
 	return uuid, managedNATKey(vpc, natName), uuid != "" && vpc != "" && natName != ""
 }
 
+func parseDHCPGCRow(line string) (string, string, bool) {
+	uuid, externalIDs, ok := parseExternalIDsCSVRow(line)
+	if !ok {
+		return "", "", false
+	}
+	endpointID := externalIDs["netloom_endpoint"]
+	vpc := externalIDs["netloom_vpc"]
+	return uuid, managedDHCPOptionKey(endpointID, vpc), uuid != "" && endpointID != "" && vpc != ""
+}
+
 func managedNATKey(vpc, name string) string {
 	return vpc + "\x00" + name
+}
+
+func managedDHCPOptionKey(endpointID, vpc string) string {
+	return endpointID + "\x00" + vpc
 }
 
 func parseExternalIDsCSVRow(line string) (string, map[string]string, bool) {
@@ -478,7 +681,9 @@ func parseExternalIDsCSVRow(line string) (string, map[string]string, bool) {
 	externalIDs = strings.TrimSpace(externalIDs)
 	externalIDs = strings.Trim(externalIDs, `"{} `)
 	out := make(map[string]string)
-	for _, field := range strings.Split(externalIDs, ",") {
+	for _, field := range strings.FieldsFunc(externalIDs, func(r rune) bool {
+		return r == ',' || unicode.IsSpace(r)
+	}) {
 		key, value, ok := strings.Cut(strings.TrimSpace(field), "=")
 		if !ok {
 			continue
@@ -519,14 +724,11 @@ func trimOVNString(value string) string {
 }
 
 func (e *NBCTLExecutor) destroyMatchingRecords(ctx context.Context, table string, matches ...string) error {
-	args := append([]string(nil), e.BaseArgs...)
-	args = append(args, "--bare", "--columns=_uuid", "find", table)
-	args = append(args, matches...)
-	output, err := e.outputCommand(ctx, args)
+	uuids, err := e.findUUIDs(ctx, table, matches...)
 	if err != nil {
 		return err
 	}
-	for _, uuid := range strings.Fields(string(output)) {
+	for _, uuid := range uuids {
 		destroyArgs := append([]string(nil), e.BaseArgs...)
 		destroyArgs = append(destroyArgs, "--if-exists", "destroy", table, uuid)
 		if err := e.runCommand(ctx, destroyArgs); err != nil {
@@ -536,7 +738,42 @@ func (e *NBCTLExecutor) destroyMatchingRecords(ctx context.Context, table string
 	return nil
 }
 
+func (e *NBCTLExecutor) findUUIDs(ctx context.Context, table string, matches ...string) ([]string, error) {
+	args := append([]string(nil), e.BaseArgs...)
+	args = append(args, "--bare", "--columns=_uuid", "find", table)
+	for _, match := range matches {
+		args = append(args, ovnMatchField(match))
+	}
+	output, err := e.outputCommand(ctx, args)
+	if err != nil {
+		return nil, err
+	}
+	return strings.Fields(strings.TrimSpace(string(output))), nil
+}
+
+func ovnMatchField(match string) string {
+	key, value, ok := strings.Cut(match, "=")
+	if !ok || key == "" || value == "" {
+		return match
+	}
+	value = trimOVNString(value)
+	if strings.Contains(value, ":") {
+		return key + "=" + ovnStringValue(value)
+	}
+	return key + "=" + value
+}
+
 func (e *NBCTLExecutor) runCommand(ctx context.Context, args []string) error {
+	_, err := e.executeWithRetry(ctx, func(ctx context.Context, candidate []string) ([]byte, error) {
+		return nil, e.runCommandRaw(ctx, candidate)
+	}, args)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (e *NBCTLExecutor) runCommandRaw(ctx context.Context, args []string) error {
 	cmdCtx, cancel := e.commandContext(ctx)
 	defer cancel()
 
@@ -553,6 +790,10 @@ func (e *NBCTLExecutor) runCommand(ctx context.Context, args []string) error {
 }
 
 func (e *NBCTLExecutor) outputCommand(ctx context.Context, args []string) ([]byte, error) {
+	return e.executeWithRetry(ctx, e.outputCommandRaw, args)
+}
+
+func (e *NBCTLExecutor) outputCommandRaw(ctx context.Context, args []string) ([]byte, error) {
 	cmdCtx, cancel := e.commandContext(ctx)
 	defer cancel()
 
@@ -567,6 +808,195 @@ func (e *NBCTLExecutor) outputCommand(ctx context.Context, args []string) ([]byt
 		return nil, fmt.Errorf("%s %v failed: %w: %s", e.Binary, args, err, stderr.String())
 	}
 	return output, nil
+}
+
+func (e *NBCTLExecutor) executeWithRetry(ctx context.Context, command func(context.Context, []string) ([]byte, error), args []string) ([]byte, error) {
+	policy := e.retryPolicy()
+	candidates := natFallbackArgs(append([]string(nil), args...))
+	var lastErr error
+	for _, candidate := range candidates {
+		for attempt := 0; attempt < policy.Attempts; attempt++ {
+			output, err := command(ctx, candidate)
+			if err == nil {
+				return output, nil
+			}
+			lastErr = err
+			if isNATFallbackableError(err) {
+				break
+			}
+			if !isRetryableNBCTLCommandError(err) || attempt == policy.Attempts-1 {
+				return nil, err
+			}
+			if delay := policy.backoff(attempt + 1); delay > 0 {
+				if err := sleepWithContext(ctx, delay); err != nil {
+					return nil, err
+				}
+			}
+		}
+		if !isNATFallbackableError(lastErr) {
+			return nil, lastErr
+		}
+	}
+	return nil, lastErr
+}
+
+func (e *NBCTLExecutor) retryPolicy() NBCTLRetryPolicy {
+	policy := e.RetryPolicy
+	if policy.Attempts <= 0 {
+		policy.Attempts = 1
+	}
+	if policy.InitialBackoff <= 0 {
+		policy.InitialBackoff = DefaultNBCTLRetryInitialBackoff
+	}
+	if policy.MaxBackoff <= 0 {
+		policy.MaxBackoff = DefaultNBCTLRetryMaxBackoff
+	}
+	return policy
+}
+
+func (p NBCTLRetryPolicy) backoff(attempt int) time.Duration {
+	if attempt <= 0 || p.InitialBackoff <= 0 {
+		return 0
+	}
+	if p.Attempts <= 1 {
+		return 0
+	}
+	delay := p.InitialBackoff
+	for i := 1; i < attempt; i++ {
+		delay *= 2
+		if delay > p.MaxBackoff {
+			return p.MaxBackoff
+		}
+	}
+	return delay
+}
+
+func isRetryableNBCTLCommandError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errorText := err.Error()
+	return strings.Contains(errorText, "database is busy") ||
+		strings.Contains(errorText, "database is locked") ||
+		strings.Contains(errorText, "transaction is already committed") ||
+		strings.Contains(errorText, "Transaction in progress") ||
+		strings.Contains(errorText, "another transaction") ||
+		strings.Contains(errorText, "connection refused")
+}
+
+func sleepWithContext(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func isNATFallbackableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errorText := err.Error()
+	return strings.Contains(errorText, "logical_port_range") ||
+		strings.Contains(errorText, "external_port_range") ||
+		strings.Contains(errorText, "column whose name matches \"protocol\"") ||
+		strings.Contains(errorText, "column \"protocol\"")
+}
+
+func natFallbackArgs(args []string) [][]string {
+	candidates := [][]string{append([]string(nil), args...)}
+	if hasNATRangeArgs(args) {
+		rangeArgs := legacyNATRangeArgs(args)
+		if !equalStringSlices(rangeArgs, args) {
+			candidates = append(candidates, rangeArgs)
+		}
+		if hasNATProtocolArg(rangeArgs) {
+			protocolRangeArgs := removeNATProtocolArg(rangeArgs)
+			if !containsStringSlice(candidates, protocolRangeArgs) {
+				candidates = append(candidates, protocolRangeArgs)
+			}
+		}
+		return candidates
+	}
+	if hasNATProtocolArg(args) {
+		protocolArgs := removeNATProtocolArg(args)
+		if !equalStringSlices(protocolArgs, args) {
+			candidates = append(candidates, protocolArgs)
+		}
+	}
+	return candidates
+}
+
+func hasNATRangeArgs(args []string) bool {
+	return hasAnyNATArgPrefix(args, "external_port_range=", "logical_port_range=")
+}
+
+func hasNATProtocolArg(args []string) bool {
+	return hasAnyNATArgPrefix(args, "protocol=")
+}
+
+func hasAnyNATArgPrefix(args []string, prefixes ...string) bool {
+	for _, arg := range args {
+		for _, prefix := range prefixes {
+			if strings.HasPrefix(arg, prefix) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func containsStringSlice(list [][]string, target []string) bool {
+	for _, item := range list {
+		if equalStringSlices(item, target) {
+			return true
+		}
+	}
+	return false
+}
+
+func equalStringSlices(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func legacyNATRangeArgs(args []string) []string {
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "external_port_range=") || strings.HasPrefix(arg, "logical_port_range=") {
+			break
+		}
+	}
+	out := make([]string, len(args))
+	for i, arg := range args {
+		arg = strings.ReplaceAll(arg, "external_port_range=", "external_port=")
+		arg = strings.ReplaceAll(arg, "logical_port_range=", "logical_port=")
+		out[i] = arg
+	}
+	return out
+}
+
+func removeNATProtocolArg(args []string) []string {
+	out := make([]string, 0, len(args))
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "protocol=") {
+			continue
+		}
+		out = append(out, arg)
+	}
+	return out
 }
 
 func (e *NBCTLExecutor) commandContext(ctx context.Context) (context.Context, context.CancelFunc) {
@@ -609,9 +1039,31 @@ func validateSpecialOperation(op Operation) error {
 		}
 		return nil
 	}
+	if op.Command == "gc-stale-dhcp-options" {
+		if len(op.Args)%2 != 0 {
+			return fmt.Errorf("special operation %q requires endpoint/vpc keep pairs", op.Command)
+		}
+		for _, arg := range op.Args {
+			if arg == "" {
+				return fmt.Errorf("special operation %q contains empty keep argument", op.Command)
+			}
+		}
+		return nil
+	}
 	if op.Command == "gc-nat-rule" {
 		if len(op.Args) != 2 || op.Args[0] == "" || op.Args[1] == "" {
 			return fmt.Errorf("special operation %q requires nat rule name and vpc", op.Command)
+		}
+		return nil
+	}
+	if op.Command == "tag-nat-rule" {
+		if len(op.Args) != 5 {
+			return fmt.Errorf("special operation %q requires nat rule name, vpc, type, external ip, and logical ip", op.Command)
+		}
+		for _, arg := range op.Args {
+			if arg == "" {
+				return fmt.Errorf("special operation %q contains empty argument", op.Command)
+			}
 		}
 		return nil
 	}
@@ -624,6 +1076,17 @@ func validateSpecialOperation(op Operation) error {
 	if op.Command == "tag-policy-route" {
 		if len(op.Args) != 4 {
 			return fmt.Errorf("special operation %q requires vpc, name, priority, and match", op.Command)
+		}
+		for _, arg := range op.Args {
+			if arg == "" {
+				return fmt.Errorf("special operation %q contains empty argument", op.Command)
+			}
+		}
+		return nil
+	}
+	if op.Command == "sync-policy-route-nexthops" {
+		if len(op.Args) != 5 {
+			return fmt.Errorf("special operation %q requires vpc, name, priority, match, and nexthops", op.Command)
 		}
 		for _, arg := range op.Args {
 			if arg == "" {

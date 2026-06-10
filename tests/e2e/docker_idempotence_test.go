@@ -6,8 +6,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
-	"sort"
 	"runtime"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -278,18 +278,18 @@ func TestDockerControllerConcurrentReconcilesAreStableAcrossVPCs(t *testing.T) {
 			"file": {
 				"logical_router":        len(activeManagedRows(t, ctx, composeFile, "logical_router", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
 				"logical_switch":        len(activeManagedRows(t, ctx, composeFile, "logical_switch", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
-				"logical_switch_port":    len(activeManagedRows(t, ctx, composeFile, "logical_switch_port", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file", "external_ids:netloom_endpoint="+fileEndpoint)),
+				"logical_switch_port":   len(activeManagedRows(t, ctx, composeFile, "logical_switch_port", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file", "external_ids:netloom_endpoint="+fileEndpoint)),
 				"nat":                   len(activeManagedRows(t, ctx, composeFile, "NAT", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
 				"load_balancer":         len(activeManagedRows(t, ctx, composeFile, "load_balancer", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
-				"logical_router_policy":  len(activeManagedRows(t, ctx, composeFile, "Logical_Router_Policy", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
+				"logical_router_policy": len(activeManagedRows(t, ctx, composeFile, "Logical_Router_Policy", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
 			},
 			"blue": {
 				"logical_router":        len(activeManagedRows(t, ctx, composeFile, "logical_router", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue")),
 				"logical_switch":        len(activeManagedRows(t, ctx, composeFile, "logical_switch", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue")),
-				"logical_switch_port":    len(activeManagedRows(t, ctx, composeFile, "logical_switch_port", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue", "external_ids:netloom_endpoint="+blueEndpoint)),
+				"logical_switch_port":   len(activeManagedRows(t, ctx, composeFile, "logical_switch_port", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue", "external_ids:netloom_endpoint="+blueEndpoint)),
 				"nat":                   len(activeManagedRows(t, ctx, composeFile, "NAT", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue")),
 				"load_balancer":         len(activeManagedRows(t, ctx, composeFile, "load_balancer", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue")),
-				"logical_router_policy":  len(activeManagedRows(t, ctx, composeFile, "Logical_Router_Policy", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue")),
+				"logical_router_policy": len(activeManagedRows(t, ctx, composeFile, "Logical_Router_Policy", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue")),
 			},
 		}
 	}
@@ -590,18 +590,18 @@ func TestDockerControllerReplaySameResourceNamesAcrossVPCs(t *testing.T) {
 			"file": {
 				"logical_router":        len(activeManagedRows(t, ctx, composeFile, "logical_router", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
 				"logical_switch":        len(activeManagedRows(t, ctx, composeFile, "logical_switch", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
-				"logical_switch_port":    len(activeManagedRows(t, ctx, composeFile, "logical_switch_port", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file", "external_ids:netloom_endpoint="+fileEndpoint)),
+				"logical_switch_port":   len(activeManagedRows(t, ctx, composeFile, "logical_switch_port", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file", "external_ids:netloom_endpoint="+fileEndpoint)),
 				"nat":                   len(activeManagedRows(t, ctx, composeFile, "NAT", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
 				"load_balancer":         len(activeManagedRows(t, ctx, composeFile, "load_balancer", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
-				"logical_router_policy":  len(activeManagedRows(t, ctx, composeFile, "Logical_Router_Policy", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
+				"logical_router_policy": len(activeManagedRows(t, ctx, composeFile, "Logical_Router_Policy", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
 			},
 			"blue": {
 				"logical_router":        len(activeManagedRows(t, ctx, composeFile, "logical_router", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue")),
 				"logical_switch":        len(activeManagedRows(t, ctx, composeFile, "logical_switch", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue")),
-				"logical_switch_port":    len(activeManagedRows(t, ctx, composeFile, "logical_switch_port", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue", "external_ids:netloom_endpoint="+blueEndpoint)),
+				"logical_switch_port":   len(activeManagedRows(t, ctx, composeFile, "logical_switch_port", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue", "external_ids:netloom_endpoint="+blueEndpoint)),
 				"nat":                   len(activeManagedRows(t, ctx, composeFile, "NAT", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue")),
 				"load_balancer":         len(activeManagedRows(t, ctx, composeFile, "load_balancer", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue")),
-				"logical_router_policy":  len(activeManagedRows(t, ctx, composeFile, "Logical_Router_Policy", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue")),
+				"logical_router_policy": len(activeManagedRows(t, ctx, composeFile, "Logical_Router_Policy", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue")),
 			},
 		}
 	}
@@ -732,8 +732,8 @@ func TestDockerControllerStateReplayDetectsManagedOVNLeaks(t *testing.T) {
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", stateCommand)
 
 	beforeManagedRows := map[string]int{
-		"NAT":                   len(activeManagedRows(t, ctx, composeFile, "NAT", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
-		"Logical_Router_Policy": len(activeManagedRows(t, ctx, composeFile, "Logical_Router_Policy", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
+		"NAT":                        len(activeManagedRows(t, ctx, composeFile, "NAT", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
+		"Logical_Router_Policy":      len(activeManagedRows(t, ctx, composeFile, "Logical_Router_Policy", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
 		"Load_Balancer_Health_Check": len(activeManagedRows(t, ctx, composeFile, "Load_Balancer_Health_Check", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file", "external_ids:netloom_load_balancer=file-web")),
 	}
 	staleManagedNAT := "ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock --id=@stale_managed_nat create NAT type=snat external_ip=198.51.100.220 logical_ip=10.10.0.220 external_ids:netloom_owner=netloom external_ids:netloom_nat=stale-leak external_ids:netloom_vpc=file -- add logical_router nl_lr_file nat @stale_managed_nat"
@@ -748,8 +748,8 @@ func TestDockerControllerStateReplayDetectsManagedOVNLeaks(t *testing.T) {
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", stateCommand)
 
 	afterManagedRows := map[string]int{
-		"NAT":                   len(activeManagedRows(t, ctx, composeFile, "NAT", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
-		"Logical_Router_Policy": len(activeManagedRows(t, ctx, composeFile, "Logical_Router_Policy", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
+		"NAT":                        len(activeManagedRows(t, ctx, composeFile, "NAT", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
+		"Logical_Router_Policy":      len(activeManagedRows(t, ctx, composeFile, "Logical_Router_Policy", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
 		"Load_Balancer_Health_Check": len(activeManagedRows(t, ctx, composeFile, "Load_Balancer_Health_Check", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file", "external_ids:netloom_load_balancer=file-web")),
 	}
 	if beforeManagedRows["NAT"] != afterManagedRows["NAT"] {
@@ -786,8 +786,8 @@ func TestDockerControllerStateReplayDetectsManagedOVNLeaks(t *testing.T) {
 			t.Fatalf("managed leak cleanup replay iteration %d failed:\n%s", i, replayOutput)
 		}
 		afterReplayManagedRows := map[string]int{
-			"NAT":                   len(activeManagedRows(t, ctx, composeFile, "NAT", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
-			"Logical_Router_Policy": len(activeManagedRows(t, ctx, composeFile, "Logical_Router_Policy", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
+			"NAT":                        len(activeManagedRows(t, ctx, composeFile, "NAT", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
+			"Logical_Router_Policy":      len(activeManagedRows(t, ctx, composeFile, "Logical_Router_Policy", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
 			"Load_Balancer_Health_Check": len(activeManagedRows(t, ctx, composeFile, "Load_Balancer_Health_Check", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file", "external_ids:netloom_load_balancer=file-web")),
 		}
 		for table, beforeCount := range beforeManagedRows {
@@ -842,8 +842,8 @@ func TestDockerControllerRestartRecoversManagedOVNLeakCleanup(t *testing.T) {
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", stateCommand)
 
 	before := map[string]int{
-		"NAT":                   len(activeManagedRows(t, ctx, composeFile, "NAT", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
-		"Logical_Router_Policy": len(activeManagedRows(t, ctx, composeFile, "Logical_Router_Policy", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
+		"NAT":                        len(activeManagedRows(t, ctx, composeFile, "NAT", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
+		"Logical_Router_Policy":      len(activeManagedRows(t, ctx, composeFile, "Logical_Router_Policy", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
 		"Load_Balancer_Health_Check": len(activeManagedRows(t, ctx, composeFile, "Load_Balancer_Health_Check", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file", "external_ids:netloom_load_balancer=file-web")),
 	}
 
@@ -886,8 +886,8 @@ func TestDockerControllerRestartRecoversManagedOVNLeakCleanup(t *testing.T) {
 	waitForControllerWatch("reconciled desired state")
 
 	after := map[string]int{
-		"NAT":                   len(activeManagedRows(t, ctx, composeFile, "NAT", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
-		"Logical_Router_Policy": len(activeManagedRows(t, ctx, composeFile, "Logical_Router_Policy", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
+		"NAT":                        len(activeManagedRows(t, ctx, composeFile, "NAT", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
+		"Logical_Router_Policy":      len(activeManagedRows(t, ctx, composeFile, "Logical_Router_Policy", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
 		"Load_Balancer_Health_Check": len(activeManagedRows(t, ctx, composeFile, "Load_Balancer_Health_Check", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file", "external_ids:netloom_load_balancer=file-web")),
 	}
 	for table, beforeCount := range before {
@@ -972,8 +972,8 @@ func TestDockerControllerStateReplayDetectsManagedOVNLeaksAcrossVPCs(t *testing.
 
 	for _, vpc := range []string{"file", "blue"} {
 		afterManagedRows := map[string]int{
-			"NAT":                   len(activeManagedRows(t, ctx, composeFile, "NAT", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc="+vpc)),
-			"Logical_Router_Policy": len(activeManagedRows(t, ctx, composeFile, "Logical_Router_Policy", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc="+vpc)),
+			"NAT":                        len(activeManagedRows(t, ctx, composeFile, "NAT", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc="+vpc)),
+			"Logical_Router_Policy":      len(activeManagedRows(t, ctx, composeFile, "Logical_Router_Policy", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc="+vpc)),
 			"Load_Balancer_Health_Check": len(activeManagedRows(t, ctx, composeFile, "Load_Balancer_Health_Check", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc="+vpc, "external_ids:netloom_load_balancer=cross-vpc-web")),
 		}
 		for table, beforeCount := range beforeManagedRows[vpc] {
@@ -1058,8 +1058,8 @@ func TestDockerControllerReplayDetectsManagedOVNLeaksAcrossVPCsIdempotent(t *tes
 
 		for _, vpc := range []string{"file", "blue"} {
 			afterManagedRows := map[string]int{
-				"NAT":                   len(activeManagedRows(t, ctx, composeFile, "NAT", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc="+vpc)),
-				"Logical_Router_Policy": len(activeManagedRows(t, ctx, composeFile, "Logical_Router_Policy", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc="+vpc)),
+				"NAT":                        len(activeManagedRows(t, ctx, composeFile, "NAT", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc="+vpc)),
+				"Logical_Router_Policy":      len(activeManagedRows(t, ctx, composeFile, "Logical_Router_Policy", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc="+vpc)),
 				"Load_Balancer_Health_Check": len(activeManagedRows(t, ctx, composeFile, "Load_Balancer_Health_Check", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc="+vpc, "external_ids:netloom_load_balancer=cross-vpc-web")),
 			}
 			for table, beforeCount := range beforeManagedRows[vpc] {
@@ -1119,7 +1119,7 @@ func TestDockerControllerReplayDoesNotChangeOVNStateAcrossVPCs(t *testing.T) {
 			"file": {
 				"logical_router":      len(activeManagedRows(t, ctx, composeFile, "logical_router", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
 				"logical_switch":      len(activeManagedRows(t, ctx, composeFile, "logical_switch", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
-				"logical_switch_port":  len(activeManagedRows(t, ctx, composeFile, "logical_switch_port", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file", "external_ids:netloom_endpoint="+fileEndpoint)),
+				"logical_switch_port": len(activeManagedRows(t, ctx, composeFile, "logical_switch_port", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file", "external_ids:netloom_endpoint="+fileEndpoint)),
 				"nat":                 len(activeManagedRows(t, ctx, composeFile, "NAT", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
 				"load_balancer":       len(activeManagedRows(t, ctx, composeFile, "load_balancer", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
 				"policy_routes":       len(activeManagedRows(t, ctx, composeFile, "Logical_Router_Policy", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
@@ -1127,7 +1127,7 @@ func TestDockerControllerReplayDoesNotChangeOVNStateAcrossVPCs(t *testing.T) {
 			"blue": {
 				"logical_router":      len(activeManagedRows(t, ctx, composeFile, "logical_router", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue")),
 				"logical_switch":      len(activeManagedRows(t, ctx, composeFile, "logical_switch", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue")),
-				"logical_switch_port":  len(activeManagedRows(t, ctx, composeFile, "logical_switch_port", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue", "external_ids:netloom_endpoint="+blueEndpoint)),
+				"logical_switch_port": len(activeManagedRows(t, ctx, composeFile, "logical_switch_port", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue", "external_ids:netloom_endpoint="+blueEndpoint)),
 				"nat":                 len(activeManagedRows(t, ctx, composeFile, "NAT", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue")),
 				"load_balancer":       len(activeManagedRows(t, ctx, composeFile, "load_balancer", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue")),
 				"policy_routes":       len(activeManagedRows(t, ctx, composeFile, "Logical_Router_Policy", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue")),
@@ -1197,18 +1197,18 @@ func TestDockerControllerReplaysRecoverOnDualVPCRestart(t *testing.T) {
 	snapshot := func() map[string]map[string]int {
 		return map[string]map[string]int{
 			"file": {
-				"logical_router":     len(activeManagedRows(t, ctx, composeFile, "logical_router", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
-				"logical_switch":     len(activeManagedRows(t, ctx, composeFile, "logical_switch", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
+				"logical_router":      len(activeManagedRows(t, ctx, composeFile, "logical_router", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
+				"logical_switch":      len(activeManagedRows(t, ctx, composeFile, "logical_switch", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
 				"logical_switch_port": len(activeManagedRows(t, ctx, composeFile, "logical_switch_port", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
-				"nat":                len(activeManagedRows(t, ctx, composeFile, "NAT", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
-				"load_balancer":      len(activeManagedRows(t, ctx, composeFile, "load_balancer", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
+				"nat":                 len(activeManagedRows(t, ctx, composeFile, "NAT", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
+				"load_balancer":       len(activeManagedRows(t, ctx, composeFile, "load_balancer", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file")),
 			},
 			"blue": {
-				"logical_router":     len(activeManagedRows(t, ctx, composeFile, "logical_router", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue")),
-				"logical_switch":     len(activeManagedRows(t, ctx, composeFile, "logical_switch", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue")),
+				"logical_router":      len(activeManagedRows(t, ctx, composeFile, "logical_router", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue")),
+				"logical_switch":      len(activeManagedRows(t, ctx, composeFile, "logical_switch", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue")),
 				"logical_switch_port": len(activeManagedRows(t, ctx, composeFile, "logical_switch_port", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue")),
-				"nat":                len(activeManagedRows(t, ctx, composeFile, "NAT", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue")),
-				"load_balancer":      len(activeManagedRows(t, ctx, composeFile, "load_balancer", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue")),
+				"nat":                 len(activeManagedRows(t, ctx, composeFile, "NAT", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue")),
+				"load_balancer":       len(activeManagedRows(t, ctx, composeFile, "load_balancer", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=blue")),
 			},
 		}
 	}
@@ -1860,8 +1860,31 @@ func TestDockerWorkloadPolicyPriorityConflict(t *testing.T) {
 			" NETLOOM_POLICY_STORE=ebpf" +
 			" NETLOOM_LINUX_DATAPATH=1" +
 			" NETLOOM_LINUX_DATAPATH_MODE=netns" +
+			" NETLOOM_PROVIDER_NETWORK_LINKS=physnet-a=eth0" +
 			" NETLOOM_NODE_UNDERLAYS=node-a=172.30.0.11,node-b=172.30.0.12 " +
 			"/netloom/bin/netloom-agent"
+	}
+	startTCXWorkloadAgent := func(stateJSON string, wantAttached bool) {
+		logPath := "/tmp/netloom-workload-priority-agent.log"
+		command := "cat >" + statePath + " <<'EOF'\n" + stateJSON + "\nEOF\n" +
+			"pkill -f '/netloom/bin/netloom-agent' 2>/dev/null || true\n" +
+			": >" + logPath + "\n" +
+			"NETLOOM_STATE_FILE=" + statePath +
+			" NETLOOM_NODE_NAME=node-b" +
+			" NETLOOM_POLICY_STORE=ebpf" +
+			" NETLOOM_LINUX_DATAPATH=1" +
+			" NETLOOM_LINUX_DATAPATH_MODE=netns" +
+			" NETLOOM_PROVIDER_NETWORK_LINKS=physnet-a=eth0" +
+			" NETLOOM_NODE_UNDERLAYS=node-a=172.30.0.11,node-b=172.30.0.12" +
+			" NETLOOM_TCX_WORKLOAD=1" +
+			" NETLOOM_RECONCILE_INTERVAL_MS=500" +
+			" /netloom/bin/netloom-agent >" + logPath + " 2>&1 &"
+		run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "sh", "-c", command)
+		expected := "tcx=not-attached"
+		if wantAttached {
+			expected = "tcx=attached"
+		}
+		run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "sh", "-c", "for i in $(seq 1 20); do grep -q '"+expected+"' "+logPath+" 2>/dev/null && exit 0; sleep 1; done; cat "+logPath+"; exit 1")
 	}
 
 	nodeAWorkloadDenyOutput := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-a", "sh", "-c", stateForNode(desiredWorkloadPolicyPriorityDenyWinsStateJSON(), "node-a"))
@@ -1872,6 +1895,7 @@ func TestDockerWorkloadPolicyPriorityConflict(t *testing.T) {
 	if !strings.Contains(nodeBWorkloadDenyOutput, "reconciled node policy") {
 		t.Fatalf("node-b deny-state reconcile did not succeed:\n%s", nodeBWorkloadDenyOutput)
 	}
+	startTCXWorkloadAgent(desiredWorkloadPolicyPriorityDenyWinsStateJSON(), true)
 
 	resolveWorkloadNamespace := func(node, endpointID string) string {
 		expected := workloadNamespace("file", endpointID)
@@ -1943,6 +1967,7 @@ func TestDockerWorkloadPolicyPriorityConflict(t *testing.T) {
 	if !strings.Contains(nodeBWorkloadAllowOutput, "reconciled node policy") {
 		t.Fatalf("node-b allow-state reconcile did not succeed:\n%s", nodeBWorkloadAllowOutput)
 	}
+	startTCXWorkloadAgent(desiredWorkloadPolicyPriorityAllowWinsStateJSON(), false)
 
 	allowProbe := runAllowFailure(
 		t,
@@ -1961,6 +1986,7 @@ func TestDockerWorkloadPolicyPriorityConflict(t *testing.T) {
 	if allowProbe.exitCode != 0 {
 		t.Fatalf("policy priority expected allow state to pass traffic, probe output: %s", allowProbe.output)
 	}
+	runAllowFailure(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "pkill", "-f", "/netloom/bin/netloom-agent")
 }
 
 func TestDockerControllerReconcileIPv6VPC(t *testing.T) {
@@ -2081,6 +2107,11 @@ func TestDockerControllerReconcileDualStackVPC(t *testing.T) {
 	if !strings.Contains(reconcileOutput, "reconciled desired state") {
 		t.Fatalf("dual-stack desired-state reconcile did not succeed:\n%s", reconcileOutput)
 	}
+	for _, expected := range []string{"policy_routes=2", "load_balancers=2"} {
+		if !strings.Contains(reconcileOutput, expected) {
+			t.Fatalf("dual-stack reconcile output missing %q:\n%s", expected, reconcileOutput)
+		}
+	}
 
 	v4EndpointID := endpointExternalIDForOVN("dual", "dual-pod-v4")
 	v6EndpointID := endpointExternalIDForOVN("dual", "dual-pod-v6")
@@ -2109,17 +2140,92 @@ func TestDockerControllerReconcileDualStackVPC(t *testing.T) {
 		t.Fatalf("unexpected IPv4 address on IPv6 endpoint logical port:\n%s", v6AddressOutput)
 	}
 
+	v4DHCPOptionsID := strings.TrimSpace(run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "lsp-get-dhcpv4-options", v4Ports[0]))
+	if v4DHCPOptionsID == "" || v4DHCPOptionsID == "[]" {
+		t.Fatalf("dual-stack IPv4 endpoint DHCP options were not bound: %q", v4DHCPOptionsID)
+	}
+	v4DHCPOptionsID = strings.Fields(v4DHCPOptionsID)[0]
+	v4DHCPOptions := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "dhcp-options-get-options", v4DHCPOptionsID)
+	for _, expected := range []string{"lease_time=3600", "router=10.245.0.1", "server_id=10.245.0.1", "dns_server=[\"10.96.0.10\"]"} {
+		if !strings.Contains(v4DHCPOptions, expected) {
+			t.Fatalf("dual-stack IPv4 DHCP options missing %q:\n%s", expected, v4DHCPOptions)
+		}
+	}
+
+	v6DHCPOptionsID := strings.TrimSpace(run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "lsp-get-dhcpv6-options", v6Ports[0]))
+	if v6DHCPOptionsID == "" || v6DHCPOptionsID == "[]" {
+		t.Fatalf("dual-stack IPv6 endpoint DHCP options were not bound: %q", v6DHCPOptionsID)
+	}
+	v6DHCPOptionsID = strings.Fields(v6DHCPOptionsID)[0]
+	v6DHCPOptions := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "dhcp-options-get-options", v6DHCPOptionsID)
+	for _, expected := range []string{"dns_server=[\"fd00:96::10\"]", "domain_name=dual.internal"} {
+		if !strings.Contains(v6DHCPOptions, expected) {
+			t.Fatalf("dual-stack IPv6 DHCP options missing %q:\n%s", expected, v6DHCPOptions)
+		}
+	}
+
+	v4LB := findLoadBalancerForVIP(t, ctx, composeFile, "dual", "dual-web-v4", "10.96.0.40:80")
+	if v4LB == "" {
+		t.Fatal("expected IPv4 dual-stack load balancer row for VIP 10.96.0.40:80")
+	}
+	v4LBState := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "lb-list", v4LB)
+	for _, expected := range []string{"10.96.0.40:80", "10.245.0.10:8080"} {
+		if !strings.Contains(v4LBState, expected) {
+			t.Fatalf("dual-stack IPv4 LB state missing %q:\n%s", expected, v4LBState)
+		}
+	}
+	v4LBHC := activeManagedRows(t, ctx, composeFile, "Load_Balancer_Health_Check", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=dual", "external_ids:netloom_load_balancer=dual-web-v4")
+	if len(v4LBHC) != 1 {
+		t.Fatalf("expected one IPv4 dual-stack load balancer health check row, got %v", v4LBHC)
+	}
+
+	v6LB := findLoadBalancerForVIP(t, ctx, composeFile, "dual", "dual-web-v6", "[fd00:96::40]:80")
+	if v6LB == "" {
+		t.Fatal("expected IPv6 dual-stack load balancer row for VIP [fd00:96::40]:80")
+	}
+	v6LBState := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "lb-list", v6LB)
+	for _, expected := range []string{"[fd00:96::40]:80", "[fd00:20:20::10]:8080"} {
+		if !strings.Contains(v6LBState, expected) {
+			t.Fatalf("dual-stack IPv6 LB state missing %q:\n%s", expected, v6LBState)
+		}
+	}
+	v6LBHC := activeManagedRows(t, ctx, composeFile, "Load_Balancer_Health_Check", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=dual", "external_ids:netloom_load_balancer=dual-web-v6")
+	if len(v6LBHC) != 1 {
+		t.Fatalf("expected one IPv6 dual-stack load balancer health check row, got %v", v6LBHC)
+	}
+
 	routers := activeManagedRows(t, ctx, composeFile, "logical_router", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=dual")
 	if len(routers) != 1 {
 		t.Fatalf("expected one dual-stack logical router, got %v", routers)
+	}
+	policyState := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "lr-policy-list", routers[0])
+	for _, expected := range []string{"ip4.src == 10.245.0.0/24", "ip4.dst == 198.51.100.0/24", "10.245.0.254", "ip6.src == fd00:20:20::/64", "ip6.dst == 2001:db8:100::/64", "fd00:20:20::fe"} {
+		if !strings.Contains(policyState, expected) {
+			t.Fatalf("dual-stack OVN policy route state missing %q:\n%s", expected, policyState)
+		}
 	}
 	switches := activeManagedRows(t, ctx, composeFile, "logical_switch", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=dual")
 	if len(switches) != 2 {
 		t.Fatalf("expected two dual-stack logical switches (v4/v6), got %v", switches)
 	}
+	loadBalancers := activeManagedRows(t, ctx, composeFile, "load_balancer", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=dual")
+	if len(loadBalancers) != 2 {
+		t.Fatalf("expected two dual-stack load balancer rows (v4/v6), got %v", loadBalancers)
+	}
 	nat := activeManagedRows(t, ctx, composeFile, "NAT", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=dual")
-	if len(nat) != 0 {
-		t.Fatalf("unexpected managed NAT rows for dual-stack VPC without NAT rules: %v", nat)
+	if len(nat) != 3 {
+		t.Fatalf("expected three managed dual-stack NAT rows (v4 snat, v6 snat, v6 dnat), got %v", nat)
+	}
+	var natDetails []string
+	for _, uuid := range nat {
+		detail := strings.TrimSpace(run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "--bare", "get", "NAT", uuid, "type", "external_ip", "logical_ip"))
+		natDetails = append(natDetails, detail)
+	}
+	joinedNATDetails := strings.ReplaceAll(strings.Join(natDetails, "\n"), "\"", "")
+	for _, expected := range []string{"snat\n198.51.100.40\n10.245.0.0/24", "snat\n2001:db8:ffff::40\nfd00:20:20::/64", "dnat\n2001:db8:ffff::41\nfd00:20:20::10"} {
+		if !strings.Contains(joinedNATDetails, expected) {
+			t.Fatalf("dual-stack NAT detail missing %q:\n%s", expected, joinedNATDetails)
+		}
 	}
 }
 
@@ -2321,12 +2427,25 @@ func desiredStateDualStackJSON() string {
 	return `{
   "vpcs": [{"name": "dual"}],
   "subnets": [
-    {"name": "apps-v4", "vpc": "dual", "cidr": "10.245.0.0/24", "gateway": "10.245.0.1"},
-    {"name": "apps-v6", "vpc": "dual", "cidr": "fd00:20:20::/64", "gateway": "fd00:20:20::1"}
+    {"name": "apps-v4", "vpc": "dual", "cidr": "10.245.0.0/24", "gateway": "10.245.0.1", "dhcp": {"enabled": true, "dns_servers": ["10.96.0.10"], "domain_name": "dual.internal"}},
+    {"name": "apps-v6", "vpc": "dual", "cidr": "fd00:20:20::/64", "gateway": "fd00:20:20::1", "dhcp": {"enabled": true, "dns_servers": ["fd00:96::10"], "domain_name": "dual.internal"}}
   ],
   "endpoints": [
     {"id": "dual-pod-v4", "vpc": "dual", "subnet": "apps-v4", "ip": "10.245.0.10", "node": "node-a", "security_groups": ["dual-allow"]},
     {"id": "dual-pod-v6", "vpc": "dual", "subnet": "apps-v6", "ip": "fd00:20:20::10", "node": "node-a", "security_groups": ["dual-allow"]}
+  ],
+  "policy_routes": [
+    {"name": "v4-fw", "vpc": "dual", "priority": 100, "match": {"source": "10.245.0.0/24", "destination": "198.51.100.0/24", "protocol": "tcp", "dst_ports": [{"from": 443, "to": 443}]}, "action": {"type": "reroute", "next_hops": ["10.245.0.254"]}},
+    {"name": "v6-fw", "vpc": "dual", "priority": 110, "match": {"source": "fd00:20:20::/64", "destination": "2001:db8:100::/64", "protocol": "tcp", "dst_ports": [{"from": 8443, "to": 8443}]}, "action": {"type": "reroute", "next_hops": ["fd00:20:20::fe"]}}
+  ],
+  "load_balancers": [
+    {"name": "dual-web-v4", "vpc": "dual", "vip": "10.96.0.40", "ports": [{"name": "http", "port": 80, "protocol": "tcp", "backends": [{"ip": "10.245.0.10", "port": 8080}]}], "subnets": ["apps-v4"], "health_check": {"enabled": true, "interval": 5, "timeout": 20, "success_count": 2, "failure_count": 3}},
+    {"name": "dual-web-v6", "vpc": "dual", "vip": "fd00:96::40", "ports": [{"name": "http", "port": 80, "protocol": "tcp", "backends": [{"ip": "fd00:20:20::10", "port": 8080}]}], "subnets": ["apps-v6"], "health_check": {"enabled": true, "interval": 5, "timeout": 20, "success_count": 2, "failure_count": 3}}
+  ],
+  "nat_rules": [
+    {"name": "v4-egress", "vpc": "dual", "type": "snat", "match_cidr": "10.245.0.0/24", "external_ip": "198.51.100.40"},
+    {"name": "v6-egress", "vpc": "dual", "type": "snat", "match_cidr": "fd00:20:20::/64", "external_ip": "2001:db8:ffff::40"},
+    {"name": "v6-api", "vpc": "dual", "type": "dnat", "external_ip": "2001:db8:ffff::41", "target_ip": "fd00:20:20::10"}
   ],
   "security_groups": [{"name": "dual-allow", "vpc": "dual", "rules": [{"id": "allow-all", "priority": 100, "direction": "ingress", "protocol": "any", "remote_cidr": "0.0.0.0/0", "action": "allow"}, {"id": "allow-all-v6", "priority": 100, "direction": "ingress", "protocol": "any", "remote_cidr": "::/0", "action": "allow"}]}]
 }`

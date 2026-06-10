@@ -3,6 +3,7 @@ package ovn
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"fmt"
 	"net/netip"
 	"sort"
@@ -106,13 +107,13 @@ func (p *Planner) EnsureEndpoint(_ context.Context, endpoint model.Endpoint) err
 	p.ops = append(p.ops,
 		Operation{Command: "lsp-add", Flags: []string{"--may-exist"}, Args: []string{logicalSwitch(endpoint.VPC, endpoint.Subnet), port}},
 		Operation{Command: "lsp-set-addresses", Args: []string{port, endpointAddress(endpoint)}},
-		setOperation("logical_switch_port", port, "external_ids:netloom_owner=netloom", "external_ids:netloom_endpoint="+endpoint.ID, "external_ids:netloom_node="+endpoint.Node, "external_ids:netloom_vpc="+endpoint.VPC, "external_ids:netloom_subnet="+endpoint.Subnet),
+		setOperation("logical_switch_port", port, "external_ids:netloom_owner=netloom", "external_ids:netloom_endpoint="+endpointExternalID(endpoint.VPC, endpoint.ID), "external_ids:netloom_node="+endpoint.Node, "external_ids:netloom_vpc="+endpoint.VPC, "external_ids:netloom_subnet="+endpoint.Subnet),
 		Operation{Command: "lsp-set-dhcpv4-options", Args: []string{port}},
 		Operation{Command: "lsp-set-dhcpv6-options", Args: []string{port}},
 	)
 	subnet, hasSubnet := p.subnets[subnetStateKey(endpoint.VPC, endpoint.Subnet)]
 	if hasSubnet {
-		p.ops = append(p.ops, gcDHCPOptionsOperation(endpoint.ID, endpoint.VPC))
+		p.ops = append(p.ops, gcDHCPOptionsOperation(endpoint))
 	}
 	if endpoint.NormalizedMAC() != "" {
 		p.ops = append(p.ops, Operation{Command: "lsp-set-port-security", Args: []string{port, endpointAddress(endpoint)}})
@@ -228,6 +229,7 @@ func (p *Planner) EnsureNATRule(_ context.Context, rule model.NATRule) error {
 	switch rule.Type {
 	case model.ActionSNAT:
 		p.ops = append(p.ops, Operation{Command: "lr-nat-add", Flags: []string{"--may-exist"}, Args: []string{router, "snat", rule.ExternalIP.String(), rule.MatchCIDR.String()}})
+		p.ops = append(p.ops, tagNATRuleOperation(rule))
 	case model.ActionDNAT:
 		if natUsesManagedRecord(rule) {
 			uuid := natRuleNamedUUID(rule)
@@ -244,6 +246,7 @@ func (p *Planner) EnsureNATRule(_ context.Context, rule model.NATRule) error {
 			op.Args = append(op.Args, fmt.Sprint(rule.ExternalPort))
 		}
 		p.ops = append(p.ops, op)
+		p.ops = append(p.ops, tagNATRuleOperation(rule))
 	case model.ActionDNATSNAT:
 		if natUsesManagedRecord(rule) {
 			uuid := natRuleNamedUUID(rule)
@@ -259,6 +262,7 @@ func (p *Planner) EnsureNATRule(_ context.Context, rule model.NATRule) error {
 			args = append(args, rule.LogicalPort, rule.ExternalMAC)
 		}
 		p.ops = append(p.ops, Operation{Command: "lr-nat-add", Flags: []string{"--may-exist"}, Args: args})
+		p.ops = append(p.ops, tagNATRuleOperation(rule))
 	}
 	return nil
 }
@@ -295,6 +299,33 @@ func (p *Planner) Operations() []Operation {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return append([]Operation(nil), p.ops...)
+}
+
+func (p *Planner) OperationCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.ops)
+}
+
+func (p *Planner) OperationsSince(start int, discard bool) []Operation {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if start < 0 {
+		start = 0
+	}
+	if start > len(p.ops) {
+		start = len(p.ops)
+	}
+	out := append([]Operation(nil), p.ops[start:]...)
+	if !discard {
+		return out
+	}
+	if start == 0 {
+		p.ops = nil
+		return out
+	}
+	p.ops = append([]Operation(nil), p.ops[:start]...)
+	return out
 }
 
 func (p *Planner) DiscardOperations(n int) {
@@ -454,7 +485,7 @@ func dhcpv4OptionsArgs(subnet model.Subnet, endpoint model.Endpoint) []string {
 		fmt.Sprintf("options:lease_time=%d", leaseTime),
 		"external_ids:netloom_owner=netloom",
 		"external_ids:netloom_subnet=" + subnet.Name,
-		"external_ids:netloom_endpoint=" + endpoint.ID,
+		"external_ids:netloom_endpoint=" + endpointExternalID(endpoint.VPC, endpoint.ID),
 		"external_ids:netloom_vpc=" + endpoint.VPC,
 	}
 	if subnet.DHCP.MTU != 0 {
@@ -467,11 +498,11 @@ func dhcpv4OptionsArgs(subnet model.Subnet, endpoint model.Endpoint) []string {
 func dhcpv6OptionsArgs(subnet model.Subnet, endpoint model.Endpoint) []string {
 	args := []string{
 		"DHCP_Options",
-		"cidr=" + subnet.CIDR.String(),
+		"cidr=" + ovnStringValue(subnet.CIDR.String()),
 		"options:server_id=" + deterministicMAC(subnet),
 		"external_ids:netloom_owner=netloom",
 		"external_ids:netloom_subnet=" + subnet.Name,
-		"external_ids:netloom_endpoint=" + endpoint.ID,
+		"external_ids:netloom_endpoint=" + endpointExternalID(endpoint.VPC, endpoint.ID),
 		"external_ids:netloom_vpc=" + endpoint.VPC,
 	}
 	args = append(args, dhcpDNSOptions(subnet)...)
@@ -542,6 +573,26 @@ func natUsesManagedRecord(rule model.NATRule) bool {
 	return (rule.Type == model.ActionDNAT || rule.Type == model.ActionDNATSNAT) &&
 		rule.ExternalPort != 0 &&
 		rule.TargetPort != 0
+}
+
+func tagNATRuleOperation(rule model.NATRule) Operation {
+	return Operation{
+		Command: "tag-nat-rule",
+		Args: []string{
+			rule.Name,
+			rule.VPC,
+			natType(rule.Type),
+			rule.ExternalIP.String(),
+			natTagLogicalIP(rule),
+		},
+	}
+}
+
+func natTagLogicalIP(rule model.NATRule) string {
+	if rule.Type == model.ActionSNAT {
+		return rule.MatchCIDR.String()
+	}
+	return rule.TargetIP.String()
 }
 
 func natPortTranslationArgs(rule model.NATRule) []string {
@@ -645,8 +696,12 @@ func loadBalancerProtocolNamesFromFrontends(vpc, lbName string, frontendsByProto
 	return names
 }
 
-func gcDHCPOptionsOperation(endpoint, vpc string) Operation {
-	return Operation{Command: "gc-dhcp-options", Args: []string{endpoint, vpc}}
+func gcDHCPOptionsOperation(endpoint model.Endpoint) Operation {
+	return Operation{Command: "gc-dhcp-options", Args: []string{endpointExternalID(endpoint.VPC, endpoint.ID), endpoint.VPC}}
+}
+
+func endpointExternalID(vpc, endpoint string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(model.EndpointKey(vpc, endpoint)))
 }
 
 func gcLoadBalancerHealthChecksOperation(loadBalancer, vpc string) Operation {
@@ -710,7 +765,7 @@ func loadBalancerHealthCheckArgs(lb model.LoadBalancer, frontend model.LoadBalan
 	}
 	return []string{
 		"Load_Balancer_Health_Check",
-		"vip=" + loadBalancerFrontendVIP(frontend),
+		"vip=" + ovnStringValue(loadBalancerFrontendVIP(frontend)),
 		fmt.Sprintf("options:interval=%d", interval),
 		fmt.Sprintf("options:timeout=%d", timeout),
 		fmt.Sprintf("options:success_count=%d", successCount),
@@ -747,9 +802,13 @@ func ovnStringSetValues(values []string) string {
 	sort.Strings(values)
 	quoted := make([]string, 0, len(values))
 	for _, value := range values {
-		quoted = append(quoted, `"`+value+`"`)
+		quoted = append(quoted, ovnStringValue(value))
 	}
 	return "[" + strings.Join(quoted, ",") + "]"
+}
+
+func ovnStringValue(value string) string {
+	return `"` + value + `"`
 }
 
 func policyRouteMatch(match model.RouteMatch) string {
