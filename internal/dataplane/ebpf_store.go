@@ -50,6 +50,10 @@ func (s *EBPFPolicyStore) ReplaceEndpoint(ctx context.Context, endpointID string
 	plan := PlanPolicyUpdate(s.entries[endpointID], entries)
 	previousRevision := s.revisions[endpointID]
 	revision := previousRevision + 1
+	if err := s.validatePolicyMapCapacity(endpointID, entries); err != nil {
+		s.recordPolicyUpdateFailure(endpointID, previousRevision, revision, plan.Stats(), err)
+		return err
+	}
 
 	next, err := ebpf.NewMap(&ebpf.MapSpec{
 		Name:       mapName(endpointID),
