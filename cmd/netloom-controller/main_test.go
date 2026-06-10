@@ -48,6 +48,25 @@ func TestNBCTLTimeoutRejectsInvalidValue(t *testing.T) {
 	}
 }
 
+func TestNBCTLRetryAttemptsParsesValue(t *testing.T) {
+	t.Setenv("NETLOOM_OVN_NBCTL_RETRY_ATTEMPTS", "5")
+	attempts, err := nbctlRetryAttempts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 5 {
+		t.Fatalf("retry attempts = %d, want 5", attempts)
+	}
+}
+
+func TestNBCTLRetryAttemptsRejectsInvalidValue(t *testing.T) {
+	t.Setenv("NETLOOM_OVN_NBCTL_RETRY_ATTEMPTS", "often")
+	_, err := nbctlRetryAttempts()
+	if err == nil {
+		t.Fatal("expected invalid nbctl retry attempts to fail")
+	}
+}
+
 func TestApplyLoadBalancerHealthChecksDisabledByDefault(t *testing.T) {
 	state := control.DesiredState{LoadBalancers: []model.LoadBalancer{{
 		Name:        "web",

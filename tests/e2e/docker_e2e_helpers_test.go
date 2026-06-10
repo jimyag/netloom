@@ -152,6 +152,63 @@ func findLogicalPortByEndpointID(t *testing.T, ctx context.Context, composeFile,
 	return strings.TrimSpace(result.output)
 }
 
+func detectDefaultEBPFPolicyMapRoot(t *testing.T, ctx context.Context, composeFile, service string) string {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		output := runAllowFailure(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", service, "sh", "-c", "for dir in /sys/fs/bpf/netloom/policy /var/run/netloom-ebpf/policy; do if [ -d \"$dir\" ] && ls \"$dir\"/nlp* >/dev/null 2>&1; then echo \"$dir\"; exit 0; fi; done; exit 1")
+		if output.exitCode == 0 {
+			return strings.TrimSpace(output.output)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	debug := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", service, "sh", "-c", "ls -la /sys/fs/bpf/netloom 2>/dev/null || true; ls -la /var/run/netloom-ebpf 2>/dev/null || true")
+	t.Fatalf("default eBPF policy map root did not appear on %s:\n%s", service, debug)
+	return ""
+}
+
+func waitForEBPFPolicyMapCount(t *testing.T, ctx context.Context, composeFile, service, root string, want int) {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		output := runAllowFailure(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", service, "sh", "-c", "count=$(find "+root+" -maxdepth 1 -type f | wc -l); [ \"$count\" = \""+fmt.Sprint(want)+"\" ] && exit 0 || { echo \"$count\"; exit 1; }")
+		if output.exitCode == 0 {
+			return
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	debug := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", service, "sh", "-c", "find "+root+" -maxdepth 1 -type f | sort")
+	t.Fatalf("eBPF policy map count under %s did not converge to %d:\n%s", root, want, debug)
+}
+
+func waitForEBPFPolicyMetadataCount(t *testing.T, ctx context.Context, composeFile, service, root string, want int) {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		output := runAllowFailure(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", service, "sh", "-c", "count=$(find "+root+" -maxdepth 1 -name '*.meta' | wc -l); [ \"$count\" = \""+fmt.Sprint(want)+"\" ] && exit 0 || { echo \"$count\"; exit 1; }")
+		if output.exitCode == 0 {
+			return
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	debug := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", service, "sh", "-c", "find "+root+" -maxdepth 1 -name '*.meta' | sort")
+	t.Fatalf("eBPF policy metadata count under %s did not converge to %d:\n%s", root, want, debug)
+}
+
+func waitForManagedLinkCount(t *testing.T, ctx context.Context, composeFile, service, prefix string, want int) {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		output := runAllowFailure(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", service, "sh", "-c", "count=$(ip -o link show | awk -F': ' '{print $2}' | cut -d@ -f1 | grep '^"+prefix+"' | wc -l); [ \"$count\" = \""+fmt.Sprint(want)+"\" ] && exit 0 || { echo \"$count\"; exit 1; }")
+		if output.exitCode == 0 {
+			return
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	debug := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", service, "sh", "-c", "ip -o link show | awk -F': ' '{print $2}' | cut -d@ -f1 | sort")
+	t.Fatalf("managed link prefix %s count on %s did not converge to %d:\n%s", prefix, service, want, debug)
+}
+
 func findLoadBalancerForVIP(t *testing.T, ctx context.Context, composeFile, vpc, name, vip string) string {
 	t.Helper()
 	result := runAllowFailure(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "--bare", "--no-heading", "--columns=name", "find", "load_balancer", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc="+vpc, "external_ids:netloom_load_balancer="+name)

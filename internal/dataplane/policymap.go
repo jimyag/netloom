@@ -84,6 +84,13 @@ type PolicyUpdatePlan struct {
 	Unchanged []PolicyMapEntry
 }
 
+type policyUpdateStep int
+
+const (
+	policyUpdateStepAddUpdate policyUpdateStep = iota + 1
+	policyUpdateStepDelete
+)
+
 type PolicyStore interface {
 	ReplaceEndpoint(ctx context.Context, endpointID string, entries []PolicyMapEntry) error
 	DeleteEndpoint(ctx context.Context, endpointID string) error
@@ -115,23 +122,29 @@ func (s *InMemoryPolicyStore) ReplaceEndpoint(_ context.Context, endpointID stri
 	previousRevision := s.revisions[endpointID]
 	revision := previousRevision + 1
 	applied := 0
-	for _, key := range plan.Delete {
-		if s.failAfter > 0 && applied >= s.failAfter {
-			err := fmt.Errorf("in-memory policy update failed after %d operations", applied)
-			s.recordPolicyUpdateFailure(endpointID, previousRevision, revision, plan.Stats(), err)
-			return err
+	for _, step := range policyUpdateSequence(len(s.endpoints[endpointID]), plan, 0, false) {
+		switch step {
+		case policyUpdateStepAddUpdate:
+			for _, entry := range append(append([]PolicyMapEntry(nil), plan.Add...), plan.Update...) {
+				if s.failAfter > 0 && applied >= s.failAfter {
+					err := fmt.Errorf("in-memory policy update failed after %d operations", applied)
+					s.recordPolicyUpdateFailure(endpointID, previousRevision, revision, plan.Stats(), err)
+					return err
+				}
+				next = upsertEntry(next, entry)
+				applied++
+			}
+		case policyUpdateStepDelete:
+			for _, key := range plan.Delete {
+				if s.failAfter > 0 && applied >= s.failAfter {
+					err := fmt.Errorf("in-memory policy update failed after %d operations", applied)
+					s.recordPolicyUpdateFailure(endpointID, previousRevision, revision, plan.Stats(), err)
+					return err
+				}
+				next = deleteEntry(next, key)
+				applied++
+			}
 		}
-		next = deleteEntry(next, key)
-		applied++
-	}
-	for _, entry := range append(append([]PolicyMapEntry(nil), plan.Add...), plan.Update...) {
-		if s.failAfter > 0 && applied >= s.failAfter {
-			err := fmt.Errorf("in-memory policy update failed after %d operations", applied)
-			s.recordPolicyUpdateFailure(endpointID, previousRevision, revision, plan.Stats(), err)
-			return err
-		}
-		next = upsertEntry(next, entry)
-		applied++
 	}
 	stats := plan.Stats()
 	stats.Revision = revision
@@ -423,6 +436,16 @@ func PlanPolicyUpdate(oldEntries, newEntries []PolicyMapEntry) PolicyUpdatePlan 
 	}
 	sortPlan(&plan)
 	return plan
+}
+
+func policyUpdateSequence(oldEntryCount int, plan PolicyUpdatePlan, maxEntries uint32, fullRewrite bool) []policyUpdateStep {
+	if fullRewrite {
+		return []policyUpdateStep{policyUpdateStepAddUpdate}
+	}
+	if maxEntries == 0 || oldEntryCount+len(plan.Add) <= int(maxEntries) {
+		return []policyUpdateStep{policyUpdateStepAddUpdate, policyUpdateStepDelete}
+	}
+	return []policyUpdateStep{policyUpdateStepDelete, policyUpdateStepAddUpdate}
 }
 
 func (p PolicyUpdatePlan) Stats() PolicyUpdateStats {

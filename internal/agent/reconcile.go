@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"fmt"
+	"net/netip"
+	"sync"
 	"time"
 
 	"github.com/cilium/ebpf"
@@ -56,13 +58,14 @@ type PolicyUsageStore interface {
 }
 
 type ReconcileOptions struct {
-	Node          string
-	Store         PolicyStore
-	TCXInterface  string
-	TCXWorkload   bool
-	TCXHold       time.Duration
-	ConntrackIdle time.Duration
-	LinuxDatapath *linuxdatapath.Options
+	Node             string
+	Store            PolicyStore
+	IdentityResolver policy.IdentityResolver
+	TCXInterface     string
+	TCXWorkload      bool
+	TCXHold          time.Duration
+	ConntrackIdle    time.Duration
+	LinuxDatapath    *linuxdatapath.Options
 }
 
 type tcxTarget struct {
@@ -82,6 +85,7 @@ type tcxAttachFunc func(context.Context, tcxTarget) (tcxAttachmentHandle, error)
 
 type Reconciler struct {
 	store               PolicyStore
+	mu                  sync.Mutex
 	attachments         map[string]tcxAttachmentHandle
 	attach              tcxAttachFunc
 	conntrack           *dataplane.InMemoryConntrackStore
@@ -123,6 +127,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, state control.DesiredState, 
 	if r == nil {
 		return ReconcileResult{}, fmt.Errorf("reconciler is required")
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if options.Store == nil {
 		options.Store = r.store
 	}
@@ -156,7 +162,20 @@ func (r *Reconciler) syncPolicyStore(ctx context.Context, programs []policy.Prog
 	for _, program := range programs {
 		desired[program.EndpointID] = struct{}{}
 	}
+	tracked := make(map[string]struct{}, len(r.policyEndpoints))
 	for endpointID := range r.policyEndpoints {
+		tracked[endpointID] = struct{}{}
+	}
+	if inventory, ok := store.(PolicyEndpointInventory); ok {
+		endpointIDs, err := inventory.EndpointIDs(ctx)
+		if err != nil {
+			return fmt.Errorf("list managed policy endpoints: %w", err)
+		}
+		for _, endpointID := range endpointIDs {
+			tracked[endpointID] = struct{}{}
+		}
+	}
+	for endpointID := range tracked {
 		if _, ok := desired[endpointID]; ok {
 			continue
 		}
@@ -175,6 +194,8 @@ func (r *Reconciler) Close() error {
 	if r == nil {
 		return nil
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	return r.closeTCXAttachments()
 }
 
@@ -228,6 +249,10 @@ func prepareReconcile(ctx context.Context, state control.DesiredState, options R
 	result := ReconcileResult{Node: options.Node, TCX: "not-requested", Datapath: "not-requested"}
 	var localPrograms []policy.Program
 	var tcxPrograms []policy.Program
+	resolver := options.IdentityResolver
+	if resolver == nil {
+		resolver = policy.NewIdentityCache()
+	}
 	for _, endpoint := range state.Endpoints {
 		if endpoint.Node != options.Node {
 			continue
@@ -301,6 +326,30 @@ func prepareReconcile(ctx context.Context, state control.DesiredState, options R
 		}
 	}
 	return result, targets, localPrograms, nil
+}
+
+func populatePolicyMapUsageResult(ctx context.Context, store PolicyStore, result *ReconcileResult) error {
+	if result == nil {
+		return nil
+	}
+	usageStore, ok := store.(PolicyUsageStore)
+	if !ok {
+		result.PolicyMapEntries = 0
+		result.PolicyMapCapacity = 0
+		result.PolicyMapPressureMax = 0
+		result.PolicyMapPressureEndpoints = 0
+		return nil
+	}
+	usages, err := usageStore.PolicyMapUsage(ctx)
+	if err != nil {
+		return fmt.Errorf("read policy map usage: %w", err)
+	}
+	summary := dataplane.SummarizePolicyMapUsage(usages)
+	result.PolicyMapEntries = summary.Entries
+	result.PolicyMapCapacity = summary.Capacity
+	result.PolicyMapPressureMax = summary.MaxPressurePercent
+	result.PolicyMapPressureEndpoints = summary.PressureEndpoints
+	return nil
 }
 
 func securityGroupsForEndpointVPC(groups []model.SecurityGroup, vpc string) map[string]model.SecurityGroup {
@@ -391,23 +440,50 @@ func tcxTargets(options ReconcileOptions, programs []policy.Program) ([]tcxTarge
 		return nil, nil
 	}
 	ingressPrograms := make([]policy.Program, 0, len(programs))
+	egressPrograms := make([]policy.Program, 0, len(programs))
 	for _, program := range programs {
 		if tcxEligibleProgramForDirection(program, model.DirectionIngress) {
 			ingressPrograms = append(ingressPrograms, program)
 		}
+		if tcxEligibleProgramForDirection(program, model.DirectionEgress) {
+			egressPrograms = append(egressPrograms, program)
+		}
 	}
-	if len(ingressPrograms) == 0 {
+	if len(ingressPrograms) == 0 && len(egressPrograms) == 0 {
 		return nil, nil
 	}
-	if len(ingressPrograms) > 1 {
-		return nil, fmt.Errorf("tcx interface %s cannot safely attach ingress policy for %d endpoints; use workload TCX", options.TCXInterface, len(ingressPrograms))
+	targets := make([]tcxTarget, 0, 2)
+	if len(ingressPrograms) > 0 {
+		targetPrograms := ingressPrograms
+		if len(targetPrograms) == 1 {
+			targetPrograms = []policy.Program{tcxInterfaceProgram(targetPrograms[0])}
+		}
+		targets = append(targets, tcxTarget{
+			ifName:          options.TCXInterface,
+			attach:          ebpf.AttachTCXIngress,
+			policyDirection: model.DirectionIngress,
+			programs:        targetPrograms,
+		})
 	}
-	return []tcxTarget{{
-		ifName:          options.TCXInterface,
-		attach:          ebpf.AttachTCXIngress,
-		policyDirection: model.DirectionIngress,
-		programs:        ingressPrograms,
-	}}, nil
+	if len(egressPrograms) > 0 {
+		targetPrograms := egressPrograms
+		if len(targetPrograms) == 1 {
+			targetPrograms = []policy.Program{tcxInterfaceProgram(targetPrograms[0])}
+		}
+		targets = append(targets, tcxTarget{
+			ifName:          options.TCXInterface,
+			attach:          ebpf.AttachTCXEgress,
+			policyDirection: model.DirectionEgress,
+			programs:        targetPrograms,
+		})
+	}
+	return targets, nil
+}
+
+func tcxInterfaceProgram(program policy.Program) policy.Program {
+	cloned := program
+	cloned.EndpointIP = netip.Addr{}
+	return cloned
 }
 
 func tcxEligibleProgram(program policy.Program) bool {
@@ -455,7 +531,7 @@ func attachTCXTargets(ctx context.Context, targets []tcxTarget, hold time.Durati
 func (r *Reconciler) syncTCXTargets(ctx context.Context, targets []tcxTarget) (string, error) {
 	if len(targets) == 0 {
 		if err := r.closeTCXAttachments(); err != nil {
-			return "", err
+			return "", fmt.Errorf("close stale tcx attachments: %w", err)
 		}
 		return "not-attached", nil
 	}
@@ -463,32 +539,43 @@ func (r *Reconciler) syncTCXTargets(ctx context.Context, targets []tcxTarget) (s
 	for _, target := range targets {
 		desired[tcxTargetKey(target)] = target
 	}
-	for key, attachment := range r.attachments {
-		if _, ok := desired[key]; !ok {
-			if err := attachment.close(); err != nil {
-				return "", err
-			}
-			delete(r.attachments, key)
-		}
-	}
+	next := make(map[string]tcxAttachmentHandle, len(desired))
+	attached := make([]string, 0, len(targets))
 	for key, target := range desired {
 		signature := tcxTargetSignature(target)
-		if old, ok := r.attachments[key]; ok && old.signature == signature {
+		old, hasOld := r.attachments[key]
+		if hasOld && old.signature == signature {
+			next[key] = old
 			continue
-		}
-		if old, ok := r.attachments[key]; ok {
-			if err := old.close(); err != nil {
-				return "", err
-			}
-			delete(r.attachments, key)
 		}
 		attachment, err := r.attach(ctx, target)
 		if err != nil {
-			return "", err
+			for i := len(attached) - 1; i >= 0; i-- {
+				stale := attached[i]
+				_ = next[stale].close()
+			}
+			return "", fmt.Errorf("attach tcx target %s: %w", tcxTargetLabel(target), err)
 		}
 		attachment.signature = signature
-		r.attachments[key] = attachment
+		next[key] = attachment
+		attached = append(attached, key)
 	}
+	var closeErr error
+	for key, attachment := range r.attachments {
+		if _, ok := next[key]; ok {
+			continue
+		}
+		if err := attachment.close(); err != nil && closeErr == nil {
+			closeErr = fmt.Errorf("close stale tcx attachment %s: %w", key, err)
+		}
+	}
+	if closeErr != nil {
+		for _, attachment := range next {
+			_ = attachment.close()
+		}
+		return "", closeErr
+	}
+	r.attachments = next
 	attachments := make([]tcxAttachmentHandle, 0, len(targets))
 	for _, target := range targets {
 		attachments = append(attachments, r.attachments[tcxTargetKey(target)])
@@ -500,7 +587,7 @@ func (r *Reconciler) closeTCXAttachments() error {
 	var firstErr error
 	for key, attachment := range r.attachments {
 		if err := attachment.close(); err != nil && firstErr == nil {
-			firstErr = err
+			firstErr = fmt.Errorf("close tcx attachment %s: %w", key, err)
 		}
 		delete(r.attachments, key)
 	}
@@ -510,7 +597,7 @@ func (r *Reconciler) closeTCXAttachments() error {
 func attachTCXTarget(ctx context.Context, target tcxTarget) (tcxAttachmentHandle, error) {
 	attachment, err := dataplane.AttachTCXL4ProgramsForDirection(ctx, target.ifName, target.programs, target.attach, target.policyDirection)
 	if err != nil {
-		return tcxAttachmentHandle{}, err
+		return tcxAttachmentHandle{}, fmt.Errorf("attach tcx target %s: %w", tcxTargetLabel(target), err)
 	}
 	return tcxAttachmentHandle{
 		result: attachment.Result,
@@ -526,20 +613,31 @@ func tcxTargetSignature(target tcxTarget) string {
 	return fmt.Sprintf("%s/%#v", tcxTargetKey(target), target.programs)
 }
 
+func tcxTargetLabel(target tcxTarget) string {
+	return fmt.Sprintf("iface=%s direction=%s attach=%d", target.ifName, target.policyDirection, target.attach)
+}
+
 func formatTCXResult(attachments []tcxAttachmentHandle) string {
 	first := attachments[0].result
 	if len(attachments) == 1 {
 		return fmt.Sprintf("attached:%s:%s:%s", first.Interface, first.Direction, first.Mode)
 	}
+	sameInterface := true
 	direction := first.Direction
 	mode := first.Mode
 	for _, attachment := range attachments[1:] {
+		if attachment.result.Interface != first.Interface {
+			sameInterface = false
+		}
 		if attachment.result.Direction != direction {
 			direction = "mixed"
 		}
 		if attachment.result.Mode != mode {
 			mode = "mixed"
 		}
+	}
+	if sameInterface {
+		return fmt.Sprintf("attached:%s:%s:%s", first.Interface, direction, mode)
 	}
 	return fmt.Sprintf("attached-workloads:%d:%s:%s", len(attachments), direction, mode)
 }

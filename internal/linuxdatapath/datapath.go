@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/netip"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -29,7 +30,8 @@ type Options struct {
 	Backend         string
 	LocalDevice     string
 	UnderlayDevice  string
-	NodeUnderlays   map[string]netip.Addr
+	NodeUnderlays   map[string][]netip.Addr
+	ProviderLinks   map[string]string
 	NetNSPrefix     string
 	WorkloadIF      string
 	HostGateway     netip.Addr
@@ -54,6 +56,12 @@ const (
 	linuxMainRouteTable        = 254
 	linuxPolicyRuleProtocolID  = 186
 	linuxRemoteRouteProtocolID = 187
+	providerLinkPrefix         = "nlv"
+)
+
+var (
+	defaultIPv4HostGateway = netip.MustParseAddr("169.254.1.1")
+	defaultIPv6HostGateway = netip.MustParseAddr("fd00::1")
 )
 
 func (CommandExecutor) Execute(ctx context.Context, op Operation) error {
@@ -117,9 +125,6 @@ func Plan(ctx context.Context, state control.DesiredState, options Options) ([]O
 		workloadIF = "eth0"
 	}
 	hostGateway := options.HostGateway
-	if !hostGateway.IsValid() {
-		hostGateway = netip.MustParseAddr("169.254.1.1")
-	}
 	policyTableBase := options.PolicyTableBase
 	if policyTableBase == 0 {
 		policyTableBase = 10000
@@ -131,6 +136,14 @@ func Plan(ctx context.Context, state control.DesiredState, options Options) ([]O
 
 	result := Result{Device: localDevice, Mode: mode, CleanupPlanned: options.CleanupStale}
 	var ops []Operation
+	providerSpecs, err := desiredProviderNetworkLinkSpecs(state, options.Node, options.ProviderLinks)
+	if err != nil {
+		return nil, Result{}, err
+	}
+	ops = append(ops, planProviderNetworkLinks(providerSpecs)...)
+	if options.CleanupStale {
+		ops = append(ops, planProviderNetworkLinkCleanup(providerSpecs))
+	}
 	if mode == "local" {
 		ops = append(ops, Operation{Command: "ip", Args: []string{"link", "set", localDevice, "up"}})
 	}
@@ -140,6 +153,7 @@ func Plan(ctx context.Context, state control.DesiredState, options Options) ([]O
 			shellOperation("sysctl -w net.ipv4.ip_forward=1 >/dev/null"),
 			shellOperation("sysctl -w net.ipv4.conf.all.rp_filter=0 >/dev/null"),
 			shellOperation("sysctl -w net.ipv4.conf.default.rp_filter=0 >/dev/null"),
+			shellOperation("sysctl -w net.ipv6.conf.all.forwarding=1 >/dev/null"),
 		)
 		if options.CleanupStale {
 			ops = append(ops, planNetNSCleanup(state, options.Node, options.NetNSPrefix))
@@ -148,7 +162,7 @@ func Plan(ctx context.Context, state control.DesiredState, options Options) ([]O
 	for _, endpoint := range state.Endpoints {
 		if endpoint.Node == options.Node {
 			if mode == "netns" {
-				ops = append(ops, planNetNSWorkload(model.EndpointKey(endpoint.VPC, endpoint.ID), endpoint.IP, workloadIF, hostGateway, options.NetNSPrefix)...)
+				ops = append(ops, planNetNSWorkload(model.EndpointKey(endpoint.VPC, endpoint.ID), endpoint.IP, workloadIF, workloadHostGateway(endpoint.IP, hostGateway), options.NetNSPrefix)...)
 			} else {
 				ops = append(ops, Operation{
 					Command: "ip",
@@ -159,7 +173,7 @@ func Plan(ctx context.Context, state control.DesiredState, options Options) ([]O
 			continue
 		}
 		prefix := endpoint.IP.String() + "/" + strconv.Itoa(addrPrefixBits(endpoint.IP))
-		nextHop, err := resolveNode(ctx, endpoint.Node, options.NodeUnderlays)
+		nextHop, err := resolveNode(ctx, endpoint.Node, endpoint.IP, options.NodeUnderlays)
 		if err != nil {
 			return nil, Result{}, fmt.Errorf("resolve underlay for node %s: %w", endpoint.Node, err)
 		}
@@ -169,8 +183,14 @@ func Plan(ctx context.Context, state control.DesiredState, options Options) ([]O
 		})
 		result.RemoteRoutes++
 	}
+	if options.CleanupStale && mode == "local" && localDevice != "lo" {
+		ops = append(ops, planLocalAddressCleanup(state, options.Node, localDevice))
+	}
 	if options.CleanupStale {
 		ops = append(ops, planRemoteRouteCleanup(state, options.Node, underlayDevice))
+	}
+	if options.CleanupStale && mode == "netns" {
+		ops = append(ops, planNetNSLocalRouteCleanup(state, options.Node))
 	}
 	policyOps, policyRoutes, err := planPolicyRoutes(state, options.Node, underlayDevice, policyTableBase, policyTableSize, options.CleanupStale)
 	if err != nil {
@@ -179,6 +199,78 @@ func Plan(ctx context.Context, state control.DesiredState, options Options) ([]O
 	ops = append(ops, policyOps...)
 	result.PolicyRoutes = policyRoutes
 	return ops, result, nil
+}
+
+type providerNetworkLinkSpec struct {
+	ProviderNetwork string
+	ParentDevice    string
+	VLAN            uint16
+	Name            string
+}
+
+func desiredProviderNetworkLinkSpecs(state control.DesiredState, node string, mappings map[string]string) ([]providerNetworkLinkSpec, error) {
+	subnets := make(map[string]model.Subnet, len(state.Subnets))
+	for _, subnet := range state.Subnets {
+		subnets[subnetStateKey(subnet.VPC, subnet.Name)] = subnet
+	}
+	seen := make(map[string]providerNetworkLinkSpec)
+	for _, endpoint := range state.Endpoints {
+		if endpoint.Node != node {
+			continue
+		}
+		subnet, ok := subnets[subnetStateKey(endpoint.VPC, endpoint.Subnet)]
+		if !ok || subnet.ProviderNetwork == "" || subnet.VLAN == 0 {
+			continue
+		}
+		parent := mappings[subnet.ProviderNetwork]
+		if parent == "" {
+			return nil, fmt.Errorf("provider network %q requires parent device mapping", subnet.ProviderNetwork)
+		}
+		spec := providerNetworkLinkSpec{
+			ProviderNetwork: subnet.ProviderNetwork,
+			ParentDevice:    parent,
+			VLAN:            subnet.VLAN,
+			Name:            providerNetworkLinkName(subnet.ProviderNetwork, parent, subnet.VLAN),
+		}
+		seen[providerNetworkLinkKey(spec)] = spec
+	}
+	keys := make([]string, 0, len(seen))
+	for key := range seen {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	specs := make([]providerNetworkLinkSpec, 0, len(keys))
+	for _, key := range keys {
+		specs = append(specs, seen[key])
+	}
+	return specs, nil
+}
+
+func providerNetworkLinkKey(spec providerNetworkLinkSpec) string {
+	return spec.ProviderNetwork + "|" + spec.ParentDevice + "|" + strconv.Itoa(int(spec.VLAN))
+}
+
+func providerNetworkLinkName(providerNetwork, parent string, vlan uint16) string {
+	return shortName(providerLinkPrefix, providerNetwork+"|"+parent+"|"+strconv.Itoa(int(vlan)))
+}
+
+func planProviderNetworkLinks(specs []providerNetworkLinkSpec) []Operation {
+	ops := make([]Operation, 0, len(specs)*2)
+	for _, spec := range specs {
+		ops = append(ops,
+			shellOperation("ip link show "+spec.Name+" >/dev/null 2>&1 || ip link add link "+spec.ParentDevice+" name "+spec.Name+" type vlan id "+strconv.Itoa(int(spec.VLAN))),
+			Operation{Command: "ip", Args: []string{"link", "set", spec.Name, "up"}},
+		)
+	}
+	return ops
+}
+
+func planProviderNetworkLinkCleanup(specs []providerNetworkLinkSpec) Operation {
+	names := make([]string, 0, len(specs))
+	for _, spec := range specs {
+		names = append(names, spec.Name)
+	}
+	return shellOperation("for link in $(ip -o link show | awk -F': ' '{print $2}' | cut -d@ -f1 | grep '^" + providerLinkPrefix + "' || true); do case '" + keepSet(names) + "' in *\" $link \"*) ;; *) ip link del \"$link\" 2>/dev/null || true ;; esac; done")
 }
 
 func planPolicyRoutes(state control.DesiredState, node, device string, tableBase, tableSize int, cleanup bool) ([]Operation, int, error) {
@@ -255,10 +347,37 @@ func planRemoteRouteCleanup(state control.DesiredState, node, device string) Ope
 	return shellOperation(script)
 }
 
+func planLocalAddressCleanup(state control.DesiredState, node, device string) Operation {
+	keep := keepSet(localEndpointPrefixes(state, node))
+	script := "for family in '' '-6'; do ip $family -o addr show dev " + device + " 2>/dev/null | awk '{print $4}' | while read -r addr; do case \"$addr\" in 127.0.0.1/8|::1/128) continue ;; esac; case \"$addr\" in */32|*/128) : ;; *) continue ;; esac; case '" + keep + "' in *\" $addr \"*) ;; *) ip $family addr del \"$addr\" dev " + device + " 2>/dev/null || true ;; esac; done; done"
+	return shellOperation(script)
+}
+
+func planNetNSLocalRouteCleanup(state control.DesiredState, node string) Operation {
+	keep := keepSet(localEndpointPrefixes(state, node))
+	script := "for family in '' '-6'; do ip $family -o route show table main 2>/dev/null | awk '{ dst=$1; dev=\"\"; for (i=1; i<=NF; i++) if ($i == \"dev\") { dev=$(i+1); break } if (dev ~ /^nlh/) print dst, dev }' | while read -r dst dev; do case '" + keep + "' in *\" $dst \"*) ;; *) ip $family route del \"$dst\" dev \"$dev\" 2>/dev/null || true ;; esac; done; done"
+	return shellOperation(script)
+}
+
 func remoteEndpointPrefixes(state control.DesiredState, node string) []string {
 	var prefixes []string
 	for _, endpoint := range state.Endpoints {
 		if endpoint.Node == node {
+			continue
+		}
+		prefixes = append(prefixes, endpointPrefix(endpoint.IP))
+	}
+	return prefixes
+}
+
+func subnetStateKey(vpc, subnet string) string {
+	return vpc + "\x00" + subnet
+}
+
+func localEndpointPrefixes(state control.DesiredState, node string) []string {
+	var prefixes []string
+	for _, endpoint := range state.Endpoints {
+		if endpoint.Node != node {
 			continue
 		}
 		prefixes = append(prefixes, endpointPrefix(endpoint.IP))
@@ -409,14 +528,16 @@ func planNetNSWorkload(endpointID string, ip netip.Addr, workloadIF string, host
 	ns := netnsName(endpointID, prefix)
 	hostVeth := HostVethName(endpointID)
 	peerVeth := peerVethName(endpointID)
+	workloadPrefix := endpointPrefix(ip)
 	return []Operation{
 		shellOperation("ip netns add " + ns + " 2>/dev/null || true"),
 		shellOperation("ip -n " + ns + " link show " + workloadIF + " >/dev/null 2>&1 || { ip link show " + hostVeth + " >/dev/null 2>&1 || ip link add " + hostVeth + " type veth peer name " + peerVeth + "; ip link set " + peerVeth + " netns " + ns + "; ip -n " + ns + " link set " + peerVeth + " name " + workloadIF + "; }"),
-		{Command: "ip", Args: []string{"addr", "replace", hostGateway.String() + "/" + strconv.Itoa(addrPrefixBits(hostGateway)), "dev", hostVeth}},
+		{Command: "ip", Args: ipAddrReplaceArgs(hostGateway, hostVeth)},
 		{Command: "ip", Args: []string{"link", "set", hostVeth, "up"}},
 		{Command: "ip", Args: []string{"route", "replace", ip.String() + "/" + strconv.Itoa(addrPrefixBits(ip)), "dev", hostVeth}},
 		{Command: "ip", Args: []string{"netns", "exec", ns, "ip", "link", "set", "lo", "up"}},
-		{Command: "ip", Args: []string{"netns", "exec", ns, "ip", "addr", "replace", ip.String() + "/" + strconv.Itoa(addrPrefixBits(ip)), "dev", workloadIF}},
+		shellOperation("ip -n " + ns + " -o addr show dev " + workloadIF + " 2>/dev/null | awk '{print $4}' | while read -r addr; do case \"$addr\" in 127.0.0.1/8|::1/128) continue ;; esac; case \"$addr\" in */32|*/128) : ;; *) continue ;; esac; case ' " + workloadPrefix + " ' in *\" $addr \"*) ;; *) ip -n " + ns + " addr del \"$addr\" dev " + workloadIF + " 2>/dev/null || true ;; esac; done"),
+		{Command: "ip", Args: append([]string{"netns", "exec", ns, "ip"}, ipAddrReplaceArgs(ip, workloadIF)...)},
 		{Command: "ip", Args: []string{"netns", "exec", ns, "ip", "link", "set", workloadIF, "up"}},
 		{Command: "ip", Args: []string{"netns", "exec", ns, "ip", "route", "replace", "default", "via", hostGateway.String(), "dev", workloadIF, "onlink"}},
 	}
@@ -427,6 +548,24 @@ func addrPrefixBits(addr netip.Addr) int {
 		return 128
 	}
 	return 32
+}
+
+func workloadHostGateway(ip, configured netip.Addr) netip.Addr {
+	if configured.IsValid() && configured.Is6() == ip.Is6() {
+		return configured
+	}
+	if ip.Is6() {
+		return defaultIPv6HostGateway
+	}
+	return defaultIPv4HostGateway
+}
+
+func ipAddrReplaceArgs(addr netip.Addr, dev string) []string {
+	args := []string{"addr", "replace", addr.String() + "/" + strconv.Itoa(addrPrefixBits(addr)), "dev", dev}
+	if addr.Is6() {
+		args = append(args, "nodad")
+	}
+	return args
 }
 
 func shellOperation(script string) Operation {
@@ -481,21 +620,30 @@ func sanitize(value string) string {
 	return out.String()
 }
 
-func resolveNode(ctx context.Context, node string, underlays map[string]netip.Addr) (netip.Addr, error) {
+func resolveNode(ctx context.Context, node string, targetIP netip.Addr, underlays map[string][]netip.Addr) (netip.Addr, error) {
 	if node == "" {
 		return netip.Addr{}, fmt.Errorf("node name is required")
 	}
-	if addr := underlays[node]; addr.IsValid() {
-		return addr, nil
+	for _, addr := range underlays[node] {
+		if addr.IsValid() && (!targetIP.IsValid() || addr.Is6() == targetIP.Is6()) {
+			return addr, nil
+		}
 	}
-	ips, err := net.DefaultResolver.LookupNetIP(ctx, "ip4", node)
+	network := "ip4"
+	if targetIP.IsValid() && targetIP.Is6() {
+		network = "ip6"
+	}
+	ips, err := net.DefaultResolver.LookupNetIP(ctx, network, node)
 	if err != nil {
 		return netip.Addr{}, err
 	}
 	for _, ip := range ips {
-		if ip.Is4() {
+		if !targetIP.IsValid() || ip.Is6() == targetIP.Is6() {
 			return ip, nil
 		}
+	}
+	if targetIP.Is6() {
+		return netip.Addr{}, fmt.Errorf("node %s has no IPv6 address", node)
 	}
 	return netip.Addr{}, fmt.Errorf("node %s has no IPv4 address", node)
 }

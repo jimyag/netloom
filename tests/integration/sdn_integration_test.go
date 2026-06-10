@@ -154,7 +154,7 @@ func TestDesiredStateDrivesTopologyRoutesAndEBPFStyleACL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dnatDecision.MatchedBy != "nat/web-dnat" || dnatDecision.Destination != "pod-b" || dnatDecision.Translated.String() != "10.10.0.11" {
+	if dnatDecision.MatchedBy != "nat/web-dnat" || dnatDecision.Destination != model.EndpointKey("prod", "pod-b") || dnatDecision.Translated.String() != "10.10.0.11" {
 		t.Fatalf("expected DNAT to resolve to pod-b, got: %+v", dnatDecision)
 	}
 	fipDecision, err := topology.Resolve(memoryBackend.TopologyState(), topology.Packet{
@@ -165,7 +165,7 @@ func TestDesiredStateDrivesTopologyRoutesAndEBPFStyleACL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fipDecision.MatchedBy != "nat/web-fip" || fipDecision.Destination != "pod-b" || fipDecision.Translated.String() != "10.10.0.11" {
+	if fipDecision.MatchedBy != "nat/web-fip" || fipDecision.Destination != model.EndpointKey("prod", "pod-b") || fipDecision.Translated.String() != "10.10.0.11" {
 		t.Fatalf("expected floating IP to resolve to pod-b, got: %+v", fipDecision)
 	}
 
@@ -368,6 +368,69 @@ func TestDesiredStateDrivesTopologyRoutesAndEBPFStyleACL(t *testing.T) {
 	})
 	if remoteNodeLocalDrop.Verdict != dataplane.VerdictDrop {
 		t.Fatalf("expected local gateway to stay outside remote-node entity, got %+v", remoteNodeLocalDrop)
+	}
+}
+
+func TestDesiredStatePriorityConflictMatchesTCXEligibilityFromJSON(t *testing.T) {
+	ctx := context.Background()
+	denyState, err := control.LoadDesiredStateJSON(strings.NewReader(`{
+  "vpcs": [{"name": "file"}],
+  "subnets": [{"name": "fileapps", "vpc": "file", "cidr": "10.245.0.0/24", "gateway": "10.245.0.1", "provider_network": "physnet-a", "vlan": 100, "dhcp": {"enabled": true, "lease_time": 7200, "mtu": 1400, "dns_servers": ["10.96.0.10"], "domain_name": "svc.cluster.local", "search_domains": ["cluster.local", "svc.cluster.local"]}}],
+  "endpoints": [
+    {"id": "file-pod-a", "vpc": "file", "subnet": "fileapps", "ip": "10.245.0.10", "node": "node-a", "security_groups": ["client"]},
+    {"id": "file-pod-b", "vpc": "file", "subnet": "fileapps", "ip": "10.245.0.11", "node": "node-b", "security_groups": ["policy-conflict"]}
+  ],
+  "security_groups": [
+    {"name": "client", "vpc": "file", "rules": []},
+    {
+      "name": "policy-conflict",
+      "vpc": "file",
+      "rules": [
+        {"id": "allow-tcp", "priority": 200, "direction": "ingress", "protocol": "tcp", "remote_cidr": "10.245.0.10/32", "ports": [{"from": 8081, "to": 8081}], "action": "allow"},
+        {"id": "deny-tcp", "priority": 100, "direction": "ingress", "protocol": "tcp", "remote_cidr": "10.245.0.10/32", "ports": [{"from": 8081, "to": 8081}], "action": "drop"}
+      ]
+    }
+  ]
+}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	denyResult, err := agent.ReconcileNode(ctx, denyState, "node-b", dataplane.NewInMemoryPolicyStore())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if denyResult.TCXEligible != 1 {
+		t.Fatalf("deny-winning tcx eligible = %d, want 1", denyResult.TCXEligible)
+	}
+
+	allowState, err := control.LoadDesiredStateJSON(strings.NewReader(`{
+  "vpcs": [{"name": "file"}],
+  "subnets": [{"name": "fileapps", "vpc": "file", "cidr": "10.245.0.0/24", "gateway": "10.245.0.1", "provider_network": "physnet-a", "vlan": 100, "dhcp": {"enabled": true, "lease_time": 7200, "mtu": 1400, "dns_servers": ["10.96.0.10"], "domain_name": "svc.cluster.local", "search_domains": ["cluster.local", "svc.cluster.local"]}}],
+  "endpoints": [
+    {"id": "file-pod-a", "vpc": "file", "subnet": "fileapps", "ip": "10.245.0.10", "node": "node-a", "security_groups": ["client"]},
+    {"id": "file-pod-b", "vpc": "file", "subnet": "fileapps", "ip": "10.245.0.11", "node": "node-b", "security_groups": ["policy-conflict"]}
+  ],
+  "security_groups": [
+    {"name": "client", "vpc": "file", "rules": []},
+    {
+      "name": "policy-conflict",
+      "vpc": "file",
+      "rules": [
+        {"id": "allow-tcp", "priority": 100, "direction": "ingress", "protocol": "tcp", "remote_cidr": "10.245.0.10/32", "ports": [{"from": 8081, "to": 8081}], "action": "allow"},
+        {"id": "deny-tcp", "priority": 200, "direction": "ingress", "protocol": "tcp", "remote_cidr": "10.245.0.10/32", "ports": [{"from": 8081, "to": 8081}], "action": "drop"}
+      ]
+    }
+  ]
+}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	allowResult, err := agent.ReconcileNode(ctx, allowState, "node-b", dataplane.NewInMemoryPolicyStore())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if allowResult.TCXEligible != 0 {
+		t.Fatalf("allow-winning tcx eligible = %d, want 0", allowResult.TCXEligible)
 	}
 }
 

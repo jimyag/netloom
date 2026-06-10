@@ -65,6 +65,24 @@ type PolicyEvent struct {
 	Established    bool
 }
 
+type TraceEvent struct {
+	EndpointID     string
+	Verdict        Verdict
+	RemoteIdentity uint32
+	RemoteIP       netip.Addr
+	Direction      uint8
+	Protocol       uint8
+	DestPort       uint16
+	ICMPType       uint8
+	ICMPCode       uint8
+	RuleCookie     uint32
+	Conntrack      bool
+	Established    bool
+	NoMatchDrop    bool
+	DenyDrop       bool
+	RejectDrop     bool
+}
+
 type PolicyMetrics struct {
 	Allowed      uint64
 	Dropped      uint64
@@ -85,6 +103,7 @@ type PolicyRecorder struct {
 	metrics map[string]PolicyMetrics
 	drops   []DropEvent
 	events  []PolicyEvent
+	traces  []TraceEvent
 }
 
 func NewPolicyRecorder() *PolicyRecorder {
@@ -97,6 +116,7 @@ func (r *PolicyRecorder) Observe(endpointID string, packet Packet, decision Deci
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.traces = append(r.traces, traceEvent(endpointID, packet, decision))
 	metrics := r.metrics[endpointID]
 	if decision.Verdict == VerdictAllow {
 		metrics.Allowed++
@@ -169,6 +189,15 @@ func (r *PolicyRecorder) PolicyEvents() []PolicyEvent {
 	return append([]PolicyEvent(nil), r.events...)
 }
 
+func (r *PolicyRecorder) TraceEvents() []TraceEvent {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]TraceEvent(nil), r.traces...)
+}
+
 func shouldLogPolicy(decision Decision) bool {
 	return decision.Match != nil && decision.Match.Value.Log != 0
 }
@@ -187,6 +216,31 @@ func policyEvent(endpointID string, packet Packet, decision Decision) PolicyEven
 	}
 	if decision.Match != nil {
 		event.RuleCookie = decision.Match.Value.RuleCookie
+	}
+	return event
+}
+
+func traceEvent(endpointID string, packet Packet, decision Decision) TraceEvent {
+	event := TraceEvent{
+		EndpointID:     endpointID,
+		Verdict:        decision.Verdict,
+		RemoteIdentity: packet.RemoteIdentity,
+		RemoteIP:       packet.RemoteIP,
+		Direction:      packet.Direction,
+		Protocol:       packet.Protocol,
+		DestPort:       packet.DestPort,
+		ICMPType:       packet.ICMPType,
+		ICMPCode:       packet.ICMPCode,
+		Conntrack:      decision.Conntrack,
+		Established:    decision.Established,
+	}
+	if decision.Match != nil {
+		event.RuleCookie = decision.Match.Value.RuleCookie
+	}
+	if decision.Verdict == VerdictDrop {
+		event.NoMatchDrop = decision.Match == nil
+		event.RejectDrop = decision.Match != nil && decision.Verdict == VerdictReject
+		event.DenyDrop = decision.Match != nil && !event.RejectDrop
 	}
 	return event
 }

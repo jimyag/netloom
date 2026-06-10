@@ -2,12 +2,17 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"net/netip"
+	"os"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/rlimit"
 	"github.com/jimyag/netloom/internal/control"
 	"github.com/jimyag/netloom/internal/dataplane"
 	"github.com/jimyag/netloom/internal/linuxdatapath"
@@ -15,9 +20,146 @@ import (
 	"github.com/jimyag/netloom/internal/policy"
 )
 
+func requireEBPFReconcilerTest(t *testing.T) {
+	t.Helper()
+	if os.Getenv("NETLOOM_EBPF_TEST") != "1" {
+		t.Skip("set NETLOOM_EBPF_TEST=1 to create kernel eBPF maps")
+	}
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Skipf("cannot adjust memlock rlimit for eBPF test: %v", err)
+	}
+}
+
+type countingIdentityResolver struct {
+	mu     sync.Mutex
+	inner  policy.IdentityResolver
+	misses map[string]int
+}
+
+func newCountingIdentityResolver() *countingIdentityResolver {
+	return &countingIdentityResolver{
+		inner:  policy.NewIdentityCache(),
+		misses: make(map[string]int),
+	}
+}
+
+func (c *countingIdentityResolver) Identity(value string) uint32 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, ok := c.misses[value]; !ok {
+		c.misses[value] = 1
+	}
+	if c.inner == nil {
+		return policy.EndpointIdentity(value)
+	}
+	return c.inner.Identity(value)
+}
+
+func (c *countingIdentityResolver) missesFor(value string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.misses[value]
+}
+
+type scopedPolicyStore struct {
+	replaces []string
+	deletes  []string
+}
+
+func (s *scopedPolicyStore) ReplaceEndpoint(_ context.Context, endpointID string, _ []dataplane.PolicyMapEntry) error {
+	s.replaces = append(s.replaces, endpointID)
+	return nil
+}
+
+func (s *scopedPolicyStore) DeleteEndpoint(_ context.Context, endpointID string) error {
+	s.deletes = append(s.deletes, endpointID)
+	return nil
+}
+
+type inventoryPolicyStore struct {
+	scopedPolicyStore
+	endpoints []string
+}
+
+func (s *inventoryPolicyStore) EndpointIDs(_ context.Context) ([]string, error) {
+	return append([]string(nil), s.endpoints...), nil
+}
+
+type usagePolicyStore struct {
+	*dataplane.InMemoryPolicyStore
+	usages []dataplane.PolicyMapUsage
+	err    error
+}
+
+func (s *usagePolicyStore) PolicyMapUsage(_ context.Context) ([]dataplane.PolicyMapUsage, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	return append([]dataplane.PolicyMapUsage(nil), s.usages...), nil
+}
+
+type concurrentPolicyStore struct {
+	delay               time.Duration
+	delegate            *dataplane.InMemoryPolicyStore
+	mu                  sync.Mutex
+	active              int
+	maxActive           int
+	firstReplaceStarted chan struct{}
+	startedOnce         sync.Once
+}
+
+func newConcurrentPolicyStore(delay time.Duration) *concurrentPolicyStore {
+	return &concurrentPolicyStore{
+		delay:               delay,
+		delegate:            dataplane.NewInMemoryPolicyStore(),
+		firstReplaceStarted: make(chan struct{}, 1),
+	}
+}
+
+func (s *concurrentPolicyStore) ReplaceEndpoint(ctx context.Context, endpointID string, entries []dataplane.PolicyMapEntry) error {
+	s.startWrite()
+	time.Sleep(s.delay)
+	defer s.finishWrite()
+	return s.delegate.ReplaceEndpoint(ctx, endpointID, entries)
+}
+
+func (s *concurrentPolicyStore) DeleteEndpoint(ctx context.Context, endpointID string) error {
+	s.startWrite()
+	time.Sleep(s.delay)
+	defer s.finishWrite()
+	return s.delegate.DeleteEndpoint(ctx, endpointID)
+}
+
+func (s *concurrentPolicyStore) startWrite() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.active++
+	if s.active > s.maxActive {
+		s.maxActive = s.active
+	}
+	if s.active == 1 {
+		s.startedOnce.Do(func() {
+			s.firstReplaceStarted <- struct{}{}
+		})
+	}
+}
+
+func (s *concurrentPolicyStore) finishWrite() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.active--
+}
+
+func (s *concurrentPolicyStore) MaxConcurrentWrites() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.maxActive
+}
+
 func tcxProgram(endpointID string, direction model.Direction, cidr string, port uint16) policy.Program {
 	return policy.Program{
 		EndpointID: endpointID,
+		EndpointIP: tcxProgramEndpointIP(endpointID),
 		Rules: []policy.Rule{{
 			ID:         endpointID + "-tcx",
 			Direction:  direction,
@@ -26,6 +168,17 @@ func tcxProgram(endpointID string, direction model.Direction, cidr string, port 
 			Ports:      []model.PortRange{{From: port, To: port}},
 			Action:     model.ActionDrop,
 		}},
+	}
+}
+
+func tcxProgramEndpointIP(endpointID string) netip.Addr {
+	switch {
+	case strings.Contains(endpointID, "pod-a"):
+		return netip.MustParseAddr("10.10.0.10")
+	case strings.Contains(endpointID, "pod-b"):
+		return netip.MustParseAddr("10.10.0.11")
+	default:
+		return netip.MustParseAddr("10.10.0.254")
 	}
 }
 
@@ -82,6 +235,273 @@ func TestReconcileNodeAppliesOnlyLocalEndpointPolicies(t *testing.T) {
 	}
 	if entries := store.Entries(model.EndpointKey("prod", "pod-b")); len(entries) != 0 {
 		t.Fatalf("pod-b entries = %d, want 0", len(entries))
+	}
+}
+
+func TestReconcileNodeKeepsSameEndpointIDScopedByVPCInPolicyLifecycle(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{
+			{
+				ID:             "shared",
+				VPC:            "prod",
+				Subnet:         "apps",
+				IP:             netip.MustParseAddr("10.10.0.10"),
+				Node:           "node-a",
+				SecurityGroups: []string{"web"},
+			},
+			{
+				ID:             "shared",
+				VPC:            "dev",
+				Subnet:         "apps-dev",
+				IP:             netip.MustParseAddr("10.20.0.10"),
+				Node:           "node-a",
+				SecurityGroups: []string{"web"},
+			},
+		},
+		SecurityGroups: []model.SecurityGroup{
+			{
+				Name: "web",
+				VPC:  "prod",
+				Rules: []model.SecurityGroupRule{{
+					ID:        "prod-web",
+					Priority:  100,
+					Direction: model.DirectionIngress,
+					Protocol:  model.ProtocolAny,
+					Action:    model.ActionAllow,
+				}},
+			},
+			{
+				Name: "web",
+				VPC:  "dev",
+				Rules: []model.SecurityGroupRule{{
+					ID:        "dev-web",
+					Priority:  100,
+					Direction: model.DirectionIngress,
+					Protocol:  model.ProtocolAny,
+					Action:    model.ActionAllow,
+				}},
+			},
+		},
+	}
+
+	store := &scopedPolicyStore{}
+	reconciler := NewReconciler(store)
+	if _, err := reconciler.Reconcile(context.Background(), state, ReconcileOptions{Node: "node-a", Store: store}); err != nil {
+		t.Fatalf("first reconcile failed: %v", err)
+	}
+	prodKey := model.EndpointKey("prod", "shared")
+	devKey := model.EndpointKey("dev", "shared")
+	if !slices.Contains(store.replaces, prodKey) || !slices.Contains(store.replaces, devKey) {
+		t.Fatalf("first reconcile replace endpoints = %v, want %v and %v", store.replaces, prodKey, devKey)
+	}
+
+	state.Endpoints = []model.Endpoint{{
+		ID:             "shared",
+		VPC:            "dev",
+		Subnet:         "apps-dev",
+		IP:             netip.MustParseAddr("10.20.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"web"},
+	}}
+	if _, err := reconciler.Reconcile(context.Background(), state, ReconcileOptions{Node: "node-a", Store: store}); err != nil {
+		t.Fatalf("second reconcile failed: %v", err)
+	}
+	if !slices.Contains(store.deletes, prodKey) || slices.Contains(store.deletes, devKey) {
+		t.Fatalf("delete endpoints = %v, want stale %v only", store.deletes, prodKey)
+	}
+}
+
+func TestReconcilerDeletesInventoryEndpointsMissingAfterRestart(t *testing.T) {
+	store := &inventoryPolicyStore{
+		endpoints: []string{
+			model.EndpointKey("prod", "stale"),
+			model.EndpointKey("prod", "live"),
+		},
+	}
+	reconciler := NewReconciler(store)
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:             "live",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"web"},
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:        "allow-all",
+				Priority:  100,
+				Direction: model.DirectionIngress,
+				Protocol:  model.ProtocolAny,
+				Action:    model.ActionAllow,
+			}},
+		}},
+	}
+
+	if _, err := reconciler.Reconcile(context.Background(), state, ReconcileOptions{Node: "node-a", Store: store}); err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+	if !slices.Contains(store.deletes, model.EndpointKey("prod", "stale")) {
+		t.Fatalf("stale endpoint delete list = %v, want %q", store.deletes, model.EndpointKey("prod", "stale"))
+	}
+	if slices.Contains(store.deletes, model.EndpointKey("prod", "live")) {
+		t.Fatalf("live endpoint must not be deleted: %v", store.deletes)
+	}
+	if !slices.Contains(store.replaces, model.EndpointKey("prod", "live")) {
+		t.Fatalf("live endpoint replace list = %v, want %q", store.replaces, model.EndpointKey("prod", "live"))
+	}
+}
+
+func TestReconcilerRestartCleansStalePinnedEBPFEndpoints(t *testing.T) {
+	requireEBPFReconcilerTest(t)
+	tmp := t.TempDir()
+	staleEndpoint := model.EndpointKey("prod", "stale")
+	liveEndpoint := model.EndpointKey("prod", "live")
+
+	initialStore := dataplane.NewEBPFPolicyStoreWithConfig(dataplane.EBPFPolicyStoreConfig{
+		PinRoot:       tmp,
+		MaxEntries:    16,
+		SchemaVersion: 1,
+	})
+	staleEntries := []dataplane.PolicyMapEntry{{
+		Key:   dataplane.PolicyKey{PrefixLen: dataplane.StaticPrefixBits, RemoteIdentity: 10, Direction: dataplane.DirectionIngress},
+		Value: dataplane.PolicyEntry{Precedence: 10, Deny: 1},
+	}}
+	liveEntries := []dataplane.PolicyMapEntry{{
+		Key:   dataplane.PolicyKey{PrefixLen: dataplane.StaticPrefixBits, RemoteIdentity: 20, Direction: dataplane.DirectionIngress},
+		Value: dataplane.PolicyEntry{Precedence: 20, Deny: 1},
+	}}
+	if err := initialStore.ReplaceEndpoint(context.Background(), staleEndpoint, staleEntries); err != nil {
+		if strings.Contains(err.Error(), "operation not permitted") {
+			t.Skipf("kernel eBPF map creation is not permitted in this environment: %v", err)
+		}
+		t.Fatalf("seed stale endpoint map: %v", err)
+	}
+	if err := initialStore.ReplaceEndpoint(context.Background(), liveEndpoint, liveEntries); err != nil {
+		if strings.Contains(err.Error(), "operation not permitted") {
+			t.Skipf("kernel eBPF map creation is not permitted in this environment: %v", err)
+		}
+		t.Fatalf("seed live endpoint map: %v", err)
+	}
+	if err := initialStore.Close(); err != nil {
+		t.Fatalf("close seeded store: %v", err)
+	}
+	if entries, err := os.ReadDir(tmp); err != nil {
+		t.Fatalf("list pin root after seed: %v", err)
+	} else if len(entries) != 4 {
+		t.Fatalf("pin root entries after seed = %d, want 4", len(entries))
+	}
+
+	restartedStore := dataplane.NewEBPFPolicyStoreWithConfig(dataplane.EBPFPolicyStoreConfig{
+		PinRoot:       tmp,
+		MaxEntries:    16,
+		SchemaVersion: 1,
+	})
+	t.Cleanup(func() { _ = restartedStore.Close() })
+	reconciler := NewReconciler(restartedStore)
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:             "live",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"web"},
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "allow-web",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("10.10.0.11/32"),
+				Ports:      []model.PortRange{{From: 443, To: 443}},
+				Action:     model.ActionAllow,
+			}},
+		}},
+	}
+	if _, err := reconciler.Reconcile(context.Background(), state, ReconcileOptions{Node: "node-a", Store: restartedStore}); err != nil {
+		t.Fatalf("reconcile after restart: %v", err)
+	}
+
+	endpointIDs, err := restartedStore.EndpointIDs(context.Background())
+	if err != nil {
+		t.Fatalf("EndpointIDs() after restart reconcile: %v", err)
+	}
+	if !slices.Equal(endpointIDs, []string{liveEndpoint}) {
+		t.Fatalf("managed endpoints after restart reconcile = %v, want [%q]", endpointIDs, liveEndpoint)
+	}
+	if entries, err := os.ReadDir(tmp); err != nil {
+		t.Fatalf("list pin root after restart reconcile: %v", err)
+	} else if len(entries) != 2 {
+		t.Fatalf("pin root entries after stale cleanup = %d, want 2", len(entries))
+	}
+}
+
+func TestReconcileSharesIdentityResolverAcrossLocalEndpoints(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{
+			{
+				ID:             "pod-a",
+				VPC:            "prod",
+				Subnet:         "apps",
+				IP:             netip.MustParseAddr("10.10.0.10"),
+				Node:           "node-a",
+				SecurityGroups: []string{"clients"},
+			},
+			{
+				ID:             "pod-b",
+				VPC:            "prod",
+				Subnet:         "apps",
+				IP:             netip.MustParseAddr("10.10.0.11"),
+				Node:           "node-a",
+				SecurityGroups: []string{"clients"},
+			},
+			{
+				ID:             "pod-c",
+				VPC:            "prod",
+				Subnet:         "apps",
+				IP:             netip.MustParseAddr("10.10.0.12"),
+				Node:           "node-a",
+				SecurityGroups: []string{"clients"},
+			},
+		},
+		SecurityGroups: []model.SecurityGroup{
+			{
+				Name: "clients",
+				VPC:  "prod",
+				Rules: []model.SecurityGroupRule{{
+					ID:          "allow-clients",
+					Priority:    100,
+					Direction:   model.DirectionIngress,
+					Protocol:    model.ProtocolTCP,
+					RemoteGroup: "clients",
+					Ports:       []model.PortRange{{From: 8080, To: 8081}},
+					Action:      model.ActionAllow,
+				}},
+			},
+		},
+	}
+	store := dataplane.NewInMemoryPolicyStore()
+	resolver := newCountingIdentityResolver()
+	reconciler := NewReconciler(store)
+	if _, err := reconciler.Reconcile(context.Background(), state, ReconcileOptions{
+		Node:             "node-a",
+		Store:            store,
+		IdentityResolver: resolver,
+	}); err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+	for _, endpoint := range []string{"pod-a", "pod-b", "pod-c"} {
+		endpointKey := model.EndpointKey("prod", endpoint)
+		if got := resolver.missesFor("endpoint:" + endpointKey); got != 1 {
+			t.Fatalf("identity(%q) misses = %d, want 1 with shared resolver", endpointKey, got)
+		}
 	}
 }
 
@@ -207,6 +627,63 @@ func TestReconcileNodeReportsUnchangedPolicyStats(t *testing.T) {
 	}
 	if result.PolicyAdded != 0 || result.PolicyUpdated != 0 || result.PolicyDeleted != 0 || result.PolicyUnchanged != 1 || result.PolicyEvents != 1 || result.PolicyRevisionMax != 2 {
 		t.Fatalf("policy update summary = %+v, want one unchanged entry at revision 2", result)
+	}
+}
+
+func TestReconcileNodeReportsPolicyMapPressureSummary(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:             "pod-a",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"web"},
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "web",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("172.30.0.11/32"),
+				Ports:      []model.PortRange{{From: 8080, To: 8080}},
+				Action:     model.ActionDrop,
+			}},
+		}},
+	}
+	store := &usagePolicyStore{
+		InMemoryPolicyStore: dataplane.NewInMemoryPolicyStore(),
+		usages: []dataplane.PolicyMapUsage{
+			{EndpointID: model.EndpointKey("prod", "pod-a"), Entries: 12, Capacity: 16},
+			{EndpointID: model.EndpointKey("prod", "pod-b"), Entries: 8, Capacity: 16},
+		},
+	}
+	result, err := ReconcileNode(context.Background(), state, "node-a", store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.PolicyMapEntries != 20 || result.PolicyMapCapacity != 32 {
+		t.Fatalf("policy map totals = %+v, want entries 20 capacity 32", result)
+	}
+	if result.PolicyMapPressureMax != 75 {
+		t.Fatalf("policy map pressure max = %d, want 75", result.PolicyMapPressureMax)
+	}
+	if result.PolicyMapPressureEndpoints != 0 {
+		t.Fatalf("policy map pressure endpoints = %d, want 0", result.PolicyMapPressureEndpoints)
+	}
+
+	store.usages = []dataplane.PolicyMapUsage{
+		{EndpointID: model.EndpointKey("prod", "pod-a"), Entries: 13, Capacity: 16},
+	}
+	result, err = ReconcileNode(context.Background(), state, "node-a", store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.PolicyMapPressureMax != 81 || result.PolicyMapPressureEndpoints != 1 {
+		t.Fatalf("pressure summary = %+v, want one pressured endpoint at 81%%", result)
 	}
 }
 
@@ -465,17 +942,76 @@ func TestTCXTargetsBuildsSingleIngressTargetForNodeInterface(t *testing.T) {
 	}
 }
 
-func TestTCXTargetsRejectsMultipleIngressProgramsForNodeInterface(t *testing.T) {
+func TestTCXTargetsBuildsSingleEgressTargetForNodeInterface(t *testing.T) {
+	programs := []policy.Program{
+		tcxProgram("pod-a", model.DirectionEgress, "198.51.100.10/32", 443),
+	}
+	targets, err := tcxTargets(ReconcileOptions{TCXInterface: "eth0"}, programs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 1 {
+		t.Fatalf("targets = %d, want 1", len(targets))
+	}
+	target := targets[0]
+	if target.ifName != "eth0" || target.attach != ebpf.AttachTCXEgress || target.policyDirection != model.DirectionEgress || len(target.programs) != 1 {
+		t.Fatalf("unexpected target: %+v", target)
+	}
+}
+
+func TestTCXTargetsBuildsIngressAndEgressTargetsForSingleNodeInterfaceEndpoint(t *testing.T) {
+	programs := []policy.Program{
+		tcxProgram("pod-a", model.DirectionIngress, "172.30.0.11/32", 8080),
+		tcxProgram("pod-a", model.DirectionEgress, "198.51.100.10/32", 443),
+	}
+	targets, err := tcxTargets(ReconcileOptions{TCXInterface: "eth0"}, programs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 2 {
+		t.Fatalf("targets = %d, want 2", len(targets))
+	}
+	if targets[0].attach != ebpf.AttachTCXIngress || targets[0].policyDirection != model.DirectionIngress {
+		t.Fatalf("first target = %+v, want ingress attach for ingress policy", targets[0])
+	}
+	if targets[1].attach != ebpf.AttachTCXEgress || targets[1].policyDirection != model.DirectionEgress {
+		t.Fatalf("second target = %+v, want egress attach for egress policy", targets[1])
+	}
+}
+
+func TestTCXTargetsBuildsSingleIngressTargetForMultipleNodeInterfaceEndpoints(t *testing.T) {
 	programs := []policy.Program{
 		tcxProgram("pod-a", model.DirectionIngress, "172.30.0.11/32", 8080),
 		tcxProgram("pod-b", model.DirectionIngress, "172.30.0.12/32", 8080),
 	}
-	_, err := tcxTargets(ReconcileOptions{TCXInterface: "eth0"}, programs)
-	if err == nil {
-		t.Fatal("expected node interface TCX to reject multiple ingress endpoint programs")
+	targets, err := tcxTargets(ReconcileOptions{TCXInterface: "eth0"}, programs)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(err.Error(), "cannot safely attach ingress policy for 2 endpoints") {
-		t.Fatalf("error = %v, want unsafe multi-endpoint TCX rejection", err)
+	if len(targets) != 1 {
+		t.Fatalf("targets = %d, want one aggregated ingress target", len(targets))
+	}
+	target := targets[0]
+	if target.attach != ebpf.AttachTCXIngress || target.policyDirection != model.DirectionIngress || len(target.programs) != 2 {
+		t.Fatalf("unexpected target: %+v", target)
+	}
+}
+
+func TestTCXTargetsBuildsSingleEgressTargetForMultipleNodeInterfaceEndpoints(t *testing.T) {
+	programs := []policy.Program{
+		tcxProgram("pod-a", model.DirectionEgress, "198.51.100.10/32", 443),
+		tcxProgram("pod-b", model.DirectionEgress, "198.51.100.11/32", 443),
+	}
+	targets, err := tcxTargets(ReconcileOptions{TCXInterface: "eth0"}, programs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 1 {
+		t.Fatalf("targets = %d, want one aggregated egress target", len(targets))
+	}
+	target := targets[0]
+	if target.attach != ebpf.AttachTCXEgress || target.policyDirection != model.DirectionEgress || len(target.programs) != 2 {
+		t.Fatalf("unexpected target: %+v", target)
 	}
 }
 
@@ -486,6 +1022,141 @@ func TestAttachTCXTargetsReportsNotAttachedForEmptyTargets(t *testing.T) {
 	}
 	if status != "not-attached" {
 		t.Fatalf("status = %q, want not-attached", status)
+	}
+}
+
+func TestReconcilerTCXAttachmentErrorIncludesTargetContext(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:             "pod-a",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"web"},
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "drop-http",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("172.30.0.11/32"),
+				Ports:      []model.PortRange{{From: 8080, To: 8080}},
+				Action:     model.ActionDrop,
+			}},
+		}},
+	}
+	reconciler := NewReconciler(dataplane.NewInMemoryPolicyStore())
+	reconciler.attach = func(context.Context, tcxTarget) (tcxAttachmentHandle, error) {
+		return tcxAttachmentHandle{}, fmt.Errorf("kernel attach failed")
+	}
+	_, err := reconciler.Reconcile(context.Background(), state, ReconcileOptions{
+		Node:         "node-a",
+		TCXInterface: "lo",
+	})
+	if err == nil {
+		t.Fatal("expected tcx attachment error")
+	}
+	if !strings.Contains(err.Error(), "attach tcx target") || !strings.Contains(err.Error(), "iface=lo") || !strings.Contains(err.Error(), "direction=ingress") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestReconcilerSyncTCXTargetsRollsBackOnFailure(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:             "pod-a",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"web"},
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "drop-http",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("172.30.0.11/32"),
+				Ports:      []model.PortRange{{From: 8080, To: 8080}},
+				Action:     model.ActionDrop,
+			}},
+		}},
+	}
+	reconciler := NewReconciler(dataplane.NewInMemoryPolicyStore())
+	options := ReconcileOptions{Node: "node-a", TCXWorkload: true}
+	var attachCalls int
+	var closeCalls int
+	reconciler.attach = func(_ context.Context, target tcxTarget) (tcxAttachmentHandle, error) {
+		attachCalls++
+		if attachCalls == 2 {
+			return tcxAttachmentHandle{}, fmt.Errorf("simulated attach failure")
+		}
+		return tcxAttachmentHandle{
+			result: dataplane.TCXSelfTestResult{Interface: target.ifName, Direction: "egress", Mode: "policy-l4"},
+			close: func() error {
+				closeCalls++
+				return nil
+			},
+		}, nil
+	}
+	if _, err := reconciler.Reconcile(context.Background(), state, options); err != nil {
+		t.Fatal(err)
+	}
+	podA := model.EndpointKey("prod", "pod-a")
+	podB := model.EndpointKey("prod", "pod-b")
+	firstKey := tcxTargetKey(tcxTarget{ifName: linuxdatapath.HostVethName(podA), attach: ebpf.AttachTCXEgress, policyDirection: model.DirectionIngress})
+	firstAttachment, ok := reconciler.attachments[firstKey]
+	if !ok {
+		t.Fatalf("expected first attachment %s to exist", firstKey)
+	}
+	firstSignature := firstAttachment.signature
+
+	state.Endpoints = append(state.Endpoints, model.Endpoint{
+		ID:             "pod-b",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.11"),
+		Node:           "node-a",
+		SecurityGroups: []string{"web"},
+	})
+	state.Endpoints[0].IP = netip.MustParseAddr("10.10.0.20")
+	state.SecurityGroups[0].Rules[0].RemoteCIDR = netip.MustParsePrefix("172.30.0.12/32")
+
+	_, err := reconciler.Reconcile(context.Background(), state, options)
+	if err == nil {
+		t.Fatal("expected reconcile failure during partial attachment update")
+	}
+	if attachCalls != 2 || closeCalls != 0 {
+		t.Fatalf("unexpected attach/close counters after partial failure: attaches=%d closes=%d", attachCalls, closeCalls)
+	}
+	rolledBack, ok := reconciler.attachments[firstKey]
+	if !ok {
+		t.Fatalf("first attachment key %s was removed after failure", firstKey)
+	}
+	if rolledBack.signature != firstSignature {
+		t.Fatalf("expected attachment %s signature to be rolled back, before=%q after=%q", firstKey, firstSignature, rolledBack.signature)
+	}
+	if len(reconciler.attachments) != 1 {
+		t.Fatalf("expected only first attachment to remain after rollback, got=%d", len(reconciler.attachments))
+	}
+
+	_, err = reconciler.Reconcile(context.Background(), state, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondKey := tcxTargetKey(tcxTarget{ifName: linuxdatapath.HostVethName(podB), attach: ebpf.AttachTCXEgress, policyDirection: model.DirectionIngress})
+	if _, ok := reconciler.attachments[secondKey]; !ok {
+		t.Fatalf("expected second attachment %s to be attached after successful reconcile", secondKey)
+	}
+	if attachCalls != 4 {
+		t.Fatalf("unexpected attach counter after successful reconcile: %d", attachCalls)
 	}
 }
 
@@ -538,6 +1209,157 @@ func TestReconcileNodeWithTCXInterfaceTreatsAllowOnlyPolicyAsNotEligible(t *test
 	}
 	if result.Entries != 1 || result.TCXEligible != 0 || result.TCX != "not-attached" {
 		t.Fatalf("result = %+v, want policy stored but allow-only TCX not attached", result)
+	}
+}
+
+func TestReconcileNodeWithTCXInterfaceRejectsRejectAction(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:             "pod-a",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"web"},
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "reject-web",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("172.30.0.11/32"),
+				Ports:      []model.PortRange{{From: 8080, To: 8080}},
+				Action:     model.ActionReject,
+			}},
+		}},
+	}
+
+	_, err := ReconcileNodeWithOptions(context.Background(), state, ReconcileOptions{
+		Node:         "node-a",
+		Store:        dataplane.NewInMemoryPolicyStore(),
+		TCXInterface: "lo",
+	})
+	if err == nil || !strings.Contains(err.Error(), "reject action is not supported by TCX fast path") {
+		t.Fatalf("error = %v, want reject fast-path validation failure", err)
+	}
+}
+
+func TestReconcileNodeWithTCXInterfaceAttachesEgressPolicy(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:             "pod-a",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"client"},
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "client",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "drop-egress-https",
+				Priority:   100,
+				Direction:  model.DirectionEgress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("198.51.100.10/32"),
+				Ports:      []model.PortRange{{From: 443, To: 443}},
+				Action:     model.ActionDrop,
+			}},
+		}},
+	}
+	reconciler := NewReconciler(dataplane.NewInMemoryPolicyStore())
+	var attaches int
+	reconciler.attach = func(_ context.Context, target tcxTarget) (tcxAttachmentHandle, error) {
+		attaches++
+		if target.ifName != "eth0" || target.attach != ebpf.AttachTCXEgress || target.policyDirection != model.DirectionEgress {
+			t.Fatalf("unexpected target: %+v", target)
+		}
+		return tcxAttachmentHandle{
+			result: dataplane.TCXSelfTestResult{Interface: target.ifName, Direction: "egress", Mode: "policy-l4"},
+			close:  func() error { return nil },
+		}, nil
+	}
+	result, err := reconciler.Reconcile(context.Background(), state, ReconcileOptions{
+		Node:         "node-a",
+		Store:        dataplane.NewInMemoryPolicyStore(),
+		TCXInterface: "eth0",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if attaches != 1 || result.TCXEligible != 1 || result.TCX != "attached:eth0:egress:policy-l4" {
+		t.Fatalf("result/attaches = %+v/%d, want one egress attachment on eth0", result, attaches)
+	}
+}
+
+func TestReconcileNodeWithTCXInterfaceAttachesBothDirectionsForSingleEndpoint(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:             "pod-a",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"web"},
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{
+				{
+					ID:         "drop-http-ingress",
+					Priority:   100,
+					Direction:  model.DirectionIngress,
+					Protocol:   model.ProtocolTCP,
+					RemoteCIDR: netip.MustParsePrefix("172.30.0.11/32"),
+					Ports:      []model.PortRange{{From: 8080, To: 8080}},
+					Action:     model.ActionDrop,
+				},
+				{
+					ID:         "drop-https-egress",
+					Priority:   100,
+					Direction:  model.DirectionEgress,
+					Protocol:   model.ProtocolTCP,
+					RemoteCIDR: netip.MustParsePrefix("198.51.100.10/32"),
+					Ports:      []model.PortRange{{From: 443, To: 443}},
+					Action:     model.ActionDrop,
+				},
+			},
+		}},
+	}
+	reconciler := NewReconciler(dataplane.NewInMemoryPolicyStore())
+	var gotTargets []tcxTarget
+	reconciler.attach = func(_ context.Context, target tcxTarget) (tcxAttachmentHandle, error) {
+		gotTargets = append(gotTargets, target)
+		return tcxAttachmentHandle{
+			result: dataplane.TCXSelfTestResult{
+				Interface: target.ifName,
+				Direction: map[model.Direction]string{
+					model.DirectionIngress: "ingress",
+					model.DirectionEgress:  "egress",
+				}[target.policyDirection],
+				Mode: "policy-l4",
+			},
+			close: func() error { return nil },
+		}, nil
+	}
+	result, err := reconciler.Reconcile(context.Background(), state, ReconcileOptions{
+		Node:         "node-a",
+		Store:        dataplane.NewInMemoryPolicyStore(),
+		TCXInterface: "eth0",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gotTargets) != 2 {
+		t.Fatalf("targets = %d, want 2", len(gotTargets))
+	}
+	if result.TCXEligible != 1 || result.TCX != "attached:eth0:mixed:policy-l4" {
+		t.Fatalf("result = %+v, want mixed-direction attachment on shared interface", result)
 	}
 }
 
@@ -754,6 +1576,61 @@ func TestReconcilerClosesTCXAttachmentsWhenPolicyNoLongerEligible(t *testing.T) 
 	}
 }
 
+func TestReconcilerTCXEligibilityFollowsPriorityConflictOutcome(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:             "pod-a",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"web"},
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{
+				{
+					ID:         "allow-http",
+					Priority:   200,
+					Direction:  model.DirectionIngress,
+					Protocol:   model.ProtocolTCP,
+					RemoteCIDR: netip.MustParsePrefix("172.30.0.11/32"),
+					Ports:      []model.PortRange{{From: 8080, To: 8080}},
+					Action:     model.ActionAllow,
+				},
+				{
+					ID:         "drop-http",
+					Priority:   100,
+					Direction:  model.DirectionIngress,
+					Protocol:   model.ProtocolTCP,
+					RemoteCIDR: netip.MustParsePrefix("172.30.0.11/32"),
+					Ports:      []model.PortRange{{From: 8080, To: 8080}},
+					Action:     model.ActionDrop,
+				},
+			},
+		}},
+	}
+	reconciler := NewReconciler(dataplane.NewInMemoryPolicyStore())
+	result, err := reconciler.Reconcile(context.Background(), state, ReconcileOptions{Node: "node-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.TCXEligible != 1 {
+		t.Fatalf("deny-winning policy tcx eligible = %d, want 1", result.TCXEligible)
+	}
+
+	state.SecurityGroups[0].Rules[0].Priority = 100
+	state.SecurityGroups[0].Rules[1].Priority = 200
+	result, err = reconciler.Reconcile(context.Background(), state, ReconcileOptions{Node: "node-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.TCXEligible != 0 {
+		t.Fatalf("allow-winning policy tcx eligible = %d, want 0", result.TCXEligible)
+	}
+}
+
 func TestReconcilerClearsConntrackWhenPolicyChangesOrEndpointIsRemoved(t *testing.T) {
 	state := control.DesiredState{
 		Endpoints: []model.Endpoint{{
@@ -847,7 +1724,7 @@ func TestReconcilerClearsConntrackForNonTCXPolicyChange(t *testing.T) {
 		t.Fatal(err)
 	}
 	if tcxEligibleProgramForDirection(policy.Program{
-		EndpointID: "pod-a",
+		EndpointID: model.EndpointKey("prod", "pod-a"),
 		Rules: []policy.Rule{{
 			ID:         "allow-any-cidr",
 			Direction:  model.DirectionIngress,
@@ -969,7 +1846,7 @@ func TestReconcileNodeAllowsMultipleEligibleWorkloadsWithoutTCXAttach(t *testing
 	}
 }
 
-func TestReconcileNodeWithTCXInterfaceRejectsMultipleEligibleIngressEndpoints(t *testing.T) {
+func TestReconcileNodeWithTCXInterfaceAggregatesMultipleEligibleIngressEndpoints(t *testing.T) {
 	state := control.DesiredState{
 		Endpoints: []model.Endpoint{
 			{
@@ -1003,16 +1880,27 @@ func TestReconcileNodeWithTCXInterfaceRejectsMultipleEligibleIngressEndpoints(t 
 			}},
 		}},
 	}
-	_, err := ReconcileNodeWithOptions(context.Background(), state, ReconcileOptions{
+	reconciler := NewReconciler(dataplane.NewInMemoryPolicyStore())
+	var gotTarget tcxTarget
+	var attaches int
+	reconciler.attach = func(_ context.Context, target tcxTarget) (tcxAttachmentHandle, error) {
+		attaches++
+		gotTarget = target
+		return tcxAttachmentHandle{
+			result: dataplane.TCXSelfTestResult{Interface: target.ifName, Direction: "ingress", Mode: "policy-l4"},
+			close:  func() error { return nil },
+		}, nil
+	}
+	result, err := reconciler.Reconcile(context.Background(), state, ReconcileOptions{
 		Node:         "node-a",
 		Store:        dataplane.NewInMemoryPolicyStore(),
 		TCXInterface: "eth0",
 	})
-	if err == nil {
-		t.Fatal("expected node-wide TCX interface attach to reject multiple endpoint programs")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(err.Error(), "cannot safely attach ingress policy for 2 endpoints") {
-		t.Fatalf("error = %v, want unsafe multi-endpoint TCX rejection", err)
+	if attaches != 1 || gotTarget.attach != ebpf.AttachTCXIngress || gotTarget.policyDirection != model.DirectionIngress || len(gotTarget.programs) != 2 {
+		t.Fatalf("unexpected attach target/result: target=%+v attaches=%d result=%+v", gotTarget, attaches, result)
 	}
 }
 
@@ -1674,5 +2562,66 @@ func TestReconcileNodeCompilesRemoteNodeEntityFromGateways(t *testing.T) {
 	})
 	if localDecision.Verdict != dataplane.VerdictDrop {
 		t.Fatalf("expected local gateway to stay outside remote-node entity, got %+v", localDecision)
+	}
+}
+
+func TestReconcilerConcurrentReconcileSerializesStoreWrites(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:             "pod-a",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"web"},
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "drop-http",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("172.30.0.11/32"),
+				Ports:      []model.PortRange{{From: 8080, To: 8080}},
+				Action:     model.ActionDrop,
+			}},
+		}},
+	}
+	store := newConcurrentPolicyStore(50 * time.Millisecond)
+	reconciler := NewReconciler(store)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	first := make(chan error, 1)
+	second := make(chan error, 1)
+	go func() {
+		_, err := reconciler.Reconcile(ctx, state, ReconcileOptions{Node: "node-a", Store: store})
+		first <- err
+	}()
+
+	select {
+	case <-store.firstReplaceStarted:
+	case <-ctx.Done():
+		t.Fatal("first reconcile did not reach policy store")
+	}
+
+	go func() {
+		_, err := reconciler.Reconcile(ctx, state, ReconcileOptions{Node: "node-a", Store: store})
+		second <- err
+	}()
+
+	firstErr := <-first
+	secondErr := <-second
+	if firstErr != nil {
+		t.Fatalf("first reconcile failed: %v", firstErr)
+	}
+	if secondErr != nil {
+		t.Fatalf("second reconcile failed: %v", secondErr)
+	}
+	if got := store.MaxConcurrentWrites(); got != 1 {
+		t.Fatalf("concurrent policy store writes = %d, want 1", got)
 	}
 }

@@ -2,8 +2,8 @@ package dataplane
 
 import (
 	"context"
-	"math"
 	"net/netip"
+	"slices"
 	"strings"
 	"testing"
 
@@ -126,11 +126,11 @@ func TestPolicyBackendReplacesEndpointEntries(t *testing.T) {
 	if entries[0].RemoteCIDR != netip.MustParsePrefix("192.0.2.0/24") {
 		t.Fatalf("remote cidr = %s, want 192.0.2.0/24", entries[0].RemoteCIDR)
 	}
-	if entries[0].Value.Precedence != math.MaxUint32 {
-		t.Fatalf("deny precedence = %d, want max uint32", entries[0].Value.Precedence)
-	}
 	if entries[0].Value.Deny != 1 {
 		t.Fatal("deny rule should encode deny flag")
+	}
+	if entries[0].Value.Precedence == 0 {
+		t.Fatal("deny rule should retain non-zero precedence")
 	}
 }
 
@@ -323,7 +323,7 @@ func TestPolicyBackendHonorsLowerSecurityGroupRulePriority(t *testing.T) {
 
 func TestEncodeProgramRejectsSamePriorityDuplicateKeyConflict(t *testing.T) {
 	program := policy.Program{
-		EndpointID: "pod-a",
+		EndpointID: model.EndpointKey("prod", "pod-a"),
 		MapEntries: []policy.MapEntry{
 			{
 				Key: policy.MapKey{
@@ -356,6 +356,77 @@ func TestEncodeProgramRejectsSamePriorityDuplicateKeyConflict(t *testing.T) {
 	}
 	if got := err.Error(); !strings.Contains(got, "conflicting policy map entries") {
 		t.Fatalf("error = %q, want conflicting policy map entries", got)
+	}
+}
+
+func TestEncodeProgramLetsLowerNumericPriorityAllowBeatHigherNumericDrop(t *testing.T) {
+	program := policy.Program{
+		EndpointID: model.EndpointKey("prod", "pod-a"),
+		Rules: []policy.Rule{
+			{
+				ID:         "drop-fallback",
+				Priority:   200,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("192.0.2.10/32"),
+				Ports:      []model.PortRange{{From: 443, To: 443}},
+				Action:     model.ActionDrop,
+			},
+			{
+				ID:         "allow-primary",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("192.0.2.10/32"),
+				Ports:      []model.PortRange{{From: 443, To: 443}},
+				Action:     model.ActionAllow,
+			},
+		},
+		MapEntries: []policy.MapEntry{
+			{
+				Key: policy.MapKey{
+					Direction:    model.DirectionIngress,
+					Protocol:     model.ProtocolTCP,
+					DestPort:     443,
+					L4PrefixBits: 24,
+				},
+				Value: policy.MapValue{
+					Deny:       true,
+					Precedence: 10,
+				},
+				RemoteCIDR: netip.MustParsePrefix("192.0.2.10/32"),
+				RuleID:     "drop-fallback",
+			},
+			{
+				Key: policy.MapKey{
+					Direction:    model.DirectionIngress,
+					Protocol:     model.ProtocolTCP,
+					DestPort:     443,
+					L4PrefixBits: 24,
+				},
+				Value: policy.MapValue{
+					Precedence: 20,
+				},
+				RemoteCIDR: netip.MustParsePrefix("192.0.2.10/32"),
+				RuleID:     "allow-primary",
+			},
+		},
+	}
+	entries, err := EncodeProgram(program)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Value.RuleCookie != stableCookie("allow-primary") {
+		t.Fatalf("entries = %+v, want allow-primary to win duplicate key", entries)
+	}
+	decision := Evaluate(entries, Packet{
+		RemoteIP:  netip.MustParseAddr("192.0.2.10"),
+		Direction: DirectionIngress,
+		Protocol:  6,
+		DestPort:  443,
+	})
+	if decision.Verdict != VerdictAllow || decision.Match == nil || decision.Match.Value.RuleCookie != stableCookie("allow-primary") {
+		t.Fatalf("decision = %+v, want allow-primary verdict", decision)
 	}
 }
 
@@ -443,7 +514,7 @@ func TestPlanPolicyUpdateComputesIncrementalDiff(t *testing.T) {
 
 func TestPlanPolicyUpdateDetectsRemoteCIDRMetadataChange(t *testing.T) {
 	oldEntry := PolicyMapEntry{
-		Key:        PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: policy.EndpointIdentity("pod-b"), Direction: DirectionIngress},
+		Key:        PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: policy.EndpointIdentity(model.EndpointKey("prod", "pod-b")), Direction: DirectionIngress},
 		Value:      PolicyEntry{Precedence: 10},
 		RemoteCIDR: netip.MustParsePrefix("10.10.0.11/32"),
 	}
@@ -516,14 +587,15 @@ func TestInMemoryPolicyStoreAppliesIncrementalStats(t *testing.T) {
 		Key:   PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 1, Direction: DirectionIngress},
 		Value: PolicyEntry{Precedence: 10},
 	}}
-	if err := store.ReplaceEndpoint(context.Background(), "pod-a", first); err != nil {
+	endpointA := model.EndpointKey("prod", "pod-a")
+	if err := store.ReplaceEndpoint(context.Background(), endpointA, first); err != nil {
 		t.Fatal(err)
 	}
-	stats := store.LastStats("pod-a")
+	stats := store.LastStats(endpointA)
 	if stats.Revision != 1 || stats.Added != 1 || stats.Updated != 0 || stats.Deleted != 0 {
 		t.Fatalf("first stats = %+v, want one add", stats)
 	}
-	if revision := store.Revision("pod-a"); revision != 1 {
+	if revision := store.Revision(endpointA); revision != 1 {
 		t.Fatalf("first revision = %d, want 1", revision)
 	}
 
@@ -531,14 +603,14 @@ func TestInMemoryPolicyStoreAppliesIncrementalStats(t *testing.T) {
 		Key:   first[0].Key,
 		Value: PolicyEntry{Precedence: 20},
 	}}
-	if err := store.ReplaceEndpoint(context.Background(), "pod-a", second); err != nil {
+	if err := store.ReplaceEndpoint(context.Background(), endpointA, second); err != nil {
 		t.Fatal(err)
 	}
-	stats = store.LastStats("pod-a")
+	stats = store.LastStats(endpointA)
 	if stats.Revision != 2 || stats.Added != 0 || stats.Updated != 1 || stats.Deleted != 0 {
 		t.Fatalf("second stats = %+v, want one update", stats)
 	}
-	entries := store.Entries("pod-a")
+	entries := store.Entries(endpointA)
 	if len(entries) != 1 || entries[0].Value.Precedence != 20 {
 		t.Fatalf("entries = %+v, want updated precedence", entries)
 	}
@@ -546,10 +618,10 @@ func TestInMemoryPolicyStoreAppliesIncrementalStats(t *testing.T) {
 	if len(events) != 2 {
 		t.Fatalf("events = %d, want 2", len(events))
 	}
-	if events[0].EndpointID != "pod-a" || !events[0].Success || events[0].PreviousRevision != 0 || events[0].Revision != 1 {
+	if events[0].EndpointID != endpointA || !events[0].Success || events[0].PreviousRevision != 0 || events[0].Revision != 1 {
 		t.Fatalf("first event = %+v, want pod-a success from revision 0 to 1", events[0])
 	}
-	if events[1].EndpointID != "pod-a" || !events[1].Success || events[1].PreviousRevision != 1 || events[1].Revision != 2 {
+	if events[1].EndpointID != endpointA || !events[1].Success || events[1].PreviousRevision != 1 || events[1].Revision != 2 {
 		t.Fatalf("events = %+v, want pod-a revisions 1 and 2", events)
 	}
 }
@@ -560,30 +632,86 @@ func TestInMemoryPolicyStoreDeletesEndpoint(t *testing.T) {
 		Key:   PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 1, Direction: DirectionIngress},
 		Value: PolicyEntry{Precedence: 10},
 	}}
-	if err := store.ReplaceEndpoint(context.Background(), "pod-a", entries); err != nil {
+	endpointA := model.EndpointKey("prod", "pod-a")
+	if err := store.ReplaceEndpoint(context.Background(), endpointA, entries); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.DeleteEndpoint(context.Background(), "pod-a"); err != nil {
+	if err := store.DeleteEndpoint(context.Background(), endpointA); err != nil {
 		t.Fatal(err)
 	}
-	if got := store.Entries("pod-a"); len(got) != 0 {
+	if got := store.Entries(endpointA); len(got) != 0 {
 		t.Fatalf("entries after delete = %+v, want empty", got)
 	}
-	if revision := store.Revision("pod-a"); revision != 0 {
+	if revision := store.Revision(endpointA); revision != 0 {
 		t.Fatalf("revision after delete = %d, want 0", revision)
 	}
-	if stats := store.LastStats("pod-a"); stats != (PolicyUpdateStats{}) {
+	if stats := store.LastStats(endpointA); stats != (PolicyUpdateStats{}) {
 		t.Fatalf("stats after delete = %+v, want zero", stats)
+	}
+}
+
+func TestInMemoryPolicyStoreReportsPolicyMapUsage(t *testing.T) {
+	store := NewInMemoryPolicyStore()
+	endpointA := model.EndpointKey("prod", "pod-a")
+	endpointB := model.EndpointKey("prod", "pod-b")
+	for endpointID, entries := range map[string][]PolicyMapEntry{
+		endpointA: {{
+			Key:   PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 1, Direction: DirectionIngress},
+			Value: PolicyEntry{Precedence: 10},
+		}},
+		endpointB: {{
+			Key:   PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 2, Direction: DirectionIngress},
+			Value: PolicyEntry{Precedence: 20},
+		}, {
+			Key:   PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 3, Direction: DirectionIngress},
+			Value: PolicyEntry{Precedence: 30},
+		}},
+	} {
+		if err := store.ReplaceEndpoint(context.Background(), endpointID, entries); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	usages, err := store.PolicyMapUsage(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(usages) != 2 {
+		t.Fatalf("usages = %d, want 2", len(usages))
+	}
+	if usages[0].EndpointID != endpointA || usages[0].Entries != 1 || usages[0].Capacity != 0 {
+		t.Fatalf("first usage = %+v, want pod-a with one entry and unknown capacity", usages[0])
+	}
+	if usages[1].EndpointID != endpointB || usages[1].Entries != 2 || usages[1].Capacity != 0 {
+		t.Fatalf("second usage = %+v, want pod-b with two entries and unknown capacity", usages[1])
+	}
+}
+
+func TestSummarizePolicyMapUsageTracksPressure(t *testing.T) {
+	summary := SummarizePolicyMapUsage([]PolicyMapUsage{
+		{EndpointID: "a", Entries: 12, Capacity: 16},
+		{EndpointID: "b", Entries: 13, Capacity: 16},
+		{EndpointID: "c", Entries: 4, Capacity: 0},
+	})
+	if summary.Entries != 29 || summary.Capacity != 32 {
+		t.Fatalf("summary totals = %+v, want entries 29 and capacity 32", summary)
+	}
+	if summary.MaxPressurePercent != 81 {
+		t.Fatalf("max pressure = %d, want 81", summary.MaxPressurePercent)
+	}
+	if summary.PressureEndpoints != 1 {
+		t.Fatalf("pressure endpoints = %d, want 1", summary.PressureEndpoints)
 	}
 }
 
 func TestInMemoryPolicyStoreRollsBackOnFailure(t *testing.T) {
 	store := NewInMemoryPolicyStore()
+	endpointA := model.EndpointKey("prod", "pod-a")
 	oldEntries := []PolicyMapEntry{{
 		Key:   PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 1, Direction: DirectionIngress},
 		Value: PolicyEntry{Precedence: 10},
 	}}
-	if err := store.ReplaceEndpoint(context.Background(), "pod-a", oldEntries); err != nil {
+	if err := store.ReplaceEndpoint(context.Background(), endpointA, oldEntries); err != nil {
 		t.Fatal(err)
 	}
 	store.SetFailAfter(0)
@@ -592,14 +720,14 @@ func TestInMemoryPolicyStoreRollsBackOnFailure(t *testing.T) {
 		Key:   PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 2, Direction: DirectionIngress},
 		Value: PolicyEntry{Precedence: 20},
 	}}
-	err := store.ReplaceEndpoint(context.Background(), "pod-a", newEntries)
+	err := store.ReplaceEndpoint(context.Background(), endpointA, newEntries)
 	if err == nil {
 		t.Fatal("expected injected update failure")
 	}
-	if revision := store.Revision("pod-a"); revision != 1 {
+	if revision := store.Revision(endpointA); revision != 1 {
 		t.Fatalf("revision after failure = %d, want 1", revision)
 	}
-	entries := store.Entries("pod-a")
+	entries := store.Entries(endpointA)
 	if len(entries) != 1 || entries[0] != oldEntries[0] {
 		t.Fatalf("entries after failure = %+v, want old entries", entries)
 	}
@@ -608,10 +736,61 @@ func TestInMemoryPolicyStoreRollsBackOnFailure(t *testing.T) {
 		t.Fatalf("events = %d, want success and failed update event", len(events))
 	}
 	failed := events[1]
-	if failed.Success || failed.EndpointID != "pod-a" || failed.PreviousRevision != 1 || failed.Revision != 2 || failed.Error == "" {
+	if failed.Success || failed.EndpointID != endpointA || failed.PreviousRevision != 1 || failed.Revision != 2 || failed.Error == "" {
 		t.Fatalf("failed event = %+v, want failed attempted revision 2 without advancing store revision", failed)
 	}
 	if failed.Stats.Revision != 2 || failed.Stats.Added != 1 || failed.Stats.Deleted != 1 {
 		t.Fatalf("failed stats = %+v, want attempted add/delete diff at revision 2", failed.Stats)
+	}
+}
+
+func TestPolicyUpdateSequencePrefersAddBeforeDelete(t *testing.T) {
+	plan := PolicyUpdatePlan{
+		Add: []PolicyMapEntry{{
+			Key:   PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 2, Direction: DirectionIngress},
+			Value: PolicyEntry{Precedence: 20},
+		}},
+		Delete: []PolicyKey{{
+			PrefixLen: StaticPrefixBits, RemoteIdentity: 1, Direction: DirectionIngress,
+		}},
+	}
+	got := policyUpdateSequence(1, plan, 2, false)
+	want := []policyUpdateStep{policyUpdateStepAddUpdate, policyUpdateStepDelete}
+	if !slices.Equal(got, want) {
+		t.Fatalf("sequence = %v, want %v", got, want)
+	}
+}
+
+func TestPolicyUpdateSequenceFallsBackToDeleteBeforeAddWhenMapWouldOverflow(t *testing.T) {
+	plan := PolicyUpdatePlan{
+		Add: []PolicyMapEntry{{
+			Key:   PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 2, Direction: DirectionIngress},
+			Value: PolicyEntry{Precedence: 20},
+		}},
+		Delete: []PolicyKey{{
+			PrefixLen: StaticPrefixBits, RemoteIdentity: 1, Direction: DirectionIngress,
+		}},
+	}
+	got := policyUpdateSequence(1, plan, 1, false)
+	want := []policyUpdateStep{policyUpdateStepDelete, policyUpdateStepAddUpdate}
+	if !slices.Equal(got, want) {
+		t.Fatalf("sequence = %v, want %v", got, want)
+	}
+}
+
+func TestPolicyUpdateSequenceSkipsDeletePhaseDuringFullRewrite(t *testing.T) {
+	plan := PolicyUpdatePlan{
+		Add: []PolicyMapEntry{{
+			Key:   PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 2, Direction: DirectionIngress},
+			Value: PolicyEntry{Precedence: 20},
+		}},
+		Delete: []PolicyKey{{
+			PrefixLen: StaticPrefixBits, RemoteIdentity: 1, Direction: DirectionIngress,
+		}},
+	}
+	got := policyUpdateSequence(1, plan, 1, true)
+	want := []policyUpdateStep{policyUpdateStepAddUpdate}
+	if !slices.Equal(got, want) {
+		t.Fatalf("sequence = %v, want %v", got, want)
 	}
 }

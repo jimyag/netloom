@@ -51,7 +51,8 @@ func Resolve(state State, packet Packet) (Decision, error) {
 		packet.Protocol = model.ProtocolAny
 	}
 
-	if endpointID := findEndpoint(state, packet.VPC, packet.Dest); endpointID != "" {
+	_, endpointID := findEndpoint(state, packet.VPC, packet.Dest)
+	if endpointID != "" {
 		return Decision{
 			Action:      model.ActionAllow,
 			MatchedBy:   "endpoint",
@@ -93,7 +94,7 @@ func resolveDNAT(state State, packet Packet) (Decision, bool) {
 			translatedPort = rule.TargetPort
 		}
 		destination := rule.TargetIP.String()
-		if endpointID := findEndpoint(state, packet.VPC, rule.TargetIP); endpointID != "" {
+		if _, endpointID := findEndpoint(state, packet.VPC, rule.TargetIP); endpointID != "" {
 			destination = endpointID
 		}
 		return Decision{
@@ -243,13 +244,13 @@ func compareLoadBalancerBackend(a, b model.LoadBalancerBackend) int {
 	return 0
 }
 
-func findEndpoint(state State, vpc string, dest netip.Addr) string {
+func findEndpoint(state State, vpc string, dest netip.Addr) (model.Endpoint, string) {
 	for _, endpoint := range state.Endpoints {
 		if endpoint.VPC == vpc && endpoint.IP == dest {
-			return endpoint.ID
+			return endpoint, model.EndpointKey(endpoint.VPC, endpoint.ID)
 		}
 	}
-	return ""
+	return model.Endpoint{}, ""
 }
 
 func resolvePolicyRoute(routes []model.PolicyRoute, packet Packet) (Decision, bool) {

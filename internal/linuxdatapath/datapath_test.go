@@ -3,6 +3,7 @@ package linuxdatapath
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -39,8 +40,8 @@ func TestPlanProgramsLocalAddressesAndRemoteRoutes(t *testing.T) {
 		Node:           "node-a",
 		LocalDevice:    "nl0",
 		UnderlayDevice: "eth9",
-		NodeUnderlays: map[string]netip.Addr{
-			"node-b": netip.MustParseAddr("172.30.0.12"),
+		NodeUnderlays: map[string][]netip.Addr{
+			"node-b": {netip.MustParseAddr("172.30.0.12")},
 		},
 	})
 	if err != nil {
@@ -97,7 +98,7 @@ func TestPlanNetNSProgramsVethAndNamespace(t *testing.T) {
 		Node:          "node-a",
 		Mode:          "netns",
 		WorkloadIF:    "eth0",
-		NodeUnderlays: map[string]netip.Addr{"node-b": netip.MustParseAddr("172.30.0.12")},
+		NodeUnderlays: map[string][]netip.Addr{"node-b": {netip.MustParseAddr("172.30.0.12"), netip.MustParseAddr("fd00::12")}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -108,6 +109,7 @@ func TestPlanNetNSProgramsVethAndNamespace(t *testing.T) {
 	joined := stringifyOps(ops)
 	for _, expected := range []string{
 		"ip_forward=1",
+		"net.ipv6.conf.all.forwarding=1",
 		"ip netns add nl-prod_x000000pod-a",
 		"ip netns exec nl-prod_x000000pod-a ip addr replace 10.10.0.10/32 dev eth0",
 		"ip netns exec nl-prod_x000000pod-a ip route replace default via 169.254.1.1 dev eth0 onlink",
@@ -116,6 +118,159 @@ func TestPlanNetNSProgramsVethAndNamespace(t *testing.T) {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("ops missing %q:\n%s", expected, joined)
 		}
+	}
+}
+
+func TestPlanNetNSProgramsIPv6VethAndNamespace(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{
+			{
+				ID:     "pod-a",
+				VPC:    "prod",
+				Subnet: "apps",
+				IP:     netip.MustParseAddr("fd00:10::10"),
+				Node:   "node-a",
+			},
+			{
+				ID:     "pod-b",
+				VPC:    "prod",
+				Subnet: "apps",
+				IP:     netip.MustParseAddr("fd00:10::11"),
+				Node:   "node-b",
+			},
+		},
+	}
+	ops, result, err := Plan(context.Background(), state, Options{
+		Node:          "node-a",
+		Mode:          "netns",
+		WorkloadIF:    "eth0",
+		NodeUnderlays: map[string][]netip.Addr{"node-b": {netip.MustParseAddr("172.30.0.12"), netip.MustParseAddr("fd00::12")}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Mode != "netns" || result.Device != "netns" || result.LocalAddresses != 1 || result.RemoteRoutes != 1 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	joined := stringifyOps(ops)
+	for _, expected := range []string{
+		"net.ipv6.conf.all.forwarding=1",
+		"ip netns add nl-prod_x000000pod-a",
+		"ip addr replace fd00::1/128 dev",
+		" nodad",
+		"ip netns exec nl-prod_x000000pod-a ip addr replace fd00:10::10/128 dev eth0 nodad",
+		"ip netns exec nl-prod_x000000pod-a ip route replace default via fd00::1 dev eth0 onlink",
+		"ip route replace fd00:10::11/128 via fd00::12 dev eth0 proto 187",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("ops missing %q:\n%s", expected, joined)
+		}
+	}
+}
+
+func TestPlanProgramsProviderNetworkVLANLinkForLocalEndpoints(t *testing.T) {
+	state := control.DesiredState{
+		Subnets: []model.Subnet{{
+			Name:            "baremetal",
+			VPC:             "prod",
+			CIDR:            netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway:         netip.MustParseAddr("10.10.0.1"),
+			ProviderNetwork: "physnet-a",
+			VLAN:            100,
+		}},
+		Endpoints: []model.Endpoint{{
+			ID:     "pod-a",
+			VPC:    "prod",
+			Subnet: "baremetal",
+			IP:     netip.MustParseAddr("10.10.0.10"),
+			Node:   "node-a",
+		}},
+	}
+	ops, _, err := Plan(context.Background(), state, Options{
+		Node:          "node-a",
+		LocalDevice:   "nl0",
+		ProviderLinks: map[string]string{"physnet-a": "eth1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := stringifyOps(ops)
+	linkName := providerNetworkLinkName("physnet-a", "eth1", 100)
+	for _, expected := range []string{
+		"ip link show " + linkName + " >/dev/null 2>&1 || ip link add link eth1 name " + linkName + " type vlan id 100",
+		"ip link set " + linkName + " up",
+		"ip addr replace 10.10.0.10/32 dev nl0",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("provider vlan link ops missing %q:\n%s", expected, joined)
+		}
+	}
+}
+
+func TestPlanCleansStaleProviderNetworkVLANLinks(t *testing.T) {
+	state := control.DesiredState{
+		Subnets: []model.Subnet{{
+			Name:            "baremetal",
+			VPC:             "prod",
+			CIDR:            netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway:         netip.MustParseAddr("10.10.0.1"),
+			ProviderNetwork: "physnet-a",
+			VLAN:            100,
+		}},
+		Endpoints: []model.Endpoint{{
+			ID:     "pod-a",
+			VPC:    "prod",
+			Subnet: "baremetal",
+			IP:     netip.MustParseAddr("10.10.0.10"),
+			Node:   "node-a",
+		}},
+	}
+	ops, result, err := Plan(context.Background(), state, Options{
+		Node:          "node-a",
+		LocalDevice:   "nl0",
+		ProviderLinks: map[string]string{"physnet-a": "eth1"},
+		CleanupStale:  true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.CleanupPlanned {
+		t.Fatal("cleanup was not marked as planned")
+	}
+	linkName := providerNetworkLinkName("physnet-a", "eth1", 100)
+	joined := stringifyOps(ops)
+	for _, expected := range []string{
+		"grep '^nlv'",
+		" " + linkName + " ",
+		"ip link del \"$link\"",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("provider vlan cleanup ops missing %q:\n%s", expected, joined)
+		}
+	}
+}
+
+func TestPlanRejectsProviderSubnetWithoutParentLinkMapping(t *testing.T) {
+	state := control.DesiredState{
+		Subnets: []model.Subnet{{
+			Name:            "baremetal",
+			VPC:             "prod",
+			CIDR:            netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway:         netip.MustParseAddr("10.10.0.1"),
+			ProviderNetwork: "physnet-a",
+			VLAN:            100,
+		}},
+		Endpoints: []model.Endpoint{{
+			ID:     "pod-a",
+			VPC:    "prod",
+			Subnet: "baremetal",
+			IP:     netip.MustParseAddr("10.10.0.10"),
+			Node:   "node-a",
+		}},
+	}
+	_, _, err := Plan(context.Background(), state, Options{Node: "node-a", LocalDevice: "nl0"})
+	if err == nil || !strings.Contains(err.Error(), `provider network "physnet-a" requires parent device mapping`) {
+		t.Fatalf("err = %v, want missing provider mapping failure", err)
 	}
 }
 
@@ -142,8 +297,8 @@ func TestPlanRemoteRouteCleanupDeletesOnlyManagedStaleRoutes(t *testing.T) {
 		Node:           "node-a",
 		LocalDevice:    "nl0",
 		UnderlayDevice: "eth9",
-		NodeUnderlays: map[string]netip.Addr{
-			"node-b": netip.MustParseAddr("172.30.0.12"),
+		NodeUnderlays: map[string][]netip.Addr{
+			"node-b": {netip.MustParseAddr("172.30.0.12")},
 		},
 		CleanupStale: true,
 	})
@@ -162,6 +317,92 @@ func TestPlanRemoteRouteCleanupDeletesOnlyManagedStaleRoutes(t *testing.T) {
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("managed remote route cleanup missing %q:\n%s", expected, joined)
+		}
+	}
+}
+
+func TestPlanLocalAddressCleanupDeletesOnlyManagedEndpointAddresses(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{
+			{
+				ID:     "pod-a",
+				VPC:    "prod",
+				Subnet: "apps",
+				IP:     netip.MustParseAddr("10.10.0.10"),
+				Node:   "node-a",
+			},
+			{
+				ID:     "pod-v6",
+				VPC:    "prod",
+				Subnet: "apps-v6",
+				IP:     netip.MustParseAddr("fd00:10::10"),
+				Node:   "node-a",
+			},
+		},
+	}
+	ops, result, err := Plan(context.Background(), state, Options{
+		Node:         "node-a",
+		LocalDevice:  "nl0",
+		CleanupStale: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.CleanupPlanned {
+		t.Fatal("cleanup was not marked as planned")
+	}
+	joined := stringifyOps(ops)
+	for _, expected := range []string{
+		"ip $family -o addr show dev nl0",
+		" 10.10.0.10/32 fd00:10::10/128 ",
+		"127.0.0.1/8|::1/128",
+		"ip $family addr del \"$addr\" dev nl0",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("managed local address cleanup missing %q:\n%s", expected, joined)
+		}
+	}
+}
+
+func TestPlanNetNSLocalRouteCleanupDeletesOnlyManagedHostVethRoutes(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{
+			{
+				ID:     "pod-a",
+				VPC:    "prod",
+				Subnet: "apps",
+				IP:     netip.MustParseAddr("10.10.0.10"),
+				Node:   "node-a",
+			},
+			{
+				ID:     "pod-v6",
+				VPC:    "prod",
+				Subnet: "apps-v6",
+				IP:     netip.MustParseAddr("fd00:10::10"),
+				Node:   "node-a",
+			},
+		},
+	}
+	ops, result, err := Plan(context.Background(), state, Options{
+		Node:         "node-a",
+		Mode:         "netns",
+		CleanupStale: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.CleanupPlanned {
+		t.Fatal("cleanup was not marked as planned")
+	}
+	joined := stringifyOps(ops)
+	for _, expected := range []string{
+		"ip $family -o route show table main",
+		"dev ~ /^nlh/",
+		" 10.10.0.10/32 fd00:10::10/128 ",
+		"ip $family route del \"$dst\" dev \"$dev\"",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("managed netns route cleanup missing %q:\n%s", expected, joined)
 		}
 	}
 }
@@ -924,6 +1165,46 @@ func TestNetlinkPolicyRuleEncodesIPv6Family(t *testing.T) {
 	}
 }
 
+func TestManagedAddrKeyRecognizesEndpointStyleAddresses(t *testing.T) {
+	tests := []struct {
+		name string
+		addr netlink.Addr
+		want string
+		ok   bool
+	}{
+		{
+			name: "ipv4 endpoint",
+			addr: netlink.Addr{IPNet: mustIPNet(t, "10.10.0.10/32")},
+			want: "10.10.0.10/32",
+			ok:   true,
+		},
+		{
+			name: "ipv6 endpoint",
+			addr: netlink.Addr{IPNet: mustIPNet(t, "fd00:10::10/128")},
+			want: "fd00:10::10/128",
+			ok:   true,
+		},
+		{
+			name: "loopback protected",
+			addr: netlink.Addr{IPNet: mustIPNet(t, "::1/128")},
+			ok:   false,
+		},
+		{
+			name: "non host prefix ignored",
+			addr: netlink.Addr{IPNet: mustIPNet(t, "10.10.0.0/24")},
+			ok:   false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := managedAddrKey(tt.addr)
+			if ok != tt.ok || got != tt.want {
+				t.Fatalf("managedAddrKey(%v) = %q,%t want %q,%t", tt.addr.IPNet, got, ok, tt.want, tt.ok)
+			}
+		})
+	}
+}
+
 func TestPlanNetNSCleanupDeletesStaleNamespaces(t *testing.T) {
 	state := control.DesiredState{
 		Endpoints: []model.Endpoint{{
@@ -951,6 +1232,15 @@ func TestPlanNetNSCleanupDeletesStaleNamespaces(t *testing.T) {
 			t.Fatalf("cleanup ops missing %q:\n%s", expected, joined)
 		}
 	}
+}
+
+func mustIPNet(t *testing.T, cidr string) *net.IPNet {
+	t.Helper()
+	_, ipNet, err := net.ParseCIDR(cidr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ipNet
 }
 
 func TestHostVethNameIsStableAndShort(t *testing.T) {
@@ -990,6 +1280,20 @@ func TestNetNSNamesEncodeEndpointIDsWithoutCollisions(t *testing.T) {
 	}
 }
 
+func TestNetNSNamesDifferentVPCsDoNotCollide(t *testing.T) {
+	prod := netnsName(model.EndpointKey("prod", "pod-a"), "nl")
+	dev := netnsName(model.EndpointKey("dev", "pod-a"), "nl")
+	if prod == dev {
+		t.Fatalf("netns names for different VPCs colliding: %q", prod)
+	}
+	if prod != "nl-prod_x000000pod-a" {
+		t.Fatalf("prod vpc netns = %q, want nl-prod_x000000pod-a", prod)
+	}
+	if dev != "nl-dev_x000000pod-a" {
+		t.Fatalf("dev vpc netns = %q, want nl-dev_x000000pod-a", dev)
+	}
+}
+
 func TestListManagedNetNSFiltersByPrefix(t *testing.T) {
 	dir := t.TempDir()
 	for _, name := range []string{"nl-pod-a", "nl-pod-b", "other-pod", "nlx-pod"} {
@@ -1024,6 +1328,46 @@ func TestNormalizeOptionsDefaultsNetlinkSettings(t *testing.T) {
 	}
 	if result.Device != "lo" || result.Mode != "local" {
 		t.Fatalf("unexpected result defaults: %+v", result)
+	}
+}
+
+func TestWorkloadHostGatewayChoosesFamilyAwareDefault(t *testing.T) {
+	if got := workloadHostGateway(netip.MustParseAddr("10.10.0.10"), netip.Addr{}); got != netip.MustParseAddr("169.254.1.1") {
+		t.Fatalf("ipv4 host gateway = %s, want 169.254.1.1", got)
+	}
+	if got := workloadHostGateway(netip.MustParseAddr("fd00:10::10"), netip.Addr{}); got != netip.MustParseAddr("fd00::1") {
+		t.Fatalf("ipv6 host gateway = %s, want fd00::1", got)
+	}
+	if got := workloadHostGateway(netip.MustParseAddr("fd00:10::10"), netip.MustParseAddr("169.254.1.1")); got != netip.MustParseAddr("fd00::1") {
+		t.Fatalf("ipv6 host gateway with mismatched configured family = %s, want fd00::1", got)
+	}
+	if got := workloadHostGateway(netip.MustParseAddr("fd00:10::10"), netip.MustParseAddr("fd00::1")); got != netip.MustParseAddr("fd00::1") {
+		t.Fatalf("ipv6 host gateway should keep matching configured family, got %s", got)
+	}
+}
+
+func TestResolveNodePrefersMatchingAddressFamilyFromConfiguredUnderlays(t *testing.T) {
+	underlays := map[string][]netip.Addr{
+		"node-b": {
+			netip.MustParseAddr("172.30.0.12"),
+			netip.MustParseAddr("fd00::12"),
+		},
+	}
+
+	got4, err := resolveNode(context.Background(), "node-b", netip.MustParseAddr("10.10.0.11"), underlays)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got4 != netip.MustParseAddr("172.30.0.12") {
+		t.Fatalf("resolveNode(ipv4) = %s, want 172.30.0.12", got4)
+	}
+
+	got6, err := resolveNode(context.Background(), "node-b", netip.MustParseAddr("fd00:10::11"), underlays)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got6 != netip.MustParseAddr("fd00::12") {
+		t.Fatalf("resolveNode(ipv6) = %s, want fd00::12", got6)
 	}
 }
 

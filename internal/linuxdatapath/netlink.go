@@ -42,6 +42,20 @@ func applyLocalNetlink(ctx context.Context, state control.DesiredState, options 
 	}
 	defer root.Close()
 	result.CleanupPlanned = options.CleanupStale
+	providerSpecs, err := desiredProviderNetworkLinkSpecs(state, options.Node, options.ProviderLinks)
+	if err != nil {
+		return Result{}, err
+	}
+	for _, spec := range providerSpecs {
+		if err := ensureProviderNetworkLink(root, spec); err != nil {
+			return Result{}, fmt.Errorf("ensure provider link %s: %w", spec.Name, err)
+		}
+	}
+	if options.CleanupStale {
+		if err := cleanupStaleProviderNetworkLinks(root, providerSpecs); err != nil {
+			return Result{}, err
+		}
+	}
 
 	localLink, err := root.LinkByName(options.LocalDevice)
 	if err != nil {
@@ -58,18 +72,20 @@ func applyLocalNetlink(ctx context.Context, state control.DesiredState, options 
 		}
 	}
 	desiredRemoteRoutes := make(map[string]struct{})
+	desiredLocalPrefixes := make(map[string]struct{})
 	for _, endpoint := range state.Endpoints {
 		if err := ctx.Err(); err != nil {
 			return Result{}, err
 		}
 		if endpoint.Node == options.Node {
+			desiredLocalPrefixes[endpointPrefix(endpoint.IP)] = struct{}{}
 			if err := replaceAddr(root, localLink, endpoint.IP, addrPrefixBits(endpoint.IP)); err != nil {
 				return Result{}, fmt.Errorf("assign %s to %s: %w", endpoint.IP, options.LocalDevice, err)
 			}
 			result.LocalAddresses++
 			continue
 		}
-		nextHop, err := resolveNode(ctx, endpoint.Node, options.NodeUnderlays)
+		nextHop, err := resolveNode(ctx, endpoint.Node, endpoint.IP, options.NodeUnderlays)
 		if err != nil {
 			return Result{}, fmt.Errorf("resolve underlay for node %s: %w", endpoint.Node, err)
 		}
@@ -80,6 +96,11 @@ func applyLocalNetlink(ctx context.Context, state control.DesiredState, options 
 		result.RemoteRoutes++
 	}
 	if options.CleanupStale {
+		if options.LocalDevice != "lo" {
+			if err := cleanupStaleManagedAddrs(root, localLink, desiredLocalPrefixes); err != nil {
+				return Result{}, fmt.Errorf("cleanup stale local addresses on %s: %w", options.LocalDevice, err)
+			}
+		}
 		if err := cleanupStaleRemoteRoutes(root, desiredRemoteRoutes, underlay.Attrs().Index); err != nil {
 			return Result{}, err
 		}
@@ -103,6 +124,20 @@ func applyNetNSNetlink(ctx context.Context, state control.DesiredState, options 
 		return Result{}, err
 	}
 	defer root.Close()
+	providerSpecs, err := desiredProviderNetworkLinkSpecs(state, options.Node, options.ProviderLinks)
+	if err != nil {
+		return Result{}, err
+	}
+	for _, spec := range providerSpecs {
+		if err := ensureProviderNetworkLink(root, spec); err != nil {
+			return Result{}, fmt.Errorf("ensure provider link %s: %w", spec.Name, err)
+		}
+	}
+	if options.CleanupStale {
+		if err := cleanupStaleProviderNetworkLinks(root, providerSpecs); err != nil {
+			return Result{}, err
+		}
+	}
 
 	if options.CleanupStale {
 		if err := cleanupStaleNamespaces(state, options.Node, options.NetNSPrefix); err != nil {
@@ -117,18 +152,20 @@ func applyNetNSNetlink(ctx context.Context, state control.DesiredState, options 
 		}
 	}
 	desiredRemoteRoutes := make(map[string]struct{})
+	desiredLocalPrefixes := make(map[string]struct{})
 	for _, endpoint := range state.Endpoints {
 		if err := ctx.Err(); err != nil {
 			return Result{}, err
 		}
 		if endpoint.Node == options.Node {
-			if err := ensureNetNSWorkload(root, model.EndpointKey(endpoint.VPC, endpoint.ID), endpoint.IP, options.WorkloadIF, options.HostGateway, options.NetNSPrefix); err != nil {
+			desiredLocalPrefixes[endpointPrefix(endpoint.IP)] = struct{}{}
+			if err := ensureNetNSWorkload(root, model.EndpointKey(endpoint.VPC, endpoint.ID), endpoint.IP, options.WorkloadIF, workloadHostGateway(endpoint.IP, options.HostGateway), options.NetNSPrefix); err != nil {
 				return Result{}, fmt.Errorf("ensure workload %s: %w", endpoint.ID, err)
 			}
 			result.LocalAddresses++
 			continue
 		}
-		nextHop, err := resolveNode(ctx, endpoint.Node, options.NodeUnderlays)
+		nextHop, err := resolveNode(ctx, endpoint.Node, endpoint.IP, options.NodeUnderlays)
 		if err != nil {
 			return Result{}, fmt.Errorf("resolve underlay for node %s: %w", endpoint.Node, err)
 		}
@@ -140,6 +177,9 @@ func applyNetNSNetlink(ctx context.Context, state control.DesiredState, options 
 	}
 	if options.CleanupStale {
 		if err := cleanupStaleRemoteRoutes(root, desiredRemoteRoutes, underlay.Attrs().Index); err != nil {
+			return Result{}, err
+		}
+		if err := cleanupStaleWorkloadRoutes(root, desiredLocalPrefixes); err != nil {
 			return Result{}, err
 		}
 	}
@@ -168,7 +208,7 @@ func normalizeOptions(options Options) (Options, Result, error) {
 		options.WorkloadIF = "eth0"
 	}
 	if !options.HostGateway.IsValid() {
-		options.HostGateway = netip.MustParseAddr("169.254.1.1")
+		options.HostGateway = defaultIPv4HostGateway
 	}
 	if options.PolicyTableBase == 0 {
 		options.PolicyTableBase = 10000
@@ -184,6 +224,7 @@ func setIPv4Forwarding() error {
 		"/proc/sys/net/ipv4/ip_forward":             "1",
 		"/proc/sys/net/ipv4/conf/all/rp_filter":     "0",
 		"/proc/sys/net/ipv4/conf/default/rp_filter": "0",
+		"/proc/sys/net/ipv6/conf/all/forwarding":    "1",
 	}
 	for path, value := range writes {
 		if err := os.WriteFile(path, []byte(value), 0o644); err != nil {
@@ -447,6 +488,152 @@ func cleanupStaleRemoteRoutes(root *netlink.Handle, desired map[string]struct{},
 			}
 			if err := root.RouteDel(&route); err != nil && !errors.Is(err, os.ErrNotExist) {
 				return fmt.Errorf("delete stale remote route %s: %w", ipNetString(route.Dst), err)
+			}
+		}
+	}
+	return nil
+}
+
+func cleanupStaleManagedAddrs(handle *netlink.Handle, link netlink.Link, desired map[string]struct{}) error {
+	addrs, err := handle.AddrList(link, unix.AF_UNSPEC)
+	if err != nil {
+		return err
+	}
+	for i := range addrs {
+		addr := addrs[i]
+		key, ok := managedAddrKey(addr)
+		if !ok {
+			continue
+		}
+		if _, keep := desired[key]; keep {
+			continue
+		}
+		if err := handle.AddrDel(link, &addr); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("delete stale address %s: %w", key, err)
+		}
+	}
+	return nil
+}
+
+func ensureProviderNetworkLink(root *netlink.Handle, spec providerNetworkLinkSpec) error {
+	parent, err := root.LinkByName(spec.ParentDevice)
+	if err != nil {
+		return fmt.Errorf("lookup parent device %s: %w", spec.ParentDevice, err)
+	}
+	link, err := root.LinkByName(spec.Name)
+	if err != nil {
+		if !isLinkNotFound(err) {
+			return err
+		}
+		if err := root.LinkAdd(&netlink.Vlan{
+			LinkAttrs: netlink.LinkAttrs{
+				Name:        spec.Name,
+				ParentIndex: parent.Attrs().Index,
+			},
+			VlanId: int(spec.VLAN),
+		}); err != nil && !errors.Is(err, os.ErrExist) && !errors.Is(err, unix.EEXIST) {
+			return fmt.Errorf("create vlan link %s: %w", spec.Name, err)
+		}
+		link, err = root.LinkByName(spec.Name)
+		if err != nil {
+			return err
+		}
+	}
+	vlan, ok := link.(*netlink.Vlan)
+	if !ok {
+		return fmt.Errorf("link %s exists but is %T, want vlan", spec.Name, link)
+	}
+	if vlan.VlanId != int(spec.VLAN) {
+		return fmt.Errorf("link %s vlan id = %d, want %d", spec.Name, vlan.VlanId, spec.VLAN)
+	}
+	if link.Attrs().ParentIndex != parent.Attrs().Index {
+		return fmt.Errorf("link %s parent index = %d, want %d", spec.Name, link.Attrs().ParentIndex, parent.Attrs().Index)
+	}
+	if err := root.LinkSetUp(link); err != nil {
+		return fmt.Errorf("set link %s up: %w", spec.Name, err)
+	}
+	return nil
+}
+
+func cleanupStaleProviderNetworkLinks(root *netlink.Handle, desired []providerNetworkLinkSpec) error {
+	keep := make(map[string]struct{}, len(desired))
+	for _, spec := range desired {
+		keep[spec.Name] = struct{}{}
+	}
+	links, err := root.LinkList()
+	if err != nil {
+		return fmt.Errorf("list provider links: %w", err)
+	}
+	for _, link := range links {
+		name := link.Attrs().Name
+		if !strings.HasPrefix(name, providerLinkPrefix) {
+			continue
+		}
+		if _, ok := keep[name]; ok {
+			continue
+		}
+		if _, ok := link.(*netlink.Vlan); !ok {
+			continue
+		}
+		if err := root.LinkDel(link); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("delete stale provider link %s: %w", name, err)
+		}
+	}
+	return nil
+}
+
+func managedAddrKey(addr netlink.Addr) (string, bool) {
+	if addr.IPNet == nil {
+		return "", false
+	}
+	bits, maxBits := addr.IPNet.Mask.Size()
+	if bits != maxBits || (maxBits != 32 && maxBits != 128) {
+		return "", false
+	}
+	ip, ok := netip.AddrFromSlice(addr.IPNet.IP)
+	if !ok {
+		return "", false
+	}
+	ip = ip.Unmap()
+	if !ip.IsValid() || ip.IsLoopback() || ip.IsUnspecified() {
+		return "", false
+	}
+	return endpointPrefix(ip), true
+}
+
+func cleanupStaleWorkloadRoutes(root *netlink.Handle, desired map[string]struct{}) error {
+	linkNames := make(map[int]string)
+	for _, family := range []int{netlink.FAMILY_V4, netlink.FAMILY_V6} {
+		routes, err := root.RouteListFiltered(family, &netlink.Route{Table: linuxMainRouteTable}, netlink.RT_FILTER_TABLE)
+		if err != nil {
+			return fmt.Errorf("list local workload routes: %w", err)
+		}
+		for i := range routes {
+			route := routes[i]
+			if route.Dst == nil || route.LinkIndex == 0 {
+				continue
+			}
+			name, ok := linkNames[route.LinkIndex]
+			if !ok {
+				link, err := root.LinkByIndex(route.LinkIndex)
+				if err != nil {
+					if isLinkNotFound(err) {
+						continue
+					}
+					return fmt.Errorf("lookup workload route link %d: %w", route.LinkIndex, err)
+				}
+				name = link.Attrs().Name
+				linkNames[route.LinkIndex] = name
+			}
+			if !strings.HasPrefix(name, "nlh") {
+				continue
+			}
+			key := ipNetString(route.Dst)
+			if _, keep := desired[key]; keep {
+				continue
+			}
+			if err := root.RouteDel(&route); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("delete stale workload route %s on %s: %w", key, name, err)
 			}
 		}
 	}
@@ -759,6 +946,9 @@ func ensureNetNSWorkload(root *netlink.Handle, endpointID string, ip netip.Addr,
 	if err != nil {
 		return fmt.Errorf("lookup workload iface %s in %s: %w", workloadIF, nsName, err)
 	}
+	if err := cleanupStaleManagedAddrs(ns, workload, map[string]struct{}{endpointPrefix(ip): struct{}{}}); err != nil {
+		return fmt.Errorf("cleanup stale workload addresses in %s: %w", nsName, err)
+	}
 	if err := replaceAddr(ns, workload, ip, addrPrefixBits(ip)); err != nil {
 		return fmt.Errorf("assign workload ip %s: %w", ip, err)
 	}
@@ -867,7 +1057,11 @@ func replaceAddr(handle *netlink.Handle, link netlink.Link, addr netip.Addr, bit
 	if err != nil {
 		return err
 	}
-	return handle.AddrReplace(link, &netlink.Addr{IPNet: ipNet})
+	nlAddr := &netlink.Addr{IPNet: ipNet}
+	if addr.Is6() {
+		nlAddr.Flags = unix.IFA_F_NODAD
+	}
+	return handle.AddrReplace(link, nlAddr)
 }
 
 func replaceRoute(handle *netlink.Handle, dst netip.Addr, bits int, gw netip.Addr, linkIndex int, flags int) error {

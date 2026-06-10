@@ -118,7 +118,11 @@ func (b *Backend) CleanupTopology(ctx context.Context, state topology.State) err
 	next := snapshotDesired(state)
 	ops := cleanupOperations(b.last, next)
 	if !b.seen {
-		ops = append([]Operation{gcStaleNATRulesOperation(next.NATRules), gcStalePolicyRoutesOperation(next.PolicyRoutes)}, ops...)
+		ops = append([]Operation{
+			gcStaleDHCPOptionsOperation(next.Endpoints, next.Subnets),
+			gcStaleNATRulesOperation(next.NATRules),
+			gcStalePolicyRoutesOperation(next.PolicyRoutes),
+		}, ops...)
 	}
 	skipNAT := unchangedNATRules(b.last, next)
 	skipLB := unchangedLoadBalancers(b.last, next)
@@ -205,20 +209,22 @@ func (b *Backend) apply(ctx context.Context, plan func() error) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	before := len(b.planner.Operations())
+	before := b.planner.OperationCount()
 	if err := plan(); err != nil {
 		return err
 	}
-	planned := b.planner.Operations()
-	next := planned[before:]
-	if len(next) == 0 || b.executor == nil {
+	if b.executor == nil {
+		return nil
+	}
+	next := b.planner.OperationsSince(before, false)
+	if len(next) == 0 {
 		return nil
 	}
 	if err := b.executor.Execute(ctx, next); err != nil {
 		return err
 	}
 	b.recordOperationsLocked(next)
-	b.planner.DiscardOperations(len(planned))
+	_ = b.planner.OperationsSince(before, true)
 	return nil
 }
 

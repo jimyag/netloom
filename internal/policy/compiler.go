@@ -3,7 +3,6 @@ package policy
 import (
 	"fmt"
 	"hash/fnv"
-	"math"
 	"net/netip"
 	"regexp"
 	"sort"
@@ -15,6 +14,7 @@ import (
 
 type Program struct {
 	EndpointID string
+	EndpointIP netip.Addr
 	MapEntries []MapEntry
 	Rules      []Rule
 }
@@ -126,7 +126,10 @@ func CompileForEndpointWithContext(endpoint model.Endpoint, groups map[string]mo
 	if err != nil {
 		return Program{}, err
 	}
-	program := Program{EndpointID: model.EndpointKey(endpoint.VPC, endpoint.ID)}
+	program := Program{
+		EndpointID: model.EndpointKey(endpoint.VPC, endpoint.ID),
+		EndpointIP: endpoint.IP,
+	}
 	attachedGroups := make([]model.SecurityGroup, 0, len(endpoint.SecurityGroups))
 	for _, groupName := range endpoint.SecurityGroups {
 		group, ok := groups[groupName]
@@ -1115,9 +1118,6 @@ func l4PrefixBits(protocol model.Protocol, port uint16) uint8 {
 }
 
 func precedence(rule Rule) uint32 {
-	if rule.Tier <= 0 && (rule.Action == model.ActionDrop || rule.Action == model.ActionReject) {
-		return math.MaxUint32
-	}
 	tier := rule.Tier
 	if tier < 0 {
 		tier = 0
@@ -1137,8 +1137,9 @@ func precedence(rule Rule) uint32 {
 		priorityScore = model.SecurityGroupPriorityMax - priority + 1
 	}
 	precedence := uint32(1-tier) << 31
+	precedence |= uint32(priorityScore) << 1
 	if rule.Action == model.ActionDrop || rule.Action == model.ActionReject {
-		precedence |= 1 << 30
+		precedence |= 1
 	}
-	return precedence | uint32(priorityScore)
+	return precedence
 }

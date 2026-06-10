@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/netip"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
@@ -182,7 +183,7 @@ func TestIPv4L4ACLRulesFromProgramProjectsExactEgressPolicy(t *testing.T) {
 	}
 }
 
-func TestIPv4L4ACLRulesFromProgramProjectsRejectAsDrop(t *testing.T) {
+func TestIPv4L4ACLRulesFromProgramRejectsRejectAction(t *testing.T) {
 	program := policy.Program{
 		EndpointID: testEndpointA,
 		Rules: []policy.Rule{{
@@ -195,15 +196,9 @@ func TestIPv4L4ACLRulesFromProgramProjectsRejectAsDrop(t *testing.T) {
 		}},
 	}
 
-	rules, err := IPv4L4ACLRulesFromProgram(program)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(rules) != 1 {
-		t.Fatalf("rules = %d, want 1 reject-derived drop rule", len(rules))
-	}
-	if rules[0].SourceCIDR != netip.MustParsePrefix("172.30.0.20/32") || rules[0].Protocol != 6 || rules[0].DestPort != 8080 || rules[0].Action != TCXDrop {
-		t.Fatalf("reject TCX rule = %+v, want tcp/8080 drop projection", rules[0])
+	_, err := IPv4L4ACLRulesFromProgram(program)
+	if err == nil || !strings.Contains(err.Error(), "reject action is not supported by TCX fast path") {
+		t.Fatalf("error = %v, want reject fast-path validation failure", err)
 	}
 }
 
@@ -497,7 +492,7 @@ func TestIPv6L4ACLRulesFromProgramProjectsExactIngressPolicy(t *testing.T) {
 	}
 }
 
-func TestIPv6L4ACLRulesFromProgramProjectsRejectAsDrop(t *testing.T) {
+func TestIPv6L4ACLRulesFromProgramRejectsRejectAction(t *testing.T) {
 	program := policy.Program{
 		EndpointID: testEndpointA,
 		Rules: []policy.Rule{{
@@ -510,15 +505,9 @@ func TestIPv6L4ACLRulesFromProgramProjectsRejectAsDrop(t *testing.T) {
 		}},
 	}
 
-	rules, err := IPv6L4ACLRulesFromProgram(program)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(rules) != 1 {
-		t.Fatalf("rules = %d, want 1 reject-derived IPv6 drop rule", len(rules))
-	}
-	if rules[0].SourceCIDR != netip.MustParsePrefix("fd00:10::20/128") || rules[0].Protocol != 6 || rules[0].DestPort != 8443 || rules[0].Action != TCXDrop {
-		t.Fatalf("reject IPv6 TCX rule = %+v, want tcp/8443 drop projection", rules[0])
+	_, err := IPv6L4ACLRulesFromProgram(program)
+	if err == nil || !strings.Contains(err.Error(), "reject action is not supported by TCX fast path") {
+		t.Fatalf("error = %v, want reject fast-path validation failure", err)
 	}
 }
 
@@ -883,8 +872,8 @@ func TestIPv4L4ACLUsesLPMTrieMapSpec(t *testing.T) {
 	if spec.Type != ebpf.LPMTrie {
 		t.Fatalf("map type = %s, want LPMTrie", spec.Type)
 	}
-	if spec.KeySize != 16 {
-		t.Fatalf("key size = %d, want 16", spec.KeySize)
+	if spec.KeySize != 20 {
+		t.Fatalf("key size = %d, want 20 with local+peer IPv4 key", spec.KeySize)
 	}
 	if spec.Flags == 0 {
 		t.Fatal("LPM trie map should set no-prealloc flag")
@@ -896,8 +885,8 @@ func TestIPv6L4ACLUsesLPMTrieMapSpec(t *testing.T) {
 	if spec.Type != ebpf.LPMTrie {
 		t.Fatalf("map type = %s, want LPMTrie", spec.Type)
 	}
-	if spec.KeySize != 28 {
-		t.Fatalf("key size = %d, want 28", spec.KeySize)
+	if spec.KeySize != 44 {
+		t.Fatalf("key size = %d, want 44 with local+peer IPv6 key", spec.KeySize)
 	}
 	if spec.Flags == 0 {
 		t.Fatal("LPM trie map should set no-prealloc flag")
@@ -942,32 +931,34 @@ func TestIPv6L4ACLRuleSourceCIDR(t *testing.T) {
 }
 
 func TestIPv4L4ACLKeyPrefixLenIncludesProtocolAndPort(t *testing.T) {
-	if got := ipv4L4PrefixLen(netip.MustParsePrefix("172.30.0.0/24"), 16); got != 72 {
-		t.Fatalf("/24 exact-port prefix len = %d, want protocol+pad+cidr+port bits 72", got)
+	local := netip.MustParsePrefix("10.10.0.10/32")
+	if got := ipv4L4PrefixLen(local, netip.MustParsePrefix("172.30.0.0/24"), 16); got != 104 {
+		t.Fatalf("/32-local+/24-peer exact-port prefix len = %d, want 104", got)
 	}
-	if got := ipv4L4PrefixLen(netip.MustParsePrefix("172.30.0.11/32"), 16); got != 80 {
-		t.Fatalf("/32 exact-port prefix len = %d, want full key length 80", got)
+	if got := ipv4L4PrefixLen(local, netip.MustParsePrefix("172.30.0.11/32"), 16); got != 112 {
+		t.Fatalf("/32-local+/32-peer exact-port prefix len = %d, want full key length 112", got)
 	}
-	if got := ipv4L4PrefixLen(netip.MustParsePrefix("172.30.0.0/24"), 12); got != 68 {
-		t.Fatalf("/24 port-prefix len = %d, want protocol+pad+cidr+port-prefix bits 68", got)
+	if got := ipv4L4PrefixLen(local, netip.MustParsePrefix("172.30.0.0/24"), 12); got != 100 {
+		t.Fatalf("/32-local+/24-peer port-prefix len = %d, want 100", got)
 	}
-	if ipv4L4LookupPrefixLen != 80 {
-		t.Fatalf("lookup prefix len = %d, want full key length 80", ipv4L4LookupPrefixLen)
+	if ipv4L4LookupPrefixLen != 112 {
+		t.Fatalf("lookup prefix len = %d, want full key length 112", ipv4L4LookupPrefixLen)
 	}
 }
 
 func TestIPv6L4ACLKeyPrefixLenIncludesProtocolAndPort(t *testing.T) {
-	if got := ipv6L4PrefixLen(netip.MustParsePrefix("fd00:10::/64"), 16); got != 112 {
-		t.Fatalf("/64 exact-port prefix len = %d, want protocol+pad+cidr+port bits 112", got)
+	local := netip.MustParsePrefix("fd00:10::10/128")
+	if got := ipv6L4PrefixLen(local, netip.MustParsePrefix("fd00:10::/64"), 16); got != 240 {
+		t.Fatalf("/128-local+/64-peer exact-port prefix len = %d, want 240", got)
 	}
-	if got := ipv6L4PrefixLen(netip.MustParsePrefix("fd00:10::11/128"), 16); got != 176 {
-		t.Fatalf("/128 exact-port prefix len = %d, want full key length 176", got)
+	if got := ipv6L4PrefixLen(local, netip.MustParsePrefix("fd00:10::11/128"), 16); got != 304 {
+		t.Fatalf("/128-local+/128-peer exact-port prefix len = %d, want full key length 304", got)
 	}
-	if got := ipv6L4PrefixLen(netip.MustParsePrefix("fd00:10::/64"), 12); got != 108 {
-		t.Fatalf("/64 port-prefix len = %d, want protocol+pad+cidr+port-prefix bits 108", got)
+	if got := ipv6L4PrefixLen(local, netip.MustParsePrefix("fd00:10::/64"), 12); got != 236 {
+		t.Fatalf("/128-local+/64-peer port-prefix len = %d, want 236", got)
 	}
-	if ipv6L4LookupPrefixLen != 176 {
-		t.Fatalf("lookup prefix len = %d, want full IPv6 key length 176", ipv6L4LookupPrefixLen)
+	if ipv6L4LookupPrefixLen != 304 {
+		t.Fatalf("lookup prefix len = %d, want full IPv6 key length 304", ipv6L4LookupPrefixLen)
 	}
 }
 
@@ -1042,6 +1033,74 @@ func TestIPv4L4ACLRulesFromProgramsKeepsHigherPrecedenceDuplicateKey(t *testing.
 	}
 }
 
+func TestIPv4L4ACLRulesFromProgramTreatsLowerNumericPriorityAllowAsNonEnforcingWhenItBeatsDrop(t *testing.T) {
+	program := policy.Program{
+		EndpointID: testEndpointA,
+		Rules: []policy.Rule{
+			{
+				ID:         "drop-fallback",
+				Priority:   200,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("172.30.0.11/32"),
+				Ports:      []model.PortRange{{From: 8081, To: 8081}},
+				Action:     model.ActionDrop,
+			},
+			{
+				ID:         "allow-primary",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("172.30.0.11/32"),
+				Ports:      []model.PortRange{{From: 8081, To: 8081}},
+				Action:     model.ActionAllow,
+			},
+		},
+	}
+	_, err := IPv4L4ACLRulesFromProgram(program)
+	if err == nil || !strings.Contains(err.Error(), "no enforcing IPv4 L4 ingress ACL rules") {
+		t.Fatalf("error = %v, want allow-winning TCX policy to be treated as non-enforcing", err)
+	}
+}
+
+func TestIPv4L4ACLRulesFromProgramsKeepDistinctLocalEndpointKeys(t *testing.T) {
+	programA := policy.Program{
+		EndpointID: testEndpointA,
+		EndpointIP: netip.MustParseAddr("10.10.0.10"),
+		Rules: []policy.Rule{{
+			ID:         "drop-web-a",
+			Direction:  model.DirectionIngress,
+			Protocol:   model.ProtocolTCP,
+			RemoteCIDR: netip.MustParsePrefix("172.30.0.11/32"),
+			Ports:      []model.PortRange{{From: 8080, To: 8080}},
+			Action:     model.ActionDrop,
+		}},
+	}
+	programB := policy.Program{
+		EndpointID: testEndpointB,
+		EndpointIP: netip.MustParseAddr("10.10.0.11"),
+		Rules: []policy.Rule{{
+			ID:         "drop-web-b",
+			Direction:  model.DirectionIngress,
+			Protocol:   model.ProtocolTCP,
+			RemoteCIDR: netip.MustParsePrefix("172.30.0.11/32"),
+			Ports:      []model.PortRange{{From: 8080, To: 8080}},
+			Action:     model.ActionDrop,
+		}},
+	}
+	rules, err := IPv4L4ACLRulesFromPrograms([]policy.Program{programA, programB})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 2 {
+		t.Fatalf("rules = %+v, want one rule per local endpoint", rules)
+	}
+	locals := []netip.Prefix{rules[0].LocalCIDR, rules[1].LocalCIDR}
+	if !slices.Contains(locals, netip.MustParsePrefix("10.10.0.10/32")) || !slices.Contains(locals, netip.MustParsePrefix("10.10.0.11/32")) {
+		t.Fatalf("locals = %+v, want both endpoint /32s", locals)
+	}
+}
+
 func TestIPv6L4ACLRulesFromProgramsDeduplicatesRules(t *testing.T) {
 	program := policy.Program{
 		EndpointID: testEndpointA,
@@ -1094,6 +1153,44 @@ func TestIPv6L4ACLRulesFromProgramsKeepsHigherPrecedenceDuplicateKey(t *testing.
 	}
 	if len(rules) != 1 || rules[0].Action != TCXDrop {
 		t.Fatalf("rules = %+v, want higher-precedence drop only", rules)
+	}
+}
+
+func TestIPv6L4ACLRulesFromProgramsKeepDistinctLocalEndpointKeys(t *testing.T) {
+	programA := policy.Program{
+		EndpointID: testEndpointA,
+		EndpointIP: netip.MustParseAddr("fd00:10::10"),
+		Rules: []policy.Rule{{
+			ID:         "drop-v6-web-a",
+			Direction:  model.DirectionIngress,
+			Protocol:   model.ProtocolTCP,
+			RemoteCIDR: netip.MustParsePrefix("fd00:20::11/128"),
+			Ports:      []model.PortRange{{From: 8443, To: 8443}},
+			Action:     model.ActionDrop,
+		}},
+	}
+	programB := policy.Program{
+		EndpointID: testEndpointB,
+		EndpointIP: netip.MustParseAddr("fd00:10::11"),
+		Rules: []policy.Rule{{
+			ID:         "drop-v6-web-b",
+			Direction:  model.DirectionIngress,
+			Protocol:   model.ProtocolTCP,
+			RemoteCIDR: netip.MustParsePrefix("fd00:20::11/128"),
+			Ports:      []model.PortRange{{From: 8443, To: 8443}},
+			Action:     model.ActionDrop,
+		}},
+	}
+	rules, err := IPv6L4ACLRulesFromPrograms([]policy.Program{programA, programB})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 2 {
+		t.Fatalf("rules = %+v, want one rule per local endpoint", rules)
+	}
+	locals := []netip.Prefix{rules[0].LocalCIDR, rules[1].LocalCIDR}
+	if !slices.Contains(locals, netip.MustParsePrefix("fd00:10::10/128")) || !slices.Contains(locals, netip.MustParsePrefix("fd00:10::11/128")) {
+		t.Fatalf("locals = %+v, want both endpoint /128s", locals)
 	}
 }
 

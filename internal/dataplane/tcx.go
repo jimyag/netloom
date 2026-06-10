@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
-	"math"
 	"net"
 	"net/netip"
 	"time"
@@ -21,8 +20,8 @@ const (
 	TCXPass = int32(0)
 	TCXDrop = int32(2)
 
-	ipv4L4LookupPrefixLen = int32(80)
-	ipv6L4LookupPrefixLen = int32(176)
+	ipv4L4LookupPrefixLen = int32(112)
+	ipv6L4LookupPrefixLen = int32(304)
 )
 
 var attachTCX = link.AttachTCX
@@ -101,6 +100,7 @@ func (a *TCXAttachment) Close() error {
 
 type IPv4L4Key struct {
 	PrefixLen uint32
+	LocalIP   [4]byte
 	Protocol  uint8
 	Pad       [3]byte
 	PeerIP    [4]byte
@@ -109,6 +109,8 @@ type IPv4L4Key struct {
 }
 
 type IPv4L4ACLRule struct {
+	Local              netip.Addr
+	LocalCIDR          netip.Prefix
 	Source             netip.Addr
 	SourceCIDR         netip.Prefix
 	Protocol           uint8
@@ -120,6 +122,7 @@ type IPv4L4ACLRule struct {
 
 type IPv6L4Key struct {
 	PrefixLen uint32
+	LocalIP   [16]byte
 	Protocol  uint8
 	Pad       [3]byte
 	PeerIP    [16]byte
@@ -128,6 +131,8 @@ type IPv6L4Key struct {
 }
 
 type IPv6L4ACLRule struct {
+	Local              netip.Addr
+	LocalCIDR          netip.Prefix
 	Source             netip.Addr
 	SourceCIDR         netip.Prefix
 	Protocol           uint8
@@ -293,7 +298,7 @@ func ipv4L4ACLMapSpec(ruleCount int) *ebpf.MapSpec {
 	return &ebpf.MapSpec{
 		Name:       "netloom_tcx_l4",
 		Type:       ebpf.LPMTrie,
-		KeySize:    16,
+		KeySize:    20,
 		ValueSize:  4,
 		MaxEntries: uint32(max(256, ruleCount)),
 		Flags:      unix.BPF_F_NO_PREALLOC,
@@ -304,7 +309,7 @@ func ipv6L4ACLMapSpec(ruleCount int) *ebpf.MapSpec {
 	return &ebpf.MapSpec{
 		Name:       "netloom_tcx_l4_v6",
 		Type:       ebpf.LPMTrie,
-		KeySize:    28,
+		KeySize:    44,
 		ValueSize:  4,
 		MaxEntries: uint32(max(256, ruleCount)),
 		Flags:      unix.BPF_F_NO_PREALLOC,
@@ -312,6 +317,10 @@ func ipv6L4ACLMapSpec(ruleCount int) *ebpf.MapSpec {
 }
 
 func putIPv4L4ACLRule(aclMap *ebpf.Map, rule IPv4L4ACLRule) error {
+	localCIDR, err := ipv4LocalCIDR(rule)
+	if err != nil {
+		return err
+	}
 	sourceCIDR, err := ruleSourceCIDR(rule)
 	if err != nil {
 		return err
@@ -327,7 +336,8 @@ func putIPv4L4ACLRule(aclMap *ebpf.Map, rule IPv4L4ACLRule) error {
 		return fmt.Errorf("unsupported tcx action %d", rule.Action)
 	}
 	key := IPv4L4Key{
-		PrefixLen: ipv4L4PrefixLen(sourceCIDR, destPortPrefixBits),
+		PrefixLen: ipv4L4PrefixLen(localCIDR, sourceCIDR, destPortPrefixBits),
+		LocalIP:   ipv4L4PeerKey(localCIDR.Addr()),
 		Protocol:  rule.Protocol,
 		DestPort:  rule.DestPort,
 		PeerIP:    ipv4L4PeerKey(sourceCIDR.Addr()),
@@ -337,6 +347,10 @@ func putIPv4L4ACLRule(aclMap *ebpf.Map, rule IPv4L4ACLRule) error {
 }
 
 func putIPv6L4ACLRule(aclMap *ebpf.Map, rule IPv6L4ACLRule) error {
+	localCIDR, err := ipv6LocalCIDR(rule)
+	if err != nil {
+		return err
+	}
 	sourceCIDR, err := ipv6RuleSourceCIDR(rule)
 	if err != nil {
 		return err
@@ -352,7 +366,8 @@ func putIPv6L4ACLRule(aclMap *ebpf.Map, rule IPv6L4ACLRule) error {
 		return fmt.Errorf("unsupported tcx action %d", rule.Action)
 	}
 	key := IPv6L4Key{
-		PrefixLen: ipv6L4PrefixLen(sourceCIDR, destPortPrefixBits),
+		PrefixLen: ipv6L4PrefixLen(localCIDR, sourceCIDR, destPortPrefixBits),
+		LocalIP:   ipv6L4PeerKey(localCIDR.Addr()),
 		Protocol:  rule.Protocol,
 		DestPort:  rule.DestPort,
 		PeerIP:    ipv6L4PeerKey(sourceCIDR.Addr()),
@@ -374,6 +389,22 @@ func ruleSourceCIDR(rule IPv4L4ACLRule) (netip.Prefix, error) {
 	return netip.PrefixFrom(rule.Source, 32), nil
 }
 
+func ipv4LocalCIDR(rule IPv4L4ACLRule) (netip.Prefix, error) {
+	if rule.LocalCIDR.IsValid() {
+		if !rule.LocalCIDR.Addr().Is4() {
+			return netip.Prefix{}, fmt.Errorf("local cidr must be IPv4")
+		}
+		return rule.LocalCIDR.Masked(), nil
+	}
+	if !rule.Local.IsValid() {
+		return netip.PrefixFrom(netip.IPv4Unspecified(), 32), nil
+	}
+	if !rule.Local.Is4() {
+		return netip.Prefix{}, fmt.Errorf("local address must be IPv4")
+	}
+	return netip.PrefixFrom(rule.Local, 32), nil
+}
+
 func ipv6RuleSourceCIDR(rule IPv6L4ACLRule) (netip.Prefix, error) {
 	if rule.SourceCIDR.IsValid() {
 		if !rule.SourceCIDR.Addr().Is6() || rule.SourceCIDR.Addr().Is4() {
@@ -385,6 +416,22 @@ func ipv6RuleSourceCIDR(rule IPv6L4ACLRule) (netip.Prefix, error) {
 		return netip.Prefix{}, fmt.Errorf("source address must be IPv6")
 	}
 	return netip.PrefixFrom(rule.Source, 128), nil
+}
+
+func ipv6LocalCIDR(rule IPv6L4ACLRule) (netip.Prefix, error) {
+	if rule.LocalCIDR.IsValid() {
+		if !rule.LocalCIDR.Addr().Is6() || rule.LocalCIDR.Addr().Is4() {
+			return netip.Prefix{}, fmt.Errorf("local cidr must be IPv6")
+		}
+		return rule.LocalCIDR.Masked(), nil
+	}
+	if !rule.Local.IsValid() {
+		return netip.PrefixFrom(netip.IPv6Unspecified(), 128), nil
+	}
+	if !rule.Local.Is6() || rule.Local.Is4() {
+		return netip.Prefix{}, fmt.Errorf("local address must be IPv6")
+	}
+	return netip.PrefixFrom(rule.Local, 128), nil
 }
 
 func IPv4L4ACLRulesFromProgram(program policy.Program) ([]IPv4L4ACLRule, error) {
@@ -511,6 +558,7 @@ func ValidateL4ACLProgramSupport(program policy.Program) error {
 }
 
 func appendIPv4L4ACLRulesFromProgram(rules *[]IPv4L4ACLRule, seen map[IPv4L4Key]int32, program policy.Program, direction model.Direction) error {
+	localCIDR := programIPv4CIDR(program)
 	for _, rule := range program.Rules {
 		if rule.Direction != direction {
 			continue
@@ -525,12 +573,12 @@ func appendIPv4L4ACLRulesFromProgram(rules *[]IPv4L4ACLRule, seen map[IPv4L4Key]
 		if !rule.RemoteCIDR.IsValid() {
 			continue
 		}
+		if err := validateIPv4L4ACLRuleSupport(rule); err != nil {
+			return fmt.Errorf("rule %s: %w", rule.ID, err)
+		}
 		action, ok := tcxAction(rule.Action)
 		if !ok {
 			continue
-		}
-		if err := validateIPv4L4ACLRuleSupport(rule); err != nil {
-			return fmt.Errorf("rule %s: %w", rule.ID, err)
 		}
 		sourceCIDR, ok := ipv4Prefix(rule.RemoteCIDR)
 		if !ok {
@@ -542,6 +590,8 @@ func appendIPv4L4ACLRulesFromProgram(rules *[]IPv4L4ACLRule, seen map[IPv4L4Key]
 		if protocol == 1 && len(rule.Ports) == 0 {
 			icmpValue, icmpPrefixBits := icmpTCXMatch(rule)
 			if err := appendIPv4ProjectedRule(rules, seen, IPv4L4ACLRule{
+				Local:              program.EndpointIP,
+				LocalCIDR:          localCIDR,
 				Source:             sourceCIDR.Addr(),
 				SourceCIDR:         sourceCIDR,
 				Protocol:           protocol,
@@ -556,6 +606,8 @@ func appendIPv4L4ACLRulesFromProgram(rules *[]IPv4L4ACLRule, seen map[IPv4L4Key]
 		}
 		if len(rule.Ports) == 0 {
 			if err := appendIPv4ProjectedRule(rules, seen, IPv4L4ACLRule{
+				Local:              program.EndpointIP,
+				LocalCIDR:          localCIDR,
 				Source:             sourceCIDR.Addr(),
 				SourceCIDR:         sourceCIDR,
 				Protocol:           protocol,
@@ -574,6 +626,8 @@ func appendIPv4L4ACLRulesFromProgram(rules *[]IPv4L4ACLRule, seen map[IPv4L4Key]
 			}
 			for _, block := range splitTCXPortRange(port.From, port.To) {
 				if err := appendIPv4ProjectedRule(rules, seen, IPv4L4ACLRule{
+					Local:              program.EndpointIP,
+					LocalCIDR:          localCIDR,
 					Source:             sourceCIDR.Addr(),
 					SourceCIDR:         sourceCIDR,
 					Protocol:           protocol,
@@ -591,6 +645,7 @@ func appendIPv4L4ACLRulesFromProgram(rules *[]IPv4L4ACLRule, seen map[IPv4L4Key]
 }
 
 func appendIPv6L4ACLRulesFromProgram(rules *[]IPv6L4ACLRule, seen map[IPv6L4Key]int32, program policy.Program, direction model.Direction) error {
+	localCIDR := programIPv6CIDR(program)
 	for _, rule := range program.Rules {
 		if rule.Direction != direction {
 			continue
@@ -605,12 +660,12 @@ func appendIPv6L4ACLRulesFromProgram(rules *[]IPv6L4ACLRule, seen map[IPv6L4Key]
 		if !rule.RemoteCIDR.IsValid() {
 			continue
 		}
+		if err := validateIPv6L4ACLRuleSupport(rule); err != nil {
+			return fmt.Errorf("rule %s: %w", rule.ID, err)
+		}
 		action, ok := tcxAction(rule.Action)
 		if !ok {
 			continue
-		}
-		if err := validateIPv6L4ACLRuleSupport(rule); err != nil {
-			return fmt.Errorf("rule %s: %w", rule.ID, err)
 		}
 		sourceCIDR, ok := ipv6Prefix(rule.RemoteCIDR)
 		if !ok {
@@ -622,6 +677,8 @@ func appendIPv6L4ACLRulesFromProgram(rules *[]IPv6L4ACLRule, seen map[IPv6L4Key]
 		if protocol == 58 && len(rule.Ports) == 0 {
 			icmpValue, icmpPrefixBits := icmpTCXMatch(rule)
 			if err := appendIPv6ProjectedRule(rules, seen, IPv6L4ACLRule{
+				Local:              program.EndpointIP,
+				LocalCIDR:          localCIDR,
 				Source:             sourceCIDR.Addr(),
 				SourceCIDR:         sourceCIDR,
 				Protocol:           protocol,
@@ -636,6 +693,8 @@ func appendIPv6L4ACLRulesFromProgram(rules *[]IPv6L4ACLRule, seen map[IPv6L4Key]
 		}
 		if len(rule.Ports) == 0 {
 			if err := appendIPv6ProjectedRule(rules, seen, IPv6L4ACLRule{
+				Local:              program.EndpointIP,
+				LocalCIDR:          localCIDR,
 				Source:             sourceCIDR.Addr(),
 				SourceCIDR:         sourceCIDR,
 				Protocol:           protocol,
@@ -654,6 +713,8 @@ func appendIPv6L4ACLRulesFromProgram(rules *[]IPv6L4ACLRule, seen map[IPv6L4Key]
 			}
 			for _, block := range splitTCXPortRange(port.From, port.To) {
 				if err := appendIPv6ProjectedRule(rules, seen, IPv6L4ACLRule{
+					Local:              program.EndpointIP,
+					LocalCIDR:          localCIDR,
 					Source:             sourceCIDR.Addr(),
 					SourceCIDR:         sourceCIDR,
 					Protocol:           protocol,
@@ -674,8 +735,8 @@ func appendIPv4ProjectedRule(rules *[]IPv4L4ACLRule, seen map[IPv4L4Key]int32, c
 	current := *rules
 	out := current[:0]
 	for i, existing := range current {
-		if ipv4L4RuleKey(existing.SourceCIDR, existing.Protocol, existing.DestPort, existing.DestPortPrefixBits) ==
-			ipv4L4RuleKey(candidate.SourceCIDR, candidate.Protocol, candidate.DestPort, candidate.DestPortPrefixBits) &&
+		if ipv4L4RuleKey(existing.LocalCIDR, existing.SourceCIDR, existing.Protocol, existing.DestPort, existing.DestPortPrefixBits) ==
+			ipv4L4RuleKey(candidate.LocalCIDR, candidate.SourceCIDR, candidate.Protocol, candidate.DestPort, candidate.DestPortPrefixBits) &&
 			existing.Precedence == candidate.Precedence && existing.Action != candidate.Action {
 			return fmt.Errorf("conflicting TCX ACL actions for identical match key")
 		}
@@ -684,13 +745,13 @@ func appendIPv4ProjectedRule(rules *[]IPv4L4ACLRule, seen map[IPv4L4Key]int32, c
 			return nil
 		}
 		if ipv4RuleCovers(candidate, existing) && candidate.Precedence > existing.Precedence {
-			delete(seen, ipv4L4RuleKey(existing.SourceCIDR, existing.Protocol, existing.DestPort, existing.DestPortPrefixBits))
+			delete(seen, ipv4L4RuleKey(existing.LocalCIDR, existing.SourceCIDR, existing.Protocol, existing.DestPort, existing.DestPortPrefixBits))
 			continue
 		}
 		out = append(out, existing)
 	}
 	*rules = append(out, candidate)
-	seen[ipv4L4RuleKey(candidate.SourceCIDR, candidate.Protocol, candidate.DestPort, candidate.DestPortPrefixBits)] = candidate.Action
+	seen[ipv4L4RuleKey(candidate.LocalCIDR, candidate.SourceCIDR, candidate.Protocol, candidate.DestPort, candidate.DestPortPrefixBits)] = candidate.Action
 	return nil
 }
 
@@ -698,8 +759,8 @@ func appendIPv6ProjectedRule(rules *[]IPv6L4ACLRule, seen map[IPv6L4Key]int32, c
 	current := *rules
 	out := current[:0]
 	for i, existing := range current {
-		if ipv6L4RuleKey(existing.SourceCIDR, existing.Protocol, existing.DestPort, existing.DestPortPrefixBits) ==
-			ipv6L4RuleKey(candidate.SourceCIDR, candidate.Protocol, candidate.DestPort, candidate.DestPortPrefixBits) &&
+		if ipv6L4RuleKey(existing.LocalCIDR, existing.SourceCIDR, existing.Protocol, existing.DestPort, existing.DestPortPrefixBits) ==
+			ipv6L4RuleKey(candidate.LocalCIDR, candidate.SourceCIDR, candidate.Protocol, candidate.DestPort, candidate.DestPortPrefixBits) &&
 			existing.Precedence == candidate.Precedence && existing.Action != candidate.Action {
 			return fmt.Errorf("conflicting TCX ACL actions for identical match key")
 		}
@@ -708,24 +769,26 @@ func appendIPv6ProjectedRule(rules *[]IPv6L4ACLRule, seen map[IPv6L4Key]int32, c
 			return nil
 		}
 		if ipv6RuleCovers(candidate, existing) && candidate.Precedence > existing.Precedence {
-			delete(seen, ipv6L4RuleKey(existing.SourceCIDR, existing.Protocol, existing.DestPort, existing.DestPortPrefixBits))
+			delete(seen, ipv6L4RuleKey(existing.LocalCIDR, existing.SourceCIDR, existing.Protocol, existing.DestPort, existing.DestPortPrefixBits))
 			continue
 		}
 		out = append(out, existing)
 	}
 	*rules = append(out, candidate)
-	seen[ipv6L4RuleKey(candidate.SourceCIDR, candidate.Protocol, candidate.DestPort, candidate.DestPortPrefixBits)] = candidate.Action
+	seen[ipv6L4RuleKey(candidate.LocalCIDR, candidate.SourceCIDR, candidate.Protocol, candidate.DestPort, candidate.DestPortPrefixBits)] = candidate.Action
 	return nil
 }
 
 func ipv4RuleCovers(candidate, selected IPv4L4ACLRule) bool {
-	return candidate.Protocol == selected.Protocol &&
+	return prefixCovers(candidate.LocalCIDR, selected.LocalCIDR) &&
+		candidate.Protocol == selected.Protocol &&
 		prefixCovers(candidate.SourceCIDR, selected.SourceCIDR) &&
 		portPrefixCovers(candidate.DestPort, candidate.DestPortPrefixBits, selected.DestPort, selected.DestPortPrefixBits)
 }
 
 func ipv6RuleCovers(candidate, selected IPv6L4ACLRule) bool {
-	return candidate.Protocol == selected.Protocol &&
+	return prefixCovers(candidate.LocalCIDR, selected.LocalCIDR) &&
+		candidate.Protocol == selected.Protocol &&
 		prefixCovers(candidate.SourceCIDR, selected.SourceCIDR) &&
 		portPrefixCovers(candidate.DestPort, candidate.DestPortPrefixBits, selected.DestPort, selected.DestPortPrefixBits)
 }
@@ -752,9 +815,6 @@ func portPrefixCovers(candidatePort uint16, candidateBits uint8, selectedPort ui
 }
 
 func tcxRulePrecedence(rule policy.Rule) uint32 {
-	if rule.Tier <= 0 && (rule.Action == model.ActionDrop || rule.Action == model.ActionReject) {
-		return math.MaxUint32
-	}
 	tier := rule.Tier
 	if tier < 0 {
 		tier = 0
@@ -774,10 +834,11 @@ func tcxRulePrecedence(rule policy.Rule) uint32 {
 		priorityScore = model.SecurityGroupPriorityMax - priority + 1
 	}
 	precedence := uint32(1-tier) << 31
+	precedence |= uint32(priorityScore) << 1
 	if rule.Action == model.ActionDrop || rule.Action == model.ActionReject {
-		precedence |= 1 << 30
+		precedence |= 1
 	}
-	return precedence | uint32(priorityScore)
+	return precedence
 }
 
 func validateIPv4L4ACLRuleSupport(rule policy.Rule) error {
@@ -787,6 +848,9 @@ func validateIPv4L4ACLRuleSupport(rule policy.Rule) error {
 	}
 	if protocol != 1 && protocol != 6 && protocol != 17 {
 		return nil
+	}
+	if rule.Action == model.ActionReject {
+		return fmt.Errorf("reject action is not supported by TCX fast path")
 	}
 	if _, ok := tcxAction(rule.Action); !ok {
 		return nil
@@ -801,6 +865,9 @@ func validateIPv6L4ACLRuleSupport(rule policy.Rule) error {
 	}
 	if protocol != 6 && protocol != 17 && protocol != 58 {
 		return nil
+	}
+	if rule.Action == model.ActionReject {
+		return fmt.Errorf("reject action is not supported by TCX fast path")
 	}
 	if _, ok := tcxAction(rule.Action); !ok {
 		return nil
@@ -821,30 +888,32 @@ func icmpTCXMatch(rule policy.Rule) (uint16, uint8) {
 	return value, prefixBits
 }
 
-func ipv4L4RuleKey(sourceCIDR netip.Prefix, protocol uint8, destPort uint16, destPortPrefixBits uint8) IPv4L4Key {
+func ipv4L4RuleKey(localCIDR, sourceCIDR netip.Prefix, protocol uint8, destPort uint16, destPortPrefixBits uint8) IPv4L4Key {
 	return IPv4L4Key{
-		PrefixLen: ipv4L4PrefixLen(sourceCIDR, destPortPrefixBits),
+		PrefixLen: ipv4L4PrefixLen(localCIDR, sourceCIDR, destPortPrefixBits),
+		LocalIP:   ipv4L4PeerKey(localCIDR.Addr()),
 		Protocol:  protocol,
 		PeerIP:    ipv4L4PeerKey(sourceCIDR.Addr()),
 		DestPort:  destPort,
 	}
 }
 
-func ipv6L4RuleKey(sourceCIDR netip.Prefix, protocol uint8, destPort uint16, destPortPrefixBits uint8) IPv6L4Key {
+func ipv6L4RuleKey(localCIDR, sourceCIDR netip.Prefix, protocol uint8, destPort uint16, destPortPrefixBits uint8) IPv6L4Key {
 	return IPv6L4Key{
-		PrefixLen: ipv6L4PrefixLen(sourceCIDR, destPortPrefixBits),
+		PrefixLen: ipv6L4PrefixLen(localCIDR, sourceCIDR, destPortPrefixBits),
+		LocalIP:   ipv6L4PeerKey(localCIDR.Addr()),
 		Protocol:  protocol,
 		PeerIP:    ipv6L4PeerKey(sourceCIDR.Addr()),
 		DestPort:  destPort,
 	}
 }
 
-func ipv4L4PrefixLen(prefix netip.Prefix, destPortPrefixBits uint8) uint32 {
-	return uint32(32 + prefix.Bits() + int(destPortPrefixBits))
+func ipv4L4PrefixLen(localPrefix, peerPrefix netip.Prefix, destPortPrefixBits uint8) uint32 {
+	return uint32(localPrefix.Bits() + 32 + peerPrefix.Bits() + int(destPortPrefixBits))
 }
 
-func ipv6L4PrefixLen(prefix netip.Prefix, destPortPrefixBits uint8) uint32 {
-	return uint32(32 + prefix.Bits() + int(destPortPrefixBits))
+func ipv6L4PrefixLen(localPrefix, peerPrefix netip.Prefix, destPortPrefixBits uint8) uint32 {
+	return uint32(localPrefix.Bits() + 32 + peerPrefix.Bits() + int(destPortPrefixBits))
 }
 
 func normalizedDestPortPrefixBits(rule IPv4L4ACLRule) uint8 {
@@ -859,6 +928,20 @@ func normalizedIPv6DestPortPrefixBits(rule IPv6L4ACLRule) uint8 {
 		return 16
 	}
 	return rule.DestPortPrefixBits
+}
+
+func programIPv4CIDR(program policy.Program) netip.Prefix {
+	if program.EndpointIP.Is4() {
+		return netip.PrefixFrom(program.EndpointIP, 32)
+	}
+	return netip.PrefixFrom(netip.IPv4Unspecified(), 32)
+}
+
+func programIPv6CIDR(program policy.Program) netip.Prefix {
+	if program.EndpointIP.Is6() && !program.EndpointIP.Is4() {
+		return netip.PrefixFrom(program.EndpointIP, 128)
+	}
+	return netip.PrefixFrom(netip.IPv6Unspecified(), 128)
 }
 
 func ipv4L4PeerKey(addr netip.Addr) [4]byte {
@@ -894,7 +977,7 @@ func tcxAction(action model.Action) (int32, bool) {
 	switch action {
 	case model.ActionAllow, model.ActionLog:
 		return TCXPass, true
-	case model.ActionDrop, model.ActionReject:
+	case model.ActionDrop:
 		return TCXDrop, true
 	default:
 		return 0, false
@@ -954,15 +1037,20 @@ func NewIPv4L4ACLTCXProgramForDirection(aclMap *ebpf.Map, direction model.Direct
 }
 
 func ipv4L4ACLTCXInstructions(aclMapFD int, peerOffset int32) asm.Instructions {
+	localOffset := localOffsetForIPv4Peer(peerOffset)
 	return asm.Instructions{
 		asm.Mov.Reg(asm.R6, asm.R1),
 		asm.Mov.Imm(asm.R0, ipv4L4LookupPrefixLen),
-		asm.StoreMem(asm.RFP, -16, asm.R0, asm.Word),
+		asm.StoreMem(asm.RFP, -20, asm.R0, asm.Word),
 		asm.Mov.Imm(asm.R0, 0),
+		asm.StoreMem(asm.RFP, -16, asm.R0, asm.Word),
 		asm.StoreMem(asm.RFP, -12, asm.R0, asm.Word),
 		asm.StoreMem(asm.RFP, -4, asm.R0, asm.Word),
 		asm.LoadAbs(12, asm.Half),
 		asm.JNE.Imm(asm.R0, 0x0800, "pass"),
+		asm.LoadAbs(localOffset, asm.Word),
+		asm.HostTo(asm.BE, asm.R0, asm.Word),
+		asm.StoreMem(asm.RFP, -16, asm.R0, asm.Word),
 		asm.LoadAbs(23, asm.Byte),
 		asm.StoreMem(asm.RFP, -12, asm.R0, asm.Byte),
 		asm.Mov.Reg(asm.R8, asm.R0),
@@ -981,7 +1069,7 @@ func ipv4L4ACLTCXInstructions(aclMapFD int, peerOffset int32) asm.Instructions {
 		asm.StoreMem(asm.RFP, -4, asm.R0, asm.Half),
 		asm.LoadMapPtr(asm.R1, aclMapFD).WithSymbol("lookup"),
 		asm.Mov.Reg(asm.R2, asm.RFP),
-		asm.Add.Imm(asm.R2, -16),
+		asm.Add.Imm(asm.R2, -20),
 		asm.FnMapLookupElem.Call(),
 		asm.JEq.Imm(asm.R0, 0, "pass"),
 		asm.LoadMem(asm.R0, asm.R0, 0, asm.Word),
@@ -1010,11 +1098,16 @@ func NewIPv6L4ACLTCXProgramForDirection(aclMap *ebpf.Map, direction model.Direct
 }
 
 func ipv6L4ACLTCXInstructions(aclMapFD int, peerOffset int32) asm.Instructions {
+	localOffset := localOffsetForIPv6Peer(peerOffset)
 	return asm.Instructions{
 		asm.Mov.Reg(asm.R6, asm.R1),
 		asm.Mov.Imm(asm.R0, ipv6L4LookupPrefixLen),
-		asm.StoreMem(asm.RFP, -28, asm.R0, asm.Word),
+		asm.StoreMem(asm.RFP, -44, asm.R0, asm.Word),
 		asm.Mov.Imm(asm.R0, 0),
+		asm.StoreMem(asm.RFP, -40, asm.R0, asm.Word),
+		asm.StoreMem(asm.RFP, -36, asm.R0, asm.Word),
+		asm.StoreMem(asm.RFP, -32, asm.R0, asm.Word),
+		asm.StoreMem(asm.RFP, -28, asm.R0, asm.Word),
 		asm.StoreMem(asm.RFP, -24, asm.R0, asm.Word),
 		asm.StoreMem(asm.RFP, -20, asm.R0, asm.Word),
 		asm.StoreMem(asm.RFP, -16, asm.R0, asm.Word),
@@ -1023,6 +1116,18 @@ func ipv6L4ACLTCXInstructions(aclMapFD int, peerOffset int32) asm.Instructions {
 		asm.StoreMem(asm.RFP, -4, asm.R0, asm.Word),
 		asm.LoadAbs(12, asm.Half),
 		asm.JNE.Imm(asm.R0, 0x86dd, "pass"),
+		asm.LoadAbs(localOffset, asm.Word),
+		asm.HostTo(asm.BE, asm.R0, asm.Word),
+		asm.StoreMem(asm.RFP, -40, asm.R0, asm.Word),
+		asm.LoadAbs(localOffset+4, asm.Word),
+		asm.HostTo(asm.BE, asm.R0, asm.Word),
+		asm.StoreMem(asm.RFP, -36, asm.R0, asm.Word),
+		asm.LoadAbs(localOffset+8, asm.Word),
+		asm.HostTo(asm.BE, asm.R0, asm.Word),
+		asm.StoreMem(asm.RFP, -32, asm.R0, asm.Word),
+		asm.LoadAbs(localOffset+12, asm.Word),
+		asm.HostTo(asm.BE, asm.R0, asm.Word),
+		asm.StoreMem(asm.RFP, -28, asm.R0, asm.Word),
 		asm.LoadAbs(20, asm.Byte),
 		asm.StoreMem(asm.RFP, -24, asm.R0, asm.Byte),
 		asm.Mov.Reg(asm.R8, asm.R0),
@@ -1043,7 +1148,7 @@ func ipv6L4ACLTCXInstructions(aclMapFD int, peerOffset int32) asm.Instructions {
 		asm.StoreMem(asm.RFP, -4, asm.R0, asm.Half),
 		asm.LoadMapPtr(asm.R1, aclMapFD).WithSymbol("lookup"),
 		asm.Mov.Reg(asm.R2, asm.RFP),
-		asm.Add.Imm(asm.R2, -28),
+		asm.Add.Imm(asm.R2, -44),
 		asm.FnMapLookupElem.Call(),
 		asm.JEq.Imm(asm.R0, 0, "pass"),
 		asm.LoadMem(asm.R0, asm.R0, 0, asm.Word),
@@ -1076,6 +1181,13 @@ func ipv4PeerOffset(direction model.Direction) (int32, error) {
 	}
 }
 
+func localOffsetForIPv4Peer(peerOffset int32) int32 {
+	if peerOffset == 26 {
+		return 30
+	}
+	return 26
+}
+
 func ipv6PeerOffset(direction model.Direction) (int32, error) {
 	switch direction {
 	case model.DirectionIngress:
@@ -1085,6 +1197,79 @@ func ipv6PeerOffset(direction model.Direction) (int32, error) {
 	default:
 		return 0, fmt.Errorf("unsupported policy direction %q", direction)
 	}
+}
+
+func localOffsetForIPv6Peer(peerOffset int32) int32 {
+	if peerOffset == 22 {
+		return 38
+	}
+	return 22
+}
+
+func fillMissingIPv4LocalCIDRs(ifName string, rules []IPv4L4ACLRule) error {
+	local, ok, err := interfacePrimaryAddr(ifName, false)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil
+	}
+	localCIDR := netip.PrefixFrom(local, 32)
+	for i := range rules {
+		if rules[i].LocalCIDR.IsValid() && !rules[i].LocalCIDR.Addr().IsUnspecified() {
+			continue
+		}
+		rules[i].Local = local
+		rules[i].LocalCIDR = localCIDR
+	}
+	return nil
+}
+
+func fillMissingIPv6LocalCIDRs(ifName string, rules []IPv6L4ACLRule) error {
+	local, ok, err := interfacePrimaryAddr(ifName, true)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil
+	}
+	localCIDR := netip.PrefixFrom(local, 128)
+	for i := range rules {
+		if rules[i].LocalCIDR.IsValid() && !rules[i].LocalCIDR.Addr().IsUnspecified() {
+			continue
+		}
+		rules[i].Local = local
+		rules[i].LocalCIDR = localCIDR
+	}
+	return nil
+}
+
+func interfacePrimaryAddr(ifName string, ipv6 bool) (netip.Addr, bool, error) {
+	iface, err := net.InterfaceByName(ifName)
+	if err != nil {
+		return netip.Addr{}, false, err
+	}
+	addrs, err := iface.Addrs()
+	if err != nil {
+		return netip.Addr{}, false, err
+	}
+	for _, addr := range addrs {
+		prefix, err := netip.ParsePrefix(addr.String())
+		if err != nil {
+			continue
+		}
+		ip := prefix.Addr()
+		if ipv6 {
+			if ip.Is6() && !ip.Is4() {
+				return ip, true, nil
+			}
+			continue
+		}
+		if ip.Is4() {
+			return ip, true, nil
+		}
+	}
+	return netip.Addr{}, false, nil
 }
 
 func AttachTCX(ctx context.Context, ifName string, program *ebpf.Program, attach ebpf.AttachType) (link.Link, error) {
@@ -1248,6 +1433,9 @@ func RunTCXIPv4L4ProgramsAttachForDirection(ctx context.Context, ifName string, 
 	if err != nil {
 		return TCXSelfTestResult{}, err
 	}
+	if err := fillMissingIPv4LocalCIDRs(ifName, rules); err != nil {
+		return TCXSelfTestResult{}, err
+	}
 	return RunTCXIPv4L4RulesAttachForDirection(ctx, ifName, rules, attach, direction, hold)
 }
 
@@ -1280,6 +1468,16 @@ func AttachTCXIPv4L4Programs(ctx context.Context, ifName string, programs []poli
 func AttachTCXL4ProgramsForDirection(ctx context.Context, ifName string, programs []policy.Program, attach ebpf.AttachType, direction model.Direction) (*TCXAttachment, error) {
 	v4Rules, v4Err := IPv4L4ACLRulesFromProgramsForDirection(programs, direction)
 	v6Rules, v6Err := IPv6L4ACLRulesFromProgramsForDirection(programs, direction)
+	if v4Err == nil {
+		if err := fillMissingIPv4LocalCIDRs(ifName, v4Rules); err != nil {
+			return nil, err
+		}
+	}
+	if v6Err == nil {
+		if err := fillMissingIPv6LocalCIDRs(ifName, v6Rules); err != nil {
+			return nil, err
+		}
+	}
 	switch {
 	case v4Err != nil && v6Err != nil:
 		return nil, fmt.Errorf("programs have no IPv4 or IPv6 L4 %s ACL rules for TCX", direction)
@@ -1295,6 +1493,9 @@ func AttachTCXL4ProgramsForDirection(ctx context.Context, ifName string, program
 func AttachTCXIPv4L4ProgramsForDirection(ctx context.Context, ifName string, programs []policy.Program, attach ebpf.AttachType, direction model.Direction) (*TCXAttachment, error) {
 	rules, err := IPv4L4ACLRulesFromProgramsForDirection(programs, direction)
 	if err != nil {
+		return nil, err
+	}
+	if err := fillMissingIPv4LocalCIDRs(ifName, rules); err != nil {
 		return nil, err
 	}
 	return AttachTCXIPv4L4RulesForDirection(ctx, ifName, rules, attach, direction)

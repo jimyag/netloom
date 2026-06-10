@@ -4,6 +4,7 @@ import (
 	"context"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -218,6 +219,7 @@ func TestDockerAgentStateWatchRecoversFromRestart(t *testing.T) {
 
 	agentWatchLog := "/tmp/netloom-agent-watch-restart.log"
 	agentPIDFile := "/tmp/netloom-agent-watch-restart.pid"
+	metadataRoot := "/var/run/netloom-ebpf-meta/policy"
 	agentWatchCommand := "NETLOOM_STATE_FILE=" + statePath + " NETLOOM_NODE_NAME=node-b NETLOOM_POLICY_STORE=ebpf NETLOOM_RECONCILE_INTERVAL_MS=500 /netloom/bin/netloom-agent >" + agentWatchLog + " 2>&1"
 	shortCtx := func() (context.Context, context.CancelFunc) {
 		return context.WithTimeout(context.Background(), 30*time.Second)
@@ -247,19 +249,74 @@ func TestDockerAgentStateWatchRecoversFromRestart(t *testing.T) {
 		cancel()
 		t.Fatalf("agent watch did not emit %q in time:\n%s", expected, logOutput)
 	}
+	detectPinnedPolicyRoot := func() string {
+		for i := 0; i < 30; i++ {
+			opCtx, cancel := shortCtx()
+			output := runAllowFailure(t, opCtx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "sh", "-c", "for dir in /sys/fs/bpf/netloom/policy /var/run/netloom-ebpf/policy; do if [ -d \"$dir\" ] && ls \"$dir\"/nlp* >/dev/null 2>&1; then echo \"$dir\"; exit 0; fi; done; exit 1")
+			cancel()
+			if output.exitCode == 0 {
+				return strings.TrimSpace(output.output)
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+		opCtx, cancel := shortCtx()
+		logOutput := run(t, opCtx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "sh", "-c", "ls -la /sys/fs/bpf/netloom 2>/dev/null || true; ls -la /var/run/netloom-ebpf 2>/dev/null || true; cat "+agentWatchLog+" 2>/dev/null || true")
+		cancel()
+		t.Fatalf("default eBPF pin root was not populated in time:\n%s", logOutput)
+		return ""
+	}
+	waitForPinnedArtifacts := func(root string, want int) {
+		for i := 0; i < 30; i++ {
+			opCtx, cancel := shortCtx()
+			output := runAllowFailure(t, opCtx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "sh", "-c", "count=$(find "+root+" -maxdepth 1 -type f | wc -l); [ \"$count\" = \""+strconv.Itoa(want)+"\" ] && exit 0 || { echo \"$count\"; exit 1; }")
+			cancel()
+			if output.exitCode == 0 {
+				return
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+		opCtx, cancel := shortCtx()
+		logOutput := run(t, opCtx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "sh", "-c", "find "+root+" -maxdepth 1 -type f | sort; cat "+agentWatchLog+" 2>/dev/null || true")
+		cancel()
+		t.Fatalf("pinned artifact count under %s did not converge to %d:\n%s", root, want, logOutput)
+	}
+	waitForMetadataArtifacts := func(root string, want int) {
+		for i := 0; i < 30; i++ {
+			opCtx, cancel := shortCtx()
+			output := runAllowFailure(t, opCtx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "sh", "-c", "count=$(find "+root+" -maxdepth 1 -name '*.meta' | wc -l); [ \"$count\" = \""+strconv.Itoa(want)+"\" ] && exit 0 || { echo \"$count\"; exit 1; }")
+			cancel()
+			if output.exitCode == 0 {
+				return
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+		opCtx, cancel := shortCtx()
+		logOutput := run(t, opCtx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "sh", "-c", "find "+root+" -maxdepth 1 -name '*.meta' | sort; cat "+agentWatchLog+" 2>/dev/null || true")
+		cancel()
+		t.Fatalf("metadata artifact count under %s did not converge to %d:\n%s", root, want, logOutput)
+	}
 
 	startWatch()
 	t.Cleanup(stopWatch)
 	waitForWatch("reconciled node policy")
 	waitForWatch("store=ebpf")
 	waitForWatch("endpoints=2")
+	pinRoot := detectPinnedPolicyRoot()
+	waitForPinnedArtifacts(pinRoot, 2)
+	waitForMetadataArtifacts(metadataRoot, 2)
 
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "sh", "-c", stateBWrite)
 	waitForWatch("endpoints=1")
+	waitForPinnedArtifacts(pinRoot, 1)
+	waitForMetadataArtifacts(metadataRoot, 1)
 
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "sh", "-c", "cat /dev/null > "+agentWatchLog)
 	stopWatch()
+	waitForPinnedArtifacts(pinRoot, 1)
+	waitForMetadataArtifacts(metadataRoot, 1)
 	startWatch()
 	waitForWatch("reconciled node policy")
 	waitForWatch("endpoints=1")
+	waitForPinnedArtifacts(pinRoot, 1)
+	waitForMetadataArtifacts(metadataRoot, 1)
 }

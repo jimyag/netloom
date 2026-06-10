@@ -178,6 +178,11 @@ func newNBCTLExecutorFromEnv(db string) (*ovn.NBCTLExecutor, error) {
 		return nil, err
 	}
 	executor.Timeout = timeout
+	retryAttempts, err := nbctlRetryAttempts()
+	if err != nil {
+		return nil, err
+	}
+	executor.RetryPolicy.Attempts = retryAttempts
 	return executor, nil
 }
 
@@ -194,6 +199,21 @@ func nbctlTimeout() (time.Duration, error) {
 		return 0, nil
 	}
 	return time.Duration(ms) * time.Millisecond, nil
+}
+
+func nbctlRetryAttempts() (int, error) {
+	raw := os.Getenv("NETLOOM_OVN_NBCTL_RETRY_ATTEMPTS")
+	if raw == "" {
+		return ovn.DefaultNBCTLRetryAttempts, nil
+	}
+	attempts, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("invalid NETLOOM_OVN_NBCTL_RETRY_ATTEMPTS: %w", err)
+	}
+	if attempts <= 0 {
+		return 1, nil
+	}
+	return attempts, nil
 }
 
 func countPolicyEntries(memory *control.MemoryBackend) int {

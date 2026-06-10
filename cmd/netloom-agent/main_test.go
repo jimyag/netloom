@@ -1,10 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"io"
 	"net/netip"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +17,36 @@ import (
 	"github.com/jimyag/netloom/internal/dataplane"
 	"github.com/jimyag/netloom/internal/model"
 )
+
+func TestEBPFMapPinRootUsesExplicitEnv(t *testing.T) {
+	t.Setenv("NETLOOM_EBPF_MAP_PIN_ROOT", " /tmp/netloom-ebpf ")
+	if got := ebpfMapPinRoot(); got != "/tmp/netloom-ebpf" {
+		t.Fatalf("ebpfMapPinRoot() = %q, want %q", got, "/tmp/netloom-ebpf")
+	}
+}
+
+func TestEnsureDirAccessibleRejectsMissingPath(t *testing.T) {
+	if err := ensureDirAccessible(filepath.Join(t.TempDir(), "missing")); err == nil {
+		t.Fatal("ensureDirAccessible() should reject missing path")
+	}
+}
+
+func TestEnsureDirAccessibleRejectsRegularFile(t *testing.T) {
+	tmp := t.TempDir()
+	file := filepath.Join(tmp, "file")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureDirAccessible(file); err == nil {
+		t.Fatal("ensureDirAccessible() should reject regular file")
+	}
+}
+
+func TestEnsureDirAccessibleAcceptsDirectory(t *testing.T) {
+	if err := ensureDirAccessible(t.TempDir()); err != nil {
+		t.Fatalf("ensureDirAccessible() error = %v", err)
+	}
+}
 
 func TestReconcileIntervalParsesMilliseconds(t *testing.T) {
 	t.Setenv("NETLOOM_RECONCILE_INTERVAL_MS", "250")
@@ -50,6 +84,7 @@ func TestLinuxDatapathOptionsParsesBackend(t *testing.T) {
 	t.Setenv("NETLOOM_LINUX_DATAPATH", "1")
 	t.Setenv("NETLOOM_LINUX_DATAPATH_MODE", "netns")
 	t.Setenv("NETLOOM_LINUX_DATAPATH_BACKEND", "netlink")
+	t.Setenv("NETLOOM_PROVIDER_NETWORK_LINKS", "physnet-a=eth1, physnet-b = bond0.100")
 	t.Setenv("NETLOOM_POLICY_ROUTE_TABLE_BASE", "22000")
 	t.Setenv("NETLOOM_POLICY_ROUTE_TABLE_SIZE", "64")
 
@@ -62,6 +97,9 @@ func TestLinuxDatapathOptionsParsesBackend(t *testing.T) {
 	}
 	if options.Backend != "netlink" {
 		t.Fatalf("backend = %s, want netlink", options.Backend)
+	}
+	if options.ProviderLinks["physnet-a"] != "eth1" || options.ProviderLinks["physnet-b"] != "bond0.100" {
+		t.Fatalf("provider links = %#v", options.ProviderLinks)
 	}
 	if options.PolicyTableBase != 22000 {
 		t.Fatalf("policy table base = %d, want 22000", options.PolicyTableBase)
@@ -80,6 +118,29 @@ func TestLinuxDatapathOptionsDefaultsToNetlinkBackend(t *testing.T) {
 	}
 	if options.Backend != "netlink" {
 		t.Fatalf("backend = %s, want netlink", options.Backend)
+	}
+}
+
+func TestParseProviderLinksSkipsInvalidEntries(t *testing.T) {
+	got := parseProviderLinks("physnet-a=eth1,broken,=eth2,physnet-b=,physnet-c = bond0")
+	if len(got) != 2 || got["physnet-a"] != "eth1" || got["physnet-c"] != "bond0" {
+		t.Fatalf("parseProviderLinks() = %#v", got)
+	}
+}
+
+func TestParseNodeUnderlaysKeepsMultipleAddressesPerNode(t *testing.T) {
+	got := parseNodeUnderlays("node-a=172.30.0.11,node-a=fd00::11,node-b=bad,node-b=172.30.0.12")
+	want := map[string][]netip.Addr{
+		"node-a": {
+			netip.MustParseAddr("172.30.0.11"),
+			netip.MustParseAddr("fd00::11"),
+		},
+		"node-b": {
+			netip.MustParseAddr("172.30.0.12"),
+		},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("parseNodeUnderlays() = %#v, want %#v", got, want)
 	}
 }
 
@@ -162,5 +223,49 @@ func TestWithDNSObservationsPrunesExpiredRecords(t *testing.T) {
 	}
 	if state.DNSRecords[0].Name != "active.example.com" || state.DNSRecords[1].Name != "static.example.com" {
 		t.Fatalf("dns records = %+v", state.DNSRecords)
+	}
+}
+
+func TestPrintReconcileResultIncludesPolicyMapUsageSummary(t *testing.T) {
+	oldStdout := os.Stdout
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = writer
+	defer func() {
+		os.Stdout = oldStdout
+	}()
+
+	printReconcileResult(agent.ReconcileResult{
+		Node:                       "node-a",
+		Endpoints:                  1,
+		Programs:                   1,
+		Entries:                    3,
+		PolicyMapEntries:           12,
+		PolicyMapCapacity:          16,
+		PolicyMapPressureMax:       75,
+		PolicyMapPressureEndpoints: 0,
+		Datapath:                   "not-requested",
+		TCX:                        "not-requested",
+	}, "ebpf")
+
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if _, err := io.Copy(&buf, reader); err != nil {
+		t.Fatal(err)
+	}
+	output := buf.String()
+	for _, expected := range []string{
+		"policy_map_entries=12",
+		"policy_map_capacity=16",
+		"policy_map_pressure_max=75",
+		"policy_map_pressure_endpoints=0",
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("output missing %q:\n%s", expected, output)
+		}
 	}
 }

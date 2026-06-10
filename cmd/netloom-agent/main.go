@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/netip"
@@ -14,6 +15,15 @@ import (
 	"github.com/jimyag/netloom/internal/control"
 	"github.com/jimyag/netloom/internal/dataplane"
 	"github.com/jimyag/netloom/internal/linuxdatapath"
+	"golang.org/x/sys/unix"
+)
+
+const (
+	defaultBPFFSRoot      = "/sys/fs/bpf"
+	defaultBPFFSPinRoot   = "/sys/fs/bpf/netloom/policy"
+	defaultRuntimeBPFRoot = "/var/run/netloom-ebpf"
+	defaultRuntimePinRoot = "/var/run/netloom-ebpf/policy"
+	defaultMetadataRoot   = "/var/run/netloom-ebpf-meta/policy"
 )
 
 func main() {
@@ -164,7 +174,7 @@ func withDNSObservationsAt(state control.DesiredState, now time.Time) (control.D
 }
 
 func printReconcileResult(result agent.ReconcileResult, storeName string) {
-	fmt.Printf("netloom-agent reconciled node policy node=%s store=%s endpoints=%d programs=%d entries=%d policy_added=%d policy_updated=%d policy_deleted=%d policy_unchanged=%d policy_events=%d policy_revision_max=%d conntrack_expired=%d tcx_eligible=%d tcx=%s datapath=%s local_ips=%d remote_routes=%d policy_routes=%d cleanup=%t\n", result.Node, storeName, result.Endpoints, result.Programs, result.Entries, result.PolicyAdded, result.PolicyUpdated, result.PolicyDeleted, result.PolicyUnchanged, result.PolicyEvents, result.PolicyRevisionMax, result.ConntrackExpired, result.TCXEligible, result.TCX, result.Datapath, result.LocalIPs, result.RemoteRoutes, result.PolicyRoutes, result.Cleanup)
+	fmt.Printf("netloom-agent reconciled node policy node=%s store=%s endpoints=%d programs=%d entries=%d policy_map_entries=%d policy_map_capacity=%d policy_map_pressure_max=%d policy_map_pressure_endpoints=%d policy_added=%d policy_updated=%d policy_deleted=%d policy_unchanged=%d policy_events=%d policy_revision_max=%d conntrack_expired=%d tcx_eligible=%d tcx=%s datapath=%s local_ips=%d remote_routes=%d policy_routes=%d cleanup=%t\n", result.Node, storeName, result.Endpoints, result.Programs, result.Entries, result.PolicyMapEntries, result.PolicyMapCapacity, result.PolicyMapPressureMax, result.PolicyMapPressureEndpoints, result.PolicyAdded, result.PolicyUpdated, result.PolicyDeleted, result.PolicyUnchanged, result.PolicyEvents, result.PolicyRevisionMax, result.ConntrackExpired, result.TCXEligible, result.TCX, result.Datapath, result.LocalIPs, result.RemoteRoutes, result.PolicyRoutes, result.Cleanup)
 }
 
 func reconcileInterval() (time.Duration, error) {
@@ -184,12 +194,97 @@ func reconcileInterval() (time.Duration, error) {
 
 func policyStore() (agent.PolicyStore, string, func()) {
 	if os.Getenv("NETLOOM_POLICY_STORE") == "ebpf" {
-		store := dataplane.NewEBPFPolicyStore(0)
+		cfg := dataplane.EBPFPolicyStoreConfig{}
+		if maxEntries, err := parseUint32Env("NETLOOM_EBPF_MAP_MAX_ENTRIES"); err == nil {
+			cfg.MaxEntries = maxEntries
+		}
+		if schemaVersion, err := parseUint32Env("NETLOOM_EBPF_MAP_SCHEMA_VERSION"); err == nil {
+			cfg.SchemaVersion = schemaVersion
+		}
+		cfg.PinRoot = ebpfMapPinRoot()
+		cfg.MetadataRoot = ebpfMapMetadataRoot()
+		store := dataplane.NewEBPFPolicyStoreWithConfig(cfg)
 		return store, "ebpf", func() {
 			_ = store.Close()
 		}
 	}
 	return dataplane.NewInMemoryPolicyStore(), "memory", func() {}
+}
+
+func ebpfMapPinRoot() string {
+	if configured := strings.TrimSpace(os.Getenv("NETLOOM_EBPF_MAP_PIN_ROOT")); configured != "" {
+		return configured
+	}
+	if err := ensureBPFFSPinRoot(defaultBPFFSRoot, defaultBPFFSPinRoot); err == nil {
+		return defaultBPFFSPinRoot
+	}
+	if err := ensureBPFFSPinRoot(defaultRuntimeBPFRoot, defaultRuntimePinRoot); err == nil {
+		return defaultRuntimePinRoot
+	}
+	return defaultRuntimePinRoot
+}
+
+func ebpfMapMetadataRoot() string {
+	if configured := strings.TrimSpace(os.Getenv("NETLOOM_EBPF_MAP_METADATA_ROOT")); configured != "" {
+		return configured
+	}
+	return defaultMetadataRoot
+}
+
+func ensureDirAccessible(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return errors.New("not a directory")
+	}
+	return nil
+}
+
+func ensureBPFFSPinRoot(mountRoot, pinRoot string) error {
+	if err := ensureBPFFSMounted(mountRoot); err != nil {
+		return err
+	}
+	return os.MkdirAll(pinRoot, 0o755)
+}
+
+func ensureBPFFSMounted(path string) error {
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		return err
+	}
+	var fs unix.Statfs_t
+	if err := unix.Statfs(path, &fs); err != nil {
+		return err
+	}
+	if fs.Type == unix.BPF_FS_MAGIC {
+		return nil
+	}
+	if err := unix.Mount("bpffs", path, "bpf", 0, ""); err != nil {
+		return err
+	}
+	if err := unix.Statfs(path, &fs); err != nil {
+		return err
+	}
+	if fs.Type != unix.BPF_FS_MAGIC {
+		return fmt.Errorf("%s is not backed by bpffs", path)
+	}
+	return nil
+}
+
+func parseUint32Env(key string) (uint32, error) {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return 0, fmt.Errorf("%s is empty", key)
+	}
+	value, err := strconv.ParseUint(raw, 10, 32)
+	if err != nil {
+		return 0, err
+	}
+	if value == 0 {
+		return 0, fmt.Errorf("%s must be greater than zero", key)
+	}
+	return uint32(value), nil
 }
 
 func tcxHold() (time.Duration, error) {
@@ -221,6 +316,7 @@ func linuxDatapathOptions() *linuxdatapath.Options {
 		Backend:         getenvDefault("NETLOOM_LINUX_DATAPATH_BACKEND", "netlink"),
 		LocalDevice:     getenvDefault("NETLOOM_DATAPATH_DEV", "lo"),
 		UnderlayDevice:  getenvDefault("NETLOOM_UNDERLAY_DEV", "eth0"),
+		ProviderLinks:   parseProviderLinks(os.Getenv("NETLOOM_PROVIDER_NETWORK_LINKS")),
 		NetNSPrefix:     getenvDefault("NETLOOM_NETNS_PREFIX", "nl"),
 		WorkloadIF:      getenvDefault("NETLOOM_WORKLOAD_IF", "eth0"),
 		NodeUnderlays:   parseNodeUnderlays(os.Getenv("NETLOOM_NODE_UNDERLAYS")),
@@ -249,8 +345,8 @@ func getenvIntDefault(key string, fallback int) int {
 	return parsed
 }
 
-func parseNodeUnderlays(raw string) map[string]netip.Addr {
-	out := make(map[string]netip.Addr)
+func parseNodeUnderlays(raw string) map[string][]netip.Addr {
+	out := make(map[string][]netip.Addr)
 	for _, item := range strings.Split(raw, ",") {
 		if item == "" {
 			continue
@@ -261,8 +357,25 @@ func parseNodeUnderlays(raw string) map[string]netip.Addr {
 		}
 		addr, err := netip.ParseAddr(value)
 		if err == nil {
-			out[name] = addr
+			out[name] = append(out[name], addr)
 		}
+	}
+	return out
+}
+
+func parseProviderLinks(raw string) map[string]string {
+	out := make(map[string]string)
+	for _, item := range strings.Split(raw, ",") {
+		if item == "" {
+			continue
+		}
+		provider, device, ok := strings.Cut(item, "=")
+		provider = strings.TrimSpace(provider)
+		device = strings.TrimSpace(device)
+		if !ok || provider == "" || device == "" {
+			continue
+		}
+		out[provider] = device
 	}
 	return out
 }

@@ -65,7 +65,7 @@ func TestEvaluateRequiresRemoteCIDRMatchEvenWhenIdentityMatches(t *testing.T) {
 	entries := []PolicyMapEntry{{
 		Key: PolicyKey{
 			PrefixLen:      StaticPrefixBits + 24,
-			RemoteIdentity: policy.EndpointIdentity("pod-b"),
+			RemoteIdentity: policy.EndpointIdentity(model.EndpointKey("prod", "pod-b")),
 			Direction:      DirectionIngress,
 			Protocol:       6,
 			DestPortBE:     hostToNetwork16(443),
@@ -79,7 +79,7 @@ func TestEvaluateRequiresRemoteCIDRMatchEvenWhenIdentityMatches(t *testing.T) {
 	}}
 
 	spoofed := Evaluate(entries, Packet{
-		RemoteIdentity: policy.EndpointIdentity("pod-b"),
+		RemoteIdentity: policy.EndpointIdentity(model.EndpointKey("prod", "pod-b")),
 		RemoteIP:       netip.MustParseAddr("10.30.0.10"),
 		Direction:      DirectionIngress,
 		Protocol:       6,
@@ -90,7 +90,7 @@ func TestEvaluateRequiresRemoteCIDRMatchEvenWhenIdentityMatches(t *testing.T) {
 	}
 
 	allowed := Evaluate(entries, Packet{
-		RemoteIdentity: policy.EndpointIdentity("pod-b"),
+		RemoteIdentity: policy.EndpointIdentity(model.EndpointKey("prod", "pod-b")),
 		RemoteIP:       netip.MustParseAddr("10.20.0.10"),
 		Direction:      DirectionIngress,
 		Protocol:       6,
@@ -119,7 +119,7 @@ func TestEvaluatePreservesRejectVerdict(t *testing.T) {
 		},
 	}}
 	recorder := NewPolicyRecorder()
-	decision := EvaluateObserved("pod-a", entries, Packet{
+	decision := EvaluateObserved(model.EndpointKey("prod", "pod-a"), entries, Packet{
 		RemoteIdentity: 100,
 		Direction:      DirectionIngress,
 		Protocol:       6,
@@ -128,7 +128,7 @@ func TestEvaluatePreservesRejectVerdict(t *testing.T) {
 	if decision.Verdict != VerdictReject {
 		t.Fatalf("verdict = %s, want reject", decision.Verdict)
 	}
-	metrics := recorder.Metrics("pod-a")
+	metrics := recorder.Metrics(model.EndpointKey("prod", "pod-a"))
 	if metrics.Dropped != 1 || metrics.RejectDrops != 1 || metrics.DenyDrops != 0 || metrics.NoMatchDrops != 0 {
 		t.Fatalf("metrics = %+v, want one policy reject drop", metrics)
 	}
@@ -542,7 +542,7 @@ func TestEvaluateStatefulAllowsReverseFlowFromConntrack(t *testing.T) {
 	}}
 	conntrack := NewInMemoryConntrackStore()
 
-	ingress := EvaluateStateful("pod-a", entries, Packet{
+	ingress := EvaluateStateful(model.EndpointKey("prod", "pod-a"), entries, Packet{
 		SourcePort:     55000,
 		RemoteIdentity: 100,
 		Direction:      DirectionIngress,
@@ -556,7 +556,7 @@ func TestEvaluateStatefulAllowsReverseFlowFromConntrack(t *testing.T) {
 		t.Fatalf("conntrack entries = %d, want 1", conntrack.Len())
 	}
 
-	reverse := EvaluateStateful("pod-a", nil, Packet{
+	reverse := EvaluateStateful(model.EndpointKey("prod", "pod-a"), nil, Packet{
 		RemoteIdentity: 100,
 		Direction:      DirectionEgress,
 		Protocol:       6,
@@ -585,7 +585,7 @@ func TestEvaluateStatefulKeepsConntrackSourcePortsSeparate(t *testing.T) {
 	}}
 	conntrack := NewInMemoryConntrackStore()
 
-	allowed := EvaluateStateful("pod-a", entries, Packet{
+	allowed := EvaluateStateful(model.EndpointKey("prod", "pod-a"), entries, Packet{
 		SourcePort:     55000,
 		RemoteIdentity: 100,
 		Direction:      DirectionIngress,
@@ -596,7 +596,7 @@ func TestEvaluateStatefulKeepsConntrackSourcePortsSeparate(t *testing.T) {
 		t.Fatalf("allowed decision = %+v, want stateful allow", allowed)
 	}
 
-	reverseDifferentLocalPort := EvaluateStateful("pod-a", nil, Packet{
+	reverseDifferentLocalPort := EvaluateStateful(model.EndpointKey("prod", "pod-a"), nil, Packet{
 		RemoteIdentity: 100,
 		Direction:      DirectionEgress,
 		Protocol:       6,
@@ -607,7 +607,7 @@ func TestEvaluateStatefulKeepsConntrackSourcePortsSeparate(t *testing.T) {
 		t.Fatalf("reverse different local port decision = %+v, want no conntrack match", reverseDifferentLocalPort)
 	}
 
-	reverseSameLocalPort := EvaluateStateful("pod-a", nil, Packet{
+	reverseSameLocalPort := EvaluateStateful(model.EndpointKey("prod", "pod-a"), nil, Packet{
 		RemoteIdentity: 100,
 		Direction:      DirectionEgress,
 		Protocol:       6,
@@ -636,7 +636,7 @@ func TestEvaluateStatefulKeepsICMPTypesSeparate(t *testing.T) {
 	}}
 	conntrack := NewInMemoryConntrackStore()
 
-	request := EvaluateStateful("pod-a", entries, Packet{
+	request := EvaluateStateful(model.EndpointKey("prod", "pod-a"), entries, Packet{
 		RemoteIdentity: 100,
 		Direction:      DirectionEgress,
 		Protocol:       1,
@@ -647,7 +647,7 @@ func TestEvaluateStatefulKeepsICMPTypesSeparate(t *testing.T) {
 		t.Fatalf("request decision = %+v, want stateful allow", request)
 	}
 
-	wrongReply := EvaluateStateful("pod-a", nil, Packet{
+	wrongReply := EvaluateStateful(model.EndpointKey("prod", "pod-a"), nil, Packet{
 		RemoteIdentity: 100,
 		Direction:      DirectionIngress,
 		Protocol:       1,
@@ -658,7 +658,7 @@ func TestEvaluateStatefulKeepsICMPTypesSeparate(t *testing.T) {
 		t.Fatalf("wrong reply decision = %+v, want no conntrack match", wrongReply)
 	}
 
-	echoReply := EvaluateStateful("pod-a", nil, Packet{
+	echoReply := EvaluateStateful(model.EndpointKey("prod", "pod-a"), nil, Packet{
 		RemoteIdentity: 100,
 		Direction:      DirectionIngress,
 		Protocol:       1,
@@ -687,7 +687,7 @@ func TestEvaluateStatefulKeepsICMPv6TypesSeparate(t *testing.T) {
 	}}
 	conntrack := NewInMemoryConntrackStore()
 
-	request := EvaluateStateful("pod-a", entries, Packet{
+	request := EvaluateStateful(model.EndpointKey("prod", "pod-a"), entries, Packet{
 		RemoteIdentity: 100,
 		Direction:      DirectionEgress,
 		Protocol:       58,
@@ -698,7 +698,7 @@ func TestEvaluateStatefulKeepsICMPv6TypesSeparate(t *testing.T) {
 		t.Fatalf("request decision = %+v, want stateful allow", request)
 	}
 
-	wrongReply := EvaluateStateful("pod-a", nil, Packet{
+	wrongReply := EvaluateStateful(model.EndpointKey("prod", "pod-a"), nil, Packet{
 		RemoteIdentity: 100,
 		Direction:      DirectionIngress,
 		Protocol:       58,
@@ -709,7 +709,7 @@ func TestEvaluateStatefulKeepsICMPv6TypesSeparate(t *testing.T) {
 		t.Fatalf("wrong reply decision = %+v, want no conntrack match", wrongReply)
 	}
 
-	echoReply := EvaluateStateful("pod-a", nil, Packet{
+	echoReply := EvaluateStateful(model.EndpointKey("prod", "pod-a"), nil, Packet{
 		RemoteIdentity: 100,
 		Direction:      DirectionIngress,
 		Protocol:       58,
@@ -738,7 +738,7 @@ func TestEvaluateStatefulDenyDoesNotCreateConntrack(t *testing.T) {
 		},
 	}}
 	conntrack := NewInMemoryConntrackStore()
-	decision := EvaluateStateful("pod-a", entries, Packet{
+	decision := EvaluateStateful(model.EndpointKey("prod", "pod-a"), entries, Packet{
 		SourcePort:     55000,
 		RemoteIdentity: 100,
 		Direction:      DirectionIngress,
@@ -771,7 +771,7 @@ func TestEvaluateStatefulDenyOverridesConntrack(t *testing.T) {
 	}}
 	conntrack := NewInMemoryConntrackStore()
 	conntrack.Add(ConntrackKey{
-		EndpointID:     "pod-a",
+		EndpointID:     model.EndpointKey("prod", "pod-a"),
 		RemoteIdentity: 100,
 		Direction:      DirectionEgress,
 		Protocol:       6,
@@ -780,7 +780,7 @@ func TestEvaluateStatefulDenyOverridesConntrack(t *testing.T) {
 	})
 
 	recorder := NewPolicyRecorder()
-	decision := EvaluateStatefulObserved("pod-a", entries, Packet{
+	decision := EvaluateStatefulObserved(model.EndpointKey("prod", "pod-a"), entries, Packet{
 		RemoteIdentity: 100,
 		Direction:      DirectionEgress,
 		Protocol:       6,
@@ -790,7 +790,7 @@ func TestEvaluateStatefulDenyOverridesConntrack(t *testing.T) {
 	if decision.Verdict != VerdictDrop || decision.Conntrack {
 		t.Fatalf("decision = %+v, want explicit deny to override conntrack", decision)
 	}
-	metrics := recorder.Metrics("pod-a")
+	metrics := recorder.Metrics(model.EndpointKey("prod", "pod-a"))
 	if metrics.Dropped != 1 || metrics.DenyDrops != 1 || metrics.Allowed != 0 || metrics.Conntrack != 0 {
 		t.Fatalf("metrics = %+v, want one policy deny without conntrack allow", metrics)
 	}
@@ -819,7 +819,7 @@ func TestEvaluateStatefulRejectOverridesConntrack(t *testing.T) {
 	}}
 	conntrack := NewInMemoryConntrackStore()
 	conntrack.Add(ConntrackKey{
-		EndpointID:     "pod-a",
+		EndpointID:     model.EndpointKey("prod", "pod-a"),
 		RemoteIdentity: 100,
 		Direction:      DirectionEgress,
 		Protocol:       6,
@@ -827,7 +827,7 @@ func TestEvaluateStatefulRejectOverridesConntrack(t *testing.T) {
 		DestPort:       55000,
 	})
 
-	decision := EvaluateStateful("pod-a", entries, Packet{
+	decision := EvaluateStateful(model.EndpointKey("prod", "pod-a"), entries, Packet{
 		RemoteIdentity: 100,
 		Direction:      DirectionEgress,
 		Protocol:       6,
@@ -841,21 +841,57 @@ func TestEvaluateStatefulRejectOverridesConntrack(t *testing.T) {
 
 func TestConntrackDeleteEndpointRemovesState(t *testing.T) {
 	conntrack := NewInMemoryConntrackStore()
-	conntrack.Add(ConntrackKey{EndpointID: "pod-a", RemoteIdentity: 100, Direction: DirectionEgress, Protocol: 6, DestPort: 55000})
-	conntrack.Add(ConntrackKey{EndpointID: "pod-b", RemoteIdentity: 100, Direction: DirectionEgress, Protocol: 6, DestPort: 55000})
-	conntrack.DeleteEndpoint("pod-a")
+	conntrack.Add(ConntrackKey{EndpointID: model.EndpointKey("prod", "pod-a"), RemoteIdentity: 100, Direction: DirectionEgress, Protocol: 6, DestPort: 55000})
+	conntrack.Add(ConntrackKey{EndpointID: model.EndpointKey("prod", "pod-b"), RemoteIdentity: 100, Direction: DirectionEgress, Protocol: 6, DestPort: 55000})
+	conntrack.DeleteEndpoint(model.EndpointKey("prod", "pod-a"))
 	if conntrack.Len() != 1 {
 		t.Fatalf("conntrack entries = %d, want 1", conntrack.Len())
 	}
-	if conntrack.Has(ConntrackKey{EndpointID: "pod-a", RemoteIdentity: 100, Direction: DirectionEgress, Protocol: 6, DestPort: 55000}) {
+	if conntrack.Has(ConntrackKey{EndpointID: model.EndpointKey("prod", "pod-a"), RemoteIdentity: 100, Direction: DirectionEgress, Protocol: 6, DestPort: 55000}) {
 		t.Fatal("pod-a state should be deleted")
+	}
+}
+
+func TestConntrackKeysAreVPCAware(t *testing.T) {
+	conntrack := NewInMemoryConntrackStore()
+	prodEndpoint := model.EndpointKey("prod", "pod-a")
+	devEndpoint := model.EndpointKey("dev", "pod-a")
+	conntrack.Add(ConntrackKey{
+		EndpointID:     devEndpoint,
+		RemoteIdentity: 100,
+		Direction:      DirectionEgress,
+		Protocol:       6,
+		SourcePort:     443,
+		DestPort:       55000,
+	})
+
+	prodReply := EvaluateStateful(prodEndpoint, nil, Packet{
+		RemoteIdentity: 100,
+		Direction:      DirectionEgress,
+		Protocol:       6,
+		SourcePort:     443,
+		DestPort:       55000,
+	}, conntrack)
+	if prodReply.Verdict != VerdictDrop {
+		t.Fatalf("prod reply = %+v, want conntrack mismatch due to VPC mismatch", prodReply)
+	}
+
+	devReply := EvaluateStateful(devEndpoint, nil, Packet{
+		RemoteIdentity: 100,
+		Direction:      DirectionEgress,
+		Protocol:       6,
+		SourcePort:     443,
+		DestPort:       55000,
+	}, conntrack)
+	if devReply.Verdict != VerdictAllow || !devReply.Conntrack {
+		t.Fatalf("dev reply = %+v, want conntrack allow", devReply)
 	}
 }
 
 func TestConntrackExpiresIdleEntries(t *testing.T) {
 	now := time.Unix(100, 0)
 	conntrack := newInMemoryConntrackStoreWithClock(time.Second, func() time.Time { return now })
-	key := ConntrackKey{EndpointID: "pod-a", RemoteIdentity: 100, Direction: DirectionEgress, Protocol: 6, DestPort: 55000}
+	key := ConntrackKey{EndpointID: model.EndpointKey("prod", "pod-a"), RemoteIdentity: 100, Direction: DirectionEgress, Protocol: 6, DestPort: 55000}
 	conntrack.Add(key)
 
 	now = now.Add(time.Second)
@@ -874,8 +910,8 @@ func TestConntrackExpiresIdleEntries(t *testing.T) {
 func TestConntrackSweepIdleEntries(t *testing.T) {
 	now := time.Unix(100, 0)
 	conntrack := newInMemoryConntrackStoreWithClock(0, func() time.Time { return now })
-	conntrack.Add(ConntrackKey{EndpointID: "pod-a", RemoteIdentity: 100, Direction: DirectionEgress, Protocol: 6, DestPort: 55000})
-	conntrack.Add(ConntrackKey{EndpointID: "pod-b", RemoteIdentity: 100, Direction: DirectionEgress, Protocol: 6, DestPort: 55000})
+	conntrack.Add(ConntrackKey{EndpointID: model.EndpointKey("prod", "pod-a"), RemoteIdentity: 100, Direction: DirectionEgress, Protocol: 6, DestPort: 55000})
+	conntrack.Add(ConntrackKey{EndpointID: model.EndpointKey("prod", "pod-b"), RemoteIdentity: 100, Direction: DirectionEgress, Protocol: 6, DestPort: 55000})
 
 	now = now.Add(2 * time.Second)
 	deleted := conntrack.SweepIdle(time.Second)
@@ -917,13 +953,13 @@ func TestPolicyRecorderTracksMetricsAndDropEvents(t *testing.T) {
 		},
 	}
 	recorder := NewPolicyRecorder()
-	allow := EvaluateObserved("pod-a", entries, Packet{RemoteIdentity: 100, RemoteIP: netip.MustParseAddr("10.20.0.10"), Direction: DirectionIngress, Protocol: 6, DestPort: 443}, recorder)
-	deny := EvaluateObserved("pod-a", entries, Packet{RemoteIdentity: 200, RemoteIP: netip.MustParseAddr("10.20.0.20"), Direction: DirectionIngress, Protocol: 6, DestPort: 443}, recorder)
-	noMatch := EvaluateObserved("pod-a", entries, Packet{RemoteIdentity: 300, RemoteIP: netip.MustParseAddr("10.20.0.30"), Direction: DirectionIngress, Protocol: 6, DestPort: 443}, recorder)
+	allow := EvaluateObserved(model.EndpointKey("prod", "pod-a"), entries, Packet{RemoteIdentity: 100, RemoteIP: netip.MustParseAddr("10.20.0.10"), Direction: DirectionIngress, Protocol: 6, DestPort: 443}, recorder)
+	deny := EvaluateObserved(model.EndpointKey("prod", "pod-a"), entries, Packet{RemoteIdentity: 200, RemoteIP: netip.MustParseAddr("10.20.0.20"), Direction: DirectionIngress, Protocol: 6, DestPort: 443}, recorder)
+	noMatch := EvaluateObserved(model.EndpointKey("prod", "pod-a"), entries, Packet{RemoteIdentity: 300, RemoteIP: netip.MustParseAddr("10.20.0.30"), Direction: DirectionIngress, Protocol: 6, DestPort: 443}, recorder)
 	if allow.Verdict != VerdictAllow || deny.Verdict != VerdictDrop || noMatch.Verdict != VerdictDrop {
 		t.Fatalf("unexpected decisions: allow=%+v deny=%+v noMatch=%+v", allow, deny, noMatch)
 	}
-	metrics := recorder.Metrics("pod-a")
+	metrics := recorder.Metrics(model.EndpointKey("prod", "pod-a"))
 	if metrics.Allowed != 1 || metrics.Dropped != 2 || metrics.DenyDrops != 1 || metrics.NoMatchDrops != 1 {
 		t.Fatalf("metrics = %+v, want allow=1 drop=2 deny=1 no-match=1", metrics)
 	}
@@ -974,13 +1010,13 @@ func TestPolicyRecorderTracksLoggedPolicyEvents(t *testing.T) {
 		},
 	}
 	recorder := NewPolicyRecorder()
-	allow := EvaluateObserved("pod-a", entries, Packet{RemoteIdentity: 100, RemoteIP: netip.MustParseAddr("10.30.0.10"), Direction: DirectionIngress, Protocol: 6, DestPort: 443}, recorder)
-	drop := EvaluateObserved("pod-a", entries, Packet{RemoteIdentity: 200, RemoteIP: netip.MustParseAddr("10.30.0.20"), Direction: DirectionIngress, Protocol: 6, DestPort: 8443}, recorder)
-	noMatch := EvaluateObserved("pod-a", entries, Packet{RemoteIdentity: 300, RemoteIP: netip.MustParseAddr("10.30.0.30"), Direction: DirectionIngress, Protocol: 6, DestPort: 443}, recorder)
+	allow := EvaluateObserved(model.EndpointKey("prod", "pod-a"), entries, Packet{RemoteIdentity: 100, RemoteIP: netip.MustParseAddr("10.30.0.10"), Direction: DirectionIngress, Protocol: 6, DestPort: 443}, recorder)
+	drop := EvaluateObserved(model.EndpointKey("prod", "pod-a"), entries, Packet{RemoteIdentity: 200, RemoteIP: netip.MustParseAddr("10.30.0.20"), Direction: DirectionIngress, Protocol: 6, DestPort: 8443}, recorder)
+	noMatch := EvaluateObserved(model.EndpointKey("prod", "pod-a"), entries, Packet{RemoteIdentity: 300, RemoteIP: netip.MustParseAddr("10.30.0.30"), Direction: DirectionIngress, Protocol: 6, DestPort: 443}, recorder)
 	if allow.Verdict != VerdictAllow || drop.Verdict != VerdictDrop || noMatch.Verdict != VerdictDrop {
 		t.Fatalf("unexpected decisions: allow=%+v drop=%+v noMatch=%+v", allow, drop, noMatch)
 	}
-	metrics := recorder.Metrics("pod-a")
+	metrics := recorder.Metrics(model.EndpointKey("prod", "pod-a"))
 	if metrics.Logged != 2 {
 		t.Fatalf("logged metrics = %d, want 2", metrics.Logged)
 	}
@@ -1028,7 +1064,7 @@ func TestActionLogCompilesToAllowPolicyEvent(t *testing.T) {
 		t.Fatal(err)
 	}
 	recorder := NewPolicyRecorder()
-	decision := EvaluateObserved("pod-a", entries, Packet{
+	decision := EvaluateObserved(model.EndpointKey("prod", "pod-a"), entries, Packet{
 		RemoteIdentity: program.MapEntries[0].Key.RemoteIdentity,
 		RemoteIP:       netip.MustParseAddr("10.20.0.10"),
 		Direction:      DirectionIngress,
@@ -1038,7 +1074,7 @@ func TestActionLogCompilesToAllowPolicyEvent(t *testing.T) {
 	if decision.Verdict != VerdictAllow {
 		t.Fatalf("verdict = %s, want allow", decision.Verdict)
 	}
-	metrics := recorder.Metrics("pod-a")
+	metrics := recorder.Metrics(model.EndpointKey("prod", "pod-a"))
 	if metrics.Allowed != 1 || metrics.Logged != 1 || metrics.Dropped != 0 {
 		t.Fatalf("metrics = %+v, want one logged allow", metrics)
 	}
@@ -1065,22 +1101,101 @@ func TestPolicyRecorderTracksConntrackDecisions(t *testing.T) {
 	}}
 	recorder := NewPolicyRecorder()
 	conntrack := NewInMemoryConntrackStore()
-	EvaluateStatefulObserved("pod-a", entries, Packet{
+	EvaluateStatefulObserved(model.EndpointKey("prod", "pod-a"), entries, Packet{
 		SourcePort:     55000,
 		RemoteIdentity: 100,
 		Direction:      DirectionIngress,
 		Protocol:       6,
 		DestPort:       443,
 	}, conntrack, recorder)
-	EvaluateStatefulObserved("pod-a", nil, Packet{
+	EvaluateStatefulObserved(model.EndpointKey("prod", "pod-a"), nil, Packet{
 		RemoteIdentity: 100,
 		Direction:      DirectionEgress,
 		Protocol:       6,
 		SourcePort:     443,
 		DestPort:       55000,
 	}, conntrack, recorder)
-	metrics := recorder.Metrics("pod-a")
+	metrics := recorder.Metrics(model.EndpointKey("prod", "pod-a"))
 	if metrics.Allowed != 2 || metrics.Established != 1 || metrics.Conntrack != 1 {
 		t.Fatalf("metrics = %+v, want allowed=2 established=1 conntrack=1", metrics)
+	}
+}
+
+func TestPolicyRecorderTracksTraceEvents(t *testing.T) {
+	entries := []PolicyMapEntry{{
+		Key: PolicyKey{
+			PrefixLen:      StaticPrefixBits + 24,
+			RemoteIdentity: 100,
+			Direction:      DirectionIngress,
+			Protocol:       6,
+			DestPortBE:     hostToNetwork16(443),
+		},
+		Value: PolicyEntry{
+			L4PrefixLen: 24,
+			Precedence:  100,
+			Stateful:    1,
+		},
+	}, {
+		Key: PolicyKey{
+			PrefixLen:      StaticPrefixBits + 24,
+			RemoteIdentity: 200,
+			Direction:      DirectionIngress,
+			Protocol:       6,
+			DestPortBE:     hostToNetwork16(8443),
+		},
+		Value: PolicyEntry{
+			Deny:        1,
+			L4PrefixLen: 24,
+			Precedence:  100,
+			RuleCookie:  88,
+		},
+	}}
+	recorder := NewPolicyRecorder()
+	conntrack := NewInMemoryConntrackStore()
+
+	EvaluateStatefulObserved(model.EndpointKey("prod", "pod-a"), entries, Packet{
+		SourcePort:     50000,
+		RemoteIdentity: 100,
+		Direction:      DirectionIngress,
+		Protocol:       6,
+		DestPort:       443,
+	}, conntrack, recorder)
+	EvaluateStatefulObserved(model.EndpointKey("prod", "pod-a"), entries, Packet{
+		RemoteIdentity: 200,
+		Direction:      DirectionIngress,
+		Protocol:       6,
+		DestPort:       8443,
+		RemoteIP:       netip.MustParseAddr("10.10.0.99"),
+	}, conntrack, recorder)
+	EvaluateStatefulObserved(model.EndpointKey("prod", "pod-a"), entries, Packet{
+		RemoteIdentity: 300,
+		Direction:      DirectionIngress,
+		Protocol:       6,
+		DestPort:       443,
+		RemoteIP:       netip.MustParseAddr("10.10.0.88"),
+	}, conntrack, recorder)
+	EvaluateStatefulObserved(model.EndpointKey("prod", "pod-a"), nil, Packet{
+		RemoteIdentity: 100,
+		Direction:      DirectionEgress,
+		Protocol:       6,
+		SourcePort:     443,
+		DestPort:       50000,
+	}, conntrack, recorder)
+
+	events := recorder.TraceEvents()
+	if len(events) != 4 {
+		t.Fatalf("trace events = %d, want 4", len(events))
+	}
+	if events[0].Verdict != VerdictAllow || events[0].Established != true || events[0].Conntrack {
+		t.Fatalf("first trace event = %+v, want stateful allow establishing conntrack", events[0])
+	}
+	if events[1].Verdict != VerdictDrop || !events[1].DenyDrop || events[1].RuleCookie != 88 {
+		t.Fatalf("second trace event = %+v, want policy deny with cookie", events[1])
+	}
+	if !events[2].NoMatchDrop || events[2].Verdict != VerdictDrop {
+		t.Fatalf("third trace event = %+v, want no-match drop marker", events[2])
+	}
+	if events[3].Verdict != VerdictAllow || !events[3].Conntrack {
+		t.Fatalf("fourth trace event = %+v, want conntrack allow", events[3])
 	}
 }

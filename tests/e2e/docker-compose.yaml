@@ -21,6 +21,7 @@ services:
     networks:
       fabric:
         ipv4_address: 172.30.0.10
+        ipv6_address: fd00:30::10
 
   node-a:
     image: alpine:3.20
@@ -30,6 +31,7 @@ services:
     networks:
       fabric:
         ipv4_address: 172.30.0.11
+        ipv6_address: fd00:30::11
     cap_add:
       - NET_ADMIN
       - SYS_ADMIN
@@ -43,6 +45,7 @@ services:
     networks:
       fabric:
         ipv4_address: 172.30.0.12
+        ipv6_address: fd00:30::12
     cap_add:
       - NET_ADMIN
       - SYS_ADMIN
@@ -56,6 +59,7 @@ services:
     networks:
       fabric:
         ipv4_address: 172.30.0.13
+        ipv6_address: fd00:30::13
     cap_add:
       - NET_ADMIN
       - SYS_ADMIN
@@ -64,6 +68,8 @@ services:
 networks:
   fabric:
     driver: bridge
+    enable_ipv6: true
     ipam:
       config:
         - subnet: 172.30.0.0/24
+        - subnet: fd00:30::/64

@@ -123,6 +123,53 @@ func TestCompileForEndpointUsesKubeOVNStyleLowerRulePriorityFirst(t *testing.T) 
 	}
 }
 
+func TestCompileForEndpointLetsLowerNumericPriorityAllowBeatHigherNumericDrop(t *testing.T) {
+	endpoint := model.Endpoint{
+		ID:             "pod-a",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"web"},
+	}
+	groups := map[string]model.SecurityGroup{
+		"web": {
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{
+				{
+					ID:         "drop-fallback",
+					Priority:   200,
+					Direction:  model.DirectionIngress,
+					Protocol:   model.ProtocolTCP,
+					RemoteCIDR: netip.MustParsePrefix("192.0.2.10/32"),
+					Ports:      []model.PortRange{{From: 443, To: 443}},
+					Action:     model.ActionDrop,
+				},
+				{
+					ID:         "allow-primary",
+					Priority:   100,
+					Direction:  model.DirectionIngress,
+					Protocol:   model.ProtocolTCP,
+					RemoteCIDR: netip.MustParsePrefix("192.0.2.10/32"),
+					Ports:      []model.PortRange{{From: 443, To: 443}},
+					Action:     model.ActionAllow,
+				},
+			},
+		},
+	}
+	program, err := CompileForEndpoint(endpoint, groups)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if program.Rules[0].ID != "allow-primary" {
+		t.Fatalf("first rule = %s, want lower numeric priority allow-primary", program.Rules[0].ID)
+	}
+	if len(program.MapEntries) != 2 || program.MapEntries[0].RuleID != "allow-primary" {
+		t.Fatalf("map entries = %+v, want allow-primary first", program.MapEntries)
+	}
+}
+
 func TestCompileForEndpointPropagatesStatefulPolicyToMapEntries(t *testing.T) {
 	endpoint := model.Endpoint{
 		ID:             "pod-a",

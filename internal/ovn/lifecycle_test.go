@@ -356,6 +356,40 @@ func TestRouteCleanupFromBlackholeToNexthopDeletesDestination(t *testing.T) {
 	}
 }
 
+func TestRouteCleanupFromSingleToSingleUsesMayExistUpdate(t *testing.T) {
+	oldState := topology.State{
+		RouteTables: map[string]model.RouteTable{
+			"main": {
+				Name: "main",
+				VPC:  "prod",
+				Routes: []model.Route{{
+					Destination: netip.MustParsePrefix("10.10.0.0/16"),
+					NextHops:    []netip.Addr{netip.MustParseAddr("10.10.0.254")},
+				}},
+			},
+		},
+	}
+	nextState := topology.State{
+		RouteTables: map[string]model.RouteTable{
+			"main": {
+				Name: "main",
+				VPC:  "prod",
+				Routes: []model.Route{{
+					Destination: netip.MustParsePrefix("10.10.0.0/16"),
+					NextHops:    []netip.Addr{netip.MustParseAddr("10.10.0.253")},
+				}},
+			},
+		},
+	}
+
+	old := snapshotDesired(oldState).Routes[routeKey("prod", oldState.RouteTables["main"].Routes[0])]
+	next := snapshotDesired(nextState).Routes[routeKey("prod", nextState.RouteTables["main"].Routes[0])]
+	ops := routeUpdateCleanupOperations(old, next)
+	if len(ops) != 0 {
+		t.Fatalf("route cleanup ops = %v, want no cleanup because lr-route-add --may-exist updates nexthop", ops)
+	}
+}
+
 func TestRouteCleanupFromECMPToECMPDeletesOnlyStaleNexthops(t *testing.T) {
 	oldState := topology.State{
 		RouteTables: map[string]model.RouteTable{
@@ -567,7 +601,7 @@ func TestSnapshotDesiredClonesLoadBalancerBackendHealthPointers(t *testing.T) {
 	snapshot := snapshotDesired(state)
 	healthy = false
 
-	got := snapshot.LoadBalancers["web"].Ports[0].Backends[0].Healthy
+	got := snapshot.LoadBalancers[loadBalancerStateKey(state.LoadBalancers["web"])].Ports[0].Backends[0].Healthy
 	if got == nil || !*got {
 		t.Fatalf("snapshot backend health = %v, want cloned true value after source mutation", got)
 	}
