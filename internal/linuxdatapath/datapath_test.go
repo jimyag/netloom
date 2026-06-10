@@ -459,7 +459,15 @@ func TestPlanCleansManagedPolicyRouteRulesWhenRequested(t *testing.T) {
 		t.Fatalf("policy routes = %d, want 0", result.PolicyRoutes)
 	}
 	joined := stringifyOps(ops)
-	for _, expected := range []string{"ip rule show", "start=22000", "end=22064", "proto=186", "ip rule del priority"} {
+	for _, expected := range []string{
+		"ip rule show",
+		"start=22000",
+		"end=22064",
+		"proto=186",
+		"ip rule del priority",
+		"for family in '' '-6'",
+		"ip $family route flush table \"$table\"",
+	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("cleanup ops missing %q:\n%s", expected, joined)
 		}

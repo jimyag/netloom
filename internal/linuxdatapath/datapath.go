@@ -242,7 +242,10 @@ func planPolicyRouteCleanup(tableBase, tableSize int) Operation {
 	start := strconv.Itoa(tableBase)
 	end := strconv.Itoa(tableBase + tableSize)
 	protocol := strconv.Itoa(linuxPolicyRuleProtocolID)
-	return shellOperation("ip rule show | awk -v start=" + start + " -v end=" + end + " -v proto=" + protocol + " '{ managed=0; for (i=1; i<=NF; i++) { if (($i == \"lookup\" || $i == \"table\") && $(i+1) >= start && $(i+1) < end) managed=1; if (($i == \"proto\" || $i == \"protocol\") && $(i+1) == proto) managed=1 } if (managed) print }' | while read -r rule; do priority=${rule%%:*}; table=$(printf '%s\\n' \"$rule\" | awk '{ for (i=1; i<=NF; i++) if (($i == \"lookup\" || $i == \"table\")) { print $(i+1); exit } }'); ip rule del priority \"$priority\" table \"$table\" 2>/dev/null || true; done")
+	return shellOperation(
+		"ip rule show | awk -v start=" + start + " -v end=" + end + " -v proto=" + protocol + " '{ managed=0; for (i=1; i<=NF; i++) { if (($i == \"lookup\" || $i == \"table\") && $(i+1) >= start && $(i+1) < end) managed=1; if (($i == \"proto\" || $i == \"protocol\") && $(i+1) == proto) managed=1 } if (managed) print }' | while read -r rule; do priority=${rule%%:*}; table=$(printf '%s\\n' \"$rule\" | awk '{ for (i=1; i<=NF; i++) if (($i == \"lookup\" || $i == \"table\")) { print $(i+1); exit } }'); ip rule del priority \"$priority\" table \"$table\" 2>/dev/null || true; done; " +
+			"for family in '' '-6'; do table=" + start + "; while [ \"$table\" -lt " + end + " ]; do ip $family route flush table \"$table\" 2>/dev/null || true; table=$((table+1)); done; done",
+	)
 }
 
 func planRemoteRouteCleanup(state control.DesiredState, node, device string) Operation {
