@@ -213,6 +213,7 @@ func desiredProviderNetworkLinkSpecs(state control.DesiredState, node string, ma
 	for _, subnet := range state.Subnets {
 		subnets[subnetStateKey(subnet.VPC, subnet.Name)] = subnet
 	}
+	nodeMappings := providerLinkMappingsForNode(state.ProviderNetworks, node, mappings)
 	seen := make(map[string]providerNetworkLinkSpec)
 	claimedLinks := make(map[string]providerNetworkLinkSpec)
 	for _, endpoint := range state.Endpoints {
@@ -223,9 +224,9 @@ func desiredProviderNetworkLinkSpecs(state control.DesiredState, node string, ma
 		if !ok || subnet.ProviderNetwork == "" || subnet.VLAN == 0 {
 			continue
 		}
-		parent := mappings[subnet.ProviderNetwork]
+		parent := nodeMappings[subnet.ProviderNetwork]
 		if parent == "" {
-			return nil, fmt.Errorf("provider network %q requires parent device mapping", subnet.ProviderNetwork)
+			return nil, fmt.Errorf("provider network %q requires parent device mapping on node %q", subnet.ProviderNetwork, node)
 		}
 		spec := providerNetworkLinkSpec{
 			ProviderNetwork: subnet.ProviderNetwork,
@@ -250,6 +251,23 @@ func desiredProviderNetworkLinkSpecs(state control.DesiredState, node string, ma
 		specs = append(specs, seen[key])
 	}
 	return specs, nil
+}
+
+func providerLinkMappingsForNode(providerNetworks []model.ProviderNetwork, node string, fallback map[string]string) map[string]string {
+	mappings := make(map[string]string, len(fallback)+len(providerNetworks))
+	for name, device := range fallback {
+		mappings[name] = device
+	}
+	for _, providerNetwork := range providerNetworks {
+		for _, providerNode := range providerNetwork.Nodes {
+			if providerNode.Node != node {
+				continue
+			}
+			mappings[providerNetwork.Name] = providerNode.Interface
+			break
+		}
+	}
+	return mappings
 }
 
 func providerNetworkLinkKey(spec providerNetworkLinkSpec) string {

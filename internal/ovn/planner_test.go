@@ -15,6 +15,13 @@ func TestPlannerMapsNetloomObjectsToOVNOperations(t *testing.T) {
 	planner := ovn.NewPlanner()
 	state := control.DesiredState{
 		VPCs: []model.VPC{{Name: "prod"}},
+		ProviderNetworks: []model.ProviderNetwork{{
+			Name: "physnet-a",
+			Nodes: []model.ProviderNetworkNode{{
+				Node:      "node-a",
+				Interface: "eth1",
+			}},
+		}},
 		Subnets: []model.Subnet{{
 			Name:            "apps",
 			VPC:             "prod",

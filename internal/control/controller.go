@@ -134,17 +134,18 @@ type PolicyLifecycleBackend interface {
 }
 
 type DesiredState struct {
-	VPCs           []model.VPC           `json:"vpcs"`
-	Subnets        []model.Subnet        `json:"subnets"`
-	Endpoints      []model.Endpoint      `json:"endpoints"`
-	RouteTables    []model.RouteTable    `json:"route_tables"`
-	PolicyRoutes   []model.PolicyRoute   `json:"policy_routes"`
-	Gateways       []model.Gateway       `json:"gateways"`
-	NATRules       []model.NATRule       `json:"nat_rules"`
-	LoadBalancers  []model.LoadBalancer  `json:"load_balancers"`
-	SecurityGroups []model.SecurityGroup `json:"security_groups"`
-	CIDRGroups     []model.CIDRGroup     `json:"cidr_groups"`
-	DNSRecords     []model.DNSRecord     `json:"dns_records"`
+	VPCs             []model.VPC             `json:"vpcs"`
+	ProviderNetworks []model.ProviderNetwork `json:"provider_networks"`
+	Subnets          []model.Subnet          `json:"subnets"`
+	Endpoints        []model.Endpoint        `json:"endpoints"`
+	RouteTables      []model.RouteTable      `json:"route_tables"`
+	PolicyRoutes     []model.PolicyRoute     `json:"policy_routes"`
+	Gateways         []model.Gateway         `json:"gateways"`
+	NATRules         []model.NATRule         `json:"nat_rules"`
+	LoadBalancers    []model.LoadBalancer    `json:"load_balancers"`
+	SecurityGroups   []model.SecurityGroup   `json:"security_groups"`
+	CIDRGroups       []model.CIDRGroup       `json:"cidr_groups"`
+	DNSRecords       []model.DNSRecord       `json:"dns_records"`
 }
 
 type Controller struct {
@@ -396,6 +397,17 @@ func validateObjectGraph(state DesiredState) error {
 		vpcs[vpc.Name] = struct{}{}
 	}
 
+	providerNetworks := make(map[string]model.ProviderNetwork, len(state.ProviderNetworks))
+	for _, providerNetwork := range state.ProviderNetworks {
+		if err := providerNetwork.Validate(); err != nil {
+			return err
+		}
+		if _, ok := providerNetworks[providerNetwork.Name]; ok {
+			return fmt.Errorf("duplicate provider network name %q", providerNetwork.Name)
+		}
+		providerNetworks[providerNetwork.Name] = providerNetwork
+	}
+
 	subnets := make(map[string]model.Subnet, len(state.Subnets))
 	for _, subnet := range state.Subnets {
 		if err := subnet.Validate(); err != nil {
@@ -407,6 +419,11 @@ func validateObjectGraph(state DesiredState) error {
 		}
 		if _, ok := vpcs[subnet.VPC]; !ok {
 			return fmt.Errorf("subnet %q references unknown vpc %q", subnet.Name, subnet.VPC)
+		}
+		if subnet.ProviderNetwork != "" {
+			if _, ok := providerNetworks[subnet.ProviderNetwork]; !ok {
+				return fmt.Errorf("subnet %q references unknown provider network %q", subnet.Name, subnet.ProviderNetwork)
+			}
 		}
 		for _, existing := range subnets {
 			if existing.VPC == subnet.VPC && prefixesOverlap(existing.CIDR, subnet.CIDR) {

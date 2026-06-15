@@ -3026,6 +3026,13 @@ func cloneTestOperations(ops []ovn.Operation) []ovn.Operation {
 func controlStateWithEndpoint(endpointID string) control.DesiredState {
 	return control.DesiredState{
 		VPCs: []model.VPC{{Name: "prod"}},
+		ProviderNetworks: []model.ProviderNetwork{{
+			Name: "physnet-a",
+			Nodes: []model.ProviderNetworkNode{{
+				Node:      "node-a",
+				Interface: "eth1",
+			}},
+		}},
 		Subnets: []model.Subnet{{
 			Name:            "apps",
 			VPC:             "prod",

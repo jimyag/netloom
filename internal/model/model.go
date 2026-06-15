@@ -51,6 +51,16 @@ type VPC struct {
 	Name string `json:"name"`
 }
 
+type ProviderNetwork struct {
+	Name  string                `json:"name"`
+	Nodes []ProviderNetworkNode `json:"nodes"`
+}
+
+type ProviderNetworkNode struct {
+	Node      string `json:"node"`
+	Interface string `json:"interface"`
+}
+
 type Subnet struct {
 	Name            string         `json:"name"`
 	VPC             string         `json:"vpc"`
@@ -263,6 +273,36 @@ type PortRange struct {
 func (v VPC) Validate() error {
 	if v.Name == "" {
 		return errors.New("vpc name is required")
+	}
+	return nil
+}
+
+func (p ProviderNetwork) Validate() error {
+	if p.Name == "" {
+		return errors.New("provider network name is required")
+	}
+	if len(p.Nodes) == 0 {
+		return errors.New("provider network nodes are required")
+	}
+	seenNodes := make(map[string]struct{}, len(p.Nodes))
+	for i, node := range p.Nodes {
+		if err := node.Validate(); err != nil {
+			return fmt.Errorf("provider network node %d: %w", i, err)
+		}
+		if _, ok := seenNodes[node.Node]; ok {
+			return fmt.Errorf("provider network node %q is duplicated", node.Node)
+		}
+		seenNodes[node.Node] = struct{}{}
+	}
+	return nil
+}
+
+func (n ProviderNetworkNode) Validate() error {
+	if n.Node == "" {
+		return errors.New("provider network node is required")
+	}
+	if n.Interface == "" {
+		return errors.New("provider network interface is required")
 	}
 	return nil
 }

@@ -375,6 +375,7 @@ func TestDesiredStatePriorityConflictMatchesTCXEligibilityFromJSON(t *testing.T)
 	ctx := context.Background()
 	denyState, err := control.LoadDesiredStateJSON(strings.NewReader(`{
   "vpcs": [{"name": "file"}],
+  "provider_networks": [{"name": "physnet-a", "nodes": [{"node": "node-a", "interface": "eth1"}, {"node": "node-b", "interface": "eth1"}]}],
   "subnets": [{"name": "fileapps", "vpc": "file", "cidr": "10.245.0.0/24", "gateway": "10.245.0.1", "provider_network": "physnet-a", "vlan": 100, "dhcp": {"enabled": true, "lease_time": 7200, "mtu": 1400, "dns_servers": ["10.96.0.10"], "domain_name": "svc.cluster.local", "search_domains": ["cluster.local", "svc.cluster.local"]}}],
   "endpoints": [
     {"id": "file-pod-a", "vpc": "file", "subnet": "fileapps", "ip": "10.245.0.10", "node": "node-a", "security_groups": ["client"]},
@@ -405,6 +406,7 @@ func TestDesiredStatePriorityConflictMatchesTCXEligibilityFromJSON(t *testing.T)
 
 	allowState, err := control.LoadDesiredStateJSON(strings.NewReader(`{
   "vpcs": [{"name": "file"}],
+  "provider_networks": [{"name": "physnet-a", "nodes": [{"node": "node-a", "interface": "eth1"}, {"node": "node-b", "interface": "eth1"}]}],
   "subnets": [{"name": "fileapps", "vpc": "file", "cidr": "10.245.0.0/24", "gateway": "10.245.0.1", "provider_network": "physnet-a", "vlan": 100, "dhcp": {"enabled": true, "lease_time": 7200, "mtu": 1400, "dns_servers": ["10.96.0.10"], "domain_name": "svc.cluster.local", "search_domains": ["cluster.local", "svc.cluster.local"]}}],
   "endpoints": [
     {"id": "file-pod-a", "vpc": "file", "subnet": "fileapps", "ip": "10.245.0.10", "node": "node-a", "security_groups": ["client"]},
@@ -438,6 +440,7 @@ func TestDesiredStateRemovesLocalnetTagWhenProviderNetworkVLANIsCleared(t *testi
 	ctx := context.Background()
 	initial, err := control.LoadDesiredStateJSON(strings.NewReader(`{
   "vpcs": [{"name": "file"}],
+  "provider_networks": [{"name": "physnet-a", "nodes": [{"node": "node-a", "interface": "eth1"}]}],
   "subnets": [{"name": "fileapps", "vpc": "file", "cidr": "10.245.0.0/24", "gateway": "10.245.0.1", "provider_network": "physnet-a", "vlan": 100}],
   "endpoints": [{"id": "file-pod-a", "vpc": "file", "subnet": "fileapps", "ip": "10.245.0.10", "node": "node-a"}]
 }`))
@@ -446,6 +449,7 @@ func TestDesiredStateRemovesLocalnetTagWhenProviderNetworkVLANIsCleared(t *testi
 	}
 	updated, err := control.LoadDesiredStateJSON(strings.NewReader(`{
   "vpcs": [{"name": "file"}],
+  "provider_networks": [{"name": "physnet-a", "nodes": [{"node": "node-a", "interface": "eth1"}]}],
   "subnets": [{"name": "fileapps", "vpc": "file", "cidr": "10.245.0.0/24", "gateway": "10.245.0.1", "provider_network": "physnet-a"}],
   "endpoints": [{"id": "file-pod-a", "vpc": "file", "subnet": "fileapps", "ip": "10.245.0.10", "node": "node-a"}]
 }`))
@@ -501,6 +505,7 @@ func mustAddr(t *testing.T, raw string) netip.Addr {
 
 const integrationStateJSON = `{
   "vpcs": [{"name": "prod"}],
+  "provider_networks": [{"name": "physnet-a", "nodes": [{"node": "node-a", "interface": "eth1"}, {"node": "node-b", "interface": "eth1"}]}],
   "subnets": [{"name": "apps", "vpc": "prod", "cidr": "10.10.0.0/24", "gateway": "10.10.0.1", "exclude_cidrs": ["10.10.0.16/28"], "provider_network": "physnet-a", "vlan": 100, "dhcp": {"enabled": true, "lease_time": 7200, "mtu": 1400, "dns_servers": ["10.96.0.10"], "domain_name": "svc.cluster.local", "search_domains": ["cluster.local", "svc.cluster.local"]}}],
   "endpoints": [
     {"id": "pod-a", "vpc": "prod", "subnet": "apps", "ip": "10.10.0.10", "mac": "0A:58:0A:0A:00:0A", "node": "node-a", "security_groups": ["platform-client", "client"], "labels": {"app": "client", "env": "prod"}},

@@ -56,6 +56,26 @@ func TestCoreNetworkResourcesValidateRequiredFields(t *testing.T) {
 			wantErr: "outside cidr",
 		},
 		{
+			name: "provider network",
+			valid: func() error {
+				return ProviderNetwork{
+					Name: "physnet-a",
+					Nodes: []ProviderNetworkNode{
+						{Node: "node-a", Interface: "bond0.100"},
+					},
+				}.Validate()
+			},
+			invalid: func() error {
+				return ProviderNetwork{
+					Name: "physnet-a",
+					Nodes: []ProviderNetworkNode{
+						{Node: "node-a", Interface: ""},
+					},
+				}.Validate()
+			},
+			wantErr: "provider network interface is required",
+		},
+		{
 			name: "gateway",
 			valid: func() error {
 				return Gateway{
@@ -117,6 +137,22 @@ func TestCoreNetworkResourcesValidateRequiredFields(t *testing.T) {
 				t.Fatalf("error %q does not contain %q", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestProviderNetworkRejectsDuplicateNodes(t *testing.T) {
+	err := ProviderNetwork{
+		Name: "physnet-a",
+		Nodes: []ProviderNetworkNode{
+			{Node: "node-a", Interface: "eth1"},
+			{Node: "node-a", Interface: "eth2"},
+		},
+	}.Validate()
+	if err == nil {
+		t.Fatal("expected duplicate provider network node to fail")
+	}
+	if !strings.Contains(err.Error(), `provider network node "node-a" is duplicated`) {
+		t.Fatalf("error %q does not mention duplicate provider network node", err)
 	}
 }
 

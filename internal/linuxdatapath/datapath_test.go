@@ -170,6 +170,13 @@ func TestPlanNetNSProgramsIPv6VethAndNamespace(t *testing.T) {
 
 func TestPlanProgramsProviderNetworkVLANLinkForLocalEndpoints(t *testing.T) {
 	state := control.DesiredState{
+		ProviderNetworks: []model.ProviderNetwork{{
+			Name: "physnet-a",
+			Nodes: []model.ProviderNetworkNode{{
+				Node:      "node-a",
+				Interface: "eth1",
+			}},
+		}},
 		Subnets: []model.Subnet{{
 			Name:            "baremetal",
 			VPC:             "prod",
@@ -187,9 +194,8 @@ func TestPlanProgramsProviderNetworkVLANLinkForLocalEndpoints(t *testing.T) {
 		}},
 	}
 	ops, _, err := Plan(context.Background(), state, Options{
-		Node:          "node-a",
-		LocalDevice:   "nl0",
-		ProviderLinks: map[string]string{"physnet-a": "eth1"},
+		Node:        "node-a",
+		LocalDevice: "nl0",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -209,6 +215,13 @@ func TestPlanProgramsProviderNetworkVLANLinkForLocalEndpoints(t *testing.T) {
 
 func TestPlanCleansStaleProviderNetworkVLANLinks(t *testing.T) {
 	state := control.DesiredState{
+		ProviderNetworks: []model.ProviderNetwork{{
+			Name: "physnet-a",
+			Nodes: []model.ProviderNetworkNode{{
+				Node:      "node-a",
+				Interface: "eth1",
+			}},
+		}},
 		Subnets: []model.Subnet{{
 			Name:            "baremetal",
 			VPC:             "prod",
@@ -226,10 +239,9 @@ func TestPlanCleansStaleProviderNetworkVLANLinks(t *testing.T) {
 		}},
 	}
 	ops, result, err := Plan(context.Background(), state, Options{
-		Node:          "node-a",
-		LocalDevice:   "nl0",
-		ProviderLinks: map[string]string{"physnet-a": "eth1"},
-		CleanupStale:  true,
+		Node:         "node-a",
+		LocalDevice:  "nl0",
+		CleanupStale: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -252,6 +264,13 @@ func TestPlanCleansStaleProviderNetworkVLANLinks(t *testing.T) {
 
 func TestPlanRejectsProviderSubnetWithoutParentLinkMapping(t *testing.T) {
 	state := control.DesiredState{
+		ProviderNetworks: []model.ProviderNetwork{{
+			Name: "physnet-a",
+			Nodes: []model.ProviderNetworkNode{{
+				Node:      "node-b",
+				Interface: "eth1",
+			}},
+		}},
 		Subnets: []model.Subnet{{
 			Name:            "baremetal",
 			VPC:             "prod",
@@ -269,13 +288,29 @@ func TestPlanRejectsProviderSubnetWithoutParentLinkMapping(t *testing.T) {
 		}},
 	}
 	_, _, err := Plan(context.Background(), state, Options{Node: "node-a", LocalDevice: "nl0"})
-	if err == nil || !strings.Contains(err.Error(), `provider network "physnet-a" requires parent device mapping`) {
+	if err == nil || !strings.Contains(err.Error(), `provider network "physnet-a" requires parent device mapping on node "node-a"`) {
 		t.Fatalf("err = %v, want missing provider mapping failure", err)
 	}
 }
 
 func TestPlanRejectsConflictingProviderNetworksOnSameParentVLAN(t *testing.T) {
 	state := control.DesiredState{
+		ProviderNetworks: []model.ProviderNetwork{
+			{
+				Name: "physnet-a",
+				Nodes: []model.ProviderNetworkNode{{
+					Node:      "node-a",
+					Interface: "eth1",
+				}},
+			},
+			{
+				Name: "physnet-b",
+				Nodes: []model.ProviderNetworkNode{{
+					Node:      "node-a",
+					Interface: "eth1",
+				}},
+			},
+		},
 		Subnets: []model.Subnet{
 			{
 				Name:            "baremetal-a",
@@ -314,10 +349,6 @@ func TestPlanRejectsConflictingProviderNetworksOnSameParentVLAN(t *testing.T) {
 	_, _, err := Plan(context.Background(), state, Options{
 		Node:        "node-a",
 		LocalDevice: "nl0",
-		ProviderLinks: map[string]string{
-			"physnet-a": "eth1",
-			"physnet-b": "eth1",
-		},
 	})
 	if err == nil || !strings.Contains(err.Error(), `provider networks "physnet-a" and "physnet-b" both require parent eth1 vlan 100`) {
 		t.Fatalf("err = %v, want conflicting provider network failure", err)
@@ -326,6 +357,13 @@ func TestPlanRejectsConflictingProviderNetworksOnSameParentVLAN(t *testing.T) {
 
 func TestPlanDeduplicatesSharedProviderNetworkLinkAcrossSubnets(t *testing.T) {
 	state := control.DesiredState{
+		ProviderNetworks: []model.ProviderNetwork{{
+			Name: "physnet-a",
+			Nodes: []model.ProviderNetworkNode{{
+				Node:      "node-a",
+				Interface: "eth1",
+			}},
+		}},
 		Subnets: []model.Subnet{
 			{
 				Name:            "baremetal-a",
@@ -362,9 +400,8 @@ func TestPlanDeduplicatesSharedProviderNetworkLinkAcrossSubnets(t *testing.T) {
 		},
 	}
 	ops, _, err := Plan(context.Background(), state, Options{
-		Node:          "node-a",
-		LocalDevice:   "nl0",
-		ProviderLinks: map[string]string{"physnet-a": "eth1"},
+		Node:        "node-a",
+		LocalDevice: "nl0",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -376,6 +413,49 @@ func TestPlanDeduplicatesSharedProviderNetworkLinkAcrossSubnets(t *testing.T) {
 	}
 	if got := strings.Count(joined, "ip link set "+linkName+" up"); got != 1 {
 		t.Fatalf("provider vlan setup count = %d, want 1:\n%s", got, joined)
+	}
+}
+
+func TestPlanPrefersStateProviderNetworkMappingOverEnvFallback(t *testing.T) {
+	state := control.DesiredState{
+		ProviderNetworks: []model.ProviderNetwork{{
+			Name: "physnet-a",
+			Nodes: []model.ProviderNetworkNode{{
+				Node:      "node-a",
+				Interface: "bond0",
+			}},
+		}},
+		Subnets: []model.Subnet{{
+			Name:            "baremetal",
+			VPC:             "prod",
+			CIDR:            netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway:         netip.MustParseAddr("10.10.0.1"),
+			ProviderNetwork: "physnet-a",
+			VLAN:            100,
+		}},
+		Endpoints: []model.Endpoint{{
+			ID:     "pod-a",
+			VPC:    "prod",
+			Subnet: "baremetal",
+			IP:     netip.MustParseAddr("10.10.0.10"),
+			Node:   "node-a",
+		}},
+	}
+	ops, _, err := Plan(context.Background(), state, Options{
+		Node:          "node-a",
+		LocalDevice:   "nl0",
+		ProviderLinks: map[string]string{"physnet-a": "eth1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := stringifyOps(ops)
+	linkName := providerNetworkLinkName("physnet-a", "bond0", 100)
+	if !strings.Contains(joined, "ip link show "+linkName+" >/dev/null 2>&1 || ip link add link bond0 name "+linkName+" type vlan id 100") {
+		t.Fatalf("state provider mapping should override env fallback:\n%s", joined)
+	}
+	if strings.Contains(joined, "link eth1 name") {
+		t.Fatalf("state provider mapping should not fall back to env parent when node mapping exists:\n%s", joined)
 	}
 }
 

@@ -633,6 +633,26 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 			wantErr: "subnet \"apps\" references unknown vpc",
 		},
 		{
+			name: "duplicate provider network",
+			mutate: func(state *DesiredState) {
+				state.ProviderNetworks = []model.ProviderNetwork{
+					{Name: "physnet-a", Nodes: []model.ProviderNetworkNode{{Node: "node-a", Interface: "eth1"}}},
+					{Name: "physnet-a", Nodes: []model.ProviderNetworkNode{{Node: "node-b", Interface: "eth2"}}},
+				}
+				state.Subnets[0].ProviderNetwork = "physnet-a"
+				state.Subnets[0].VLAN = 100
+			},
+			wantErr: "duplicate provider network name",
+		},
+		{
+			name: "subnet unknown provider network",
+			mutate: func(state *DesiredState) {
+				state.Subnets[0].ProviderNetwork = "physnet-missing"
+				state.Subnets[0].VLAN = 100
+			},
+			wantErr: "subnet \"apps\" references unknown provider network",
+		},
+		{
 			name: "duplicate security group",
 			mutate: func(state *DesiredState) {
 				state.SecurityGroups = append(state.SecurityGroups, state.SecurityGroups[0])
@@ -1997,9 +2017,9 @@ func TestControllerReconcileRecoversAfterRestartWithStaleState(t *testing.T) {
 		ExternalIP: netip.MustParseAddr("198.51.100.99"),
 	}
 	backend.LoadBalancers[loadBalancerKey("prod", "stale-lb")] = model.LoadBalancer{
-		Name: "stale-lb",
-		VPC:  "prod",
-		VIP:  netip.MustParseAddr("10.96.0.99"),
+		Name:  "stale-lb",
+		VPC:   "prod",
+		VIP:   netip.MustParseAddr("10.96.0.99"),
 		Ports: []model.LoadBalancerPort{{Port: 80, Protocol: model.ProtocolTCP, Backends: []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.11"), Port: 8080}}}},
 	}
 	backend.PolicyRoutes = append(backend.PolicyRoutes, model.PolicyRoute{
