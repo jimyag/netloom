@@ -395,8 +395,16 @@ func TestDockerAgentStateWatchPreservesPinnedMapsOnEBPFOverflow(t *testing.T) {
 
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "sh", "-c", overflowStateWrite)
 	overflowOutput := runAgentOnce(false)
-	if !strings.Contains(overflowOutput, "policy map capacity exceeded") {
-		t.Fatalf("overflow output missing capacity failure:\n%s", overflowOutput)
+	for _, expected := range []string{
+		"netloom-agent reconcile failed",
+		"policy_failed=1",
+		"policy_rollbacks=1",
+		`policy_last_error="policy map capacity exceeded`,
+		"policy map capacity exceeded",
+	} {
+		if !strings.Contains(overflowOutput, expected) {
+			t.Fatalf("overflow output missing %q:\n%s", expected, overflowOutput)
+		}
 	}
 
 	waitForEBPFPolicyMapCount(t, ctx, composeFile, "node-b", pinRoot, 1)

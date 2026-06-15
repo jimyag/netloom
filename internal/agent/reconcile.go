@@ -29,7 +29,10 @@ type ReconcileResult struct {
 	PolicyDeleted              int
 	PolicyUnchanged            int
 	PolicyEvents               int
+	PolicyFailed               int
+	PolicyRollbacks            int
 	PolicyRevisionMax          uint64
+	PolicyLastError            string
 	ConntrackExpired           int
 	TCXEligible                int
 	TCX                        string
@@ -52,6 +55,10 @@ type PolicyStore interface {
 
 type PolicyStatsStore interface {
 	LastStats(endpointID string) dataplane.PolicyUpdateStats
+}
+
+type PolicyEventStore interface {
+	Events() []dataplane.PolicyUpdateEvent
 }
 
 type PolicyEndpointInventory interface {
@@ -116,12 +123,12 @@ func ReconcileNode(ctx context.Context, state control.DesiredState, node string,
 func ReconcileNodeWithOptions(ctx context.Context, state control.DesiredState, options ReconcileOptions) (ReconcileResult, error) {
 	result, targets, _, err := prepareReconcile(ctx, state, options)
 	if err != nil {
-		return ReconcileResult{}, err
+		return result, err
 	}
 	if options.TCXInterface != "" || options.TCXWorkload {
 		tcxResult, err := attachTCXTargets(ctx, targets, options.TCXHold)
 		if err != nil {
-			return ReconcileResult{}, fmt.Errorf("attach tcx policy for node %s: %w", options.Node, err)
+			return result, fmt.Errorf("attach tcx policy for node %s: %w", options.Node, err)
 		}
 		result.TCX = tcxResult
 	}
@@ -139,20 +146,20 @@ func (r *Reconciler) Reconcile(ctx context.Context, state control.DesiredState, 
 	}
 	result, targets, programs, err := prepareReconcile(ctx, state, options)
 	if err != nil {
-		return ReconcileResult{}, err
+		return result, err
 	}
 	if err := r.syncPolicyStore(ctx, programs, options.Store); err != nil {
-		return ReconcileResult{}, err
+		return result, err
 	}
 	if err := populatePolicyMapUsageResult(ctx, options.Store, &result); err != nil {
-		return ReconcileResult{}, err
+		return result, err
 	}
 	r.syncConntrackPrograms(programs)
 	result.ConntrackExpired = r.conntrack.SweepIdle(conntrackIdleTimeout(options.ConntrackIdle))
 	if options.TCXInterface != "" || options.TCXWorkload {
 		tcxResult, err := r.syncTCXTargets(ctx, targets)
 		if err != nil {
-			return ReconcileResult{}, fmt.Errorf("attach tcx policy for node %s: %w", options.Node, err)
+			return result, fmt.Errorf("attach tcx policy for node %s: %w", options.Node, err)
 		}
 		result.TCX = tcxResult
 	}
@@ -278,10 +285,23 @@ func prepareReconcile(ctx context.Context, state control.DesiredState, options R
 		if err != nil {
 			return ReconcileResult{}, nil, nil, err
 		}
-		if err := backend.ApplyEndpointProgram(ctx, program); err != nil {
-			return ReconcileResult{}, nil, nil, fmt.Errorf("apply policy program for endpoint %s in vpc %s: %w", endpoint.ID, endpoint.VPC, err)
+		eventStore, _ := options.Store.(PolicyEventStore)
+		beforeEvents := 0
+		if eventStore != nil {
+			beforeEvents = len(eventStore.Events())
 		}
-		if statsStore, ok := options.Store.(PolicyStatsStore); ok {
+		result.Endpoints++
+		result.Programs++
+		result.Entries += len(program.MapEntries)
+		if err := backend.ApplyEndpointProgram(ctx, program); err != nil {
+			if eventStore != nil {
+				recordPolicyEventsDelta(&result, eventStore.Events(), beforeEvents, program.EndpointID)
+			}
+			return result, nil, nil, fmt.Errorf("apply policy program for endpoint %s in vpc %s: %w", endpoint.ID, endpoint.VPC, err)
+		}
+		if eventStore != nil {
+			recordPolicyEventsDelta(&result, eventStore.Events(), beforeEvents, program.EndpointID)
+		} else if statsStore, ok := options.Store.(PolicyStatsStore); ok {
 			stats := statsStore.LastStats(program.EndpointID)
 			result.PolicyAdded += stats.Added
 			result.PolicyUpdated += stats.Updated
@@ -292,9 +312,6 @@ func prepareReconcile(ctx context.Context, state control.DesiredState, options R
 				result.PolicyRevisionMax = stats.Revision
 			}
 		}
-		result.Endpoints++
-		result.Programs++
-		result.Entries += len(program.MapEntries)
 		localPrograms = append(localPrograms, program)
 		if tcxEligibleProgram(program) {
 			result.TCXEligible++
@@ -336,6 +353,37 @@ func prepareReconcile(ctx context.Context, state control.DesiredState, options R
 		}
 	}
 	return result, targets, localPrograms, nil
+}
+
+func recordPolicyEventsDelta(result *ReconcileResult, events []dataplane.PolicyUpdateEvent, from int, endpointID string) {
+	if result == nil {
+		return
+	}
+	if from < 0 {
+		from = 0
+	}
+	for i := from; i < len(events); i++ {
+		event := events[i]
+		if endpointID != "" && event.EndpointID != endpointID {
+			continue
+		}
+		result.PolicyEvents++
+		if event.Revision > result.PolicyRevisionMax {
+			result.PolicyRevisionMax = event.Revision
+		}
+		if event.Success {
+			result.PolicyAdded += event.Stats.Added
+			result.PolicyUpdated += event.Stats.Updated
+			result.PolicyDeleted += event.Stats.Deleted
+			result.PolicyUnchanged += event.Stats.Unchanged
+			continue
+		}
+		result.PolicyFailed++
+		result.PolicyRollbacks++
+		if event.Error != "" {
+			result.PolicyLastError = event.Error
+		}
+	}
 }
 
 func populatePolicyMapUsageResult(ctx context.Context, store PolicyStore, result *ReconcileResult) error {

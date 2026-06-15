@@ -770,6 +770,66 @@ func TestReconcileNodeReportsPolicyDiffStatsAcrossRevisions(t *testing.T) {
 	}
 }
 
+func TestReconcileNodeReportsPolicyFailureAndRollbackSignals(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:             "pod-a",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"web"},
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "web",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("172.30.0.11/32"),
+				Ports:      []model.PortRange{{From: 8080, To: 8080}},
+				Action:     model.ActionAllow,
+			}},
+		}},
+	}
+	store := dataplane.NewInMemoryPolicyStore()
+	if _, err := ReconcileNode(context.Background(), state, "node-a", store); err != nil {
+		t.Fatal(err)
+	}
+
+	state.SecurityGroups[0].Rules[0].RemoteCIDR = netip.MustParsePrefix("172.30.0.21/32")
+	state.SecurityGroups[0].Rules = append(state.SecurityGroups[0].Rules, model.SecurityGroupRule{
+		ID:         "web-alt",
+		Priority:   110,
+		Direction:  model.DirectionIngress,
+		Protocol:   model.ProtocolTCP,
+		RemoteCIDR: netip.MustParsePrefix("172.30.0.12/32"),
+		Ports:      []model.PortRange{{From: 8443, To: 8443}},
+		Action:     model.ActionAllow,
+	})
+	store.SetFailAfter(1)
+
+	result, err := ReconcileNode(context.Background(), state, "node-a", store)
+	if err == nil {
+		t.Fatal("expected reconcile to fail after partial policy update")
+	}
+	if result.Endpoints != 1 || result.Programs != 1 || result.Entries != 2 {
+		t.Fatalf("partial result scope = %+v, want one endpoint/program and two desired entries", result)
+	}
+	if result.PolicyEvents != 1 || result.PolicyFailed != 1 || result.PolicyRollbacks != 1 || result.PolicyRevisionMax != 2 {
+		t.Fatalf("policy failure summary = %+v, want one failed rollback event at revision 2", result)
+	}
+	if !strings.Contains(result.PolicyLastError, "in-memory policy update failed after 1 operations") {
+		t.Fatalf("policy last error = %q, want in-memory update failure", result.PolicyLastError)
+	}
+	events := store.Events()
+	if len(events) != 2 || events[1].Success {
+		t.Fatalf("events = %+v, want failed second event", events)
+	}
+}
+
 func TestReconcilerDeletesStaleEndpointPolicy(t *testing.T) {
 	state := control.DesiredState{
 		Endpoints: []model.Endpoint{{
