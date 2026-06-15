@@ -2385,6 +2385,98 @@ func TestDockerControllerReconcileDualStackVPC(t *testing.T) {
 	}
 }
 
+func TestDockerControllerToggleDualStackLoadBalancerHealthChecks(t *testing.T) {
+	requireDockerE2E(t)
+	if testing.Short() {
+		t.Skip("skip long e2e test in short mode")
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker is not installed")
+	}
+
+	composeFile := filepath.Join("testdata", "..", "docker-compose.yaml")
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+
+	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
+	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
+	startComposeLab(t, ctx, composeFile)
+	t.Cleanup(func() {
+		downCtx, downCancel := context.WithTimeout(context.Background(), time.Minute)
+		defer downCancel()
+		run(t, downCtx, "docker", "compose", "-f", composeFile, "down", "-v")
+	})
+	waitForOVN(t, ctx, composeFile)
+
+	statePath := "/tmp/netloom-state-dual-stack-health-toggle.json"
+	applyState := func(stateJSON string) string {
+		return run(
+			t,
+			ctx,
+			"docker",
+			"compose",
+			"-f",
+			composeFile,
+			"exec",
+			"-T",
+			"ovn-central",
+			"sh",
+			"-c",
+			"cat >"+statePath+" <<'EOF'\n"+stateJSON+"\nEOF\nNETLOOM_STATE_FILE="+statePath+" NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller",
+		)
+	}
+
+	enableOutput := applyState(desiredStateDualStackJSON())
+	if !strings.Contains(enableOutput, "reconciled desired state") {
+		t.Fatalf("dual-stack health-check enable reconcile did not succeed:\n%s", enableOutput)
+	}
+
+	v4LB := findLoadBalancerForVIP(t, ctx, composeFile, "dual", "dual-web-v4", "10.96.0.40:80")
+	if v4LB == "" {
+		t.Fatal("expected IPv4 dual-stack load balancer row for VIP 10.96.0.40:80")
+	}
+	v6LB := findLoadBalancerForVIP(t, ctx, composeFile, "dual", "dual-web-v6", "[fd00:96::40]:80")
+	if v6LB == "" {
+		t.Fatal("expected IPv6 dual-stack load balancer row for VIP [fd00:96::40]:80")
+	}
+
+	if got := activeManagedRows(t, ctx, composeFile, "Load_Balancer_Health_Check", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=dual", "external_ids:netloom_load_balancer=dual-web-v4"); len(got) != 1 {
+		t.Fatalf("expected one IPv4 health-check row before toggle, got %v", got)
+	}
+	if got := activeManagedRows(t, ctx, composeFile, "Load_Balancer_Health_Check", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=dual", "external_ids:netloom_load_balancer=dual-web-v6"); len(got) != 1 {
+		t.Fatalf("expected one IPv6 health-check row before toggle, got %v", got)
+	}
+
+	disableOutput := applyState(desiredStateDualStackWithoutHealthChecksJSON())
+	if !strings.Contains(disableOutput, "reconciled desired state") {
+		t.Fatalf("dual-stack health-check disable reconcile did not succeed:\n%s", disableOutput)
+	}
+
+	waitForNoLBHealthChecks := func(lbName, ovnName string) {
+		t.Helper()
+		cmd := "for i in $(seq 1 20); do " +
+			"[ -z \"$(ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock get load_balancer " + ovnName + " health_check | tr -d '[][:space:]')\" ] && " +
+			"[ -z \"$(ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock --bare --no-heading --columns=_uuid find Load_Balancer_Health_Check external_ids:netloom_owner=netloom external_ids:netloom_vpc=dual external_ids:netloom_load_balancer=" + lbName + ")\" ] && exit 0; " +
+			"sleep 1; done; " +
+			"echo 'lb health_check:'; ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock get load_balancer " + ovnName + " health_check; " +
+			"echo 'table rows:'; ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock --bare --no-heading --columns=_uuid,vip find Load_Balancer_Health_Check external_ids:netloom_owner=netloom external_ids:netloom_vpc=dual external_ids:netloom_load_balancer=" + lbName + "; " +
+			"exit 1"
+		run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", cmd)
+	}
+
+	waitForNoLBHealthChecks("dual-web-v4", v4LB)
+	waitForNoLBHealthChecks("dual-web-v6", v6LB)
+
+	v4LBState := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "lb-list", v4LB)
+	if !strings.Contains(v4LBState, "10.96.0.40:80") || !strings.Contains(v4LBState, "10.245.0.10:8080") {
+		t.Fatalf("dual-stack IPv4 LB state changed after disabling health checks:\n%s", v4LBState)
+	}
+	v6LBState := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "lb-list", v6LB)
+	if !strings.Contains(v6LBState, "[fd00:96::40]:80") || !strings.Contains(v6LBState, "[fd00:20:20::10]:8080") {
+		t.Fatalf("dual-stack IPv6 LB state changed after disabling health checks:\n%s", v6LBState)
+	}
+}
+
 func routeListHasOnlyHops(got []string, expected []string) bool {
 	if len(got) != len(expected) {
 		return false
@@ -2607,6 +2699,34 @@ func desiredStateDualStackJSON() string {
   "load_balancers": [
     {"name": "dual-web-v4", "vpc": "dual", "vip": "10.96.0.40", "ports": [{"name": "http", "port": 80, "protocol": "tcp", "backends": [{"ip": "10.245.0.10", "port": 8080}]}], "subnets": ["apps-v4"], "health_check": {"enabled": true, "interval": 5, "timeout": 20, "success_count": 2, "failure_count": 3}},
     {"name": "dual-web-v6", "vpc": "dual", "vip": "fd00:96::40", "ports": [{"name": "http", "port": 80, "protocol": "tcp", "backends": [{"ip": "fd00:20:20::10", "port": 8080}]}], "subnets": ["apps-v6"], "health_check": {"enabled": true, "interval": 5, "timeout": 20, "success_count": 2, "failure_count": 3}}
+  ],
+  "nat_rules": [
+    {"name": "v4-egress", "vpc": "dual", "type": "snat", "match_cidr": "10.245.0.0/24", "external_ip": "198.51.100.40"},
+    {"name": "v6-egress", "vpc": "dual", "type": "snat", "match_cidr": "fd00:20:20::/64", "external_ip": "2001:db8:ffff::40"},
+    {"name": "v6-api", "vpc": "dual", "type": "dnat", "external_ip": "2001:db8:ffff::41", "target_ip": "fd00:20:20::10"}
+  ],
+  "security_groups": [{"name": "dual-allow", "vpc": "dual", "rules": [{"id": "allow-all", "priority": 100, "direction": "ingress", "protocol": "any", "remote_cidr": "0.0.0.0/0", "action": "allow"}, {"id": "allow-all-v6", "priority": 100, "direction": "ingress", "protocol": "any", "remote_cidr": "::/0", "action": "allow"}]}]
+}`
+}
+
+func desiredStateDualStackWithoutHealthChecksJSON() string {
+	return `{
+  "vpcs": [{"name": "dual"}],
+  "subnets": [
+    {"name": "apps-v4", "vpc": "dual", "cidr": "10.245.0.0/24", "gateway": "10.245.0.1", "dhcp": {"enabled": true, "dns_servers": ["10.96.0.10"], "domain_name": "dual.internal"}},
+    {"name": "apps-v6", "vpc": "dual", "cidr": "fd00:20:20::/64", "gateway": "fd00:20:20::1", "dhcp": {"enabled": true, "dns_servers": ["fd00:96::10"], "domain_name": "dual.internal"}}
+  ],
+  "endpoints": [
+    {"id": "dual-pod-v4", "vpc": "dual", "subnet": "apps-v4", "ip": "10.245.0.10", "node": "node-a", "security_groups": ["dual-allow"]},
+    {"id": "dual-pod-v6", "vpc": "dual", "subnet": "apps-v6", "ip": "fd00:20:20::10", "node": "node-a", "security_groups": ["dual-allow"]}
+  ],
+  "policy_routes": [
+    {"name": "v4-fw", "vpc": "dual", "priority": 100, "match": {"source": "10.245.0.0/24", "destination": "198.51.100.0/24", "protocol": "tcp", "dst_ports": [{"from": 443, "to": 443}]}, "action": {"type": "reroute", "next_hops": ["10.245.0.254"]}},
+    {"name": "v6-fw", "vpc": "dual", "priority": 110, "match": {"source": "fd00:20:20::/64", "destination": "2001:db8:100::/64", "protocol": "tcp", "dst_ports": [{"from": 8443, "to": 8443}]}, "action": {"type": "reroute", "next_hops": ["fd00:20:20::fe"]}}
+  ],
+  "load_balancers": [
+    {"name": "dual-web-v4", "vpc": "dual", "vip": "10.96.0.40", "ports": [{"name": "http", "port": 80, "protocol": "tcp", "backends": [{"ip": "10.245.0.10", "port": 8080}]}], "subnets": ["apps-v4"]},
+    {"name": "dual-web-v6", "vpc": "dual", "vip": "fd00:96::40", "ports": [{"name": "http", "port": 80, "protocol": "tcp", "backends": [{"ip": "fd00:20:20::10", "port": 8080}]}], "subnets": ["apps-v6"]}
   ],
   "nat_rules": [
     {"name": "v4-egress", "vpc": "dual", "type": "snat", "match_cidr": "10.245.0.0/24", "external_ip": "198.51.100.40"},
