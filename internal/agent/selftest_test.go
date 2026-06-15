@@ -30,6 +30,29 @@ func TestRunSelfTestCompilesAndEvaluatesPolicy(t *testing.T) {
 	if result.PolicyStats.Allowed != 3 || result.PolicyStats.Dropped != 1 || result.PolicyStats.Conntrack != 1 || result.PolicyStats.Established != 1 || result.PolicyStats.DenyDrops != 1 || result.PolicyStats.Logged != 3 {
 		t.Fatalf("policy stats = %+v, want allowed=3 dropped=1 conntrack=1 established=1 deny_drops=1 logged=3", result.PolicyStats)
 	}
+	if len(result.RuleStats) != 3 {
+		t.Fatalf("rule stats = %+v, want allow, deny, and conntrack buckets", result.RuleStats)
+	}
+	var conntrackRule, allowRule, denyRule *dataplane.RuleMetrics
+	for i := range result.RuleStats {
+		switch {
+		case result.RuleStats[i].RuleCookie == 0:
+			conntrackRule = &result.RuleStats[i]
+		case result.RuleStats[i].Allowed > 0:
+			allowRule = &result.RuleStats[i]
+		case result.RuleStats[i].Dropped > 0:
+			denyRule = &result.RuleStats[i]
+		}
+	}
+	if conntrackRule == nil || conntrackRule.Allowed != 1 || conntrackRule.Conntrack != 1 || conntrackRule.RuleCookie != 0 {
+		t.Fatalf("conntrack rule stats = %+v, want one conntrack-only allow bucket", conntrackRule)
+	}
+	if allowRule == nil || allowRule.RuleCookie == 0 || allowRule.Allowed != 2 || allowRule.Conntrack != 0 || allowRule.Established != 1 || allowRule.Logged != 2 {
+		t.Fatalf("allow rule stats = %+v, want stateful allow aggregation", allowRule)
+	}
+	if denyRule == nil || denyRule.RuleCookie == 0 || denyRule.Dropped != 1 || denyRule.DenyDrops != 1 || denyRule.Logged != 1 {
+		t.Fatalf("deny rule stats = %+v, want deny aggregation", denyRule)
+	}
 	if result.DropEvents != 1 {
 		t.Fatalf("drop events = %d, want 1", result.DropEvents)
 	}

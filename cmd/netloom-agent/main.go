@@ -38,7 +38,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Printf("netloom-agent ready for node policy and dataplane reconciliation endpoint=%s entries=%d allow=%s deny=%s policy_allowed=%d policy_dropped=%d policy_conntrack=%d policy_established=%d policy_logged=%d drop_events=%d policy_events=%d trace_events=%d tcx=%s\n", result.EndpointID, result.Entries, result.Allowed, result.Denied, result.PolicyStats.Allowed, result.PolicyStats.Dropped, result.PolicyStats.Conntrack, result.PolicyStats.Established, result.PolicyStats.Logged, result.DropEvents, result.PolicyEvents, result.TraceEvents, result.TCX)
+	fmt.Printf("netloom-agent ready for node policy and dataplane reconciliation endpoint=%s entries=%d allow=%s deny=%s policy_allowed=%d policy_dropped=%d policy_conntrack=%d policy_established=%d policy_logged=%d rule_stats=%s drop_events=%d policy_events=%d trace_events=%d tcx=%s\n", result.EndpointID, result.Entries, result.Allowed, result.Denied, result.PolicyStats.Allowed, result.PolicyStats.Dropped, result.PolicyStats.Conntrack, result.PolicyStats.Established, result.PolicyStats.Logged, formatRuleStats(result.RuleStats), result.DropEvents, result.PolicyEvents, result.TraceEvents, result.TCX)
 }
 
 func runStateFile(ctx context.Context, path string) error {
@@ -175,6 +175,17 @@ func withDNSObservationsAt(state control.DesiredState, now time.Time) (control.D
 
 func printReconcileResult(result agent.ReconcileResult, storeName string) {
 	fmt.Printf("netloom-agent reconciled node policy node=%s store=%s endpoints=%d programs=%d entries=%d policy_map_entries=%d policy_map_capacity=%d policy_map_pressure_max=%d policy_map_pressure_endpoints=%d policy_added=%d policy_updated=%d policy_deleted=%d policy_unchanged=%d policy_events=%d policy_revision_max=%d conntrack_expired=%d tcx_eligible=%d tcx=%s datapath=%s local_ips=%d remote_routes=%d policy_routes=%d cleanup=%t\n", result.Node, storeName, result.Endpoints, result.Programs, result.Entries, result.PolicyMapEntries, result.PolicyMapCapacity, result.PolicyMapPressureMax, result.PolicyMapPressureEndpoints, result.PolicyAdded, result.PolicyUpdated, result.PolicyDeleted, result.PolicyUnchanged, result.PolicyEvents, result.PolicyRevisionMax, result.ConntrackExpired, result.TCXEligible, result.TCX, result.Datapath, result.LocalIPs, result.RemoteRoutes, result.PolicyRoutes, result.Cleanup)
+}
+
+func formatRuleStats(stats []dataplane.RuleMetrics) string {
+	if len(stats) == 0 {
+		return "none"
+	}
+	parts := make([]string, 0, len(stats))
+	for _, stat := range stats {
+		parts = append(parts, fmt.Sprintf("%d:p=%d,b=%d,a=%d,d=%d,r=%d,nm=%d,ct=%d,est=%d,log=%d", stat.RuleCookie, stat.Packets, stat.Bytes, stat.Allowed, stat.Dropped, stat.Rejected, stat.NoMatchDrops, stat.Conntrack, stat.Established, stat.Logged))
+	}
+	return strings.Join(parts, ";")
 }
 
 func reconcileInterval() (time.Duration, error) {

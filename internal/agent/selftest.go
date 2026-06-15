@@ -20,6 +20,7 @@ type SelfTestResult struct {
 	Allowed      dataplane.Verdict
 	Denied       dataplane.Verdict
 	PolicyStats  dataplane.PolicyMetrics
+	RuleStats    []dataplane.RuleMetrics
 	DropEvents   int
 	PolicyEvents int
 	TraceEvents  int
@@ -208,6 +209,7 @@ func RunSelfTest(ctx context.Context) (SelfTestResult, error) {
 		Allowed:      allowed.Verdict,
 		Denied:       denied.Verdict,
 		PolicyStats:  recorder.Metrics(endpointKey),
+		RuleStats:    recorder.RuleMetrics(endpointKey),
 		DropEvents:   len(recorder.DropEvents()),
 		PolicyEvents: len(recorder.PolicyEvents()),
 		TraceEvents:  len(recorder.TraceEvents()),

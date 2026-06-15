@@ -1032,6 +1032,83 @@ func TestPolicyRecorderTracksLoggedPolicyEvents(t *testing.T) {
 	}
 }
 
+func TestPolicyRecorderAggregatesRuleMetrics(t *testing.T) {
+	entries := []PolicyMapEntry{
+		{
+			Key: PolicyKey{
+				PrefixLen:      StaticPrefixBits + 24,
+				RemoteIdentity: 100,
+				Direction:      DirectionIngress,
+				Protocol:       6,
+				DestPortBE:     hostToNetwork16(443),
+			},
+			Value: PolicyEntry{
+				L4PrefixLen: 24,
+				Log:         1,
+				Precedence:  100,
+				RuleCookie:  42,
+			},
+		},
+		{
+			Key: PolicyKey{
+				PrefixLen:      StaticPrefixBits + 24,
+				RemoteIdentity: 200,
+				Direction:      DirectionIngress,
+				Protocol:       6,
+				DestPortBE:     hostToNetwork16(8443),
+			},
+			Value: PolicyEntry{
+				Deny:        1,
+				Log:         1,
+				L4PrefixLen: 24,
+				Precedence:  100,
+				RuleCookie:  99,
+			},
+		},
+	}
+	recorder := NewPolicyRecorder()
+	endpointID := model.EndpointKey("prod", "pod-a")
+
+	EvaluateObserved(endpointID, entries, Packet{
+		RemoteIdentity: 100,
+		RemoteIP:       netip.MustParseAddr("10.30.0.10"),
+		Direction:      DirectionIngress,
+		Protocol:       6,
+		DestPort:       443,
+		Bytes:          128,
+	}, recorder)
+	EvaluateObserved(endpointID, entries, Packet{
+		RemoteIdentity: 200,
+		RemoteIP:       netip.MustParseAddr("10.30.0.20"),
+		Direction:      DirectionIngress,
+		Protocol:       6,
+		DestPort:       8443,
+		Bytes:          256,
+	}, recorder)
+	EvaluateObserved(endpointID, entries, Packet{
+		RemoteIdentity: 300,
+		RemoteIP:       netip.MustParseAddr("10.30.0.30"),
+		Direction:      DirectionIngress,
+		Protocol:       6,
+		DestPort:       9443,
+		Bytes:          512,
+	}, recorder)
+
+	stats := recorder.RuleMetrics(endpointID)
+	if len(stats) != 3 {
+		t.Fatalf("rule metrics = %+v, want 3 buckets including no-match", stats)
+	}
+	if stats[0].RuleCookie != 0 || stats[0].Packets != 1 || stats[0].Bytes != 512 || stats[0].Dropped != 1 || stats[0].NoMatchDrops != 1 {
+		t.Fatalf("no-match rule metrics = %+v, want one 512-byte no-match drop", stats[0])
+	}
+	if stats[1].RuleCookie != 42 || stats[1].Allowed != 1 || stats[1].Dropped != 0 || stats[1].Bytes != 128 || stats[1].Logged != 1 {
+		t.Fatalf("allow rule metrics = %+v, want one logged allow", stats[1])
+	}
+	if stats[2].RuleCookie != 99 || stats[2].Allowed != 0 || stats[2].Dropped != 1 || stats[2].Bytes != 256 || stats[2].DenyDrops != 1 || stats[2].Logged != 1 {
+		t.Fatalf("deny rule metrics = %+v, want one logged deny drop", stats[2])
+	}
+}
+
 func TestActionLogCompilesToAllowPolicyEvent(t *testing.T) {
 	endpoint := model.Endpoint{
 		ID:             "pod-a",

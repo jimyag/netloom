@@ -76,6 +76,8 @@ func TestDockerAgentSelftestCapturesStatefulPolicyAndTraceMetrics(t *testing.T) 
 		"policy_conntrack=1",
 		"policy_established=1",
 		"policy_logged=3",
+		"rule_stats=",
+		"0:p=1,b=64,a=1,d=0,r=0,nm=0,ct=1,est=0,log=0",
 		"policy_events=3",
 		"trace_events=4",
 		"drop_events=1",

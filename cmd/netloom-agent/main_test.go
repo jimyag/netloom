@@ -269,3 +269,32 @@ func TestPrintReconcileResultIncludesPolicyMapUsageSummary(t *testing.T) {
 		}
 	}
 }
+
+func TestFormatRuleStatsIncludesCounters(t *testing.T) {
+	formatted := formatRuleStats([]dataplane.RuleMetrics{
+		{
+			RuleCookie:   0,
+			Packets:      1,
+			Bytes:        512,
+			Dropped:      1,
+			NoMatchDrops: 1,
+		},
+		{
+			RuleCookie:  42,
+			Packets:     2,
+			Bytes:       256,
+			Allowed:     2,
+			Conntrack:   1,
+			Established: 1,
+			Logged:      2,
+		},
+	})
+	for _, expected := range []string{
+		"0:p=1,b=512,a=0,d=1,r=0,nm=1,ct=0,est=0,log=0",
+		"42:p=2,b=256,a=2,d=0,r=0,nm=0,ct=1,est=1,log=2",
+	} {
+		if !strings.Contains(formatted, expected) {
+			t.Fatalf("formatted rule stats missing %q: %s", expected, formatted)
+		}
+	}
+}

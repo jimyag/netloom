@@ -2,7 +2,9 @@ package dataplane
 
 import (
 	"encoding/binary"
+	"fmt"
 	"net/netip"
+	"slices"
 	"sync"
 	"time"
 )
@@ -16,6 +18,7 @@ type Packet struct {
 	DestPort       uint16
 	ICMPType       uint8
 	ICMPCode       uint8
+	Bytes          uint32
 }
 
 type Verdict string
@@ -94,6 +97,22 @@ type PolicyMetrics struct {
 	Logged       uint64
 }
 
+type RuleMetrics struct {
+	EndpointID   string
+	RuleCookie   uint32
+	Packets      uint64
+	Bytes        uint64
+	Allowed      uint64
+	Dropped      uint64
+	Rejected     uint64
+	NoMatchDrops uint64
+	DenyDrops    uint64
+	RejectDrops  uint64
+	Conntrack    uint64
+	Established  uint64
+	Logged       uint64
+}
+
 type PolicyObserver interface {
 	Observe(endpointID string, packet Packet, decision Decision)
 }
@@ -101,13 +120,17 @@ type PolicyObserver interface {
 type PolicyRecorder struct {
 	mu      sync.Mutex
 	metrics map[string]PolicyMetrics
+	rules   map[string]RuleMetrics
 	drops   []DropEvent
 	events  []PolicyEvent
 	traces  []TraceEvent
 }
 
 func NewPolicyRecorder() *PolicyRecorder {
-	return &PolicyRecorder{metrics: make(map[string]PolicyMetrics)}
+	return &PolicyRecorder{
+		metrics: make(map[string]PolicyMetrics),
+		rules:   make(map[string]RuleMetrics),
+	}
 }
 
 func (r *PolicyRecorder) Observe(endpointID string, packet Packet, decision Decision) {
@@ -118,22 +141,36 @@ func (r *PolicyRecorder) Observe(endpointID string, packet Packet, decision Deci
 	defer r.mu.Unlock()
 	r.traces = append(r.traces, traceEvent(endpointID, packet, decision))
 	metrics := r.metrics[endpointID]
+	ruleKey := ruleMetricsKey(endpointID, decision)
+	ruleMetrics := r.rules[ruleKey]
+	if ruleMetrics.EndpointID == "" {
+		ruleMetrics.EndpointID = endpointID
+		ruleMetrics.RuleCookie = ruleCookie(decision)
+	}
+	ruleMetrics.Packets++
+	ruleMetrics.Bytes += observedPacketBytes(packet)
 	if decision.Verdict == VerdictAllow {
 		metrics.Allowed++
+		ruleMetrics.Allowed++
 		if decision.Conntrack {
 			metrics.Conntrack++
+			ruleMetrics.Conntrack++
 		}
 		if decision.Established {
 			metrics.Established++
+			ruleMetrics.Established++
 		}
 		if shouldLogPolicy(decision) {
 			metrics.Logged++
+			ruleMetrics.Logged++
 			r.events = append(r.events, policyEvent(endpointID, packet, decision))
 		}
 		r.metrics[endpointID] = metrics
+		r.rules[ruleKey] = ruleMetrics
 		return
 	}
 	metrics.Dropped++
+	ruleMetrics.Dropped++
 	event := DropEvent{
 		EndpointID:     endpointID,
 		RemoteIdentity: packet.RemoteIdentity,
@@ -144,21 +181,27 @@ func (r *PolicyRecorder) Observe(endpointID string, packet Packet, decision Deci
 	}
 	if decision.Match == nil {
 		metrics.NoMatchDrops++
+		ruleMetrics.NoMatchDrops++
 		event.Reason = DropReasonNoMatch
 	} else if decision.Verdict == VerdictReject {
 		metrics.RejectDrops++
+		ruleMetrics.Rejected++
+		ruleMetrics.RejectDrops++
 		event.Reason = DropReasonPolicyReject
 		event.RuleCookie = decision.Match.Value.RuleCookie
 	} else {
 		metrics.DenyDrops++
+		ruleMetrics.DenyDrops++
 		event.Reason = DropReasonPolicyDeny
 		event.RuleCookie = decision.Match.Value.RuleCookie
 	}
 	if shouldLogPolicy(decision) {
 		metrics.Logged++
+		ruleMetrics.Logged++
 		r.events = append(r.events, policyEvent(endpointID, packet, decision))
 	}
 	r.metrics[endpointID] = metrics
+	r.rules[ruleKey] = ruleMetrics
 	r.drops = append(r.drops, event)
 }
 
@@ -178,6 +221,59 @@ func (r *PolicyRecorder) DropEvents() []DropEvent {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]DropEvent(nil), r.drops...)
+}
+
+func (r *PolicyRecorder) RuleMetrics(endpointID string) []RuleMetrics {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]RuleMetrics, 0, len(r.rules))
+	for _, metrics := range r.rules {
+		if metrics.EndpointID != endpointID {
+			continue
+		}
+		out = append(out, metrics)
+	}
+	slices.SortFunc(out, func(a, b RuleMetrics) int {
+		if a.RuleCookie < b.RuleCookie {
+			return -1
+		}
+		if a.RuleCookie > b.RuleCookie {
+			return 1
+		}
+		return 0
+	})
+	return out
+}
+
+func (r *PolicyRecorder) AllRuleMetrics() []RuleMetrics {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]RuleMetrics, 0, len(r.rules))
+	for _, metrics := range r.rules {
+		out = append(out, metrics)
+	}
+	slices.SortFunc(out, func(a, b RuleMetrics) int {
+		if a.EndpointID < b.EndpointID {
+			return -1
+		}
+		if a.EndpointID > b.EndpointID {
+			return 1
+		}
+		if a.RuleCookie < b.RuleCookie {
+			return -1
+		}
+		if a.RuleCookie > b.RuleCookie {
+			return 1
+		}
+		return 0
+	})
+	return out
 }
 
 func (r *PolicyRecorder) PolicyEvents() []PolicyEvent {
@@ -243,6 +339,24 @@ func traceEvent(endpointID string, packet Packet, decision Decision) TraceEvent 
 		event.DenyDrop = decision.Match != nil && !event.RejectDrop
 	}
 	return event
+}
+
+func ruleMetricsKey(endpointID string, decision Decision) string {
+	return fmt.Sprintf("%s|%d", endpointID, ruleCookie(decision))
+}
+
+func ruleCookie(decision Decision) uint32 {
+	if decision.Match == nil {
+		return 0
+	}
+	return decision.Match.Value.RuleCookie
+}
+
+func observedPacketBytes(packet Packet) uint64 {
+	if packet.Bytes != 0 {
+		return uint64(packet.Bytes)
+	}
+	return 64
 }
 
 func Evaluate(entries []PolicyMapEntry, packet Packet) Decision {
