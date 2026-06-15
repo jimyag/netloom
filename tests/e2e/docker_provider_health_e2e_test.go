@@ -152,6 +152,34 @@ func TestDockerProviderHealthReportsCandidateResolutionFailureInventory(t *testi
 	}
 }
 
+func TestDockerProviderHealthReportsConflictFailureInventory(t *testing.T) {
+	requireDockerE2E(t)
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker is not installed")
+	}
+
+	composeFile := filepath.Join("testdata", "..", "docker-compose.yaml")
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
+	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
+	startComposeLab(t, ctx, composeFile)
+	waitForOVN(t, ctx, composeFile)
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-c", "sh", "-c", "command -v ip >/dev/null 2>&1 || apk add --no-cache iproute2")
+
+	workloadStateNodeCScript := "cat >/tmp/netloom-workload-node-c-state.json <<'EOF'\n" + desiredProviderConflictNodeCJSON() + "\nEOF\nNETLOOM_STATE_FILE=/tmp/netloom-workload-node-c-state.json NETLOOM_LINUX_DATAPATH=1 NETLOOM_LINUX_DATAPATH_MODE=netns NETLOOM_LINUX_DATAPATH_CLEANUP=1 NETLOOM_NODE_UNDERLAYS=node-a=172.30.0.11,node-b=172.30.0.12 "
+	output := runAllowFailure(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-c", "sh", "-c", workloadStateNodeCScript+"NETLOOM_NODE_NAME=node-c /netloom/bin/netloom-agent")
+	if output.exitCode == 0 {
+		t.Fatalf("expected reconcile to fail for provider conflict:\n%s", output.output)
+	}
+	for _, expected := range []string{"both require parent eth0 vlan 100", "provider_inventory_total=", "provider_inventory_status=", "eth0:up"} {
+		if !strings.Contains(output.output, expected) {
+			t.Fatalf("provider conflict output missing %q:\n%s", expected, output.output)
+		}
+	}
+}
+
 func desiredProviderOnlyStateWithMappedNodeCJSON() string {
 	return `{
   "vpcs": [{"name": "file"}],
@@ -178,6 +206,25 @@ func desiredProviderOnlyStateWithMissingCandidateNodeCJSON() string {
   "provider_networks": [{"name": "physnet-a", "nodes": [{"node": "node-c", "interfaces": ["ens9"]}]}],
   "subnets": [{"name": "fileapps", "vpc": "file", "cidr": "10.245.0.0/24", "gateway": "10.245.0.1", "provider_network": "physnet-a", "vlan": 100}],
   "endpoints": [{"id": "provider-probe", "vpc": "file", "subnet": "fileapps", "ip": "10.245.0.10", "node": "node-c"}],
+  "security_groups": []
+}`
+}
+
+func desiredProviderConflictNodeCJSON() string {
+	return `{
+  "vpcs": [{"name": "file"}],
+  "provider_networks": [
+    {"name": "physnet-a", "nodes": [{"node": "node-c", "interface": "eth0"}]},
+    {"name": "physnet-b", "nodes": [{"node": "node-c", "interface": "eth0"}]}
+  ],
+  "subnets": [
+    {"name": "fileapps-a", "vpc": "file", "cidr": "10.245.0.0/24", "gateway": "10.245.0.1", "provider_network": "physnet-a", "vlan": 100},
+    {"name": "fileapps-b", "vpc": "file", "cidr": "10.246.0.0/24", "gateway": "10.246.0.1", "provider_network": "physnet-b", "vlan": 100}
+  ],
+  "endpoints": [
+    {"id": "provider-a", "vpc": "file", "subnet": "fileapps-a", "ip": "10.245.0.10", "node": "node-c"},
+    {"id": "provider-b", "vpc": "file", "subnet": "fileapps-b", "ip": "10.246.0.10", "node": "node-c"}
+  ],
   "security_groups": []
 }`
 }

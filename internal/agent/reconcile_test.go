@@ -2668,6 +2668,69 @@ func TestReconcileNodeFailureKeepsProviderInventoryOnCandidateResolutionError(t 
 	}
 }
 
+func TestReconcileNodeFailureKeepsProviderInventoryOnProviderConflict(t *testing.T) {
+	state := control.DesiredState{
+		ProviderNetworks: []model.ProviderNetwork{
+			{
+				Name: "physnet-a",
+				Nodes: []model.ProviderNetworkNode{{
+					Node:      "node-a",
+					Interface: "eth1",
+				}},
+			},
+			{
+				Name: "physnet-b",
+				Nodes: []model.ProviderNetworkNode{{
+					Node:      "node-a",
+					Interface: "eth1",
+				}},
+			},
+		},
+		Subnets: []model.Subnet{
+			{
+				Name:            "apps-a",
+				VPC:             "prod",
+				CIDR:            netip.MustParsePrefix("10.10.0.0/24"),
+				Gateway:         netip.MustParseAddr("10.10.0.1"),
+				ProviderNetwork: "physnet-a",
+				VLAN:            100,
+			},
+			{
+				Name:            "apps-b",
+				VPC:             "prod",
+				CIDR:            netip.MustParsePrefix("10.20.0.0/24"),
+				Gateway:         netip.MustParseAddr("10.20.0.1"),
+				ProviderNetwork: "physnet-b",
+				VLAN:            100,
+			},
+		},
+		Endpoints: []model.Endpoint{
+			{ID: "pod-a", VPC: "prod", Subnet: "apps-a", IP: netip.MustParseAddr("10.10.0.10"), Node: "node-a"},
+			{ID: "pod-b", VPC: "prod", Subnet: "apps-b", IP: netip.MustParseAddr("10.20.0.10"), Node: "node-a"},
+		},
+	}
+	result, err := ReconcileNodeWithOptions(context.Background(), state, ReconcileOptions{
+		Node:  "node-a",
+		Store: dataplane.NewInMemoryPolicyStore(),
+		LinuxDatapath: &linuxdatapath.Options{
+			LocalDevice: "nl0",
+			Mode:        "local",
+			Backend:     "command",
+			Executor:    noopExecutor{},
+			ProviderInventory: []linuxdatapath.ProviderInterface{
+				{Name: "eth1", Ready: true, State: "up"},
+				{Name: "eth2", Ready: false, State: "down"},
+			},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), `provider networks "physnet-a" and "physnet-b" both require parent eth1 vlan 100`) {
+		t.Fatalf("err = %v, want provider conflict failure", err)
+	}
+	if result.ProviderInventoryTotal != 2 || result.ProviderInventoryReady != 1 || result.ProviderInventoryDegraded != 1 {
+		t.Fatalf("provider inventory summary = %+v, want total=2 ready=1 degraded=1", result)
+	}
+}
+
 type noopExecutor struct{}
 
 func (noopExecutor) Execute(context.Context, linuxdatapath.Operation) error {
