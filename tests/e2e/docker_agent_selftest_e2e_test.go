@@ -381,7 +381,7 @@ func TestDockerAgentStateWatchPreservesPinnedMapsOnEBPFOverflow(t *testing.T) {
 	}
 
 	baselineOutput := runAgentOnce(true)
-	for _, expected := range []string{"reconciled node policy", "store=ebpf", "endpoints=1", "policy_map_capacity=1", "policy_map_entries=1"} {
+	for _, expected := range []string{"reconciled node policy", "store=ebpf", "endpoints=1", "policy_map_capacity=1", "policy_map_entries=1", "reconcile_duration_ms="} {
 		if !strings.Contains(baselineOutput, expected) {
 			t.Fatalf("baseline reconcile output missing %q:\n%s", expected, baselineOutput)
 		}
@@ -401,6 +401,7 @@ func TestDockerAgentStateWatchPreservesPinnedMapsOnEBPFOverflow(t *testing.T) {
 		"policy_rollbacks=1",
 		`policy_last_error="policy map capacity exceeded`,
 		"policy map capacity exceeded",
+		"reconcile_duration_ms=",
 	} {
 		if !strings.Contains(overflowOutput, expected) {
 			t.Fatalf("overflow output missing %q:\n%s", expected, overflowOutput)
@@ -455,6 +456,7 @@ func TestDockerAgentStateFileReportsTCXAttachFailureSignals(t *testing.T) {
 		"tcx_rollbacks=0",
 		`tcx_last_error="attach tcx target`,
 		"not-a-real-interface",
+		"reconcile_duration_ms=",
 	} {
 		if !strings.Contains(output.output, expected) {
 			t.Fatalf("tcx attach failure output missing %q:\n%s", expected, output.output)

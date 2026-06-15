@@ -85,6 +85,7 @@ func runStateFile(ctx context.Context, path string) error {
 }
 
 func reconcileStateFile(ctx context.Context, path, node, storeName string, reconciler *agent.Reconciler) error {
+	start := time.Now()
 	file, err := os.Open(path)
 	if err != nil {
 		return err
@@ -107,14 +108,15 @@ func reconcileStateFile(ctx context.Context, path, node, storeName string, recon
 		LinuxDatapath: linuxDatapathOptions(),
 	})
 	if err != nil {
-		printReconcileFailure(result, storeName, err)
+		printReconcileFailure(result, storeName, err, time.Since(start))
 		return err
 	}
-	printReconcileResult(result, storeName)
+	printReconcileResult(result, storeName, time.Since(start))
 	return nil
 }
 
 func reconcileStateFileOnce(ctx context.Context, path, node, storeName string, store agent.PolicyStore, hold time.Duration) error {
+	start := time.Now()
 	file, err := os.Open(path)
 	if err != nil {
 		return err
@@ -138,10 +140,10 @@ func reconcileStateFileOnce(ctx context.Context, path, node, storeName string, s
 		LinuxDatapath: linuxDatapathOptions(),
 	})
 	if err != nil {
-		printReconcileFailure(result, storeName, err)
+		printReconcileFailure(result, storeName, err, time.Since(start))
 		return err
 	}
-	printReconcileResult(result, storeName)
+	printReconcileResult(result, storeName, time.Since(start))
 	return nil
 }
 
@@ -175,12 +177,12 @@ func withDNSObservationsAt(state control.DesiredState, now time.Time) (control.D
 	return state, nil
 }
 
-func printReconcileResult(result agent.ReconcileResult, storeName string) {
-	fmt.Printf("netloom-agent reconciled node policy node=%s store=%s endpoints=%d programs=%d entries=%d policy_map_entries=%d policy_map_capacity=%d policy_map_pressure_max=%d policy_map_pressure_endpoints=%d policy_added=%d policy_updated=%d policy_deleted=%d policy_unchanged=%d policy_events=%d policy_failed=%d policy_rollbacks=%d policy_revision_max=%d policy_last_error=%s conntrack_expired=%d tcx_eligible=%d tcx=%s tcx_failed=%d tcx_rollbacks=%d tcx_last_error=%s datapath=%s local_ips=%d remote_routes=%d policy_routes=%d provider_networks=%d provider_links=%d provider_ready=%d provider_degraded=%d provider_status=%s cleanup=%t\n", result.Node, storeName, result.Endpoints, result.Programs, result.Entries, result.PolicyMapEntries, result.PolicyMapCapacity, result.PolicyMapPressureMax, result.PolicyMapPressureEndpoints, result.PolicyAdded, result.PolicyUpdated, result.PolicyDeleted, result.PolicyUnchanged, result.PolicyEvents, result.PolicyFailed, result.PolicyRollbacks, result.PolicyRevisionMax, formatResultError(result.PolicyLastError), result.ConntrackExpired, result.TCXEligible, result.TCX, result.TCXFailed, result.TCXRollbacks, formatResultError(result.TCXLastError), result.Datapath, result.LocalIPs, result.RemoteRoutes, result.PolicyRoutes, result.ProviderNetworks, result.ProviderLinks, result.ProviderReady, result.ProviderDegraded, formatProviderStatus(result.ProviderStatus), result.Cleanup)
+func printReconcileResult(result agent.ReconcileResult, storeName string, duration time.Duration) {
+	fmt.Printf("netloom-agent reconciled node policy node=%s store=%s endpoints=%d programs=%d entries=%d policy_map_entries=%d policy_map_capacity=%d policy_map_pressure_max=%d policy_map_pressure_endpoints=%d policy_added=%d policy_updated=%d policy_deleted=%d policy_unchanged=%d policy_events=%d policy_failed=%d policy_rollbacks=%d policy_revision_max=%d policy_last_error=%s conntrack_expired=%d tcx_eligible=%d tcx=%s tcx_failed=%d tcx_rollbacks=%d tcx_last_error=%s datapath=%s local_ips=%d remote_routes=%d policy_routes=%d provider_networks=%d provider_links=%d provider_ready=%d provider_degraded=%d provider_status=%s cleanup=%t reconcile_duration_ms=%d\n", result.Node, storeName, result.Endpoints, result.Programs, result.Entries, result.PolicyMapEntries, result.PolicyMapCapacity, result.PolicyMapPressureMax, result.PolicyMapPressureEndpoints, result.PolicyAdded, result.PolicyUpdated, result.PolicyDeleted, result.PolicyUnchanged, result.PolicyEvents, result.PolicyFailed, result.PolicyRollbacks, result.PolicyRevisionMax, formatResultError(result.PolicyLastError), result.ConntrackExpired, result.TCXEligible, result.TCX, result.TCXFailed, result.TCXRollbacks, formatResultError(result.TCXLastError), result.Datapath, result.LocalIPs, result.RemoteRoutes, result.PolicyRoutes, result.ProviderNetworks, result.ProviderLinks, result.ProviderReady, result.ProviderDegraded, formatProviderStatus(result.ProviderStatus), result.Cleanup, duration.Milliseconds())
 }
 
-func printReconcileFailure(result agent.ReconcileResult, storeName string, err error) {
-	fmt.Printf("netloom-agent reconcile failed node=%s store=%s endpoints=%d programs=%d entries=%d policy_map_entries=%d policy_map_capacity=%d policy_map_pressure_max=%d policy_map_pressure_endpoints=%d policy_added=%d policy_updated=%d policy_deleted=%d policy_unchanged=%d policy_events=%d policy_failed=%d policy_rollbacks=%d policy_revision_max=%d policy_last_error=%s tcx_eligible=%d tcx=%s tcx_failed=%d tcx_rollbacks=%d tcx_last_error=%s err=%s\n", result.Node, storeName, result.Endpoints, result.Programs, result.Entries, result.PolicyMapEntries, result.PolicyMapCapacity, result.PolicyMapPressureMax, result.PolicyMapPressureEndpoints, result.PolicyAdded, result.PolicyUpdated, result.PolicyDeleted, result.PolicyUnchanged, result.PolicyEvents, result.PolicyFailed, result.PolicyRollbacks, result.PolicyRevisionMax, formatResultError(result.PolicyLastError), result.TCXEligible, result.TCX, result.TCXFailed, result.TCXRollbacks, formatResultError(result.TCXLastError), formatResultError(fmt.Sprint(err)))
+func printReconcileFailure(result agent.ReconcileResult, storeName string, err error, duration time.Duration) {
+	fmt.Printf("netloom-agent reconcile failed node=%s store=%s endpoints=%d programs=%d entries=%d policy_map_entries=%d policy_map_capacity=%d policy_map_pressure_max=%d policy_map_pressure_endpoints=%d policy_added=%d policy_updated=%d policy_deleted=%d policy_unchanged=%d policy_events=%d policy_failed=%d policy_rollbacks=%d policy_revision_max=%d policy_last_error=%s tcx_eligible=%d tcx=%s tcx_failed=%d tcx_rollbacks=%d tcx_last_error=%s err=%s reconcile_duration_ms=%d\n", result.Node, storeName, result.Endpoints, result.Programs, result.Entries, result.PolicyMapEntries, result.PolicyMapCapacity, result.PolicyMapPressureMax, result.PolicyMapPressureEndpoints, result.PolicyAdded, result.PolicyUpdated, result.PolicyDeleted, result.PolicyUnchanged, result.PolicyEvents, result.PolicyFailed, result.PolicyRollbacks, result.PolicyRevisionMax, formatResultError(result.PolicyLastError), result.TCXEligible, result.TCX, result.TCXFailed, result.TCXRollbacks, formatResultError(result.TCXLastError), formatResultError(fmt.Sprint(err)), duration.Milliseconds())
 }
 
 func formatResultError(value string) string {

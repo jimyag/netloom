@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jimyag/netloom/internal/agent"
 	"github.com/jimyag/netloom/internal/linuxdatapath"
@@ -41,7 +42,7 @@ func TestPrintReconcileResultReportsPolicyMapUsageSummary(t *testing.T) {
 		},
 		Datapath: "not-requested",
 		TCX:      "not-requested",
-	}, "ebpf")
+	}, "ebpf", 250*time.Millisecond)
 
 	if err := writer.Close(); err != nil {
 		t.Fatal(err)

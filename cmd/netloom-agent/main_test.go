@@ -261,7 +261,7 @@ func TestPrintReconcileResultIncludesPolicyMapUsageSummary(t *testing.T) {
 		},
 		Datapath: "not-requested",
 		TCX:      "not-requested",
-	}, "ebpf")
+	}, "ebpf", 250*time.Millisecond)
 
 	if err := writer.Close(); err != nil {
 		t.Fatal(err)

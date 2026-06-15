@@ -445,9 +445,12 @@ func TestDockerControllerWatchRecoversFromOVNDBRestart(t *testing.T) {
 
 	waitForControllerWatchLog("reconciled desired state")
 	waitForControllerWatchLog("ovn_health=ok")
+	waitForControllerWatchLog("reconcile_duration_ms=")
 
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "pid=$(cat /var/run/ovn/ovnnb_db.pid); kill \"$pid\"")
 	waitForControllerWatchLog("netloom-controller reconcile failed: ovn health check:")
+	waitForControllerWatchLog("netloom-controller reconcile failed")
+	waitForControllerWatchLog("reconcile_duration_ms=")
 
 	restartOVN := "mkdir -p /var/run/ovn /var/lib/ovn\n" +
 		"ovsdb-server --detach --pidfile=/var/run/ovn/ovnnb_db.pid --remote=punix:/var/run/ovn/ovnnb_db.sock /var/lib/ovn/ovnnb_db.db\n" +
