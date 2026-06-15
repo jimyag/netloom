@@ -40,6 +40,14 @@ func TestPrintReconcileResultReportsPolicyMapUsageSummary(t *testing.T) {
 			{ProviderNetwork: "physnet-a", ParentDevice: "eth1", VLAN: 100, LinkName: "nlv-a", Ready: true, ParentState: "up", LinkState: "up"},
 			{ProviderNetwork: "physnet-b", ParentDevice: "bond0", VLAN: 200, LinkName: "nlv-b", Ready: false, ParentState: "up", LinkState: "down"},
 		},
+		ProviderInventoryTotal:    3,
+		ProviderInventoryReady:    2,
+		ProviderInventoryDegraded: 1,
+		ProviderInventoryStatus: []linuxdatapath.ProviderInterface{
+			{Name: "eth1", Ready: true, State: "up"},
+			{Name: "bond0", Ready: true, State: "up"},
+			{Name: "ens5", Ready: false, State: "down"},
+		},
 		Datapath: "not-requested",
 		TCX:      "not-requested",
 	}, "ebpf", 250*time.Millisecond)
@@ -62,6 +70,10 @@ func TestPrintReconcileResultReportsPolicyMapUsageSummary(t *testing.T) {
 		"provider_ready=1",
 		"provider_degraded=1",
 		"provider_status=physnet-a:eth1:100:nlv-a:ready:up:up,physnet-b:bond0:200:nlv-b:pending:up:down",
+		"provider_inventory_total=3",
+		"provider_inventory_ready=2",
+		"provider_inventory_degraded=1",
+		"provider_inventory_status=eth1:up,bond0:up,ens5:down",
 	} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("output missing %q:\n%s", expected, output)

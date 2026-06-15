@@ -114,6 +114,9 @@ func TestPlanReportsProviderNetworkCounts(t *testing.T) {
 	if result.ProviderReady != 0 || result.ProviderDegraded != 2 {
 		t.Fatalf("provider health summary = %+v, want provider_ready=0 provider_degraded=2", result)
 	}
+	if result.ProviderInventoryTotal != 0 || result.ProviderInventoryReady != 0 || result.ProviderInventoryDegraded != 0 {
+		t.Fatalf("provider inventory summary = %+v, want zero inventory in pure planner path", result)
+	}
 	if len(result.ProviderStatus) != 2 {
 		t.Fatalf("provider status = %+v, want 2 entries", result.ProviderStatus)
 	}
@@ -308,6 +311,12 @@ func TestApplyCommandAutoDiscoversCandidateProviderInterface(t *testing.T) {
 	if result.ProviderLinks != 1 {
 		t.Fatalf("provider links = %d, want 1", result.ProviderLinks)
 	}
+	if result.ProviderInventoryTotal != 2 || result.ProviderInventoryReady != 1 || result.ProviderInventoryDegraded != 1 {
+		t.Fatalf("provider inventory summary = %+v, want total=2 ready=1 degraded=1", result)
+	}
+	if got := result.ProviderInventoryStatus[0]; got.Name != "lo" || got.State != "down" {
+		t.Fatalf("provider inventory status[0] = %+v, want lo down", got)
+	}
 	if got := result.ProviderStatus[0].ParentDevice; got != "eth1" {
 		t.Fatalf("selected provider parent = %s, want eth1", got)
 	}
@@ -368,6 +377,9 @@ func TestApplyCommandRefreshesProviderHealthAfterExecution(t *testing.T) {
 	}
 	if result.ProviderReady != 1 || result.ProviderDegraded != 0 {
 		t.Fatalf("provider health = ready:%d degraded:%d, want 1/0", result.ProviderReady, result.ProviderDegraded)
+	}
+	if result.ProviderInventoryTotal != 2 || result.ProviderInventoryReady != 2 || result.ProviderInventoryDegraded != 0 {
+		t.Fatalf("provider inventory summary = %+v, want total=2 ready=2 degraded=0", result)
 	}
 	if got := result.ProviderStatus[0]; !got.Ready || got.ParentState != "up" || got.LinkState != "up" {
 		t.Fatalf("provider status = %+v, want ready up/up", got)

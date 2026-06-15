@@ -48,6 +48,10 @@ type ReconcileResult struct {
 	ProviderReady              int
 	ProviderDegraded           int
 	ProviderStatus             []linuxdatapath.ProviderLinkStatus
+	ProviderInventoryTotal     int
+	ProviderInventoryReady     int
+	ProviderInventoryDegraded  int
+	ProviderInventoryStatus    []linuxdatapath.ProviderInterface
 	Cleanup                    bool
 }
 
@@ -336,9 +340,6 @@ func prepareReconcile(ctx context.Context, state control.DesiredState, options R
 		linuxOptions := *options.LinuxDatapath
 		linuxOptions.Node = options.Node
 		linuxResult, err := linuxdatapath.Apply(ctx, state, linuxOptions)
-		if err != nil {
-			return ReconcileResult{}, nil, nil, fmt.Errorf("apply linux datapath for node %s: %w", options.Node, err)
-		}
 		result.Datapath = "linux:" + linuxResult.Device
 		result.LocalIPs = linuxResult.LocalAddresses
 		result.RemoteRoutes = linuxResult.RemoteRoutes
@@ -348,7 +349,14 @@ func prepareReconcile(ctx context.Context, state control.DesiredState, options R
 		result.ProviderReady = linuxResult.ProviderReady
 		result.ProviderDegraded = linuxResult.ProviderDegraded
 		result.ProviderStatus = append([]linuxdatapath.ProviderLinkStatus(nil), linuxResult.ProviderStatus...)
+		result.ProviderInventoryTotal = linuxResult.ProviderInventoryTotal
+		result.ProviderInventoryReady = linuxResult.ProviderInventoryReady
+		result.ProviderInventoryDegraded = linuxResult.ProviderInventoryDegraded
+		result.ProviderInventoryStatus = append([]linuxdatapath.ProviderInterface(nil), linuxResult.ProviderInventoryStatus...)
 		result.Cleanup = linuxResult.CleanupPlanned
+		if err != nil {
+			return result, nil, nil, fmt.Errorf("apply linux datapath for node %s: %w", options.Node, err)
+		}
 	}
 	if err := populatePolicyMapUsageResult(ctx, options.Store, &result); err != nil {
 		return ReconcileResult{}, nil, nil, err

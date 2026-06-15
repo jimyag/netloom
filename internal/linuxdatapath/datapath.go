@@ -44,17 +44,21 @@ type Options struct {
 }
 
 type Result struct {
-	LocalAddresses   int
-	RemoteRoutes     int
-	PolicyRoutes     int
-	ProviderNetworks int
-	ProviderLinks    int
-	ProviderReady    int
-	ProviderDegraded int
-	ProviderStatus   []ProviderLinkStatus
-	Device           string
-	Mode             string
-	CleanupPlanned   bool
+	LocalAddresses            int
+	RemoteRoutes              int
+	PolicyRoutes              int
+	ProviderNetworks          int
+	ProviderLinks             int
+	ProviderReady             int
+	ProviderDegraded          int
+	ProviderStatus            []ProviderLinkStatus
+	ProviderInventoryTotal    int
+	ProviderInventoryReady    int
+	ProviderInventoryDegraded int
+	ProviderInventoryStatus   []ProviderInterface
+	Device                    string
+	Mode                      string
+	CleanupPlanned            bool
 }
 
 type ProviderLinkStatus struct {
@@ -70,6 +74,7 @@ type ProviderLinkStatus struct {
 type ProviderInterface struct {
 	Name  string
 	Ready bool
+	State string
 }
 
 type CommandExecutor struct{}
@@ -112,6 +117,8 @@ func Apply(ctx context.Context, state control.DesiredState, options Options) (Re
 				return Result{}, err
 			}
 		}
+		result.ProviderInventoryStatus = append([]ProviderInterface(nil), options.ProviderInventory...)
+		result.ProviderInventoryTotal, result.ProviderInventoryReady, result.ProviderInventoryDegraded = summarizeProviderInventory(options.ProviderInventory)
 		providerSpecs, err := desiredProviderNetworkLinkSpecs(state, options.Node, options.ProviderLinks, options.ProviderInventory)
 		if err != nil {
 			return Result{}, err
@@ -133,6 +140,8 @@ func Apply(ctx context.Context, state control.DesiredState, options Options) (Re
 		if discoveredInventory {
 			inventory, invErr := discoverProviderInventory()
 			if invErr == nil {
+				result.ProviderInventoryStatus = append([]ProviderInterface(nil), inventory...)
+				result.ProviderInventoryTotal, result.ProviderInventoryReady, result.ProviderInventoryDegraded = summarizeProviderInventory(inventory)
 				result.ProviderStatus = providerLinkStatusesFromInventory(providerSpecs, inventory)
 				result.ProviderReady, result.ProviderDegraded = summarizeProviderLinkHealth(result.ProviderStatus)
 			}
@@ -144,10 +153,10 @@ func Apply(ctx context.Context, state control.DesiredState, options Options) (Re
 		return Result{}, fmt.Errorf("unsupported linux datapath backend %q", options.Backend)
 	}
 	if err != nil {
-		return Result{}, err
+		return result, err
 	}
 	if err := validateProviderHealth(result, options); err != nil {
-		return Result{}, err
+		return result, err
 	}
 	return result, nil
 }
@@ -172,6 +181,7 @@ func discoverProviderInventory() ([]ProviderInterface, error) {
 		out = append(out, ProviderInterface{
 			Name:  iface.Name,
 			Ready: iface.Flags&net.FlagUp != 0,
+			State: providerInterfaceState(true, iface.Flags&net.FlagUp != 0),
 		})
 	}
 	return out, nil
@@ -216,6 +226,8 @@ func Plan(ctx context.Context, state control.DesiredState, options Options) ([]O
 	result.ProviderNetworks, result.ProviderLinks = summarizeProviderNetworkSpecs(providerSpecs)
 	result.ProviderStatus = providerLinkStatuses(providerSpecs, false)
 	result.ProviderReady, result.ProviderDegraded = summarizeProviderLinkHealth(result.ProviderStatus)
+	result.ProviderInventoryStatus = append([]ProviderInterface(nil), options.ProviderInventory...)
+	result.ProviderInventoryTotal, result.ProviderInventoryReady, result.ProviderInventoryDegraded = summarizeProviderInventory(options.ProviderInventory)
 	ops = append(ops, planProviderNetworkLinks(providerSpecs)...)
 	if options.CleanupStale {
 		ops = append(ops, planProviderNetworkLinkCleanup(providerSpecs))
@@ -445,6 +457,18 @@ func providerLinkStatusesFromInventory(specs []providerNetworkLinkSpec, inventor
 		})
 	}
 	return out
+}
+
+func summarizeProviderInventory(inventory []ProviderInterface) (total, ready, degraded int) {
+	total = len(inventory)
+	for _, link := range inventory {
+		if link.Ready {
+			ready++
+		} else {
+			degraded++
+		}
+	}
+	return total, ready, degraded
 }
 
 func summarizeProviderLinkHealth(statuses []ProviderLinkStatus) (ready, degraded int) {

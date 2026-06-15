@@ -49,6 +49,8 @@ func applyLocalNetlink(ctx context.Context, state control.DesiredState, options 
 		}
 		options.ProviderInventory = providerInventoryFromNetlink(links)
 	}
+	result.ProviderInventoryStatus = append([]ProviderInterface(nil), options.ProviderInventory...)
+	result.ProviderInventoryTotal, result.ProviderInventoryReady, result.ProviderInventoryDegraded = summarizeProviderInventory(options.ProviderInventory)
 	providerSpecs, err := desiredProviderNetworkLinkSpecs(state, options.Node, options.ProviderLinks, options.ProviderInventory)
 	if err != nil {
 		return Result{}, err
@@ -143,6 +145,8 @@ func applyNetNSNetlink(ctx context.Context, state control.DesiredState, options 
 		}
 		options.ProviderInventory = providerInventoryFromNetlink(links)
 	}
+	result.ProviderInventoryStatus = append([]ProviderInterface(nil), options.ProviderInventory...)
+	result.ProviderInventoryTotal, result.ProviderInventoryReady, result.ProviderInventoryDegraded = summarizeProviderInventory(options.ProviderInventory)
 	providerSpecs, err := desiredProviderNetworkLinkSpecs(state, options.Node, options.ProviderLinks, options.ProviderInventory)
 	if err != nil {
 		return Result{}, err
@@ -637,6 +641,7 @@ func providerInventoryFromNetlink(links []netlink.Link) []ProviderInterface {
 		out = append(out, ProviderInterface{
 			Name:  attrs.Name,
 			Ready: providerOperStateReady(attrs.OperState),
+			State: operStateName(attrs.OperState),
 		})
 	}
 	return out

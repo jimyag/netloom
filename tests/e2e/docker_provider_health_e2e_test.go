@@ -28,7 +28,7 @@ func TestDockerProviderHealthStrictFailsForDegradedLink(t *testing.T) {
 
 	workloadStateNodeCScript := "cat >/tmp/netloom-workload-node-c-state.json <<'EOF'\n" + desiredProviderOnlyStateWithMappedNodeCJSON() + "\nEOF\nNETLOOM_STATE_FILE=/tmp/netloom-workload-node-c-state.json NETLOOM_LINUX_DATAPATH=1 NETLOOM_LINUX_DATAPATH_MODE=netns NETLOOM_PROVIDER_NETWORK_LINKS=physnet-a=eth0 NETLOOM_LINUX_DATAPATH_CLEANUP=1 NETLOOM_NODE_UNDERLAYS=node-a=172.30.0.11,node-b=172.30.0.12 "
 	initialOutput := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-c", "sh", "-c", workloadStateNodeCScript+"NETLOOM_NODE_NAME=node-c /netloom/bin/netloom-agent")
-	for _, expected := range []string{"datapath=linux:netns", "provider_networks=1", "provider_links=1", "provider_status=physnet-a:eth0:100:"} {
+	for _, expected := range []string{"datapath=linux:netns", "provider_networks=1", "provider_links=1", "provider_status=physnet-a:eth0:100:", "provider_inventory_total=", "provider_inventory_status=", "eth0:up"} {
 		if !strings.Contains(initialOutput, expected) {
 			t.Fatalf("initial provider link reconcile missing %q:\n%s", expected, initialOutput)
 		}
@@ -46,7 +46,7 @@ func TestDockerProviderHealthStrictFailsForDegradedLink(t *testing.T) {
 	if strictOutput.exitCode == 0 {
 		t.Fatalf("expected strict provider health reconcile to fail while parent link is down:\n%s", strictOutput.output)
 	}
-	for _, expected := range []string{"provider health degraded", "ready=0 degraded=1", "physnet-a:eth0:100:"} {
+	for _, expected := range []string{"provider health degraded", "ready=0 degraded=1", "physnet-a:eth0:100:", "eth0:down"} {
 		if !strings.Contains(strictOutput.output, expected) {
 			t.Fatalf("strict provider health failure missing %q:\n%s", expected, strictOutput.output)
 		}
@@ -54,7 +54,7 @@ func TestDockerProviderHealthStrictFailsForDegradedLink(t *testing.T) {
 
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-c", "sh", "-c", "ip link set eth0 up; for i in $(seq 1 10); do [ \"$(cat /sys/class/net/eth0/operstate 2>/dev/null)\" = up ] && exit 0; sleep 1; done; ip -o link show dev eth0; exit 1")
 	recoveredOutput := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-c", "sh", "-c", workloadStateNodeCScript+"NETLOOM_PROVIDER_HEALTH_STRICT=1 NETLOOM_NODE_NAME=node-c /netloom/bin/netloom-agent")
-	for _, expected := range []string{"provider_ready=1", "provider_degraded=0", "provider_status=physnet-a:eth0:100:"} {
+	for _, expected := range []string{"provider_ready=1", "provider_degraded=0", "provider_status=physnet-a:eth0:100:", "provider_inventory_status=", "eth0:up"} {
 		if !strings.Contains(recoveredOutput, expected) {
 			t.Fatalf("recovered strict provider health reconcile missing %q:\n%s", expected, recoveredOutput)
 		}
@@ -80,7 +80,7 @@ func TestDockerProviderHealthAutoDiscoversCandidateInterface(t *testing.T) {
 
 	workloadStateNodeCScript := "cat >/tmp/netloom-workload-node-c-state.json <<'EOF'\n" + desiredProviderOnlyStateWithCandidateNodeCJSON() + "\nEOF\nNETLOOM_STATE_FILE=/tmp/netloom-workload-node-c-state.json NETLOOM_LINUX_DATAPATH=1 NETLOOM_LINUX_DATAPATH_MODE=netns NETLOOM_LINUX_DATAPATH_CLEANUP=1 NETLOOM_NODE_UNDERLAYS=node-a=172.30.0.11,node-b=172.30.0.12 "
 	output := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-c", "sh", "-c", workloadStateNodeCScript+"NETLOOM_NODE_NAME=node-c /netloom/bin/netloom-agent")
-	for _, expected := range []string{"datapath=linux:netns", "provider_networks=1", "provider_links=1", "provider_ready=1", "provider_status=physnet-a:eth0:100:"} {
+	for _, expected := range []string{"datapath=linux:netns", "provider_networks=1", "provider_links=1", "provider_ready=1", "provider_status=physnet-a:eth0:100:", "provider_inventory_total=", "provider_inventory_status=", "eth0:up"} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("candidate provider interface reconcile missing %q:\n%s", expected, output)
 		}
