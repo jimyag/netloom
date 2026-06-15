@@ -152,7 +152,7 @@ func Plan(ctx context.Context, state control.DesiredState, options Options) ([]O
 		return nil, Result{}, err
 	}
 	result.ProviderNetworks, result.ProviderLinks = summarizeProviderNetworkSpecs(providerSpecs)
-	result.ProviderStatus = providerLinkStatuses(providerSpecs)
+	result.ProviderStatus = providerLinkStatuses(providerSpecs, false)
 	ops = append(ops, planProviderNetworkLinks(providerSpecs)...)
 	if options.CleanupStale {
 		ops = append(ops, planProviderNetworkLinkCleanup(providerSpecs))
@@ -301,7 +301,7 @@ func summarizeProviderNetworkSpecs(specs []providerNetworkLinkSpec) (int, int) {
 	return len(uniqueNetworks), len(specs)
 }
 
-func providerLinkStatuses(specs []providerNetworkLinkSpec) []ProviderLinkStatus {
+func providerLinkStatuses(specs []providerNetworkLinkSpec, ready bool) []ProviderLinkStatus {
 	out := make([]ProviderLinkStatus, 0, len(specs))
 	for _, spec := range specs {
 		out = append(out, ProviderLinkStatus{
@@ -309,7 +309,7 @@ func providerLinkStatuses(specs []providerNetworkLinkSpec) []ProviderLinkStatus 
 			ParentDevice:    spec.ParentDevice,
 			VLAN:            spec.VLAN,
 			LinkName:        spec.Name,
-			Ready:           true,
+			Ready:           ready,
 		})
 	}
 	return out
