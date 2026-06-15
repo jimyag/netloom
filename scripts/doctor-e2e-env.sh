@@ -71,14 +71,21 @@ for service in node-a node-b node-c; do
 done
 
 echo "[netloom] verifying privileged datapath prerequisites"
-docker compose -f "${compose_file}" exec -T node-b sh -ceu '
-  if ! ip netns list >/dev/null 2>&1; then
-    apk add --no-cache iproute2 >/dev/null
-  fi
-  ip link show >/dev/null
-  ip netns list >/dev/null
-  test -d /sys/fs/bpf || mkdir -p /sys/fs/bpf
-'
+for service in node-a node-b node-c; do
+  echo "[netloom] preparing ${service}"
+  docker compose -f "${compose_file}" exec -T "${service}" sh -ceu '
+    if ! command -v ip >/dev/null 2>&1 || ! ip -V 2>&1 | grep -q iproute2; then
+      apk add --no-cache iproute2 >/dev/null
+    fi
+    ip -V | grep -q iproute2
+    ip link show >/dev/null
+    ip netns list >/dev/null
+    test -d /sys/fs/bpf || mkdir -p /sys/fs/bpf
+    test -d /netloom/bin
+    test -x /netloom/bin/netloom-agent
+    test -x /netloom/bin/netloom-controller
+  '
+done
 
 echo "[netloom] environment is ready"
 docker compose -f "${compose_file}" ps
