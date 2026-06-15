@@ -88,6 +88,42 @@ func TestDockerProviderHealthAutoDiscoversCandidateInterface(t *testing.T) {
 	waitForManagedLinkCount(t, ctx, composeFile, "node-c", "nlv", 1)
 }
 
+func TestDockerProviderHealthReportsLinkTypeMismatch(t *testing.T) {
+	requireDockerE2E(t)
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker is not installed")
+	}
+
+	composeFile := filepath.Join("testdata", "..", "docker-compose.yaml")
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
+	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
+	startComposeLab(t, ctx, composeFile)
+	waitForOVN(t, ctx, composeFile)
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-c", "sh", "-c", "command -v ip >/dev/null 2>&1 || apk add --no-cache iproute2")
+
+	workloadStateNodeCScript := "cat >/tmp/netloom-workload-node-c-state.json <<'EOF'\n" + desiredProviderOnlyStateWithMappedNodeCJSON() + "\nEOF\nNETLOOM_STATE_FILE=/tmp/netloom-workload-node-c-state.json NETLOOM_LINUX_DATAPATH=1 NETLOOM_LINUX_DATAPATH_MODE=netns NETLOOM_PROVIDER_NETWORK_LINKS=physnet-a=eth0 NETLOOM_LINUX_DATAPATH_CLEANUP=1 NETLOOM_NODE_UNDERLAYS=node-a=172.30.0.11,node-b=172.30.0.12 "
+	linkName := "nlv27517824"
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-c", "sh", "-c", "ip link add "+linkName+" type dummy")
+	t.Cleanup(func() {
+		restoreCtx, restoreCancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer restoreCancel()
+		runAllowFailure(t, restoreCtx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-c", "ip", "link", "del", linkName)
+	})
+
+	output := runAllowFailure(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-c", "sh", "-c", workloadStateNodeCScript+"NETLOOM_NODE_NAME=node-c /netloom/bin/netloom-agent")
+	if output.exitCode == 0 {
+		t.Fatalf("expected reconcile to fail for provider link type mismatch:\n%s", output.output)
+	}
+	for _, expected := range []string{"type-mismatch", "provider_status=physnet-a:eth0:100:" + linkName + ":pending:up:type-mismatch", "provider_inventory_status=", "eth0:up"} {
+		if !strings.Contains(output.output, expected) {
+			t.Fatalf("provider type mismatch output missing %q:\n%s", expected, output.output)
+		}
+	}
+}
+
 func desiredProviderOnlyStateWithMappedNodeCJSON() string {
 	return `{
   "vpcs": [{"name": "file"}],

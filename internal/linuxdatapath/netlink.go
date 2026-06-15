@@ -59,10 +59,13 @@ func applyLocalNetlink(ctx context.Context, state control.DesiredState, options 
 	result.ProviderStatus = make([]ProviderLinkStatus, 0, len(providerSpecs))
 	for _, spec := range providerSpecs {
 		status, err := ensureProviderNetworkLink(root, spec)
-		if err != nil {
-			return Result{}, fmt.Errorf("ensure provider link %s: %w", spec.Name, err)
+		if status.ProviderNetwork != "" {
+			result.ProviderStatus = append(result.ProviderStatus, status)
+			result.ProviderReady, result.ProviderDegraded = summarizeProviderLinkHealth(result.ProviderStatus)
 		}
-		result.ProviderStatus = append(result.ProviderStatus, status)
+		if err != nil {
+			return result, fmt.Errorf("ensure provider link %s: %w", spec.Name, err)
+		}
 	}
 	result.ProviderReady, result.ProviderDegraded = summarizeProviderLinkHealth(result.ProviderStatus)
 	if options.CleanupStale {
@@ -155,10 +158,13 @@ func applyNetNSNetlink(ctx context.Context, state control.DesiredState, options 
 	result.ProviderStatus = make([]ProviderLinkStatus, 0, len(providerSpecs))
 	for _, spec := range providerSpecs {
 		status, err := ensureProviderNetworkLink(root, spec)
-		if err != nil {
-			return Result{}, fmt.Errorf("ensure provider link %s: %w", spec.Name, err)
+		if status.ProviderNetwork != "" {
+			result.ProviderStatus = append(result.ProviderStatus, status)
+			result.ProviderReady, result.ProviderDegraded = summarizeProviderLinkHealth(result.ProviderStatus)
 		}
-		result.ProviderStatus = append(result.ProviderStatus, status)
+		if err != nil {
+			return result, fmt.Errorf("ensure provider link %s: %w", spec.Name, err)
+		}
 	}
 	result.ProviderReady, result.ProviderDegraded = summarizeProviderLinkHealth(result.ProviderStatus)
 	if options.CleanupStale {
@@ -546,12 +552,12 @@ func cleanupStaleManagedAddrs(handle *netlink.Handle, link netlink.Link, desired
 func ensureProviderNetworkLink(root *netlink.Handle, spec providerNetworkLinkSpec) (ProviderLinkStatus, error) {
 	parent, err := root.LinkByName(spec.ParentDevice)
 	if err != nil {
-		return ProviderLinkStatus{}, fmt.Errorf("lookup parent device %s: %w", spec.ParentDevice, err)
+		return providerLinkFailureStatus(spec, "missing", "missing"), fmt.Errorf("lookup parent device %s: %w", spec.ParentDevice, err)
 	}
 	link, err := root.LinkByName(spec.Name)
 	if err != nil {
 		if !isLinkNotFound(err) {
-			return ProviderLinkStatus{}, err
+			return providerLinkFailureStatusWithParent(spec, parent, "unknown"), err
 		}
 		if err := root.LinkAdd(&netlink.Vlan{
 			LinkAttrs: netlink.LinkAttrs{
@@ -560,28 +566,28 @@ func ensureProviderNetworkLink(root *netlink.Handle, spec providerNetworkLinkSpe
 			},
 			VlanId: int(spec.VLAN),
 		}); err != nil && !errors.Is(err, os.ErrExist) && !errors.Is(err, unix.EEXIST) {
-			return ProviderLinkStatus{}, fmt.Errorf("create vlan link %s: %w", spec.Name, err)
+			return providerLinkFailureStatusWithParent(spec, parent, "create-failed"), fmt.Errorf("create vlan link %s: %w", spec.Name, err)
 		}
 		link, err = root.LinkByName(spec.Name)
 		if err != nil {
-			return ProviderLinkStatus{}, err
+			return providerLinkFailureStatusWithParent(spec, parent, "missing"), err
 		}
 	}
 	vlan, ok := link.(*netlink.Vlan)
 	if !ok {
-		return ProviderLinkStatus{}, fmt.Errorf("link %s exists but is %T, want vlan", spec.Name, link)
+		return providerLinkFailureStatusWithParent(spec, parent, "type-mismatch"), fmt.Errorf("link %s exists but is %T, want vlan", spec.Name, link)
 	}
 	if vlan.VlanId != int(spec.VLAN) {
-		return ProviderLinkStatus{}, fmt.Errorf("link %s vlan id = %d, want %d", spec.Name, vlan.VlanId, spec.VLAN)
+		return providerLinkFailureStatusWithParent(spec, parent, "vlan-mismatch"), fmt.Errorf("link %s vlan id = %d, want %d", spec.Name, vlan.VlanId, spec.VLAN)
 	}
 	if link.Attrs().ParentIndex != parent.Attrs().Index {
-		return ProviderLinkStatus{}, fmt.Errorf("link %s parent index = %d, want %d", spec.Name, link.Attrs().ParentIndex, parent.Attrs().Index)
+		return providerLinkFailureStatusWithParent(spec, parent, "parent-mismatch"), fmt.Errorf("link %s parent index = %d, want %d", spec.Name, link.Attrs().ParentIndex, parent.Attrs().Index)
 	}
 	if err := root.LinkSetUp(link); err != nil {
 		if providerLinkSetupCanDegrade(err) {
 			return providerLinkStatus(root, spec)
 		}
-		return ProviderLinkStatus{}, fmt.Errorf("set link %s up: %w", spec.Name, err)
+		return providerLinkFailureStatusWithParent(spec, parent, "setup-failed"), fmt.Errorf("set link %s up: %w", spec.Name, err)
 	}
 	return providerLinkStatus(root, spec)
 }
@@ -589,11 +595,11 @@ func ensureProviderNetworkLink(root *netlink.Handle, spec providerNetworkLinkSpe
 func providerLinkStatus(root *netlink.Handle, spec providerNetworkLinkSpec) (ProviderLinkStatus, error) {
 	parent, err := root.LinkByName(spec.ParentDevice)
 	if err != nil {
-		return ProviderLinkStatus{}, fmt.Errorf("refresh parent device %s: %w", spec.ParentDevice, err)
+		return providerLinkFailureStatus(spec, "missing", "missing"), fmt.Errorf("refresh parent device %s: %w", spec.ParentDevice, err)
 	}
 	link, err := root.LinkByName(spec.Name)
 	if err != nil {
-		return ProviderLinkStatus{}, fmt.Errorf("refresh provider link %s: %w", spec.Name, err)
+		return providerLinkFailureStatusWithParent(spec, parent, "missing"), fmt.Errorf("refresh provider link %s: %w", spec.Name, err)
 	}
 	return ProviderLinkStatus{
 		ProviderNetwork: spec.ProviderNetwork,
@@ -604,6 +610,26 @@ func providerLinkStatus(root *netlink.Handle, spec providerNetworkLinkSpec) (Pro
 		ParentState:     operStateName(parent.Attrs().OperState),
 		LinkState:       operStateName(link.Attrs().OperState),
 	}, nil
+}
+
+func providerLinkFailureStatus(spec providerNetworkLinkSpec, parentState, linkState string) ProviderLinkStatus {
+	return ProviderLinkStatus{
+		ProviderNetwork: spec.ProviderNetwork,
+		ParentDevice:    spec.ParentDevice,
+		VLAN:            spec.VLAN,
+		LinkName:        spec.Name,
+		Ready:           false,
+		ParentState:     parentState,
+		LinkState:       linkState,
+	}
+}
+
+func providerLinkFailureStatusWithParent(spec providerNetworkLinkSpec, parent netlink.Link, linkState string) ProviderLinkStatus {
+	parentState := "unknown"
+	if parent != nil && parent.Attrs() != nil {
+		parentState = operStateName(parent.Attrs().OperState)
+	}
+	return providerLinkFailureStatus(spec, parentState, linkState)
 }
 
 func providerLinkSetupCanDegrade(err error) bool {

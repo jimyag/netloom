@@ -386,6 +386,40 @@ func TestApplyCommandRefreshesProviderHealthAfterExecution(t *testing.T) {
 	}
 }
 
+func TestProviderLinkFailureStatusReportsDriftReason(t *testing.T) {
+	spec := providerNetworkLinkSpec{
+		ProviderNetwork: "physnet-a",
+		ParentDevice:    "eth1",
+		VLAN:            100,
+		Name:            "nlv-test",
+	}
+	status := providerLinkFailureStatus(spec, "up", "vlan-mismatch")
+	if status.ProviderNetwork != "physnet-a" || status.ParentDevice != "eth1" || status.VLAN != 100 || status.LinkName != "nlv-test" {
+		t.Fatalf("status identity = %+v", status)
+	}
+	if status.Ready {
+		t.Fatalf("status = %+v, want degraded", status)
+	}
+	if status.ParentState != "up" || status.LinkState != "vlan-mismatch" {
+		t.Fatalf("status drift detail = %+v, want up/vlan-mismatch", status)
+	}
+}
+
+func TestSummarizeProviderStatusIncludesDriftReason(t *testing.T) {
+	summary := summarizeProviderStatus([]ProviderLinkStatus{{
+		ProviderNetwork: "physnet-a",
+		ParentDevice:    "eth1",
+		VLAN:            100,
+		LinkName:        "nlv-test",
+		Ready:           false,
+		ParentState:     "up",
+		LinkState:       "type-mismatch",
+	}})
+	if summary != "physnet-a:eth1:100:nlv-test:pending:up:type-mismatch" {
+		t.Fatalf("summary = %q, want drift reason in provider status", summary)
+	}
+}
+
 func TestPlanNetNSProgramsIPv6VethAndNamespace(t *testing.T) {
 	state := control.DesiredState{
 		Endpoints: []model.Endpoint{
