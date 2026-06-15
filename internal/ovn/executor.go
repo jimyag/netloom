@@ -501,6 +501,7 @@ func (e *NBCTLExecutor) syncPolicyRouteNexthop(ctx context.Context, vpc, name, p
 	}
 	router := logicalRouter(vpc)
 	updated := false
+	singleNextHop := ovnStringSetValues([]string{nextHop})
 	for _, uuid := range policyUUIDs {
 		policyPriority, policyMatch, err := e.logicalRouterPolicyIdentity(ctx, uuid)
 		if err != nil {
@@ -516,7 +517,7 @@ func (e *NBCTLExecutor) syncPolicyRouteNexthop(ctx context.Context, vpc, name, p
 			continue
 		}
 		args := append([]string(nil), e.BaseArgs...)
-		args = append(args, "set", "Logical_Router_Policy", uuid, "nexthop="+nextHop)
+		args = append(args, "set", "Logical_Router_Policy", uuid, "nexthops="+singleNextHop)
 		if err := e.runCommand(ctx, args); err != nil {
 			return err
 		}

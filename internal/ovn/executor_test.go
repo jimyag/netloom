@@ -2702,8 +2702,8 @@ esac
 	for _, call := range calls {
 		if strings.Contains(call, "set\nLogical_Router_Policy\npolicy-a") {
 			hasPolicyASet = true
-			if !strings.Contains(call, "nexthop=10.10.0.252") {
-				t.Fatalf("matching policy update should include nexthop set:\n%s", call)
+			if !strings.Contains(call, "nexthops=[\"10.10.0.252\"]") {
+				t.Fatalf("matching policy update should include nexthops set:\n%s", call)
 			}
 		}
 		if strings.Contains(call, "set\nLogical_Router_Policy\npolicy-b") {
@@ -2756,7 +2756,7 @@ esac
 		t.Fatal(err)
 	}
 	text := string(raw)
-	if strings.Count(text, "set\nLogical_Router_Policy\npolicy-a\nnexthop=10.10.0.252") != 1 {
+	if strings.Count(text, "set\nLogical_Router_Policy\npolicy-a\nnexthops=[\"10.10.0.252\"]") != 1 {
 		t.Fatalf("canonical policy should be updated exactly once:\n%s", raw)
 	}
 	if strings.Contains(text, "set\nLogical_Router_Policy\npolicy-b") {
