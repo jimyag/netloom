@@ -1082,6 +1082,100 @@ func TestDockerControllerPolicyRouteSingleHopDeltaRemovesDuplicateManagedRows(t 
 	waitForPolicyRouteState("10.245.0.252", []string{"10.245.0.253"}, 1)
 }
 
+func TestDockerControllerPolicyRouteECMPFirstReconcilePreservesCanonicalRow(t *testing.T) {
+	requireDockerE2E(t)
+	if testing.Short() {
+		t.Skip("skip long e2e test in short mode")
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker is not installed")
+	}
+
+	composeFile := filepath.Join("testdata", "..", "docker-compose.yaml")
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+
+	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
+	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
+	startComposeLab(t, ctx, composeFile)
+	t.Cleanup(func() {
+		downCtx, downCancel := context.WithTimeout(context.Background(), time.Minute)
+		defer downCancel()
+		run(t, downCtx, "docker", "compose", "-f", composeFile, "down", "-v")
+	})
+	waitForOVN(t, ctx, composeFile)
+
+	baseState := "/tmp/netloom-state-policy-route-ecmp-base.json"
+	updatedState := "/tmp/netloom-state-policy-route-ecmp-updated.json"
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "cat >"+baseState+" <<'EOF'\n"+desiredStateWithPolicyRouteECMPNexthopsJSON("10.245.0.251", "10.245.0.252")+"\nEOF")
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "cat >"+updatedState+" <<'EOF'\n"+desiredStateWithPolicyRouteECMPNexthopsJSON("10.245.0.252", "10.245.0.253")+"\nEOF")
+
+	runPolicyRouteReconcile := func(path string) {
+		command := "NETLOOM_STATE_FILE=" + path + " NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller"
+		output := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", command)
+		if !strings.Contains(output, "reconciled desired state") {
+			t.Fatalf("controller reconcile on %s did not succeed: %s", path, output)
+		}
+	}
+
+	waitForPolicyRouteECMPState := func(expectedHops []string, forbiddenHops []string, expectedManagedRows int) string {
+		deadline := time.Now().Add(30 * time.Second)
+		for time.Now().Before(deadline) {
+			rows := activeManagedRows(t, ctx, composeFile, "Logical_Router_Policy", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file", "external_ids:netloom_policy_route=https-via-fw")
+			if len(rows) != expectedManagedRows {
+				time.Sleep(500 * time.Millisecond)
+				continue
+			}
+			nexthops := strings.TrimSpace(run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "--bare", "--no-heading", "--columns=nexthops", "find", "Logical_Router_Policy", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file", "external_ids:netloom_policy_route=https-via-fw"))
+			ok := true
+			for _, expected := range expectedHops {
+				if !strings.Contains(nexthops, expected) {
+					ok = false
+					break
+				}
+			}
+			if ok {
+				for _, forbidden := range forbiddenHops {
+					if strings.Contains(nexthops, forbidden) {
+						ok = false
+						break
+					}
+				}
+			}
+			if !ok {
+				time.Sleep(500 * time.Millisecond)
+				continue
+			}
+			if expectedManagedRows == 1 {
+				return rows[0]
+			}
+			return ""
+		}
+		rows := activeManagedRows(t, ctx, composeFile, "Logical_Router_Policy", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file", "external_ids:netloom_policy_route=https-via-fw")
+		nexthops := runAllowFailure(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "--bare", "--no-heading", "--columns=nexthops", "find", "Logical_Router_Policy", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file", "external_ids:netloom_policy_route=https-via-fw")
+		t.Fatalf("ECMP policy route state did not converge to expected hops %v with %d managed rows and no stale hops %v:\nrows=%v\n%s", expectedHops, expectedManagedRows, forbiddenHops, rows, nexthops.output)
+		return ""
+	}
+
+	runPolicyRouteReconcile(baseState)
+	baseUUID := waitForPolicyRouteECMPState([]string{"10.245.0.251", "10.245.0.252"}, nil, 1)
+	if baseUUID == "" {
+		t.Fatal("expected canonical managed ECMP policy route row")
+	}
+
+	runPolicyRouteReconcile(baseState)
+	replayedUUID := waitForPolicyRouteECMPState([]string{"10.245.0.251", "10.245.0.252"}, nil, 1)
+	if replayedUUID != baseUUID {
+		t.Fatalf("unchanged ECMP policy route should preserve canonical row on one-shot reconcile: before=%q after=%q", baseUUID, replayedUUID)
+	}
+
+	runPolicyRouteReconcile(updatedState)
+	updatedUUID := waitForPolicyRouteECMPState([]string{"10.245.0.252", "10.245.0.253"}, []string{"10.245.0.251"}, 1)
+	if updatedUUID != baseUUID {
+		t.Fatalf("ECMP policy route nexthop update should preserve canonical row on first reconcile: before=%q after=%q", baseUUID, updatedUUID)
+	}
+}
+
 func TestDockerControllerStateReplayDetectsManagedOVNLeaksAcrossVPCs(t *testing.T) {
 	requireDockerE2E(t)
 	if testing.Short() {

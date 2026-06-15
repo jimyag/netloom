@@ -508,24 +508,20 @@ func TestPlannerBoundsLongOVNNamesWithHashSuffix(t *testing.T) {
 		t.Fatalf("long OVN router names collided: %q", routers[0])
 	}
 
-	var uuids []string
+	var policyOps []string
 	for _, op := range ops {
-		if op.Command != "create" {
+		if op.Command != "ensure-policy-route-nexthops" {
 			continue
 		}
-		for _, flag := range op.Flags {
-			if strings.HasPrefix(flag, "--id=@nl_lrp_") {
-				uuids = append(uuids, strings.TrimPrefix(flag, "--id=@"))
-			}
+		if len(op.Args) >= 2 {
+			policyOps = append(policyOps, op.Args[0]+"\x00"+op.Args[1])
 		}
 	}
-	if len(uuids) != 2 {
-		t.Fatalf("policy route named UUIDs = %v, want 2", uuids)
+	if len(policyOps) != 2 {
+		t.Fatalf("policy route ensure ops = %v, want 2", policyOps)
 	}
-	assertBoundedHashedIdentifier(t, uuids[0])
-	assertBoundedHashedIdentifier(t, uuids[1])
-	if uuids[0] == uuids[1] {
-		t.Fatalf("long named UUIDs collided: %q", uuids[0])
+	if policyOps[0] == policyOps[1] {
+		t.Fatalf("long policy-route ensure identities collided: %q", policyOps[0])
 	}
 }
 
@@ -1122,23 +1118,18 @@ func TestPlannerBuildsECMPPolicyRouteOperation(t *testing.T) {
 	}
 	joined := stringify(planner.Operations())
 	for _, expected := range []string{
-		"--if-exists lr-policy-del nl_lr_prod 110 ip4.src == 10.10.0.0/24",
-		"--id=@nl_lrp_prod_centralized_hegress create Logical_Router_Policy priority=110",
-		"action=reroute",
-		"nexthops=[\"10.10.0.253\",\"10.10.0.254\"]",
-		"external_ids:netloom_policy_route=centralized-egress",
-		"add logical_router nl_lr_prod policies @nl_lrp_prod_centralized_hegress",
+		"ensure-policy-route-nexthops prod centralized-egress 110 ip4.src == 10.10.0.0/24 [\"10.10.0.253\",\"10.10.0.254\"]",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("ECMP policy route operations missing %q:\n%s", expected, joined)
 		}
 	}
-	if strings.Contains(joined, "lr-policy-add") {
-		t.Fatalf("ECMP policy route must use Logical_Router_Policy nexthops set:\n%s", joined)
+	if strings.Contains(joined, "lr-policy-del") || strings.Contains(joined, "create Logical_Router_Policy") {
+		t.Fatalf("ECMP policy route first reconcile should use ensure op, not delete and recreate:\n%s", joined)
 	}
 }
 
-func TestPlannerECMPPolicyRouteNamedUUIDAvoidsEscapedNameCollisions(t *testing.T) {
+func TestPlannerECMPPolicyRouteEnsureOpKeepsDistinctEscapedNames(t *testing.T) {
 	planner := ovn.NewPlanner()
 	for _, name := range []string{"pod-1", "pod_1"} {
 		err := planner.EnsurePolicyRoute(context.Background(), model.PolicyRoute{
@@ -1160,16 +1151,16 @@ func TestPlannerECMPPolicyRouteNamedUUIDAvoidsEscapedNameCollisions(t *testing.T
 	}
 	joined := stringify(planner.Operations())
 	for _, expected := range []string{
-		"--id=@nl_lrp_prod_pod_h1 create Logical_Router_Policy",
-		"--id=@nl_lrp_prod_pod__1 create Logical_Router_Policy",
+		"ensure-policy-route-nexthops prod pod-1 100 ip4.src == 10.10.0.0/24 [\"10.10.0.253\",\"10.10.0.254\"]",
+		"ensure-policy-route-nexthops prod pod_1 100 ip4.src == 10.10.0.0/24 [\"10.10.0.253\",\"10.10.0.254\"]",
 	} {
 		if !strings.Contains(joined, expected) {
-			t.Fatalf("named UUID encoding missing %q:\n%s", expected, joined)
+			t.Fatalf("distinct ECMP ensure op missing %q:\n%s", expected, joined)
 		}
 	}
 }
 
-func TestPlannerECMPPolicyRouteNamedUUIDIncludesVPC(t *testing.T) {
+func TestPlannerECMPPolicyRouteEnsureOpIncludesVPC(t *testing.T) {
 	planner := ovn.NewPlanner()
 	for _, vpc := range []string{"prod", "dev"} {
 		err := planner.EnsurePolicyRoute(context.Background(), model.PolicyRoute{
@@ -1191,11 +1182,11 @@ func TestPlannerECMPPolicyRouteNamedUUIDIncludesVPC(t *testing.T) {
 	}
 	joined := stringify(planner.Operations())
 	for _, expected := range []string{
-		"--id=@nl_lrp_prod_centralized_hegress create Logical_Router_Policy",
-		"--id=@nl_lrp_dev_centralized_hegress create Logical_Router_Policy",
+		"ensure-policy-route-nexthops prod centralized-egress 100 ip4.dst == 198.51.100.0/24 [\"10.10.0.253\",\"10.10.0.254\"]",
+		"ensure-policy-route-nexthops dev centralized-egress 100 ip4.dst == 198.51.100.0/24 [\"10.10.0.253\",\"10.10.0.254\"]",
 	} {
 		if !strings.Contains(joined, expected) {
-			t.Fatalf("vpc-scoped named UUID missing %q:\n%s", expected, joined)
+			t.Fatalf("vpc-scoped ECMP ensure op missing %q:\n%s", expected, joined)
 		}
 	}
 }

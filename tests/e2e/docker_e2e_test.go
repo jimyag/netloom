@@ -1039,6 +1039,19 @@ func desiredStateWithPolicyRouteNexthopJSON(nextHop string) string {
 	)
 }
 
+func desiredStateWithPolicyRouteECMPNexthopsJSON(nextHops ...string) string {
+	quoted := make([]string, 0, len(nextHops))
+	for _, nextHop := range nextHops {
+		quoted = append(quoted, `"`+nextHop+`"`)
+	}
+	return strings.Replace(
+		desiredStateJSON(),
+		`"next_hops": ["10.245.0.253"]`,
+		`"next_hops": [`+strings.Join(quoted, ", ")+`]`,
+		1,
+	)
+}
+
 func desiredStateWithUpdatedStaticRouteJSON() string {
 	return `{
   "vpcs": [{"name": "file"}],

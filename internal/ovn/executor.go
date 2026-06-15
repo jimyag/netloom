@@ -179,7 +179,7 @@ func firstSpecialOperation(ops []Operation) int {
 
 func isSpecialOperation(op Operation) bool {
 	switch op.Command {
-	case "gc-dhcp-options", "gc-stale-dhcp-options", "gc-load-balancer-health-checks", "ensure-load-balancer-health-check", "gc-stale-load-balancer-health-checks", "gc-nat-rule", "gc-stale-nat-rules", "tag-nat-rule", "tag-policy-route", "gc-stale-policy-routes", "sync-policy-route-nexthop", "sync-policy-route-nexthops":
+	case "gc-dhcp-options", "gc-stale-dhcp-options", "gc-load-balancer-health-checks", "ensure-load-balancer-health-check", "gc-stale-load-balancer-health-checks", "gc-nat-rule", "gc-stale-nat-rules", "tag-nat-rule", "tag-policy-route", "gc-stale-policy-routes", "sync-policy-route-nexthop", "sync-policy-route-nexthops", "ensure-policy-route-nexthops":
 		return true
 	default:
 		return false
@@ -236,6 +236,8 @@ func (e *NBCTLExecutor) executeSpecial(ctx context.Context, op Operation) error 
 		return e.syncPolicyRouteNexthop(ctx, op.Args[0], op.Args[1], op.Args[2], op.Args[3], op.Args[4])
 	case "sync-policy-route-nexthops":
 		return e.syncPolicyRouteNexthops(ctx, op.Args[0], op.Args[1], op.Args[2], op.Args[3], op.Args[4])
+	case "ensure-policy-route-nexthops":
+		return e.ensurePolicyRouteNexthops(ctx, op.Args[0], op.Args[1], op.Args[2], op.Args[3], op.Args[4])
 	default:
 		return fmt.Errorf("unsupported special operation %q", op.Command)
 	}
@@ -504,6 +506,23 @@ func (e *NBCTLExecutor) syncPolicyRouteNexthops(ctx context.Context, vpc, name, 
 	return nil
 }
 
+func (e *NBCTLExecutor) ensurePolicyRouteNexthops(ctx context.Context, vpc, name, priority, match, nextHops string) error {
+	if err := e.tagPolicyRoute(ctx, vpc, name, priority, match); err != nil {
+		return err
+	}
+	if err := e.syncPolicyRouteNexthops(ctx, vpc, name, priority, match, nextHops); err != nil {
+		return err
+	}
+	exists, err := e.managedPolicyRouteExists(ctx, vpc, name, priority, match)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return nil
+	}
+	return e.createPolicyRouteWithNexthops(ctx, vpc, name, priority, match, nextHops)
+}
+
 func (e *NBCTLExecutor) syncPolicyRouteNexthop(ctx context.Context, vpc, name, priority, match, nextHop string) error {
 	policyUUIDs, err := e.policyRouteUUIDsByName(ctx, vpc, name)
 	if err != nil {
@@ -534,6 +553,46 @@ func (e *NBCTLExecutor) syncPolicyRouteNexthop(ctx context.Context, vpc, name, p
 		updated = true
 	}
 	return nil
+}
+
+func (e *NBCTLExecutor) managedPolicyRouteExists(ctx context.Context, vpc, name, priority, match string) (bool, error) {
+	policyUUIDs, err := e.policyRouteUUIDsByName(ctx, vpc, name)
+	if err != nil {
+		return false, err
+	}
+	for _, uuid := range policyUUIDs {
+		policyPriority, policyMatch, err := e.logicalRouterPolicyIdentity(ctx, uuid)
+		if err != nil {
+			return false, err
+		}
+		if policyPriority == priority && policyMatch == match {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (e *NBCTLExecutor) createPolicyRouteWithNexthops(ctx context.Context, vpc, name, priority, match, nextHops string) error {
+	args := append([]string(nil), e.BaseArgs...)
+	args = append(args,
+		"--id=@netloom_lrp",
+		"create",
+		"Logical_Router_Policy",
+		"priority="+priority,
+		"match="+ovnStringValue(match),
+		"action=reroute",
+		"nexthops="+nextHops,
+		"external_ids:netloom_owner=netloom",
+		"external_ids:netloom_policy_route="+name,
+		"external_ids:netloom_vpc="+vpc,
+		"--",
+		"add",
+		"logical_router",
+		logicalRouter(vpc),
+		"policies",
+		"@netloom_lrp",
+	)
+	return e.runCommand(ctx, args)
 }
 
 func (e *NBCTLExecutor) removeAndDestroyPolicyRoute(ctx context.Context, router, uuid string) error {
@@ -1140,6 +1199,17 @@ func validateSpecialOperation(op Operation) error {
 		return nil
 	}
 	if op.Command == "sync-policy-route-nexthops" {
+		if len(op.Args) != 5 {
+			return fmt.Errorf("special operation %q requires vpc, name, priority, match, and nexthops", op.Command)
+		}
+		for _, arg := range op.Args {
+			if arg == "" {
+				return fmt.Errorf("special operation %q contains empty argument", op.Command)
+			}
+		}
+		return nil
+	}
+	if op.Command == "ensure-policy-route-nexthops" {
 		if len(op.Args) != 5 {
 			return fmt.Errorf("special operation %q requires vpc, name, priority, match, and nexthops", op.Command)
 		}

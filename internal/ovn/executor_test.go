@@ -1114,7 +1114,7 @@ func TestBackendCleanupConvergesChangedECMPPolicyRouteNexthops(t *testing.T) {
 	}
 
 	joined := stringifyOVNOps(recorder.Operations())
-	if strings.Count(joined, "--if-exists lr-policy-del nl_lr_prod 300 ip4.src == 10.10.0.0/24") != 1 {
+	if strings.Contains(joined, "--if-exists lr-policy-del nl_lr_prod 300 ip4.src == 10.10.0.0/24") {
 		t.Fatalf("changed ECMP policy route should not be deleted, should sync nexthops:\n%s", joined)
 	}
 	if !strings.Contains(joined, "sync-policy-route-nexthops prod centralized-egress 300") {
@@ -1184,11 +1184,11 @@ func TestBackendCleanupDoesNotRecreateUnchangedECMPPolicyRoute(t *testing.T) {
 	}
 
 	joined := stringifyOVNOps(recorder.Operations())
-	if got := strings.Count(joined, "create Logical_Router_Policy priority=300"); got != 1 {
-		t.Fatalf("unchanged ECMP policy route create count = %d, want one initial apply:\n%s", got, joined)
+	if got := strings.Count(joined, "ensure-policy-route-nexthops prod centralized-egress 300 ip4.src == 10.10.0.0/24 [\"10.10.0.253\",\"10.10.0.254\"]"); got != 1 {
+		t.Fatalf("unchanged ECMP policy route ensure count = %d, want one initial apply:\n%s", got, joined)
 	}
-	if got := strings.Count(joined, "lr-policy-del nl_lr_prod 300 ip4.src == 10.10.0.0/24"); got != 1 {
-		t.Fatalf("unchanged ECMP policy route delete count = %d, want one initial planner guard:\n%s", got, joined)
+	if strings.Contains(joined, "create Logical_Router_Policy priority=300") || strings.Contains(joined, "lr-policy-del nl_lr_prod 300 ip4.src == 10.10.0.0/24") {
+		t.Fatalf("unchanged ECMP policy route should not be deleted and recreated on first reconcile:\n%s", joined)
 	}
 }
 
@@ -2815,6 +2815,94 @@ esac
 	if !strings.Contains(text, "remove\nlogical_router\nnl_lr_prod\npolicies\npolicy-b") ||
 		!strings.Contains(text, "destroy\nLogical_Router_Policy\npolicy-b") {
 		t.Fatalf("duplicate matching policy should be removed and destroyed:\n%s", raw)
+	}
+}
+
+func TestNBCTLExecutorEnsurePolicyRouteECMPNexthopsCreatesMissingPolicy(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args")
+	binary := filepath.Join(dir, "ovn-nbctl")
+	script := fmt.Sprintf(`#!/bin/sh
+printf '%%s\n' '---' >> %q
+printf '%%s\n' "$@" >> %q
+case "$*" in
+  *"get logical_router nl_lr_prod policies"*) printf '[]\n' ;;
+  *"find Logical_Router_Policy external_ids:netloom_owner=netloom external_ids:netloom_vpc=prod external_ids:netloom_policy_route=https-via-fw"*) ;;
+esac
+`, argsFile, argsFile)
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	executor := ovn.NewNBCTLExecutor(binary, "--db=unix:/tmp/ovnnb.sock")
+	err := executor.Execute(context.Background(), []ovn.Operation{{
+		Command: "ensure-policy-route-nexthops",
+		Args: []string{
+			"prod",
+			"https-via-fw",
+			"100",
+			"ip4.src == 10.10.0.0/24",
+			"[\"10.10.0.252\",\"10.10.0.254\"]",
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	if !strings.Contains(text, "create\nLogical_Router_Policy\npriority=100\nmatch=\"ip4.src == 10.10.0.0/24\"\naction=reroute\nnexthops=[\"10.10.0.252\",\"10.10.0.254\"]") {
+		t.Fatalf("missing policy should be created with requested nexthops:\n%s", raw)
+	}
+	if !strings.Contains(text, "add\nlogical_router\nnl_lr_prod\npolicies\n@netloom_lrp") {
+		t.Fatalf("missing policy should be attached to router:\n%s", raw)
+	}
+}
+
+func TestNBCTLExecutorEnsurePolicyRouteECMPNexthopsUpdatesExistingPolicyWithoutRecreate(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args")
+	binary := filepath.Join(dir, "ovn-nbctl")
+	script := fmt.Sprintf(`#!/bin/sh
+printf '%%s\n' '---' >> %q
+printf '%%s\n' "$@" >> %q
+case "$*" in
+  *"get logical_router nl_lr_prod policies"*) printf '["policy-a"]\n' ;;
+  *"find Logical_Router_Policy external_ids:netloom_owner=netloom external_ids:netloom_vpc=prod external_ids:netloom_policy_route=https-via-fw"*) printf 'policy-a\n' ;;
+  *"get Logical_Router_Policy policy-a priority"*) printf '100\n' ;;
+  *"get Logical_Router_Policy policy-a match"*) printf '"ip4.src == 10.10.0.0/24"\n' ;;
+esac
+`, argsFile, argsFile)
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	executor := ovn.NewNBCTLExecutor(binary, "--db=unix:/tmp/ovnnb.sock")
+	err := executor.Execute(context.Background(), []ovn.Operation{{
+		Command: "ensure-policy-route-nexthops",
+		Args: []string{
+			"prod",
+			"https-via-fw",
+			"100",
+			"ip4.src == 10.10.0.0/24",
+			"[\"10.10.0.252\",\"10.10.0.254\"]",
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	if !strings.Contains(text, "set\nLogical_Router_Policy\npolicy-a\nnexthops=[\"10.10.0.252\",\"10.10.0.254\"]") {
+		t.Fatalf("existing matching policy should be updated in place:\n%s", raw)
+	}
+	if strings.Contains(text, "create\nLogical_Router_Policy") {
+		t.Fatalf("existing matching policy should not be recreated:\n%s", raw)
 	}
 }
 

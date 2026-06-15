@@ -186,11 +186,8 @@ func (p *Planner) EnsurePolicyRoute(_ context.Context, route model.PolicyRoute) 
 			)
 			return nil
 		}
-		uuid := policyRouteNamedUUID(route)
 		p.ops = append(p.ops,
-			Operation{Command: "lr-policy-del", Flags: []string{"--if-exists"}, Args: []string{router, fmt.Sprint(route.Priority), match}},
-			Operation{Command: "create", Flags: []string{"--id=" + uuid}, Args: logicalRouterPolicyArgs(route, match, nextHops)},
-			Operation{Command: "add", Args: []string{"logical_router", router, "policies", uuid}},
+			ensurePolicyRouteNexthopsOperation(route, match),
 		)
 		return nil
 	}
@@ -894,7 +891,7 @@ func logicalRouterPolicyArgs(route model.PolicyRoute, match string, nextHops []n
 	args := []string{
 		"Logical_Router_Policy",
 		fmt.Sprintf("priority=%d", route.Priority),
-		"match=" + match,
+		"match=" + ovnStringValue(match),
 		"action=reroute",
 		"nexthops=" + ovnStringSet(nextHops),
 		"external_ids:netloom_owner=netloom",

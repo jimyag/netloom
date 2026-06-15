@@ -889,6 +889,21 @@ func syncPolicyRouteNexthopOperation(route model.PolicyRoute, match string) Oper
 	}}
 }
 
+func ensurePolicyRouteNexthopsOperation(route model.PolicyRoute, match string) Operation {
+	nextHops := make([]string, 0, len(route.Action.RerouteNextHops()))
+	for _, nextHop := range route.Action.RerouteNextHops() {
+		nextHops = append(nextHops, nextHop.String())
+	}
+	sort.Strings(nextHops)
+	return Operation{Command: "ensure-policy-route-nexthops", Args: []string{
+		route.VPC,
+		route.Name,
+		fmt.Sprint(route.Priority),
+		match,
+		ovnStringSetValues(nextHops),
+	}}
+}
+
 func gcStalePolicyRoutesOperation(routes map[string]policyRouteRecord) Operation {
 	keep := make([]string, 0, len(routes)*2)
 	keys := make([]string, 0, len(routes))
