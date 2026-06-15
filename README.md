@@ -212,11 +212,15 @@ task test:integration
 # 执行 Docker 多节点 e2e 测试，需要 Docker 和可用的 privileged 容器能力
 task test:e2e
 
+# 重建并修复 e2e lab 环境
+task env:doctor
+
 # 构建二进制
 task build
 ```
 
 `task test` 会运行所有 Go 包测试，包括 `tests/integration`；`task test:e2e` 会启动 Docker Compose lab，用多个容器模拟节点，验证 OVN Northbound、控制面 state-file、OVN desired-state 删除、基于 netlink 的 Linux netns 工作负载、跨节点连通性、策略路由输出、运行时 DNS 观测刷新 FQDN 安全组策略、remote-group 安全组策略、eBPF/TCX ACL drop/allow 和 stale namespace cleanup。
+`task env:doctor` 会重新构建 `bin/` 下的二进制、清空并重建 Docker e2e lab、等待 OVN NB 就绪，并校验 `node-a/node-b/node-c` 的 privileged netns/eBPF 前置条件，适合在本地环境跑乱后直接恢复。
 
 agent 以 `NETLOOM_STATE_FILE` 运行时可额外设置 `NETLOOM_DNS_OBSERVATIONS_FILE=/path/dns.json`，让每轮 reconcile 合并运行时 DNS 观测记录并刷新 `remote_fqdns` 派生策略；文件可以是 `{"dns_records":[...]}` 文档或 `DNSRecord` 数组，字段与 desired-state `dns_records` 相同。
 `netloom-dns-observer` 可作为 DNS proxy/sidecar 前置观测入口使用：它从 `base64-lines`、`hex-lines` 或单个 `raw` DNS wire response 输入中解析 answer/authority/additional 区域的 `A`/`AAAA`/`CNAME` 记录，并原子合并写入同一个 observations 文件，例如 `netloom-dns-observer -observations /tmp/netloom-dns.json < responses.b64`。

@@ -61,6 +61,11 @@ tasks:
     cmds:
       - NETLOOM_E2E=1 go test -v -trimpath ./tests/e2e
 
+  env:doctor:
+    desc: Rebuild and repair the docker-based e2e lab environment
+    cmds:
+      - bash ./scripts/doctor-e2e-env.sh
+
   build:
     desc: Build all binaries to bin/
     cmds:
