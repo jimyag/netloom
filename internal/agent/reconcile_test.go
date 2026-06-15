@@ -545,6 +545,123 @@ func TestReconcilerRestartCleansStalePinnedEBPFEndpointsWithSeparateMetadataRoot
 	}
 }
 
+func TestReconcilerRepairsDriftedPinnedEBPFPolicyMap(t *testing.T) {
+	requireEBPFReconcilerTest(t)
+	tmp := t.TempDir()
+	store := dataplane.NewEBPFPolicyStoreWithConfig(dataplane.EBPFPolicyStoreConfig{
+		PinRoot:       tmp,
+		MaxEntries:    16,
+		SchemaVersion: 1,
+	})
+	t.Cleanup(func() { _ = store.Close() })
+	reconciler := NewReconciler(store)
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:             "live",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"web"},
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "allow-web",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("10.10.0.11/32"),
+				Ports:      []model.PortRange{{From: 443, To: 443}},
+				Action:     model.ActionAllow,
+			}},
+		}},
+	}
+	if _, err := reconciler.Reconcile(context.Background(), state, ReconcileOptions{Node: "node-a", Store: store}); err != nil {
+		t.Fatalf("first reconcile failed: %v", err)
+	}
+
+	mapPath, err := singlePinnedPolicyMapPath(tmp)
+	if err != nil {
+		t.Fatalf("singlePinnedPolicyMapPath() error = %v", err)
+	}
+	pinnedMap, err := ebpf.LoadPinnedMap(mapPath, &ebpf.LoadPinOptions{})
+	if err != nil {
+		t.Fatalf("LoadPinnedMap(%q) error = %v", mapPath, err)
+	}
+	defer pinnedMap.Close()
+
+	expectedKey := dataplane.PolicyKey{
+		PrefixLen:      dataplane.StaticPrefixBits + 24,
+		RemoteIdentity: policy.EndpointIdentity("10.10.0.11/32"),
+		Direction:      dataplane.DirectionIngress,
+		Protocol:       6,
+		DestPortBE:     hostToNetwork16(443),
+	}
+	var expectedValue dataplane.PolicyEntry
+	if err := pinnedMap.Lookup(expectedKey, &expectedValue); err != nil {
+		t.Fatalf("Lookup(expectedKey) error = %v", err)
+	}
+	if err := pinnedMap.Delete(expectedKey); err != nil {
+		t.Fatalf("Delete(expectedKey) error = %v", err)
+	}
+	rogueKey := dataplane.PolicyKey{
+		PrefixLen:      dataplane.StaticPrefixBits + 24,
+		RemoteIdentity: policy.EndpointIdentity("10.10.0.99/32"),
+		Direction:      dataplane.DirectionIngress,
+		Protocol:       6,
+		DestPortBE:     hostToNetwork16(443),
+	}
+	rogueValue := dataplane.PolicyEntry{Precedence: 999, L4PrefixLen: 24}
+	if err := pinnedMap.Put(&rogueKey, &rogueValue); err != nil {
+		t.Fatalf("Put(rogueKey) error = %v", err)
+	}
+
+	if _, err := reconciler.Reconcile(context.Background(), state, ReconcileOptions{Node: "node-a", Store: store}); err != nil {
+		t.Fatalf("second reconcile failed: %v", err)
+	}
+
+	repairedMap, err := ebpf.LoadPinnedMap(mapPath, &ebpf.LoadPinOptions{})
+	if err != nil {
+		t.Fatalf("LoadPinnedMap repaired map error = %v", err)
+	}
+	defer repairedMap.Close()
+	var repairedValue dataplane.PolicyEntry
+	if err := repairedMap.Lookup(expectedKey, &repairedValue); err != nil {
+		t.Fatalf("Lookup(expectedKey) after repair error = %v", err)
+	}
+	if repairedValue != expectedValue {
+		t.Fatalf("expected value after repair = %+v, want %+v", repairedValue, expectedValue)
+	}
+	var discarded dataplane.PolicyEntry
+	if err := repairedMap.Lookup(rogueKey, &discarded); err == nil {
+		t.Fatalf("rogue key still present after repair: %+v", discarded)
+	}
+}
+
+func singlePinnedPolicyMapPath(pinRoot string) (string, error) {
+	entries, err := os.ReadDir(pinRoot)
+	if err != nil {
+		return "", err
+	}
+	var matches []string
+	for _, entry := range entries {
+		if entry.IsDir() || strings.HasSuffix(entry.Name(), ".meta") {
+			continue
+		}
+		matches = append(matches, filepath.Join(pinRoot, entry.Name()))
+	}
+	if len(matches) != 1 {
+		return "", fmt.Errorf("expected one pinned policy map, got %d", len(matches))
+	}
+	return matches[0], nil
+}
+
+func hostToNetwork16(value uint16) uint16 {
+	return value<<8 | value>>8
+}
+
 func TestReconcileSharesIdentityResolverAcrossLocalEndpoints(t *testing.T) {
 	state := control.DesiredState{
 		Endpoints: []model.Endpoint{

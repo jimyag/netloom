@@ -166,6 +166,21 @@ func (s *EBPFPolicyStore) preparePolicyMapLocked(ctx context.Context, endpointID
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	if !reloaded && len(oldEntries) > 0 {
+		drifted, err := s.policyMapDrifted(m, nextEntries)
+		if err != nil {
+			return nil, fmt.Errorf("inspect eBPF policy map for endpoint %s: %w", endpointID, err)
+		}
+		if drifted {
+			if err := s.clearMap(m); err != nil {
+				return nil, fmt.Errorf("clear drifted eBPF policy map for endpoint %s: %w", endpointID, err)
+			}
+			if err := s.populatePolicyMap(ctx, m, nextEntries); err != nil {
+				return nil, fmt.Errorf("rewrite drifted eBPF policy map for endpoint %s: %w", endpointID, err)
+			}
+			return m, nil
+		}
+	}
 	if reloaded || len(oldEntries) == 0 {
 		if err := s.clearMap(m); err != nil {
 			return nil, fmt.Errorf("clear stale eBPF policy map for endpoint %s: %w", endpointID, err)
@@ -354,6 +369,47 @@ func (s *EBPFPolicyStore) clearMap(m *ebpf.Map) error {
 		return err
 	}
 	return nil
+}
+
+func (s *EBPFPolicyStore) policyMapDrifted(m *ebpf.Map, desired []PolicyMapEntry) (bool, error) {
+	actual, err := s.readPolicyMapEntries(m)
+	if err != nil {
+		return false, err
+	}
+	actualByKey := make(map[PolicyKey]PolicyEntry, len(actual))
+	for _, entry := range actual {
+		actualByKey[entry.Key] = entry.Value
+	}
+	desiredByKey := make(map[PolicyKey]PolicyEntry, len(desired))
+	for _, entry := range desired {
+		desiredByKey[entry.Key] = entry.Value
+	}
+	if len(actualByKey) != len(desiredByKey) {
+		return true, nil
+	}
+	for key, desiredValue := range desiredByKey {
+		actualValue, ok := actualByKey[key]
+		if !ok || actualValue != desiredValue {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (s *EBPFPolicyStore) readPolicyMapEntries(m *ebpf.Map) ([]PolicyMapEntry, error) {
+	iter := m.Iterate()
+	var (
+		key   PolicyKey
+		value PolicyEntry
+	)
+	entries := make([]PolicyMapEntry, 0)
+	for iter.Next(&key, &value) {
+		entries = append(entries, PolicyMapEntry{Key: key, Value: value})
+	}
+	if err := iter.Err(); err != nil {
+		return nil, err
+	}
+	return entries, nil
 }
 
 func (s *EBPFPolicyStore) policyMapSpec() *ebpf.MapSpec {

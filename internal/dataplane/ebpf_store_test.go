@@ -647,6 +647,49 @@ func TestEBPFPolicyStorePinnedMapCanBeUpdatedAcrossReconciles(t *testing.T) {
 	}
 }
 
+func TestEBPFPolicyStoreRepairsDriftedPinnedMapEntries(t *testing.T) {
+	requireEBPFTest(t)
+	endpointID := model.EndpointKey("prod", "endpoint-a")
+	tmp := t.TempDir()
+	store := NewEBPFPolicyStoreWithConfig(EBPFPolicyStoreConfig{
+		PinRoot:       tmp,
+		MaxEntries:    16,
+		SchemaVersion: 1,
+	})
+	t.Cleanup(func() { _ = store.Close() })
+
+	desired := []PolicyMapEntry{{
+		Key:   PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 10, Direction: DirectionIngress},
+		Value: PolicyEntry{Precedence: 10, Deny: 1},
+	}}
+	replaceOrSkipIfUnprivileged(t, store, endpointID, desired)
+
+	driftedMap := store.maps[endpointID]
+	if driftedMap == nil {
+		t.Fatal("expected loaded pinned map")
+	}
+	if err := driftedMap.Delete(desired[0].Key); err != nil {
+		t.Fatalf("delete desired key from pinned map: %v", err)
+	}
+	rogue := PolicyMapEntry{
+		Key:   PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 99, Direction: DirectionIngress},
+		Value: PolicyEntry{Precedence: 99, Deny: 1},
+	}
+	if err := driftedMap.Put(&rogue.Key, &rogue.Value); err != nil {
+		t.Fatalf("inject rogue key into pinned map: %v", err)
+	}
+
+	replaceOrSkipIfUnprivileged(t, store, endpointID, desired)
+
+	liveEntries, err := store.readPolicyMapEntries(store.maps[endpointID])
+	if err != nil {
+		t.Fatalf("readPolicyMapEntries() error = %v", err)
+	}
+	if got := canonicalPolicyEntries(liveEntries); len(got) != 1 || got[0].Key != desired[0].Key || got[0].Value != desired[0].Value {
+		t.Fatalf("live entries after drift repair = %+v, want %+v", got, desired)
+	}
+}
+
 func TestEBPFPolicyStoreMaintainsDistinctPinnedMapsForVPCEndpoints(t *testing.T) {
 	requireEBPFTest(t)
 	vpcOne := model.EndpointKey("prod", "endpoint-a")
