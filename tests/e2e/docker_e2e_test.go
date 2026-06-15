@@ -24,12 +24,7 @@ func TestDockerMultiNodeLab(t *testing.T) {
 
 	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
 	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
-	run(t, ctx, "docker", "compose", "-f", composeFile, "up", "-d", "--quiet-pull", "--force-recreate")
-	t.Cleanup(func() {
-		downCtx, downCancel := context.WithTimeout(context.Background(), time.Minute)
-		defer downCancel()
-		run(t, downCtx, "docker", "compose", "-f", composeFile, "down", "-v")
-	})
+	startComposeLab(t, ctx, composeFile)
 	waitForOVN(t, ctx, composeFile)
 
 	for _, service := range []string{"node-a", "node-b", "node-c"} {
@@ -405,7 +400,7 @@ func TestDockerIPv6WorkloadPolicyTCX(t *testing.T) {
 
 	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
 	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
-	run(t, ctx, "docker", "compose", "-f", composeFile, "up", "-d", "--quiet-pull", "--force-recreate")
+	startComposeLab(t, ctx, composeFile)
 	t.Cleanup(func() {
 		downCtx, downCancel := context.WithTimeout(context.Background(), time.Minute)
 		defer downCancel()
@@ -466,7 +461,7 @@ func TestDockerIPv6CrossNodeWorkloadPolicyTCX(t *testing.T) {
 
 	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
 	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
-	run(t, ctx, "docker", "compose", "-f", composeFile, "up", "-d", "--quiet-pull", "--force-recreate")
+	startComposeLab(t, ctx, composeFile)
 	t.Cleanup(func() {
 		downCtx, downCancel := context.WithTimeout(context.Background(), time.Minute)
 		defer downCancel()
@@ -540,7 +535,7 @@ func TestDockerIPv6CrossNodeWorkloadL4PolicyTCX(t *testing.T) {
 
 	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
 	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
-	run(t, ctx, "docker", "compose", "-f", composeFile, "up", "-d", "--quiet-pull", "--force-recreate")
+	startComposeLab(t, ctx, composeFile)
 	t.Cleanup(func() {
 		downCtx, downCancel := context.WithTimeout(context.Background(), time.Minute)
 		defer downCancel()
@@ -616,7 +611,7 @@ func TestDockerDualStackInterfaceL4PolicyTCX(t *testing.T) {
 
 	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
 	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
-	run(t, ctx, "docker", "compose", "-f", composeFile, "up", "-d", "--quiet-pull", "--force-recreate")
+	startComposeLab(t, ctx, composeFile)
 	t.Cleanup(func() {
 		downCtx, downCancel := context.WithTimeout(context.Background(), time.Minute)
 		defer downCancel()
@@ -675,7 +670,7 @@ func TestDockerIPv6CrossNodeWorkloadEgressL4PolicyTCX(t *testing.T) {
 
 	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
 	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
-	run(t, ctx, "docker", "compose", "-f", composeFile, "up", "-d", "--quiet-pull", "--force-recreate")
+	startComposeLab(t, ctx, composeFile)
 	t.Cleanup(func() {
 		downCtx, downCancel := context.WithTimeout(context.Background(), time.Minute)
 		defer downCancel()
@@ -1071,7 +1066,7 @@ func desiredWorkloadIPv6ICMPDropStateJSON() string {
     {"name": "drop-icmpv6", "vpc": "ipv6", "rules": [{"id": "drop-icmpv6-from-clients", "priority": 100, "direction": "ingress", "protocol": "icmp", "remote_group": "clients", "action": "drop"}]}
   ]
 }`
-} 
+}
 
 func desiredWorkloadIPv6CrossNodeStateJSON() string {
 	return `{
@@ -1101,7 +1096,7 @@ func desiredWorkloadIPv6CrossNodeICMPDropStateJSON() string {
     {"name": "drop-icmpv6", "vpc": "ipv6", "rules": [{"id": "drop-icmpv6-from-clients", "priority": 100, "direction": "ingress", "protocol": "icmp", "remote_group": "clients", "action": "drop"}]}
   ]
 }`
-} 
+}
 
 func desiredWorkloadIPv6CrossNodeL4StateJSON() string {
 	return `{
@@ -1131,7 +1126,7 @@ func desiredWorkloadIPv6CrossNodeL4DropStateJSON() string {
     {"name": "drop-web", "vpc": "ipv6", "rules": [{"id": "drop-web-from-clients", "priority": 100, "direction": "ingress", "protocol": "tcp", "remote_group": "clients", "ports": [{"from": 8080, "to": 8080}], "action": "drop"}]}
   ]
 }`
-} 
+}
 
 func desiredDualStackInterfaceDropStateJSON() string {
 	return `{
@@ -1143,7 +1138,7 @@ func desiredDualStackInterfaceDropStateJSON() string {
     {"id": "drop-v6-from-node-a", "priority": 100, "direction": "ingress", "protocol": "tcp", "remote_cidr": "fd00:30::11/128", "ports": [{"from": 8084, "to": 8084}], "action": "drop"}
   ]}]
 }`
-} 
+}
 
 func desiredWorkloadIPv6CrossNodeEgressL4StateJSON() string {
 	return `{
@@ -1241,6 +1236,55 @@ func waitForOVN(t *testing.T, ctx context.Context, composeFile string) {
 		time.Sleep(500 * time.Millisecond)
 	}
 	t.Fatalf("OVN NB DB did not become ready:\n%s", last)
+}
+
+func startComposeLab(t *testing.T, ctx context.Context, composeFile string) {
+	t.Helper()
+	composeDown(t, composeFile)
+	deadline := time.Now().Add(45 * time.Second)
+	var last commandResult
+	for {
+		last = runAllowFailure(t, ctx, "docker", "compose", "-f", composeFile, "up", "-d", "--quiet-pull", "--force-recreate", "--remove-orphans")
+		if last.exitCode == 0 {
+			break
+		}
+		if !dockerComposeStartupRetryable(last.output) || time.Now().After(deadline) {
+			t.Fatalf("docker compose -f %s up -d --quiet-pull --force-recreate --remove-orphans failed:\n%s", composeFile, last.output)
+		}
+		time.Sleep(2 * time.Second)
+		composeDown(t, composeFile)
+	}
+	t.Cleanup(func() {
+		composeDown(t, composeFile)
+	})
+}
+
+func composeDown(t *testing.T, composeFile string) {
+	t.Helper()
+	downCtx, downCancel := context.WithTimeout(context.Background(), time.Minute)
+	defer downCancel()
+	runAllowFailure(t, downCtx, "docker", "compose", "-f", composeFile, "down", "-v", "--remove-orphans")
+	waitForComposeProjectRemoval(t, composeFile)
+}
+
+func dockerComposeStartupRetryable(output string) bool {
+	return (strings.Contains(output, "removal of container") && strings.Contains(output, "already in progress")) ||
+		strings.Contains(output, "container name") && strings.Contains(output, "is already in use")
+}
+
+func waitForComposeProjectRemoval(t *testing.T, composeFile string) {
+	t.Helper()
+	project := filepath.Base(filepath.Dir(composeFile))
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		result := runAllowFailure(t, context.Background(), "docker", "ps", "-a", "--filter", "label=com.docker.compose.project="+project, "--format", "{{.Names}}")
+		if result.exitCode == 0 && strings.TrimSpace(result.output) == "" {
+			return
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	result := runAllowFailure(t, context.Background(), "docker", "ps", "-a", "--filter", "label=com.docker.compose.project="+project, "--format", "{{.Names}} {{.Status}}")
+	t.Fatalf("docker compose project %s did not finish removing containers:\n%s", project, result.output)
 }
 
 func run(t *testing.T, ctx context.Context, name string, args ...string) string {

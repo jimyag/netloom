@@ -27,12 +27,7 @@ func TestDockerControllerReconcileIdempotent(t *testing.T) {
 
 	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
 	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
-	run(t, ctx, "docker", "compose", "-f", composeFile, "up", "-d", "--quiet-pull", "--force-recreate")
-	t.Cleanup(func() {
-		downCtx, downCancel := context.WithTimeout(context.Background(), time.Minute)
-		defer downCancel()
-		run(t, downCtx, "docker", "compose", "-f", composeFile, "down", "-v")
-	})
+	startComposeLab(t, ctx, composeFile)
 
 	waitForOVN(t, ctx, composeFile)
 
@@ -79,12 +74,7 @@ func TestDockerControllerReplayDoesNotChangeOVNState(t *testing.T) {
 
 	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
 	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
-	run(t, ctx, "docker", "compose", "-f", composeFile, "up", "-d", "--quiet-pull", "--force-recreate")
-	t.Cleanup(func() {
-		downCtx, downCancel := context.WithTimeout(context.Background(), time.Minute)
-		defer downCancel()
-		run(t, downCtx, "docker", "compose", "-f", composeFile, "down", "-v")
-	})
+	startComposeLab(t, ctx, composeFile)
 	waitForOVN(t, ctx, composeFile)
 
 	statePath := "/tmp/netloom-state-replay.json"
@@ -138,12 +128,7 @@ func TestDockerControllerConcurrentReconcilesAreStable(t *testing.T) {
 
 	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
 	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
-	run(t, ctx, "docker", "compose", "-f", composeFile, "up", "-d", "--quiet-pull", "--force-recreate")
-	t.Cleanup(func() {
-		downCtx, downCancel := context.WithTimeout(context.Background(), time.Minute)
-		defer downCancel()
-		run(t, downCtx, "docker", "compose", "-f", composeFile, "down", "-v")
-	})
+	startComposeLab(t, ctx, composeFile)
 	waitForOVN(t, ctx, composeFile)
 
 	stateScript := "cat >/tmp/netloom-state.json <<'EOF'\n" + desiredStateJSON() + "\nEOF\n"
@@ -241,7 +226,7 @@ func TestDockerControllerConcurrentReconcilesAreStableAcrossVPCs(t *testing.T) {
 
 	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
 	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
-	run(t, ctx, "docker", "compose", "-f", composeFile, "up", "-d", "--quiet-pull", "--force-recreate")
+	startComposeLab(t, ctx, composeFile)
 	t.Cleanup(func() {
 		downCtx, downCancel := context.WithTimeout(context.Background(), time.Minute)
 		defer downCancel()
@@ -349,7 +334,7 @@ func TestDockerControllerWatchRecoversFromRestart(t *testing.T) {
 
 	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
 	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
-	run(t, ctx, "docker", "compose", "-f", composeFile, "up", "-d", "--quiet-pull", "--force-recreate")
+	startComposeLab(t, ctx, composeFile)
 	t.Cleanup(func() {
 		downCtx, downCancel := context.WithTimeout(context.Background(), time.Minute)
 		defer downCancel()
@@ -421,7 +406,7 @@ func TestDockerControllerReconcileSupportsSameEndpointIDAcrossVPCs(t *testing.T)
 
 	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
 	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
-	run(t, ctx, "docker", "compose", "-f", composeFile, "up", "-d", "--quiet-pull", "--force-recreate")
+	startComposeLab(t, ctx, composeFile)
 	t.Cleanup(func() {
 		downCtx, downCancel := context.WithTimeout(context.Background(), time.Minute)
 		defer downCancel()
@@ -463,7 +448,7 @@ func TestDockerControllerSupportsSameResourceNamesAcrossVPCs(t *testing.T) {
 
 	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
 	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
-	run(t, ctx, "docker", "compose", "-f", composeFile, "up", "-d", "--quiet-pull", "--force-recreate")
+	startComposeLab(t, ctx, composeFile)
 	t.Cleanup(func() {
 		downCtx, downCancel := context.WithTimeout(context.Background(), time.Minute)
 		defer downCancel()
@@ -570,7 +555,7 @@ func TestDockerControllerReplaySameResourceNamesAcrossVPCs(t *testing.T) {
 
 	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
 	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
-	run(t, ctx, "docker", "compose", "-f", composeFile, "up", "-d", "--quiet-pull", "--force-recreate")
+	startComposeLab(t, ctx, composeFile)
 	t.Cleanup(func() {
 		downCtx, downCancel := context.WithTimeout(context.Background(), time.Minute)
 		defer downCancel()
@@ -672,7 +657,7 @@ func TestDockerControllerSameResourceNamesAcrossVPCsIncludeRoutes(t *testing.T) 
 
 	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
 	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
-	run(t, ctx, "docker", "compose", "-f", composeFile, "up", "-d", "--quiet-pull", "--force-recreate")
+	startComposeLab(t, ctx, composeFile)
 	t.Cleanup(func() {
 		downCtx, downCancel := context.WithTimeout(context.Background(), time.Minute)
 		defer downCancel()
@@ -718,7 +703,7 @@ func TestDockerControllerStateReplayDetectsManagedOVNLeaks(t *testing.T) {
 
 	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
 	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
-	run(t, ctx, "docker", "compose", "-f", composeFile, "up", "-d", "--quiet-pull", "--force-recreate")
+	startComposeLab(t, ctx, composeFile)
 	t.Cleanup(func() {
 		downCtx, downCancel := context.WithTimeout(context.Background(), time.Minute)
 		defer downCancel()
@@ -828,7 +813,7 @@ func TestDockerControllerRestartRecoversManagedOVNLeakCleanup(t *testing.T) {
 
 	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
 	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
-	run(t, ctx, "docker", "compose", "-f", composeFile, "up", "-d", "--quiet-pull", "--force-recreate")
+	startComposeLab(t, ctx, composeFile)
 	t.Cleanup(func() {
 		downCtx, downCancel := context.WithTimeout(context.Background(), time.Minute)
 		defer downCancel()
@@ -933,7 +918,7 @@ func TestDockerControllerStateReplayDetectsManagedOVNLeaksAcrossVPCs(t *testing.
 
 	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
 	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
-	run(t, ctx, "docker", "compose", "-f", composeFile, "up", "-d", "--quiet-pull", "--force-recreate")
+	startComposeLab(t, ctx, composeFile)
 	t.Cleanup(func() {
 		downCtx, downCancel := context.WithTimeout(context.Background(), time.Minute)
 		defer downCancel()
@@ -1018,7 +1003,7 @@ func TestDockerControllerReplayDetectsManagedOVNLeaksAcrossVPCsIdempotent(t *tes
 
 	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
 	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
-	run(t, ctx, "docker", "compose", "-f", composeFile, "up", "-d", "--quiet-pull", "--force-recreate")
+	startComposeLab(t, ctx, composeFile)
 	t.Cleanup(func() {
 		downCtx, downCancel := context.WithTimeout(context.Background(), time.Minute)
 		defer downCancel()
@@ -1098,7 +1083,7 @@ func TestDockerControllerReplayDoesNotChangeOVNStateAcrossVPCs(t *testing.T) {
 
 	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
 	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
-	run(t, ctx, "docker", "compose", "-f", composeFile, "up", "-d", "--quiet-pull", "--force-recreate")
+	startComposeLab(t, ctx, composeFile)
 	t.Cleanup(func() {
 		downCtx, downCancel := context.WithTimeout(context.Background(), time.Minute)
 		defer downCancel()
@@ -1163,7 +1148,7 @@ func TestDockerControllerReplaysRecoverOnDualVPCRestart(t *testing.T) {
 
 	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
 	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
-	run(t, ctx, "docker", "compose", "-f", composeFile, "up", "-d", "--quiet-pull", "--force-recreate")
+	startComposeLab(t, ctx, composeFile)
 	t.Cleanup(func() {
 		downCtx, downCancel := context.WithTimeout(context.Background(), time.Minute)
 		defer downCancel()
@@ -1279,7 +1264,7 @@ func TestDockerControllerRouteTableECMPDeltaIsIncremental(t *testing.T) {
 
 	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
 	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
-	run(t, ctx, "docker", "compose", "-f", composeFile, "up", "-d", "--quiet-pull", "--force-recreate")
+	startComposeLab(t, ctx, composeFile)
 	t.Cleanup(func() {
 		downCtx, downCancel := context.WithTimeout(context.Background(), time.Minute)
 		defer downCancel()
@@ -1382,7 +1367,7 @@ func TestDockerControllerRouteTableECMPDeltaSurvivesRestart(t *testing.T) {
 
 	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
 	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
-	run(t, ctx, "docker", "compose", "-f", composeFile, "up", "-d", "--quiet-pull", "--force-recreate")
+	startComposeLab(t, ctx, composeFile)
 	t.Cleanup(func() {
 		downCtx, downCancel := context.WithTimeout(context.Background(), time.Minute)
 		defer downCancel()
@@ -1512,7 +1497,7 @@ func TestDockerControllerRouteTableECMPDeltaIsIdempotentForOneShotReconcile(t *t
 
 	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
 	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
-	run(t, ctx, "docker", "compose", "-f", composeFile, "up", "-d", "--quiet-pull", "--force-recreate")
+	startComposeLab(t, ctx, composeFile)
 	t.Cleanup(func() {
 		downCtx, downCancel := context.WithTimeout(context.Background(), time.Minute)
 		defer downCancel()
@@ -1633,7 +1618,7 @@ func TestDockerControllerRouteTableECMPDeltaIsOrderInsensitive(t *testing.T) {
 
 	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
 	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
-	run(t, ctx, "docker", "compose", "-f", composeFile, "up", "-d", "--quiet-pull", "--force-recreate")
+	startComposeLab(t, ctx, composeFile)
 	t.Cleanup(func() {
 		downCtx, downCancel := context.WithTimeout(context.Background(), time.Minute)
 		defer downCancel()
@@ -1736,7 +1721,7 @@ func TestDockerControllerRouteTableECMPDeltaIsOrderInsensitiveIPv6(t *testing.T)
 
 	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
 	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
-	run(t, ctx, "docker", "compose", "-f", composeFile, "up", "-d", "--quiet-pull", "--force-recreate")
+	startComposeLab(t, ctx, composeFile)
 	t.Cleanup(func() {
 		downCtx, downCancel := context.WithTimeout(context.Background(), time.Minute)
 		defer downCancel()
@@ -1827,7 +1812,7 @@ func TestDockerWorkloadPolicyPriorityConflict(t *testing.T) {
 
 	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
 	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
-	run(t, ctx, "docker", "compose", "-f", composeFile, "up", "-d", "--quiet-pull", "--force-recreate")
+	startComposeLab(t, ctx, composeFile)
 	t.Cleanup(func() {
 		downCtx, downCancel := context.WithTimeout(context.Background(), time.Minute)
 		defer downCancel()
@@ -2003,7 +1988,7 @@ func TestDockerControllerReconcileIPv6VPC(t *testing.T) {
 
 	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
 	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
-	run(t, ctx, "docker", "compose", "-f", composeFile, "up", "-d", "--quiet-pull", "--force-recreate")
+	startComposeLab(t, ctx, composeFile)
 	t.Cleanup(func() {
 		downCtx, downCancel := context.WithTimeout(context.Background(), time.Minute)
 		defer downCancel()
@@ -2081,7 +2066,7 @@ func TestDockerControllerReconcileSubnetExcludeCIDRs(t *testing.T) {
 
 	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
 	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
-	run(t, ctx, "docker", "compose", "-f", composeFile, "up", "-d", "--quiet-pull", "--force-recreate")
+	startComposeLab(t, ctx, composeFile)
 	t.Cleanup(func() {
 		downCtx, downCancel := context.WithTimeout(context.Background(), time.Minute)
 		defer downCancel()
@@ -2149,7 +2134,7 @@ func TestDockerControllerReconcileDualStackVPC(t *testing.T) {
 
 	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
 	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
-	run(t, ctx, "docker", "compose", "-f", composeFile, "up", "-d", "--quiet-pull", "--force-recreate")
+	startComposeLab(t, ctx, composeFile)
 	t.Cleanup(func() {
 		downCtx, downCancel := context.WithTimeout(context.Background(), time.Minute)
 		defer downCancel()

@@ -24,12 +24,7 @@ func TestDockerAgentSelftestSupportsCustomVpc(t *testing.T) {
 
 	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
 	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
-	run(t, ctx, "docker", "compose", "-f", composeFile, "up", "-d", "--quiet-pull", "--force-recreate")
-	t.Cleanup(func() {
-		downCtx, downCancel := context.WithTimeout(context.Background(), time.Minute)
-		defer downCancel()
-		run(t, downCtx, "docker", "compose", "-f", composeFile, "down", "-v")
-	})
+	startComposeLab(t, ctx, composeFile)
 	waitForOVN(t, ctx, composeFile)
 
 	tcxIface, _ := tcxSelftestInterface(t, ctx, composeFile, "node-b")
@@ -60,7 +55,7 @@ func TestDockerAgentSelftestCapturesStatefulPolicyAndTraceMetrics(t *testing.T) 
 
 	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
 	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
-	run(t, ctx, "docker", "compose", "-f", composeFile, "up", "-d", "--quiet-pull", "--force-recreate")
+	startComposeLab(t, ctx, composeFile)
 	t.Cleanup(func() {
 		downCtx, downCancel := context.WithTimeout(context.Background(), time.Minute)
 		defer downCancel()
@@ -103,7 +98,7 @@ func TestDockerAgentSelftestTCXAttachFailureIsSurfaceable(t *testing.T) {
 
 	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
 	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
-	run(t, ctx, "docker", "compose", "-f", composeFile, "up", "-d", "--quiet-pull", "--force-recreate")
+	startComposeLab(t, ctx, composeFile)
 	t.Cleanup(func() {
 		downCtx, downCancel := context.WithTimeout(context.Background(), time.Minute)
 		defer downCancel()
@@ -137,7 +132,7 @@ func TestDockerAgentSelftestTCXAttachFailureAndRecovery(t *testing.T) {
 
 	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
 	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
-	run(t, ctx, "docker", "compose", "-f", composeFile, "up", "-d", "--quiet-pull", "--force-recreate")
+	startComposeLab(t, ctx, composeFile)
 	t.Cleanup(func() {
 		downCtx, downCancel := context.WithTimeout(context.Background(), time.Minute)
 		defer downCancel()
@@ -205,7 +200,7 @@ func TestDockerAgentStateWatchRecoversFromRestart(t *testing.T) {
 
 	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
 	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
-	run(t, ctx, "docker", "compose", "-f", composeFile, "up", "-d", "--quiet-pull", "--force-recreate")
+	startComposeLab(t, ctx, composeFile)
 	t.Cleanup(func() {
 		downCtx, downCancel := context.WithTimeout(context.Background(), time.Minute)
 		defer downCancel()
