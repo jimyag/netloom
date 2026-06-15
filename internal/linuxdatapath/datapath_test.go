@@ -67,7 +67,7 @@ func TestPlanRequiresRemoteUnderlay(t *testing.T) {
 			VPC:    "prod",
 			Subnet: "apps",
 			IP:     netip.MustParseAddr("10.10.0.11"),
-			Node:   "missing-node",
+			Node:   "missing node",
 		}},
 	}, Options{Node: "node-a"})
 	if err == nil {
@@ -271,6 +271,111 @@ func TestPlanRejectsProviderSubnetWithoutParentLinkMapping(t *testing.T) {
 	_, _, err := Plan(context.Background(), state, Options{Node: "node-a", LocalDevice: "nl0"})
 	if err == nil || !strings.Contains(err.Error(), `provider network "physnet-a" requires parent device mapping`) {
 		t.Fatalf("err = %v, want missing provider mapping failure", err)
+	}
+}
+
+func TestPlanRejectsConflictingProviderNetworksOnSameParentVLAN(t *testing.T) {
+	state := control.DesiredState{
+		Subnets: []model.Subnet{
+			{
+				Name:            "baremetal-a",
+				VPC:             "prod",
+				CIDR:            netip.MustParsePrefix("10.10.0.0/24"),
+				Gateway:         netip.MustParseAddr("10.10.0.1"),
+				ProviderNetwork: "physnet-a",
+				VLAN:            100,
+			},
+			{
+				Name:            "baremetal-b",
+				VPC:             "prod",
+				CIDR:            netip.MustParsePrefix("10.20.0.0/24"),
+				Gateway:         netip.MustParseAddr("10.20.0.1"),
+				ProviderNetwork: "physnet-b",
+				VLAN:            100,
+			},
+		},
+		Endpoints: []model.Endpoint{
+			{
+				ID:     "pod-a",
+				VPC:    "prod",
+				Subnet: "baremetal-a",
+				IP:     netip.MustParseAddr("10.10.0.10"),
+				Node:   "node-a",
+			},
+			{
+				ID:     "pod-b",
+				VPC:    "prod",
+				Subnet: "baremetal-b",
+				IP:     netip.MustParseAddr("10.20.0.10"),
+				Node:   "node-a",
+			},
+		},
+	}
+	_, _, err := Plan(context.Background(), state, Options{
+		Node:        "node-a",
+		LocalDevice: "nl0",
+		ProviderLinks: map[string]string{
+			"physnet-a": "eth1",
+			"physnet-b": "eth1",
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), `provider networks "physnet-a" and "physnet-b" both require parent eth1 vlan 100`) {
+		t.Fatalf("err = %v, want conflicting provider network failure", err)
+	}
+}
+
+func TestPlanDeduplicatesSharedProviderNetworkLinkAcrossSubnets(t *testing.T) {
+	state := control.DesiredState{
+		Subnets: []model.Subnet{
+			{
+				Name:            "baremetal-a",
+				VPC:             "prod",
+				CIDR:            netip.MustParsePrefix("10.10.0.0/24"),
+				Gateway:         netip.MustParseAddr("10.10.0.1"),
+				ProviderNetwork: "physnet-a",
+				VLAN:            100,
+			},
+			{
+				Name:            "baremetal-b",
+				VPC:             "prod",
+				CIDR:            netip.MustParsePrefix("10.20.0.0/24"),
+				Gateway:         netip.MustParseAddr("10.20.0.1"),
+				ProviderNetwork: "physnet-a",
+				VLAN:            100,
+			},
+		},
+		Endpoints: []model.Endpoint{
+			{
+				ID:     "pod-a",
+				VPC:    "prod",
+				Subnet: "baremetal-a",
+				IP:     netip.MustParseAddr("10.10.0.10"),
+				Node:   "node-a",
+			},
+			{
+				ID:     "pod-b",
+				VPC:    "prod",
+				Subnet: "baremetal-b",
+				IP:     netip.MustParseAddr("10.20.0.10"),
+				Node:   "node-a",
+			},
+		},
+	}
+	ops, _, err := Plan(context.Background(), state, Options{
+		Node:          "node-a",
+		LocalDevice:   "nl0",
+		ProviderLinks: map[string]string{"physnet-a": "eth1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	linkName := providerNetworkLinkName("physnet-a", "eth1", 100)
+	joined := stringifyOps(ops)
+	if got := strings.Count(joined, "ip link show "+linkName+" >/dev/null 2>&1 || ip link add link eth1 name "+linkName+" type vlan id 100"); got != 1 {
+		t.Fatalf("provider vlan create count = %d, want 1:\n%s", got, joined)
+	}
+	if got := strings.Count(joined, "ip link set "+linkName+" up"); got != 1 {
+		t.Fatalf("provider vlan setup count = %d, want 1:\n%s", got, joined)
 	}
 }
 

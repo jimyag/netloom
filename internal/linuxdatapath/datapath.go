@@ -214,6 +214,7 @@ func desiredProviderNetworkLinkSpecs(state control.DesiredState, node string, ma
 		subnets[subnetStateKey(subnet.VPC, subnet.Name)] = subnet
 	}
 	seen := make(map[string]providerNetworkLinkSpec)
+	claimedLinks := make(map[string]providerNetworkLinkSpec)
 	for _, endpoint := range state.Endpoints {
 		if endpoint.Node != node {
 			continue
@@ -232,6 +233,11 @@ func desiredProviderNetworkLinkSpecs(state control.DesiredState, node string, ma
 			VLAN:            subnet.VLAN,
 			Name:            providerNetworkLinkName(subnet.ProviderNetwork, parent, subnet.VLAN),
 		}
+		linkKey := parent + "|" + strconv.Itoa(int(spec.VLAN))
+		if claimed, ok := claimedLinks[linkKey]; ok && claimed.ProviderNetwork != spec.ProviderNetwork {
+			return nil, fmt.Errorf("provider networks %q and %q both require parent %s vlan %d", claimed.ProviderNetwork, spec.ProviderNetwork, parent, spec.VLAN)
+		}
+		claimedLinks[linkKey] = spec
 		seen[providerNetworkLinkKey(spec)] = spec
 	}
 	keys := make([]string, 0, len(seen))
