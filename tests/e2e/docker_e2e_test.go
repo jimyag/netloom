@@ -1245,10 +1245,13 @@ func startComposeLab(t *testing.T, ctx context.Context, composeFile string) {
 	var last commandResult
 	for {
 		last = runAllowFailure(t, ctx, "docker", "compose", "-f", composeFile, "up", "-d", "--quiet-pull", "--force-recreate", "--remove-orphans")
-		if last.exitCode == 0 {
+		if last.exitCode == 0 && composeServicesRunning(t, composeFile, "ovn-central", "node-a", "node-b", "node-c") {
 			break
 		}
-		if !dockerComposeStartupRetryable(last.output) || time.Now().After(deadline) {
+		if last.exitCode != 0 && !dockerComposeStartupRetryable(last.output) {
+			t.Fatalf("docker compose -f %s up -d --quiet-pull --force-recreate --remove-orphans failed:\n%s", composeFile, last.output)
+		}
+		if time.Now().After(deadline) {
 			t.Fatalf("docker compose -f %s up -d --quiet-pull --force-recreate --remove-orphans failed:\n%s", composeFile, last.output)
 		}
 		time.Sleep(2 * time.Second)
@@ -1269,7 +1272,9 @@ func composeDown(t *testing.T, composeFile string) {
 
 func dockerComposeStartupRetryable(output string) bool {
 	return (strings.Contains(output, "removal of container") && strings.Contains(output, "already in progress")) ||
-		strings.Contains(output, "container name") && strings.Contains(output, "is already in use")
+		(strings.Contains(output, "container name") && strings.Contains(output, "is already in use")) ||
+		strings.Contains(output, "marked for removal and cannot be started") ||
+		(strings.Contains(output, "network") && strings.Contains(output, "not found"))
 }
 
 func waitForComposeProjectRemoval(t *testing.T, composeFile string) {
@@ -1285,6 +1290,32 @@ func waitForComposeProjectRemoval(t *testing.T, composeFile string) {
 	}
 	result := runAllowFailure(t, context.Background(), "docker", "ps", "-a", "--filter", "label=com.docker.compose.project="+project, "--format", "{{.Names}} {{.Status}}")
 	t.Fatalf("docker compose project %s did not finish removing containers:\n%s", project, result.output)
+}
+
+func composeServicesRunning(t *testing.T, composeFile string, services ...string) bool {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		allRunning := true
+		for _, service := range services {
+			result := runAllowFailure(t, context.Background(), "docker", "compose", "-f", composeFile, "ps", "-q", service)
+			containerID := strings.TrimSpace(result.output)
+			if result.exitCode != 0 || containerID == "" {
+				allRunning = false
+				break
+			}
+			inspect := runAllowFailure(t, context.Background(), "docker", "inspect", "-f", "{{.State.Running}}", containerID)
+			if inspect.exitCode != 0 || strings.TrimSpace(inspect.output) != "true" {
+				allRunning = false
+				break
+			}
+		}
+		if allRunning {
+			return true
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	return false
 }
 
 func run(t *testing.T, ctx context.Context, name string, args ...string) string {
