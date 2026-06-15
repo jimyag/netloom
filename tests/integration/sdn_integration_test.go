@@ -434,6 +434,45 @@ func TestDesiredStatePriorityConflictMatchesTCXEligibilityFromJSON(t *testing.T)
 	}
 }
 
+func TestDesiredStateRemovesLocalnetTagWhenProviderNetworkVLANIsCleared(t *testing.T) {
+	ctx := context.Background()
+	initial, err := control.LoadDesiredStateJSON(strings.NewReader(`{
+  "vpcs": [{"name": "file"}],
+  "subnets": [{"name": "fileapps", "vpc": "file", "cidr": "10.245.0.0/24", "gateway": "10.245.0.1", "provider_network": "physnet-a", "vlan": 100}],
+  "endpoints": [{"id": "file-pod-a", "vpc": "file", "subnet": "fileapps", "ip": "10.245.0.10", "node": "node-a"}]
+}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := control.LoadDesiredStateJSON(strings.NewReader(`{
+  "vpcs": [{"name": "file"}],
+  "subnets": [{"name": "fileapps", "vpc": "file", "cidr": "10.245.0.0/24", "gateway": "10.245.0.1", "provider_network": "physnet-a"}],
+  "endpoints": [{"id": "file-pod-a", "vpc": "file", "subnet": "fileapps", "ip": "10.245.0.10", "node": "node-a"}]
+}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	memoryBackend := control.NewMemoryBackend()
+	ovnRecorder := ovn.NewRecorderExecutor()
+	ovnBackend := ovn.NewBackend(ovnRecorder)
+	controller := control.NewController(control.MultiTopologyBackend{memoryBackend, ovnBackend}, memoryBackend)
+	if err := controller.Reconcile(ctx, initial); err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.Reconcile(ctx, updated); err != nil {
+		t.Fatal(err)
+	}
+
+	joined := stringifyOVNOps(ovnRecorder.Operations())
+	if !strings.Contains(joined, "set logical_switch_port nl_ls_file_fileapps_to_fileapps_localnet tag=100") {
+		t.Fatalf("initial provider vlan programming missing tag set:\n%s", joined)
+	}
+	if !strings.Contains(joined, "remove logical_switch_port nl_ls_file_fileapps_to_fileapps_localnet tag") {
+		t.Fatalf("updated provider network should clear stale localnet tag:\n%s", joined)
+	}
+}
+
 func hasOVNCommand(ops []ovn.Operation, command string) bool {
 	for _, op := range ops {
 		if op.Command == command {
