@@ -182,6 +182,7 @@ func (p *Planner) EnsurePolicyRoute(_ context.Context, route model.PolicyRoute) 
 			p.ops = append(p.ops,
 				Operation{Command: "lr-policy-add", Flags: []string{"--may-exist"}, Args: []string{router, fmt.Sprint(route.Priority), match, "reroute", nextHops[0].String()}},
 				tagPolicyRouteOperation(route, match),
+				syncPolicyRouteNexthopOperation(route, match),
 			)
 			return nil
 		}

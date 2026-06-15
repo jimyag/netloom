@@ -1030,6 +1030,15 @@ func desiredStateWithUpdatedPolicyRouteJSON() string {
 }`
 }
 
+func desiredStateWithPolicyRouteNexthopJSON(nextHop string) string {
+	return strings.Replace(
+		desiredStateJSON(),
+		`"next_hops": ["10.245.0.253"]`,
+		`"next_hops": ["`+nextHop+`"]`,
+		1,
+	)
+}
+
 func desiredStateWithUpdatedStaticRouteJSON() string {
 	return `{
   "vpcs": [{"name": "file"}],

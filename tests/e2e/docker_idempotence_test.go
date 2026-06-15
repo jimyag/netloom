@@ -994,6 +994,94 @@ func TestDockerControllerRestartRecoversManagedOVNLeakCleanup(t *testing.T) {
 	})
 }
 
+func TestDockerControllerPolicyRouteSingleHopDeltaRemovesDuplicateManagedRows(t *testing.T) {
+	requireDockerE2E(t)
+	if testing.Short() {
+		t.Skip("skip long e2e test in short mode")
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker is not installed")
+	}
+
+	composeFile := filepath.Join("testdata", "..", "docker-compose.yaml")
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+
+	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
+	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
+	startComposeLab(t, ctx, composeFile)
+	t.Cleanup(func() {
+		downCtx, downCancel := context.WithTimeout(context.Background(), time.Minute)
+		defer downCancel()
+		run(t, downCtx, "docker", "compose", "-f", composeFile, "down", "-v")
+	})
+	waitForOVN(t, ctx, composeFile)
+
+	baseState := "/tmp/netloom-state-policy-route-base.json"
+	updatedState := "/tmp/netloom-state-policy-route-updated.json"
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "cat >"+baseState+" <<'EOF'\n"+desiredStateWithPolicyRouteNexthopJSON("10.245.0.253")+"\nEOF")
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "cat >"+updatedState+" <<'EOF'\n"+desiredStateWithPolicyRouteNexthopJSON("10.245.0.252")+"\nEOF")
+
+	runPolicyRouteReconcile := func(path string) {
+		command := "NETLOOM_STATE_FILE=" + path + " NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller"
+		output := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", command)
+		if !strings.Contains(output, "reconciled desired state") {
+			t.Fatalf("controller reconcile on %s did not succeed: %s", path, output)
+		}
+	}
+
+	waitForPolicyRouteState := func(expectedHop string, forbiddenHops []string, expectedManagedRows int) string {
+		deadline := time.Now().Add(30 * time.Second)
+		for time.Now().Before(deadline) {
+			listOutput := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "lr-policy-list", "nl_lr_file")
+			rows := activeManagedRows(t, ctx, composeFile, "Logical_Router_Policy", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file", "external_ids:netloom_policy_route=https-via-fw")
+			if len(rows) != expectedManagedRows {
+				time.Sleep(500 * time.Millisecond)
+				continue
+			}
+			if !strings.Contains(listOutput, "tcp.src == 32000") || !strings.Contains(listOutput, "tcp.dst == 443") || !strings.Contains(listOutput, expectedHop) {
+				time.Sleep(500 * time.Millisecond)
+				continue
+			}
+			stale := false
+			for _, forbidden := range forbiddenHops {
+				if strings.Contains(listOutput, forbidden) {
+					stale = true
+					break
+				}
+			}
+			if stale {
+				time.Sleep(500 * time.Millisecond)
+				continue
+			}
+			if expectedManagedRows == 1 {
+				return rows[0]
+			}
+			return ""
+		}
+		listOutput := runAllowFailure(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "lr-policy-list", "nl_lr_file")
+		rows := activeManagedRows(t, ctx, composeFile, "Logical_Router_Policy", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file", "external_ids:netloom_policy_route=https-via-fw")
+		t.Fatalf("policy route state did not converge to expected hop %q with %d managed rows and no stale hops %v:\nrows=%v\n%s", expectedHop, expectedManagedRows, forbiddenHops, rows, listOutput.output)
+		return ""
+	}
+
+	runPolicyRouteReconcile(baseState)
+	if waitForPolicyRouteState("10.245.0.253", nil, 1) == "" {
+		t.Fatal("expected canonical managed policy route row")
+	}
+
+	duplicateCreate := "ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock --id=@dup_policy create Logical_Router_Policy priority=100 match='\"ip4.dst == 172.16.0.0/16 && ip4.src == 10.245.0.0/24 && tcp && tcp.dst == 443 && tcp.src == 32000\"' action=reroute nexthops='[\"10.245.0.253\"]' external_ids:netloom_owner=netloom external_ids:netloom_policy_route=https-via-fw external_ids:netloom_vpc=file external_ids:netloom_duplicate=1 -- add logical_router nl_lr_file policies @dup_policy"
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", duplicateCreate)
+
+	duplicateRows := activeManagedRows(t, ctx, composeFile, "Logical_Router_Policy", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=file", "external_ids:netloom_policy_route=https-via-fw")
+	if len(duplicateRows) != 2 {
+		t.Fatalf("expected duplicate managed policy rows before update, got %v", duplicateRows)
+	}
+
+	runPolicyRouteReconcile(updatedState)
+	waitForPolicyRouteState("10.245.0.252", []string{"10.245.0.253"}, 1)
+}
+
 func TestDockerControllerStateReplayDetectsManagedOVNLeaksAcrossVPCs(t *testing.T) {
 	requireDockerE2E(t)
 	if testing.Short() {

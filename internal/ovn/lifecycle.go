@@ -879,6 +879,16 @@ func tagPolicyRouteOperation(route model.PolicyRoute, match string) Operation {
 	}}
 }
 
+func syncPolicyRouteNexthopOperation(route model.PolicyRoute, match string) Operation {
+	return Operation{Command: "sync-policy-route-nexthop", Args: []string{
+		route.VPC,
+		route.Name,
+		fmt.Sprint(route.Priority),
+		match,
+		route.Action.RerouteNextHops()[0].String(),
+	}}
+}
+
 func gcStalePolicyRoutesOperation(routes map[string]policyRouteRecord) Operation {
 	keep := make([]string, 0, len(routes)*2)
 	keys := make([]string, 0, len(routes))
