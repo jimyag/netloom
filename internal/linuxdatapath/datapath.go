@@ -121,12 +121,12 @@ func Apply(ctx context.Context, state control.DesiredState, options Options) (Re
 		result.ProviderInventoryTotal, result.ProviderInventoryReady, result.ProviderInventoryDegraded = summarizeProviderInventory(options.ProviderInventory)
 		providerSpecs, err := desiredProviderNetworkLinkSpecs(state, options.Node, options.ProviderLinks, options.ProviderInventory)
 		if err != nil {
-			return Result{}, err
+			return result, err
 		}
 		var ops []Operation
 		ops, result, err = Plan(ctx, state, options)
 		if err != nil {
-			return Result{}, err
+			return result, err
 		}
 		executor := options.Executor
 		if executor == nil {
@@ -218,16 +218,16 @@ func Plan(ctx context.Context, state control.DesiredState, options Options) ([]O
 	}
 
 	result := Result{Device: localDevice, Mode: mode, CleanupPlanned: options.CleanupStale}
+	result.ProviderInventoryStatus = append([]ProviderInterface(nil), options.ProviderInventory...)
+	result.ProviderInventoryTotal, result.ProviderInventoryReady, result.ProviderInventoryDegraded = summarizeProviderInventory(options.ProviderInventory)
 	var ops []Operation
 	providerSpecs, err := desiredProviderNetworkLinkSpecs(state, options.Node, options.ProviderLinks, options.ProviderInventory)
 	if err != nil {
-		return nil, Result{}, err
+		return nil, result, err
 	}
 	result.ProviderNetworks, result.ProviderLinks = summarizeProviderNetworkSpecs(providerSpecs)
 	result.ProviderStatus = providerLinkStatuses(providerSpecs, false)
 	result.ProviderReady, result.ProviderDegraded = summarizeProviderLinkHealth(result.ProviderStatus)
-	result.ProviderInventoryStatus = append([]ProviderInterface(nil), options.ProviderInventory...)
-	result.ProviderInventoryTotal, result.ProviderInventoryReady, result.ProviderInventoryDegraded = summarizeProviderInventory(options.ProviderInventory)
 	ops = append(ops, planProviderNetworkLinks(providerSpecs)...)
 	if options.CleanupStale {
 		ops = append(ops, planProviderNetworkLinkCleanup(providerSpecs))

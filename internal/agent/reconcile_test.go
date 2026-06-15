@@ -2618,6 +2618,56 @@ func TestReconcileNodeFailsWhenStrictProviderHealthIsEnabled(t *testing.T) {
 	}
 }
 
+func TestReconcileNodeFailureKeepsProviderInventoryOnCandidateResolutionError(t *testing.T) {
+	state := control.DesiredState{
+		ProviderNetworks: []model.ProviderNetwork{{
+			Name: "physnet-a",
+			Nodes: []model.ProviderNetworkNode{{
+				Node:       "node-a",
+				Interfaces: []string{"ens5", "bond0"},
+			}},
+		}},
+		Subnets: []model.Subnet{{
+			Name:            "apps",
+			VPC:             "prod",
+			CIDR:            netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway:         netip.MustParseAddr("10.10.0.1"),
+			ProviderNetwork: "physnet-a",
+			VLAN:            100,
+		}},
+		Endpoints: []model.Endpoint{{
+			ID:     "pod-a",
+			VPC:    "prod",
+			Subnet: "apps",
+			IP:     netip.MustParseAddr("10.10.0.10"),
+			Node:   "node-a",
+		}},
+	}
+	result, err := ReconcileNodeWithOptions(context.Background(), state, ReconcileOptions{
+		Node:  "node-a",
+		Store: dataplane.NewInMemoryPolicyStore(),
+		LinuxDatapath: &linuxdatapath.Options{
+			LocalDevice: "nl0",
+			Mode:        "local",
+			Backend:     "command",
+			Executor:    noopExecutor{},
+			ProviderInventory: []linuxdatapath.ProviderInterface{
+				{Name: "eth1", Ready: true, State: "up"},
+				{Name: "eth2", Ready: false, State: "down"},
+			},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), `provider network "physnet-a" on node "node-a" could not resolve candidate interfaces ens5,bond0`) {
+		t.Fatalf("err = %v, want candidate resolution failure", err)
+	}
+	if result.ProviderInventoryTotal != 2 || result.ProviderInventoryReady != 1 || result.ProviderInventoryDegraded != 1 {
+		t.Fatalf("provider inventory summary = %+v, want total=2 ready=1 degraded=1", result)
+	}
+	if got := result.ProviderInventoryStatus[0].Name; got != "eth1" {
+		t.Fatalf("provider inventory status[0] = %+v, want eth1 first", result.ProviderInventoryStatus[0])
+	}
+}
+
 type noopExecutor struct{}
 
 func (noopExecutor) Execute(context.Context, linuxdatapath.Operation) error {
