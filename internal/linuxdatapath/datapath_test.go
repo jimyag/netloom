@@ -156,6 +156,47 @@ func TestSummarizeProviderLinkHealth(t *testing.T) {
 	}
 }
 
+func TestApplyStrictProviderHealthFailsForDegradedProviderLinks(t *testing.T) {
+	state := control.DesiredState{
+		ProviderNetworks: []model.ProviderNetwork{{
+			Name: "physnet-a",
+			Nodes: []model.ProviderNetworkNode{{
+				Node:      "node-a",
+				Interface: "eth1",
+			}},
+		}},
+		Subnets: []model.Subnet{{
+			Name:            "apps",
+			VPC:             "prod",
+			CIDR:            netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway:         netip.MustParseAddr("10.10.0.1"),
+			ProviderNetwork: "physnet-a",
+			VLAN:            100,
+		}},
+		Endpoints: []model.Endpoint{{
+			ID:     "pod-a",
+			VPC:    "prod",
+			Subnet: "apps",
+			IP:     netip.MustParseAddr("10.10.0.10"),
+			Node:   "node-a",
+		}},
+	}
+	_, err := Apply(context.Background(), state, Options{
+		Node:                 "node-a",
+		LocalDevice:          "nl0",
+		Backend:              "command",
+		Executor:             noopCommandExecutor{},
+		StrictProviderHealth: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "provider health degraded") {
+		t.Fatalf("err = %v, want strict provider health failure", err)
+	}
+}
+
+type noopCommandExecutor struct{}
+
+func (noopCommandExecutor) Execute(context.Context, Operation) error { return nil }
+
 func TestPlanRequiresRemoteUnderlay(t *testing.T) {
 	_, _, err := Plan(context.Background(), control.DesiredState{
 		Endpoints: []model.Endpoint{{

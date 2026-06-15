@@ -345,17 +345,18 @@ func linuxDatapathOptions() *linuxdatapath.Options {
 		return nil
 	}
 	return &linuxdatapath.Options{
-		Mode:            getenvDefault("NETLOOM_LINUX_DATAPATH_MODE", "local"),
-		Backend:         getenvDefault("NETLOOM_LINUX_DATAPATH_BACKEND", "netlink"),
-		LocalDevice:     getenvDefault("NETLOOM_DATAPATH_DEV", "lo"),
-		UnderlayDevice:  getenvDefault("NETLOOM_UNDERLAY_DEV", "eth0"),
-		ProviderLinks:   parseProviderLinks(os.Getenv("NETLOOM_PROVIDER_NETWORK_LINKS")),
-		NetNSPrefix:     getenvDefault("NETLOOM_NETNS_PREFIX", "nl"),
-		WorkloadIF:      getenvDefault("NETLOOM_WORKLOAD_IF", "eth0"),
-		NodeUnderlays:   parseNodeUnderlays(os.Getenv("NETLOOM_NODE_UNDERLAYS")),
-		PolicyTableBase: getenvIntDefault("NETLOOM_POLICY_ROUTE_TABLE_BASE", 10000),
-		PolicyTableSize: getenvIntDefault("NETLOOM_POLICY_ROUTE_TABLE_SIZE", 1024),
-		CleanupStale:    os.Getenv("NETLOOM_LINUX_DATAPATH_CLEANUP") == "1",
+		Mode:                 getenvDefault("NETLOOM_LINUX_DATAPATH_MODE", "local"),
+		Backend:              getenvDefault("NETLOOM_LINUX_DATAPATH_BACKEND", "netlink"),
+		LocalDevice:          getenvDefault("NETLOOM_DATAPATH_DEV", "lo"),
+		UnderlayDevice:       getenvDefault("NETLOOM_UNDERLAY_DEV", "eth0"),
+		ProviderLinks:        parseProviderLinks(os.Getenv("NETLOOM_PROVIDER_NETWORK_LINKS")),
+		NetNSPrefix:          getenvDefault("NETLOOM_NETNS_PREFIX", "nl"),
+		WorkloadIF:           getenvDefault("NETLOOM_WORKLOAD_IF", "eth0"),
+		NodeUnderlays:        parseNodeUnderlays(os.Getenv("NETLOOM_NODE_UNDERLAYS")),
+		PolicyTableBase:      getenvIntDefault("NETLOOM_POLICY_ROUTE_TABLE_BASE", 10000),
+		PolicyTableSize:      getenvIntDefault("NETLOOM_POLICY_ROUTE_TABLE_SIZE", 1024),
+		CleanupStale:         os.Getenv("NETLOOM_LINUX_DATAPATH_CLEANUP") == "1",
+		StrictProviderHealth: os.Getenv("NETLOOM_PROVIDER_HEALTH_STRICT") == "1",
 	}
 }
 

@@ -2466,6 +2466,47 @@ func TestReconcileNodeReportsProviderNetworkCountsFromLinuxDatapath(t *testing.T
 	}
 }
 
+func TestReconcileNodeFailsWhenStrictProviderHealthIsEnabled(t *testing.T) {
+	state := control.DesiredState{
+		ProviderNetworks: []model.ProviderNetwork{{
+			Name: "physnet-a",
+			Nodes: []model.ProviderNetworkNode{{
+				Node:      "node-a",
+				Interface: "eth1",
+			}},
+		}},
+		Subnets: []model.Subnet{{
+			Name:            "apps",
+			VPC:             "prod",
+			CIDR:            netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway:         netip.MustParseAddr("10.10.0.1"),
+			ProviderNetwork: "physnet-a",
+			VLAN:            100,
+		}},
+		Endpoints: []model.Endpoint{{
+			ID:     "pod-a",
+			VPC:    "prod",
+			Subnet: "apps",
+			IP:     netip.MustParseAddr("10.10.0.10"),
+			Node:   "node-a",
+		}},
+	}
+	_, err := ReconcileNodeWithOptions(context.Background(), state, ReconcileOptions{
+		Node:  "node-a",
+		Store: dataplane.NewInMemoryPolicyStore(),
+		LinuxDatapath: &linuxdatapath.Options{
+			LocalDevice:          "nl0",
+			Mode:                 "local",
+			Backend:              "command",
+			Executor:             noopExecutor{},
+			StrictProviderHealth: true,
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "provider health degraded") {
+		t.Fatalf("err = %v, want strict provider health failure", err)
+	}
+}
+
 type noopExecutor struct{}
 
 func (noopExecutor) Execute(context.Context, linuxdatapath.Operation) error {

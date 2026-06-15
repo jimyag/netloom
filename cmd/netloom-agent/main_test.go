@@ -88,6 +88,7 @@ func TestLinuxDatapathOptionsParsesBackend(t *testing.T) {
 	t.Setenv("NETLOOM_PROVIDER_NETWORK_LINKS", "physnet-a=eth1, physnet-b = bond0.100")
 	t.Setenv("NETLOOM_POLICY_ROUTE_TABLE_BASE", "22000")
 	t.Setenv("NETLOOM_POLICY_ROUTE_TABLE_SIZE", "64")
+	t.Setenv("NETLOOM_PROVIDER_HEALTH_STRICT", "1")
 
 	options := linuxDatapathOptions()
 	if options == nil {
@@ -107,6 +108,9 @@ func TestLinuxDatapathOptionsParsesBackend(t *testing.T) {
 	}
 	if options.PolicyTableSize != 64 {
 		t.Fatalf("policy table size = %d, want 64", options.PolicyTableSize)
+	}
+	if !options.StrictProviderHealth {
+		t.Fatal("strict provider health should be enabled")
 	}
 }
 

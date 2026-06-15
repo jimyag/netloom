@@ -25,20 +25,21 @@ type Executor interface {
 }
 
 type Options struct {
-	Node            string
-	Mode            string
-	Backend         string
-	LocalDevice     string
-	UnderlayDevice  string
-	NodeUnderlays   map[string][]netip.Addr
-	ProviderLinks   map[string]string
-	NetNSPrefix     string
-	WorkloadIF      string
-	HostGateway     netip.Addr
-	PolicyTableBase int
-	PolicyTableSize int
-	CleanupStale    bool
-	Executor        Executor
+	Node                 string
+	Mode                 string
+	Backend              string
+	LocalDevice          string
+	UnderlayDevice       string
+	NodeUnderlays        map[string][]netip.Addr
+	ProviderLinks        map[string]string
+	NetNSPrefix          string
+	WorkloadIF           string
+	HostGateway          netip.Addr
+	PolicyTableBase      int
+	PolicyTableSize      int
+	CleanupStale         bool
+	StrictProviderHealth bool
+	Executor             Executor
 }
 
 type Result struct {
@@ -89,25 +90,36 @@ func (CommandExecutor) Execute(ctx context.Context, op Operation) error {
 }
 
 func Apply(ctx context.Context, state control.DesiredState, options Options) (Result, error) {
+	var (
+		result Result
+		err    error
+	)
 	switch datapathBackend(options.Backend) {
 	case "netlink":
-		return ApplyNetlink(ctx, state, options)
+		result, err = ApplyNetlink(ctx, state, options)
 	case "command":
+		var ops []Operation
+		ops, result, err = Plan(ctx, state, options)
+		if err != nil {
+			return Result{}, err
+		}
+		executor := options.Executor
+		if executor == nil {
+			executor = CommandExecutor{}
+		}
+		for _, op := range ops {
+			if err := executor.Execute(ctx, op); err != nil {
+				return Result{}, err
+			}
+		}
 	default:
 		return Result{}, fmt.Errorf("unsupported linux datapath backend %q", options.Backend)
 	}
-	ops, result, err := Plan(ctx, state, options)
 	if err != nil {
 		return Result{}, err
 	}
-	executor := options.Executor
-	if executor == nil {
-		executor = CommandExecutor{}
-	}
-	for _, op := range ops {
-		if err := executor.Execute(ctx, op); err != nil {
-			return Result{}, err
-		}
+	if err := validateProviderHealth(result, options); err != nil {
+		return Result{}, err
 	}
 	return result, nil
 }
@@ -337,6 +349,35 @@ func summarizeProviderLinkHealth(statuses []ProviderLinkStatus) (ready, degraded
 		degraded++
 	}
 	return ready, degraded
+}
+
+func validateProviderHealth(result Result, options Options) error {
+	if !options.StrictProviderHealth || result.ProviderDegraded == 0 {
+		return nil
+	}
+	return fmt.Errorf("provider health degraded: ready=%d degraded=%d status=%s", result.ProviderReady, result.ProviderDegraded, summarizeProviderStatus(result.ProviderStatus))
+}
+
+func summarizeProviderStatus(statuses []ProviderLinkStatus) string {
+	if len(statuses) == 0 {
+		return "none"
+	}
+	parts := make([]string, 0, len(statuses))
+	for _, status := range statuses {
+		state := "pending"
+		if status.Ready {
+			state = "ready"
+		}
+		parts = append(parts, fmt.Sprintf("%s:%s:%d:%s:%s:%s:%s", status.ProviderNetwork, status.ParentDevice, status.VLAN, status.LinkName, state, fallbackProviderState(status.ParentState), fallbackProviderState(status.LinkState)))
+	}
+	return strings.Join(parts, ",")
+}
+
+func fallbackProviderState(state string) string {
+	if state == "" {
+		return "unknown"
+	}
+	return state
 }
 
 func providerNetworkLinkKey(spec providerNetworkLinkSpec) string {
