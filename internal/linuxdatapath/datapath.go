@@ -59,6 +59,8 @@ type ProviderLinkStatus struct {
 	VLAN            uint16
 	LinkName        string
 	Ready           bool
+	ParentState     string
+	LinkState       string
 }
 
 type CommandExecutor struct{}
@@ -303,6 +305,12 @@ func summarizeProviderNetworkSpecs(specs []providerNetworkLinkSpec) (int, int) {
 
 func providerLinkStatuses(specs []providerNetworkLinkSpec, ready bool) []ProviderLinkStatus {
 	out := make([]ProviderLinkStatus, 0, len(specs))
+	parentState := "planned"
+	linkState := "planned"
+	if ready {
+		parentState = "unknown"
+		linkState = "unknown"
+	}
 	for _, spec := range specs {
 		out = append(out, ProviderLinkStatus{
 			ProviderNetwork: spec.ProviderNetwork,
@@ -310,6 +318,8 @@ func providerLinkStatuses(specs []providerNetworkLinkSpec, ready bool) []Provide
 			VLAN:            spec.VLAN,
 			LinkName:        spec.Name,
 			Ready:           ready,
+			ParentState:     parentState,
+			LinkState:       linkState,
 		})
 	}
 	return out

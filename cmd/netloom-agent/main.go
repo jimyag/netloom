@@ -187,9 +187,16 @@ func formatProviderStatus(statuses []linuxdatapath.ProviderLinkStatus) string {
 		if status.Ready {
 			state = "ready"
 		}
-		parts = append(parts, fmt.Sprintf("%s:%s:%d:%s:%s", status.ProviderNetwork, status.ParentDevice, status.VLAN, status.LinkName, state))
+		parts = append(parts, fmt.Sprintf("%s:%s:%d:%s:%s:%s:%s", status.ProviderNetwork, status.ParentDevice, status.VLAN, status.LinkName, state, fallbackProviderState(status.ParentState), fallbackProviderState(status.LinkState)))
 	}
 	return strings.Join(parts, ",")
+}
+
+func fallbackProviderState(state string) string {
+	if state == "" {
+		return "unknown"
+	}
+	return state
 }
 
 func formatRuleStats(stats []dataplane.RuleMetrics) string {
