@@ -275,6 +275,80 @@ func TestPlanProgramsProviderNetworkVLANLinkForLocalEndpoints(t *testing.T) {
 	}
 }
 
+func TestPlanProgramsProviderNetworkVLANLinkWithoutLocalEndpoints(t *testing.T) {
+	state := control.DesiredState{
+		ProviderNetworks: []model.ProviderNetwork{{
+			Name: "physnet-a",
+			Nodes: []model.ProviderNetworkNode{{
+				Node:      "node-a",
+				Interface: "eth1",
+			}},
+		}},
+		Subnets: []model.Subnet{{
+			Name:            "baremetal",
+			VPC:             "prod",
+			CIDR:            netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway:         netip.MustParseAddr("10.10.0.1"),
+			ProviderNetwork: "physnet-a",
+			VLAN:            100,
+		}},
+	}
+	ops, result, err := Plan(context.Background(), state, Options{
+		Node:        "node-a",
+		LocalDevice: "nl0",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ProviderNetworks != 1 || result.ProviderLinks != 1 {
+		t.Fatalf("provider counts = %+v, want provider_networks=1 provider_links=1", result)
+	}
+	joined := stringifyOps(ops)
+	linkName := providerNetworkLinkName("physnet-a", "eth1", 100)
+	for _, expected := range []string{
+		"ip link show " + linkName + " >/dev/null 2>&1 || ip link add link eth1 name " + linkName + " type vlan id 100",
+		"ip link set " + linkName + " up",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("provider vlan preprovision ops missing %q:\n%s", expected, joined)
+		}
+	}
+}
+
+func TestPlanSkipsProviderSubnetWithoutNodeMappingWhenNoLocalEndpoints(t *testing.T) {
+	state := control.DesiredState{
+		ProviderNetworks: []model.ProviderNetwork{{
+			Name: "physnet-a",
+			Nodes: []model.ProviderNetworkNode{{
+				Node:      "node-b",
+				Interface: "eth1",
+			}},
+		}},
+		Subnets: []model.Subnet{{
+			Name:            "baremetal",
+			VPC:             "prod",
+			CIDR:            netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway:         netip.MustParseAddr("10.10.0.1"),
+			ProviderNetwork: "physnet-a",
+			VLAN:            100,
+		}},
+	}
+	ops, result, err := Plan(context.Background(), state, Options{
+		Node:        "node-a",
+		LocalDevice: "nl0",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ProviderNetworks != 0 || result.ProviderLinks != 0 {
+		t.Fatalf("provider counts = %+v, want provider_networks=0 provider_links=0", result)
+	}
+	joined := stringifyOps(ops)
+	if strings.Contains(joined, "type vlan id 100") {
+		t.Fatalf("unexpected provider vlan preprovision on non-participating node:\n%s", joined)
+	}
+}
+
 func TestPlanCleansStaleProviderNetworkVLANLinks(t *testing.T) {
 	state := control.DesiredState{
 		ProviderNetworks: []model.ProviderNetwork{{

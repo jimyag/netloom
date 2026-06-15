@@ -226,9 +226,7 @@ func desiredProviderNetworkLinkSpecs(state control.DesiredState, node string, ma
 	for _, subnet := range state.Subnets {
 		subnets[subnetStateKey(subnet.VPC, subnet.Name)] = subnet
 	}
-	nodeMappings := providerLinkMappingsForNode(state.ProviderNetworks, node, mappings)
-	seen := make(map[string]providerNetworkLinkSpec)
-	claimedLinks := make(map[string]providerNetworkLinkSpec)
+	localProviderNetworks := make(map[string]struct{})
 	for _, endpoint := range state.Endpoints {
 		if endpoint.Node != node {
 			continue
@@ -237,9 +235,21 @@ func desiredProviderNetworkLinkSpecs(state control.DesiredState, node string, ma
 		if !ok || subnet.ProviderNetwork == "" || subnet.VLAN == 0 {
 			continue
 		}
+		localProviderNetworks[subnet.ProviderNetwork] = struct{}{}
+	}
+	nodeMappings := providerLinkMappingsForNode(state.ProviderNetworks, node, mappings)
+	seen := make(map[string]providerNetworkLinkSpec)
+	claimedLinks := make(map[string]providerNetworkLinkSpec)
+	for _, subnet := range state.Subnets {
+		if subnet.ProviderNetwork == "" || subnet.VLAN == 0 {
+			continue
+		}
 		parent := nodeMappings[subnet.ProviderNetwork]
 		if parent == "" {
-			return nil, fmt.Errorf("provider network %q requires parent device mapping on node %q", subnet.ProviderNetwork, node)
+			if _, ok := localProviderNetworks[subnet.ProviderNetwork]; ok {
+				return nil, fmt.Errorf("provider network %q requires parent device mapping on node %q", subnet.ProviderNetwork, node)
+			}
+			continue
 		}
 		spec := providerNetworkLinkSpec{
 			ProviderNetwork: subnet.ProviderNetwork,
