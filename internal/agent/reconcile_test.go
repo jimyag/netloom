@@ -1540,7 +1540,7 @@ func TestReconcileNodeWithTCXInterfaceTreatsAllowOnlyPolicyAsNotEligible(t *test
 	}
 }
 
-func TestReconcileNodeWithTCXInterfaceRejectsRejectAction(t *testing.T) {
+func TestReconcileNodeWithTCXInterfaceSkipsRejectActionFastPath(t *testing.T) {
 	state := control.DesiredState{
 		Endpoints: []model.Endpoint{{
 			ID:             "pod-a",
@@ -1565,13 +1565,78 @@ func TestReconcileNodeWithTCXInterfaceRejectsRejectAction(t *testing.T) {
 		}},
 	}
 
-	_, err := ReconcileNodeWithOptions(context.Background(), state, ReconcileOptions{
+	result, err := ReconcileNodeWithOptions(context.Background(), state, ReconcileOptions{
 		Node:         "node-a",
 		Store:        dataplane.NewInMemoryPolicyStore(),
 		TCXInterface: "lo",
 	})
-	if err == nil || !strings.Contains(err.Error(), "reject action is not supported by TCX fast path") {
-		t.Fatalf("error = %v, want reject fast-path validation failure", err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Entries != 1 || result.TCXEligible != 0 || result.TCX != "not-attached" {
+		t.Fatalf("result = %+v, want reject policy stored but tcx skipped", result)
+	}
+}
+
+func TestReconcileNodeWithTCXInterfaceKeepsEligibleDirectionWhenOtherDirectionRejects(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:             "pod-a",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"mixed"},
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "mixed",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{
+				{
+					ID:         "reject-web",
+					Priority:   100,
+					Direction:  model.DirectionIngress,
+					Protocol:   model.ProtocolTCP,
+					RemoteCIDR: netip.MustParsePrefix("172.30.0.11/32"),
+					Ports:      []model.PortRange{{From: 8080, To: 8080}},
+					Action:     model.ActionReject,
+				},
+				{
+					ID:         "drop-egress-https",
+					Priority:   100,
+					Direction:  model.DirectionEgress,
+					Protocol:   model.ProtocolTCP,
+					RemoteCIDR: netip.MustParsePrefix("198.51.100.10/32"),
+					Ports:      []model.PortRange{{From: 443, To: 443}},
+					Action:     model.ActionDrop,
+				},
+			},
+		}},
+	}
+
+	result, targets, _, err := prepareReconcile(context.Background(), state, ReconcileOptions{
+		Node:         "node-a",
+		Store:        dataplane.NewInMemoryPolicyStore(),
+		TCXInterface: "eth0",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Entries != 2 || result.TCXEligible != 1 {
+		t.Fatalf("result = %+v, want one tcx-eligible program with both rules stored", result)
+	}
+	if len(targets) != 1 {
+		t.Fatalf("targets = %d, want only egress tcx target", len(targets))
+	}
+	if targets[0].attach != ebpf.AttachTCXEgress || targets[0].policyDirection != model.DirectionEgress {
+		t.Fatalf("target = %+v, want interface egress attach for egress policy direction", targets[0])
+	}
+	v4Rules, err := dataplane.IPv4L4ACLRulesFromProgramsForDirection(targets[0].programs, model.DirectionEgress)
+	if err != nil {
+		t.Fatalf("egress tcx rules: %v", err)
+	}
+	if len(v4Rules) != 1 || v4Rules[0].SourceCIDR != netip.MustParsePrefix("198.51.100.10/32") || v4Rules[0].DestPort != 443 {
+		t.Fatalf("egress tcx rules = %+v, want exact https drop rule", v4Rules)
 	}
 }
 

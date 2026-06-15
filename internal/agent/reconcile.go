@@ -367,11 +367,6 @@ func prepareReconcile(ctx context.Context, state control.DesiredState, options R
 	}
 	var targets []tcxTarget
 	if options.TCXInterface != "" || options.TCXWorkload {
-		for _, program := range localPrograms {
-			if err := dataplane.ValidateL4ACLProgramSupport(program); err != nil {
-				return ReconcileResult{}, nil, nil, fmt.Errorf("tcx policy for endpoint %s: %w", program.EndpointID, err)
-			}
-		}
 		var err error
 		targets, err = tcxTargets(options, tcxPrograms)
 		if err != nil {
