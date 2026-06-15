@@ -4,11 +4,23 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"os"
+	"os/exec"
 	"sort"
 	"strings"
 	"testing"
 	"time"
 )
+
+func requireDockerE2E(t *testing.T) {
+	t.Helper()
+	if os.Getenv("NETLOOM_E2E") != "1" {
+		t.Skip("set NETLOOM_E2E=1 to run docker e2e tests")
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker is not installed")
+	}
+}
 
 func tcxSelftestInterface(t *testing.T, ctx context.Context, composeFile, service string) (string, string) {
 	t.Helper()

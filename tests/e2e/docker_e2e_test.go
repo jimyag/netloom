@@ -11,6 +11,7 @@ import (
 )
 
 func TestDockerMultiNodeLab(t *testing.T) {
+	requireDockerE2E(t)
 	if os.Getenv("NETLOOM_E2E") != "1" {
 		t.Skip("set NETLOOM_E2E=1 to run docker e2e tests")
 	}
@@ -387,6 +388,7 @@ func TestDockerMultiNodeLab(t *testing.T) {
 }
 
 func TestDockerIPv6WorkloadPolicyTCX(t *testing.T) {
+	requireDockerE2E(t)
 	if testing.Short() {
 		t.Skip("skip long e2e test in short mode")
 	}
@@ -448,6 +450,7 @@ func TestDockerIPv6WorkloadPolicyTCX(t *testing.T) {
 }
 
 func TestDockerIPv6CrossNodeWorkloadPolicyTCX(t *testing.T) {
+	requireDockerE2E(t)
 	if testing.Short() {
 		t.Skip("skip long e2e test in short mode")
 	}
@@ -522,6 +525,7 @@ func TestDockerIPv6CrossNodeWorkloadPolicyTCX(t *testing.T) {
 }
 
 func TestDockerIPv6CrossNodeWorkloadL4PolicyTCX(t *testing.T) {
+	requireDockerE2E(t)
 	if testing.Short() {
 		t.Skip("skip long e2e test in short mode")
 	}
@@ -598,6 +602,7 @@ func TestDockerIPv6CrossNodeWorkloadL4PolicyTCX(t *testing.T) {
 }
 
 func TestDockerDualStackInterfaceL4PolicyTCX(t *testing.T) {
+	requireDockerE2E(t)
 	if testing.Short() {
 		t.Skip("skip long e2e test in short mode")
 	}
@@ -657,6 +662,7 @@ func TestDockerDualStackInterfaceL4PolicyTCX(t *testing.T) {
 }
 
 func TestDockerIPv6CrossNodeWorkloadEgressL4PolicyTCX(t *testing.T) {
+	requireDockerE2E(t)
 	if testing.Short() {
 		t.Skip("skip long e2e test in short mode")
 	}

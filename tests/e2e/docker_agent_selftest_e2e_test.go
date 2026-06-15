@@ -11,6 +11,7 @@ import (
 )
 
 func TestDockerAgentSelftestSupportsCustomVpc(t *testing.T) {
+	requireDockerE2E(t)
 	if testing.Short() {
 		t.Skip("skip long e2e test in short mode")
 	}
@@ -42,6 +43,7 @@ func TestDockerAgentSelftestSupportsCustomVpc(t *testing.T) {
 }
 
 func TestDockerAgentSelftestCapturesStatefulPolicyAndTraceMetrics(t *testing.T) {
+	requireDockerE2E(t)
 	if testing.Short() {
 		t.Skip("skip long e2e test in short mode")
 	}
@@ -85,6 +87,7 @@ func TestDockerAgentSelftestCapturesStatefulPolicyAndTraceMetrics(t *testing.T) 
 }
 
 func TestDockerAgentSelftestTCXAttachFailureIsSurfaceable(t *testing.T) {
+	requireDockerE2E(t)
 	if testing.Short() {
 		t.Skip("skip long e2e test in short mode")
 	}
@@ -119,6 +122,7 @@ func TestDockerAgentSelftestTCXAttachFailureIsSurfaceable(t *testing.T) {
 }
 
 func TestDockerAgentSelftestTCXAttachFailureAndRecovery(t *testing.T) {
+	requireDockerE2E(t)
 	if testing.Short() {
 		t.Skip("skip long e2e test in short mode")
 	}
@@ -187,6 +191,7 @@ func TestDockerAgentSelftestTCXAttachFailureAndRecovery(t *testing.T) {
 }
 
 func TestDockerAgentStateWatchRecoversFromRestart(t *testing.T) {
+	requireDockerE2E(t)
 	if testing.Short() {
 		t.Skip("skip long e2e test in short mode")
 	}

@@ -14,6 +14,7 @@ import (
 )
 
 func TestDockerControllerReconcileIdempotent(t *testing.T) {
+	requireDockerE2E(t)
 	if testing.Short() {
 		t.Skip("skip long e2e test in short mode")
 	}
@@ -61,6 +62,7 @@ func TestDockerControllerReconcileIdempotent(t *testing.T) {
 }
 
 func TestDockerControllerReplayDoesNotChangeOVNState(t *testing.T) {
+	requireDockerE2E(t)
 	if testing.Short() {
 		t.Skip("skip long e2e test in short mode")
 	}
@@ -115,6 +117,7 @@ func TestDockerControllerReplayDoesNotChangeOVNState(t *testing.T) {
 }
 
 func TestDockerControllerConcurrentReconcilesAreStable(t *testing.T) {
+	requireDockerE2E(t)
 	if testing.Short() {
 		t.Skip("skip long e2e test in short mode")
 	}
@@ -213,6 +216,7 @@ func TestDockerControllerConcurrentReconcilesAreStable(t *testing.T) {
 }
 
 func TestDockerControllerConcurrentReconcilesAreStableAcrossVPCs(t *testing.T) {
+	requireDockerE2E(t)
 	if testing.Short() {
 		t.Skip("skip long e2e test in short mode")
 	}
@@ -321,6 +325,7 @@ func TestDockerControllerConcurrentReconcilesAreStableAcrossVPCs(t *testing.T) {
 }
 
 func TestDockerControllerWatchRecoversFromRestart(t *testing.T) {
+	requireDockerE2E(t)
 	if testing.Short() {
 		t.Skip("skip long e2e test in short mode")
 	}
@@ -393,6 +398,7 @@ func TestDockerControllerWatchRecoversFromRestart(t *testing.T) {
 }
 
 func TestDockerControllerWatchRecoversFromOVNDBRestart(t *testing.T) {
+	requireDockerE2E(t)
 	if testing.Short() {
 		t.Skip("skip long e2e test in short mode")
 	}
@@ -455,6 +461,7 @@ func TestDockerControllerWatchRecoversFromOVNDBRestart(t *testing.T) {
 }
 
 func TestDockerControllerReconcileSupportsSameEndpointIDAcrossVPCs(t *testing.T) {
+	requireDockerE2E(t)
 	if testing.Short() {
 		t.Skip("skip long e2e test in short mode")
 	}
@@ -497,6 +504,7 @@ func TestDockerControllerReconcileSupportsSameEndpointIDAcrossVPCs(t *testing.T)
 }
 
 func TestDockerControllerSupportsSameResourceNamesAcrossVPCs(t *testing.T) {
+	requireDockerE2E(t)
 	if testing.Short() {
 		t.Skip("skip long e2e test in short mode")
 	}
@@ -604,6 +612,7 @@ func TestDockerControllerSupportsSameResourceNamesAcrossVPCs(t *testing.T) {
 }
 
 func TestDockerControllerReplaySameResourceNamesAcrossVPCs(t *testing.T) {
+	requireDockerE2E(t)
 	if testing.Short() {
 		t.Skip("skip long e2e test in short mode")
 	}
@@ -706,6 +715,7 @@ func TestDockerControllerReplaySameResourceNamesAcrossVPCs(t *testing.T) {
 }
 
 func TestDockerControllerSameResourceNamesAcrossVPCsIncludeRoutes(t *testing.T) {
+	requireDockerE2E(t)
 	if testing.Short() {
 		t.Skip("skip long e2e test in short mode")
 	}
@@ -752,6 +762,7 @@ func TestDockerControllerSameResourceNamesAcrossVPCsIncludeRoutes(t *testing.T) 
 }
 
 func TestDockerControllerStateReplayDetectsManagedOVNLeaks(t *testing.T) {
+	requireDockerE2E(t)
 	if testing.Short() {
 		t.Skip("skip long e2e test in short mode")
 	}
@@ -862,6 +873,7 @@ func TestDockerControllerStateReplayDetectsManagedOVNLeaks(t *testing.T) {
 }
 
 func TestDockerControllerRestartRecoversManagedOVNLeakCleanup(t *testing.T) {
+	requireDockerE2E(t)
 	if testing.Short() {
 		t.Skip("skip long e2e test in short mode")
 	}
@@ -967,6 +979,7 @@ func TestDockerControllerRestartRecoversManagedOVNLeakCleanup(t *testing.T) {
 }
 
 func TestDockerControllerStateReplayDetectsManagedOVNLeaksAcrossVPCs(t *testing.T) {
+	requireDockerE2E(t)
 	if testing.Short() {
 		t.Skip("skip long e2e test in short mode")
 	}
@@ -1052,6 +1065,7 @@ func TestDockerControllerStateReplayDetectsManagedOVNLeaksAcrossVPCs(t *testing.
 }
 
 func TestDockerControllerReplayDetectsManagedOVNLeaksAcrossVPCsIdempotent(t *testing.T) {
+	requireDockerE2E(t)
 	if testing.Short() {
 		t.Skip("skip long e2e test in short mode")
 	}
@@ -1132,6 +1146,7 @@ func TestDockerControllerReplayDetectsManagedOVNLeaksAcrossVPCsIdempotent(t *tes
 }
 
 func TestDockerControllerReplayDoesNotChangeOVNStateAcrossVPCs(t *testing.T) {
+	requireDockerE2E(t)
 	if testing.Short() {
 		t.Skip("skip long e2e test in short mode")
 	}
@@ -1197,6 +1212,7 @@ func TestDockerControllerReplayDoesNotChangeOVNStateAcrossVPCs(t *testing.T) {
 }
 
 func TestDockerControllerReplaysRecoverOnDualVPCRestart(t *testing.T) {
+	requireDockerE2E(t)
 	if testing.Short() {
 		t.Skip("skip long e2e test in short mode")
 	}
@@ -1313,6 +1329,7 @@ func TestDockerControllerReplaysRecoverOnDualVPCRestart(t *testing.T) {
 }
 
 func TestDockerControllerRouteTableECMPDeltaIsIncremental(t *testing.T) {
+	requireDockerE2E(t)
 	if testing.Short() {
 		t.Skip("skip long e2e test in short mode")
 	}
@@ -1416,6 +1433,7 @@ func TestDockerControllerRouteTableECMPDeltaIsIncremental(t *testing.T) {
 }
 
 func TestDockerControllerRouteTableECMPDeltaSurvivesRestart(t *testing.T) {
+	requireDockerE2E(t)
 	if testing.Short() {
 		t.Skip("skip long e2e test in short mode")
 	}
@@ -1546,6 +1564,7 @@ func TestDockerControllerRouteTableECMPDeltaSurvivesRestart(t *testing.T) {
 }
 
 func TestDockerControllerRouteTableECMPDeltaIsIdempotentForOneShotReconcile(t *testing.T) {
+	requireDockerE2E(t)
 	if testing.Short() {
 		t.Skip("skip long e2e test in short mode")
 	}
@@ -1667,6 +1686,7 @@ func TestDockerControllerRouteTableECMPDeltaIsIdempotentForOneShotReconcile(t *t
 }
 
 func TestDockerControllerRouteTableECMPDeltaIsOrderInsensitive(t *testing.T) {
+	requireDockerE2E(t)
 	if testing.Short() {
 		t.Skip("skip long e2e test in short mode")
 	}
@@ -1770,6 +1790,7 @@ func TestDockerControllerRouteTableECMPDeltaIsOrderInsensitive(t *testing.T) {
 }
 
 func TestDockerControllerRouteTableECMPDeltaIsOrderInsensitiveIPv6(t *testing.T) {
+	requireDockerE2E(t)
 	if testing.Short() {
 		t.Skip("skip long e2e test in short mode")
 	}
@@ -1861,6 +1882,7 @@ func TestDockerControllerRouteTableECMPDeltaIsOrderInsensitiveIPv6(t *testing.T)
 }
 
 func TestDockerWorkloadPolicyPriorityConflict(t *testing.T) {
+	requireDockerE2E(t)
 	if testing.Short() {
 		t.Skip("skip long e2e test in short mode")
 	}
@@ -2037,6 +2059,7 @@ func TestDockerWorkloadPolicyPriorityConflict(t *testing.T) {
 }
 
 func TestDockerControllerReconcileIPv6VPC(t *testing.T) {
+	requireDockerE2E(t)
 	if testing.Short() {
 		t.Skip("skip long e2e test in short mode")
 	}
@@ -2115,6 +2138,7 @@ func TestDockerControllerReconcileIPv6VPC(t *testing.T) {
 }
 
 func TestDockerControllerReconcileSubnetExcludeCIDRs(t *testing.T) {
+	requireDockerE2E(t)
 	if testing.Short() {
 		t.Skip("skip long e2e test in short mode")
 	}
@@ -2183,6 +2207,7 @@ func TestDockerControllerReconcileSubnetExcludeCIDRs(t *testing.T) {
 }
 
 func TestDockerControllerReconcileDualStackVPC(t *testing.T) {
+	requireDockerE2E(t)
 	if testing.Short() {
 		t.Skip("skip long e2e test in short mode")
 	}
