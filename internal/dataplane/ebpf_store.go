@@ -496,14 +496,56 @@ func (s *EBPFPolicyStore) EndpointIDs(_ context.Context) ([]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	endpoints := make(map[string]struct{}, len(s.maps))
+	return s.managedEndpointIDsLocked()
+}
+
+func (s *EBPFPolicyStore) Revision(endpointID string) uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.revisions[endpointID]
+}
+
+func (s *EBPFPolicyStore) Events() []PolicyUpdateEvent {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]PolicyUpdateEvent(nil), s.events...)
+}
+
+func (s *EBPFPolicyStore) PolicyMapUsage(_ context.Context) ([]PolicyMapUsage, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	endpointIDs, err := s.managedEndpointIDsLocked()
+	if err != nil {
+		return nil, err
+	}
+	usages := make([]PolicyMapUsage, 0, len(endpointIDs))
+	for _, endpointID := range endpointIDs {
+		count, err := s.policyMapEntryCountLocked(endpointID)
+		if err != nil {
+			return nil, fmt.Errorf("read policy map usage for endpoint %s: %w", endpointID, err)
+		}
+		usages = append(usages, PolicyMapUsage{
+			EndpointID: endpointID,
+			Entries:    count,
+			Capacity:   s.maxEntries,
+		})
+	}
+	sort.Slice(usages, func(i, j int) bool {
+		return usages[i].EndpointID < usages[j].EndpointID
+	})
+	return usages, nil
+}
+
+func (s *EBPFPolicyStore) managedEndpointIDsLocked() ([]string, error) {
+	endpoints := make(map[string]struct{}, len(s.maps)+len(s.entries))
 	for endpointID := range s.maps {
 		endpoints[endpointID] = struct{}{}
 	}
-	metadataRoot := s.pinRoot
-	if s.metadataRoot != "" {
-		metadataRoot = s.metadataRoot
+	for endpointID := range s.entries {
+		endpoints[endpointID] = struct{}{}
 	}
+	metadataRoot := s.policyMapMetadataRoot()
 	if metadataRoot != "" {
 		entries, err := os.ReadDir(metadataRoot)
 		if err != nil && !os.IsNotExist(err) {
@@ -528,34 +570,36 @@ func (s *EBPFPolicyStore) EndpointIDs(_ context.Context) ([]string, error) {
 	return ids, nil
 }
 
-func (s *EBPFPolicyStore) Revision(endpointID string) uint64 {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.revisions[endpointID]
-}
-
-func (s *EBPFPolicyStore) Events() []PolicyUpdateEvent {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return append([]PolicyUpdateEvent(nil), s.events...)
-}
-
-func (s *EBPFPolicyStore) PolicyMapUsage(_ context.Context) ([]PolicyMapUsage, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	usages := make([]PolicyMapUsage, 0, len(s.entries))
-	for endpointID, entries := range s.entries {
-		usages = append(usages, PolicyMapUsage{
-			EndpointID: endpointID,
-			Entries:    uint32(len(entries)),
-			Capacity:   s.maxEntries,
-		})
+func (s *EBPFPolicyStore) policyMapEntryCountLocked(endpointID string) (uint32, error) {
+	if m := s.maps[endpointID]; m != nil {
+		entries, err := s.readPolicyMapEntries(m)
+		if err != nil {
+			return 0, err
+		}
+		return uint32(len(entries)), nil
 	}
-	sort.Slice(usages, func(i, j int) bool {
-		return usages[i].EndpointID < usages[j].EndpointID
-	})
-	return usages, nil
+	if s.pinRoot != "" {
+		loaded, err := s.loadPinnedPolicyMap(endpointID, s.pinnedPolicyMapPath(endpointID), s.pinnedPolicyMapMetadataPath(endpointID), s.policyMapSpec())
+		if err != nil {
+			return 0, err
+		}
+		if loaded != nil {
+			defer loaded.Close()
+			entries, err := s.readPolicyMapEntries(loaded)
+			if err != nil {
+				return 0, err
+			}
+			return uint32(len(entries)), nil
+		}
+	}
+	return uint32(len(s.entries[endpointID])), nil
+}
+
+func (s *EBPFPolicyStore) policyMapMetadataRoot() string {
+	if s.metadataRoot != "" {
+		return s.metadataRoot
+	}
+	return s.pinRoot
 }
 
 func (s *EBPFPolicyStore) Close() error {

@@ -690,6 +690,80 @@ func TestEBPFPolicyStoreRepairsDriftedPinnedMapEntries(t *testing.T) {
 	}
 }
 
+func TestEBPFPolicyStorePolicyMapUsageReadsLivePinnedMapEntries(t *testing.T) {
+	requireEBPFTest(t)
+	endpointID := model.EndpointKey("prod", "endpoint-a")
+	tmp := t.TempDir()
+	store := NewEBPFPolicyStoreWithConfig(EBPFPolicyStoreConfig{
+		PinRoot:       tmp,
+		MaxEntries:    16,
+		SchemaVersion: 1,
+	})
+	t.Cleanup(func() { _ = store.Close() })
+
+	desired := []PolicyMapEntry{{
+		Key:   PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 10, Direction: DirectionIngress},
+		Value: PolicyEntry{Precedence: 10, Deny: 1},
+	}}
+	replaceOrSkipIfUnprivileged(t, store, endpointID, desired)
+	rogue := PolicyMapEntry{
+		Key:   PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 99, Direction: DirectionIngress},
+		Value: PolicyEntry{Precedence: 99, Deny: 1},
+	}
+	if err := store.maps[endpointID].Put(&rogue.Key, &rogue.Value); err != nil {
+		t.Fatalf("inject rogue key into pinned map: %v", err)
+	}
+
+	usages, err := store.PolicyMapUsage(context.Background())
+	if err != nil {
+		t.Fatalf("PolicyMapUsage() error = %v", err)
+	}
+	if len(usages) != 1 || usages[0].EndpointID != endpointID || usages[0].Entries != 2 || usages[0].Capacity != 16 {
+		t.Fatalf("PolicyMapUsage() = %+v, want one endpoint with 2 live entries and capacity 16", usages)
+	}
+}
+
+func TestEBPFPolicyStorePolicyMapUsageReadsSeparateMetadataRootAfterRestart(t *testing.T) {
+	requireEBPFTest(t)
+	endpointID := model.EndpointKey("prod", "endpoint-a")
+	tmp := t.TempDir()
+	metadataRoot := filepath.Join(tmp, "meta")
+	store := NewEBPFPolicyStoreWithConfig(EBPFPolicyStoreConfig{
+		PinRoot:       tmp,
+		MetadataRoot:  metadataRoot,
+		MaxEntries:    16,
+		SchemaVersion: 1,
+	})
+	replaceOrSkipIfUnprivileged(t, store, endpointID, []PolicyMapEntry{
+		{
+			Key:   PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 7, Direction: DirectionIngress},
+			Value: PolicyEntry{Precedence: 7, Deny: 1},
+		},
+		{
+			Key:   PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 8, Direction: DirectionIngress},
+			Value: PolicyEntry{Precedence: 8, Deny: 1},
+		},
+	})
+	if err := store.Close(); err != nil {
+		t.Fatalf("close store error = %v", err)
+	}
+
+	recovered := NewEBPFPolicyStoreWithConfig(EBPFPolicyStoreConfig{
+		PinRoot:       tmp,
+		MetadataRoot:  metadataRoot,
+		MaxEntries:    16,
+		SchemaVersion: 1,
+	})
+	t.Cleanup(func() { _ = recovered.Close() })
+	usages, err := recovered.PolicyMapUsage(context.Background())
+	if err != nil {
+		t.Fatalf("PolicyMapUsage() error = %v", err)
+	}
+	if len(usages) != 1 || usages[0].EndpointID != endpointID || usages[0].Entries != 2 || usages[0].Capacity != 16 {
+		t.Fatalf("PolicyMapUsage() = %+v, want one recovered endpoint with 2 entries and capacity 16", usages)
+	}
+}
+
 func TestEBPFPolicyStoreMaintainsDistinctPinnedMapsForVPCEndpoints(t *testing.T) {
 	requireEBPFTest(t)
 	vpcOne := model.EndpointKey("prod", "endpoint-a")
