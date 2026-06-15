@@ -174,7 +174,22 @@ func withDNSObservationsAt(state control.DesiredState, now time.Time) (control.D
 }
 
 func printReconcileResult(result agent.ReconcileResult, storeName string) {
-	fmt.Printf("netloom-agent reconciled node policy node=%s store=%s endpoints=%d programs=%d entries=%d policy_map_entries=%d policy_map_capacity=%d policy_map_pressure_max=%d policy_map_pressure_endpoints=%d policy_added=%d policy_updated=%d policy_deleted=%d policy_unchanged=%d policy_events=%d policy_revision_max=%d conntrack_expired=%d tcx_eligible=%d tcx=%s datapath=%s local_ips=%d remote_routes=%d policy_routes=%d provider_networks=%d provider_links=%d cleanup=%t\n", result.Node, storeName, result.Endpoints, result.Programs, result.Entries, result.PolicyMapEntries, result.PolicyMapCapacity, result.PolicyMapPressureMax, result.PolicyMapPressureEndpoints, result.PolicyAdded, result.PolicyUpdated, result.PolicyDeleted, result.PolicyUnchanged, result.PolicyEvents, result.PolicyRevisionMax, result.ConntrackExpired, result.TCXEligible, result.TCX, result.Datapath, result.LocalIPs, result.RemoteRoutes, result.PolicyRoutes, result.ProviderNetworks, result.ProviderLinks, result.Cleanup)
+	fmt.Printf("netloom-agent reconciled node policy node=%s store=%s endpoints=%d programs=%d entries=%d policy_map_entries=%d policy_map_capacity=%d policy_map_pressure_max=%d policy_map_pressure_endpoints=%d policy_added=%d policy_updated=%d policy_deleted=%d policy_unchanged=%d policy_events=%d policy_revision_max=%d conntrack_expired=%d tcx_eligible=%d tcx=%s datapath=%s local_ips=%d remote_routes=%d policy_routes=%d provider_networks=%d provider_links=%d provider_status=%s cleanup=%t\n", result.Node, storeName, result.Endpoints, result.Programs, result.Entries, result.PolicyMapEntries, result.PolicyMapCapacity, result.PolicyMapPressureMax, result.PolicyMapPressureEndpoints, result.PolicyAdded, result.PolicyUpdated, result.PolicyDeleted, result.PolicyUnchanged, result.PolicyEvents, result.PolicyRevisionMax, result.ConntrackExpired, result.TCXEligible, result.TCX, result.Datapath, result.LocalIPs, result.RemoteRoutes, result.PolicyRoutes, result.ProviderNetworks, result.ProviderLinks, formatProviderStatus(result.ProviderStatus), result.Cleanup)
+}
+
+func formatProviderStatus(statuses []linuxdatapath.ProviderLinkStatus) string {
+	if len(statuses) == 0 {
+		return "none"
+	}
+	parts := make([]string, 0, len(statuses))
+	for _, status := range statuses {
+		state := "pending"
+		if status.Ready {
+			state = "ready"
+		}
+		parts = append(parts, fmt.Sprintf("%s:%s:%d:%s:%s", status.ProviderNetwork, status.ParentDevice, status.VLAN, status.LinkName, state))
+	}
+	return strings.Join(parts, ",")
 }
 
 func formatRuleStats(stats []dataplane.RuleMetrics) string {

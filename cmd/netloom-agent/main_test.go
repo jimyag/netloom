@@ -15,6 +15,7 @@ import (
 	"github.com/jimyag/netloom/internal/agent"
 	"github.com/jimyag/netloom/internal/control"
 	"github.com/jimyag/netloom/internal/dataplane"
+	"github.com/jimyag/netloom/internal/linuxdatapath"
 	"github.com/jimyag/netloom/internal/model"
 )
 
@@ -248,8 +249,12 @@ func TestPrintReconcileResultIncludesPolicyMapUsageSummary(t *testing.T) {
 		PolicyMapPressureEndpoints: 0,
 		ProviderNetworks:           1,
 		ProviderLinks:              2,
-		Datapath:                   "not-requested",
-		TCX:                        "not-requested",
+		ProviderStatus: []linuxdatapath.ProviderLinkStatus{
+			{ProviderNetwork: "physnet-a", ParentDevice: "eth1", VLAN: 100, LinkName: "nlv-a", Ready: true},
+			{ProviderNetwork: "physnet-b", ParentDevice: "bond0", VLAN: 200, LinkName: "nlv-b", Ready: true},
+		},
+		Datapath: "not-requested",
+		TCX:      "not-requested",
 	}, "ebpf")
 
 	if err := writer.Close(); err != nil {
@@ -267,6 +272,7 @@ func TestPrintReconcileResultIncludesPolicyMapUsageSummary(t *testing.T) {
 		"policy_map_pressure_endpoints=0",
 		"provider_networks=1",
 		"provider_links=2",
+		"provider_status=physnet-a:eth1:100:nlv-a:ready,physnet-b:bond0:200:nlv-b:ready",
 	} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("output missing %q:\n%s", expected, output)

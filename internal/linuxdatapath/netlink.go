@@ -47,6 +47,7 @@ func applyLocalNetlink(ctx context.Context, state control.DesiredState, options 
 		return Result{}, err
 	}
 	result.ProviderNetworks, result.ProviderLinks = summarizeProviderNetworkSpecs(providerSpecs)
+	result.ProviderStatus = providerLinkStatuses(providerSpecs)
 	for _, spec := range providerSpecs {
 		if err := ensureProviderNetworkLink(root, spec); err != nil {
 			return Result{}, fmt.Errorf("ensure provider link %s: %w", spec.Name, err)
@@ -130,6 +131,7 @@ func applyNetNSNetlink(ctx context.Context, state control.DesiredState, options 
 		return Result{}, err
 	}
 	result.ProviderNetworks, result.ProviderLinks = summarizeProviderNetworkSpecs(providerSpecs)
+	result.ProviderStatus = providerLinkStatuses(providerSpecs)
 	for _, spec := range providerSpecs {
 		if err := ensureProviderNetworkLink(root, spec); err != nil {
 			return Result{}, fmt.Errorf("ensure provider link %s: %w", spec.Name, err)

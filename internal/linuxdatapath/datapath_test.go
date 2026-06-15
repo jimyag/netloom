@@ -111,6 +111,15 @@ func TestPlanReportsProviderNetworkCounts(t *testing.T) {
 	if result.ProviderNetworks != 2 || result.ProviderLinks != 2 {
 		t.Fatalf("provider counts = %+v, want provider_networks=2 provider_links=2", result)
 	}
+	if len(result.ProviderStatus) != 2 {
+		t.Fatalf("provider status = %+v, want 2 entries", result.ProviderStatus)
+	}
+	if got := result.ProviderStatus[0]; got.ProviderNetwork != "physnet-a" || got.ParentDevice != "eth1" || got.VLAN != 100 || got.LinkName == "" || !got.Ready {
+		t.Fatalf("provider status[0] = %+v", got)
+	}
+	if got := result.ProviderStatus[1]; got.ProviderNetwork != "physnet-b" || got.ParentDevice != "eth2" || got.VLAN != 200 || got.LinkName == "" || !got.Ready {
+		t.Fatalf("provider status[1] = %+v", got)
+	}
 }
 
 func TestPlanRequiresRemoteUnderlay(t *testing.T) {

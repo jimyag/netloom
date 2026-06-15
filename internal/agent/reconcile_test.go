@@ -2452,6 +2452,12 @@ func TestReconcileNodeReportsProviderNetworkCountsFromLinuxDatapath(t *testing.T
 	if result.ProviderNetworks != 1 || result.ProviderLinks != 1 {
 		t.Fatalf("provider counts = %+v, want provider_networks=1 provider_links=1", result)
 	}
+	if len(result.ProviderStatus) != 1 {
+		t.Fatalf("provider status = %+v, want 1 entry", result.ProviderStatus)
+	}
+	if got := result.ProviderStatus[0]; got.ProviderNetwork != "physnet-a" || got.ParentDevice != "eth1" || got.VLAN != 100 || got.LinkName == "" || !got.Ready {
+		t.Fatalf("provider status[0] = %+v", got)
+	}
 	if result.Datapath != "linux:nl0" {
 		t.Fatalf("datapath = %s, want linux:nl0", result.Datapath)
 	}

@@ -47,9 +47,18 @@ type Result struct {
 	PolicyRoutes     int
 	ProviderNetworks int
 	ProviderLinks    int
+	ProviderStatus   []ProviderLinkStatus
 	Device           string
 	Mode             string
 	CleanupPlanned   bool
+}
+
+type ProviderLinkStatus struct {
+	ProviderNetwork string
+	ParentDevice    string
+	VLAN            uint16
+	LinkName        string
+	Ready           bool
 }
 
 type CommandExecutor struct{}
@@ -143,6 +152,7 @@ func Plan(ctx context.Context, state control.DesiredState, options Options) ([]O
 		return nil, Result{}, err
 	}
 	result.ProviderNetworks, result.ProviderLinks = summarizeProviderNetworkSpecs(providerSpecs)
+	result.ProviderStatus = providerLinkStatuses(providerSpecs)
 	ops = append(ops, planProviderNetworkLinks(providerSpecs)...)
 	if options.CleanupStale {
 		ops = append(ops, planProviderNetworkLinkCleanup(providerSpecs))
@@ -279,6 +289,20 @@ func summarizeProviderNetworkSpecs(specs []providerNetworkLinkSpec) (int, int) {
 		uniqueNetworks[spec.ProviderNetwork] = struct{}{}
 	}
 	return len(uniqueNetworks), len(specs)
+}
+
+func providerLinkStatuses(specs []providerNetworkLinkSpec) []ProviderLinkStatus {
+	out := make([]ProviderLinkStatus, 0, len(specs))
+	for _, spec := range specs {
+		out = append(out, ProviderLinkStatus{
+			ProviderNetwork: spec.ProviderNetwork,
+			ParentDevice:    spec.ParentDevice,
+			VLAN:            spec.VLAN,
+			LinkName:        spec.Name,
+			Ready:           true,
+		})
+	}
+	return out
 }
 
 func providerNetworkLinkKey(spec providerNetworkLinkSpec) string {
