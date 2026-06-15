@@ -93,6 +93,8 @@ func (p *Planner) EnsureSubnet(_ context.Context, subnet model.Subnet) error {
 		)
 		if subnet.VLAN != 0 {
 			p.ops = append(p.ops, setOperation("logical_switch_port", localnetPort, fmt.Sprintf("tag=%d", subnet.VLAN)))
+		} else {
+			p.ops = append(p.ops, Operation{Command: "remove", Args: []string{"logical_switch_port", localnetPort, "tag"}})
 		}
 	} else {
 		p.ops = append(p.ops, Operation{Command: "lsp-del", Flags: []string{"--if-exists"}, Args: []string{localnetPortName(switchName, subnet.Name)}})

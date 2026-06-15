@@ -353,6 +353,32 @@ func TestPlannerDeletesLocalnetWhenProviderNetworkDisabled(t *testing.T) {
 	}
 }
 
+func TestPlannerClearsLocalnetTagWhenProviderNetworkVLANDisabled(t *testing.T) {
+	planner := ovn.NewPlanner()
+	if err := planner.EnsureSubnet(context.Background(), model.Subnet{
+		Name:            "apps",
+		VPC:             "prod",
+		CIDR:            netip.MustParsePrefix("10.10.0.0/24"),
+		Gateway:         netip.MustParseAddr("10.10.0.1"),
+		ProviderNetwork: "physnet-a",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	joined := stringify(planner.Operations())
+	for _, expected := range []string{
+		"lsp-add-localnet-port nl_ls_prod_apps nl_ls_prod_apps_to_apps_localnet physnet-a",
+		"remove logical_switch_port nl_ls_prod_apps_to_apps_localnet tag",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("provider network vlan disable operation missing %q:\n%s", expected, joined)
+		}
+	}
+	if strings.Contains(joined, "set logical_switch_port nl_ls_prod_apps_to_apps_localnet tag=") {
+		t.Fatalf("provider network without vlan must not leave stale tag set operations:\n%s", joined)
+	}
+}
+
 func TestPlannerClearsEndpointDHCPWhenSubnetDHCPDisabled(t *testing.T) {
 	planner := ovn.NewPlanner()
 	if err := planner.EnsureSubnet(context.Background(), model.Subnet{
