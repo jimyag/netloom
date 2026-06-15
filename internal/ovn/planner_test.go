@@ -34,7 +34,7 @@ func TestPlannerMapsNetloomObjectsToOVNOperations(t *testing.T) {
 				Enabled:       true,
 				LeaseTime:     7200,
 				MTU:           1400,
-				DNSServers:    []netip.Addr{netip.MustParseAddr("10.96.0.10"), netip.MustParseAddr("fd00:96::10")},
+				DNSServers:    []netip.Addr{netip.MustParseAddr("10.96.0.10")},
 				DomainName:    "svc.cluster.local",
 				SearchDomains: []string{"cluster.local", "svc.cluster.local"},
 			},
@@ -584,13 +584,15 @@ func TestPlannerBuildsIPv6DHCPOptions(t *testing.T) {
 		"--id=@nl_dhcp6_prod_pod_hv6 create DHCP_Options cidr=\"fd00:10::/64\"",
 		"options:server_id=0a:58:85:d4:23:26",
 		"options:dns_server=[\"fd00:96::10\"]",
-		"options:domain_name=svc.cluster.local",
-		"options:domain_search_list=[\"cluster.local\"]",
+		"options:domain_search=cluster.local,svc.cluster.local",
 		"set logical_switch_port nl_lp_prod_pod-v6 dhcpv6_options=@nl_dhcp6_prod_pod_hv6",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("IPv6 DHCP operation missing %q:\n%s", expected, joined)
 		}
+	}
+	if strings.Contains(joined, "options:domain_name=") || strings.Contains(joined, "options:domain_search_list=") {
+		t.Fatalf("DHCPv6 options should use domain_search instead of DHCPv4 DNS option names:\n%s", joined)
 	}
 	if strings.Contains(joined, "dhcpv4_options=@") {
 		t.Fatalf("IPv6 endpoint should not bind DHCPv4 options:\n%s", joined)

@@ -369,6 +369,11 @@ func (s Subnet) Validate() error {
 	if err := s.DHCP.Validate(); err != nil {
 		return fmt.Errorf("subnet dhcp: %w", err)
 	}
+	for i, server := range s.DHCP.DNSServers {
+		if server.Is4() != s.CIDR.Addr().Is4() {
+			return fmt.Errorf("subnet dhcp: dns server %d family must match subnet cidr", i)
+		}
+	}
 	return nil
 }
 

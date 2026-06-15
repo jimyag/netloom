@@ -2499,7 +2499,7 @@ func TestDockerControllerReconcileDualStackVPC(t *testing.T) {
 	}
 	v6DHCPOptionsID = strings.Fields(v6DHCPOptionsID)[0]
 	v6DHCPOptions := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "dhcp-options-get-options", v6DHCPOptionsID)
-	for _, expected := range []string{"dns_server=[\"fd00:96::10\"]", "domain_name=dual.internal"} {
+	for _, expected := range []string{"dns_server=[\"fd00:96::10\"]", "domain_search=dual.internal"} {
 		if !strings.Contains(v6DHCPOptions, expected) {
 			t.Fatalf("dual-stack IPv6 DHCP options missing %q:\n%s", expected, v6DHCPOptions)
 		}

@@ -602,7 +602,7 @@ func dhcpv4OptionsArgs(subnet model.Subnet, endpoint model.Endpoint) []string {
 	if subnet.DHCP.MTU != 0 {
 		args = append(args, fmt.Sprintf("options:mtu=%d", subnet.DHCP.MTU))
 	}
-	args = append(args, dhcpDNSOptions(subnet)...)
+	args = append(args, dhcpv4DNSOptions(subnet)...)
 	return args
 }
 
@@ -616,18 +616,22 @@ func dhcpv6OptionsArgs(subnet model.Subnet, endpoint model.Endpoint) []string {
 		"external_ids:netloom_endpoint=" + endpointExternalID(endpoint.VPC, endpoint.ID),
 		"external_ids:netloom_vpc=" + endpoint.VPC,
 	}
-	args = append(args, dhcpDNSOptions(subnet)...)
+	args = append(args, dhcpv6DNSOptions(subnet)...)
 	return args
 }
 
-func dhcpDNSOptions(subnet model.Subnet) []string {
+func dhcpv4DNSOptions(subnet model.Subnet) []string {
 	var args []string
 	if len(subnet.DHCP.DNSServers) > 0 {
 		servers := make([]string, 0, len(subnet.DHCP.DNSServers))
 		for _, server := range subnet.DHCP.DNSServers {
-			servers = append(servers, server.String())
+			if server.Is4() {
+				servers = append(servers, server.String())
+			}
 		}
-		args = append(args, "options:dns_server="+ovnStringSetValues(servers))
+		if len(servers) > 0 {
+			args = append(args, "options:dns_server="+ovnStringSetValues(servers))
+		}
 	}
 	if subnet.DHCP.DomainName != "" {
 		args = append(args, "options:domain_name="+subnet.DHCP.DomainName)
@@ -636,6 +640,43 @@ func dhcpDNSOptions(subnet model.Subnet) []string {
 		args = append(args, "options:domain_search_list="+ovnStringSetValues(subnet.DHCP.SearchDomains))
 	}
 	return args
+}
+
+func dhcpv6DNSOptions(subnet model.Subnet) []string {
+	var args []string
+	if len(subnet.DHCP.DNSServers) > 0 {
+		servers := make([]string, 0, len(subnet.DHCP.DNSServers))
+		for _, server := range subnet.DHCP.DNSServers {
+			if server.Is6() {
+				servers = append(servers, server.String())
+			}
+		}
+		if len(servers) > 0 {
+			args = append(args, "options:dns_server="+ovnStringSetValues(servers))
+		}
+	}
+	if domains := dhcpv6SearchDomains(subnet.DHCP); len(domains) > 0 {
+		args = append(args, "options:domain_search="+strings.Join(domains, ","))
+	}
+	return args
+}
+
+func dhcpv6SearchDomains(options model.DHCPOptions) []string {
+	seen := make(map[string]struct{}, len(options.SearchDomains)+1)
+	var domains []string
+	for _, domain := range options.SearchDomains {
+		if _, ok := seen[domain]; ok {
+			continue
+		}
+		seen[domain] = struct{}{}
+		domains = append(domains, domain)
+	}
+	if options.DomainName != "" {
+		if _, ok := seen[options.DomainName]; !ok {
+			domains = append(domains, options.DomainName)
+		}
+	}
+	return domains
 }
 
 func loadBalancerVIP(lb model.LoadBalancer) string {

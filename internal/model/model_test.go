@@ -552,6 +552,12 @@ func TestSubnetDHCPValidation(t *testing.T) {
 		t.Fatalf("error = %v, want invalid dns server validation", err)
 	}
 
+	subnet.DHCP = DHCPOptions{Enabled: true, DNSServers: []netip.Addr{netip.MustParseAddr("fd00:96::10")}}
+	err = subnet.Validate()
+	if err == nil || !strings.Contains(err.Error(), "family must match subnet cidr") {
+		t.Fatalf("error = %v, want subnet/dns family validation", err)
+	}
+
 	subnet.DHCP = DHCPOptions{Enabled: true, DomainName: "bad domain"}
 	err = subnet.Validate()
 	if err == nil || !strings.Contains(err.Error(), "dhcp domain name") {
@@ -578,6 +584,22 @@ func TestSubnetDHCPValidation(t *testing.T) {
 	}
 	if err := subnet.Validate(); err != nil {
 		t.Fatalf("valid dhcp dns options failed: %v", err)
+	}
+
+	ipv6Subnet := Subnet{
+		Name:    "appsv6",
+		VPC:     "prod",
+		CIDR:    netip.MustParsePrefix("fd00:10::/64"),
+		Gateway: netip.MustParseAddr("fd00:10::1"),
+		DHCP: DHCPOptions{
+			Enabled:       true,
+			DNSServers:    []netip.Addr{netip.MustParseAddr("fd00:96::10")},
+			DomainName:    "svc.cluster.local",
+			SearchDomains: []string{"cluster.local"},
+		},
+	}
+	if err := ipv6Subnet.Validate(); err != nil {
+		t.Fatalf("valid ipv6 dhcp dns options failed: %v", err)
 	}
 }
 
