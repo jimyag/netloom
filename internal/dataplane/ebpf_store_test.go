@@ -566,6 +566,41 @@ func TestEBPFPolicyStoreEndpointIDsIncludesPinnedEndpointsAfterRestart(t *testin
 	}
 }
 
+func TestEBPFPolicyStoreEndpointIDsIncludesPinnedEndpointsFromSeparateMetadataRoot(t *testing.T) {
+	requireEBPFTest(t)
+	endpointID := model.EndpointKey("prod", "endpoint-a")
+	tmp := t.TempDir()
+	metadataRoot := filepath.Join(tmp, "meta")
+	store := NewEBPFPolicyStoreWithConfig(EBPFPolicyStoreConfig{
+		PinRoot:       tmp,
+		MetadataRoot:  metadataRoot,
+		MaxEntries:    16,
+		SchemaVersion: 1,
+	})
+	replaceOrSkipIfUnprivileged(t, store, endpointID, []PolicyMapEntry{{
+		Key:   PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 7, Direction: DirectionIngress},
+		Value: PolicyEntry{Precedence: 7, Deny: 1},
+	}})
+	if err := store.Close(); err != nil {
+		t.Fatalf("close store error = %v", err)
+	}
+
+	recovered := NewEBPFPolicyStoreWithConfig(EBPFPolicyStoreConfig{
+		PinRoot:       tmp,
+		MetadataRoot:  metadataRoot,
+		MaxEntries:    16,
+		SchemaVersion: 1,
+	})
+	t.Cleanup(func() { _ = recovered.Close() })
+	endpoints, err := recovered.EndpointIDs(context.Background())
+	if err != nil {
+		t.Fatalf("EndpointIDs() error = %v", err)
+	}
+	if len(endpoints) != 1 || endpoints[0] != endpointID {
+		t.Fatalf("EndpointIDs() = %v, want [%q]", endpoints, endpointID)
+	}
+}
+
 func TestEBPFPolicyStorePinnedMapCanBeUpdatedAcrossReconciles(t *testing.T) {
 	requireEBPFTest(t)
 	endpointID := model.EndpointKey("prod", "endpoint-a")

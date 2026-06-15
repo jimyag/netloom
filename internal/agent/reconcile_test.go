@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -440,6 +441,107 @@ func TestReconcilerRestartCleansStalePinnedEBPFEndpoints(t *testing.T) {
 		t.Fatalf("list pin root after restart reconcile: %v", err)
 	} else if len(entries) != 2 {
 		t.Fatalf("pin root entries after stale cleanup = %d, want 2", len(entries))
+	}
+}
+
+func TestReconcilerRestartCleansStalePinnedEBPFEndpointsWithSeparateMetadataRoot(t *testing.T) {
+	requireEBPFReconcilerTest(t)
+	tmp := t.TempDir()
+	metadataRoot := filepath.Join(tmp, "meta")
+	staleEndpoint := model.EndpointKey("prod", "stale")
+	liveEndpoint := model.EndpointKey("prod", "live")
+
+	initialStore := dataplane.NewEBPFPolicyStoreWithConfig(dataplane.EBPFPolicyStoreConfig{
+		PinRoot:       tmp,
+		MetadataRoot:  metadataRoot,
+		MaxEntries:    16,
+		SchemaVersion: 1,
+	})
+	staleEntries := []dataplane.PolicyMapEntry{{
+		Key:   dataplane.PolicyKey{PrefixLen: dataplane.StaticPrefixBits, RemoteIdentity: 10, Direction: dataplane.DirectionIngress},
+		Value: dataplane.PolicyEntry{Precedence: 10, Deny: 1},
+	}}
+	liveEntries := []dataplane.PolicyMapEntry{{
+		Key:   dataplane.PolicyKey{PrefixLen: dataplane.StaticPrefixBits, RemoteIdentity: 20, Direction: dataplane.DirectionIngress},
+		Value: dataplane.PolicyEntry{Precedence: 20, Deny: 1},
+	}}
+	if err := initialStore.ReplaceEndpoint(context.Background(), staleEndpoint, staleEntries); err != nil {
+		if strings.Contains(err.Error(), "operation not permitted") {
+			t.Skipf("kernel eBPF map creation is not permitted in this environment: %v", err)
+		}
+		t.Fatalf("seed stale endpoint map: %v", err)
+	}
+	if err := initialStore.ReplaceEndpoint(context.Background(), liveEndpoint, liveEntries); err != nil {
+		if strings.Contains(err.Error(), "operation not permitted") {
+			t.Skipf("kernel eBPF map creation is not permitted in this environment: %v", err)
+		}
+		t.Fatalf("seed live endpoint map: %v", err)
+	}
+	if err := initialStore.Close(); err != nil {
+		t.Fatalf("close seeded store: %v", err)
+	}
+	if entries, err := os.ReadDir(tmp); err != nil {
+		t.Fatalf("list pin root after seed: %v", err)
+	} else if len(entries) != 3 {
+		t.Fatalf("pin root entries after seed = %d, want 3 including metadata dir", len(entries))
+	}
+	if entries, err := os.ReadDir(metadataRoot); err != nil {
+		t.Fatalf("list metadata root after seed: %v", err)
+	} else if len(entries) != 2 {
+		t.Fatalf("metadata root entries after seed = %d, want 2", len(entries))
+	}
+
+	restartedStore := dataplane.NewEBPFPolicyStoreWithConfig(dataplane.EBPFPolicyStoreConfig{
+		PinRoot:       tmp,
+		MetadataRoot:  metadataRoot,
+		MaxEntries:    16,
+		SchemaVersion: 1,
+	})
+	t.Cleanup(func() { _ = restartedStore.Close() })
+	reconciler := NewReconciler(restartedStore)
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:             "live",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"web"},
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "allow-web",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("10.10.0.11/32"),
+				Ports:      []model.PortRange{{From: 443, To: 443}},
+				Action:     model.ActionAllow,
+			}},
+		}},
+	}
+	if _, err := reconciler.Reconcile(context.Background(), state, ReconcileOptions{Node: "node-a", Store: restartedStore}); err != nil {
+		t.Fatalf("reconcile after restart: %v", err)
+	}
+
+	endpointIDs, err := restartedStore.EndpointIDs(context.Background())
+	if err != nil {
+		t.Fatalf("EndpointIDs() after restart reconcile: %v", err)
+	}
+	if !slices.Equal(endpointIDs, []string{liveEndpoint}) {
+		t.Fatalf("managed endpoints after restart reconcile = %v, want [%q]", endpointIDs, liveEndpoint)
+	}
+	if entries, err := os.ReadDir(tmp); err != nil {
+		t.Fatalf("list pin root after restart reconcile: %v", err)
+	} else if len(entries) != 2 {
+		t.Fatalf("pin root entries after stale cleanup = %d, want 2 including metadata dir", len(entries))
+	}
+	if entries, err := os.ReadDir(metadataRoot); err != nil {
+		t.Fatalf("list metadata root after restart reconcile: %v", err)
+	} else if len(entries) != 1 {
+		t.Fatalf("metadata root entries after stale cleanup = %d, want 1", len(entries))
 	}
 }
 

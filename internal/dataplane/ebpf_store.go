@@ -444,16 +444,20 @@ func (s *EBPFPolicyStore) EndpointIDs(_ context.Context) ([]string, error) {
 	for endpointID := range s.maps {
 		endpoints[endpointID] = struct{}{}
 	}
-	if s.pinRoot != "" {
-		entries, err := os.ReadDir(s.pinRoot)
+	metadataRoot := s.pinRoot
+	if s.metadataRoot != "" {
+		metadataRoot = s.metadataRoot
+	}
+	if metadataRoot != "" {
+		entries, err := os.ReadDir(metadataRoot)
 		if err != nil && !os.IsNotExist(err) {
-			return nil, fmt.Errorf("list eBPF map pin root %s: %w", s.pinRoot, err)
+			return nil, fmt.Errorf("list eBPF policy metadata root %s: %w", metadataRoot, err)
 		}
 		for _, entry := range entries {
 			if entry.IsDir() || !strings.HasSuffix(entry.Name(), policyMapMetaFileSuffix) {
 				continue
 			}
-			metadata, err := s.loadMapMetadata(filepath.Join(s.pinRoot, entry.Name()))
+			metadata, err := s.loadMapMetadata(filepath.Join(metadataRoot, entry.Name()))
 			if err != nil || metadata.EndpointID == "" {
 				continue
 			}
