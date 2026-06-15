@@ -42,12 +42,14 @@ type Options struct {
 }
 
 type Result struct {
-	LocalAddresses int
-	RemoteRoutes   int
-	PolicyRoutes   int
-	Device         string
-	Mode           string
-	CleanupPlanned bool
+	LocalAddresses   int
+	RemoteRoutes     int
+	PolicyRoutes     int
+	ProviderNetworks int
+	ProviderLinks    int
+	Device           string
+	Mode             string
+	CleanupPlanned   bool
 }
 
 type CommandExecutor struct{}
@@ -140,6 +142,7 @@ func Plan(ctx context.Context, state control.DesiredState, options Options) ([]O
 	if err != nil {
 		return nil, Result{}, err
 	}
+	result.ProviderNetworks, result.ProviderLinks = summarizeProviderNetworkSpecs(providerSpecs)
 	ops = append(ops, planProviderNetworkLinks(providerSpecs)...)
 	if options.CleanupStale {
 		ops = append(ops, planProviderNetworkLinkCleanup(providerSpecs))
@@ -268,6 +271,14 @@ func providerLinkMappingsForNode(providerNetworks []model.ProviderNetwork, node 
 		}
 	}
 	return mappings
+}
+
+func summarizeProviderNetworkSpecs(specs []providerNetworkLinkSpec) (int, int) {
+	uniqueNetworks := make(map[string]struct{}, len(specs))
+	for _, spec := range specs {
+		uniqueNetworks[spec.ProviderNetwork] = struct{}{}
+	}
+	return len(uniqueNetworks), len(specs)
 }
 
 func providerNetworkLinkKey(spec providerNetworkLinkSpec) string {

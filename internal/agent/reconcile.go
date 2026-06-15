@@ -37,6 +37,8 @@ type ReconcileResult struct {
 	LocalIPs                   int
 	RemoteRoutes               int
 	PolicyRoutes               int
+	ProviderNetworks           int
+	ProviderLinks              int
 	Cleanup                    bool
 }
 
@@ -307,6 +309,8 @@ func prepareReconcile(ctx context.Context, state control.DesiredState, options R
 		result.LocalIPs = linuxResult.LocalAddresses
 		result.RemoteRoutes = linuxResult.RemoteRoutes
 		result.PolicyRoutes = linuxResult.PolicyRoutes
+		result.ProviderNetworks = linuxResult.ProviderNetworks
+		result.ProviderLinks = linuxResult.ProviderLinks
 		result.Cleanup = linuxResult.CleanupPlanned
 	}
 	if err := populatePolicyMapUsageResult(ctx, options.Store, &result); err != nil {

@@ -2499,6 +2499,7 @@ func routeListContainsAnyHops(nextHops []string, expected []string) bool {
 func desiredStateWithExcludeCIDRsJSON() string {
 	return `{
   "vpcs": [{"name": "file"}],
+  "provider_networks": [{"name": "physnet-a", "nodes": [{"node": "node-a", "interface": "eth0"}, {"node": "node-b", "interface": "eth0"}]}],
   "subnets": [{"name": "fileapps", "vpc": "file", "cidr": "10.245.0.0/24", "gateway": "10.245.0.1", "exclude_cidrs": ["10.245.0.16/28"], "provider_network": "physnet-a", "vlan": 100, "dhcp": {"enabled": true, "lease_time": 7200, "mtu": 1400}}],
   "endpoints": [{"id": "file-pod-a", "vpc": "file", "subnet": "fileapps", "ip": "10.245.0.10", "node": "node-a", "security_groups": ["file-allow"]}],
   "security_groups": [{"name": "file-allow", "vpc": "file", "rules": [{"id": "allow-all", "priority": 100, "direction": "ingress", "protocol": "any", "remote_cidr": "0.0.0.0/0", "action": "allow"}]}]

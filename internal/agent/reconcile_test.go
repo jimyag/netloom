@@ -2411,6 +2411,58 @@ func TestReconcileNodeExpandsRemoteGroupMembership(t *testing.T) {
 	}
 }
 
+func TestReconcileNodeReportsProviderNetworkCountsFromLinuxDatapath(t *testing.T) {
+	state := control.DesiredState{
+		ProviderNetworks: []model.ProviderNetwork{{
+			Name: "physnet-a",
+			Nodes: []model.ProviderNetworkNode{{
+				Node:      "node-a",
+				Interface: "eth1",
+			}},
+		}},
+		Subnets: []model.Subnet{{
+			Name:            "apps",
+			VPC:             "prod",
+			CIDR:            netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway:         netip.MustParseAddr("10.10.0.1"),
+			ProviderNetwork: "physnet-a",
+			VLAN:            100,
+		}},
+		Endpoints: []model.Endpoint{{
+			ID:     "pod-a",
+			VPC:    "prod",
+			Subnet: "apps",
+			IP:     netip.MustParseAddr("10.10.0.10"),
+			Node:   "node-a",
+		}},
+	}
+	result, err := ReconcileNodeWithOptions(context.Background(), state, ReconcileOptions{
+		Node:  "node-a",
+		Store: dataplane.NewInMemoryPolicyStore(),
+		LinuxDatapath: &linuxdatapath.Options{
+			LocalDevice: "nl0",
+			Mode:        "local",
+			Backend:     "command",
+			Executor:    noopExecutor{},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ProviderNetworks != 1 || result.ProviderLinks != 1 {
+		t.Fatalf("provider counts = %+v, want provider_networks=1 provider_links=1", result)
+	}
+	if result.Datapath != "linux:nl0" {
+		t.Fatalf("datapath = %s, want linux:nl0", result.Datapath)
+	}
+}
+
+type noopExecutor struct{}
+
+func (noopExecutor) Execute(context.Context, linuxdatapath.Operation) error {
+	return nil
+}
+
 func TestReconcileNodeExpandsRemoteEndpointSelector(t *testing.T) {
 	state := control.DesiredState{
 		Endpoints: []model.Endpoint{

@@ -246,6 +246,8 @@ func TestPrintReconcileResultIncludesPolicyMapUsageSummary(t *testing.T) {
 		PolicyMapCapacity:          16,
 		PolicyMapPressureMax:       75,
 		PolicyMapPressureEndpoints: 0,
+		ProviderNetworks:           1,
+		ProviderLinks:              2,
 		Datapath:                   "not-requested",
 		TCX:                        "not-requested",
 	}, "ebpf")
@@ -263,6 +265,8 @@ func TestPrintReconcileResultIncludesPolicyMapUsageSummary(t *testing.T) {
 		"policy_map_capacity=16",
 		"policy_map_pressure_max=75",
 		"policy_map_pressure_endpoints=0",
+		"provider_networks=1",
+		"provider_links=2",
 	} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("output missing %q:\n%s", expected, output)

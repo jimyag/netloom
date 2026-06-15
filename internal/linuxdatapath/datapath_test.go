@@ -60,6 +60,59 @@ func TestPlanProgramsLocalAddressesAndRemoteRoutes(t *testing.T) {
 	}
 }
 
+func TestPlanReportsProviderNetworkCounts(t *testing.T) {
+	state := control.DesiredState{
+		ProviderNetworks: []model.ProviderNetwork{
+			{
+				Name: "physnet-a",
+				Nodes: []model.ProviderNetworkNode{{
+					Node:      "node-a",
+					Interface: "eth1",
+				}},
+			},
+			{
+				Name: "physnet-b",
+				Nodes: []model.ProviderNetworkNode{{
+					Node:      "node-a",
+					Interface: "eth2",
+				}},
+			},
+		},
+		Subnets: []model.Subnet{
+			{
+				Name:            "apps-a",
+				VPC:             "prod",
+				CIDR:            netip.MustParsePrefix("10.10.0.0/24"),
+				Gateway:         netip.MustParseAddr("10.10.0.1"),
+				ProviderNetwork: "physnet-a",
+				VLAN:            100,
+			},
+			{
+				Name:            "apps-b",
+				VPC:             "prod",
+				CIDR:            netip.MustParsePrefix("10.20.0.0/24"),
+				Gateway:         netip.MustParseAddr("10.20.0.1"),
+				ProviderNetwork: "physnet-b",
+				VLAN:            200,
+			},
+		},
+		Endpoints: []model.Endpoint{
+			{ID: "pod-a", VPC: "prod", Subnet: "apps-a", IP: netip.MustParseAddr("10.10.0.10"), Node: "node-a"},
+			{ID: "pod-b", VPC: "prod", Subnet: "apps-b", IP: netip.MustParseAddr("10.20.0.10"), Node: "node-a"},
+		},
+	}
+	_, result, err := Plan(context.Background(), state, Options{
+		Node:        "node-a",
+		LocalDevice: "nl0",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ProviderNetworks != 2 || result.ProviderLinks != 2 {
+		t.Fatalf("provider counts = %+v, want provider_networks=2 provider_links=2", result)
+	}
+}
+
 func TestPlanRequiresRemoteUnderlay(t *testing.T) {
 	_, _, err := Plan(context.Background(), control.DesiredState{
 		Endpoints: []model.Endpoint{{

@@ -212,13 +212,13 @@ func TestDockerMultiNodeLab(t *testing.T) {
 	}
 	workloadStateScript := "cat >/tmp/netloom-workload-state.json <<'EOF'\n" + desiredWorkloadStateJSON() + "\nEOF\nNETLOOM_STATE_FILE=/tmp/netloom-workload-state.json NETLOOM_LINUX_DATAPATH=1 NETLOOM_LINUX_DATAPATH_MODE=netns NETLOOM_PROVIDER_NETWORK_LINKS=physnet-a=eth0 NETLOOM_NODE_UNDERLAYS=node-a=172.30.0.11,node-b=172.30.0.12 "
 	nodeAWorkloadOutput := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-a", "sh", "-c", workloadStateScript+"NETLOOM_NODE_NAME=node-a /netloom/bin/netloom-agent")
-	for _, expected := range []string{"datapath=linux:netns", "local_ips=1", "remote_routes=1", "policy_added=1", "policy_events=1", "policy_revision_max=1"} {
+	for _, expected := range []string{"datapath=linux:netns", "local_ips=1", "remote_routes=1", "provider_networks=1", "provider_links=1", "policy_added=1", "policy_events=1", "policy_revision_max=1"} {
 		if !strings.Contains(nodeAWorkloadOutput, expected) {
 			t.Fatalf("node-a workload datapath output missing %q:\n%s", expected, nodeAWorkloadOutput)
 		}
 	}
 	nodeBWorkloadOutput := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "sh", "-c", workloadStateScript+"NETLOOM_NODE_NAME=node-b /netloom/bin/netloom-agent")
-	for _, expected := range []string{"datapath=linux:netns", "local_ips=1", "remote_routes=1", "policy_added=1", "policy_events=1", "policy_revision_max=1"} {
+	for _, expected := range []string{"datapath=linux:netns", "local_ips=1", "remote_routes=1", "provider_networks=1", "provider_links=1", "policy_added=1", "policy_events=1", "policy_revision_max=1"} {
 		if !strings.Contains(nodeBWorkloadOutput, expected) {
 			t.Fatalf("node-b workload datapath output missing %q:\n%s", expected, nodeBWorkloadOutput)
 		}
@@ -240,7 +240,7 @@ func TestDockerMultiNodeLab(t *testing.T) {
 	updateWatchScript := "cat >" + watchStatePath + " <<'EOF'\n" + desiredWorkloadPolicyDropStateJSON() + "\nEOF"
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "sh", "-c", updateWatchScript)
 	nodeAWorkloadPolicyOutput := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-a", "sh", "-c", "cat >/tmp/netloom-workload-policy-state.json <<'EOF'\n"+desiredWorkloadPolicyDropStateJSON()+"\nEOF\n"+workloadStateScript+"NETLOOM_STATE_FILE=/tmp/netloom-workload-policy-state.json NETLOOM_NODE_NAME=node-a /netloom/bin/netloom-agent")
-	for _, expected := range []string{"datapath=linux:netns", "local_ips=1", "remote_routes=2", "policy_added=1", "policy_events=1", "policy_revision_max=1"} {
+	for _, expected := range []string{"datapath=linux:netns", "local_ips=1", "remote_routes=2", "provider_networks=1", "provider_links=1", "policy_added=1", "policy_events=1", "policy_revision_max=1"} {
 		if !strings.Contains(nodeAWorkloadPolicyOutput, expected) {
 			t.Fatalf("node-a workload policy datapath output missing %q:\n%s", expected, nodeAWorkloadPolicyOutput)
 		}
@@ -248,7 +248,7 @@ func TestDockerMultiNodeLab(t *testing.T) {
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-a", "ip", "netns", "exec", filePodA, "ping", "-c", "1", "-W", "1", "10.245.0.11")
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-a", "sh", "-c", "for i in $(seq 1 15); do ip netns exec "+filePodA+" sh -c 'printf hi | nc -w 1 10.245.0.11 8080' >/tmp/netloom-workload-probe.log 2>&1 || exit 0; sleep 1; done; cat /tmp/netloom-workload-probe.log; exit 1")
 	workloadDropLog := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "cat", "/tmp/netloom-agent-watch.log")
-	for _, expected := range []string{"reconciled node policy", "node=node-b", "store=ebpf", "datapath=linux:netns", "local_ips=2", "policy_added=3", "policy_deleted=1", "policy_events=2", "policy_revision_max=2", "tcx=attached-workloads:2:egress:policy-l4"} {
+	for _, expected := range []string{"reconciled node policy", "node=node-b", "store=ebpf", "datapath=linux:netns", "local_ips=2", "provider_networks=1", "provider_links=1", "policy_added=3", "policy_deleted=1", "policy_events=2", "policy_revision_max=2", "tcx=attached-workloads:2:egress:policy-l4"} {
 		if !strings.Contains(workloadDropLog, expected) {
 			t.Fatalf("workload L4 drop agent output missing %q:\n%s", expected, workloadDropLog)
 		}
@@ -741,6 +741,7 @@ func TestDockerIPv6CrossNodeWorkloadEgressL4PolicyTCX(t *testing.T) {
 func desiredPolicyDropStateJSON() string {
 	return `{
   "vpcs": [{"name": "file"}],
+  "provider_networks": [{"name": "physnet-a", "nodes": [{"node": "node-a", "interface": "eth0"}, {"node": "node-b", "interface": "eth0"}]}],
   "subnets": [{"name": "fileapps", "vpc": "file", "cidr": "10.245.0.0/24", "gateway": "10.245.0.1", "provider_network": "physnet-a", "vlan": 100, "dhcp": {"enabled": true, "lease_time": 7200, "mtu": 1400, "dns_servers": ["10.96.0.10"], "domain_name": "svc.cluster.local", "search_domains": ["cluster.local", "svc.cluster.local"]}}],
   "endpoints": [{"id": "file-pod-b", "vpc": "file", "subnet": "fileapps", "ip": "10.245.0.11", "node": "node-b", "security_groups": ["drop-web"]}],
   "security_groups": [{"name": "drop-web", "vpc": "file", "rules": [{"id": "drop-web-from-node-a", "priority": 100, "direction": "ingress", "protocol": "tcp", "remote_cidr": "172.30.0.11/32", "ports": [{"from": 8080, "to": 8080}], "action": "drop"}]}]
@@ -780,6 +781,7 @@ func desiredSharedInterfaceBidirectionalStateJSON() string {
 func desiredWorkloadPolicyPriorityDenyWinsStateJSON() string {
 	return `{
   "vpcs": [{"name": "file"}],
+  "provider_networks": [{"name": "physnet-a", "nodes": [{"node": "node-a", "interface": "eth0"}, {"node": "node-b", "interface": "eth0"}]}],
   "subnets": [{"name": "fileapps", "vpc": "file", "cidr": "10.245.0.0/24", "gateway": "10.245.0.1", "provider_network": "physnet-a", "vlan": 100, "dhcp": {"enabled": true, "lease_time": 7200, "mtu": 1400, "dns_servers": ["10.96.0.10"], "domain_name": "svc.cluster.local", "search_domains": ["cluster.local", "svc.cluster.local"]}}],
   "endpoints": [
     {"id": "file-pod-a", "vpc": "file", "subnet": "fileapps", "ip": "10.245.0.10", "node": "node-a", "security_groups": ["client"]},
@@ -802,6 +804,7 @@ func desiredWorkloadPolicyPriorityDenyWinsStateJSON() string {
 func desiredWorkloadPolicyPriorityAllowWinsStateJSON() string {
 	return `{
   "vpcs": [{"name": "file"}],
+  "provider_networks": [{"name": "physnet-a", "nodes": [{"node": "node-a", "interface": "eth0"}, {"node": "node-b", "interface": "eth0"}]}],
   "subnets": [{"name": "fileapps", "vpc": "file", "cidr": "10.245.0.0/24", "gateway": "10.245.0.1", "provider_network": "physnet-a", "vlan": 100, "dhcp": {"enabled": true, "lease_time": 7200, "mtu": 1400, "dns_servers": ["10.96.0.10"], "domain_name": "svc.cluster.local", "search_domains": ["cluster.local", "svc.cluster.local"]}}],
   "endpoints": [
     {"id": "file-pod-a", "vpc": "file", "subnet": "fileapps", "ip": "10.245.0.10", "node": "node-a", "security_groups": ["client"]},
@@ -824,6 +827,7 @@ func desiredWorkloadPolicyPriorityAllowWinsStateJSON() string {
 func desiredDNSObservationStateJSON() string {
 	return `{
   "vpcs": [{"name": "file"}],
+  "provider_networks": [{"name": "physnet-a", "nodes": [{"node": "node-a", "interface": "eth0"}, {"node": "node-b", "interface": "eth0"}]}],
   "subnets": [{"name": "fileapps", "vpc": "file", "cidr": "10.245.0.0/24", "gateway": "10.245.0.1"}],
   "endpoints": [{"id": "file-pod-a", "vpc": "file", "subnet": "fileapps", "ip": "10.245.0.10", "node": "node-a", "security_groups": ["dns-client"]}],
   "security_groups": [{"name": "dns-client", "vpc": "file", "rules": [{"id": "allow-observed-api", "priority": 100, "direction": "egress", "protocol": "tcp", "remote_fqdns": [{"match_name": "api.example.com"}], "ports": [{"from": 443, "to": 443}], "action": "allow"}]}]
@@ -839,6 +843,7 @@ func dnsObservationJSON() string {
 func desiredWorkloadPolicyDropStateJSON() string {
 	return `{
   "vpcs": [{"name": "file"}],
+  "provider_networks": [{"name": "physnet-a", "nodes": [{"node": "node-a", "interface": "eth0"}, {"node": "node-b", "interface": "eth0"}]}],
   "subnets": [{"name": "fileapps", "vpc": "file", "cidr": "10.245.0.0/24", "gateway": "10.245.0.1", "provider_network": "physnet-a", "vlan": 100, "dhcp": {"enabled": true, "lease_time": 7200, "mtu": 1400, "dns_servers": ["10.96.0.10"], "domain_name": "svc.cluster.local", "search_domains": ["cluster.local", "svc.cluster.local"]}}],
   "endpoints": [
     {"id": "file-pod-a", "vpc": "file", "subnet": "fileapps", "ip": "10.245.0.10", "node": "node-a", "security_groups": ["allow-web", "clients"]},
@@ -860,6 +865,7 @@ func desiredWorkloadPolicyDropStateJSON() string {
 func desiredWorkloadICMPDropStateJSON() string {
 	return `{
   "vpcs": [{"name": "file"}],
+  "provider_networks": [{"name": "physnet-a", "nodes": [{"node": "node-a", "interface": "eth0"}, {"node": "node-b", "interface": "eth0"}]}],
   "subnets": [{"name": "fileapps", "vpc": "file", "cidr": "10.245.0.0/24", "gateway": "10.245.0.1", "provider_network": "physnet-a", "vlan": 100, "dhcp": {"enabled": true, "lease_time": 7200, "mtu": 1400}}],
   "endpoints": [
     {"id": "file-pod-a", "vpc": "file", "subnet": "fileapps", "ip": "10.245.0.10", "node": "node-a", "security_groups": ["clients"]},
@@ -880,6 +886,7 @@ func desiredWorkloadICMPDropStateJSON() string {
 func desiredWorkloadCleanupStateJSON() string {
 	return `{
   "vpcs": [{"name": "file"}],
+  "provider_networks": [{"name": "physnet-a", "nodes": [{"node": "node-a", "interface": "eth0"}, {"node": "node-b", "interface": "eth0"}]}],
   "subnets": [{"name": "fileapps", "vpc": "file", "cidr": "10.245.0.0/24", "gateway": "10.245.0.1"}],
   "endpoints": [
     {"id": "file-pod-a", "vpc": "file", "subnet": "fileapps", "ip": "10.245.0.10", "node": "node-a", "security_groups": ["allow-web"]},
@@ -892,6 +899,7 @@ func desiredWorkloadCleanupStateJSON() string {
 func desiredWorkloadStateJSON() string {
 	return `{
   "vpcs": [{"name": "file"}],
+  "provider_networks": [{"name": "physnet-a", "nodes": [{"node": "node-a", "interface": "eth0"}, {"node": "node-b", "interface": "eth0"}]}],
   "subnets": [{"name": "fileapps", "vpc": "file", "cidr": "10.245.0.0/24", "gateway": "10.245.0.1", "provider_network": "physnet-a", "vlan": 100}],
   "endpoints": [
     {"id": "file-pod-a", "vpc": "file", "subnet": "fileapps", "ip": "10.245.0.10", "node": "node-a", "security_groups": ["web"]},
@@ -904,6 +912,7 @@ func desiredWorkloadStateJSON() string {
 func desiredStateJSON() string {
 	return `{
   "vpcs": [{"name": "file"}],
+  "provider_networks": [{"name": "physnet-a", "nodes": [{"node": "node-a", "interface": "eth0"}, {"node": "node-b", "interface": "eth0"}]}],
   "subnets": [{"name": "fileapps", "vpc": "file", "cidr": "10.245.0.0/24", "gateway": "10.245.0.1", "provider_network": "physnet-a", "vlan": 100, "dhcp": {"enabled": true, "lease_time": 7200, "mtu": 1400}}],
   "endpoints": [{"id": "file-pod-a", "vpc": "file", "subnet": "fileapps", "ip": "10.245.0.10", "node": "node-a", "security_groups": ["web"]}],
   "route_tables": [{"name": "main", "vpc": "file", "routes": [{"destination": "0.0.0.0/0", "next_hops": ["10.245.0.254"]}]}],
@@ -923,6 +932,7 @@ func desiredStateJSON() string {
 func desiredStateWithoutDHCPJSON() string {
 	return `{
   "vpcs": [{"name": "file"}],
+  "provider_networks": [{"name": "physnet-a", "nodes": [{"node": "node-a", "interface": "eth0"}, {"node": "node-b", "interface": "eth0"}]}],
   "subnets": [{"name": "fileapps", "vpc": "file", "cidr": "10.245.0.0/24", "gateway": "10.245.0.1", "provider_network": "physnet-a", "vlan": 100}],
   "endpoints": [{"id": "file-pod-a", "vpc": "file", "subnet": "fileapps", "ip": "10.245.0.10", "node": "node-a", "security_groups": ["web"]}],
   "route_tables": [{"name": "main", "vpc": "file", "routes": [{"destination": "0.0.0.0/0", "next_hops": ["10.245.0.254"]}]}],
@@ -942,6 +952,7 @@ func desiredStateWithoutDHCPJSON() string {
 func desiredStateWithUpdatedLoadBalancerJSON() string {
 	return `{
   "vpcs": [{"name": "file"}],
+  "provider_networks": [{"name": "physnet-a", "nodes": [{"node": "node-a", "interface": "eth0"}, {"node": "node-b", "interface": "eth0"}]}],
   "subnets": [{"name": "fileapps", "vpc": "file", "cidr": "10.245.0.0/24", "gateway": "10.245.0.1", "provider_network": "physnet-a", "vlan": 100, "dhcp": {"enabled": true, "lease_time": 7200, "mtu": 1400}}],
   "endpoints": [{"id": "file-pod-a", "vpc": "file", "subnet": "fileapps", "ip": "10.245.0.10", "node": "node-a", "security_groups": ["web"]}],
   "route_tables": [{"name": "main", "vpc": "file", "routes": [{"destination": "0.0.0.0/0", "next_hops": ["10.245.0.254"]}]}],
@@ -961,6 +972,7 @@ func desiredStateWithUpdatedLoadBalancerJSON() string {
 func desiredStateWithUpdatedNATJSON() string {
 	return `{
   "vpcs": [{"name": "file"}],
+  "provider_networks": [{"name": "physnet-a", "nodes": [{"node": "node-a", "interface": "eth0"}, {"node": "node-b", "interface": "eth0"}]}],
   "subnets": [{"name": "fileapps", "vpc": "file", "cidr": "10.245.0.0/24", "gateway": "10.245.0.1", "provider_network": "physnet-a", "vlan": 100, "dhcp": {"enabled": true, "lease_time": 7200, "mtu": 1400}}],
   "endpoints": [{"id": "file-pod-a", "vpc": "file", "subnet": "fileapps", "ip": "10.245.0.10", "node": "node-a", "security_groups": ["web"]}],
   "route_tables": [{"name": "main", "vpc": "file", "routes": [{"destination": "0.0.0.0/0", "next_hops": ["10.245.0.254"]}]}],
@@ -980,6 +992,7 @@ func desiredStateWithUpdatedNATJSON() string {
 func desiredStateWithUpdatedPolicyRouteJSON() string {
 	return `{
   "vpcs": [{"name": "file"}],
+  "provider_networks": [{"name": "physnet-a", "nodes": [{"node": "node-a", "interface": "eth0"}, {"node": "node-b", "interface": "eth0"}]}],
   "subnets": [{"name": "fileapps", "vpc": "file", "cidr": "10.245.0.0/24", "gateway": "10.245.0.1", "provider_network": "physnet-a", "vlan": 100, "dhcp": {"enabled": true, "lease_time": 7200, "mtu": 1400}}],
   "endpoints": [{"id": "file-pod-a", "vpc": "file", "subnet": "fileapps", "ip": "10.245.0.10", "node": "node-a", "security_groups": ["web"]}],
   "route_tables": [{"name": "main", "vpc": "file", "routes": [{"destination": "0.0.0.0/0", "next_hops": ["10.245.0.254"]}]}],
@@ -999,6 +1012,7 @@ func desiredStateWithUpdatedPolicyRouteJSON() string {
 func desiredStateWithUpdatedStaticRouteJSON() string {
 	return `{
   "vpcs": [{"name": "file"}],
+  "provider_networks": [{"name": "physnet-a", "nodes": [{"node": "node-a", "interface": "eth0"}, {"node": "node-b", "interface": "eth0"}]}],
   "subnets": [{"name": "fileapps", "vpc": "file", "cidr": "10.245.0.0/24", "gateway": "10.245.0.1", "provider_network": "physnet-a", "vlan": 100, "dhcp": {"enabled": true, "lease_time": 7200, "mtu": 1400}}],
   "endpoints": [{"id": "file-pod-a", "vpc": "file", "subnet": "fileapps", "ip": "10.245.0.10", "node": "node-a", "security_groups": ["web"]}],
   "route_tables": [{"name": "main", "vpc": "file", "routes": [{"destination": "0.0.0.0/0", "next_hops": ["10.245.0.251"]}]}],
@@ -1018,6 +1032,7 @@ func desiredStateWithUpdatedStaticRouteJSON() string {
 func desiredStateWithStaticRouteToECMPJSON() string {
 	return `{
   "vpcs": [{"name": "file"}],
+  "provider_networks": [{"name": "physnet-a", "nodes": [{"node": "node-a", "interface": "eth0"}, {"node": "node-b", "interface": "eth0"}]}],
   "subnets": [{"name": "fileapps", "vpc": "file", "cidr": "10.245.0.0/24", "gateway": "10.245.0.1", "provider_network": "physnet-a", "vlan": 100, "dhcp": {"enabled": true, "lease_time": 7200, "mtu": 1400}}],
   "endpoints": [{"id": "file-pod-a", "vpc": "file", "subnet": "fileapps", "ip": "10.245.0.10", "node": "node-a", "security_groups": ["web"]}],
   "route_tables": [{"name": "main", "vpc": "file", "routes": [{"destination": "0.0.0.0/0", "next_hops": ["10.245.0.251", "10.245.0.252"]}]}],
@@ -1179,6 +1194,7 @@ func desiredWorkloadIPv6CrossNodeEgressL4DropStateJSON() string {
 func desiredStateWithStaticRouteFromECMPToSingleJSON() string {
 	return `{
   "vpcs": [{"name": "file"}],
+  "provider_networks": [{"name": "physnet-a", "nodes": [{"node": "node-a", "interface": "eth0"}, {"node": "node-b", "interface": "eth0"}]}],
   "subnets": [{"name": "fileapps", "vpc": "file", "cidr": "10.245.0.0/24", "gateway": "10.245.0.1", "provider_network": "physnet-a", "vlan": 100, "dhcp": {"enabled": true, "lease_time": 7200, "mtu": 1400}}],
   "endpoints": [{"id": "file-pod-a", "vpc": "file", "subnet": "fileapps", "ip": "10.245.0.10", "node": "node-a", "security_groups": ["web"]}],
   "route_tables": [{"name": "main", "vpc": "file", "routes": [{"destination": "0.0.0.0/0", "next_hops": ["10.245.0.252"]}]}],
@@ -1198,6 +1214,7 @@ func desiredStateWithStaticRouteFromECMPToSingleJSON() string {
 func desiredStateWithoutProviderNetworkJSON() string {
 	return `{
   "vpcs": [{"name": "file"}],
+  "provider_networks": [{"name": "physnet-a", "nodes": [{"node": "node-a", "interface": "eth0"}, {"node": "node-b", "interface": "eth0"}]}],
   "subnets": [{"name": "fileapps", "vpc": "file", "cidr": "10.245.0.0/24", "gateway": "10.245.0.1", "dhcp": {"enabled": true, "lease_time": 7200, "mtu": 1400}}],
   "endpoints": [{"id": "file-pod-a", "vpc": "file", "subnet": "fileapps", "ip": "10.245.0.10", "node": "node-a", "security_groups": ["web"]}],
   "route_tables": [{"name": "main", "vpc": "file", "routes": [{"destination": "0.0.0.0/0", "next_hops": ["10.245.0.251"]}]}],
@@ -1217,6 +1234,7 @@ func desiredStateWithoutProviderNetworkJSON() string {
 func desiredStateWithoutEndpointNATJSON() string {
 	return `{
   "vpcs": [{"name": "file"}],
+  "provider_networks": [{"name": "physnet-a", "nodes": [{"node": "node-a", "interface": "eth0"}, {"node": "node-b", "interface": "eth0"}]}],
   "subnets": [{"name": "fileapps", "vpc": "file", "cidr": "10.245.0.0/24", "gateway": "10.245.0.1", "provider_network": "physnet-a", "vlan": 100, "dhcp": {"enabled": true, "lease_time": 7200, "mtu": 1400}}],
   "endpoints": [],
   "route_tables": [{"name": "main", "vpc": "file", "routes": [{"destination": "0.0.0.0/0", "next_hops": ["10.245.0.254"]}]}],
