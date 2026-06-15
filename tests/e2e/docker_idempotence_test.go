@@ -392,6 +392,68 @@ func TestDockerControllerWatchRecoversFromRestart(t *testing.T) {
 	stopControllerWatch()
 }
 
+func TestDockerControllerWatchRecoversFromOVNDBRestart(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip long e2e test in short mode")
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker is not installed")
+	}
+
+	composeFile := filepath.Join("testdata", "..", "docker-compose.yaml")
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+
+	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
+	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
+	startComposeLab(t, ctx, composeFile)
+	waitForOVN(t, ctx, composeFile)
+
+	statePath := "/tmp/netloom-state-ovn-health-restart.json"
+	controllerPIDPath := "/tmp/netloom-controller-ovn-health-restart.pid"
+	controllerLogPath := "/tmp/netloom-controller-ovn-health-restart.log"
+	baseStatePath := "/tmp/netloom-state-ovn-health-restart-base.json"
+	updatedStatePath := "/tmp/netloom-state-ovn-health-restart-updated.json"
+
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "cat >"+baseStatePath+" <<'EOF'\n"+desiredStateJSON()+"\nEOF")
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "cat >"+updatedStatePath+" <<'EOF'\n"+desiredStateWithUpdatedStaticRouteJSON()+"\nEOF")
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "cp", baseStatePath, statePath)
+
+	startControllerWatch := "cat /dev/null > " + controllerLogPath + "; (NETLOOM_STATE_FILE=" + statePath + " NETLOOM_RECONCILE_INTERVAL_MS=250 NETLOOM_RECONCILE_FAILURE_BACKOFF_MS=100 NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller >" + controllerLogPath + " 2>&1 &) ; echo $! > " + controllerPIDPath
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", startControllerWatch)
+	t.Cleanup(func() {
+		runAllowFailure(t, context.Background(), "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "pid=$(cat "+controllerPIDPath+" 2>/dev/null || true); [ -n \"$pid\" ] && kill -9 \"$pid\" || true; rm -f "+controllerPIDPath)
+	})
+
+	waitForControllerWatchLog := func(expected string) {
+		for i := 0; i < 30; i++ {
+			output := runAllowFailure(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "grep -Fq '"+expected+"' "+controllerLogPath+" && exit 0 || exit 1")
+			if output.exitCode == 0 {
+				return
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+		logOutput := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "cat", controllerLogPath)
+		t.Fatalf("controller watch did not emit %q in time:\n%s", expected, logOutput)
+	}
+
+	waitForControllerWatchLog("reconciled desired state")
+	waitForControllerWatchLog("ovn_health=ok")
+
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "pid=$(cat /var/run/ovn/ovnnb_db.pid); kill \"$pid\"")
+	waitForControllerWatchLog("netloom-controller reconcile failed: ovn health check:")
+
+	restartOVN := "mkdir -p /var/run/ovn /var/lib/ovn\n" +
+		"ovsdb-server --detach --pidfile=/var/run/ovn/ovnnb_db.pid --remote=punix:/var/run/ovn/ovnnb_db.sock /var/lib/ovn/ovnnb_db.db\n" +
+		"ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock init"
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", restartOVN)
+	waitForOVN(t, ctx, composeFile)
+
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "cp", updatedStatePath, statePath)
+	waitForControllerWatchLog("ovn_health=ok")
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "for i in $(seq 1 20); do routes=$(ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock lr-route-list nl_lr_file); echo \"$routes\" | grep -q '10.245.0.251' && ! echo \"$routes\" | grep -q '10.245.0.254' && exit 0; sleep 1; done; cat "+controllerLogPath+"; ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock lr-route-list nl_lr_file; exit 1")
+}
+
 func TestDockerControllerReconcileSupportsSameEndpointIDAcrossVPCs(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skip long e2e test in short mode")

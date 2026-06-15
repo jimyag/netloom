@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"net/netip"
+	"sync"
 	"testing"
 	"time"
 
@@ -64,6 +66,73 @@ func TestNBCTLRetryAttemptsRejectsInvalidValue(t *testing.T) {
 	_, err := nbctlRetryAttempts()
 	if err == nil {
 		t.Fatal("expected invalid nbctl retry attempts to fail")
+	}
+}
+
+func TestReconcileFailureBackoffDefaultsToInterval(t *testing.T) {
+	backoff, err := reconcileFailureBackoff(750 * time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if backoff != 750*time.Millisecond {
+		t.Fatalf("backoff = %s, want 750ms", backoff)
+	}
+}
+
+func TestReconcileFailureBackoffParsesMilliseconds(t *testing.T) {
+	t.Setenv("NETLOOM_RECONCILE_FAILURE_BACKOFF_MS", "125")
+	backoff, err := reconcileFailureBackoff(500 * time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if backoff != 125*time.Millisecond {
+		t.Fatalf("backoff = %s, want 125ms", backoff)
+	}
+}
+
+func TestReconcileFailureBackoffRejectsInvalidValue(t *testing.T) {
+	t.Setenv("NETLOOM_RECONCILE_FAILURE_BACKOFF_MS", "slow")
+	_, err := reconcileFailureBackoff(500 * time.Millisecond)
+	if err == nil {
+		t.Fatal("expected invalid reconcile failure backoff to fail")
+	}
+}
+
+func TestRunReconcileLoopRetriesAfterFailure(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var mu sync.Mutex
+	attempts := 0
+	failures := 0
+	errBoom := errors.New("boom")
+	err := runReconcileLoop(ctx, 20*time.Millisecond, 2*time.Millisecond, func() error {
+		mu.Lock()
+		defer mu.Unlock()
+		attempts++
+		if attempts < 3 {
+			return errBoom
+		}
+		cancel()
+		return nil
+	}, func(err error) {
+		if !errors.Is(err, errBoom) {
+			t.Fatalf("reported error = %v, want boom", err)
+		}
+		mu.Lock()
+		failures++
+		mu.Unlock()
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("runReconcileLoop error = %v, want context canceled", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if attempts != 3 {
+		t.Fatalf("attempts = %d, want 3", attempts)
+	}
+	if failures != 2 {
+		t.Fatalf("failures = %d, want 2", failures)
 	}
 }
 

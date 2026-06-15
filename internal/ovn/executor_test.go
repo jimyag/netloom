@@ -2930,6 +2930,39 @@ func TestNBCTLExecutorAppliesDefaultCommandTimeout(t *testing.T) {
 	}
 }
 
+func TestNBCTLExecutorHealthCheckUsesShow(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args")
+	binary := filepath.Join(dir, "ovn-nbctl")
+	script := fmt.Sprintf(`#!/bin/sh
+printf '%%s\n' '---' >> %q
+printf '%%s\n' "$@" >> %q
+case "$*" in
+  *"show"*) exit 0 ;;
+esac
+`, argsFile, argsFile)
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	executor := ovn.NewNBCTLExecutor(binary, "--db=unix:/tmp/ovnnb.sock")
+	latency, err := executor.HealthCheck(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latency < 0 {
+		t.Fatalf("latency = %s, want non-negative", latency)
+	}
+	raw, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	if !strings.Contains(text, "--db=unix:/tmp/ovnnb.sock\nshow") {
+		t.Fatalf("health check should execute ovn-nbctl show:\n%s", text)
+	}
+}
+
 type failingExecutor struct{}
 
 func (failingExecutor) Execute(context.Context, []ovn.Operation) error {

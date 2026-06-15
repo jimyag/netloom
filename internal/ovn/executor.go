@@ -79,6 +79,16 @@ func NewNBCTLExecutor(binary string, baseArgs ...string) *NBCTLExecutor {
 	}
 }
 
+func (e *NBCTLExecutor) HealthCheck(ctx context.Context) (time.Duration, error) {
+	start := time.Now()
+	args := append([]string(nil), e.BaseArgs...)
+	args = append(args, "show")
+	if _, err := e.outputCommand(ctx, args); err != nil {
+		return 0, err
+	}
+	return time.Since(start), nil
+}
+
 func (e *NBCTLExecutor) Execute(ctx context.Context, ops []Operation) error {
 	if e.Transaction {
 		return e.executeTransaction(ctx, ops)
