@@ -263,6 +263,16 @@ func newNBCTLExecutorFromEnv(db string) (*ovn.NBCTLExecutor, error) {
 		return nil, err
 	}
 	executor.RetryPolicy.Attempts = retryAttempts
+	initialBackoff, err := nbctlRetryInitialBackoff()
+	if err != nil {
+		return nil, err
+	}
+	maxBackoff, err := nbctlRetryMaxBackoff()
+	if err != nil {
+		return nil, err
+	}
+	executor.RetryPolicy.InitialBackoff = initialBackoff
+	executor.RetryPolicy.MaxBackoff = maxBackoff
 	return executor, nil
 }
 
@@ -294,6 +304,36 @@ func nbctlRetryAttempts() (int, error) {
 		return 1, nil
 	}
 	return attempts, nil
+}
+
+func nbctlRetryInitialBackoff() (time.Duration, error) {
+	raw := os.Getenv("NETLOOM_OVN_NBCTL_RETRY_INITIAL_BACKOFF_MS")
+	if raw == "" {
+		return ovn.DefaultNBCTLRetryInitialBackoff, nil
+	}
+	ms, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("invalid NETLOOM_OVN_NBCTL_RETRY_INITIAL_BACKOFF_MS: %w", err)
+	}
+	if ms <= 0 {
+		return 0, nil
+	}
+	return time.Duration(ms) * time.Millisecond, nil
+}
+
+func nbctlRetryMaxBackoff() (time.Duration, error) {
+	raw := os.Getenv("NETLOOM_OVN_NBCTL_RETRY_MAX_BACKOFF_MS")
+	if raw == "" {
+		return ovn.DefaultNBCTLRetryMaxBackoff, nil
+	}
+	ms, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("invalid NETLOOM_OVN_NBCTL_RETRY_MAX_BACKOFF_MS: %w", err)
+	}
+	if ms <= 0 {
+		return 0, nil
+	}
+	return time.Duration(ms) * time.Millisecond, nil
 }
 
 func countPolicyEntries(memory *control.MemoryBackend) int {

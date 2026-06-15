@@ -984,7 +984,11 @@ func isRetryableNBCTLCommandError(err error) bool {
 		strings.Contains(errorText, "transaction is already committed") ||
 		strings.Contains(errorText, "Transaction in progress") ||
 		strings.Contains(errorText, "another transaction") ||
-		strings.Contains(errorText, "connection refused")
+		strings.Contains(errorText, "connection refused") ||
+		strings.Contains(errorText, "failed to connect") ||
+		strings.Contains(errorText, "No such file or directory") ||
+		strings.Contains(errorText, "Connection reset by peer") ||
+		strings.Contains(errorText, "broken pipe")
 }
 
 func sleepWithContext(ctx context.Context, d time.Duration) error {

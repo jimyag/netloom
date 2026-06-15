@@ -1918,6 +1918,54 @@ fi
 	}
 }
 
+func TestNBCTLExecutorRetriesSocketReconnectErrors(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args")
+	stateFile := filepath.Join(dir, "state")
+	binary := filepath.Join(dir, "ovn-nbctl")
+	script := fmt.Sprintf(`#!/bin/sh
+state="%s"
+attempt=0
+if [ -f "$state" ]; then
+  attempt=$(cat "$state")
+fi
+attempt=$((attempt + 1))
+echo "$attempt" > "$state"
+printf '%%s\n' "$attempt" >> %q
+printf '%%s\n' "$@" >> %q
+if [ "$attempt" -eq 1 ]; then
+  echo "ovn-nbctl: unix:/var/run/ovn/ovnnb_db.sock: database connection failed (No such file or directory)" >&2
+  exit 1
+fi
+`, stateFile, argsFile, argsFile)
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	executor := ovn.NewNBCTLExecutor(binary, "--db=unix:/tmp/ovnnb.sock")
+	executor.Timeout = 5 * time.Second
+	executor.RetryPolicy = ovn.NBCTLRetryPolicy{Attempts: 2, InitialBackoff: 1 * time.Millisecond, MaxBackoff: 1 * time.Millisecond}
+	err := executor.Execute(context.Background(), []ovn.Operation{{Command: "show"}})
+	if err != nil {
+		t.Fatalf("execute returned error: %v", err)
+	}
+	raw, err := os.ReadFile(stateFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(raw)) != "2" {
+		t.Fatalf("retry attempts did not run correctly: %s", raw)
+	}
+	args, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := strings.Split(strings.TrimSpace(string(args)), "\n")
+	if len(calls) != 6 {
+		t.Fatalf("commands = %d, want 2 attempts with 3 output lines each (attempt + 2 args): %v", len(calls), calls)
+	}
+}
+
 func TestNBCTLExecutorStopsRetryingOnNonRetryableErrors(t *testing.T) {
 	dir := t.TempDir()
 	argsFile := filepath.Join(dir, "args")

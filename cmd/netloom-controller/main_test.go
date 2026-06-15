@@ -69,6 +69,44 @@ func TestNBCTLRetryAttemptsRejectsInvalidValue(t *testing.T) {
 	}
 }
 
+func TestNBCTLRetryInitialBackoffParsesMilliseconds(t *testing.T) {
+	t.Setenv("NETLOOM_OVN_NBCTL_RETRY_INITIAL_BACKOFF_MS", "75")
+	backoff, err := nbctlRetryInitialBackoff()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if backoff != 75*time.Millisecond {
+		t.Fatalf("initial backoff = %s, want 75ms", backoff)
+	}
+}
+
+func TestNBCTLRetryInitialBackoffRejectsInvalidValue(t *testing.T) {
+	t.Setenv("NETLOOM_OVN_NBCTL_RETRY_INITIAL_BACKOFF_MS", "soon")
+	_, err := nbctlRetryInitialBackoff()
+	if err == nil {
+		t.Fatal("expected invalid initial backoff to fail")
+	}
+}
+
+func TestNBCTLRetryMaxBackoffParsesMilliseconds(t *testing.T) {
+	t.Setenv("NETLOOM_OVN_NBCTL_RETRY_MAX_BACKOFF_MS", "900")
+	backoff, err := nbctlRetryMaxBackoff()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if backoff != 900*time.Millisecond {
+		t.Fatalf("max backoff = %s, want 900ms", backoff)
+	}
+}
+
+func TestNBCTLRetryMaxBackoffRejectsInvalidValue(t *testing.T) {
+	t.Setenv("NETLOOM_OVN_NBCTL_RETRY_MAX_BACKOFF_MS", "later")
+	_, err := nbctlRetryMaxBackoff()
+	if err == nil {
+		t.Fatal("expected invalid max backoff to fail")
+	}
+}
+
 func TestReconcileFailureBackoffDefaultsToInterval(t *testing.T) {
 	backoff, err := reconcileFailureBackoff(750 * time.Millisecond)
 	if err != nil {
