@@ -322,3 +322,89 @@ func TestDockerAgentStateWatchRecoversFromRestart(t *testing.T) {
 	waitForPinnedArtifacts(pinRoot, 1)
 	waitForMetadataArtifacts(metadataRoot, 1)
 }
+
+func TestDockerAgentStateWatchPreservesPinnedMapsOnEBPFOverflow(t *testing.T) {
+	requireDockerE2E(t)
+	if testing.Short() {
+		t.Skip("skip long e2e test in short mode")
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker is not installed")
+	}
+
+	composeFile := filepath.Join("testdata", "..", "docker-compose.yaml")
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+
+	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
+	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
+	startComposeLab(t, ctx, composeFile)
+	t.Cleanup(func() {
+		downCtx, downCancel := context.WithTimeout(context.Background(), time.Minute)
+		defer downCancel()
+		run(t, downCtx, "docker", "compose", "-f", composeFile, "down", "-v")
+	})
+
+	statePath := "/tmp/netloom-agent-overflow-watch-state.json"
+	baselineStateWrite := "cat >" + statePath + " <<'EOF'\n" + desiredWorkloadStateJSON() + "\nEOF\n"
+	overflowStateWrite := "cat >" + statePath + " <<'EOF'\n" + desiredWorkloadPolicyDropStateJSON() + "\nEOF\n"
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "sh", "-c", baselineStateWrite)
+
+	metadataRoot := "/var/run/netloom-ebpf-meta/policy"
+	shortCtx := func() (context.Context, context.CancelFunc) {
+		return context.WithTimeout(context.Background(), 30*time.Second)
+	}
+	runAgentOnce := func(expectSuccess bool) string {
+		opCtx, cancel := shortCtx()
+		defer cancel()
+		command := "NETLOOM_STATE_FILE=" + statePath + " NETLOOM_NODE_NAME=node-b NETLOOM_POLICY_STORE=ebpf NETLOOM_EBPF_MAP_MAX_ENTRIES=1 /netloom/bin/netloom-agent"
+		if expectSuccess {
+			return run(t, opCtx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "sh", "-c", command)
+		}
+		output := runAllowFailure(t, opCtx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "sh", "-c", command)
+		if output.exitCode == 0 {
+			t.Fatalf("expected overflow reconcile to fail, output:\n%s", output.output)
+		}
+		return output.output
+	}
+	listFiles := func(root, pattern string) string {
+		opCtx, cancel := shortCtx()
+		defer cancel()
+		command := "find " + root + " -maxdepth 1 "
+		if pattern != "" {
+			command += "-name '" + pattern + "' "
+		} else {
+			command += "-type f "
+		}
+		command += "| sort"
+		return strings.TrimSpace(run(t, opCtx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "sh", "-c", command))
+	}
+
+	baselineOutput := runAgentOnce(true)
+	for _, expected := range []string{"reconciled node policy", "store=ebpf", "endpoints=1", "policy_map_capacity=1", "policy_map_entries=1"} {
+		if !strings.Contains(baselineOutput, expected) {
+			t.Fatalf("baseline reconcile output missing %q:\n%s", expected, baselineOutput)
+		}
+	}
+
+	pinRoot := detectDefaultEBPFPolicyMapRoot(t, ctx, composeFile, "node-b")
+	waitForEBPFPolicyMapCount(t, ctx, composeFile, "node-b", pinRoot, 1)
+	waitForEBPFPolicyMetadataCount(t, ctx, composeFile, "node-b", metadataRoot, 1)
+	baselinePinnedMaps := listFiles(pinRoot, "")
+	baselineMetadata := listFiles(metadataRoot, "*.meta")
+
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "sh", "-c", overflowStateWrite)
+	overflowOutput := runAgentOnce(false)
+	if !strings.Contains(overflowOutput, "policy map capacity exceeded") {
+		t.Fatalf("overflow output missing capacity failure:\n%s", overflowOutput)
+	}
+
+	waitForEBPFPolicyMapCount(t, ctx, composeFile, "node-b", pinRoot, 1)
+	waitForEBPFPolicyMetadataCount(t, ctx, composeFile, "node-b", metadataRoot, 1)
+	if got := listFiles(pinRoot, ""); got != baselinePinnedMaps {
+		t.Fatalf("pinned maps changed after overflow.\nbase:\n%s\ncurrent:\n%s", baselinePinnedMaps, got)
+	}
+	if got := listFiles(metadataRoot, "*.meta"); got != baselineMetadata {
+		t.Fatalf("policy metadata changed after overflow.\nbase:\n%s\ncurrent:\n%s", baselineMetadata, got)
+	}
+}
