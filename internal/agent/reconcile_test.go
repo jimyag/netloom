@@ -2452,6 +2452,9 @@ func TestReconcileNodeReportsProviderNetworkCountsFromLinuxDatapath(t *testing.T
 	if result.ProviderNetworks != 1 || result.ProviderLinks != 1 {
 		t.Fatalf("provider counts = %+v, want provider_networks=1 provider_links=1", result)
 	}
+	if result.ProviderReady != 0 || result.ProviderDegraded != 1 {
+		t.Fatalf("provider health summary = %+v, want provider_ready=0 provider_degraded=1", result)
+	}
 	if len(result.ProviderStatus) != 1 {
 		t.Fatalf("provider status = %+v, want 1 entry", result.ProviderStatus)
 	}

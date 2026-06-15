@@ -39,6 +39,8 @@ type ReconcileResult struct {
 	PolicyRoutes               int
 	ProviderNetworks           int
 	ProviderLinks              int
+	ProviderReady              int
+	ProviderDegraded           int
 	ProviderStatus             []linuxdatapath.ProviderLinkStatus
 	Cleanup                    bool
 }
@@ -312,6 +314,8 @@ func prepareReconcile(ctx context.Context, state control.DesiredState, options R
 		result.PolicyRoutes = linuxResult.PolicyRoutes
 		result.ProviderNetworks = linuxResult.ProviderNetworks
 		result.ProviderLinks = linuxResult.ProviderLinks
+		result.ProviderReady = linuxResult.ProviderReady
+		result.ProviderDegraded = linuxResult.ProviderDegraded
 		result.ProviderStatus = append([]linuxdatapath.ProviderLinkStatus(nil), linuxResult.ProviderStatus...)
 		result.Cleanup = linuxResult.CleanupPlanned
 	}

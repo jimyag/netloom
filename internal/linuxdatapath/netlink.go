@@ -55,6 +55,7 @@ func applyLocalNetlink(ctx context.Context, state control.DesiredState, options 
 		}
 		result.ProviderStatus = append(result.ProviderStatus, status)
 	}
+	result.ProviderReady, result.ProviderDegraded = summarizeProviderLinkHealth(result.ProviderStatus)
 	if options.CleanupStale {
 		if err := cleanupStaleProviderNetworkLinks(root, providerSpecs); err != nil {
 			return Result{}, err
@@ -141,6 +142,7 @@ func applyNetNSNetlink(ctx context.Context, state control.DesiredState, options 
 		}
 		result.ProviderStatus = append(result.ProviderStatus, status)
 	}
+	result.ProviderReady, result.ProviderDegraded = summarizeProviderLinkHealth(result.ProviderStatus)
 	if options.CleanupStale {
 		if err := cleanupStaleProviderNetworkLinks(root, providerSpecs); err != nil {
 			return Result{}, err

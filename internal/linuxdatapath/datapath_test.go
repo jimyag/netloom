@@ -111,6 +111,9 @@ func TestPlanReportsProviderNetworkCounts(t *testing.T) {
 	if result.ProviderNetworks != 2 || result.ProviderLinks != 2 {
 		t.Fatalf("provider counts = %+v, want provider_networks=2 provider_links=2", result)
 	}
+	if result.ProviderReady != 0 || result.ProviderDegraded != 2 {
+		t.Fatalf("provider health summary = %+v, want provider_ready=0 provider_degraded=2", result)
+	}
 	if len(result.ProviderStatus) != 2 {
 		t.Fatalf("provider status = %+v, want 2 entries", result.ProviderStatus)
 	}
@@ -139,6 +142,17 @@ func TestProviderOperStateReady(t *testing.T) {
 		if got := providerOperStateReady(tt.state); got != tt.ready {
 			t.Fatalf("providerOperStateReady(%v) = %t, want %t", tt.state, got, tt.ready)
 		}
+	}
+}
+
+func TestSummarizeProviderLinkHealth(t *testing.T) {
+	ready, degraded := summarizeProviderLinkHealth([]ProviderLinkStatus{
+		{Ready: true},
+		{Ready: false},
+		{Ready: true},
+	})
+	if ready != 2 || degraded != 1 {
+		t.Fatalf("summarizeProviderLinkHealth() = ready:%d degraded:%d, want 2/1", ready, degraded)
 	}
 }
 

@@ -47,6 +47,8 @@ type Result struct {
 	PolicyRoutes     int
 	ProviderNetworks int
 	ProviderLinks    int
+	ProviderReady    int
+	ProviderDegraded int
 	ProviderStatus   []ProviderLinkStatus
 	Device           string
 	Mode             string
@@ -155,6 +157,7 @@ func Plan(ctx context.Context, state control.DesiredState, options Options) ([]O
 	}
 	result.ProviderNetworks, result.ProviderLinks = summarizeProviderNetworkSpecs(providerSpecs)
 	result.ProviderStatus = providerLinkStatuses(providerSpecs, false)
+	result.ProviderReady, result.ProviderDegraded = summarizeProviderLinkHealth(result.ProviderStatus)
 	ops = append(ops, planProviderNetworkLinks(providerSpecs)...)
 	if options.CleanupStale {
 		ops = append(ops, planProviderNetworkLinkCleanup(providerSpecs))
@@ -323,6 +326,17 @@ func providerLinkStatuses(specs []providerNetworkLinkSpec, ready bool) []Provide
 		})
 	}
 	return out
+}
+
+func summarizeProviderLinkHealth(statuses []ProviderLinkStatus) (ready, degraded int) {
+	for _, status := range statuses {
+		if status.Ready {
+			ready++
+			continue
+		}
+		degraded++
+	}
+	return ready, degraded
 }
 
 func providerNetworkLinkKey(spec providerNetworkLinkSpec) string {
