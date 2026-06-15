@@ -2549,10 +2549,11 @@ func TestReconcileNodeReportsProviderNetworkCountsFromLinuxDatapath(t *testing.T
 		Node:  "node-a",
 		Store: dataplane.NewInMemoryPolicyStore(),
 		LinuxDatapath: &linuxdatapath.Options{
-			LocalDevice: "nl0",
-			Mode:        "local",
-			Backend:     "command",
-			Executor:    noopExecutor{},
+			LocalDevice:       "nl0",
+			Mode:              "local",
+			Backend:           "command",
+			Executor:          noopExecutor{},
+			ProviderInventory: []linuxdatapath.ProviderInterface{{Name: "eth1", Ready: true}},
 		},
 	})
 	if err != nil {
@@ -2567,7 +2568,7 @@ func TestReconcileNodeReportsProviderNetworkCountsFromLinuxDatapath(t *testing.T
 	if len(result.ProviderStatus) != 1 {
 		t.Fatalf("provider status = %+v, want 1 entry", result.ProviderStatus)
 	}
-	if got := result.ProviderStatus[0]; got.ProviderNetwork != "physnet-a" || got.ParentDevice != "eth1" || got.VLAN != 100 || got.LinkName == "" || got.Ready || got.ParentState != "planned" || got.LinkState != "planned" {
+	if got := result.ProviderStatus[0]; got.ProviderNetwork != "physnet-a" || got.ParentDevice != "eth1" || got.VLAN != 100 || got.LinkName == "" || got.Ready || got.ParentState != "up" || got.LinkState != "missing" {
 		t.Fatalf("provider status[0] = %+v", got)
 	}
 	if result.Datapath != "linux:nl0" {
@@ -2608,6 +2609,7 @@ func TestReconcileNodeFailsWhenStrictProviderHealthIsEnabled(t *testing.T) {
 			Mode:                 "local",
 			Backend:              "command",
 			Executor:             noopExecutor{},
+			ProviderInventory:    []linuxdatapath.ProviderInterface{{Name: "eth1", Ready: true}},
 			StrictProviderHealth: true,
 		},
 	})

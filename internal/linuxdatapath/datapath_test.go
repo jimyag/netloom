@@ -197,6 +197,10 @@ type noopCommandExecutor struct{}
 
 func (noopCommandExecutor) Execute(context.Context, Operation) error { return nil }
 
+type commandExecutorFunc func(context.Context, Operation) error
+
+func (f commandExecutorFunc) Execute(ctx context.Context, op Operation) error { return f(ctx, op) }
+
 func TestPlanRequiresRemoteUnderlay(t *testing.T) {
 	_, _, err := Plan(context.Background(), control.DesiredState{
 		Endpoints: []model.Endpoint{{
@@ -255,6 +259,118 @@ func TestPlanNetNSProgramsVethAndNamespace(t *testing.T) {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("ops missing %q:\n%s", expected, joined)
 		}
+	}
+}
+
+func TestApplyCommandAutoDiscoversCandidateProviderInterface(t *testing.T) {
+	previous := listSystemInterfaces
+	defer func() { listSystemInterfaces = previous }()
+	listSystemInterfaces = func() ([]net.Interface, error) {
+		return []net.Interface{
+			{Name: "lo", Flags: net.FlagLoopback},
+			{Name: "eth1", Flags: net.FlagUp},
+		}, nil
+	}
+
+	state := control.DesiredState{
+		ProviderNetworks: []model.ProviderNetwork{{
+			Name: "physnet-a",
+			Nodes: []model.ProviderNetworkNode{{
+				Node:       "node-a",
+				Interfaces: []string{"ens5", "eth1"},
+			}},
+		}},
+		Subnets: []model.Subnet{{
+			Name:            "apps",
+			VPC:             "prod",
+			CIDR:            netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway:         netip.MustParseAddr("10.10.0.1"),
+			ProviderNetwork: "physnet-a",
+			VLAN:            100,
+		}},
+		Endpoints: []model.Endpoint{{
+			ID:     "pod-a",
+			VPC:    "prod",
+			Subnet: "apps",
+			IP:     netip.MustParseAddr("10.10.0.10"),
+			Node:   "node-a",
+		}},
+	}
+	result, err := Apply(context.Background(), state, Options{
+		Node:        "node-a",
+		LocalDevice: "nl0",
+		Backend:     "command",
+		Executor:    noopCommandExecutor{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ProviderLinks != 1 {
+		t.Fatalf("provider links = %d, want 1", result.ProviderLinks)
+	}
+	if got := result.ProviderStatus[0].ParentDevice; got != "eth1" {
+		t.Fatalf("selected provider parent = %s, want eth1", got)
+	}
+}
+
+func TestApplyCommandRefreshesProviderHealthAfterExecution(t *testing.T) {
+	previous := listSystemInterfaces
+	defer func() { listSystemInterfaces = previous }()
+
+	call := 0
+	linkName := providerNetworkLinkName("physnet-a", "eth1", 100)
+	listSystemInterfaces = func() ([]net.Interface, error) {
+		call++
+		if call == 1 {
+			return []net.Interface{{Name: "eth1", Flags: net.FlagUp}}, nil
+		}
+		return []net.Interface{
+			{Name: "eth1", Flags: net.FlagUp},
+			{Name: linkName, Flags: net.FlagUp},
+		}, nil
+	}
+
+	state := control.DesiredState{
+		ProviderNetworks: []model.ProviderNetwork{{
+			Name: "physnet-a",
+			Nodes: []model.ProviderNetworkNode{{
+				Node:      "node-a",
+				Interface: "eth1",
+			}},
+		}},
+		Subnets: []model.Subnet{{
+			Name:            "apps",
+			VPC:             "prod",
+			CIDR:            netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway:         netip.MustParseAddr("10.10.0.1"),
+			ProviderNetwork: "physnet-a",
+			VLAN:            100,
+		}},
+		Endpoints: []model.Endpoint{{
+			ID:     "pod-a",
+			VPC:    "prod",
+			Subnet: "apps",
+			IP:     netip.MustParseAddr("10.10.0.10"),
+			Node:   "node-a",
+		}},
+	}
+	result, err := Apply(context.Background(), state, Options{
+		Node:        "node-a",
+		LocalDevice: "nl0",
+		Backend:     "command",
+		Executor: commandExecutorFunc(func(context.Context, Operation) error {
+			return nil
+		}),
+		StrictProviderHealth: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ProviderReady != 1 || result.ProviderDegraded != 0 {
+		t.Fatalf("provider health = ready:%d degraded:%d, want 1/0", result.ProviderReady, result.ProviderDegraded)
+	}
+	if got := result.ProviderStatus[0]; !got.Ready || got.ParentState != "up" || got.LinkState != "up" {
+		t.Fatalf("provider status = %+v, want ready up/up", got)
 	}
 }
 

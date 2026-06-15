@@ -84,6 +84,7 @@ const (
 var (
 	defaultIPv4HostGateway = netip.MustParseAddr("169.254.1.1")
 	defaultIPv6HostGateway = netip.MustParseAddr("fd00::1")
+	listSystemInterfaces   = net.Interfaces
 )
 
 func (CommandExecutor) Execute(ctx context.Context, op Operation) error {
@@ -104,6 +105,17 @@ func Apply(ctx context.Context, state control.DesiredState, options Options) (Re
 	case "netlink":
 		result, err = ApplyNetlink(ctx, state, options)
 	case "command":
+		discoveredInventory := len(options.ProviderInventory) == 0
+		if discoveredInventory {
+			options.ProviderInventory, err = discoverProviderInventory()
+			if err != nil {
+				return Result{}, err
+			}
+		}
+		providerSpecs, err := desiredProviderNetworkLinkSpecs(state, options.Node, options.ProviderLinks, options.ProviderInventory)
+		if err != nil {
+			return Result{}, err
+		}
 		var ops []Operation
 		ops, result, err = Plan(ctx, state, options)
 		if err != nil {
@@ -117,6 +129,16 @@ func Apply(ctx context.Context, state control.DesiredState, options Options) (Re
 			if err := executor.Execute(ctx, op); err != nil {
 				return Result{}, err
 			}
+		}
+		if discoveredInventory {
+			inventory, invErr := discoverProviderInventory()
+			if invErr == nil {
+				result.ProviderStatus = providerLinkStatusesFromInventory(providerSpecs, inventory)
+				result.ProviderReady, result.ProviderDegraded = summarizeProviderLinkHealth(result.ProviderStatus)
+			}
+		} else {
+			result.ProviderStatus = providerLinkStatusesFromInventory(providerSpecs, options.ProviderInventory)
+			result.ProviderReady, result.ProviderDegraded = summarizeProviderLinkHealth(result.ProviderStatus)
 		}
 	default:
 		return Result{}, fmt.Errorf("unsupported linux datapath backend %q", options.Backend)
@@ -135,6 +157,24 @@ func datapathBackend(backend string) string {
 		return "netlink"
 	}
 	return backend
+}
+
+func discoverProviderInventory() ([]ProviderInterface, error) {
+	interfaces, err := listSystemInterfaces()
+	if err != nil {
+		return nil, fmt.Errorf("list provider inventory: %w", err)
+	}
+	out := make([]ProviderInterface, 0, len(interfaces))
+	for _, iface := range interfaces {
+		if iface.Name == "" {
+			continue
+		}
+		out = append(out, ProviderInterface{
+			Name:  iface.Name,
+			Ready: iface.Flags&net.FlagUp != 0,
+		})
+	}
+	return out, nil
 }
 
 func Plan(ctx context.Context, state control.DesiredState, options Options) ([]Operation, Result, error) {
@@ -382,6 +422,31 @@ func providerLinkStatuses(specs []providerNetworkLinkSpec, ready bool) []Provide
 	return out
 }
 
+func providerLinkStatusesFromInventory(specs []providerNetworkLinkSpec, inventory []ProviderInterface) []ProviderLinkStatus {
+	index := make(map[string]ProviderInterface, len(inventory))
+	for _, link := range inventory {
+		if link.Name == "" {
+			continue
+		}
+		index[link.Name] = link
+	}
+	out := make([]ProviderLinkStatus, 0, len(specs))
+	for _, spec := range specs {
+		parent, parentOK := index[spec.ParentDevice]
+		child, childOK := index[spec.Name]
+		out = append(out, ProviderLinkStatus{
+			ProviderNetwork: spec.ProviderNetwork,
+			ParentDevice:    spec.ParentDevice,
+			VLAN:            spec.VLAN,
+			LinkName:        spec.Name,
+			Ready:           parentOK && childOK && parent.Ready && child.Ready,
+			ParentState:     providerInterfaceState(parentOK, parent.Ready),
+			LinkState:       providerInterfaceState(childOK, child.Ready),
+		})
+	}
+	return out
+}
+
 func summarizeProviderLinkHealth(statuses []ProviderLinkStatus) (ready, degraded int) {
 	for _, status := range statuses {
 		if status.Ready {
@@ -391,6 +456,16 @@ func summarizeProviderLinkHealth(statuses []ProviderLinkStatus) (ready, degraded
 		degraded++
 	}
 	return ready, degraded
+}
+
+func providerInterfaceState(present, ready bool) string {
+	if !present {
+		return "missing"
+	}
+	if ready {
+		return "up"
+	}
+	return "down"
 }
 
 func validateProviderHealth(result Result, options Options) error {
