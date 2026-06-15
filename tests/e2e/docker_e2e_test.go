@@ -223,6 +223,14 @@ func TestDockerMultiNodeLab(t *testing.T) {
 			t.Fatalf("node-b workload datapath output missing %q:\n%s", expected, nodeBWorkloadOutput)
 		}
 	}
+	workloadStateNodeCScript := "cat >/tmp/netloom-workload-node-c-state.json <<'EOF'\n" + desiredWorkloadStateWithMappedNodeCJSON() + "\nEOF\nNETLOOM_STATE_FILE=/tmp/netloom-workload-node-c-state.json NETLOOM_LINUX_DATAPATH=1 NETLOOM_LINUX_DATAPATH_MODE=netns NETLOOM_PROVIDER_NETWORK_LINKS=physnet-a=eth0 NETLOOM_LINUX_DATAPATH_CLEANUP=1 NETLOOM_NODE_UNDERLAYS=node-a=172.30.0.11,node-b=172.30.0.12 "
+	nodeCWorkloadOutput := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-c", "sh", "-c", workloadStateNodeCScript+"NETLOOM_NODE_NAME=node-c /netloom/bin/netloom-agent")
+	for _, expected := range []string{"datapath=linux:netns", "local_ips=0", "remote_routes=2", "provider_networks=1", "provider_links=1", "provider_status=physnet-a:eth0:100:", "cleanup=true"} {
+		if !strings.Contains(nodeCWorkloadOutput, expected) {
+			t.Fatalf("node-c provider preprovision datapath output missing %q:\n%s", expected, nodeCWorkloadOutput)
+		}
+	}
+	waitForManagedLinkCount(t, ctx, composeFile, "node-c", "nlv", 1)
 	filePodA := workloadNamespace("file", "file-pod-a")
 	filePodB := workloadNamespace("file", "file-pod-b")
 	filePodC := workloadNamespace("file", "file-pod-c")
@@ -900,6 +908,19 @@ func desiredWorkloadStateJSON() string {
 	return `{
   "vpcs": [{"name": "file"}],
   "provider_networks": [{"name": "physnet-a", "nodes": [{"node": "node-a", "interface": "eth0"}, {"node": "node-b", "interface": "eth0"}]}],
+  "subnets": [{"name": "fileapps", "vpc": "file", "cidr": "10.245.0.0/24", "gateway": "10.245.0.1", "provider_network": "physnet-a", "vlan": 100}],
+  "endpoints": [
+    {"id": "file-pod-a", "vpc": "file", "subnet": "fileapps", "ip": "10.245.0.10", "node": "node-a", "security_groups": ["web"]},
+    {"id": "file-pod-b", "vpc": "file", "subnet": "fileapps", "ip": "10.245.0.11", "node": "node-b", "security_groups": ["web"]}
+  ],
+  "security_groups": [{"name": "web", "vpc": "file", "rules": [{"id": "allow-web", "priority": 100, "direction": "ingress", "protocol": "tcp", "remote_cidr": "172.30.0.11/32", "ports": [{"from": 8080, "to": 8080}], "action": "allow", "stateful": true}]}]
+}`
+}
+
+func desiredWorkloadStateWithMappedNodeCJSON() string {
+	return `{
+  "vpcs": [{"name": "file"}],
+  "provider_networks": [{"name": "physnet-a", "nodes": [{"node": "node-a", "interface": "eth0"}, {"node": "node-b", "interface": "eth0"}, {"node": "node-c", "interface": "eth0"}]}],
   "subnets": [{"name": "fileapps", "vpc": "file", "cidr": "10.245.0.0/24", "gateway": "10.245.0.1", "provider_network": "physnet-a", "vlan": 100}],
   "endpoints": [
     {"id": "file-pod-a", "vpc": "file", "subnet": "fileapps", "ip": "10.245.0.10", "node": "node-a", "security_groups": ["web"]},
