@@ -57,8 +57,9 @@ type ProviderNetwork struct {
 }
 
 type ProviderNetworkNode struct {
-	Node      string `json:"node"`
-	Interface string `json:"interface"`
+	Node       string   `json:"node"`
+	Interface  string   `json:"interface"`
+	Interfaces []string `json:"interfaces,omitempty"`
 }
 
 type Subnet struct {
@@ -301,8 +302,18 @@ func (n ProviderNetworkNode) Validate() error {
 	if n.Node == "" {
 		return errors.New("provider network node is required")
 	}
-	if n.Interface == "" {
-		return errors.New("provider network interface is required")
+	if n.Interface == "" && len(n.Interfaces) == 0 {
+		return errors.New("provider network interface or interfaces are required")
+	}
+	seen := make(map[string]struct{}, len(n.Interfaces))
+	for _, candidate := range n.Interfaces {
+		if candidate == "" {
+			return errors.New("provider network candidate interface is required")
+		}
+		if _, ok := seen[candidate]; ok {
+			return fmt.Errorf("provider network candidate interface %q is duplicated", candidate)
+		}
+		seen[candidate] = struct{}{}
 	}
 	return nil
 }

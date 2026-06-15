@@ -69,11 +69,11 @@ func TestCoreNetworkResourcesValidateRequiredFields(t *testing.T) {
 				return ProviderNetwork{
 					Name: "physnet-a",
 					Nodes: []ProviderNetworkNode{
-						{Node: "node-a", Interface: ""},
+						{Node: "node-a"},
 					},
 				}.Validate()
 			},
-			wantErr: "provider network interface is required",
+			wantErr: "provider network interface or interfaces are required",
 		},
 		{
 			name: "gateway",
@@ -153,6 +153,33 @@ func TestProviderNetworkRejectsDuplicateNodes(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), `provider network node "node-a" is duplicated`) {
 		t.Fatalf("error %q does not mention duplicate provider network node", err)
+	}
+}
+
+func TestProviderNetworkAcceptsCandidateInterfaces(t *testing.T) {
+	err := ProviderNetwork{
+		Name: "physnet-a",
+		Nodes: []ProviderNetworkNode{
+			{Node: "node-a", Interfaces: []string{"ens5", "eth1"}},
+		},
+	}.Validate()
+	if err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+func TestProviderNetworkRejectsDuplicateCandidateInterfaces(t *testing.T) {
+	err := ProviderNetwork{
+		Name: "physnet-a",
+		Nodes: []ProviderNetworkNode{
+			{Node: "node-a", Interfaces: []string{"eth1", "eth1"}},
+		},
+	}.Validate()
+	if err == nil {
+		t.Fatal("expected duplicate candidate interfaces to fail")
+	}
+	if !strings.Contains(err.Error(), `provider network candidate interface "eth1" is duplicated`) {
+		t.Fatalf("error %q does not mention duplicate candidate interface", err)
 	}
 }
 

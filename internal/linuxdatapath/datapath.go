@@ -32,6 +32,7 @@ type Options struct {
 	UnderlayDevice       string
 	NodeUnderlays        map[string][]netip.Addr
 	ProviderLinks        map[string]string
+	ProviderInventory    []ProviderInterface
 	NetNSPrefix          string
 	WorkloadIF           string
 	HostGateway          netip.Addr
@@ -64,6 +65,11 @@ type ProviderLinkStatus struct {
 	Ready           bool
 	ParentState     string
 	LinkState       string
+}
+
+type ProviderInterface struct {
+	Name  string
+	Ready bool
 }
 
 type CommandExecutor struct{}
@@ -163,7 +169,7 @@ func Plan(ctx context.Context, state control.DesiredState, options Options) ([]O
 
 	result := Result{Device: localDevice, Mode: mode, CleanupPlanned: options.CleanupStale}
 	var ops []Operation
-	providerSpecs, err := desiredProviderNetworkLinkSpecs(state, options.Node, options.ProviderLinks)
+	providerSpecs, err := desiredProviderNetworkLinkSpecs(state, options.Node, options.ProviderLinks, options.ProviderInventory)
 	if err != nil {
 		return nil, Result{}, err
 	}
@@ -238,7 +244,7 @@ type providerNetworkLinkSpec struct {
 	Name            string
 }
 
-func desiredProviderNetworkLinkSpecs(state control.DesiredState, node string, mappings map[string]string) ([]providerNetworkLinkSpec, error) {
+func desiredProviderNetworkLinkSpecs(state control.DesiredState, node string, mappings map[string]string, inventory []ProviderInterface) ([]providerNetworkLinkSpec, error) {
 	subnets := make(map[string]model.Subnet, len(state.Subnets))
 	for _, subnet := range state.Subnets {
 		subnets[subnetStateKey(subnet.VPC, subnet.Name)] = subnet
@@ -254,7 +260,10 @@ func desiredProviderNetworkLinkSpecs(state control.DesiredState, node string, ma
 		}
 		localProviderNetworks[subnet.ProviderNetwork] = struct{}{}
 	}
-	nodeMappings := providerLinkMappingsForNode(state.ProviderNetworks, node, mappings)
+	nodeMappings, err := providerLinkMappingsForNode(state.ProviderNetworks, node, mappings, inventory)
+	if err != nil {
+		return nil, err
+	}
 	seen := make(map[string]providerNetworkLinkSpec)
 	claimedLinks := make(map[string]providerNetworkLinkSpec)
 	for _, subnet := range state.Subnets {
@@ -293,21 +302,54 @@ func desiredProviderNetworkLinkSpecs(state control.DesiredState, node string, ma
 	return specs, nil
 }
 
-func providerLinkMappingsForNode(providerNetworks []model.ProviderNetwork, node string, fallback map[string]string) map[string]string {
+func providerLinkMappingsForNode(providerNetworks []model.ProviderNetwork, node string, fallback map[string]string, inventory []ProviderInterface) (map[string]string, error) {
 	mappings := make(map[string]string, len(fallback)+len(providerNetworks))
 	for name, device := range fallback {
 		mappings[name] = device
+	}
+	available := make(map[string]ProviderInterface, len(inventory))
+	for _, link := range inventory {
+		if link.Name == "" {
+			continue
+		}
+		available[link.Name] = link
 	}
 	for _, providerNetwork := range providerNetworks {
 		for _, providerNode := range providerNetwork.Nodes {
 			if providerNode.Node != node {
 				continue
 			}
-			mappings[providerNetwork.Name] = providerNode.Interface
+			if providerNode.Interface != "" {
+				mappings[providerNetwork.Name] = providerNode.Interface
+				break
+			}
+			if len(providerNode.Interfaces) == 0 {
+				break
+			}
+			selected, ok := selectProviderCandidateInterface(providerNode.Interfaces, available)
+			if !ok {
+				return nil, fmt.Errorf("provider network %q on node %q could not resolve candidate interfaces %s", providerNetwork.Name, node, strings.Join(providerNode.Interfaces, ","))
+			}
+			mappings[providerNetwork.Name] = selected
 			break
 		}
 	}
-	return mappings
+	return mappings, nil
+}
+
+func selectProviderCandidateInterface(candidates []string, inventory map[string]ProviderInterface) (string, bool) {
+	for _, candidate := range candidates {
+		link, ok := inventory[candidate]
+		if ok && link.Ready {
+			return candidate, true
+		}
+	}
+	for _, candidate := range candidates {
+		if _, ok := inventory[candidate]; ok {
+			return candidate, true
+		}
+	}
+	return "", false
 }
 
 func summarizeProviderNetworkSpecs(specs []providerNetworkLinkSpec) (int, int) {

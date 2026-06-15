@@ -679,6 +679,129 @@ func TestPlanPrefersStateProviderNetworkMappingOverEnvFallback(t *testing.T) {
 	}
 }
 
+func TestPlanAutoSelectsReadyCandidateProviderInterface(t *testing.T) {
+	state := control.DesiredState{
+		ProviderNetworks: []model.ProviderNetwork{{
+			Name: "physnet-a",
+			Nodes: []model.ProviderNetworkNode{{
+				Node:       "node-a",
+				Interfaces: []string{"ens5", "eth1", "bond0"},
+			}},
+		}},
+		Subnets: []model.Subnet{{
+			Name:            "baremetal",
+			VPC:             "prod",
+			CIDR:            netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway:         netip.MustParseAddr("10.10.0.1"),
+			ProviderNetwork: "physnet-a",
+			VLAN:            100,
+		}},
+		Endpoints: []model.Endpoint{{
+			ID:     "pod-a",
+			VPC:    "prod",
+			Subnet: "baremetal",
+			IP:     netip.MustParseAddr("10.10.0.10"),
+			Node:   "node-a",
+		}},
+	}
+	ops, _, err := Plan(context.Background(), state, Options{
+		Node:        "node-a",
+		LocalDevice: "nl0",
+		ProviderInventory: []ProviderInterface{
+			{Name: "eth1", Ready: false},
+			{Name: "bond0", Ready: true},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := stringifyOps(ops)
+	linkName := providerNetworkLinkName("physnet-a", "bond0", 100)
+	if !strings.Contains(joined, "ip link show "+linkName+" >/dev/null 2>&1 || ip link add link bond0 name "+linkName+" type vlan id 100") {
+		t.Fatalf("ready candidate interface should be selected:\n%s", joined)
+	}
+	if strings.Contains(joined, "link eth1 name") {
+		t.Fatalf("degraded candidate should not win over ready candidate:\n%s", joined)
+	}
+}
+
+func TestPlanFallsBackToPresentCandidateProviderInterfaceWhenNoneReady(t *testing.T) {
+	state := control.DesiredState{
+		ProviderNetworks: []model.ProviderNetwork{{
+			Name: "physnet-a",
+			Nodes: []model.ProviderNetworkNode{{
+				Node:       "node-a",
+				Interfaces: []string{"ens5", "eth1"},
+			}},
+		}},
+		Subnets: []model.Subnet{{
+			Name:            "baremetal",
+			VPC:             "prod",
+			CIDR:            netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway:         netip.MustParseAddr("10.10.0.1"),
+			ProviderNetwork: "physnet-a",
+			VLAN:            100,
+		}},
+		Endpoints: []model.Endpoint{{
+			ID:     "pod-a",
+			VPC:    "prod",
+			Subnet: "baremetal",
+			IP:     netip.MustParseAddr("10.10.0.10"),
+			Node:   "node-a",
+		}},
+	}
+	ops, _, err := Plan(context.Background(), state, Options{
+		Node:        "node-a",
+		LocalDevice: "nl0",
+		ProviderInventory: []ProviderInterface{
+			{Name: "eth1", Ready: false},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := stringifyOps(ops)
+	linkName := providerNetworkLinkName("physnet-a", "eth1", 100)
+	if !strings.Contains(joined, "ip link show "+linkName+" >/dev/null 2>&1 || ip link add link eth1 name "+linkName+" type vlan id 100") {
+		t.Fatalf("present degraded candidate should still be selected for health reporting:\n%s", joined)
+	}
+}
+
+func TestPlanRejectsUnresolvableCandidateProviderInterfaces(t *testing.T) {
+	state := control.DesiredState{
+		ProviderNetworks: []model.ProviderNetwork{{
+			Name: "physnet-a",
+			Nodes: []model.ProviderNetworkNode{{
+				Node:       "node-a",
+				Interfaces: []string{"ens5", "bond0"},
+			}},
+		}},
+		Subnets: []model.Subnet{{
+			Name:            "baremetal",
+			VPC:             "prod",
+			CIDR:            netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway:         netip.MustParseAddr("10.10.0.1"),
+			ProviderNetwork: "physnet-a",
+			VLAN:            100,
+		}},
+		Endpoints: []model.Endpoint{{
+			ID:     "pod-a",
+			VPC:    "prod",
+			Subnet: "baremetal",
+			IP:     netip.MustParseAddr("10.10.0.10"),
+			Node:   "node-a",
+		}},
+	}
+	_, _, err := Plan(context.Background(), state, Options{
+		Node:              "node-a",
+		LocalDevice:       "nl0",
+		ProviderInventory: []ProviderInterface{{Name: "eth1", Ready: true}},
+	})
+	if err == nil || !strings.Contains(err.Error(), `provider network "physnet-a" on node "node-a" could not resolve candidate interfaces ens5,bond0`) {
+		t.Fatalf("err = %v, want unresolved candidate interface failure", err)
+	}
+}
+
 func TestPlanRemoteRouteCleanupDeletesOnlyManagedStaleRoutes(t *testing.T) {
 	state := control.DesiredState{
 		Endpoints: []model.Endpoint{

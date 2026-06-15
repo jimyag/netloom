@@ -42,7 +42,14 @@ func applyLocalNetlink(ctx context.Context, state control.DesiredState, options 
 	}
 	defer root.Close()
 	result.CleanupPlanned = options.CleanupStale
-	providerSpecs, err := desiredProviderNetworkLinkSpecs(state, options.Node, options.ProviderLinks)
+	if len(options.ProviderInventory) == 0 {
+		links, err := root.LinkList()
+		if err != nil {
+			return Result{}, fmt.Errorf("list provider inventory: %w", err)
+		}
+		options.ProviderInventory = providerInventoryFromNetlink(links)
+	}
+	providerSpecs, err := desiredProviderNetworkLinkSpecs(state, options.Node, options.ProviderLinks, options.ProviderInventory)
 	if err != nil {
 		return Result{}, err
 	}
@@ -129,7 +136,14 @@ func applyNetNSNetlink(ctx context.Context, state control.DesiredState, options 
 		return Result{}, err
 	}
 	defer root.Close()
-	providerSpecs, err := desiredProviderNetworkLinkSpecs(state, options.Node, options.ProviderLinks)
+	if len(options.ProviderInventory) == 0 {
+		links, err := root.LinkList()
+		if err != nil {
+			return Result{}, fmt.Errorf("list provider inventory: %w", err)
+		}
+		options.ProviderInventory = providerInventoryFromNetlink(links)
+	}
+	providerSpecs, err := desiredProviderNetworkLinkSpecs(state, options.Node, options.ProviderLinks, options.ProviderInventory)
 	if err != nil {
 		return Result{}, err
 	}
@@ -611,6 +625,21 @@ func operStateName(state netlink.LinkOperState) string {
 	default:
 		return "unknown"
 	}
+}
+
+func providerInventoryFromNetlink(links []netlink.Link) []ProviderInterface {
+	out := make([]ProviderInterface, 0, len(links))
+	for _, link := range links {
+		attrs := link.Attrs()
+		if attrs == nil || attrs.Name == "" {
+			continue
+		}
+		out = append(out, ProviderInterface{
+			Name:  attrs.Name,
+			Ready: providerOperStateReady(attrs.OperState),
+		})
+	}
+	return out
 }
 
 func providerOperStateReady(state netlink.LinkOperState) bool {
