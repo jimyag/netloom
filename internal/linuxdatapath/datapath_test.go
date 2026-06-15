@@ -305,6 +305,15 @@ func TestPlanNetNSProgramsIPv6VethAndNamespace(t *testing.T) {
 	}
 }
 
+func TestProviderLinkSetupCanDegrade(t *testing.T) {
+	if !providerLinkSetupCanDegrade(unix.ENETDOWN) {
+		t.Fatal("expected ENETDOWN to be treated as a degraded provider-link condition")
+	}
+	if providerLinkSetupCanDegrade(unix.EINVAL) {
+		t.Fatal("did not expect EINVAL to be treated as a degraded provider-link condition")
+	}
+}
+
 func TestPlanProgramsProviderNetworkVLANLinkForLocalEndpoints(t *testing.T) {
 	state := control.DesiredState{
 		ProviderNetworks: []model.ProviderNetwork{{

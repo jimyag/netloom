@@ -560,7 +560,22 @@ func ensureProviderNetworkLink(root *netlink.Handle, spec providerNetworkLinkSpe
 		return ProviderLinkStatus{}, fmt.Errorf("link %s parent index = %d, want %d", spec.Name, link.Attrs().ParentIndex, parent.Attrs().Index)
 	}
 	if err := root.LinkSetUp(link); err != nil {
+		if providerLinkSetupCanDegrade(err) {
+			return providerLinkStatus(root, spec)
+		}
 		return ProviderLinkStatus{}, fmt.Errorf("set link %s up: %w", spec.Name, err)
+	}
+	return providerLinkStatus(root, spec)
+}
+
+func providerLinkStatus(root *netlink.Handle, spec providerNetworkLinkSpec) (ProviderLinkStatus, error) {
+	parent, err := root.LinkByName(spec.ParentDevice)
+	if err != nil {
+		return ProviderLinkStatus{}, fmt.Errorf("refresh parent device %s: %w", spec.ParentDevice, err)
+	}
+	link, err := root.LinkByName(spec.Name)
+	if err != nil {
+		return ProviderLinkStatus{}, fmt.Errorf("refresh provider link %s: %w", spec.Name, err)
 	}
 	return ProviderLinkStatus{
 		ProviderNetwork: spec.ProviderNetwork,
@@ -571,6 +586,10 @@ func ensureProviderNetworkLink(root *netlink.Handle, spec providerNetworkLinkSpe
 		ParentState:     operStateName(parent.Attrs().OperState),
 		LinkState:       operStateName(link.Attrs().OperState),
 	}, nil
+}
+
+func providerLinkSetupCanDegrade(err error) bool {
+	return errors.Is(err, unix.ENETDOWN)
 }
 
 func operStateName(state netlink.LinkOperState) string {
