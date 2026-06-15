@@ -1540,7 +1540,7 @@ func TestReconcileNodeWithTCXInterfaceTreatsAllowOnlyPolicyAsNotEligible(t *test
 	}
 }
 
-func TestReconcileNodeWithTCXInterfaceSkipsRejectActionFastPath(t *testing.T) {
+func TestPrepareReconcileProjectsRejectActionToTCXDrop(t *testing.T) {
 	state := control.DesiredState{
 		Endpoints: []model.Endpoint{{
 			ID:             "pod-a",
@@ -1565,7 +1565,7 @@ func TestReconcileNodeWithTCXInterfaceSkipsRejectActionFastPath(t *testing.T) {
 		}},
 	}
 
-	result, err := ReconcileNodeWithOptions(context.Background(), state, ReconcileOptions{
+	result, targets, _, err := prepareReconcile(context.Background(), state, ReconcileOptions{
 		Node:         "node-a",
 		Store:        dataplane.NewInMemoryPolicyStore(),
 		TCXInterface: "lo",
@@ -1573,12 +1573,25 @@ func TestReconcileNodeWithTCXInterfaceSkipsRejectActionFastPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Entries != 1 || result.TCXEligible != 0 || result.TCX != "not-attached" {
-		t.Fatalf("result = %+v, want reject policy stored but tcx skipped", result)
+	if result.Entries != 1 || result.TCXEligible != 1 {
+		t.Fatalf("result = %+v, want reject policy to be TCX eligible", result)
+	}
+	if len(targets) != 1 {
+		t.Fatalf("targets = %d, want one ingress tcx target", len(targets))
+	}
+	if targets[0].attach != ebpf.AttachTCXIngress || targets[0].policyDirection != model.DirectionIngress {
+		t.Fatalf("target = %+v, want ingress tcx attach for reject rule", targets[0])
+	}
+	rules, err := dataplane.IPv4L4ACLRulesFromProgramsForDirection(targets[0].programs, model.DirectionIngress)
+	if err != nil {
+		t.Fatalf("ingress tcx rules: %v", err)
+	}
+	if len(rules) != 1 || rules[0].SourceCIDR != netip.MustParsePrefix("172.30.0.11/32") || rules[0].DestPort != 8080 || rules[0].Action != dataplane.TCXDrop {
+		t.Fatalf("ingress tcx rules = %+v, want reject projected as exact tcp/8080 drop", rules)
 	}
 }
 
-func TestReconcileNodeWithTCXInterfaceKeepsEligibleDirectionWhenOtherDirectionRejects(t *testing.T) {
+func TestPrepareReconcileKeepsBothDirectionsEligibleWhenOneUsesReject(t *testing.T) {
 	state := control.DesiredState{
 		Endpoints: []model.Endpoint{{
 			ID:             "pod-a",
@@ -1625,18 +1638,28 @@ func TestReconcileNodeWithTCXInterfaceKeepsEligibleDirectionWhenOtherDirectionRe
 	if result.Entries != 2 || result.TCXEligible != 1 {
 		t.Fatalf("result = %+v, want one tcx-eligible program with both rules stored", result)
 	}
-	if len(targets) != 1 {
-		t.Fatalf("targets = %d, want only egress tcx target", len(targets))
+	if len(targets) != 2 {
+		t.Fatalf("targets = %d, want ingress and egress tcx targets", len(targets))
 	}
-	if targets[0].attach != ebpf.AttachTCXEgress || targets[0].policyDirection != model.DirectionEgress {
-		t.Fatalf("target = %+v, want interface egress attach for egress policy direction", targets[0])
+	if targets[0].attach != ebpf.AttachTCXIngress || targets[0].policyDirection != model.DirectionIngress {
+		t.Fatalf("first target = %+v, want interface ingress attach for ingress reject direction", targets[0])
 	}
-	v4Rules, err := dataplane.IPv4L4ACLRulesFromProgramsForDirection(targets[0].programs, model.DirectionEgress)
+	ingressRules, err := dataplane.IPv4L4ACLRulesFromProgramsForDirection(targets[0].programs, model.DirectionIngress)
+	if err != nil {
+		t.Fatalf("ingress tcx rules: %v", err)
+	}
+	if len(ingressRules) != 1 || ingressRules[0].SourceCIDR != netip.MustParsePrefix("172.30.0.11/32") || ingressRules[0].DestPort != 8080 || ingressRules[0].Action != dataplane.TCXDrop {
+		t.Fatalf("ingress tcx rules = %+v, want reject projected as exact web drop rule", ingressRules)
+	}
+	if targets[1].attach != ebpf.AttachTCXEgress || targets[1].policyDirection != model.DirectionEgress {
+		t.Fatalf("second target = %+v, want interface egress attach for egress drop direction", targets[1])
+	}
+	egressRules, err := dataplane.IPv4L4ACLRulesFromProgramsForDirection(targets[1].programs, model.DirectionEgress)
 	if err != nil {
 		t.Fatalf("egress tcx rules: %v", err)
 	}
-	if len(v4Rules) != 1 || v4Rules[0].SourceCIDR != netip.MustParsePrefix("198.51.100.10/32") || v4Rules[0].DestPort != 443 {
-		t.Fatalf("egress tcx rules = %+v, want exact https drop rule", v4Rules)
+	if len(egressRules) != 1 || egressRules[0].SourceCIDR != netip.MustParsePrefix("198.51.100.10/32") || egressRules[0].DestPort != 443 || egressRules[0].Action != dataplane.TCXDrop {
+		t.Fatalf("egress tcx rules = %+v, want exact https drop rule", egressRules)
 	}
 }
 

@@ -183,7 +183,7 @@ func TestIPv4L4ACLRulesFromProgramProjectsExactEgressPolicy(t *testing.T) {
 	}
 }
 
-func TestIPv4L4ACLRulesFromProgramRejectsRejectAction(t *testing.T) {
+func TestIPv4L4ACLRulesFromProgramProjectsRejectActionToDrop(t *testing.T) {
 	program := policy.Program{
 		EndpointID: testEndpointA,
 		Rules: []policy.Rule{{
@@ -196,9 +196,15 @@ func TestIPv4L4ACLRulesFromProgramRejectsRejectAction(t *testing.T) {
 		}},
 	}
 
-	_, err := IPv4L4ACLRulesFromProgram(program)
-	if err == nil || !strings.Contains(err.Error(), "reject action is not supported by TCX fast path") {
-		t.Fatalf("error = %v, want reject fast-path validation failure", err)
+	rules, err := IPv4L4ACLRulesFromProgram(program)
+	if err != nil {
+		t.Fatalf("IPv4L4ACLRulesFromProgram returned error: %v", err)
+	}
+	if len(rules) != 1 {
+		t.Fatalf("rules = %d, want 1", len(rules))
+	}
+	if rules[0].Source != netip.MustParseAddr("172.30.0.20") || rules[0].Protocol != 6 || rules[0].DestPort != 8080 || rules[0].Action != TCXDrop {
+		t.Fatalf("unexpected IPv4 reject projection: %+v", rules[0])
 	}
 }
 
@@ -492,7 +498,7 @@ func TestIPv6L4ACLRulesFromProgramProjectsExactIngressPolicy(t *testing.T) {
 	}
 }
 
-func TestIPv6L4ACLRulesFromProgramRejectsRejectAction(t *testing.T) {
+func TestIPv6L4ACLRulesFromProgramProjectsRejectActionToDrop(t *testing.T) {
 	program := policy.Program{
 		EndpointID: testEndpointA,
 		Rules: []policy.Rule{{
@@ -505,9 +511,15 @@ func TestIPv6L4ACLRulesFromProgramRejectsRejectAction(t *testing.T) {
 		}},
 	}
 
-	_, err := IPv6L4ACLRulesFromProgram(program)
-	if err == nil || !strings.Contains(err.Error(), "reject action is not supported by TCX fast path") {
-		t.Fatalf("error = %v, want reject fast-path validation failure", err)
+	rules, err := IPv6L4ACLRulesFromProgram(program)
+	if err != nil {
+		t.Fatalf("IPv6L4ACLRulesFromProgram returned error: %v", err)
+	}
+	if len(rules) != 1 {
+		t.Fatalf("rules = %d, want 1", len(rules))
+	}
+	if rules[0].Source != netip.MustParseAddr("fd00:10::20") || rules[0].SourceCIDR != netip.MustParsePrefix("fd00:10::20/128") || rules[0].Protocol != 6 || rules[0].DestPort != 8443 || rules[0].DestPortPrefixBits != 16 || rules[0].Action != TCXDrop {
+		t.Fatalf("unexpected IPv6 reject projection: %+v", rules[0])
 	}
 }
 

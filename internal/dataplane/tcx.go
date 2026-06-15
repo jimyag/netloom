@@ -849,9 +849,6 @@ func validateIPv4L4ACLRuleSupport(rule policy.Rule) error {
 	if protocol != 1 && protocol != 6 && protocol != 17 {
 		return nil
 	}
-	if rule.Action == model.ActionReject {
-		return fmt.Errorf("reject action is not supported by TCX fast path")
-	}
 	if _, ok := tcxAction(rule.Action); !ok {
 		return nil
 	}
@@ -865,9 +862,6 @@ func validateIPv6L4ACLRuleSupport(rule policy.Rule) error {
 	}
 	if protocol != 6 && protocol != 17 && protocol != 58 {
 		return nil
-	}
-	if rule.Action == model.ActionReject {
-		return fmt.Errorf("reject action is not supported by TCX fast path")
 	}
 	if _, ok := tcxAction(rule.Action); !ok {
 		return nil
@@ -977,7 +971,7 @@ func tcxAction(action model.Action) (int32, bool) {
 	switch action {
 	case model.ActionAllow, model.ActionLog:
 		return TCXPass, true
-	case model.ActionDrop:
+	case model.ActionDrop, model.ActionReject:
 		return TCXDrop, true
 	default:
 		return 0, false
