@@ -420,6 +420,32 @@ func TestSummarizeProviderStatusIncludesDriftReason(t *testing.T) {
 	}
 }
 
+func TestSummarizeProviderNetworkStatusAggregatesLinksAndIssues(t *testing.T) {
+	statuses := summarizeProviderNetworkStatus(
+		[]ProviderLinkStatus{
+			{ProviderNetwork: "physnet-a", Ready: true},
+			{ProviderNetwork: "physnet-b", Ready: false},
+		},
+		[]ProviderIssue{
+			{ProviderNetwork: "physnet-b", Reason: "type-mismatch"},
+			{ProviderNetwork: "physnet-b", Reason: "type-mismatch"},
+			{ProviderNetwork: "physnet-c", Reason: "candidate-unresolved"},
+		},
+	)
+	if len(statuses) != 3 {
+		t.Fatalf("network status len = %d, want 3: %+v", len(statuses), statuses)
+	}
+	if got := statuses[0]; got.ProviderNetwork != "physnet-a" || !got.Ready || got.LinkCount != 1 || got.ReadyLinks != 1 || got.IssueCount != 0 {
+		t.Fatalf("status[0] = %+v", got)
+	}
+	if got := statuses[1]; got.ProviderNetwork != "physnet-b" || got.Ready || got.LinkCount != 1 || got.ReadyLinks != 0 || got.IssueCount != 1 || got.Reasons[0] != "type-mismatch" {
+		t.Fatalf("status[1] = %+v", got)
+	}
+	if got := statuses[2]; got.ProviderNetwork != "physnet-c" || got.Ready || got.LinkCount != 0 || got.ReadyLinks != 0 || got.IssueCount != 1 || got.Reasons[0] != "candidate-unresolved" {
+		t.Fatalf("status[2] = %+v", got)
+	}
+}
+
 func TestPlanNetNSProgramsIPv6VethAndNamespace(t *testing.T) {
 	state := control.DesiredState{
 		Endpoints: []model.Endpoint{

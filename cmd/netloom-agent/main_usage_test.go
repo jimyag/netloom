@@ -40,6 +40,10 @@ func TestPrintReconcileResultReportsPolicyMapUsageSummary(t *testing.T) {
 			{ProviderNetwork: "physnet-a", ParentDevice: "eth1", VLAN: 100, LinkName: "nlv-a", Ready: true, ParentState: "up", LinkState: "up"},
 			{ProviderNetwork: "physnet-b", ParentDevice: "bond0", VLAN: 200, LinkName: "nlv-b", Ready: false, ParentState: "up", LinkState: "down"},
 		},
+		ProviderNetworkStatus: []linuxdatapath.ProviderNetworkStatus{
+			{ProviderNetwork: "physnet-a", Ready: true, LinkCount: 1, ReadyLinks: 1, IssueCount: 0},
+			{ProviderNetwork: "physnet-b", Ready: false, LinkCount: 1, ReadyLinks: 0, IssueCount: 1, Reasons: []string{"type-mismatch"}},
+		},
 		ProviderInventoryTotal:    3,
 		ProviderInventoryReady:    2,
 		ProviderInventoryDegraded: 1,
@@ -70,6 +74,7 @@ func TestPrintReconcileResultReportsPolicyMapUsageSummary(t *testing.T) {
 		"provider_ready=1",
 		"provider_degraded=1",
 		"provider_status=physnet-a:eth1:100:nlv-a:ready:up:up,physnet-b:bond0:200:nlv-b:pending:up:down",
+		"provider_network_status=physnet-a:ready:1/1:0:none,physnet-b:degraded:0/1:1:type-mismatch",
 		"provider_inventory_total=3",
 		"provider_inventory_ready=2",
 		"provider_inventory_degraded=1",

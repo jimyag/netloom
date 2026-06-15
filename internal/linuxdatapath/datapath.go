@@ -54,6 +54,7 @@ type Result struct {
 	ProviderDegraded          int
 	ProviderStatus            []ProviderLinkStatus
 	ProviderIssues            []ProviderIssue
+	ProviderNetworkStatus     []ProviderNetworkStatus
 	ProviderInventoryTotal    int
 	ProviderInventoryReady    int
 	ProviderInventoryDegraded int
@@ -88,6 +89,15 @@ type ProviderIssue struct {
 	Detail          string
 }
 
+type ProviderNetworkStatus struct {
+	ProviderNetwork string
+	Ready           bool
+	LinkCount       int
+	ReadyLinks      int
+	IssueCount      int
+	Reasons         []string
+}
+
 type CommandExecutor struct{}
 
 const (
@@ -118,6 +128,7 @@ func applyProviderPlanningIssue(result *Result, err error) {
 		return
 	}
 	result.ProviderIssues = append(result.ProviderIssues, planningErr.issue)
+	result.ProviderNetworkStatus = summarizeProviderNetworkStatus(result.ProviderStatus, result.ProviderIssues)
 }
 
 func (CommandExecutor) Execute(ctx context.Context, op Operation) error {
@@ -173,10 +184,12 @@ func Apply(ctx context.Context, state control.DesiredState, options Options) (Re
 				result.ProviderInventoryTotal, result.ProviderInventoryReady, result.ProviderInventoryDegraded = summarizeProviderInventory(inventory)
 				result.ProviderStatus = providerLinkStatusesFromInventory(providerSpecs, inventory)
 				result.ProviderReady, result.ProviderDegraded = summarizeProviderLinkHealth(result.ProviderStatus)
+				result.ProviderNetworkStatus = summarizeProviderNetworkStatus(result.ProviderStatus, result.ProviderIssues)
 			}
 		} else {
 			result.ProviderStatus = providerLinkStatusesFromInventory(providerSpecs, options.ProviderInventory)
 			result.ProviderReady, result.ProviderDegraded = summarizeProviderLinkHealth(result.ProviderStatus)
+			result.ProviderNetworkStatus = summarizeProviderNetworkStatus(result.ProviderStatus, result.ProviderIssues)
 		}
 	default:
 		return Result{}, fmt.Errorf("unsupported linux datapath backend %q", options.Backend)
@@ -258,6 +271,7 @@ func Plan(ctx context.Context, state control.DesiredState, options Options) ([]O
 	result.ProviderNetworks, result.ProviderLinks = summarizeProviderNetworkSpecs(providerSpecs)
 	result.ProviderStatus = providerLinkStatuses(providerSpecs, false)
 	result.ProviderReady, result.ProviderDegraded = summarizeProviderLinkHealth(result.ProviderStatus)
+	result.ProviderNetworkStatus = summarizeProviderNetworkStatus(result.ProviderStatus, result.ProviderIssues)
 	ops = append(ops, planProviderNetworkLinks(providerSpecs)...)
 	if options.CleanupStale {
 		ops = append(ops, planProviderNetworkLinkCleanup(providerSpecs))
@@ -537,6 +551,58 @@ func summarizeProviderLinkHealth(statuses []ProviderLinkStatus) (ready, degraded
 		degraded++
 	}
 	return ready, degraded
+}
+
+func summarizeProviderNetworkStatus(statuses []ProviderLinkStatus, issues []ProviderIssue) []ProviderNetworkStatus {
+	type aggregate struct {
+		linkCount  int
+		readyLinks int
+		reasons    []string
+		reasonSet  map[string]struct{}
+	}
+	networks := make(map[string]*aggregate)
+	get := func(name string) *aggregate {
+		agg, ok := networks[name]
+		if ok {
+			return agg
+		}
+		agg = &aggregate{reasonSet: make(map[string]struct{})}
+		networks[name] = agg
+		return agg
+	}
+	for _, status := range statuses {
+		agg := get(status.ProviderNetwork)
+		agg.linkCount++
+		if status.Ready {
+			agg.readyLinks++
+		}
+	}
+	for _, issue := range issues {
+		agg := get(issue.ProviderNetwork)
+		if _, ok := agg.reasonSet[issue.Reason]; !ok {
+			agg.reasonSet[issue.Reason] = struct{}{}
+			agg.reasons = append(agg.reasons, issue.Reason)
+		}
+	}
+	names := make([]string, 0, len(networks))
+	for name := range networks {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]ProviderNetworkStatus, 0, len(names))
+	for _, name := range names {
+		agg := networks[name]
+		sort.Strings(agg.reasons)
+		out = append(out, ProviderNetworkStatus{
+			ProviderNetwork: name,
+			Ready:           agg.linkCount > 0 && agg.linkCount == agg.readyLinks && len(agg.reasons) == 0,
+			LinkCount:       agg.linkCount,
+			ReadyLinks:      agg.readyLinks,
+			IssueCount:      len(agg.reasons),
+			Reasons:         append([]string(nil), agg.reasons...),
+		})
+	}
+	return out
 }
 
 func providerInterfaceState(present, ready bool) string {
