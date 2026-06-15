@@ -48,6 +48,7 @@ type ReconcileResult struct {
 	ProviderReady              int
 	ProviderDegraded           int
 	ProviderStatus             []linuxdatapath.ProviderLinkStatus
+	ProviderIssues             []linuxdatapath.ProviderIssue
 	ProviderInventoryTotal     int
 	ProviderInventoryReady     int
 	ProviderInventoryDegraded  int
@@ -349,6 +350,7 @@ func prepareReconcile(ctx context.Context, state control.DesiredState, options R
 		result.ProviderReady = linuxResult.ProviderReady
 		result.ProviderDegraded = linuxResult.ProviderDegraded
 		result.ProviderStatus = append([]linuxdatapath.ProviderLinkStatus(nil), linuxResult.ProviderStatus...)
+		result.ProviderIssues = append([]linuxdatapath.ProviderIssue(nil), linuxResult.ProviderIssues...)
 		result.ProviderInventoryTotal = linuxResult.ProviderInventoryTotal
 		result.ProviderInventoryReady = linuxResult.ProviderInventoryReady
 		result.ProviderInventoryDegraded = linuxResult.ProviderInventoryDegraded

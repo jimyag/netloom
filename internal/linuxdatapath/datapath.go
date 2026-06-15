@@ -2,6 +2,7 @@ package linuxdatapath
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"net"
@@ -52,6 +53,7 @@ type Result struct {
 	ProviderReady             int
 	ProviderDegraded          int
 	ProviderStatus            []ProviderLinkStatus
+	ProviderIssues            []ProviderIssue
 	ProviderInventoryTotal    int
 	ProviderInventoryReady    int
 	ProviderInventoryDegraded int
@@ -77,6 +79,15 @@ type ProviderInterface struct {
 	State string
 }
 
+type ProviderIssue struct {
+	ProviderNetwork string
+	Node            string
+	ParentDevice    string
+	VLAN            uint16
+	Reason          string
+	Detail          string
+}
+
 type CommandExecutor struct{}
 
 const (
@@ -91,6 +102,23 @@ var (
 	defaultIPv6HostGateway = netip.MustParseAddr("fd00::1")
 	listSystemInterfaces   = net.Interfaces
 )
+
+type providerPlanningError struct {
+	issue ProviderIssue
+	err   error
+}
+
+func (e *providerPlanningError) Error() string { return e.err.Error() }
+
+func (e *providerPlanningError) Unwrap() error { return e.err }
+
+func applyProviderPlanningIssue(result *Result, err error) {
+	var planningErr *providerPlanningError
+	if result == nil || !errors.As(err, &planningErr) {
+		return
+	}
+	result.ProviderIssues = append(result.ProviderIssues, planningErr.issue)
+}
 
 func (CommandExecutor) Execute(ctx context.Context, op Operation) error {
 	cmd := exec.CommandContext(ctx, op.Command, op.Args...)
@@ -121,6 +149,7 @@ func Apply(ctx context.Context, state control.DesiredState, options Options) (Re
 		result.ProviderInventoryTotal, result.ProviderInventoryReady, result.ProviderInventoryDegraded = summarizeProviderInventory(options.ProviderInventory)
 		providerSpecs, err := desiredProviderNetworkLinkSpecs(state, options.Node, options.ProviderLinks, options.ProviderInventory)
 		if err != nil {
+			applyProviderPlanningIssue(&result, err)
 			return result, err
 		}
 		var ops []Operation
@@ -223,6 +252,7 @@ func Plan(ctx context.Context, state control.DesiredState, options Options) ([]O
 	var ops []Operation
 	providerSpecs, err := desiredProviderNetworkLinkSpecs(state, options.Node, options.ProviderLinks, options.ProviderInventory)
 	if err != nil {
+		applyProviderPlanningIssue(&result, err)
 		return nil, result, err
 	}
 	result.ProviderNetworks, result.ProviderLinks = summarizeProviderNetworkSpecs(providerSpecs)
@@ -325,7 +355,16 @@ func desiredProviderNetworkLinkSpecs(state control.DesiredState, node string, ma
 		parent := nodeMappings[subnet.ProviderNetwork]
 		if parent == "" {
 			if _, ok := localProviderNetworks[subnet.ProviderNetwork]; ok {
-				return nil, fmt.Errorf("provider network %q requires parent device mapping on node %q", subnet.ProviderNetwork, node)
+				return nil, &providerPlanningError{
+					issue: ProviderIssue{
+						ProviderNetwork: subnet.ProviderNetwork,
+						Node:            node,
+						VLAN:            subnet.VLAN,
+						Reason:          "missing-parent-mapping",
+						Detail:          "no parent device mapping for local provider network",
+					},
+					err: fmt.Errorf("provider network %q requires parent device mapping on node %q", subnet.ProviderNetwork, node),
+				}
 			}
 			continue
 		}
@@ -337,7 +376,17 @@ func desiredProviderNetworkLinkSpecs(state control.DesiredState, node string, ma
 		}
 		linkKey := parent + "|" + strconv.Itoa(int(spec.VLAN))
 		if claimed, ok := claimedLinks[linkKey]; ok && claimed.ProviderNetwork != spec.ProviderNetwork {
-			return nil, fmt.Errorf("provider networks %q and %q both require parent %s vlan %d", claimed.ProviderNetwork, spec.ProviderNetwork, parent, spec.VLAN)
+			return nil, &providerPlanningError{
+				issue: ProviderIssue{
+					ProviderNetwork: spec.ProviderNetwork,
+					Node:            node,
+					ParentDevice:    parent,
+					VLAN:            spec.VLAN,
+					Reason:          "parent-vlan-conflict",
+					Detail:          claimed.ProviderNetwork,
+				},
+				err: fmt.Errorf("provider networks %q and %q both require parent %s vlan %d", claimed.ProviderNetwork, spec.ProviderNetwork, parent, spec.VLAN),
+			}
 		}
 		claimedLinks[linkKey] = spec
 		seen[providerNetworkLinkKey(spec)] = spec
@@ -380,7 +429,15 @@ func providerLinkMappingsForNode(providerNetworks []model.ProviderNetwork, node 
 			}
 			selected, ok := selectProviderCandidateInterface(providerNode.Interfaces, available)
 			if !ok {
-				return nil, fmt.Errorf("provider network %q on node %q could not resolve candidate interfaces %s", providerNetwork.Name, node, strings.Join(providerNode.Interfaces, ","))
+				return nil, &providerPlanningError{
+					issue: ProviderIssue{
+						ProviderNetwork: providerNetwork.Name,
+						Node:            node,
+						Reason:          "candidate-unresolved",
+						Detail:          strings.Join(providerNode.Interfaces, ","),
+					},
+					err: fmt.Errorf("provider network %q on node %q could not resolve candidate interfaces %s", providerNetwork.Name, node, strings.Join(providerNode.Interfaces, ",")),
+				}
 			}
 			mappings[providerNetwork.Name] = selected
 			break

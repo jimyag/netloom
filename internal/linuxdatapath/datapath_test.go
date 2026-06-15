@@ -1003,6 +1003,9 @@ func TestPlanReturnsInventorySummaryOnUnresolvableCandidateProviderInterfaces(t 
 	if result.ProviderInventoryTotal != 2 || result.ProviderInventoryReady != 1 || result.ProviderInventoryDegraded != 1 {
 		t.Fatalf("provider inventory summary = %+v, want total=2 ready=1 degraded=1", result)
 	}
+	if len(result.ProviderIssues) != 1 || result.ProviderIssues[0].Reason != "candidate-unresolved" || result.ProviderIssues[0].Detail != "ens5,bond0" {
+		t.Fatalf("provider issues = %+v, want candidate-unresolved ens5,bond0", result.ProviderIssues)
+	}
 	if got := result.ProviderInventoryStatus[0].Name; got != "eth1" {
 		t.Fatalf("provider inventory status[0] = %+v, want eth1 first", result.ProviderInventoryStatus[0])
 	}
@@ -1062,6 +1065,9 @@ func TestPlanReturnsInventorySummaryOnConflictingProviderNetworks(t *testing.T) 
 	}
 	if result.ProviderInventoryTotal != 2 || result.ProviderInventoryReady != 1 || result.ProviderInventoryDegraded != 1 {
 		t.Fatalf("provider inventory summary = %+v, want total=2 ready=1 degraded=1", result)
+	}
+	if len(result.ProviderIssues) != 1 || result.ProviderIssues[0].Reason != "parent-vlan-conflict" || result.ProviderIssues[0].ParentDevice != "eth1" || result.ProviderIssues[0].VLAN != 100 {
+		t.Fatalf("provider issues = %+v, want parent-vlan-conflict on eth1/100", result.ProviderIssues)
 	}
 }
 

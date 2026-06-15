@@ -145,7 +145,7 @@ func TestDockerProviderHealthReportsCandidateResolutionFailureInventory(t *testi
 	if output.exitCode == 0 {
 		t.Fatalf("expected reconcile to fail for provider candidate resolution failure:\n%s", output.output)
 	}
-	for _, expected := range []string{"could not resolve candidate interfaces ens9", "provider_inventory_total=", "provider_inventory_status=", "eth0:up"} {
+	for _, expected := range []string{"could not resolve candidate interfaces ens9", "provider_issues=physnet-a:node-c::0:candidate-unresolved:ens9", "provider_inventory_total=", "provider_inventory_status=", "eth0:up"} {
 		if !strings.Contains(output.output, expected) {
 			t.Fatalf("provider candidate resolution output missing %q:\n%s", expected, output.output)
 		}
@@ -173,7 +173,7 @@ func TestDockerProviderHealthReportsConflictFailureInventory(t *testing.T) {
 	if output.exitCode == 0 {
 		t.Fatalf("expected reconcile to fail for provider conflict:\n%s", output.output)
 	}
-	for _, expected := range []string{"both require parent eth0 vlan 100", "provider_inventory_total=", "provider_inventory_status=", "eth0:up"} {
+	for _, expected := range []string{"both require parent eth0 vlan 100", "provider_issues=physnet-b:node-c:eth0:100:parent-vlan-conflict:physnet-a", "provider_inventory_total=", "provider_inventory_status=", "eth0:up"} {
 		if !strings.Contains(output.output, expected) {
 			t.Fatalf("provider conflict output missing %q:\n%s", expected, output.output)
 		}

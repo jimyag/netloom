@@ -53,6 +53,7 @@ func applyLocalNetlink(ctx context.Context, state control.DesiredState, options 
 	result.ProviderInventoryTotal, result.ProviderInventoryReady, result.ProviderInventoryDegraded = summarizeProviderInventory(options.ProviderInventory)
 	providerSpecs, err := desiredProviderNetworkLinkSpecs(state, options.Node, options.ProviderLinks, options.ProviderInventory)
 	if err != nil {
+		applyProviderPlanningIssue(&result, err)
 		return result, err
 	}
 	result.ProviderNetworks, result.ProviderLinks = summarizeProviderNetworkSpecs(providerSpecs)
@@ -152,6 +153,7 @@ func applyNetNSNetlink(ctx context.Context, state control.DesiredState, options 
 	result.ProviderInventoryTotal, result.ProviderInventoryReady, result.ProviderInventoryDegraded = summarizeProviderInventory(options.ProviderInventory)
 	providerSpecs, err := desiredProviderNetworkLinkSpecs(state, options.Node, options.ProviderLinks, options.ProviderInventory)
 	if err != nil {
+		applyProviderPlanningIssue(&result, err)
 		return result, err
 	}
 	result.ProviderNetworks, result.ProviderLinks = summarizeProviderNetworkSpecs(providerSpecs)
