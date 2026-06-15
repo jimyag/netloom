@@ -122,6 +122,26 @@ func TestPlanReportsProviderNetworkCounts(t *testing.T) {
 	}
 }
 
+func TestProviderOperStateReady(t *testing.T) {
+	tests := []struct {
+		state netlink.LinkOperState
+		ready bool
+	}{
+		{state: netlink.OperUp, ready: true},
+		{state: netlink.OperUnknown, ready: true},
+		{state: netlink.OperDormant, ready: true},
+		{state: netlink.OperTesting, ready: true},
+		{state: netlink.OperDown, ready: false},
+		{state: netlink.OperLowerLayerDown, ready: false},
+		{state: netlink.OperNotPresent, ready: false},
+	}
+	for _, tt := range tests {
+		if got := providerOperStateReady(tt.state); got != tt.ready {
+			t.Fatalf("providerOperStateReady(%v) = %t, want %t", tt.state, got, tt.ready)
+		}
+	}
+}
+
 func TestPlanRequiresRemoteUnderlay(t *testing.T) {
 	_, _, err := Plan(context.Background(), control.DesiredState{
 		Endpoints: []model.Endpoint{{

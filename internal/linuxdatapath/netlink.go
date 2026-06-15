@@ -565,7 +565,7 @@ func ensureProviderNetworkLink(root *netlink.Handle, spec providerNetworkLinkSpe
 		ParentDevice:    spec.ParentDevice,
 		VLAN:            spec.VLAN,
 		LinkName:        spec.Name,
-		Ready:           true,
+		Ready:           providerOperStateReady(parent.Attrs().OperState) && providerOperStateReady(link.Attrs().OperState),
 		ParentState:     operStateName(parent.Attrs().OperState),
 		LinkState:       operStateName(link.Attrs().OperState),
 	}, nil
@@ -589,6 +589,15 @@ func operStateName(state netlink.LinkOperState) string {
 		return "unknown"
 	default:
 		return "unknown"
+	}
+}
+
+func providerOperStateReady(state netlink.LinkOperState) bool {
+	switch state {
+	case netlink.OperDown, netlink.OperLowerLayerDown, netlink.OperNotPresent:
+		return false
+	default:
+		return true
 	}
 }
 
