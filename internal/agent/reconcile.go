@@ -33,6 +33,9 @@ type ReconcileResult struct {
 	PolicyRollbacks            int
 	PolicyRevisionMax          uint64
 	PolicyLastError            string
+	TCXFailed                  int
+	TCXRollbacks               int
+	TCXLastError               string
 	ConntrackExpired           int
 	TCXEligible                int
 	TCX                        string
@@ -93,6 +96,15 @@ type tcxAttachmentHandle struct {
 	signature string
 }
 
+type tcxUpdateStats struct {
+	Failed    int
+	Rollbacks int
+	LastError string
+	Attempted int
+	Reused    int
+	Detached  int
+}
+
 type tcxAttachFunc func(context.Context, tcxTarget) (tcxAttachmentHandle, error)
 
 type Reconciler struct {
@@ -126,7 +138,8 @@ func ReconcileNodeWithOptions(ctx context.Context, state control.DesiredState, o
 		return result, err
 	}
 	if options.TCXInterface != "" || options.TCXWorkload {
-		tcxResult, err := attachTCXTargets(ctx, targets, options.TCXHold)
+		tcxResult, tcxStats, err := attachTCXTargets(ctx, targets, options.TCXHold)
+		applyTCXUpdateStats(&result, tcxStats)
 		if err != nil {
 			return result, fmt.Errorf("attach tcx policy for node %s: %w", options.Node, err)
 		}
@@ -157,7 +170,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, state control.DesiredState, 
 	r.syncConntrackPrograms(programs)
 	result.ConntrackExpired = r.conntrack.SweepIdle(conntrackIdleTimeout(options.ConntrackIdle))
 	if options.TCXInterface != "" || options.TCXWorkload {
-		tcxResult, err := r.syncTCXTargets(ctx, targets)
+		tcxResult, tcxStats, err := r.syncTCXTargets(ctx, targets)
+		applyTCXUpdateStats(&result, tcxStats)
 		if err != nil {
 			return result, fmt.Errorf("attach tcx policy for node %s: %w", options.Node, err)
 		}
@@ -557,10 +571,11 @@ func tcxEligibleProgramForDirection(program policy.Program, direction model.Dire
 	return err == nil
 }
 
-func attachTCXTargets(ctx context.Context, targets []tcxTarget, hold time.Duration) (string, error) {
+func attachTCXTargets(ctx context.Context, targets []tcxTarget, hold time.Duration) (string, tcxUpdateStats, error) {
 	if len(targets) == 0 {
-		return "not-attached", nil
+		return "not-attached", tcxUpdateStats{}, nil
 	}
+	stats := tcxUpdateStats{}
 	attachments := make([]tcxAttachmentHandle, 0, len(targets))
 	defer func() {
 		for i := len(attachments) - 1; i >= 0; i-- {
@@ -568,9 +583,13 @@ func attachTCXTargets(ctx context.Context, targets []tcxTarget, hold time.Durati
 		}
 	}()
 	for _, target := range targets {
+		stats.Attempted++
 		attachment, err := attachTCXTarget(ctx, target)
 		if err != nil {
-			return "", err
+			stats.Failed = 1
+			stats.Rollbacks = len(attachments)
+			stats.LastError = err.Error()
+			return "", stats, err
 		}
 		attachments = append(attachments, attachment)
 	}
@@ -579,19 +598,25 @@ func attachTCXTargets(ctx context.Context, targets []tcxTarget, hold time.Durati
 		defer timer.Stop()
 		select {
 		case <-ctx.Done():
-			return "", ctx.Err()
+			stats.Failed = 1
+			stats.Rollbacks = len(attachments)
+			stats.LastError = ctx.Err().Error()
+			return "", stats, ctx.Err()
 		case <-timer.C:
 		}
 	}
-	return formatTCXResult(attachments), nil
+	return formatTCXResult(attachments), stats, nil
 }
 
-func (r *Reconciler) syncTCXTargets(ctx context.Context, targets []tcxTarget) (string, error) {
+func (r *Reconciler) syncTCXTargets(ctx context.Context, targets []tcxTarget) (string, tcxUpdateStats, error) {
+	stats := tcxUpdateStats{}
 	if len(targets) == 0 {
 		if err := r.closeTCXAttachments(); err != nil {
-			return "", fmt.Errorf("close stale tcx attachments: %w", err)
+			stats.Failed = 1
+			stats.LastError = err.Error()
+			return "", stats, fmt.Errorf("close stale tcx attachments: %w", err)
 		}
-		return "not-attached", nil
+		return "not-attached", stats, nil
 	}
 	desired := make(map[string]tcxTarget, len(targets))
 	for _, target := range targets {
@@ -604,15 +629,20 @@ func (r *Reconciler) syncTCXTargets(ctx context.Context, targets []tcxTarget) (s
 		old, hasOld := r.attachments[key]
 		if hasOld && old.signature == signature {
 			next[key] = old
+			stats.Reused++
 			continue
 		}
+		stats.Attempted++
 		attachment, err := r.attach(ctx, target)
 		if err != nil {
 			for i := len(attached) - 1; i >= 0; i-- {
 				stale := attached[i]
 				_ = next[stale].close()
 			}
-			return "", fmt.Errorf("attach tcx target %s: %w", tcxTargetLabel(target), err)
+			stats.Failed = 1
+			stats.Rollbacks = len(attached)
+			stats.LastError = err.Error()
+			return "", stats, fmt.Errorf("attach tcx target %s: %w", tcxTargetLabel(target), err)
 		}
 		attachment.signature = signature
 		next[key] = attachment
@@ -623,6 +653,7 @@ func (r *Reconciler) syncTCXTargets(ctx context.Context, targets []tcxTarget) (s
 		if _, ok := next[key]; ok {
 			continue
 		}
+		stats.Detached++
 		if err := attachment.close(); err != nil && closeErr == nil {
 			closeErr = fmt.Errorf("close stale tcx attachment %s: %w", key, err)
 		}
@@ -631,14 +662,28 @@ func (r *Reconciler) syncTCXTargets(ctx context.Context, targets []tcxTarget) (s
 		for _, attachment := range next {
 			_ = attachment.close()
 		}
-		return "", closeErr
+		stats.Failed = 1
+		stats.Rollbacks = len(attached)
+		stats.LastError = closeErr.Error()
+		return "", stats, closeErr
 	}
 	r.attachments = next
 	attachments := make([]tcxAttachmentHandle, 0, len(targets))
 	for _, target := range targets {
 		attachments = append(attachments, r.attachments[tcxTargetKey(target)])
 	}
-	return formatTCXResult(attachments), nil
+	return formatTCXResult(attachments), stats, nil
+}
+
+func applyTCXUpdateStats(result *ReconcileResult, stats tcxUpdateStats) {
+	if result == nil {
+		return
+	}
+	result.TCXFailed += stats.Failed
+	result.TCXRollbacks += stats.Rollbacks
+	if stats.LastError != "" {
+		result.TCXLastError = stats.LastError
+	}
 }
 
 func (r *Reconciler) closeTCXAttachments() error {

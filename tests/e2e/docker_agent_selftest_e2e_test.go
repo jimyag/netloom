@@ -416,3 +416,48 @@ func TestDockerAgentStateWatchPreservesPinnedMapsOnEBPFOverflow(t *testing.T) {
 		t.Fatalf("policy metadata changed after overflow.\nbase:\n%s\ncurrent:\n%s", baselineMetadata, got)
 	}
 }
+
+func TestDockerAgentStateFileReportsTCXAttachFailureSignals(t *testing.T) {
+	requireDockerE2E(t)
+	if testing.Short() {
+		t.Skip("skip long e2e test in short mode")
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker is not installed")
+	}
+
+	composeFile := filepath.Join("testdata", "..", "docker-compose.yaml")
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+
+	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
+	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
+	startComposeLab(t, ctx, composeFile)
+	t.Cleanup(func() {
+		downCtx, downCancel := context.WithTimeout(context.Background(), time.Minute)
+		defer downCancel()
+		run(t, downCtx, "docker", "compose", "-f", composeFile, "down", "-v")
+	})
+
+	statePath := "/tmp/netloom-agent-tcx-failure-state.json"
+	stateWrite := "cat >" + statePath + " <<'EOF'\n" + desiredWorkloadPolicyDropStateJSON() + "\nEOF\n"
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "sh", "-c", stateWrite)
+
+	command := "NETLOOM_STATE_FILE=" + statePath + " NETLOOM_NODE_NAME=node-b NETLOOM_POLICY_STORE=ebpf NETLOOM_TCX_IFACE=not-a-real-interface /netloom/bin/netloom-agent"
+	output := runAllowFailure(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "sh", "-c", command)
+	if output.exitCode == 0 {
+		t.Fatalf("expected tcx attach failure, output:\n%s", output.output)
+	}
+	for _, expected := range []string{
+		"netloom-agent reconcile failed",
+		"tcx_eligible=2",
+		"tcx_failed=1",
+		"tcx_rollbacks=0",
+		`tcx_last_error="attach tcx target`,
+		"not-a-real-interface",
+	} {
+		if !strings.Contains(output.output, expected) {
+			t.Fatalf("tcx attach failure output missing %q:\n%s", expected, output.output)
+		}
+	}
+}

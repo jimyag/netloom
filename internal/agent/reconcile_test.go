@@ -1295,9 +1295,12 @@ func TestTCXTargetsBuildsSingleEgressTargetForMultipleNodeInterfaceEndpoints(t *
 }
 
 func TestAttachTCXTargetsReportsNotAttachedForEmptyTargets(t *testing.T) {
-	status, err := attachTCXTargets(context.Background(), nil, 0)
+	status, stats, err := attachTCXTargets(context.Background(), nil, 0)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if stats != (tcxUpdateStats{}) {
+		t.Fatalf("stats = %+v, want zero-value", stats)
 	}
 	if status != "not-attached" {
 		t.Fatalf("status = %q, want not-attached", status)
@@ -1374,7 +1377,7 @@ func TestReconcilerSyncTCXTargetsRollsBackOnFailure(t *testing.T) {
 	var closeCalls int
 	reconciler.attach = func(_ context.Context, target tcxTarget) (tcxAttachmentHandle, error) {
 		attachCalls++
-		if attachCalls == 2 {
+		if attachCalls == 3 {
 			return tcxAttachmentHandle{}, fmt.Errorf("simulated attach failure")
 		}
 		return tcxAttachmentHandle{
@@ -1408,11 +1411,17 @@ func TestReconcilerSyncTCXTargetsRollsBackOnFailure(t *testing.T) {
 	state.Endpoints[0].IP = netip.MustParseAddr("10.10.0.20")
 	state.SecurityGroups[0].Rules[0].RemoteCIDR = netip.MustParsePrefix("172.30.0.12/32")
 
-	_, err := reconciler.Reconcile(context.Background(), state, options)
+	result, err := reconciler.Reconcile(context.Background(), state, options)
 	if err == nil {
 		t.Fatal("expected reconcile failure during partial attachment update")
 	}
-	if attachCalls != 2 || closeCalls != 0 {
+	if result.TCXFailed != 1 || result.TCXRollbacks != 1 {
+		t.Fatalf("tcx failure summary = %+v, want one failure and one rollback", result)
+	}
+	if !strings.Contains(result.TCXLastError, "simulated attach failure") {
+		t.Fatalf("tcx last error = %q, want attach failure", result.TCXLastError)
+	}
+	if attachCalls != 3 || closeCalls != 1 {
 		t.Fatalf("unexpected attach/close counters after partial failure: attaches=%d closes=%d", attachCalls, closeCalls)
 	}
 	rolledBack, ok := reconciler.attachments[firstKey]
@@ -1434,8 +1443,48 @@ func TestReconcilerSyncTCXTargetsRollsBackOnFailure(t *testing.T) {
 	if _, ok := reconciler.attachments[secondKey]; !ok {
 		t.Fatalf("expected second attachment %s to be attached after successful reconcile", secondKey)
 	}
-	if attachCalls != 4 {
+	if attachCalls != 5 {
 		t.Fatalf("unexpected attach counter after successful reconcile: %d", attachCalls)
+	}
+}
+
+func TestReconcileNodeWithTCXInterfaceReportsAttachFailureSignals(t *testing.T) {
+	reconciler := NewReconciler(dataplane.NewInMemoryPolicyStore())
+	reconciler.attach = func(context.Context, tcxTarget) (tcxAttachmentHandle, error) {
+		return tcxAttachmentHandle{}, fmt.Errorf("kernel attach failed")
+	}
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:             "pod-a",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"web"},
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "drop-http",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("172.30.0.11/32"),
+				Ports:      []model.PortRange{{From: 8080, To: 8080}},
+				Action:     model.ActionDrop,
+			}},
+		}},
+	}
+	result, err := reconciler.Reconcile(context.Background(), state, ReconcileOptions{Node: "node-a", TCXInterface: "eth0"})
+	if err == nil {
+		t.Fatal("expected tcx attach failure")
+	}
+	if result.TCXEligible != 1 || result.TCXFailed != 1 || result.TCXRollbacks != 0 {
+		t.Fatalf("result = %+v, want one tcx-eligible failure without rollback", result)
+	}
+	if !strings.Contains(result.TCXLastError, "kernel attach failed") {
+		t.Fatalf("tcx last error = %q, want kernel attach failure", result.TCXLastError)
 	}
 }
 
