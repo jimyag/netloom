@@ -21,6 +21,65 @@ func TestEvaluateDefaultsToDrop(t *testing.T) {
 	}
 }
 
+func TestExplainReportsNoPolicyMatch(t *testing.T) {
+	packet := Packet{
+		RemoteIP:  netip.MustParseAddr("10.20.0.11"),
+		Direction: DirectionIngress,
+		Protocol:  6,
+		DestPort:  443,
+	}
+
+	explanation := Explain(model.EndpointKey("prod", "pod-a"), nil, packet)
+	if explanation.EndpointID != model.EndpointKey("prod", "pod-a") {
+		t.Fatalf("endpoint = %q, want endpoint key", explanation.EndpointID)
+	}
+	if explanation.Verdict != VerdictDrop || explanation.Reason != ExplainReasonNoPolicyMatch {
+		t.Fatalf("explanation = %+v, want no-match drop", explanation)
+	}
+	if explanation.Matched || explanation.RuleCookie != 0 || explanation.EvaluatedEntries != 0 {
+		t.Fatalf("explanation = %+v, want no matched rule", explanation)
+	}
+	if explanation.Packet != packet {
+		t.Fatalf("packet = %+v, want original packet %+v", explanation.Packet, packet)
+	}
+}
+
+func TestExplainReportsMatchedRejectRule(t *testing.T) {
+	cookie := uint32(77)
+	entries := []PolicyMapEntry{{
+		Key: PolicyKey{
+			PrefixLen:      StaticPrefixBits + 24,
+			RemoteIdentity: 100,
+			Direction:      DirectionIngress,
+			Protocol:       6,
+			DestPortBE:     hostToNetwork16(443),
+		},
+		Value: PolicyEntry{
+			Deny:        1,
+			Reject:      1,
+			L4PrefixLen: 24,
+			Precedence:  100,
+			RuleCookie:  cookie,
+		},
+	}}
+
+	explanation := Explain(model.EndpointKey("prod", "pod-a"), entries, Packet{
+		RemoteIdentity: 100,
+		Direction:      DirectionIngress,
+		Protocol:       6,
+		DestPort:       443,
+	})
+	if explanation.Verdict != VerdictReject || explanation.Reason != ExplainReasonPolicyReject {
+		t.Fatalf("explanation = %+v, want policy reject", explanation)
+	}
+	if !explanation.Matched || explanation.RuleCookie != cookie {
+		t.Fatalf("explanation = %+v, want matched reject rule cookie %d", explanation, cookie)
+	}
+	if explanation.Match.Value.RuleCookie != cookie || explanation.EvaluatedEntries != 1 {
+		t.Fatalf("matched entry = %+v, want copied entry with evaluated count", explanation.Match)
+	}
+}
+
 func TestEvaluateChoosesDenyPrecedenceOverAllow(t *testing.T) {
 	entries := []PolicyMapEntry{
 		{
@@ -168,6 +227,16 @@ func TestEvaluateAllowsIPv4FragmentationNeededForPMTU(t *testing.T) {
 	if decision.Verdict != VerdictAllow || decision.Match != nil {
 		t.Fatalf("fragmentation-needed decision = %+v, want unconditional PMTU allow", decision)
 	}
+	explanation := Explain(model.EndpointKey("prod", "pod-a"), entries, Packet{
+		RemoteIP:  netip.MustParseAddr("192.0.2.10"),
+		Direction: DirectionIngress,
+		Protocol:  1,
+		ICMPType:  3,
+		ICMPCode:  4,
+	})
+	if explanation.Verdict != VerdictAllow || explanation.Reason != ExplainReasonPMTU || explanation.Matched {
+		t.Fatalf("fragmentation-needed explanation = %+v, want PMTU allow without matched rule", explanation)
+	}
 
 	otherUnreachable := Evaluate(entries, Packet{
 		RemoteIP:  netip.MustParseAddr("192.0.2.10"),
@@ -247,6 +316,16 @@ func TestEvaluateAllowsIPv6NeighborDiscovery(t *testing.T) {
 		if decision.Verdict != VerdictAllow || decision.Match != nil {
 			t.Fatalf("ICMPv6 type %d decision = %+v, want unconditional NDP allow", icmpType, decision)
 		}
+	}
+	explanation := Explain(model.EndpointKey("prod", "pod-a"), entries, Packet{
+		RemoteIP:  netip.MustParseAddr("fe80::1"),
+		Direction: DirectionIngress,
+		Protocol:  58,
+		ICMPType:  135,
+		ICMPCode:  0,
+	})
+	if explanation.Verdict != VerdictAllow || explanation.Reason != ExplainReasonNeighborDiscovery || explanation.Matched {
+		t.Fatalf("neighbor discovery explanation = %+v, want NDP allow without matched rule", explanation)
 	}
 
 	malformed := Evaluate(entries, Packet{
@@ -569,6 +648,59 @@ func TestEvaluateStatefulAllowsReverseFlowFromConntrack(t *testing.T) {
 	}, conntrack)
 	if reverse.Verdict != VerdictAllow || !reverse.Conntrack {
 		t.Fatalf("reverse decision = %+v, want conntrack allow", reverse)
+	}
+}
+
+func TestExplainStatefulReportsStatefulRuleAndConntrackHit(t *testing.T) {
+	entries := []PolicyMapEntry{{
+		Key: PolicyKey{
+			PrefixLen:      StaticPrefixBits + 24,
+			RemoteIdentity: 100,
+			Direction:      DirectionIngress,
+			Protocol:       6,
+			DestPortBE:     hostToNetwork16(443),
+		},
+		Value: PolicyEntry{
+			L4PrefixLen: 24,
+			Precedence:  100,
+			Stateful:    1,
+			RuleCookie:  101,
+		},
+	}}
+	endpointID := model.EndpointKey("prod", "pod-a")
+	conntrack := NewInMemoryConntrackStore()
+	packet := Packet{
+		SourcePort:     55000,
+		RemoteIdentity: 100,
+		Direction:      DirectionIngress,
+		Protocol:       6,
+		DestPort:       443,
+	}
+
+	explanation := ExplainStateful(endpointID, entries, packet, conntrack)
+	if explanation.Verdict != VerdictAllow || explanation.Reason != ExplainReasonStatefulRule || !explanation.Established {
+		t.Fatalf("stateful explanation = %+v, want stateful-rule allow", explanation)
+	}
+	if !explanation.Matched || explanation.RuleCookie != 101 || conntrack.Len() != 0 {
+		t.Fatalf("stateful explanation = %+v conntrack=%d, want matched rule and no conntrack mutation", explanation, conntrack.Len())
+	}
+
+	decision := EvaluateStateful(endpointID, entries, packet, conntrack)
+	if decision.Verdict != VerdictAllow || !decision.Established || conntrack.Len() != 1 {
+		t.Fatalf("stateful decision = %+v conntrack=%d, want established conntrack entry", decision, conntrack.Len())
+	}
+	reverse := ExplainStateful(endpointID, nil, Packet{
+		RemoteIdentity: 100,
+		Direction:      DirectionEgress,
+		Protocol:       6,
+		SourcePort:     443,
+		DestPort:       55000,
+	}, conntrack)
+	if reverse.Verdict != VerdictAllow || reverse.Reason != ExplainReasonConntrack || !reverse.Conntrack {
+		t.Fatalf("reverse explanation = %+v, want conntrack allow", reverse)
+	}
+	if reverse.Matched || reverse.RuleCookie != 0 {
+		t.Fatalf("reverse explanation = %+v, want no matched rule for conntrack allow", reverse)
 	}
 }
 

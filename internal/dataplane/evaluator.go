@@ -37,6 +37,32 @@ type Decision struct {
 	Established bool
 }
 
+type ExplainReason string
+
+const (
+	ExplainReasonPolicyAllow       ExplainReason = "policy-allow"
+	ExplainReasonPolicyDeny        ExplainReason = "policy-deny"
+	ExplainReasonPolicyReject      ExplainReason = "policy-reject"
+	ExplainReasonNoPolicyMatch     ExplainReason = "no-policy-match"
+	ExplainReasonConntrack         ExplainReason = "conntrack"
+	ExplainReasonStatefulRule      ExplainReason = "stateful-rule"
+	ExplainReasonPMTU              ExplainReason = "pmtu-control"
+	ExplainReasonNeighborDiscovery ExplainReason = "neighbor-discovery"
+)
+
+type PolicyExplanation struct {
+	EndpointID       string
+	Packet           Packet
+	Verdict          Verdict
+	Reason           ExplainReason
+	Matched          bool
+	Match            PolicyMapEntry
+	RuleCookie       uint32
+	Conntrack        bool
+	Established      bool
+	EvaluatedEntries int
+}
+
 type DropReason string
 
 const (
@@ -368,6 +394,10 @@ func Evaluate(entries []PolicyMapEntry, packet Packet) Decision {
 	return evaluate(entries, packet)
 }
 
+func Explain(endpointID string, entries []PolicyMapEntry, packet Packet) PolicyExplanation {
+	return explainPolicyDecision(endpointID, packet, evaluate(entries, packet), len(entries))
+}
+
 func EvaluateObserved(endpointID string, entries []PolicyMapEntry, packet Packet, observer PolicyObserver) Decision {
 	decision := evaluate(entries, packet)
 	if observer != nil {
@@ -529,6 +559,20 @@ func EvaluateStateful(endpointID string, entries []PolicyMapEntry, packet Packet
 	return EvaluateStatefulObserved(endpointID, entries, packet, conntrack, nil)
 }
 
+func ExplainStateful(endpointID string, entries []PolicyMapEntry, packet Packet, conntrack ConntrackStore) PolicyExplanation {
+	decision := evaluate(entries, packet)
+	if decision.Match != nil && (decision.Verdict == VerdictDrop || decision.Verdict == VerdictReject) {
+		return explainPolicyDecision(endpointID, packet, decision, len(entries))
+	}
+	if endpointID != "" && conntrack != nil && conntrack.Has(conntrackKey(endpointID, packet)) {
+		return explainPolicyDecision(endpointID, packet, Decision{Verdict: VerdictAllow, Conntrack: true}, len(entries))
+	}
+	if decision.Verdict == VerdictAllow && decision.Match != nil && decision.Match.Value.Stateful != 0 && conntrack != nil {
+		decision.Established = true
+	}
+	return explainPolicyDecision(endpointID, packet, decision, len(entries))
+}
+
 func EvaluateStatefulObserved(endpointID string, entries []PolicyMapEntry, packet Packet, conntrack ConntrackStore, observer PolicyObserver) Decision {
 	decision := evaluate(entries, packet)
 	if decision.Match != nil && (decision.Verdict == VerdictDrop || decision.Verdict == VerdictReject) {
@@ -559,6 +603,51 @@ func EvaluateStatefulObserved(endpointID string, entries []PolicyMapEntry, packe
 		observer.Observe(endpointID, packet, decision)
 	}
 	return decision
+}
+
+func explainPolicyDecision(endpointID string, packet Packet, decision Decision, evaluatedEntries int) PolicyExplanation {
+	explanation := PolicyExplanation{
+		EndpointID:       endpointID,
+		Packet:           packet,
+		Verdict:          decision.Verdict,
+		Reason:           explainReason(packet, decision),
+		Conntrack:        decision.Conntrack,
+		Established:      decision.Established,
+		EvaluatedEntries: evaluatedEntries,
+	}
+	if decision.Match != nil {
+		explanation.Matched = true
+		explanation.Match = *decision.Match
+		explanation.RuleCookie = decision.Match.Value.RuleCookie
+	}
+	return explanation
+}
+
+func explainReason(packet Packet, decision Decision) ExplainReason {
+	if decision.Conntrack {
+		return ExplainReasonConntrack
+	}
+	if decision.Established {
+		return ExplainReasonStatefulRule
+	}
+	if decision.Match == nil && decision.Verdict == VerdictAllow {
+		if isIPv4FragmentationNeeded(packet) || isIPv6PacketTooBig(packet) {
+			return ExplainReasonPMTU
+		}
+		if isIPv6NeighborDiscovery(packet) {
+			return ExplainReasonNeighborDiscovery
+		}
+	}
+	if decision.Match == nil {
+		return ExplainReasonNoPolicyMatch
+	}
+	if decision.Verdict == VerdictReject {
+		return ExplainReasonPolicyReject
+	}
+	if decision.Verdict == VerdictDrop {
+		return ExplainReasonPolicyDeny
+	}
+	return ExplainReasonPolicyAllow
 }
 
 func matches(entry PolicyMapEntry, packet Packet) bool {
