@@ -586,6 +586,119 @@ func TestDesiredStateRemovesLocalnetTagWhenProviderNetworkVLANIsCleared(t *testi
 	}
 }
 
+func TestDesiredStateLoadBalancerSelectionFieldsDriveStableBackendChoice(t *testing.T) {
+	ctx := context.Background()
+	state, err := control.LoadDesiredStateJSON(strings.NewReader(`{
+  "vpcs": [{"name": "affinity"}],
+  "subnets": [
+    {"name": "apps-v4", "vpc": "affinity", "cidr": "10.247.0.0/24", "gateway": "10.247.0.1"},
+    {"name": "apps-v6", "vpc": "affinity", "cidr": "fd00:47::/64", "gateway": "fd00:47::1"}
+  ],
+  "endpoints": [
+    {"id": "client-v4", "vpc": "affinity", "subnet": "apps-v4", "ip": "10.247.0.50", "node": "node-a"},
+    {"id": "client-v6", "vpc": "affinity", "subnet": "apps-v6", "ip": "fd00:47::50", "node": "node-a"}
+  ],
+  "load_balancers": [
+    {"name": "web-v4", "vpc": "affinity", "vip": "10.96.0.60", "session_affinity": true, "affinity_timeout": 7200, "selection_fields": ["tp_src", "ip_src"], "ports": [{"name": "http", "port": 80, "protocol": "tcp", "backends": [{"ip": "10.247.0.10", "port": 8080}, {"ip": "10.247.0.11", "port": 8080}]}], "subnets": ["apps-v4"]},
+    {"name": "web-v6", "vpc": "affinity", "vip": "fd00:96::60", "session_affinity": true, "selection_fields": ["ipv6_src"], "ports": [{"name": "http", "port": 80, "protocol": "tcp", "backends": [{"ip": "fd00:47::10", "port": 8080}, {"ip": "fd00:47::11", "port": 8080}]}], "subnets": ["apps-v6"]}
+  ]
+}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	memoryBackend := control.NewMemoryBackend()
+	ovnRecorder := ovn.NewRecorderExecutor()
+	ovnBackend := ovn.NewBackend(ovnRecorder)
+	controller := control.NewController(control.MultiTopologyBackend{memoryBackend, ovnBackend}, memoryBackend)
+	if err := controller.Reconcile(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+
+	firstV4, err := topology.Resolve(memoryBackend.TopologyState(), topology.Packet{
+		VPC:        "affinity",
+		Source:     mustAddr(t, "10.247.0.50"),
+		SourcePort: 31000,
+		Dest:       mustAddr(t, "10.96.0.60"),
+		Protocol:   model.ProtocolTCP,
+		DestPort:   80,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondV4, err := topology.Resolve(memoryBackend.TopologyState(), topology.Packet{
+		VPC:        "affinity",
+		Source:     mustAddr(t, "10.247.0.50"),
+		SourcePort: 31000,
+		Dest:       mustAddr(t, "10.96.0.60"),
+		Protocol:   model.ProtocolTCP,
+		DestPort:   80,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstV4.MatchedBy != "load-balancer/web-v4" || secondV4.Translated != firstV4.Translated || secondV4.TranslatedPort != firstV4.TranslatedPort {
+		t.Fatalf("v4 affinity selection should stay stable for identical source tuple: first=%+v second=%+v", firstV4, secondV4)
+	}
+
+	seenV4 := map[string]struct{}{}
+	for sourcePort := uint16(31000); sourcePort < 31100; sourcePort++ {
+		decision, err := topology.Resolve(memoryBackend.TopologyState(), topology.Packet{
+			VPC:        "affinity",
+			Source:     mustAddr(t, "10.247.0.50"),
+			SourcePort: sourcePort,
+			Dest:       mustAddr(t, "10.96.0.60"),
+			Protocol:   model.ProtocolTCP,
+			DestPort:   80,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		seenV4[decision.Translated.String()] = struct{}{}
+	}
+	if len(seenV4) < 2 {
+		t.Fatalf("tp_src selection should vary IPv4 backend choice across source ports, got backends %v", seenV4)
+	}
+
+	firstV6, err := topology.Resolve(memoryBackend.TopologyState(), topology.Packet{
+		VPC:        "affinity",
+		Source:     mustAddr(t, "fd00:47::50"),
+		SourcePort: 32000,
+		Dest:       mustAddr(t, "fd00:96::60"),
+		Protocol:   model.ProtocolTCP,
+		DestPort:   80,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondV6, err := topology.Resolve(memoryBackend.TopologyState(), topology.Packet{
+		VPC:        "affinity",
+		Source:     mustAddr(t, "fd00:47::50"),
+		SourcePort: 32099,
+		Dest:       mustAddr(t, "fd00:96::60"),
+		Protocol:   model.ProtocolTCP,
+		DestPort:   80,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstV6.MatchedBy != "load-balancer/web-v6" || secondV6.Translated != firstV6.Translated || secondV6.TranslatedPort != firstV6.TranslatedPort {
+		t.Fatalf("ipv6_src-only selection should ignore source port changes: first=%+v second=%+v", firstV6, secondV6)
+	}
+
+	ovnOps := stringifyOVNOps(ovnRecorder.Operations())
+	for _, expected := range []string{
+		`selection_fields=["ip_src","tp_src"]`,
+		`selection_fields=["ipv6_src"]`,
+		"options:affinity_timeout=7200",
+		"options:affinity_timeout=10800",
+	} {
+		if !strings.Contains(ovnOps, expected) {
+			t.Fatalf("ovn operations missing %q:\n%s", expected, ovnOps)
+		}
+	}
+}
+
 func hasOVNCommand(ops []ovn.Operation, command string) bool {
 	for _, op := range ops {
 		if op.Command == command {
