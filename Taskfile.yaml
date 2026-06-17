@@ -59,7 +59,7 @@ tasks:
   test:e2e:
     desc: Run docker-based multi-node e2e tests
     cmds:
-      - bash ./scripts/with-e2e-lock.sh env NETLOOM_E2E=1 go test -v -trimpath ./tests/e2e
+      - bash ./scripts/with-e2e-lock.sh env NETLOOM_E2E=1 go test -timeout 30m -v -trimpath ./tests/e2e
 
   env:doctor:
     desc: Rebuild and repair the docker-based e2e lab environment
