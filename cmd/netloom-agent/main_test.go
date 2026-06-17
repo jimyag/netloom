@@ -22,6 +22,7 @@ import (
 	"github.com/jimyag/netloom/internal/linuxdatapath"
 	"github.com/jimyag/netloom/internal/model"
 	"github.com/jimyag/netloom/internal/policy"
+	"github.com/jimyag/netloom/internal/topology"
 )
 
 func TestEBPFMapPinRootUsesExplicitEnv(t *testing.T) {
@@ -303,6 +304,61 @@ func TestRunPolicyExplainReportsNoMatchDrop(t *testing.T) {
 	}
 }
 
+func TestRunRouteExplainReportsPolicyRouteReroute(t *testing.T) {
+	statePath := writeRouteExplainState(t)
+	var stdout bytes.Buffer
+
+	err := runRouteExplain([]string{
+		"-state", statePath,
+		"-vpc", "prod",
+		"-source", "10.10.0.10",
+		"-dest", "172.16.1.10",
+		"-protocol", "tcp",
+		"-source-port", "32001",
+		"-dest-port", "443",
+	}, &stdout)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var decision topology.Decision
+	if err := json.Unmarshal(stdout.Bytes(), &decision); err != nil {
+		t.Fatalf("decode decision: %v\n%s", err, stdout.String())
+	}
+	if decision.Action != model.ActionReroute || decision.MatchedBy != "policy-route/private-via-fw" {
+		t.Fatalf("decision = %+v, want policy-route reroute", decision)
+	}
+	if decision.NextHop != netip.MustParseAddr("10.10.0.253") || decision.Gateway != "gw-fw" {
+		t.Fatalf("decision = %+v, want firewall next hop and gateway", decision)
+	}
+	if decision.Translated != netip.MustParseAddr("198.51.100.10") {
+		t.Fatalf("translated = %s, want SNAT external IP", decision.Translated)
+	}
+}
+
+func TestRunRouteExplainReportsNoRouteDrop(t *testing.T) {
+	statePath := writeRouteExplainState(t)
+	var stdout bytes.Buffer
+
+	err := runRouteExplain([]string{
+		"-state", statePath,
+		"-vpc", "prod",
+		"-source", "10.10.0.10",
+		"-dest", "203.0.113.200",
+	}, &stdout)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var decision topology.Decision
+	if err := json.Unmarshal(stdout.Bytes(), &decision); err != nil {
+		t.Fatalf("decode decision: %v\n%s", err, stdout.String())
+	}
+	if decision.Action != model.ActionDrop || decision.MatchedBy != "no-route" {
+		t.Fatalf("decision = %+v, want no-route drop", decision)
+	}
+}
+
 func writePolicyExplainState(t *testing.T) string {
 	t.Helper()
 	state := control.DesiredState{
@@ -343,6 +399,48 @@ func writePolicyExplainState(t *testing.T) string {
 		t.Fatal(err)
 	}
 	path := filepath.Join(t.TempDir(), "state.json")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func writeRouteExplainState(t *testing.T) string {
+	t.Helper()
+	state := control.DesiredState{
+		PolicyRoutes: []model.PolicyRoute{{
+			Name:     "private-via-fw",
+			VPC:      "prod",
+			Priority: 100,
+			Match: model.RouteMatch{
+				Source:      netip.MustParsePrefix("10.10.0.0/24"),
+				Destination: netip.MustParsePrefix("172.16.0.0/16"),
+				Protocol:    model.ProtocolTCP,
+				SrcPorts:    []model.PortRange{{From: 32000, To: 32010}},
+				DstPorts:    []model.PortRange{{From: 443, To: 443}},
+			},
+			Action: model.RouteAction{
+				Type:     model.ActionReroute,
+				NextHops: []netip.Addr{netip.MustParseAddr("10.10.0.253")},
+			},
+		}},
+		Gateways: []model.Gateway{
+			{Name: "gw-main", VPC: "prod", Node: "node-a", ExternalIF: "eth0", LANIP: netip.MustParseAddr("10.10.0.254")},
+			{Name: "gw-fw", VPC: "prod", Node: "node-b", ExternalIF: "eth0", LANIP: netip.MustParseAddr("10.10.0.253")},
+		},
+		NATRules: []model.NATRule{{
+			Name:       "egress",
+			VPC:        "prod",
+			Type:       model.ActionSNAT,
+			MatchCIDR:  netip.MustParsePrefix("10.10.0.0/24"),
+			ExternalIP: netip.MustParseAddr("198.51.100.10"),
+		}},
+	}
+	data, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "route-state.json")
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatal(err)
 	}

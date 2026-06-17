@@ -24,6 +24,7 @@ import (
 	"github.com/jimyag/netloom/internal/linuxdatapath"
 	"github.com/jimyag/netloom/internal/model"
 	"github.com/jimyag/netloom/internal/policy"
+	"github.com/jimyag/netloom/internal/topology"
 	"golang.org/x/sys/unix"
 )
 
@@ -40,6 +41,11 @@ func main() {
 		switch os.Args[1] {
 		case "policy-explain":
 			if err := runPolicyExplain(os.Args[2:], os.Stdout); err != nil {
+				log.Fatal(err)
+			}
+			return
+		case "route-explain":
+			if err := runRouteExplain(os.Args[2:], os.Stdout); err != nil {
 				log.Fatal(err)
 			}
 			return
@@ -75,6 +81,16 @@ type policyExplainOptions struct {
 	icmpType       int
 	icmpCode       int
 	stateful       bool
+}
+
+type routeExplainOptions struct {
+	stateFile  string
+	vpc        string
+	source     string
+	dest       string
+	protocol   string
+	sourcePort uint
+	destPort   uint
 }
 
 func runPolicyExplain(args []string, stdout io.Writer) error {
@@ -131,6 +147,139 @@ func runPolicyExplain(args []string, stdout io.Writer) error {
 	encoder := json.NewEncoder(stdout)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(explanation)
+}
+
+func runRouteExplain(args []string, stdout io.Writer) error {
+	var opts routeExplainOptions
+	flags := flag.NewFlagSet("netloom-agent route-explain", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	flags.StringVar(&opts.stateFile, "state", os.Getenv("NETLOOM_STATE_FILE"), "desired-state JSON path")
+	flags.StringVar(&opts.vpc, "vpc", "", "packet VPC")
+	flags.StringVar(&opts.source, "source", "", "packet source IP")
+	flags.StringVar(&opts.dest, "dest", "", "packet destination IP")
+	flags.StringVar(&opts.protocol, "protocol", "any", "any, tcp, udp, or icmp")
+	flags.UintVar(&opts.sourcePort, "source-port", 0, "source port")
+	flags.UintVar(&opts.destPort, "dest-port", 0, "destination port")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if opts.stateFile == "" {
+		return errors.New("missing -state or NETLOOM_STATE_FILE")
+	}
+	file, err := os.Open(opts.stateFile)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	state, err := control.LoadDesiredStateJSON(file)
+	if err != nil {
+		return err
+	}
+	decision, err := explainRouteFromState(state, opts)
+	if err != nil {
+		return err
+	}
+	encoder := json.NewEncoder(stdout)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(decision)
+}
+
+func explainRouteFromState(state control.DesiredState, opts routeExplainOptions) (topology.Decision, error) {
+	packet, err := routePacketFromExplainOptions(opts)
+	if err != nil {
+		return topology.Decision{}, err
+	}
+	return topology.Resolve(topologyStateFromDesired(state), packet)
+}
+
+func routePacketFromExplainOptions(opts routeExplainOptions) (topology.Packet, error) {
+	if opts.vpc == "" {
+		return topology.Packet{}, errors.New("missing -vpc")
+	}
+	source, err := parseRequiredAddr("source", opts.source)
+	if err != nil {
+		return topology.Packet{}, err
+	}
+	dest, err := parseRequiredAddr("dest", opts.dest)
+	if err != nil {
+		return topology.Packet{}, err
+	}
+	protocol, err := parseRouteProtocol(opts.protocol)
+	if err != nil {
+		return topology.Packet{}, err
+	}
+	sourcePort, err := parseUint16Flag("source-port", opts.sourcePort)
+	if err != nil {
+		return topology.Packet{}, err
+	}
+	destPort, err := parseUint16Flag("dest-port", opts.destPort)
+	if err != nil {
+		return topology.Packet{}, err
+	}
+	return topology.Packet{
+		SourcePort: sourcePort,
+		VPC:        opts.vpc,
+		Source:     source,
+		Dest:       dest,
+		Protocol:   protocol,
+		DestPort:   destPort,
+	}, nil
+}
+
+func parseRouteProtocol(value string) (model.Protocol, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", string(model.ProtocolAny):
+		return model.ProtocolAny, nil
+	case string(model.ProtocolTCP):
+		return model.ProtocolTCP, nil
+	case string(model.ProtocolUDP):
+		return model.ProtocolUDP, nil
+	case string(model.ProtocolICMP), "icmpv6":
+		return model.ProtocolICMP, nil
+	default:
+		return "", fmt.Errorf("unsupported protocol %q", value)
+	}
+}
+
+func topologyStateFromDesired(state control.DesiredState) topology.State {
+	vpcs := make(map[string]model.VPC, len(state.VPCs))
+	for _, vpc := range state.VPCs {
+		vpcs[vpc.Name] = vpc
+	}
+	subnets := make(map[string]model.Subnet, len(state.Subnets))
+	for _, subnet := range state.Subnets {
+		subnets[subnet.VPC+"\x00"+subnet.Name] = subnet
+	}
+	endpoints := make(map[string]model.Endpoint, len(state.Endpoints))
+	for _, endpoint := range state.Endpoints {
+		endpoints[model.EndpointKey(endpoint.VPC, endpoint.ID)] = endpoint
+	}
+	routeTables := make(map[string]model.RouteTable, len(state.RouteTables))
+	for _, table := range state.RouteTables {
+		routeTables[table.VPC+"\x00"+table.Name] = table
+	}
+	gateways := make(map[string]model.Gateway, len(state.Gateways))
+	for _, gateway := range state.Gateways {
+		gateways[gateway.VPC+"\x00"+gateway.Name] = gateway
+	}
+	natRules := make(map[string]model.NATRule, len(state.NATRules))
+	for _, rule := range state.NATRules {
+		natRules[rule.VPC+"\x00"+rule.Name] = rule
+	}
+	loadBalancers := make(map[string]model.LoadBalancer, len(state.LoadBalancers))
+	for _, lb := range state.LoadBalancers {
+		loadBalancers[lb.VPC+"\x00"+lb.Name] = lb
+	}
+	return topology.State{
+		VPCs:          vpcs,
+		Subnets:       subnets,
+		Endpoints:     endpoints,
+		RouteTables:   routeTables,
+		PolicyRoutes:  append([]model.PolicyRoute(nil), state.PolicyRoutes...),
+		Gateways:      gateways,
+		NATRules:      natRules,
+		LoadBalancers: loadBalancers,
+	}
 }
 
 func explainPolicyFromState(state control.DesiredState, opts policyExplainOptions) (dataplane.PolicyExplanation, error) {
@@ -291,6 +440,18 @@ func parseOptionalAddr(value string) (netip.Addr, error) {
 	addr, err := netip.ParseAddr(value)
 	if err != nil {
 		return netip.Addr{}, fmt.Errorf("invalid remote IP %q: %w", value, err)
+	}
+	return addr, nil
+}
+
+func parseRequiredAddr(name, value string) (netip.Addr, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return netip.Addr{}, fmt.Errorf("missing -%s", name)
+	}
+	addr, err := netip.ParseAddr(value)
+	if err != nil {
+		return netip.Addr{}, fmt.Errorf("invalid %s IP %q: %w", name, value, err)
 	}
 	return addr, nil
 }
