@@ -150,6 +150,69 @@ func TestDockerLinuxPolicyRoutingProgramsAndCleansECMPRuntimeState(t *testing.T)
 	waitForNodeBPolicyRouteCleanup(t, ctx, composeFile, rerouteTable, rerouteTable)
 }
 
+func TestDockerLinuxPolicyRoutingAllowUsesMainTable(t *testing.T) {
+	requireDockerE2E(t)
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker is not installed")
+	}
+
+	composeFile := filepath.Join("testdata", "..", "docker-compose.yaml")
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
+	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
+	startComposeLab(t, ctx, composeFile)
+	waitForOVN(t, ctx, composeFile)
+
+	ipVersion := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "sh", "-c", "apk add --no-cache iproute2 >/dev/null && ip -V")
+	if !strings.Contains(ipVersion, "iproute2") {
+		t.Fatalf("node-b did not install iproute2:\n%s", ipVersion)
+	}
+
+	statePath := "/tmp/netloom-policy-route-allow-state.json"
+	applyState := func(stateJSON string) string {
+		script := "cat >" + statePath + " <<'EOF'\n" + stateJSON + "\nEOF\n" +
+			"NETLOOM_STATE_FILE=" + statePath +
+			" NETLOOM_NODE_NAME=node-b" +
+			" NETLOOM_LINUX_DATAPATH=1" +
+			" NETLOOM_LINUX_DATAPATH_BACKEND=netlink" +
+			" NETLOOM_LINUX_DATAPATH_CLEANUP=1" +
+			" /netloom/bin/netloom-agent"
+		return run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "sh", "-c", script)
+	}
+
+	applyOutput := applyState(desiredLinuxPolicyRoutingAllowStateJSON())
+	if !strings.Contains(applyOutput, "policy_routes=2") {
+		t.Fatalf("allow policy-route reconcile did not program two routes:\n%s", applyOutput)
+	}
+
+	rules := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "ip", "rule", "show")
+	if !strings.Contains(rules, "from 10.10.0.0/24 to 198.51.100.10 ipproto tcp dport 443 lookup main") {
+		t.Fatalf("allow policy rule missing lookup main:\n%s", rules)
+	}
+	if !strings.Contains(rules, "from 10.10.0.0/24 to 203.0.113.0/24") {
+		t.Fatalf("drop policy rule missing expected match:\n%s", rules)
+	}
+
+	dropTable := mustLookupTableForDestination(t, rules, "203.0.113.0/24")
+	managedRouteState := runAllowFailure(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "sh", "-c", "ip route show table all | grep '198.51.100.10' || true")
+	if strings.Contains(managedRouteState.output, "table "+dropTable) || strings.Contains(managedRouteState.output, "198.51.100.10/32") {
+		t.Fatalf("allow policy route unexpectedly programmed managed route state:\n%s", managedRouteState.output)
+	}
+
+	allowLookup := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "sh", "-c", "ip route get 198.51.100.10 from 10.10.0.11 ipproto tcp dport 443")
+	if strings.Contains(allowLookup, "table "+dropTable) || strings.Contains(strings.ToLower(allowLookup), "unreachable") {
+		t.Fatalf("allow policy route lookup did not stay on main table:\n%s", allowLookup)
+	}
+
+	cleanupOutput := applyState(desiredLinuxPolicyRoutingStateWithoutPoliciesJSON())
+	if !strings.Contains(cleanupOutput, "policy_routes=0") {
+		t.Fatalf("cleanup allow policy-route reconcile did not remove routes:\n%s", cleanupOutput)
+	}
+	waitForNodeBPolicyRouteCleanup(t, ctx, composeFile, dropTable, dropTable)
+}
+
 func waitForNodeBPolicyRouteCleanup(t *testing.T, ctx context.Context, composeFile, rerouteTable, dropTable string) {
 	t.Helper()
 	cmd := "for i in $(seq 1 20); do " +
@@ -201,6 +264,19 @@ func desiredLinuxPolicyRoutingECMPStateJSON() string {
   "endpoints": [{"id": "pod-b", "vpc": "prod", "subnet": "apps", "ip": "10.10.0.11", "node": "node-b", "security_groups": []}],
   "policy_routes": [
     {"name": "https-via-fw", "vpc": "prod", "priority": 200, "match": {"source": "10.10.0.0/24", "destination": "198.51.100.10/32", "protocol": "tcp", "dst_ports": [{"from": 443, "to": 443}]}, "action": {"type": "reroute", "next_hops": ["172.30.0.11", "172.30.0.12"]}}
+  ],
+  "security_groups": []
+}`
+}
+
+func desiredLinuxPolicyRoutingAllowStateJSON() string {
+	return `{
+  "vpcs": [{"name": "prod"}],
+  "subnets": [{"name": "apps", "vpc": "prod", "cidr": "10.10.0.0/24", "gateway": "10.10.0.1"}],
+  "endpoints": [{"id": "pod-b", "vpc": "prod", "subnet": "apps", "ip": "10.10.0.11", "node": "node-b", "security_groups": []}],
+  "policy_routes": [
+    {"name": "allow-https", "vpc": "prod", "priority": 300, "match": {"source": "10.10.0.0/24", "destination": "198.51.100.10/32", "protocol": "tcp", "dst_ports": [{"from": 443, "to": 443}]}, "action": {"type": "allow"}},
+    {"name": "deny-test", "vpc": "prod", "priority": 100, "match": {"source": "10.10.0.0/24", "destination": "203.0.113.0/24"}, "action": {"type": "drop"}}
   ],
   "security_groups": []
 }`
