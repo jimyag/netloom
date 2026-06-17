@@ -333,7 +333,7 @@ func traceEvent(endpointID string, packet Packet, decision Decision) TraceEvent 
 	if decision.Match != nil {
 		event.RuleCookie = decision.Match.Value.RuleCookie
 	}
-	if decision.Verdict == VerdictDrop {
+	if decision.Verdict == VerdictDrop || decision.Verdict == VerdictReject {
 		event.NoMatchDrop = decision.Match == nil
 		event.RejectDrop = decision.Match != nil && decision.Verdict == VerdictReject
 		event.DenyDrop = decision.Match != nil && !event.RejectDrop

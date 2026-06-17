@@ -136,6 +136,10 @@ func TestEvaluatePreservesRejectVerdict(t *testing.T) {
 	if len(events) != 1 || events[0].Reason != DropReasonPolicyReject || events[0].RuleCookie != 77 {
 		t.Fatalf("drop events = %+v, want policy reject with cookie", events)
 	}
+	traces := recorder.TraceEvents()
+	if len(traces) != 1 || traces[0].Verdict != VerdictReject || !traces[0].RejectDrop || traces[0].DenyDrop || traces[0].NoMatchDrop {
+		t.Fatalf("trace events = %+v, want reject drop trace with only RejectDrop set", traces)
+	}
 }
 
 func TestEvaluateAllowsIPv4FragmentationNeededForPMTU(t *testing.T) {
