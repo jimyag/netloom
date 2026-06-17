@@ -166,6 +166,7 @@ type IPv4L4ACLRule struct {
 	Action             int32
 	Precedence         uint32
 	RuleCookie         uint32
+	Log                bool
 }
 
 type TCXL4ACLValue struct {
@@ -173,6 +174,8 @@ type TCXL4ACLValue struct {
 	RuleCookie uint32
 	Packets    uint64
 	Bytes      uint64
+	Log        uint32
+	Pad        uint32
 }
 
 func readTCXL4ACLValues(aclMap *ebpf.Map) ([]TCXL4ACLValue, error) {
@@ -220,6 +223,9 @@ func tcxRuleMetricsFromValue(value TCXL4ACLValue) RuleMetrics {
 	default:
 		metrics.Allowed = value.Packets
 	}
+	if value.Log != 0 {
+		metrics.Logged = value.Packets
+	}
 	return metrics
 }
 
@@ -244,6 +250,7 @@ type IPv6L4ACLRule struct {
 	Action             int32
 	Precedence         uint32
 	RuleCookie         uint32
+	Log                bool
 }
 
 func NewConstantTCXProgram(action int32) (*ebpf.Program, error) {
@@ -446,7 +453,7 @@ func putIPv4L4ACLRule(aclMap *ebpf.Map, rule IPv4L4ACLRule) error {
 		DestPort:  rule.DestPort,
 		PeerIP:    ipv4L4PeerKey(sourceCIDR.Addr()),
 	}
-	value := TCXL4ACLValue{Action: rule.Action, RuleCookie: rule.RuleCookie}
+	value := TCXL4ACLValue{Action: rule.Action, RuleCookie: rule.RuleCookie, Log: tcxLogFlag(rule.Log)}
 	return aclMap.Put(key, value)
 }
 
@@ -476,7 +483,7 @@ func putIPv6L4ACLRule(aclMap *ebpf.Map, rule IPv6L4ACLRule) error {
 		DestPort:  rule.DestPort,
 		PeerIP:    ipv6L4PeerKey(sourceCIDR.Addr()),
 	}
-	value := TCXL4ACLValue{Action: rule.Action, RuleCookie: rule.RuleCookie}
+	value := TCXL4ACLValue{Action: rule.Action, RuleCookie: rule.RuleCookie, Log: tcxLogFlag(rule.Log)}
 	return aclMap.Put(key, value)
 }
 
@@ -704,6 +711,7 @@ func appendIPv4L4ACLRulesFromProgram(rules *[]IPv4L4ACLRule, seen map[IPv4L4Key]
 				Action:             action,
 				Precedence:         tcxRulePrecedence(rule),
 				RuleCookie:         stableCookie(rule.ID),
+				Log:                tcxRuleLog(rule),
 			}); err != nil {
 				return fmt.Errorf("rule %s: %w", rule.ID, err)
 			}
@@ -721,6 +729,7 @@ func appendIPv4L4ACLRulesFromProgram(rules *[]IPv4L4ACLRule, seen map[IPv4L4Key]
 				Action:             action,
 				Precedence:         tcxRulePrecedence(rule),
 				RuleCookie:         stableCookie(rule.ID),
+				Log:                tcxRuleLog(rule),
 			}); err != nil {
 				return fmt.Errorf("rule %s: %w", rule.ID, err)
 			}
@@ -742,6 +751,7 @@ func appendIPv4L4ACLRulesFromProgram(rules *[]IPv4L4ACLRule, seen map[IPv4L4Key]
 					Action:             action,
 					Precedence:         tcxRulePrecedence(rule),
 					RuleCookie:         stableCookie(rule.ID),
+					Log:                tcxRuleLog(rule),
 				}); err != nil {
 					return fmt.Errorf("rule %s: %w", rule.ID, err)
 				}
@@ -794,6 +804,7 @@ func appendIPv6L4ACLRulesFromProgram(rules *[]IPv6L4ACLRule, seen map[IPv6L4Key]
 				Action:             action,
 				Precedence:         tcxRulePrecedence(rule),
 				RuleCookie:         stableCookie(rule.ID),
+				Log:                tcxRuleLog(rule),
 			}); err != nil {
 				return fmt.Errorf("rule %s: %w", rule.ID, err)
 			}
@@ -811,6 +822,7 @@ func appendIPv6L4ACLRulesFromProgram(rules *[]IPv6L4ACLRule, seen map[IPv6L4Key]
 				Action:             action,
 				Precedence:         tcxRulePrecedence(rule),
 				RuleCookie:         stableCookie(rule.ID),
+				Log:                tcxRuleLog(rule),
 			}); err != nil {
 				return fmt.Errorf("rule %s: %w", rule.ID, err)
 			}
@@ -832,6 +844,7 @@ func appendIPv6L4ACLRulesFromProgram(rules *[]IPv6L4ACLRule, seen map[IPv6L4Key]
 					Action:             action,
 					Precedence:         tcxRulePrecedence(rule),
 					RuleCookie:         stableCookie(rule.ID),
+					Log:                tcxRuleLog(rule),
 				}); err != nil {
 					return fmt.Errorf("rule %s: %w", rule.ID, err)
 				}
@@ -845,10 +858,16 @@ func appendIPv4ProjectedRule(rules *[]IPv4L4ACLRule, seen map[IPv4L4Key]int32, c
 	current := *rules
 	out := current[:0]
 	for i, existing := range current {
-		if ipv4L4RuleKey(existing.LocalCIDR, existing.SourceCIDR, existing.Protocol, existing.DestPort, existing.DestPortPrefixBits) ==
-			ipv4L4RuleKey(candidate.LocalCIDR, candidate.SourceCIDR, candidate.Protocol, candidate.DestPort, candidate.DestPortPrefixBits) &&
+		existingKey := ipv4L4RuleKey(existing.LocalCIDR, existing.SourceCIDR, existing.Protocol, existing.DestPort, existing.DestPortPrefixBits)
+		candidateKey := ipv4L4RuleKey(candidate.LocalCIDR, candidate.SourceCIDR, candidate.Protocol, candidate.DestPort, candidate.DestPortPrefixBits)
+		if existingKey == candidateKey &&
 			existing.Precedence == candidate.Precedence && existing.Action != candidate.Action {
 			return fmt.Errorf("conflicting TCX ACL actions for identical match key")
+		}
+		if existingKey == candidateKey && existing.Precedence == candidate.Precedence && existing.Action == candidate.Action {
+			current[i].Log = existing.Log || candidate.Log
+			*rules = append(out, current[i:]...)
+			return nil
 		}
 		if ipv4RuleCovers(existing, candidate) && existing.Precedence >= candidate.Precedence {
 			*rules = append(out, current[i:]...)
@@ -869,10 +888,16 @@ func appendIPv6ProjectedRule(rules *[]IPv6L4ACLRule, seen map[IPv6L4Key]int32, c
 	current := *rules
 	out := current[:0]
 	for i, existing := range current {
-		if ipv6L4RuleKey(existing.LocalCIDR, existing.SourceCIDR, existing.Protocol, existing.DestPort, existing.DestPortPrefixBits) ==
-			ipv6L4RuleKey(candidate.LocalCIDR, candidate.SourceCIDR, candidate.Protocol, candidate.DestPort, candidate.DestPortPrefixBits) &&
+		existingKey := ipv6L4RuleKey(existing.LocalCIDR, existing.SourceCIDR, existing.Protocol, existing.DestPort, existing.DestPortPrefixBits)
+		candidateKey := ipv6L4RuleKey(candidate.LocalCIDR, candidate.SourceCIDR, candidate.Protocol, candidate.DestPort, candidate.DestPortPrefixBits)
+		if existingKey == candidateKey &&
 			existing.Precedence == candidate.Precedence && existing.Action != candidate.Action {
 			return fmt.Errorf("conflicting TCX ACL actions for identical match key")
+		}
+		if existingKey == candidateKey && existing.Precedence == candidate.Precedence && existing.Action == candidate.Action {
+			current[i].Log = existing.Log || candidate.Log
+			*rules = append(out, current[i:]...)
+			return nil
 		}
 		if ipv6RuleCovers(existing, candidate) && existing.Precedence >= candidate.Precedence {
 			*rules = append(out, current[i:]...)
@@ -949,6 +974,17 @@ func tcxRulePrecedence(rule policy.Rule) uint32 {
 		precedence |= 1
 	}
 	return precedence
+}
+
+func tcxRuleLog(rule policy.Rule) bool {
+	return rule.Log || rule.Action == model.ActionLog
+}
+
+func tcxLogFlag(log bool) uint32 {
+	if log {
+		return 1
+	}
+	return 0
 }
 
 func validateIPv4L4ACLRuleSupport(rule policy.Rule) error {

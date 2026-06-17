@@ -62,6 +62,16 @@ func TestTCXRuleMetricsFromValueClassifiesCounters(t *testing.T) {
 	if allow.RuleCookie != 42 || allow.Packets != 3 || allow.Bytes != 192 || allow.Allowed != 3 || allow.Dropped != 0 {
 		t.Fatalf("allow metrics = %+v", allow)
 	}
+	loggedAllow := tcxRuleMetricsFromValue(TCXL4ACLValue{
+		Action:     TCXPass,
+		RuleCookie: 43,
+		Packets:    5,
+		Bytes:      320,
+		Log:        1,
+	})
+	if loggedAllow.Allowed != 5 || loggedAllow.Logged != 5 || loggedAllow.Dropped != 0 {
+		t.Fatalf("logged allow metrics = %+v", loggedAllow)
+	}
 
 	drop := tcxRuleMetricsFromValue(TCXL4ACLValue{
 		Action:     TCXDrop,
@@ -71,6 +81,16 @@ func TestTCXRuleMetricsFromValueClassifiesCounters(t *testing.T) {
 	})
 	if drop.RuleCookie != 7 || drop.Packets != 2 || drop.Bytes != 128 || drop.Allowed != 0 || drop.Dropped != 2 || drop.DenyDrops != 2 {
 		t.Fatalf("drop metrics = %+v", drop)
+	}
+	loggedDrop := tcxRuleMetricsFromValue(TCXL4ACLValue{
+		Action:     TCXDrop,
+		RuleCookie: 8,
+		Packets:    4,
+		Bytes:      256,
+		Log:        1,
+	})
+	if loggedDrop.Allowed != 0 || loggedDrop.Dropped != 4 || loggedDrop.DenyDrops != 4 || loggedDrop.Logged != 4 {
+		t.Fatalf("logged drop metrics = %+v", loggedDrop)
 	}
 }
 
@@ -232,6 +252,42 @@ func TestIPv4L4ACLRulesFromProgramProjectsRejectActionToDrop(t *testing.T) {
 	}
 	if rules[0].RuleCookie != stableCookie("reject-web") {
 		t.Fatalf("rule cookie = %d, want stable cookie for source rule", rules[0].RuleCookie)
+	}
+}
+
+func TestIPv4L4ACLRulesFromProgramPreservesLogFlag(t *testing.T) {
+	program := policy.Program{
+		EndpointID: testEndpointA,
+		Rules: []policy.Rule{
+			{
+				ID:         "drop-web",
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("172.30.0.20/32"),
+				Ports:      []model.PortRange{{From: 8080, To: 8080}},
+				Action:     model.ActionDrop,
+			},
+			{
+				ID:         "drop-web-logged",
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("172.30.0.20/32"),
+				Ports:      []model.PortRange{{From: 8080, To: 8080}},
+				Action:     model.ActionDrop,
+				Log:        true,
+			},
+		},
+	}
+
+	rules, err := IPv4L4ACLRulesFromProgram(program)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 1 {
+		t.Fatalf("rules = %d, want identical matches merged", len(rules))
+	}
+	if !rules[0].Log {
+		t.Fatalf("merged TCX rule lost log flag: %+v", rules[0])
 	}
 }
 
@@ -550,6 +606,42 @@ func TestIPv6L4ACLRulesFromProgramProjectsRejectActionToDrop(t *testing.T) {
 	}
 	if rules[0].RuleCookie != stableCookie("reject-v6-web") {
 		t.Fatalf("rule cookie = %d, want stable cookie for source rule", rules[0].RuleCookie)
+	}
+}
+
+func TestIPv6L4ACLRulesFromProgramPreservesLogFlag(t *testing.T) {
+	program := policy.Program{
+		EndpointID: testEndpointA,
+		Rules: []policy.Rule{
+			{
+				ID:         "drop-v6-web",
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("fd00:10::20/128"),
+				Ports:      []model.PortRange{{From: 8443, To: 8443}},
+				Action:     model.ActionDrop,
+			},
+			{
+				ID:         "drop-v6-web-logged",
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("fd00:10::20/128"),
+				Ports:      []model.PortRange{{From: 8443, To: 8443}},
+				Action:     model.ActionDrop,
+				Log:        true,
+			},
+		},
+	}
+
+	rules, err := IPv6L4ACLRulesFromProgram(program)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 1 {
+		t.Fatalf("rules = %d, want identical matches merged", len(rules))
+	}
+	if !rules[0].Log {
+		t.Fatalf("merged TCX rule lost log flag: %+v", rules[0])
 	}
 }
 
