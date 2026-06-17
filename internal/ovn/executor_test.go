@@ -162,6 +162,52 @@ func TestBackendCleanupEmitsDeletesForStaleDesiredObjects(t *testing.T) {
 	if clear < 0 || gc < 0 || del < 0 || !(clear < gc && gc < del) {
 		t.Fatalf("endpoint DHCP cleanup should clear references, GC options, then delete port:\n%s", joined)
 	}
+	stats := backend.LastCleanupStats()
+	if stats.FirstReconcileGC {
+		t.Fatalf("cleanup stats first reconcile GC = true after second reconcile: %+v", stats)
+	}
+	if stats.StaleEndpoints != 1 || stats.StaleNATRules != 1 || stats.StaleLoadBalancers != 1 {
+		t.Fatalf("cleanup stats = %+v, want stale endpoint/nat/lb", stats)
+	}
+	if stats.TotalStaleObjects() < 3 {
+		t.Fatalf("cleanup total stale objects = %d, want at least 3: %+v", stats.TotalStaleObjects(), stats)
+	}
+	if stats.Operations == 0 {
+		t.Fatalf("cleanup operations = 0, want destructive cleanup stats: %+v", stats)
+	}
+}
+
+func TestBackendCleanupStatsTrackChangedRoutesAndNATRules(t *testing.T) {
+	recorder := ovn.NewRecorderExecutor()
+	backend := ovn.NewBackend(recorder)
+	first := controlStateWithEndpoint("pod-a")
+	first.RouteTables = []model.RouteTable{{
+		Name: "main",
+		VPC:  "prod",
+		Routes: []model.Route{{
+			Destination: netip.MustParsePrefix("203.0.113.0/24"),
+			NextHops:    []netip.Addr{netip.MustParseAddr("10.10.0.254")},
+		}},
+	}}
+	controller := control.NewController(backend, control.NewMemoryBackend())
+	if err := controller.Reconcile(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+
+	second := first
+	second.RouteTables[0].Routes[0].NextHops = []netip.Addr{netip.MustParseAddr("10.10.0.253")}
+	second.NATRules[0].ExternalIP = netip.MustParseAddr("198.51.100.20")
+	if err := controller.Reconcile(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+
+	stats := backend.LastCleanupStats()
+	if stats.ChangedRoutes != 1 || stats.ChangedNATRules != 1 {
+		t.Fatalf("cleanup stats = %+v, want changed route and NAT rule", stats)
+	}
+	if stats.TotalChangedObjects() < 2 {
+		t.Fatalf("cleanup total changed objects = %d, want at least 2: %+v", stats.TotalChangedObjects(), stats)
+	}
 }
 
 func TestBackendCleanupConvergesChangedLoadBalancerBindings(t *testing.T) {

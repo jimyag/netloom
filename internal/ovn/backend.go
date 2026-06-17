@@ -9,17 +9,18 @@ import (
 )
 
 type Backend struct {
-	planner  *Planner
-	executor Executor
-	mu       sync.Mutex
-	last     desiredSnapshot
-	history  []Operation
-	skipNAT  map[string]string
-	skipLB   map[string]string
-	skipPR   map[string]string
-	skipRT   map[string]string
-	skipEP   map[string]string
-	seen     bool
+	planner     *Planner
+	executor    Executor
+	mu          sync.Mutex
+	last        desiredSnapshot
+	lastCleanup CleanupStats
+	history     []Operation
+	skipNAT     map[string]string
+	skipLB      map[string]string
+	skipPR      map[string]string
+	skipRT      map[string]string
+	skipEP      map[string]string
+	seen        bool
 }
 
 const operationHistoryLimit = 4096
@@ -40,6 +41,7 @@ func (b *Backend) RestoreTopologyState(state topology.State) {
 	b.skipRT = unchangedRoutes(next, next)
 	b.skipEP = unchangedEndpoints(next, next)
 	b.seen = true
+	b.lastCleanup = CleanupStats{}
 	b.planner.SyncLoadBalancerHealthChecks(next.LoadBalancers)
 }
 
@@ -117,12 +119,15 @@ func (b *Backend) CleanupTopology(ctx context.Context, state topology.State) err
 
 	next := snapshotDesired(state)
 	ops := cleanupOperations(b.last, next)
+	stats := cleanupStats(b.last, next, !b.seen, len(ops))
 	if !b.seen {
-		ops = append([]Operation{
+		firstReconcileOps := []Operation{
 			gcStaleDHCPOptionsOperation(next.Endpoints, next.Subnets),
 			gcStaleNATRulesOperation(next.NATRules),
 			gcStalePolicyRoutesOperation(next.PolicyRoutes),
-		}, ops...)
+		}
+		ops = append(firstReconcileOps, ops...)
+		stats.Operations = len(ops)
 	}
 	skipNAT := unchangedNATRules(b.last, next)
 	skipLB := unchangedLoadBalancers(b.last, next)
@@ -135,11 +140,13 @@ func (b *Backend) CleanupTopology(ctx context.Context, state topology.State) err
 			b.planner.Append(ops...)
 		} else {
 			if err := b.executor.Execute(ctx, ops); err != nil {
+				b.lastCleanup = stats
 				return err
 			}
 			b.recordOperationsLocked(ops)
 		}
 	}
+	b.lastCleanup = stats
 	b.skipNAT = skipNAT
 	b.skipLB = skipLB
 	b.skipPR = skipPR
@@ -149,6 +156,12 @@ func (b *Backend) CleanupTopology(ctx context.Context, state topology.State) err
 	b.seen = true
 	b.planner.SyncLoadBalancerHealthChecks(next.LoadBalancers)
 	return nil
+}
+
+func (b *Backend) LastCleanupStats() CleanupStats {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.lastCleanup
 }
 
 func (b *Backend) skipUnchangedNATRuleLocked(rule model.NATRule) bool {

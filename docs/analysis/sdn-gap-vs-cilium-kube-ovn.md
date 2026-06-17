@@ -124,13 +124,13 @@ This is the most important missing work on the eBPF side.
 
 ### 4. Rule-level observability is still shallow
 
-Netloom has drop/trace style events, policy-rule packet/byte counters in the evaluator, an agent telemetry interface that can surface endpoint/rule counters in normal reconcile output, a pinned eBPF policy-map reader for counter fields, TCX L4 ACL maps that increment packet/byte counters in the fast path and merge those counters back into agent telemetry after reconcile, a long-running agent Prometheus text endpoint for reconcile, policy-map, policy-rule, and TCX counters, and a long-running controller Prometheus text endpoint for desired object counts, LB health probes, OVN health latency, OVN operation counts, and reconcile success/failure. This now gives the product a stable place to report live datapath and control-plane counters, but it is not yet Cilium/Kube-OVN grade runtime observability.
+Netloom has drop/trace style events, policy-rule packet/byte counters in the evaluator, an agent telemetry interface that can surface endpoint/rule counters in normal reconcile output, a pinned eBPF policy-map reader for counter fields, TCX L4 ACL maps that increment packet/byte counters in the fast path and merge those counters back into agent telemetry after reconcile, a long-running agent Prometheus text endpoint for reconcile, policy-map, policy-rule, and TCX counters, and a long-running controller Prometheus text endpoint for desired object counts, LB health probes, OVN health latency, OVN operation counts, reconcile success/failure, and OVN desired-state cleanup/drift counters. This now gives the product a stable place to report live datapath and control-plane counters, but it is not yet Cilium/Kube-OVN grade runtime observability.
 
 What is missing:
 
 - histogram-style policy install/update/delete metrics
 - histogram-style reconcile latency and failure metrics with historical buckets
-- OVN object drift metrics
+- live OVSDB object drift metrics from a typed monitor/cache
 - "why was this packet dropped/rerouted" debug surface beyond tests/log scraping
 
 This is product work, not just test work.

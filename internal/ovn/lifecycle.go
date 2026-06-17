@@ -32,6 +32,45 @@ type policyRouteRecord struct {
 	Match string
 }
 
+type CleanupStats struct {
+	Operations               int
+	FirstReconcileGC         bool
+	StaleVPCs                int
+	StaleSubnets             int
+	StaleEndpoints           int
+	StaleRoutes              int
+	ChangedRoutes            int
+	StalePolicyRoutes        int
+	ChangedPolicyRoutes      int
+	StaleGateways            int
+	StaleNATRules            int
+	ChangedNATRules          int
+	StaleLoadBalancers       int
+	ChangedLoadBalancers     int
+	StaleLoadBalancerSubnets int
+	StaleLoadBalancerVIPs    int
+}
+
+func (s CleanupStats) TotalStaleObjects() int {
+	return s.StaleVPCs +
+		s.StaleSubnets +
+		s.StaleEndpoints +
+		s.StaleRoutes +
+		s.StalePolicyRoutes +
+		s.StaleGateways +
+		s.StaleNATRules +
+		s.StaleLoadBalancers +
+		s.StaleLoadBalancerSubnets +
+		s.StaleLoadBalancerVIPs
+}
+
+func (s CleanupStats) TotalChangedObjects() int {
+	return s.ChangedRoutes +
+		s.ChangedPolicyRoutes +
+		s.ChangedNATRules +
+		s.ChangedLoadBalancers
+}
+
 func snapshotDesired(state topology.State) desiredSnapshot {
 	out := desiredSnapshot{
 		VPCs:          make(map[string]model.VPC, len(state.VPCs)),
@@ -126,6 +165,53 @@ func cloneBoolPtr(value *bool) *bool {
 	}
 	cloned := *value
 	return &cloned
+}
+
+func cleanupStats(old, next desiredSnapshot, firstReconcileGC bool, operations int) CleanupStats {
+	stats := CleanupStats{
+		Operations:       operations,
+		FirstReconcileGC: firstReconcileGC,
+		StaleVPCs:        len(staleKeys(old.VPCs, next.VPCs)),
+		StaleSubnets:     len(staleKeys(old.Subnets, next.Subnets)),
+		StaleEndpoints:   len(staleKeys(old.Endpoints, next.Endpoints)),
+		StaleRoutes:      len(staleKeys(old.Routes, next.Routes)),
+		StalePolicyRoutes: len(staleKeys(
+			old.PolicyRoutes,
+			next.PolicyRoutes,
+		)),
+		StaleGateways:      len(staleKeys(old.Gateways, next.Gateways)),
+		StaleNATRules:      len(staleKeys(old.NATRules, next.NATRules)),
+		StaleLoadBalancers: len(staleKeys(old.LoadBalancers, next.LoadBalancers)),
+	}
+	for _, key := range commonKeys(old.Routes, next.Routes) {
+		if routeSignature(old.Routes[key]) != routeSignature(next.Routes[key]) {
+			stats.ChangedRoutes++
+		}
+	}
+	for _, key := range commonKeys(old.PolicyRoutes, next.PolicyRoutes) {
+		if policyRouteSignature(old.PolicyRoutes[key].Route) != policyRouteSignature(next.PolicyRoutes[key].Route) {
+			stats.ChangedPolicyRoutes++
+		}
+	}
+	for _, key := range commonKeys(old.NATRules, next.NATRules) {
+		if natRuleSignature(old.NATRules[key]) != natRuleSignature(next.NATRules[key]) {
+			stats.ChangedNATRules++
+		}
+	}
+	for _, key := range commonKeys(old.LoadBalancers, next.LoadBalancers) {
+		oldLB := old.LoadBalancers[key]
+		nextLB := next.LoadBalancers[key]
+		if loadBalancerSignature(oldLB) != loadBalancerSignature(nextLB) {
+			stats.ChangedLoadBalancers++
+		}
+		stats.StaleLoadBalancerSubnets += len(removedStrings(oldLB.Subnets, nextLB.Subnets))
+		oldVIPsByProtocol := loadBalancerVIPsByProtocol(oldLB)
+		nextVIPsByProtocol := loadBalancerVIPsByProtocol(nextLB)
+		for _, protocol := range sortedLoadBalancerProtocols(oldVIPsByProtocol) {
+			stats.StaleLoadBalancerVIPs += len(removedStrings(oldVIPsByProtocol[protocol], nextVIPsByProtocol[protocol]))
+		}
+	}
+	return stats
 }
 
 func cleanupOperations(old, next desiredSnapshot) []Operation {

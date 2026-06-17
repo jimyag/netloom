@@ -17,6 +17,7 @@ import (
 
 	"github.com/jimyag/netloom/internal/control"
 	"github.com/jimyag/netloom/internal/model"
+	"github.com/jimyag/netloom/internal/ovn"
 )
 
 func TestReconcileIntervalParsesMilliseconds(t *testing.T) {
@@ -293,8 +294,15 @@ func TestControllerMetricsExportsLatestSuccess(t *testing.T) {
 		OVNHealthLatency: 25 * time.Millisecond,
 		OVNOps:           7,
 		OVNExecuted:      6,
-		Duration:         125 * time.Millisecond,
-		Success:          true,
+		OVNCleanup: ovn.CleanupStats{
+			Operations:           3,
+			StaleEndpoints:       1,
+			ChangedRoutes:        1,
+			ChangedPolicyRoutes:  1,
+			ChangedLoadBalancers: 1,
+		},
+		Duration: 125 * time.Millisecond,
+		Success:  true,
 	})
 
 	recorder := httptest.NewRecorder()
@@ -318,6 +326,13 @@ func TestControllerMetricsExportsLatestSuccess(t *testing.T) {
 		`netloom_controller_ovn_health_latency_milliseconds{ovn_health="ok"} 25`,
 		`netloom_controller_ovn_operations_planned{ovn_health="ok"} 7`,
 		`netloom_controller_ovn_operations_executed{ovn_health="ok"} 6`,
+		`netloom_controller_ovn_cleanup_operations{ovn_health="ok"} 3`,
+		`netloom_controller_ovn_cleanup_stale_objects{ovn_health="ok"} 1`,
+		`netloom_controller_ovn_cleanup_changed_objects{ovn_health="ok"} 3`,
+		`netloom_controller_ovn_cleanup_stale_endpoints{ovn_health="ok"} 1`,
+		`netloom_controller_ovn_cleanup_changed_routes{ovn_health="ok"} 1`,
+		`netloom_controller_ovn_cleanup_changed_policy_routes{ovn_health="ok"} 1`,
+		`netloom_controller_ovn_cleanup_changed_load_balancers{ovn_health="ok"} 1`,
 	} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("metrics output missing %q:\n%s", expected, output)

@@ -233,6 +233,7 @@ func (r *stateFileReconciler) observeReconcileSuccess(state control.DesiredState
 		OVNHealthLatency: ovnHealthLatency,
 		OVNOps:           ovnOps,
 		OVNExecuted:      executed,
+		OVNCleanup:       r.lastOVNCleanupStats(),
 		Duration:         duration,
 		Success:          true,
 	})
@@ -257,11 +258,19 @@ func (r *stateFileReconciler) observeReconcileFailure(phase string, state contro
 		OVNHealthLatency: ovnHealthLatency,
 		OVNOps:           ovnOps,
 		OVNExecuted:      executed,
+		OVNCleanup:       r.lastOVNCleanupStats(),
 		Duration:         duration,
 		Success:          false,
 		Phase:            phase,
 		Error:            message,
 	})
+}
+
+func (r *stateFileReconciler) lastOVNCleanupStats() ovn.CleanupStats {
+	if r == nil || r.ovnBackend == nil {
+		return ovn.CleanupStats{}
+	}
+	return r.ovnBackend.LastCleanupStats()
 }
 
 type controllerMetrics struct {
@@ -278,6 +287,7 @@ type controllerMetricsSnapshot struct {
 	OVNHealthLatency time.Duration
 	OVNOps           int
 	OVNExecuted      int
+	OVNCleanup       ovn.CleanupStats
 	Duration         time.Duration
 	Success          bool
 	Phase            string
@@ -402,6 +412,34 @@ func writeControllerMetrics(w metricWriter, snapshot controllerMetricsSnapshot) 
 	fmt.Fprintf(w, "netloom_controller_ovn_operations_planned%s %d\n", baseLabels, snapshot.OVNOps)
 	writeMetricType(w, "netloom_controller_ovn_operations_executed", "gauge")
 	fmt.Fprintf(w, "netloom_controller_ovn_operations_executed%s %d\n", baseLabels, snapshot.OVNExecuted)
+	writeMetricType(w, "netloom_controller_ovn_cleanup_operations", "gauge")
+	fmt.Fprintf(w, "netloom_controller_ovn_cleanup_operations%s %d\n", baseLabels, snapshot.OVNCleanup.Operations)
+	writeMetricType(w, "netloom_controller_ovn_cleanup_first_reconcile_gc", "gauge")
+	fmt.Fprintf(w, "netloom_controller_ovn_cleanup_first_reconcile_gc%s %d\n", baseLabels, boolMetric(snapshot.OVNCleanup.FirstReconcileGC))
+	writeMetricType(w, "netloom_controller_ovn_cleanup_stale_objects", "gauge")
+	fmt.Fprintf(w, "netloom_controller_ovn_cleanup_stale_objects%s %d\n", baseLabels, snapshot.OVNCleanup.TotalStaleObjects())
+	writeMetricType(w, "netloom_controller_ovn_cleanup_changed_objects", "gauge")
+	fmt.Fprintf(w, "netloom_controller_ovn_cleanup_changed_objects%s %d\n", baseLabels, snapshot.OVNCleanup.TotalChangedObjects())
+	writeMetricType(w, "netloom_controller_ovn_cleanup_stale_endpoints", "gauge")
+	fmt.Fprintf(w, "netloom_controller_ovn_cleanup_stale_endpoints%s %d\n", baseLabels, snapshot.OVNCleanup.StaleEndpoints)
+	writeMetricType(w, "netloom_controller_ovn_cleanup_stale_subnets", "gauge")
+	fmt.Fprintf(w, "netloom_controller_ovn_cleanup_stale_subnets%s %d\n", baseLabels, snapshot.OVNCleanup.StaleSubnets)
+	writeMetricType(w, "netloom_controller_ovn_cleanup_stale_routes", "gauge")
+	fmt.Fprintf(w, "netloom_controller_ovn_cleanup_stale_routes%s %d\n", baseLabels, snapshot.OVNCleanup.StaleRoutes)
+	writeMetricType(w, "netloom_controller_ovn_cleanup_changed_routes", "gauge")
+	fmt.Fprintf(w, "netloom_controller_ovn_cleanup_changed_routes%s %d\n", baseLabels, snapshot.OVNCleanup.ChangedRoutes)
+	writeMetricType(w, "netloom_controller_ovn_cleanup_stale_policy_routes", "gauge")
+	fmt.Fprintf(w, "netloom_controller_ovn_cleanup_stale_policy_routes%s %d\n", baseLabels, snapshot.OVNCleanup.StalePolicyRoutes)
+	writeMetricType(w, "netloom_controller_ovn_cleanup_changed_policy_routes", "gauge")
+	fmt.Fprintf(w, "netloom_controller_ovn_cleanup_changed_policy_routes%s %d\n", baseLabels, snapshot.OVNCleanup.ChangedPolicyRoutes)
+	writeMetricType(w, "netloom_controller_ovn_cleanup_stale_nat_rules", "gauge")
+	fmt.Fprintf(w, "netloom_controller_ovn_cleanup_stale_nat_rules%s %d\n", baseLabels, snapshot.OVNCleanup.StaleNATRules)
+	writeMetricType(w, "netloom_controller_ovn_cleanup_changed_nat_rules", "gauge")
+	fmt.Fprintf(w, "netloom_controller_ovn_cleanup_changed_nat_rules%s %d\n", baseLabels, snapshot.OVNCleanup.ChangedNATRules)
+	writeMetricType(w, "netloom_controller_ovn_cleanup_stale_load_balancers", "gauge")
+	fmt.Fprintf(w, "netloom_controller_ovn_cleanup_stale_load_balancers%s %d\n", baseLabels, snapshot.OVNCleanup.StaleLoadBalancers)
+	writeMetricType(w, "netloom_controller_ovn_cleanup_changed_load_balancers", "gauge")
+	fmt.Fprintf(w, "netloom_controller_ovn_cleanup_changed_load_balancers%s %d\n", baseLabels, snapshot.OVNCleanup.ChangedLoadBalancers)
 }
 
 type metricWriter interface {
@@ -437,6 +475,13 @@ func fallbackMetricsLabel(value, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func boolMetric(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func (r *stateFileReconciler) applyLoadBalancerHealthChecks(ctx context.Context, state *control.DesiredState) (control.LoadBalancerHealthSummary, error) {
