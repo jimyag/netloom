@@ -239,16 +239,6 @@ func (c *Controller) Reconcile(ctx context.Context, state DesiredState) error {
 			return fmt.Errorf("ensure gateway %s: %w", gateway.Name, err)
 		}
 	}
-	for _, rule := range state.NATRules {
-		if err := c.topology.EnsureNATRule(ctx, rule); err != nil {
-			return fmt.Errorf("ensure nat rule %s: %w", rule.Name, err)
-		}
-	}
-	for _, lb := range state.LoadBalancers {
-		if err := c.topology.EnsureLoadBalancer(ctx, lb); err != nil {
-			return fmt.Errorf("ensure load balancer %s: %w", lb.Name, err)
-		}
-	}
 	for _, endpoint := range state.Endpoints {
 		if err := endpoint.Validate(); err != nil {
 			return err
@@ -275,6 +265,16 @@ func (c *Controller) Reconcile(ctx context.Context, state DesiredState) error {
 		}
 		if err := c.policy.ApplyEndpointProgram(ctx, program); err != nil {
 			return fmt.Errorf("apply policy program for endpoint %s: %w", endpoint.ID, err)
+		}
+	}
+	for _, rule := range state.NATRules {
+		if err := c.topology.EnsureNATRule(ctx, rule); err != nil {
+			return fmt.Errorf("ensure nat rule %s: %w", rule.Name, err)
+		}
+	}
+	for _, lb := range state.LoadBalancers {
+		if err := c.topology.EnsureLoadBalancer(ctx, lb); err != nil {
+			return fmt.Errorf("ensure load balancer %s: %w", lb.Name, err)
 		}
 	}
 	if lifecycle, ok := c.policy.(PolicyLifecycleBackend); ok {

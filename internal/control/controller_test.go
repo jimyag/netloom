@@ -21,11 +21,26 @@ type countingIdentityResolver struct {
 	misses map[string]int
 }
 
+type reconcileOrderBackend struct {
+	*MemoryBackend
+	calls []string
+}
+
 func newCountingIdentityResolver() *countingIdentityResolver {
 	return &countingIdentityResolver{
 		inner:  policy.NewIdentityCache(),
 		misses: make(map[string]int),
 	}
+}
+
+func (b *reconcileOrderBackend) EnsureEndpoint(ctx context.Context, endpoint model.Endpoint) error {
+	b.calls = append(b.calls, "endpoint:"+model.EndpointKey(endpoint.VPC, endpoint.ID))
+	return b.MemoryBackend.EnsureEndpoint(ctx, endpoint)
+}
+
+func (b *reconcileOrderBackend) EnsureNATRule(ctx context.Context, rule model.NATRule) error {
+	b.calls = append(b.calls, "nat:"+natRuleKey(rule.VPC, rule.Name))
+	return b.MemoryBackend.EnsureNATRule(ctx, rule)
 }
 
 func (c *countingIdentityResolver) Identity(value string) uint32 {
@@ -226,6 +241,54 @@ func TestControllerReconcileSharesIdentityResolverAcrossEndpoints(t *testing.T) 
 	}
 	if _, ok := backend.PolicyProgram[model.EndpointKey("prod", "pod-b")]; !ok {
 		t.Fatalf("pod-b policy missing: %+v", backend.PolicyProgram)
+	}
+}
+
+func TestControllerEnsuresEndpointsBeforeDistributedFloatingIPs(t *testing.T) {
+	backend := &reconcileOrderBackend{MemoryBackend: NewMemoryBackend()}
+	controller := NewController(backend, backend)
+
+	state := DesiredState{
+		VPCs: []model.VPC{{Name: "prod"}},
+		Subnets: []model.Subnet{{
+			Name:    "apps",
+			VPC:     "prod",
+			CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway: netip.MustParseAddr("10.10.0.1"),
+		}},
+		Endpoints: []model.Endpoint{{
+			ID:     "pod-a",
+			VPC:    "prod",
+			Node:   "node-a",
+			Subnet: "apps",
+			IP:     netip.MustParseAddr("10.10.0.10"),
+		}},
+		NATRules: []model.NATRule{{
+			Name:        "web-fip",
+			VPC:         "prod",
+			Type:        model.ActionDNATSNAT,
+			ExternalIP:  netip.MustParseAddr("198.51.100.31"),
+			TargetIP:    netip.MustParseAddr("10.10.0.10"),
+			LogicalPort: "nl_lp_prod_pod-a",
+			ExternalMAC: "0a:58:0a:0a:00:0a",
+		}},
+	}
+
+	if err := controller.Reconcile(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+
+	want := []string{
+		"endpoint:" + model.EndpointKey("prod", "pod-a"),
+		"nat:" + natRuleKey("prod", "web-fip"),
+	}
+	if len(backend.calls) < len(want) {
+		t.Fatalf("reconcile calls = %v, want at least %v", backend.calls, want)
+	}
+	for i, call := range want {
+		if backend.calls[i] != call {
+			t.Fatalf("reconcile call[%d] = %q, want %q (all calls: %v)", i, backend.calls[i], call, backend.calls)
+		}
 	}
 }
 
