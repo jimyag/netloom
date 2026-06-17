@@ -1070,6 +1070,40 @@ func TestPlannerBuildsAllowPolicyRouteOperation(t *testing.T) {
 	}
 }
 
+func TestPlannerBuildsRejectPolicyRouteAsOVNDrop(t *testing.T) {
+	planner := ovn.NewPlanner()
+	err := planner.EnsurePolicyRoute(context.Background(), model.PolicyRoute{
+		Name:     "reject-lab",
+		VPC:      "prod",
+		Priority: 250,
+		Match: model.RouteMatch{
+			Source:      netip.MustParsePrefix("10.10.0.0/24"),
+			Destination: netip.MustParsePrefix("198.51.100.0/24"),
+			Protocol:    model.ProtocolTCP,
+			DstPorts:    []model.PortRange{{From: 443, To: 443}},
+		},
+		Action: model.RouteAction{Type: model.ActionReject},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := stringify(planner.Operations())
+	for _, expected := range []string{
+		"lr-policy-add nl_lr_prod 250",
+		"drop",
+		"ip4.dst == 198.51.100.0/24",
+		"tcp.dst == 443",
+		"tag-policy-route prod reject-lab 250",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("reject policy route operation missing %q:\n%s", expected, joined)
+		}
+	}
+	if strings.Contains(joined, " reject ") || strings.Contains(joined, "reroute") || strings.Contains(joined, "nexthops=") {
+		t.Fatalf("reject policy route should use OVN drop without reroute data:\n%s", joined)
+	}
+}
+
 func TestPlannerBuildsIPv6PolicyRouteOperation(t *testing.T) {
 	planner := ovn.NewPlanner()
 	err := planner.EnsurePolicyRoute(context.Background(), model.PolicyRoute{

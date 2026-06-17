@@ -670,7 +670,7 @@ func (r PolicyRoute) Validate() error {
 	if r.Action.Type == "" {
 		return errors.New("policy route action is required")
 	}
-	if !slices.Contains([]Action{ActionAllow, ActionDrop, ActionReroute}, r.Action.Type) {
+	if !slices.Contains([]Action{ActionAllow, ActionDrop, ActionReject, ActionReroute}, r.Action.Type) {
 		return fmt.Errorf("unsupported policy route action %q", r.Action.Type)
 	}
 	nextHops := r.Action.RerouteNextHops()

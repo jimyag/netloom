@@ -698,10 +698,14 @@ func planPolicyRoutes(state control.DesiredState, node, device string, tableBase
 		if route.Action.Type != model.ActionAllow {
 			table = tables[policyRouteTableKey(route)]
 			destination := linuxPolicyRouteDestination(route)
-			if route.Action.Type == model.ActionDrop {
+			if route.Action.Type == model.ActionDrop || route.Action.Type == model.ActionReject {
+				routeType := "blackhole"
+				if route.Action.Type == model.ActionReject {
+					routeType = "unreachable"
+				}
 				ops = append(ops, Operation{
 					Command: "ip",
-					Args:    []string{"route", "replace", "blackhole", destination.String(), "table", strconv.Itoa(table)},
+					Args:    []string{"route", "replace", routeType, destination.String(), "table", strconv.Itoa(table)},
 				})
 			} else {
 				nextHops := route.Action.RerouteNextHops()

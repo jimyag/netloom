@@ -777,8 +777,11 @@ func policyRouteNetlinkRoute(route model.PolicyRoute, table, linkIndex int) (*ne
 		return nil, err
 	}
 	nlRoute := &netlink.Route{Table: table, Dst: dst}
-	if route.Action.Type == model.ActionDrop {
+	if route.Action.Type == model.ActionDrop || route.Action.Type == model.ActionReject {
 		nlRoute.Type = unix.RTN_BLACKHOLE
+		if route.Action.Type == model.ActionReject {
+			nlRoute.Type = unix.RTN_UNREACHABLE
+		}
 	} else {
 		nextHops := route.Action.RerouteNextHops()
 		if len(nextHops) == 1 {

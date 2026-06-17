@@ -766,6 +766,24 @@ func TestPolicyRoutePriorityValidation(t *testing.T) {
 	}
 }
 
+func TestPolicyRouteSupportsRejectAction(t *testing.T) {
+	route := PolicyRoute{
+		Name:     "reject-lab",
+		VPC:      "prod",
+		Priority: 100,
+		Match: RouteMatch{
+			Source:      netip.MustParsePrefix("10.10.0.0/24"),
+			Destination: netip.MustParsePrefix("198.51.100.0/24"),
+			Protocol:    ProtocolTCP,
+			DstPorts:    []PortRange{{From: 443, To: 443}},
+		},
+		Action: RouteAction{Type: ActionReject},
+	}
+	if err := route.Validate(); err != nil {
+		t.Fatalf("reject policy route should validate: %v", err)
+	}
+}
+
 func TestPolicyRouteMatchValidatesSourcePorts(t *testing.T) {
 	match := RouteMatch{
 		Source:      netip.MustParsePrefix("10.10.0.0/24"),
@@ -791,7 +809,7 @@ func TestPolicyRouteMatchValidatesSourcePorts(t *testing.T) {
 }
 
 func TestPolicyRouteRejectsNextHopsForNonRerouteActions(t *testing.T) {
-	for _, action := range []Action{ActionAllow, ActionDrop} {
+	for _, action := range []Action{ActionAllow, ActionDrop, ActionReject} {
 		route := PolicyRoute{
 			Name:     "non-reroute",
 			VPC:      "prod",

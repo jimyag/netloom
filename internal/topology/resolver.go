@@ -386,7 +386,7 @@ func ecmpNextHopScore(scope string, nextHop netip.Addr, packet Packet) uint32 {
 }
 
 func applyNATAndGateway(state State, packet Packet, decision Decision) Decision {
-	if decision.Action == model.ActionDrop {
+	if decision.Action == model.ActionDrop || decision.Action == model.ActionReject {
 		return decision
 	}
 	if decision.Action == "" {

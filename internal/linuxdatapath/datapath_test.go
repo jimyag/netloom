@@ -1468,6 +1468,54 @@ func TestPlanProgramsAllowPolicyRouteToMainTable(t *testing.T) {
 	}
 }
 
+func TestPlanProgramsRejectPolicyRouteAsUnreachable(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:     "pod-a",
+			VPC:    "prod",
+			Subnet: "apps",
+			IP:     netip.MustParseAddr("10.10.0.10"),
+			Node:   "node-a",
+		}},
+		PolicyRoutes: []model.PolicyRoute{{
+			Name:     "reject-lab",
+			VPC:      "prod",
+			Priority: 150,
+			Match: model.RouteMatch{
+				Source:      netip.MustParsePrefix("10.10.0.0/24"),
+				Destination: netip.MustParsePrefix("198.51.100.0/24"),
+				Protocol:    model.ProtocolTCP,
+				DstPorts:    []model.PortRange{{From: 443, To: 443}},
+			},
+			Action: model.RouteAction{Type: model.ActionReject},
+		}},
+	}
+
+	ops, result, err := Plan(context.Background(), state, Options{
+		Node:            "node-a",
+		LocalDevice:     "nl0",
+		UnderlayDevice:  "eth9",
+		PolicyTableBase: 20000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.PolicyRoutes != 1 {
+		t.Fatalf("policy routes = %d, want 1", result.PolicyRoutes)
+	}
+	joined := stringifyOps(ops)
+	tables := mustPolicyTables(t, state.PolicyRoutes, Options{PolicyTableBase: 20000, PolicyTableSize: 1024})
+	table := tables[policyRouteTableKey(state.PolicyRoutes[0])]
+	for _, expected := range []string{
+		fmt.Sprintf("ip route replace unreachable 198.51.100.0/24 table %d", table),
+		fmt.Sprintf("ip rule add priority 9850 from 10.10.0.0/24 to 198.51.100.0/24 ipproto tcp dport 443 table %d protocol 186", table),
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("reject policy route ops missing %q:\n%s", expected, joined)
+		}
+	}
+}
+
 func TestPlanProgramsIPv6LinuxPolicyRoute(t *testing.T) {
 	state := control.DesiredState{
 		Endpoints: []model.Endpoint{{
@@ -1959,6 +2007,28 @@ func TestRouteEquivalentDetectsNextHopChanges(t *testing.T) {
 	right.MultiPath[0].Hops = 10
 	if routeEquivalent(*left, *right) {
 		t.Fatalf("ECMP routes with different next-hop weights should not be equivalent: %#v %#v", left, right)
+	}
+}
+
+func TestPolicyRouteNetlinkRouteMapsRejectToUnreachable(t *testing.T) {
+	route := model.PolicyRoute{
+		Name:     "reject-lab",
+		VPC:      "prod",
+		Priority: 100,
+		Match: model.RouteMatch{
+			Destination: netip.MustParsePrefix("198.51.100.0/24"),
+		},
+		Action: model.RouteAction{Type: model.ActionReject},
+	}
+	nlRoute, err := policyRouteNetlinkRoute(route, 22000, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nlRoute.Type != unix.RTN_UNREACHABLE {
+		t.Fatalf("netlink route type = %d, want RTN_UNREACHABLE", nlRoute.Type)
+	}
+	if nlRoute.LinkIndex != 0 || nlRoute.Gw != nil {
+		t.Fatalf("reject route should not carry nexthop data: %#v", nlRoute)
 	}
 }
 

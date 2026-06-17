@@ -906,6 +906,51 @@ func TestResolvePolicyRouteSNATUsesNextHopGateway(t *testing.T) {
 	}
 }
 
+func TestResolveRejectPolicyRouteTerminatesWithoutNATOrGateway(t *testing.T) {
+	state := State{
+		PolicyRoutes: []model.PolicyRoute{{
+			Name:     "reject-lab",
+			VPC:      "prod",
+			Priority: 100,
+			Match: model.RouteMatch{
+				Source:      netip.MustParsePrefix("10.10.0.0/24"),
+				Destination: netip.MustParsePrefix("198.51.100.0/24"),
+				Protocol:    model.ProtocolTCP,
+				DstPorts:    []model.PortRange{{From: 443, To: 443}},
+			},
+			Action: model.RouteAction{Type: model.ActionReject},
+		}},
+		NATRules: map[string]model.NATRule{
+			"egress": {
+				Name:       "egress",
+				VPC:        "prod",
+				Type:       model.ActionSNAT,
+				MatchCIDR:  netip.MustParsePrefix("10.10.0.0/24"),
+				ExternalIP: netip.MustParseAddr("198.51.100.10"),
+			},
+		},
+		Gateways: map[string]model.Gateway{
+			"gw-a": {Name: "gw-a", VPC: "prod", LANIP: netip.MustParseAddr("10.10.0.1")},
+		},
+	}
+	decision, err := Resolve(state, Packet{
+		VPC:      "prod",
+		Source:   netip.MustParseAddr("10.10.0.10"),
+		Dest:     netip.MustParseAddr("198.51.100.10"),
+		Protocol: model.ProtocolTCP,
+		DestPort: 443,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Action != model.ActionReject || decision.MatchedBy != "policy-route/reject-lab" {
+		t.Fatalf("decision = %+v, want reject policy route", decision)
+	}
+	if decision.Translated.IsValid() || decision.Gateway != "" {
+		t.Fatalf("reject policy route must not apply NAT or gateway, got %+v", decision)
+	}
+}
+
 func TestResolveECMPPolicyRouteReturnsNextHops(t *testing.T) {
 	nextHops := []netip.Addr{
 		netip.MustParseAddr("10.10.0.253"),
