@@ -386,6 +386,67 @@ func TestApplyCommandRefreshesProviderHealthAfterExecution(t *testing.T) {
 	}
 }
 
+func TestApplyCommandReturnsPlannedProviderStatusWhenExecutorFails(t *testing.T) {
+	previous := listSystemInterfaces
+	defer func() { listSystemInterfaces = previous }()
+
+	listSystemInterfaces = func() ([]net.Interface, error) {
+		return []net.Interface{
+			{Name: "eth1", Flags: net.FlagUp},
+			{Name: "lo"},
+		}, nil
+	}
+
+	state := control.DesiredState{
+		ProviderNetworks: []model.ProviderNetwork{{
+			Name: "physnet-a",
+			Nodes: []model.ProviderNetworkNode{{
+				Node:      "node-a",
+				Interface: "eth1",
+			}},
+		}},
+		Subnets: []model.Subnet{{
+			Name:            "apps",
+			VPC:             "prod",
+			CIDR:            netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway:         netip.MustParseAddr("10.10.0.1"),
+			ProviderNetwork: "physnet-a",
+			VLAN:            100,
+		}},
+		Endpoints: []model.Endpoint{{
+			ID:     "pod-a",
+			VPC:    "prod",
+			Subnet: "apps",
+			IP:     netip.MustParseAddr("10.10.0.10"),
+			Node:   "node-a",
+		}},
+	}
+
+	result, err := Apply(context.Background(), state, Options{
+		Node:        "node-a",
+		LocalDevice: "nl0",
+		Backend:     "command",
+		Executor: commandExecutorFunc(func(_ context.Context, op Operation) error {
+			return fmt.Errorf("boom on %s %s", op.Command, strings.Join(op.Args, " "))
+		}),
+	})
+	if err == nil || !strings.Contains(err.Error(), "boom on") {
+		t.Fatalf("err = %v, want executor failure", err)
+	}
+	if result.ProviderNetworks != 1 || result.ProviderLinks != 1 {
+		t.Fatalf("provider counts = %+v, want provider_networks=1 provider_links=1", result)
+	}
+	if result.ProviderInventoryTotal != 2 || result.ProviderInventoryReady != 1 || result.ProviderInventoryDegraded != 1 {
+		t.Fatalf("provider inventory summary = %+v, want total=2 ready=1 degraded=1", result)
+	}
+	if len(result.ProviderStatus) != 1 || result.ProviderStatus[0].ProviderNetwork != "physnet-a" {
+		t.Fatalf("provider status = %+v, want planned physnet-a status retained", result.ProviderStatus)
+	}
+	if result.ProviderStatus[0].ParentDevice != "eth1" || result.ProviderStatus[0].VLAN != 100 {
+		t.Fatalf("provider status[0] = %+v, want eth1 vlan 100", result.ProviderStatus[0])
+	}
+}
+
 func TestProviderLinkFailureStatusReportsDriftReason(t *testing.T) {
 	spec := providerNetworkLinkSpec{
 		ProviderNetwork: "physnet-a",

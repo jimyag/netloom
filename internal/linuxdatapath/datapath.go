@@ -174,7 +174,7 @@ func Apply(ctx context.Context, state control.DesiredState, options Options) (Re
 		}
 		for _, op := range ops {
 			if err := executor.Execute(ctx, op); err != nil {
-				return Result{}, err
+				return result, err
 			}
 		}
 		if discoveredInventory {
