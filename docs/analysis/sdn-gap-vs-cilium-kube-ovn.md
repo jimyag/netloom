@@ -124,11 +124,11 @@ This is the most important missing work on the eBPF side.
 
 ### 4. Rule-level observability is still shallow
 
-Netloom has drop/trace style events, policy-rule packet/byte counters in the evaluator, an agent telemetry interface that can surface endpoint/rule counters in normal reconcile output, a pinned eBPF policy-map reader for counter fields, and TCX L4 ACL maps that increment packet/byte counters in the fast path. This now gives the product a stable place to report live datapath counters, but it is not yet Cilium/Kube-OVN grade runtime observability.
+Netloom has drop/trace style events, policy-rule packet/byte counters in the evaluator, an agent telemetry interface that can surface endpoint/rule counters in normal reconcile output, a pinned eBPF policy-map reader for counter fields, and TCX L4 ACL maps that increment packet/byte counters in the fast path and merge those counters back into agent telemetry after reconcile. This now gives the product a stable place to report live datapath counters, but it is not yet Cilium/Kube-OVN grade runtime observability.
 
 What is missing:
 
-- merging TCX attachment map counters back into agent telemetry output
+- exporting policy and TCX rule counters through a long-lived metrics endpoint
 - policy install/update/delete metrics
 - reconcile latency and failure metrics
 - OVN object drift metrics

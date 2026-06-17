@@ -343,8 +343,12 @@ counters during drift checks so reconcile does not rewrite a healthy map merely
 because datapath counters changed. The TCX L4 ACL map value similarly carries
 the projected rule cookie plus packet and byte counters. IPv4 and IPv6 TCX
 programs atomically increment those counters after a successful LPM lookup and
-before returning the rule action, so the fast path can expose Cilium-style rule
-hit accounting without changing match semantics.
+before returning the rule action. After a successful TCX reconcile, the agent
+reads the live attachment maps, aggregates counters by rule cookie, and merges
+them into the normal `policy_rule_stats` telemetry output. Single-workload TCX
+counters are labelled with the endpoint ID; shared-interface counters are
+labelled with the TCX target identity. This exposes Cilium-style rule hit
+accounting without changing match semantics.
 `action=reject` is preserved separately from `drop` in the policy map and
 userspace evaluator: matching packets return a `reject` verdict and generate a
 `policy-reject` drop event. The current TCX fast path still maps reject to drop

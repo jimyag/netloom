@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"sort"
 	"time"
 
 	"github.com/cilium/ebpf"
@@ -98,6 +99,52 @@ func (a *TCXAttachment) Close() error {
 	return firstErr
 }
 
+func (a *TCXAttachment) PolicyRuleMetrics(ctx context.Context) ([]RuleMetrics, error) {
+	if a == nil {
+		return nil, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	maps := make([]*ebpf.Map, 0, 1+len(a.aclMaps))
+	if a.aclMap != nil {
+		maps = append(maps, a.aclMap)
+	}
+	maps = append(maps, a.aclMaps...)
+	byCookie := make(map[uint32]RuleMetrics)
+	for _, aclMap := range maps {
+		if aclMap == nil {
+			continue
+		}
+		values, err := readTCXL4ACLValues(aclMap)
+		if err != nil {
+			return nil, err
+		}
+		for _, value := range values {
+			metrics := tcxRuleMetricsFromValue(value)
+			existing := byCookie[metrics.RuleCookie]
+			existing.RuleCookie = metrics.RuleCookie
+			existing.Packets += metrics.Packets
+			existing.Bytes += metrics.Bytes
+			existing.Allowed += metrics.Allowed
+			existing.Dropped += metrics.Dropped
+			existing.Rejected += metrics.Rejected
+			existing.DenyDrops += metrics.DenyDrops
+			existing.RejectDrops += metrics.RejectDrops
+			existing.Logged += metrics.Logged
+			byCookie[metrics.RuleCookie] = existing
+		}
+	}
+	out := make([]RuleMetrics, 0, len(byCookie))
+	for _, metrics := range byCookie {
+		out = append(out, metrics)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].RuleCookie < out[j].RuleCookie
+	})
+	return out, nil
+}
+
 type IPv4L4Key struct {
 	PrefixLen uint32
 	LocalIP   [4]byte
@@ -126,6 +173,54 @@ type TCXL4ACLValue struct {
 	RuleCookie uint32
 	Packets    uint64
 	Bytes      uint64
+}
+
+func readTCXL4ACLValues(aclMap *ebpf.Map) ([]TCXL4ACLValue, error) {
+	if aclMap == nil {
+		return nil, nil
+	}
+	info, err := aclMap.Info()
+	if err != nil {
+		return nil, fmt.Errorf("read TCX ACL map metadata: %w", err)
+	}
+	switch info.KeySize {
+	case 20:
+		return readTCXL4ACLValuesWithKey[IPv4L4Key](aclMap)
+	case 44:
+		return readTCXL4ACLValuesWithKey[IPv6L4Key](aclMap)
+	default:
+		return nil, fmt.Errorf("unsupported TCX ACL map key size %d", info.KeySize)
+	}
+}
+
+func readTCXL4ACLValuesWithKey[K any](aclMap *ebpf.Map) ([]TCXL4ACLValue, error) {
+	iter := aclMap.Iterate()
+	values := make([]TCXL4ACLValue, 0)
+	var key K
+	var value TCXL4ACLValue
+	for iter.Next(&key, &value) {
+		values = append(values, value)
+	}
+	if err := iter.Err(); err != nil {
+		return nil, fmt.Errorf("iterate TCX ACL map counters: %w", err)
+	}
+	return values, nil
+}
+
+func tcxRuleMetricsFromValue(value TCXL4ACLValue) RuleMetrics {
+	metrics := RuleMetrics{
+		RuleCookie: value.RuleCookie,
+		Packets:    value.Packets,
+		Bytes:      value.Bytes,
+	}
+	switch value.Action {
+	case TCXDrop:
+		metrics.Dropped = value.Packets
+		metrics.DenyDrops = value.Packets
+	default:
+		metrics.Allowed = value.Packets
+	}
+	return metrics
 }
 
 type IPv6L4Key struct {

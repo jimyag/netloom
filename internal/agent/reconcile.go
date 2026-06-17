@@ -115,6 +115,7 @@ type tcxTarget struct {
 type tcxAttachmentHandle struct {
 	result    dataplane.TCXSelfTestResult
 	close     func() error
+	metrics   func(context.Context) ([]dataplane.RuleMetrics, error)
 	signature string
 }
 
@@ -161,11 +162,12 @@ func ReconcileNodeWithOptions(ctx context.Context, state control.DesiredState, o
 		return result, err
 	}
 	if options.TCXInterface != "" || options.TCXWorkload {
-		tcxResult, tcxStats, err := attachTCXTargets(ctx, targets, options.TCXHold)
+		tcxResult, tcxStats, tcxMetrics, err := attachTCXTargets(ctx, targets, options.TCXHold)
 		applyTCXUpdateStats(&result, tcxStats)
 		if err != nil {
 			return result, fmt.Errorf("attach tcx policy for node %s: %w", options.Node, err)
 		}
+		addPolicyRuleMetricsResult(&result, tcxMetrics)
 		result.TCX = tcxResult
 	}
 	return result, nil
@@ -196,11 +198,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, state control.DesiredState, 
 	r.syncConntrackPrograms(programs)
 	result.ConntrackExpired = r.conntrack.SweepIdle(conntrackIdleTimeout(options.ConntrackIdle))
 	if options.TCXInterface != "" || options.TCXWorkload {
-		tcxResult, tcxStats, err := r.syncTCXTargets(ctx, targets)
+		tcxResult, tcxStats, tcxMetrics, err := r.syncTCXTargets(ctx, targets)
 		applyTCXUpdateStats(&result, tcxStats)
 		if err != nil {
 			return result, fmt.Errorf("attach tcx policy for node %s: %w", options.Node, err)
 		}
+		addPolicyRuleMetricsResult(&result, tcxMetrics)
 		result.TCX = tcxResult
 	}
 	return result, nil
@@ -481,7 +484,15 @@ func populatePolicyRuleMetricsResult(ctx context.Context, options ReconcileOptio
 	if err != nil {
 		return fmt.Errorf("read policy rule metrics: %w", err)
 	}
-	result.PolicyRuleStats = append([]dataplane.RuleMetrics(nil), stats...)
+	addPolicyRuleMetricsResult(result, stats)
+	return nil
+}
+
+func addPolicyRuleMetricsResult(result *ReconcileResult, stats []dataplane.RuleMetrics) {
+	if result == nil {
+		return
+	}
+	result.PolicyRuleStats = append(result.PolicyRuleStats, stats...)
 	for _, stat := range stats {
 		result.PolicyRulePackets += stat.Packets
 		result.PolicyRuleBytes += stat.Bytes
@@ -490,7 +501,6 @@ func populatePolicyRuleMetricsResult(ctx context.Context, options ReconcileOptio
 		result.PolicyRuleRejected += stat.Rejected
 		result.PolicyRuleLogged += stat.Logged
 	}
-	return nil
 }
 
 func securityGroupsForEndpointVPC(groups []model.SecurityGroup, vpc string) map[string]model.SecurityGroup {
@@ -640,9 +650,9 @@ func tcxEligibleProgramForDirection(program policy.Program, direction model.Dire
 	return err == nil
 }
 
-func attachTCXTargets(ctx context.Context, targets []tcxTarget, hold time.Duration) (string, tcxUpdateStats, error) {
+func attachTCXTargets(ctx context.Context, targets []tcxTarget, hold time.Duration) (string, tcxUpdateStats, []dataplane.RuleMetrics, error) {
 	if len(targets) == 0 {
-		return "not-attached", tcxUpdateStats{}, nil
+		return "not-attached", tcxUpdateStats{}, nil, nil
 	}
 	stats := tcxUpdateStats{}
 	attachments := make([]tcxAttachmentHandle, 0, len(targets))
@@ -659,8 +669,9 @@ func attachTCXTargets(ctx context.Context, targets []tcxTarget, hold time.Durati
 			stats.Rollbacks = len(attachments)
 			stats.Target = tcxTargetLabel(target)
 			stats.LastError = err.Error()
-			return "", stats, err
+			return "", stats, nil, err
 		}
+		attachment = labelTCXAttachmentMetrics(attachment, tcxTelemetryEndpoint(target))
 		attachments = append(attachments, attachment)
 	}
 	if hold > 0 {
@@ -672,23 +683,30 @@ func attachTCXTargets(ctx context.Context, targets []tcxTarget, hold time.Durati
 			stats.Rollbacks = len(attachments)
 			stats.Target = "hold"
 			stats.LastError = ctx.Err().Error()
-			return "", stats, ctx.Err()
+			return "", stats, nil, ctx.Err()
 		case <-timer.C:
 		}
 	}
-	return formatTCXResult(attachments), stats, nil
+	metrics, err := collectTCXRuleMetrics(ctx, attachments)
+	if err != nil {
+		stats.Failed = 1
+		stats.Target = "metrics"
+		stats.LastError = err.Error()
+		return "", stats, nil, err
+	}
+	return formatTCXResult(attachments), stats, metrics, nil
 }
 
-func (r *Reconciler) syncTCXTargets(ctx context.Context, targets []tcxTarget) (string, tcxUpdateStats, error) {
+func (r *Reconciler) syncTCXTargets(ctx context.Context, targets []tcxTarget) (string, tcxUpdateStats, []dataplane.RuleMetrics, error) {
 	stats := tcxUpdateStats{}
 	if len(targets) == 0 {
 		if err := r.closeTCXAttachments(); err != nil {
 			stats.Failed = 1
 			stats.Target = "stale"
 			stats.LastError = err.Error()
-			return "", stats, fmt.Errorf("close stale tcx attachments: %w", err)
+			return "", stats, nil, fmt.Errorf("close stale tcx attachments: %w", err)
 		}
-		return "not-attached", stats, nil
+		return "not-attached", stats, nil, nil
 	}
 	desired := make(map[string]tcxTarget, len(targets))
 	for _, target := range targets {
@@ -715,8 +733,9 @@ func (r *Reconciler) syncTCXTargets(ctx context.Context, targets []tcxTarget) (s
 			stats.Rollbacks = len(attached)
 			stats.Target = tcxTargetLabel(target)
 			stats.LastError = err.Error()
-			return "", stats, fmt.Errorf("attach tcx target %s: %w", tcxTargetLabel(target), err)
+			return "", stats, nil, fmt.Errorf("attach tcx target %s: %w", tcxTargetLabel(target), err)
 		}
+		attachment = labelTCXAttachmentMetrics(attachment, tcxTelemetryEndpoint(target))
 		attachment.signature = signature
 		next[key] = attachment
 		attached = append(attached, key)
@@ -739,14 +758,21 @@ func (r *Reconciler) syncTCXTargets(ctx context.Context, targets []tcxTarget) (s
 		stats.Rollbacks = len(attached)
 		stats.Target = "stale"
 		stats.LastError = closeErr.Error()
-		return "", stats, closeErr
+		return "", stats, nil, closeErr
 	}
 	r.attachments = next
 	attachments := make([]tcxAttachmentHandle, 0, len(targets))
 	for _, target := range targets {
 		attachments = append(attachments, r.attachments[tcxTargetKey(target)])
 	}
-	return formatTCXResult(attachments), stats, nil
+	metrics, err := collectTCXRuleMetrics(ctx, attachments)
+	if err != nil {
+		stats.Failed = 1
+		stats.Target = "metrics"
+		stats.LastError = err.Error()
+		return "", stats, nil, err
+	}
+	return formatTCXResult(attachments), stats, metrics, nil
 }
 
 func applyTCXUpdateStats(result *ReconcileResult, stats tcxUpdateStats) {
@@ -782,7 +808,57 @@ func attachTCXTarget(ctx context.Context, target tcxTarget) (tcxAttachmentHandle
 	return tcxAttachmentHandle{
 		result: attachment.Result,
 		close:  attachment.Close,
+		metrics: func(ctx context.Context) ([]dataplane.RuleMetrics, error) {
+			return attachment.PolicyRuleMetrics(ctx)
+		},
 	}, nil
+}
+
+func labelTCXAttachmentMetrics(attachment tcxAttachmentHandle, endpointID string) tcxAttachmentHandle {
+	if attachment.metrics == nil {
+		return attachment
+	}
+	read := attachment.metrics
+	attachment.metrics = func(ctx context.Context) ([]dataplane.RuleMetrics, error) {
+		metrics, err := read(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return labelTCXRuleMetrics(metrics, endpointID), nil
+	}
+	return attachment
+}
+
+func collectTCXRuleMetrics(ctx context.Context, attachments []tcxAttachmentHandle) ([]dataplane.RuleMetrics, error) {
+	out := make([]dataplane.RuleMetrics, 0)
+	for _, attachment := range attachments {
+		if attachment.metrics == nil {
+			continue
+		}
+		metrics, err := attachment.metrics(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("read tcx policy counters: %w", err)
+		}
+		out = append(out, metrics...)
+	}
+	return out, nil
+}
+
+func labelTCXRuleMetrics(metrics []dataplane.RuleMetrics, endpointID string) []dataplane.RuleMetrics {
+	out := append([]dataplane.RuleMetrics(nil), metrics...)
+	for i := range out {
+		if out[i].EndpointID == "" {
+			out[i].EndpointID = endpointID
+		}
+	}
+	return out
+}
+
+func tcxTelemetryEndpoint(target tcxTarget) string {
+	if len(target.programs) == 1 && target.programs[0].EndpointID != "" {
+		return target.programs[0].EndpointID
+	}
+	return "tcx:" + tcxTargetLabel(target)
 }
 
 func tcxTargetKey(target tcxTarget) string {

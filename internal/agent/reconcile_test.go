@@ -966,6 +966,66 @@ func TestReconcileNodeReportsPolicyRuleMetricsTelemetry(t *testing.T) {
 	}
 }
 
+func TestReconcilerReportsTCXRuleMetricsTelemetry(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:             "pod-a",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"web"},
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "drop-http",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("172.30.0.11/32"),
+				Ports:      []model.PortRange{{From: 8080, To: 8080}},
+				Action:     model.ActionDrop,
+			}},
+		}},
+	}
+	reconciler := NewReconciler(dataplane.NewInMemoryPolicyStore())
+	reconciler.attach = func(_ context.Context, target tcxTarget) (tcxAttachmentHandle, error) {
+		return tcxAttachmentHandle{
+			result: dataplane.TCXSelfTestResult{Interface: target.ifName, Direction: "egress", Mode: "policy-l4"},
+			close:  func() error { return nil },
+			metrics: func(context.Context) ([]dataplane.RuleMetrics, error) {
+				return []dataplane.RuleMetrics{{
+					RuleCookie: 42,
+					Packets:    2,
+					Bytes:      128,
+					Dropped:    2,
+					DenyDrops:  2,
+				}}, nil
+			},
+		}, nil
+	}
+
+	result, err := reconciler.Reconcile(context.Background(), state, ReconcileOptions{
+		Node:        "node-a",
+		TCXWorkload: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpointID := model.EndpointKey("prod", "pod-a")
+	if result.PolicyRulePackets != 2 || result.PolicyRuleBytes != 128 || result.PolicyRuleDropped != 2 || result.PolicyRuleAllowed != 0 {
+		t.Fatalf("policy rule metric summary = %+v", result)
+	}
+	if len(result.PolicyRuleStats) != 1 {
+		t.Fatalf("policy rule stats = %+v, want one tcx rule bucket", result.PolicyRuleStats)
+	}
+	if result.PolicyRuleStats[0].EndpointID != endpointID || result.PolicyRuleStats[0].RuleCookie != 42 || result.PolicyRuleStats[0].DenyDrops != 2 {
+		t.Fatalf("tcx rule stats = %+v, want endpoint-labelled drop counters", result.PolicyRuleStats[0])
+	}
+}
+
 func TestReconcileNodeReportsPolicyMapPressureSummary(t *testing.T) {
 	state := control.DesiredState{
 		Endpoints: []model.Endpoint{{
@@ -1355,7 +1415,7 @@ func TestTCXTargetsBuildsSingleEgressTargetForMultipleNodeInterfaceEndpoints(t *
 }
 
 func TestAttachTCXTargetsReportsNotAttachedForEmptyTargets(t *testing.T) {
-	status, stats, err := attachTCXTargets(context.Background(), nil, 0)
+	status, stats, metrics, err := attachTCXTargets(context.Background(), nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1364,6 +1424,9 @@ func TestAttachTCXTargetsReportsNotAttachedForEmptyTargets(t *testing.T) {
 	}
 	if status != "not-attached" {
 		t.Fatalf("status = %q, want not-attached", status)
+	}
+	if len(metrics) != 0 {
+		t.Fatalf("metrics = %+v, want none", metrics)
 	}
 }
 

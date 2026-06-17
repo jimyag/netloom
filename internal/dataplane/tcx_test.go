@@ -52,6 +52,28 @@ func TestNewIPv4L4ACLMapRejectsMissingFields(t *testing.T) {
 	}
 }
 
+func TestTCXRuleMetricsFromValueClassifiesCounters(t *testing.T) {
+	allow := tcxRuleMetricsFromValue(TCXL4ACLValue{
+		Action:     TCXPass,
+		RuleCookie: 42,
+		Packets:    3,
+		Bytes:      192,
+	})
+	if allow.RuleCookie != 42 || allow.Packets != 3 || allow.Bytes != 192 || allow.Allowed != 3 || allow.Dropped != 0 {
+		t.Fatalf("allow metrics = %+v", allow)
+	}
+
+	drop := tcxRuleMetricsFromValue(TCXL4ACLValue{
+		Action:     TCXDrop,
+		RuleCookie: 7,
+		Packets:    2,
+		Bytes:      128,
+	})
+	if drop.RuleCookie != 7 || drop.Packets != 2 || drop.Bytes != 128 || drop.Allowed != 0 || drop.Dropped != 2 || drop.DenyDrops != 2 {
+		t.Fatalf("drop metrics = %+v", drop)
+	}
+}
+
 func TestIPv4L4ACLRulesFromProgramProjectsExactIngressPolicy(t *testing.T) {
 	program := policy.Program{
 		EndpointID: testEndpointA,
