@@ -32,6 +32,8 @@ type ReconcileResult struct {
 	PolicyEvents               int
 	PolicyFailed               int
 	PolicyRollbacks            int
+	PolicyFailedEndpoint       string
+	PolicyFailedRevision       uint64
 	PolicyRevisionMax          uint64
 	PolicyLastError            string
 	TCXFailed                  int
@@ -402,6 +404,8 @@ func recordPolicyEventsDelta(result *ReconcileResult, events []dataplane.PolicyU
 		}
 		result.PolicyFailed++
 		result.PolicyRollbacks++
+		result.PolicyFailedEndpoint = event.EndpointID
+		result.PolicyFailedRevision = event.Revision
 		if event.Error != "" {
 			result.PolicyLastError = event.Error
 		}

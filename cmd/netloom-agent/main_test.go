@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/netip"
 	"os"
@@ -252,6 +253,8 @@ func TestPrintReconcileResultIncludesPolicyMapUsageSummary(t *testing.T) {
 		PolicyMapPressureMax:       75,
 		PolicyMapPressureEndpoint:  "prod\x00pod-a",
 		PolicyMapPressureEndpoints: 0,
+		PolicyFailedEndpoint:       "prod\x00pod-b",
+		PolicyFailedRevision:       3,
 		ProviderNetworks:           1,
 		ProviderLinks:              2,
 		ProviderReady:              1,
@@ -290,6 +293,8 @@ func TestPrintReconcileResultIncludesPolicyMapUsageSummary(t *testing.T) {
 		"policy_map_pressure_max=75",
 		`policy_map_pressure_endpoint="prod\x00pod-a"`,
 		"policy_map_pressure_endpoints=0",
+		`policy_failed_endpoint="prod\x00pod-b"`,
+		"policy_failed_revision=3",
 		"provider_networks=1",
 		"provider_links=2",
 		"provider_ready=1",
@@ -303,6 +308,54 @@ func TestPrintReconcileResultIncludesPolicyMapUsageSummary(t *testing.T) {
 	} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("output missing %q:\n%s", expected, output)
+		}
+	}
+}
+
+func TestPrintReconcileFailureIncludesPolicyFailureLocation(t *testing.T) {
+	oldStdout := os.Stdout
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = writer
+	defer func() {
+		os.Stdout = oldStdout
+	}()
+
+	printReconcileFailure(agent.ReconcileResult{
+		Node:                 "node-a",
+		Endpoints:            1,
+		Programs:             1,
+		Entries:              2,
+		PolicyEvents:         1,
+		PolicyFailed:         1,
+		PolicyRollbacks:      1,
+		PolicyFailedEndpoint: "prod\x00pod-a",
+		PolicyFailedRevision: 2,
+		PolicyRevisionMax:    2,
+		PolicyLastError:      "in-memory policy update failed after 1 operations",
+		TCX:                  "not-requested",
+	}, "memory", errors.New("apply failed"), 125*time.Millisecond)
+
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if _, err := io.Copy(&buf, reader); err != nil {
+		t.Fatal(err)
+	}
+	output := buf.String()
+	for _, expected := range []string{
+		"policy_failed=1",
+		"policy_rollbacks=1",
+		`policy_failed_endpoint="prod\x00pod-a"`,
+		"policy_failed_revision=2",
+		`policy_last_error="in-memory policy update failed after 1 operations"`,
+		`err="apply failed"`,
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("failure output missing %q:\n%s", expected, output)
 		}
 	}
 }

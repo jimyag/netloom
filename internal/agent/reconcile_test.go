@@ -821,6 +821,9 @@ func TestReconcileNodeReportsPolicyFailureAndRollbackSignals(t *testing.T) {
 	if result.PolicyEvents != 1 || result.PolicyFailed != 1 || result.PolicyRollbacks != 1 || result.PolicyRevisionMax != 2 {
 		t.Fatalf("policy failure summary = %+v, want one failed rollback event at revision 2", result)
 	}
+	if result.PolicyFailedEndpoint != model.EndpointKey("prod", "pod-a") || result.PolicyFailedRevision != 2 {
+		t.Fatalf("policy failed endpoint/revision = %q/%d, want pod-a revision 2", result.PolicyFailedEndpoint, result.PolicyFailedRevision)
+	}
 	if !strings.Contains(result.PolicyLastError, "in-memory policy update failed after 1 operations") {
 		t.Fatalf("policy last error = %q, want in-memory update failure", result.PolicyLastError)
 	}
