@@ -545,6 +545,73 @@ func TestDesiredStateExpandsFQDNPatternsAndPortMappedNATFromJSON(t *testing.T) {
 	}
 }
 
+func TestDesiredStateProgramsDistributedFloatingIPsFromJSON(t *testing.T) {
+	ctx := context.Background()
+	state, err := control.LoadDesiredStateJSON(strings.NewReader(`{
+  "vpcs": [{"name": "prod"}],
+  "subnets": [{"name": "apps", "vpc": "prod", "cidr": "10.10.0.0/24", "gateway": "10.10.0.1"}],
+  "endpoints": [
+    {"id": "pod-a", "vpc": "prod", "subnet": "apps", "ip": "10.10.0.10", "mac": "0A:58:0A:0A:00:0A", "node": "node-a"},
+    {"id": "dns", "vpc": "prod", "subnet": "apps", "ip": "10.10.0.20", "node": "node-b"}
+  ],
+  "nat_rules": [
+    {"name": "web-fip", "vpc": "prod", "type": "dnat_and_snat", "external_ip": "198.51.100.31", "target_ip": "10.10.0.10", "logical_port": "nl_lp_prod_pod-a", "external_mac": "0a:58:0a:0a:00:0a"},
+    {"name": "dns-fip", "vpc": "prod", "type": "dnat_and_snat", "external_ip": "198.51.100.32", "target_ip": "10.10.0.20", "protocol": "udp", "external_port": 5353, "target_port": 53, "logical_port": "nl_lp_prod_dns", "external_mac": "0a:58:0a:0a:00:14"}
+  ]
+}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	memoryBackend := control.NewMemoryBackend()
+	ovnRecorder := ovn.NewRecorderExecutor()
+	ovnBackend := ovn.NewBackend(ovnRecorder)
+	controller := control.NewController(control.MultiTopologyBackend{memoryBackend, ovnBackend}, memoryBackend)
+	if err := controller.Reconcile(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+
+	fipDecision, err := topology.Resolve(memoryBackend.TopologyState(), topology.Packet{
+		VPC:    "prod",
+		Source: mustAddr(t, "203.0.113.200"),
+		Dest:   mustAddr(t, "198.51.100.31"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fipDecision.MatchedBy != "nat/web-fip" || fipDecision.Destination != model.EndpointKey("prod", "pod-a") || fipDecision.Translated != mustAddr(t, "10.10.0.10") {
+		t.Fatalf("distributed fip decision = %+v, want pod-a floating ip translation", fipDecision)
+	}
+
+	dnsDecision, err := topology.Resolve(memoryBackend.TopologyState(), topology.Packet{
+		VPC:      "prod",
+		Source:   mustAddr(t, "203.0.113.200"),
+		Dest:     mustAddr(t, "198.51.100.32"),
+		Protocol: model.ProtocolUDP,
+		DestPort: 5353,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dnsDecision.MatchedBy != "nat/dns-fip" || dnsDecision.Destination != model.EndpointKey("prod", "dns") || dnsDecision.Translated != mustAddr(t, "10.10.0.20") || dnsDecision.TranslatedPort != 53 {
+		t.Fatalf("distributed translated fip decision = %+v, want dns target port translation", dnsDecision)
+	}
+
+	ovnOps := stringifyOVNOps(ovnRecorder.Operations())
+	for _, expected := range []string{
+		"lr-nat-add nl_lr_prod dnat_and_snat 198.51.100.31 10.10.0.10 nl_lp_prod_pod-a 0a:58:0a:0a:00:0a",
+		"tag-nat-rule web-fip prod dnat_and_snat 198.51.100.31 10.10.0.10",
+		"create NAT type=dnat_and_snat external_ip=198.51.100.32 logical_ip=10.10.0.20 external_port_range=5353 logical_port_range=53 protocol=udp",
+		"logical_port=nl_lp_prod_dns",
+		"external_mac=0a:58:0a:0a:00:14",
+		"external_ids:netloom_nat=dns-fip",
+	} {
+		if !strings.Contains(ovnOps, expected) {
+			t.Fatalf("distributed floating ip ovn operations missing %q:\n%s", expected, ovnOps)
+		}
+	}
+}
+
 func TestDesiredStateRemovesLocalnetTagWhenProviderNetworkVLANIsCleared(t *testing.T) {
 	ctx := context.Background()
 	initial, err := control.LoadDesiredStateJSON(strings.NewReader(`{
