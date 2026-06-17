@@ -436,6 +436,115 @@ func TestDesiredStatePriorityConflictMatchesTCXEligibilityFromJSON(t *testing.T)
 	}
 }
 
+func TestDesiredStateExpandsFQDNPatternsAndPortMappedNATFromJSON(t *testing.T) {
+	ctx := context.Background()
+	state, err := control.LoadDesiredStateJSON(strings.NewReader(`{
+  "vpcs": [{"name": "prod"}],
+  "subnets": [{"name": "apps", "vpc": "prod", "cidr": "10.10.0.0/24", "gateway": "10.10.0.1"}],
+  "endpoints": [
+    {"id": "pod-a", "vpc": "prod", "subnet": "apps", "ip": "10.10.0.10", "node": "node-a", "security_groups": ["client"]},
+    {"id": "web", "vpc": "prod", "subnet": "apps", "ip": "10.10.0.20", "node": "node-b"}
+  ],
+  "nat_rules": [
+    {"name": "ssh", "vpc": "prod", "type": "dnat", "external_ip": "198.51.100.23", "target_ip": "10.10.0.10", "protocol": "tcp", "external_port": 2222, "target_port": 22},
+    {"name": "https-fip", "vpc": "prod", "type": "dnat_and_snat", "external_ip": "198.51.100.30", "target_ip": "10.10.0.20", "protocol": "tcp", "external_port": 8443, "target_port": 443}
+  ],
+  "security_groups": [
+    {"name": "client", "vpc": "prod", "rules": [
+      {"id": "allow-patterns", "priority": 100, "direction": "egress", "protocol": "tcp", "remote_fqdns": [{"match_pattern": "*.svc.example.com"}, {"match_pattern": "**.deep.example.com"}], "ports": [{"from": 443, "to": 443}], "action": "allow"}
+    ]}
+  ],
+  "dns_records": [
+    {"name": "api.svc.example.com", "ips": ["203.0.113.10"]},
+    {"name": "a.b.svc.example.com", "ips": ["203.0.113.20"]},
+    {"name": "one.deep.example.com", "ips": ["203.0.113.30"]},
+    {"name": "one.two.deep.example.com", "ips": ["203.0.113.40"]},
+    {"name": "deep.example.com", "ips": ["203.0.113.50"]}
+  ]
+}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	memoryBackend := control.NewMemoryBackend()
+	ovnRecorder := ovn.NewRecorderExecutor()
+	ovnBackend := ovn.NewBackend(ovnRecorder)
+	controller := control.NewController(control.MultiTopologyBackend{memoryBackend, ovnBackend}, memoryBackend)
+	if err := controller.Reconcile(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+
+	sshDecision, err := topology.Resolve(memoryBackend.TopologyState(), topology.Packet{
+		VPC:      "prod",
+		Source:   mustAddr(t, "203.0.113.200"),
+		Dest:     mustAddr(t, "198.51.100.23"),
+		Protocol: model.ProtocolTCP,
+		DestPort: 2222,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sshDecision.MatchedBy != "nat/ssh" || sshDecision.Destination != model.EndpointKey("prod", "pod-a") || sshDecision.Translated != mustAddr(t, "10.10.0.10") || sshDecision.TranslatedPort != 22 {
+		t.Fatalf("ssh decision = %+v, want port-mapped dnat to pod-a:22", sshDecision)
+	}
+
+	fipDecision, err := topology.Resolve(memoryBackend.TopologyState(), topology.Packet{
+		VPC:      "prod",
+		Source:   mustAddr(t, "203.0.113.200"),
+		Dest:     mustAddr(t, "198.51.100.30"),
+		Protocol: model.ProtocolTCP,
+		DestPort: 8443,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fipDecision.MatchedBy != "nat/https-fip" || fipDecision.Destination != model.EndpointKey("prod", "web") || fipDecision.Translated != mustAddr(t, "10.10.0.20") || fipDecision.TranslatedPort != 443 {
+		t.Fatalf("fip decision = %+v, want floating-ip target port translation", fipDecision)
+	}
+
+	program, ok := memoryBackend.PolicyProgram[model.EndpointKey("prod", "pod-a")]
+	if !ok {
+		t.Fatalf("missing compiled client policy program: %+v", memoryBackend.PolicyProgram)
+	}
+	entries, err := dataplane.EncodeProgram(program)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, packet := range []struct {
+		name    string
+		ip      string
+		verdict dataplane.Verdict
+	}{
+		{name: "single-label wildcard", ip: "203.0.113.10", verdict: dataplane.VerdictAllow},
+		{name: "double-star deep wildcard", ip: "203.0.113.30", verdict: dataplane.VerdictAllow},
+		{name: "nested deep wildcard", ip: "203.0.113.40", verdict: dataplane.VerdictAllow},
+		{name: "star does not span labels", ip: "203.0.113.20", verdict: dataplane.VerdictDrop},
+		{name: "pattern does not match root", ip: "203.0.113.50", verdict: dataplane.VerdictDrop},
+	} {
+		decision := dataplane.Evaluate(entries, dataplane.Packet{
+			Direction: dataplane.DirectionEgress,
+			Protocol:  6,
+			RemoteIP:  mustAddr(t, packet.ip),
+			DestPort:  443,
+		})
+		if decision.Verdict != packet.verdict {
+			t.Fatalf("%s decision = %+v, want verdict %s", packet.name, decision, packet.verdict)
+		}
+	}
+
+	ovnOps := stringifyOVNOps(ovnRecorder.Operations())
+	for _, expected := range []string{
+		"external_port_range=2222",
+		"logical_port_range=22",
+		"external_port_range=8443",
+		"logical_port_range=443",
+	} {
+		if !strings.Contains(ovnOps, expected) {
+			t.Fatalf("ovn operations missing %q:\n%s", expected, ovnOps)
+		}
+	}
+}
+
 func TestDesiredStateRemovesLocalnetTagWhenProviderNetworkVLANIsCleared(t *testing.T) {
 	ctx := context.Background()
 	initial, err := control.LoadDesiredStateJSON(strings.NewReader(`{
