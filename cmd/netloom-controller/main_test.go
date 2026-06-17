@@ -1,9 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net/netip"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -174,6 +179,64 @@ func TestRunReconcileLoopRetriesAfterFailure(t *testing.T) {
 	}
 }
 
+func TestPrintControllerReconcileFailureIncludesPhase(t *testing.T) {
+	state := control.DesiredState{
+		VPCs: []model.VPC{{Name: "prod"}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			Rules: []model.SecurityGroupRule{{
+				Direction: model.DirectionIngress,
+				Action:    model.ActionAllow,
+			}},
+		}},
+	}
+	summary := control.LoadBalancerHealthSummary{Checked: 2, Healthy: 1, Unhealthy: 1}
+	output := captureStdout(t, func() {
+		printControllerReconcileFailure("ovn_health", state, summary, "error", 25*time.Millisecond, 3, 2, errors.New("boom"), 125*time.Millisecond)
+	})
+
+	expected := []string{
+		"netloom-controller reconcile failed",
+		"reconcile_phase=ovn_health",
+		"vpcs=1",
+		"security_groups=1",
+		"policy_entries=0",
+		"lb_health_checked=2",
+		"lb_health_healthy=1",
+		"lb_health_unhealthy=1",
+		"ovn_health=error",
+		"ovn_health_latency_ms=25",
+		"ovn_ops=3",
+		"ovn_executed=2",
+		"err=\"boom\"",
+		"reconcile_duration_ms=125",
+	}
+	for _, want := range expected {
+		if !strings.Contains(output, want) {
+			t.Fatalf("failure output missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestStateFileReconcilerReportsLoadStateOpenFailure(t *testing.T) {
+	reconciler := &stateFileReconciler{healthTracker: control.NewLoadBalancerHealthTracker()}
+	missingPath := filepath.Join(t.TempDir(), "missing.json")
+	var err error
+	output := captureStdout(t, func() {
+		err = reconciler.reconcile(context.Background(), missingPath)
+	})
+
+	if err == nil {
+		t.Fatal("expected missing state file to fail")
+	}
+	if !strings.Contains(output, "reconcile_phase=load_state") {
+		t.Fatalf("failure output missing load_state phase:\n%s", output)
+	}
+	if !strings.Contains(output, "err=\"open "+missingPath) {
+		t.Fatalf("failure output missing open error:\n%s", output)
+	}
+}
+
 func TestApplyLoadBalancerHealthChecksDisabledByDefault(t *testing.T) {
 	state := control.DesiredState{LoadBalancers: []model.LoadBalancer{{
 		Name:        "web",
@@ -193,4 +256,30 @@ func TestApplyLoadBalancerHealthChecksDisabledByDefault(t *testing.T) {
 	if summary.Checked != 0 || state.LoadBalancers[0].Ports[0].Backends[0].Healthy != nil {
 		t.Fatalf("summary/state = %+v/%+v, want no active probe by default", summary, state.LoadBalancers[0].Ports[0].Backends[0])
 	}
+}
+
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	original := os.Stdout
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = writer
+	defer func() {
+		os.Stdout = original
+	}()
+
+	fn()
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	if _, err := io.Copy(&output, reader); err != nil {
+		t.Fatal(err)
+	}
+	if err := reader.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return output.String()
 }

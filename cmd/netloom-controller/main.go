@@ -104,7 +104,7 @@ func (r *stateFileReconciler) reconcile(ctx context.Context, path string) error 
 	if r.healthChecker != nil {
 		latency, err := r.healthChecker.HealthCheck(ctx)
 		if err != nil {
-			printControllerReconcileFailure(state, control.LoadBalancerHealthSummary{}, "error", latency, 0, 0, fmt.Errorf("ovn health check: %w", err), time.Since(start))
+			printControllerReconcileFailure("ovn_health", state, control.LoadBalancerHealthSummary{}, "error", latency, 0, 0, fmt.Errorf("ovn health check: %w", err), time.Since(start))
 			return fmt.Errorf("ovn health check: %w", err)
 		}
 		ovnHealthStatus = "ok"
@@ -112,18 +112,19 @@ func (r *stateFileReconciler) reconcile(ctx context.Context, path string) error 
 	}
 	file, err := os.Open(path)
 	if err != nil {
+		printControllerReconcileFailure("load_state", state, control.LoadBalancerHealthSummary{}, ovnHealthStatus, ovnHealthLatency, 0, 0, err, time.Since(start))
 		return err
 	}
 	defer file.Close()
 
 	state, err = control.LoadDesiredStateJSON(file)
 	if err != nil {
-		printControllerReconcileFailure(state, control.LoadBalancerHealthSummary{}, ovnHealthStatus, ovnHealthLatency, 0, 0, err, time.Since(start))
+		printControllerReconcileFailure("load_state", state, control.LoadBalancerHealthSummary{}, ovnHealthStatus, ovnHealthLatency, 0, 0, err, time.Since(start))
 		return err
 	}
 	healthSummary, err := r.applyLoadBalancerHealthChecks(ctx, &state)
 	if err != nil {
-		printControllerReconcileFailure(state, healthSummary, ovnHealthStatus, ovnHealthLatency, 0, 0, err, time.Since(start))
+		printControllerReconcileFailure("lb_health", state, healthSummary, ovnHealthStatus, ovnHealthLatency, 0, 0, err, time.Since(start))
 		return err
 	}
 
@@ -132,7 +133,7 @@ func (r *stateFileReconciler) reconcile(ctx context.Context, path string) error 
 	if err := r.controller.Reconcile(ctx, state); err != nil {
 		ovnOps := len(r.ovnBackend.Operations()) - opsBefore
 		executed := r.executedOperations() - executedBefore
-		printControllerReconcileFailure(state, healthSummary, ovnHealthStatus, ovnHealthLatency, ovnOps, executed, err, time.Since(start))
+		printControllerReconcileFailure("apply", state, healthSummary, ovnHealthStatus, ovnHealthLatency, ovnOps, executed, err, time.Since(start))
 		return err
 	}
 
@@ -162,12 +163,16 @@ func (r *stateFileReconciler) reconcile(ctx context.Context, path string) error 
 	return nil
 }
 
-func printControllerReconcileFailure(state control.DesiredState, healthSummary control.LoadBalancerHealthSummary, ovnHealthStatus string, ovnHealthLatency time.Duration, ovnOps, executed int, err error, duration time.Duration) {
+func printControllerReconcileFailure(phase string, state control.DesiredState, healthSummary control.LoadBalancerHealthSummary, ovnHealthStatus string, ovnHealthLatency time.Duration, ovnOps, executed int, err error, duration time.Duration) {
+	if phase == "" {
+		phase = "unknown"
+	}
 	if ovnHealthStatus == "" {
 		ovnHealthStatus = "disabled"
 	}
 	fmt.Printf(
-		"netloom-controller reconcile failed vpcs=%d subnets=%d endpoints=%d route_tables=%d policy_routes=%d gateways=%d nat_rules=%d load_balancers=%d security_groups=%d policy_entries=%d lb_health_checked=%d lb_health_healthy=%d lb_health_unhealthy=%d ovn_health=%s ovn_health_latency_ms=%d ovn_ops=%d ovn_executed=%d err=%q reconcile_duration_ms=%d\n",
+		"netloom-controller reconcile failed reconcile_phase=%s vpcs=%d subnets=%d endpoints=%d route_tables=%d policy_routes=%d gateways=%d nat_rules=%d load_balancers=%d security_groups=%d policy_entries=%d lb_health_checked=%d lb_health_healthy=%d lb_health_unhealthy=%d ovn_health=%s ovn_health_latency_ms=%d ovn_ops=%d ovn_executed=%d err=%q reconcile_duration_ms=%d\n",
+		phase,
 		len(state.VPCs),
 		len(state.Subnets),
 		len(state.Endpoints),
