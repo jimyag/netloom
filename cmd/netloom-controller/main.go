@@ -345,6 +345,8 @@ type controllerMetricsTotals struct {
 	OVNHealthChecks       uint64
 	OVNHealthFailures     uint64
 	OVNHealthLatencyTotal time.Duration
+	OVNAuditChecks        uint64
+	OVNAuditFailures      uint64
 }
 
 var controllerReconcileDurationBuckets = []time.Duration{
@@ -409,6 +411,12 @@ func (t *controllerMetricsTotals) observe(snapshot controllerMetricsSnapshot) {
 		t.OVNHealthLatencyTotal += snapshot.OVNHealthLatency
 		if snapshot.OVNHealthStatus == "error" {
 			t.OVNHealthFailures++
+		}
+	}
+	if snapshot.OVNAuditStatus != "" && snapshot.OVNAuditStatus != "disabled" {
+		t.OVNAuditChecks++
+		if snapshot.OVNAuditStatus == "error" {
+			t.OVNAuditFailures++
 		}
 	}
 }
@@ -601,6 +609,8 @@ func writeControllerMetrics(w metricWriter, snapshot controllerMetricsSnapshot, 
 	fmt.Fprintf(w, "netloom_controller_ovn_live_duplicate_managed_rows%s %d\n", auditLabels, snapshot.OVNAudit.DuplicateManagedRows)
 	writeMetricType(w, "netloom_controller_ovn_live_incomplete_managed_rows", "gauge")
 	fmt.Fprintf(w, "netloom_controller_ovn_live_incomplete_managed_rows%s %d\n", auditLabels, snapshot.OVNAudit.IncompleteManagedRows)
+	writeControllerCounter(w, "netloom_controller_ovn_audit_checks_total", auditLabels, totals.OVNAuditChecks)
+	writeControllerCounter(w, "netloom_controller_ovn_audit_failures_total", auditLabels, totals.OVNAuditFailures)
 	if snapshot.OVNAuditStatus == "error" {
 		fmt.Fprintf(w, "netloom_controller_ovn_audit_error%s 1\n", prometheusLabels(map[string]string{
 			"error":      snapshot.OVNAuditError,

@@ -355,6 +355,36 @@ func TestControllerMetricsExportsLatestSuccess(t *testing.T) {
 		`netloom_controller_ovn_live_load_balancer_health_checks{ovn_audit="ok",ovn_health="ok"} 1`,
 		`netloom_controller_ovn_live_duplicate_managed_rows{ovn_audit="ok",ovn_health="ok"} 1`,
 		`netloom_controller_ovn_live_incomplete_managed_rows{ovn_audit="ok",ovn_health="ok"} 2`,
+		`netloom_controller_ovn_audit_checks_total{ovn_audit="ok",ovn_health="ok"} 1`,
+		`netloom_controller_ovn_audit_failures_total{ovn_audit="ok",ovn_health="ok"} 0`,
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("metrics output missing %q:\n%s", expected, output)
+		}
+	}
+}
+
+func TestControllerMetricsReportsOVNAuditErrorWithoutFailingReconcile(t *testing.T) {
+	metrics := newControllerMetrics()
+	metrics.observe(controllerMetricsSnapshot{
+		OVNHealthStatus: "ok",
+		OVNAuditStatus:  "error",
+		OVNAuditError:   "audit managed NAT: database is busy",
+		Duration:        25 * time.Millisecond,
+		Success:         true,
+	})
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	metrics.handleMetrics(recorder, request)
+
+	output := recorder.Body.String()
+	for _, expected := range []string{
+		`netloom_controller_reconcile_success{ovn_health="ok"} 1`,
+		`netloom_controller_ovn_live_managed_objects{ovn_audit="error",ovn_health="ok"} 0`,
+		`netloom_controller_ovn_audit_checks_total{ovn_audit="error",ovn_health="ok"} 1`,
+		`netloom_controller_ovn_audit_failures_total{ovn_audit="error",ovn_health="ok"} 1`,
+		`netloom_controller_ovn_audit_error{error="audit managed NAT: database is busy",ovn_health="ok"} 1`,
 	} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("metrics output missing %q:\n%s", expected, output)
