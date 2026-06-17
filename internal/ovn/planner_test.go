@@ -125,7 +125,7 @@ func TestPlannerMapsNetloomObjectsToOVNOperations(t *testing.T) {
 		"--id=@nl_dhcp_prod_pod_ha create DHCP_Options cidr=10.10.0.0/24",
 		"options:server_id=10.10.0.1",
 		"options:server_mac=0a:58:3e:f3:95:f0",
-		"options:dns_server=[\"10.96.0.10\",\"fd00:96::10\"]",
+		"options:dns_server=[\"10.96.0.10\"]",
 		"options:domain_name=svc.cluster.local",
 		"options:domain_search_list=[\"cluster.local\",\"svc.cluster.local\"]",
 		"options:lease_time=7200",
