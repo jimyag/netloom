@@ -1,6 +1,7 @@
 package dataplane
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"net/netip"
@@ -274,6 +275,10 @@ func (r *PolicyRecorder) AllRuleMetrics() []RuleMetrics {
 		return 0
 	})
 	return out
+}
+
+func (r *PolicyRecorder) PolicyRuleMetrics(_ context.Context) ([]RuleMetrics, error) {
+	return r.AllRuleMetrics(), nil
 }
 
 func (r *PolicyRecorder) PolicyEvents() []PolicyEvent {

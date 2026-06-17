@@ -255,11 +255,20 @@ func TestPrintReconcileResultIncludesPolicyMapUsageSummary(t *testing.T) {
 		PolicyMapPressureEndpoints: 0,
 		PolicyFailedEndpoint:       "prod\x00pod-b",
 		PolicyFailedRevision:       3,
-		TCXFailedTarget:            "iface=eth0 direction=ingress attach=2",
-		ProviderNetworks:           1,
-		ProviderLinks:              2,
-		ProviderReady:              1,
-		ProviderDegraded:           1,
+		PolicyRulePackets:          3,
+		PolicyRuleBytes:            384,
+		PolicyRuleAllowed:          2,
+		PolicyRuleDropped:          1,
+		PolicyRuleLogged:           1,
+		PolicyRuleStats: []dataplane.RuleMetrics{
+			{EndpointID: "prod\x00pod-a", RuleCookie: 7, Packets: 1, Bytes: 256, Dropped: 1, DenyDrops: 1},
+			{EndpointID: "prod\x00pod-a", RuleCookie: 42, Packets: 2, Bytes: 128, Allowed: 2, Logged: 1},
+		},
+		TCXFailedTarget:  "iface=eth0 direction=ingress attach=2",
+		ProviderNetworks: 1,
+		ProviderLinks:    2,
+		ProviderReady:    1,
+		ProviderDegraded: 1,
 		ProviderStatus: []linuxdatapath.ProviderLinkStatus{
 			{ProviderNetwork: "physnet-a", ParentDevice: "eth1", VLAN: 100, LinkName: "nlv-a", Ready: true, ParentState: "up", LinkState: "up"},
 			{ProviderNetwork: "physnet-b", ParentDevice: "bond0", VLAN: 200, LinkName: "nlv-b", Ready: false, ParentState: "up", LinkState: "down"},
@@ -296,6 +305,13 @@ func TestPrintReconcileResultIncludesPolicyMapUsageSummary(t *testing.T) {
 		"policy_map_pressure_endpoints=0",
 		`policy_failed_endpoint="prod\x00pod-b"`,
 		"policy_failed_revision=3",
+		"policy_rule_packets=3",
+		"policy_rule_bytes=384",
+		"policy_rule_allowed=2",
+		"policy_rule_dropped=1",
+		"policy_rule_rejected=0",
+		"policy_rule_logged=1",
+		`policy_rule_stats="prod\x00pod-a"/7:p=1,b=256,a=0,d=1,r=0,nm=0,ct=0,est=0,log=0;"prod\x00pod-a"/42:p=2,b=128,a=2,d=0,r=0,nm=0,ct=0,est=0,log=1`,
 		`tcx_failed_target="iface=eth0 direction=ingress attach=2"`,
 		"provider_networks=1",
 		"provider_links=2",
@@ -337,9 +353,15 @@ func TestPrintReconcileFailureIncludesPolicyFailureLocation(t *testing.T) {
 		PolicyFailedRevision: 2,
 		PolicyRevisionMax:    2,
 		PolicyLastError:      "in-memory policy update failed after 1 operations",
-		TCXFailedTarget:      "iface=eth0 direction=ingress attach=2",
-		TCXLastError:         "kernel attach failed",
-		TCX:                  "not-requested",
+		PolicyRulePackets:    1,
+		PolicyRuleBytes:      64,
+		PolicyRuleDropped:    1,
+		PolicyRuleStats: []dataplane.RuleMetrics{
+			{EndpointID: "prod\x00pod-a", RuleCookie: 0, Packets: 1, Bytes: 64, Dropped: 1, NoMatchDrops: 1},
+		},
+		TCXFailedTarget: "iface=eth0 direction=ingress attach=2",
+		TCXLastError:    "kernel attach failed",
+		TCX:             "not-requested",
 	}, "memory", errors.New("apply failed"), 125*time.Millisecond)
 
 	if err := writer.Close(); err != nil {
@@ -356,6 +378,10 @@ func TestPrintReconcileFailureIncludesPolicyFailureLocation(t *testing.T) {
 		`policy_failed_endpoint="prod\x00pod-a"`,
 		"policy_failed_revision=2",
 		`policy_last_error="in-memory policy update failed after 1 operations"`,
+		"policy_rule_packets=1",
+		"policy_rule_bytes=64",
+		"policy_rule_dropped=1",
+		`policy_rule_stats="prod\x00pod-a"/0:p=1,b=64,a=0,d=1,r=0,nm=1,ct=0,est=0,log=0`,
 		`tcx_failed_target="iface=eth0 direction=ingress attach=2"`,
 		`tcx_last_error="kernel attach failed"`,
 		`err="apply failed"`,
@@ -392,5 +418,25 @@ func TestFormatRuleStatsIncludesCounters(t *testing.T) {
 		if !strings.Contains(formatted, expected) {
 			t.Fatalf("formatted rule stats missing %q: %s", expected, formatted)
 		}
+	}
+}
+
+func TestFormatEndpointRuleStatsIncludesEndpointAndCounters(t *testing.T) {
+	formatted := formatEndpointRuleStats([]dataplane.RuleMetrics{
+		{
+			EndpointID:   "prod\x00pod-a",
+			RuleCookie:   42,
+			Packets:      2,
+			Bytes:        256,
+			Allowed:      2,
+			Conntrack:    1,
+			Established:  1,
+			Logged:       1,
+			NoMatchDrops: 0,
+		},
+	})
+	expected := `"prod\x00pod-a"/42:p=2,b=256,a=2,d=0,r=0,nm=0,ct=1,est=1,log=1`
+	if formatted != expected {
+		t.Fatalf("formatted endpoint rule stats = %s, want %s", formatted, expected)
 	}
 }

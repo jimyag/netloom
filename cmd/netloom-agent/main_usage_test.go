@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jimyag/netloom/internal/agent"
+	"github.com/jimyag/netloom/internal/dataplane"
 	"github.com/jimyag/netloom/internal/linuxdatapath"
 )
 
@@ -35,11 +36,20 @@ func TestPrintReconcileResultReportsPolicyMapUsageSummary(t *testing.T) {
 		PolicyMapPressureEndpoints: 0,
 		PolicyFailedEndpoint:       "prod\x00pod-b",
 		PolicyFailedRevision:       3,
-		TCXFailedTarget:            "iface=eth0 direction=ingress attach=2",
-		ProviderNetworks:           1,
-		ProviderLinks:              2,
-		ProviderReady:              1,
-		ProviderDegraded:           1,
+		PolicyRulePackets:          3,
+		PolicyRuleBytes:            384,
+		PolicyRuleAllowed:          2,
+		PolicyRuleDropped:          1,
+		PolicyRuleLogged:           1,
+		PolicyRuleStats: []dataplane.RuleMetrics{
+			{EndpointID: "prod\x00pod-a", RuleCookie: 7, Packets: 1, Bytes: 256, Dropped: 1, DenyDrops: 1},
+			{EndpointID: "prod\x00pod-a", RuleCookie: 42, Packets: 2, Bytes: 128, Allowed: 2, Logged: 1},
+		},
+		TCXFailedTarget:  "iface=eth0 direction=ingress attach=2",
+		ProviderNetworks: 1,
+		ProviderLinks:    2,
+		ProviderReady:    1,
+		ProviderDegraded: 1,
 		ProviderStatus: []linuxdatapath.ProviderLinkStatus{
 			{ProviderNetwork: "physnet-a", ParentDevice: "eth1", VLAN: 100, LinkName: "nlv-a", Ready: true, ParentState: "up", LinkState: "up"},
 			{ProviderNetwork: "physnet-b", ParentDevice: "bond0", VLAN: 200, LinkName: "nlv-b", Ready: false, ParentState: "up", LinkState: "down"},
@@ -76,6 +86,13 @@ func TestPrintReconcileResultReportsPolicyMapUsageSummary(t *testing.T) {
 		"policy_map_pressure_endpoints=0",
 		`policy_failed_endpoint="prod\x00pod-b"`,
 		"policy_failed_revision=3",
+		"policy_rule_packets=3",
+		"policy_rule_bytes=384",
+		"policy_rule_allowed=2",
+		"policy_rule_dropped=1",
+		"policy_rule_rejected=0",
+		"policy_rule_logged=1",
+		`policy_rule_stats="prod\x00pod-a"/7:p=1,b=256,a=0,d=1,r=0,nm=0,ct=0,est=0,log=0;"prod\x00pod-a"/42:p=2,b=128,a=2,d=0,r=0,nm=0,ct=0,est=0,log=1`,
 		`tcx_failed_target="iface=eth0 direction=ingress attach=2"`,
 		"provider_networks=1",
 		"provider_links=2",

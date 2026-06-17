@@ -36,6 +36,13 @@ type ReconcileResult struct {
 	PolicyFailedRevision       uint64
 	PolicyRevisionMax          uint64
 	PolicyLastError            string
+	PolicyRulePackets          uint64
+	PolicyRuleBytes            uint64
+	PolicyRuleAllowed          uint64
+	PolicyRuleDropped          uint64
+	PolicyRuleRejected         uint64
+	PolicyRuleLogged           uint64
+	PolicyRuleStats            []dataplane.RuleMetrics
 	TCXFailed                  int
 	TCXRollbacks               int
 	TCXFailedTarget            string
@@ -82,9 +89,14 @@ type PolicyUsageStore interface {
 	PolicyMapUsage(context.Context) ([]dataplane.PolicyMapUsage, error)
 }
 
+type PolicyRuleMetricsStore interface {
+	PolicyRuleMetrics(context.Context) ([]dataplane.RuleMetrics, error)
+}
+
 type ReconcileOptions struct {
 	Node             string
 	Store            PolicyStore
+	PolicyTelemetry  PolicyRuleMetricsStore
 	IdentityResolver policy.IdentityResolver
 	TCXInterface     string
 	TCXWorkload      bool
@@ -176,6 +188,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, state control.DesiredState, 
 		return result, err
 	}
 	if err := populatePolicyMapUsageResult(ctx, options.Store, &result); err != nil {
+		return result, err
+	}
+	if err := populatePolicyRuleMetricsResult(ctx, options, &result); err != nil {
 		return result, err
 	}
 	r.syncConntrackPrograms(programs)
@@ -370,6 +385,9 @@ func prepareReconcile(ctx context.Context, state control.DesiredState, options R
 	if err := populatePolicyMapUsageResult(ctx, options.Store, &result); err != nil {
 		return ReconcileResult{}, nil, nil, err
 	}
+	if err := populatePolicyRuleMetricsResult(ctx, options, &result); err != nil {
+		return ReconcileResult{}, nil, nil, err
+	}
 	var targets []tcxTarget
 	if options.TCXInterface != "" || options.TCXWorkload {
 		var err error
@@ -437,6 +455,41 @@ func populatePolicyMapUsageResult(ctx context.Context, store PolicyStore, result
 	result.PolicyMapPressureMax = summary.MaxPressurePercent
 	result.PolicyMapPressureEndpoint = summary.MaxPressureEndpoint
 	result.PolicyMapPressureEndpoints = summary.PressureEndpoints
+	return nil
+}
+
+func populatePolicyRuleMetricsResult(ctx context.Context, options ReconcileOptions, result *ReconcileResult) error {
+	if result == nil {
+		return nil
+	}
+	result.PolicyRulePackets = 0
+	result.PolicyRuleBytes = 0
+	result.PolicyRuleAllowed = 0
+	result.PolicyRuleDropped = 0
+	result.PolicyRuleRejected = 0
+	result.PolicyRuleLogged = 0
+	result.PolicyRuleStats = nil
+	telemetry := options.PolicyTelemetry
+	if telemetry == nil {
+		var ok bool
+		telemetry, ok = options.Store.(PolicyRuleMetricsStore)
+		if !ok {
+			return nil
+		}
+	}
+	stats, err := telemetry.PolicyRuleMetrics(ctx)
+	if err != nil {
+		return fmt.Errorf("read policy rule metrics: %w", err)
+	}
+	result.PolicyRuleStats = append([]dataplane.RuleMetrics(nil), stats...)
+	for _, stat := range stats {
+		result.PolicyRulePackets += stat.Packets
+		result.PolicyRuleBytes += stat.Bytes
+		result.PolicyRuleAllowed += stat.Allowed
+		result.PolicyRuleDropped += stat.Dropped
+		result.PolicyRuleRejected += stat.Rejected
+		result.PolicyRuleLogged += stat.Logged
+	}
 	return nil
 }
 

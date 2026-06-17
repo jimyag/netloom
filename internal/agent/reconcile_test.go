@@ -912,6 +912,60 @@ func TestReconcileNodeReportsUnchangedPolicyStats(t *testing.T) {
 	}
 }
 
+func TestReconcileNodeReportsPolicyRuleMetricsTelemetry(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:             "pod-a",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"web"},
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "web",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("172.30.0.11/32"),
+				Ports:      []model.PortRange{{From: 8080, To: 8080}},
+				Action:     model.ActionAllow,
+			}},
+		}},
+	}
+	endpointID := model.EndpointKey("prod", "pod-a")
+	allowEntry := dataplane.PolicyMapEntry{Value: dataplane.PolicyEntry{RuleCookie: 42, Log: 1}}
+	dropEntry := dataplane.PolicyMapEntry{Value: dataplane.PolicyEntry{RuleCookie: 7, Deny: 1}}
+	recorder := dataplane.NewPolicyRecorder()
+	recorder.Observe(endpointID, dataplane.Packet{Bytes: 128}, dataplane.Decision{Verdict: dataplane.VerdictAllow, Match: &allowEntry})
+	recorder.Observe(endpointID, dataplane.Packet{Bytes: 256}, dataplane.Decision{Verdict: dataplane.VerdictDrop, Match: &dropEntry})
+
+	store := dataplane.NewInMemoryPolicyStore()
+	result, err := ReconcileNodeWithOptions(context.Background(), state, ReconcileOptions{
+		Node:            "node-a",
+		Store:           store,
+		PolicyTelemetry: recorder,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.PolicyRulePackets != 2 || result.PolicyRuleBytes != 384 || result.PolicyRuleAllowed != 1 || result.PolicyRuleDropped != 1 || result.PolicyRuleRejected != 0 || result.PolicyRuleLogged != 1 {
+		t.Fatalf("policy rule metric summary = %+v", result)
+	}
+	if len(result.PolicyRuleStats) != 2 {
+		t.Fatalf("policy rule stats = %+v, want two rule buckets", result.PolicyRuleStats)
+	}
+	if result.PolicyRuleStats[0].EndpointID != endpointID || result.PolicyRuleStats[0].RuleCookie != 7 || result.PolicyRuleStats[0].Dropped != 1 {
+		t.Fatalf("first rule stats = %+v, want drop cookie 7", result.PolicyRuleStats[0])
+	}
+	if result.PolicyRuleStats[1].EndpointID != endpointID || result.PolicyRuleStats[1].RuleCookie != 42 || result.PolicyRuleStats[1].Allowed != 1 || result.PolicyRuleStats[1].Logged != 1 {
+		t.Fatalf("second rule stats = %+v, want logged allow cookie 42", result.PolicyRuleStats[1])
+	}
+}
+
 func TestReconcileNodeReportsPolicyMapPressureSummary(t *testing.T) {
 	state := control.DesiredState{
 		Endpoints: []model.Endpoint{{
