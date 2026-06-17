@@ -38,6 +38,7 @@ type ReconcileResult struct {
 	PolicyLastError            string
 	TCXFailed                  int
 	TCXRollbacks               int
+	TCXFailedTarget            string
 	TCXLastError               string
 	ConntrackExpired           int
 	TCXEligible                int
@@ -108,6 +109,7 @@ type tcxAttachmentHandle struct {
 type tcxUpdateStats struct {
 	Failed    int
 	Rollbacks int
+	Target    string
 	LastError string
 	Attempted int
 	Reused    int
@@ -602,6 +604,7 @@ func attachTCXTargets(ctx context.Context, targets []tcxTarget, hold time.Durati
 		if err != nil {
 			stats.Failed = 1
 			stats.Rollbacks = len(attachments)
+			stats.Target = tcxTargetLabel(target)
 			stats.LastError = err.Error()
 			return "", stats, err
 		}
@@ -614,6 +617,7 @@ func attachTCXTargets(ctx context.Context, targets []tcxTarget, hold time.Durati
 		case <-ctx.Done():
 			stats.Failed = 1
 			stats.Rollbacks = len(attachments)
+			stats.Target = "hold"
 			stats.LastError = ctx.Err().Error()
 			return "", stats, ctx.Err()
 		case <-timer.C:
@@ -627,6 +631,7 @@ func (r *Reconciler) syncTCXTargets(ctx context.Context, targets []tcxTarget) (s
 	if len(targets) == 0 {
 		if err := r.closeTCXAttachments(); err != nil {
 			stats.Failed = 1
+			stats.Target = "stale"
 			stats.LastError = err.Error()
 			return "", stats, fmt.Errorf("close stale tcx attachments: %w", err)
 		}
@@ -655,6 +660,7 @@ func (r *Reconciler) syncTCXTargets(ctx context.Context, targets []tcxTarget) (s
 			}
 			stats.Failed = 1
 			stats.Rollbacks = len(attached)
+			stats.Target = tcxTargetLabel(target)
 			stats.LastError = err.Error()
 			return "", stats, fmt.Errorf("attach tcx target %s: %w", tcxTargetLabel(target), err)
 		}
@@ -678,6 +684,7 @@ func (r *Reconciler) syncTCXTargets(ctx context.Context, targets []tcxTarget) (s
 		}
 		stats.Failed = 1
 		stats.Rollbacks = len(attached)
+		stats.Target = "stale"
 		stats.LastError = closeErr.Error()
 		return "", stats, closeErr
 	}
@@ -695,6 +702,9 @@ func applyTCXUpdateStats(result *ReconcileResult, stats tcxUpdateStats) {
 	}
 	result.TCXFailed += stats.Failed
 	result.TCXRollbacks += stats.Rollbacks
+	if stats.Target != "" {
+		result.TCXFailedTarget = stats.Target
+	}
 	if stats.LastError != "" {
 		result.TCXLastError = stats.LastError
 	}

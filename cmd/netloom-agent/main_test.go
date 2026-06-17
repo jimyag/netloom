@@ -255,6 +255,7 @@ func TestPrintReconcileResultIncludesPolicyMapUsageSummary(t *testing.T) {
 		PolicyMapPressureEndpoints: 0,
 		PolicyFailedEndpoint:       "prod\x00pod-b",
 		PolicyFailedRevision:       3,
+		TCXFailedTarget:            "iface=eth0 direction=ingress attach=2",
 		ProviderNetworks:           1,
 		ProviderLinks:              2,
 		ProviderReady:              1,
@@ -295,6 +296,7 @@ func TestPrintReconcileResultIncludesPolicyMapUsageSummary(t *testing.T) {
 		"policy_map_pressure_endpoints=0",
 		`policy_failed_endpoint="prod\x00pod-b"`,
 		"policy_failed_revision=3",
+		`tcx_failed_target="iface=eth0 direction=ingress attach=2"`,
 		"provider_networks=1",
 		"provider_links=2",
 		"provider_ready=1",
@@ -335,6 +337,8 @@ func TestPrintReconcileFailureIncludesPolicyFailureLocation(t *testing.T) {
 		PolicyFailedRevision: 2,
 		PolicyRevisionMax:    2,
 		PolicyLastError:      "in-memory policy update failed after 1 operations",
+		TCXFailedTarget:      "iface=eth0 direction=ingress attach=2",
+		TCXLastError:         "kernel attach failed",
 		TCX:                  "not-requested",
 	}, "memory", errors.New("apply failed"), 125*time.Millisecond)
 
@@ -352,6 +356,8 @@ func TestPrintReconcileFailureIncludesPolicyFailureLocation(t *testing.T) {
 		`policy_failed_endpoint="prod\x00pod-a"`,
 		"policy_failed_revision=2",
 		`policy_last_error="in-memory policy update failed after 1 operations"`,
+		`tcx_failed_target="iface=eth0 direction=ingress attach=2"`,
+		`tcx_last_error="kernel attach failed"`,
 		`err="apply failed"`,
 	} {
 		if !strings.Contains(output, expected) {

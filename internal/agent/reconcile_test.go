@@ -1424,6 +1424,9 @@ func TestReconcilerSyncTCXTargetsRollsBackOnFailure(t *testing.T) {
 	if result.TCXFailed != 1 || result.TCXRollbacks != 1 {
 		t.Fatalf("tcx failure summary = %+v, want one failure and one rollback", result)
 	}
+	if result.TCXFailedTarget == "" || !strings.Contains(result.TCXFailedTarget, "direction=ingress") {
+		t.Fatalf("tcx failed target = %q, want ingress target label", result.TCXFailedTarget)
+	}
 	if !strings.Contains(result.TCXLastError, "simulated attach failure") {
 		t.Fatalf("tcx last error = %q, want attach failure", result.TCXLastError)
 	}
@@ -1488,6 +1491,9 @@ func TestReconcileNodeWithTCXInterfaceReportsAttachFailureSignals(t *testing.T) 
 	}
 	if result.TCXEligible != 1 || result.TCXFailed != 1 || result.TCXRollbacks != 0 {
 		t.Fatalf("result = %+v, want one tcx-eligible failure without rollback", result)
+	}
+	if !strings.Contains(result.TCXFailedTarget, "iface=eth0") || !strings.Contains(result.TCXFailedTarget, "direction=ingress") {
+		t.Fatalf("tcx failed target = %q, want eth0 ingress target", result.TCXFailedTarget)
 	}
 	if !strings.Contains(result.TCXLastError, "kernel attach failed") {
 		t.Fatalf("tcx last error = %q, want kernel attach failure", result.TCXLastError)
