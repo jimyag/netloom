@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -19,6 +22,8 @@ import (
 	"github.com/jimyag/netloom/internal/control"
 	"github.com/jimyag/netloom/internal/dataplane"
 	"github.com/jimyag/netloom/internal/linuxdatapath"
+	"github.com/jimyag/netloom/internal/model"
+	"github.com/jimyag/netloom/internal/policy"
 	"golang.org/x/sys/unix"
 )
 
@@ -31,6 +36,16 @@ const (
 )
 
 func main() {
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "policy-explain":
+			if err := runPolicyExplain(os.Args[2:], os.Stdout); err != nil {
+				log.Fatal(err)
+			}
+			return
+		}
+	}
+
 	if stateFile := os.Getenv("NETLOOM_STATE_FILE"); stateFile != "" {
 		if err := runStateFile(context.Background(), stateFile); err != nil {
 			log.Fatal(err)
@@ -43,6 +58,255 @@ func main() {
 		log.Fatal(err)
 	}
 	fmt.Printf("netloom-agent ready for node policy and dataplane reconciliation endpoint=%s entries=%d allow=%s deny=%s policy_allowed=%d policy_dropped=%d policy_conntrack=%d policy_established=%d policy_logged=%d rule_stats=%s drop_events=%d policy_events=%d trace_events=%d tcx=%s\n", result.EndpointID, result.Entries, result.Allowed, result.Denied, result.PolicyStats.Allowed, result.PolicyStats.Dropped, result.PolicyStats.Conntrack, result.PolicyStats.Established, result.PolicyStats.Logged, formatRuleStats(result.RuleStats), result.DropEvents, result.PolicyEvents, result.TraceEvents, result.TCX)
+}
+
+type policyExplainOptions struct {
+	stateFile      string
+	vpc            string
+	endpoint       string
+	remoteEndpoint string
+	remoteVPC      string
+	remoteIdentity uint
+	remoteIP       string
+	direction      string
+	protocol       string
+	sourcePort     uint
+	destPort       uint
+	icmpType       int
+	icmpCode       int
+	stateful       bool
+}
+
+func runPolicyExplain(args []string, stdout io.Writer) error {
+	var opts policyExplainOptions
+	flags := flag.NewFlagSet("netloom-agent policy-explain", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	flags.StringVar(&opts.stateFile, "state", os.Getenv("NETLOOM_STATE_FILE"), "desired-state JSON path")
+	flags.StringVar(&opts.vpc, "vpc", "", "endpoint VPC")
+	flags.StringVar(&opts.endpoint, "endpoint", "", "endpoint ID")
+	flags.StringVar(&opts.remoteEndpoint, "remote-endpoint", "", "remote endpoint ID used to derive identity and default remote IP")
+	flags.StringVar(&opts.remoteVPC, "remote-vpc", "", "remote endpoint VPC; defaults to -vpc")
+	flags.UintVar(&opts.remoteIdentity, "remote-identity", 0, "remote identity")
+	flags.StringVar(&opts.remoteIP, "remote-ip", "", "remote IP")
+	flags.StringVar(&opts.direction, "direction", "", "ingress or egress")
+	flags.StringVar(&opts.protocol, "protocol", "tcp", "tcp, udp, icmp, icmpv6, or any")
+	flags.UintVar(&opts.sourcePort, "source-port", 0, "source port")
+	flags.UintVar(&opts.destPort, "dest-port", 0, "destination port")
+	flags.IntVar(&opts.icmpType, "icmp-type", 0, "ICMP type")
+	flags.IntVar(&opts.icmpCode, "icmp-code", 0, "ICMP code")
+	flags.BoolVar(&opts.stateful, "stateful", false, "explain stateful policy behavior")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if opts.stateFile == "" {
+		return errors.New("missing -state or NETLOOM_STATE_FILE")
+	}
+	if opts.vpc == "" {
+		return errors.New("missing -vpc")
+	}
+	if opts.endpoint == "" {
+		return errors.New("missing -endpoint")
+	}
+	if opts.direction == "" {
+		return errors.New("missing -direction")
+	}
+
+	file, err := os.Open(opts.stateFile)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	state, err := control.LoadDesiredStateJSON(file)
+	if err != nil {
+		return err
+	}
+	state, err = withDNSObservations(state)
+	if err != nil {
+		return err
+	}
+	explanation, err := explainPolicyFromState(state, opts)
+	if err != nil {
+		return err
+	}
+	encoder := json.NewEncoder(stdout)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(explanation)
+}
+
+func explainPolicyFromState(state control.DesiredState, opts policyExplainOptions) (dataplane.PolicyExplanation, error) {
+	endpoint, ok := findEndpoint(state.Endpoints, opts.vpc, opts.endpoint)
+	if !ok {
+		return dataplane.PolicyExplanation{}, fmt.Errorf("endpoint %s/%s not found", opts.vpc, opts.endpoint)
+	}
+	remoteEndpoint, hasRemoteEndpoint, err := resolveRemoteEndpoint(state.Endpoints, opts)
+	if err != nil {
+		return dataplane.PolicyExplanation{}, err
+	}
+	groups := securityGroupsForEndpoint(state.SecurityGroups, endpoint.VPC)
+	program, err := policy.CompileForEndpointWithContext(endpoint, groups, policy.CompileContext{
+		Endpoints:  state.Endpoints,
+		Subnets:    state.Subnets,
+		Gateways:   state.Gateways,
+		Services:   state.LoadBalancers,
+		DNSRecords: state.DNSRecords,
+		CIDRGroups: state.CIDRGroups,
+	})
+	if err != nil {
+		return dataplane.PolicyExplanation{}, err
+	}
+	entries, err := dataplane.EncodeProgram(program)
+	if err != nil {
+		return dataplane.PolicyExplanation{}, err
+	}
+	packet, err := packetFromExplainOptions(opts, remoteEndpoint, hasRemoteEndpoint)
+	if err != nil {
+		return dataplane.PolicyExplanation{}, err
+	}
+	if opts.stateful {
+		return dataplane.ExplainStateful(program.EndpointID, entries, packet, dataplane.NewInMemoryConntrackStore()), nil
+	}
+	return dataplane.Explain(program.EndpointID, entries, packet), nil
+}
+
+func securityGroupsForEndpoint(groups []model.SecurityGroup, vpc string) map[string]model.SecurityGroup {
+	out := make(map[string]model.SecurityGroup, len(groups))
+	for _, group := range groups {
+		if group.VPC == vpc {
+			out[group.Name] = group
+		}
+	}
+	return out
+}
+
+func findEndpoint(endpoints []model.Endpoint, vpc, id string) (model.Endpoint, bool) {
+	for _, endpoint := range endpoints {
+		if endpoint.VPC == vpc && endpoint.ID == id {
+			return endpoint, true
+		}
+	}
+	return model.Endpoint{}, false
+}
+
+func resolveRemoteEndpoint(endpoints []model.Endpoint, opts policyExplainOptions) (model.Endpoint, bool, error) {
+	if opts.remoteEndpoint == "" {
+		return model.Endpoint{}, false, nil
+	}
+	remoteVPC := opts.remoteVPC
+	if remoteVPC == "" {
+		remoteVPC = opts.vpc
+	}
+	endpoint, ok := findEndpoint(endpoints, remoteVPC, opts.remoteEndpoint)
+	if !ok {
+		return model.Endpoint{}, false, fmt.Errorf("remote endpoint %s/%s not found", remoteVPC, opts.remoteEndpoint)
+	}
+	return endpoint, true, nil
+}
+
+func packetFromExplainOptions(opts policyExplainOptions, remoteEndpoint model.Endpoint, hasRemoteEndpoint bool) (dataplane.Packet, error) {
+	direction, err := parsePacketDirection(opts.direction)
+	if err != nil {
+		return dataplane.Packet{}, err
+	}
+	remoteIP, err := parseOptionalAddr(opts.remoteIP)
+	if err != nil {
+		return dataplane.Packet{}, err
+	}
+	remoteIdentity := uint32(opts.remoteIdentity)
+	if hasRemoteEndpoint {
+		if !remoteIP.IsValid() {
+			remoteIP = remoteEndpoint.IP
+		}
+		if remoteIdentity == 0 {
+			remoteIdentity = policy.EndpointIdentity(model.EndpointKey(remoteEndpoint.VPC, remoteEndpoint.ID))
+		}
+	}
+	protocol, err := parsePacketProtocol(opts.protocol, remoteIP)
+	if err != nil {
+		return dataplane.Packet{}, err
+	}
+	sourcePort, err := parseUint16Flag("source-port", opts.sourcePort)
+	if err != nil {
+		return dataplane.Packet{}, err
+	}
+	destPort, err := parseUint16Flag("dest-port", opts.destPort)
+	if err != nil {
+		return dataplane.Packet{}, err
+	}
+	icmpType, err := parseUint8Flag("icmp-type", opts.icmpType)
+	if err != nil {
+		return dataplane.Packet{}, err
+	}
+	icmpCode, err := parseUint8Flag("icmp-code", opts.icmpCode)
+	if err != nil {
+		return dataplane.Packet{}, err
+	}
+	return dataplane.Packet{
+		SourcePort:     sourcePort,
+		RemoteIdentity: remoteIdentity,
+		RemoteIP:       remoteIP,
+		Direction:      direction,
+		Protocol:       protocol,
+		DestPort:       destPort,
+		ICMPType:       icmpType,
+		ICMPCode:       icmpCode,
+	}, nil
+}
+
+func parsePacketDirection(value string) (uint8, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case string(model.DirectionIngress):
+		return dataplane.DirectionIngress, nil
+	case string(model.DirectionEgress):
+		return dataplane.DirectionEgress, nil
+	default:
+		return 0, fmt.Errorf("unsupported direction %q", value)
+	}
+}
+
+func parsePacketProtocol(value string, remoteIP netip.Addr) (uint8, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", string(model.ProtocolAny):
+		return 0, nil
+	case string(model.ProtocolTCP):
+		return 6, nil
+	case string(model.ProtocolUDP):
+		return 17, nil
+	case string(model.ProtocolICMP):
+		if remoteIP.IsValid() && remoteIP.Is6() && !remoteIP.Is4() {
+			return 58, nil
+		}
+		return 1, nil
+	case "icmpv6":
+		return 58, nil
+	default:
+		return 0, fmt.Errorf("unsupported protocol %q", value)
+	}
+}
+
+func parseOptionalAddr(value string) (netip.Addr, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return netip.Addr{}, nil
+	}
+	addr, err := netip.ParseAddr(value)
+	if err != nil {
+		return netip.Addr{}, fmt.Errorf("invalid remote IP %q: %w", value, err)
+	}
+	return addr, nil
+}
+
+func parseUint16Flag(name string, value uint) (uint16, error) {
+	if value > 0xffff {
+		return 0, fmt.Errorf("-%s must be <= 65535", name)
+	}
+	return uint16(value), nil
+}
+
+func parseUint8Flag(name string, value int) (uint8, error) {
+	if value < 0 || value > 0xff {
+		return 0, fmt.Errorf("-%s must be between 0 and 255", name)
+	}
+	return uint8(value), nil
 }
 
 func runStateFile(ctx context.Context, path string) error {

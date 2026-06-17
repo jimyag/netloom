@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -20,6 +21,7 @@ import (
 	"github.com/jimyag/netloom/internal/dataplane"
 	"github.com/jimyag/netloom/internal/linuxdatapath"
 	"github.com/jimyag/netloom/internal/model"
+	"github.com/jimyag/netloom/internal/policy"
 )
 
 func TestEBPFMapPinRootUsesExplicitEnv(t *testing.T) {
@@ -232,6 +234,119 @@ func TestWithDNSObservationsPrunesExpiredRecords(t *testing.T) {
 	if state.DNSRecords[0].Name != "active.example.com" || state.DNSRecords[1].Name != "static.example.com" {
 		t.Fatalf("dns records = %+v", state.DNSRecords)
 	}
+}
+
+func TestRunPolicyExplainReportsSelectorAllow(t *testing.T) {
+	statePath := writePolicyExplainState(t)
+	var stdout bytes.Buffer
+
+	err := runPolicyExplain([]string{
+		"-state", statePath,
+		"-vpc", "prod",
+		"-endpoint", "pod-a",
+		"-remote-endpoint", "pod-b",
+		"-direction", "ingress",
+		"-protocol", "tcp",
+		"-dest-port", "443",
+	}, &stdout)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var explanation dataplane.PolicyExplanation
+	if err := json.Unmarshal(stdout.Bytes(), &explanation); err != nil {
+		t.Fatalf("decode explanation: %v\n%s", err, stdout.String())
+	}
+	if explanation.EndpointID != model.EndpointKey("prod", "pod-a") {
+		t.Fatalf("endpoint = %q, want pod-a key", explanation.EndpointID)
+	}
+	if explanation.Verdict != dataplane.VerdictAllow || explanation.Reason != dataplane.ExplainReasonPolicyAllow {
+		t.Fatalf("explanation = %+v, want policy allow", explanation)
+	}
+	if !explanation.Matched || explanation.RuleCookie == 0 {
+		t.Fatalf("explanation = %+v, want matched rule cookie", explanation)
+	}
+	if explanation.Packet.RemoteIP != netip.MustParseAddr("10.10.0.11") {
+		t.Fatalf("remote IP = %s, want remote endpoint IP", explanation.Packet.RemoteIP)
+	}
+	if explanation.Packet.RemoteIdentity != policy.EndpointIdentity(model.EndpointKey("prod", "pod-b")) {
+		t.Fatalf("remote identity = %d, want derived endpoint identity", explanation.Packet.RemoteIdentity)
+	}
+}
+
+func TestRunPolicyExplainReportsNoMatchDrop(t *testing.T) {
+	statePath := writePolicyExplainState(t)
+	var stdout bytes.Buffer
+
+	err := runPolicyExplain([]string{
+		"-state", statePath,
+		"-vpc", "prod",
+		"-endpoint", "pod-a",
+		"-remote-endpoint", "pod-b",
+		"-direction", "ingress",
+		"-protocol", "tcp",
+		"-dest-port", "80",
+	}, &stdout)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var explanation dataplane.PolicyExplanation
+	if err := json.Unmarshal(stdout.Bytes(), &explanation); err != nil {
+		t.Fatalf("decode explanation: %v\n%s", err, stdout.String())
+	}
+	if explanation.Verdict != dataplane.VerdictDrop || explanation.Reason != dataplane.ExplainReasonNoPolicyMatch {
+		t.Fatalf("explanation = %+v, want no-match drop", explanation)
+	}
+	if explanation.Matched || explanation.RuleCookie != 0 {
+		t.Fatalf("explanation = %+v, want no matched rule", explanation)
+	}
+}
+
+func writePolicyExplainState(t *testing.T) string {
+	t.Helper()
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{
+			{
+				ID:             "pod-a",
+				VPC:            "prod",
+				Subnet:         "apps",
+				IP:             netip.MustParseAddr("10.10.0.10"),
+				Node:           "node-a",
+				SecurityGroups: []string{"web"},
+			},
+			{
+				ID:     "pod-b",
+				VPC:    "prod",
+				Subnet: "apps",
+				IP:     netip.MustParseAddr("10.10.0.11"),
+				Node:   "node-b",
+				Labels: model.Labels{"role": "client"},
+			},
+		},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:                     "allow-client-https",
+				Priority:               100,
+				Direction:              model.DirectionIngress,
+				Protocol:               model.ProtocolTCP,
+				RemoteEndpointSelector: model.Labels{"role": "client"},
+				Ports:                  []model.PortRange{{From: 443, To: 443}},
+				Action:                 model.ActionAllow,
+			}},
+		}},
+	}
+	data, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "state.json")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func TestPrintReconcileResultIncludesPolicyMapUsageSummary(t *testing.T) {

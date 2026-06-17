@@ -340,7 +340,8 @@ The evaluator also exposes `Explain` and `ExplainStateful` query helpers for
 debugging a packet tuple without writing policy counters. The explanation
 includes endpoint ID, verdict, reason, evaluated-entry count, matched rule
 cookie, copied policy-map entry, original packet context, and conntrack or
-stateful-rule markers. This gives operators and future CLI/API surfaces a
+stateful-rule markers. `netloom-agent policy-explain` exposes that result from
+the same desired-state compilation path used by reconcile, so operators get a
 stable answer for default-deny drops, explicit deny/reject drops, PMTU/NDP
 control allows, and stateful return-flow allows without scraping log text.
 The eBPF policy-map value also carries packet and byte counter fields. The
