@@ -276,6 +276,7 @@ func (r *stateFileReconciler) lastOVNCleanupStats() ovn.CleanupStats {
 type controllerMetrics struct {
 	mu       sync.RWMutex
 	snapshot controllerMetricsSnapshot
+	totals   controllerMetricsTotals
 	ready    bool
 }
 
@@ -294,8 +295,44 @@ type controllerMetricsSnapshot struct {
 	Error            string
 }
 
+type controllerMetricsTotals struct {
+	Attempts              uint64
+	Successes             uint64
+	Failures              uint64
+	DurationSum           time.Duration
+	DurationBuckets       []uint64
+	FailurePhases         map[string]uint64
+	OVNOpsPlanned         uint64
+	OVNOpsExecuted        uint64
+	OVNCleanupOperations  uint64
+	OVNCleanupStale       uint64
+	OVNCleanupChanged     uint64
+	LBHealthChecked       uint64
+	LBHealthHealthy       uint64
+	LBHealthUnhealthy     uint64
+	OVNHealthChecks       uint64
+	OVNHealthFailures     uint64
+	OVNHealthLatencyTotal time.Duration
+}
+
+var controllerReconcileDurationBuckets = []time.Duration{
+	10 * time.Millisecond,
+	50 * time.Millisecond,
+	100 * time.Millisecond,
+	250 * time.Millisecond,
+	500 * time.Millisecond,
+	time.Second,
+	2500 * time.Millisecond,
+	5 * time.Second,
+	10 * time.Second,
+	30 * time.Second,
+}
+
 func newControllerMetrics() *controllerMetrics {
-	return &controllerMetrics{}
+	return &controllerMetrics{totals: controllerMetricsTotals{
+		DurationBuckets: make([]uint64, len(controllerReconcileDurationBuckets)),
+		FailurePhases:   make(map[string]uint64),
+	}}
 }
 
 func (m *controllerMetrics) observe(snapshot controllerMetricsSnapshot) {
@@ -305,16 +342,64 @@ func (m *controllerMetrics) observe(snapshot controllerMetricsSnapshot) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.snapshot = snapshot
+	m.totals.observe(snapshot)
 	m.ready = true
 }
 
-func (m *controllerMetrics) snapshotValue() (controllerMetricsSnapshot, bool) {
+func (t *controllerMetricsTotals) observe(snapshot controllerMetricsSnapshot) {
+	t.Attempts++
+	if snapshot.Success {
+		t.Successes++
+	} else {
+		t.Failures++
+		phase := fallbackMetricsLabel(snapshot.Phase, "unknown")
+		if t.FailurePhases == nil {
+			t.FailurePhases = make(map[string]uint64)
+		}
+		t.FailurePhases[phase]++
+	}
+	t.DurationSum += snapshot.Duration
+	for i, bucket := range controllerReconcileDurationBuckets {
+		if snapshot.Duration <= bucket {
+			t.DurationBuckets[i]++
+		}
+	}
+	t.OVNOpsPlanned += uint64(nonNegative(snapshot.OVNOps))
+	t.OVNOpsExecuted += uint64(nonNegative(snapshot.OVNExecuted))
+	t.OVNCleanupOperations += uint64(nonNegative(snapshot.OVNCleanup.Operations))
+	t.OVNCleanupStale += uint64(nonNegative(snapshot.OVNCleanup.TotalStaleObjects()))
+	t.OVNCleanupChanged += uint64(nonNegative(snapshot.OVNCleanup.TotalChangedObjects()))
+	t.LBHealthChecked += uint64(nonNegative(snapshot.HealthSummary.Checked))
+	t.LBHealthHealthy += uint64(nonNegative(snapshot.HealthSummary.Healthy))
+	t.LBHealthUnhealthy += uint64(nonNegative(snapshot.HealthSummary.Unhealthy))
+	if snapshot.OVNHealthStatus != "" && snapshot.OVNHealthStatus != "disabled" {
+		t.OVNHealthChecks++
+		t.OVNHealthLatencyTotal += snapshot.OVNHealthLatency
+		if snapshot.OVNHealthStatus == "error" {
+			t.OVNHealthFailures++
+		}
+	}
+}
+
+func (m *controllerMetrics) snapshotValue() (controllerMetricsSnapshot, controllerMetricsTotals, bool) {
 	if m == nil {
-		return controllerMetricsSnapshot{}, false
+		return controllerMetricsSnapshot{}, controllerMetricsTotals{}, false
 	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.snapshot, m.ready
+	return m.snapshot, cloneControllerMetricsTotals(m.totals), m.ready
+}
+
+func cloneControllerMetricsTotals(totals controllerMetricsTotals) controllerMetricsTotals {
+	totals.DurationBuckets = append([]uint64(nil), totals.DurationBuckets...)
+	if totals.FailurePhases != nil {
+		cloned := make(map[string]uint64, len(totals.FailurePhases))
+		for key, value := range totals.FailurePhases {
+			cloned[key] = value
+		}
+		totals.FailurePhases = cloned
+	}
+	return totals
 }
 
 func startControllerMetricsServer(ctx context.Context, addr string, metrics *controllerMetrics) (func(), error) {
@@ -353,17 +438,17 @@ func startControllerMetricsServer(ctx context.Context, addr string, metrics *con
 
 func (m *controllerMetrics) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-	snapshot, ready := m.snapshotValue()
+	snapshot, totals, ready := m.snapshotValue()
 	if !ready {
 		writeMetricHelp(w, "netloom_controller_reconcile_ready", "Whether the controller has completed at least one reconcile attempt.")
 		writeMetricType(w, "netloom_controller_reconcile_ready", "gauge")
 		fmt.Fprintln(w, "netloom_controller_reconcile_ready 0")
 		return
 	}
-	writeControllerMetrics(w, snapshot)
+	writeControllerMetrics(w, snapshot, totals)
 }
 
-func writeControllerMetrics(w metricWriter, snapshot controllerMetricsSnapshot) {
+func writeControllerMetrics(w metricWriter, snapshot controllerMetricsSnapshot, totals controllerMetricsTotals) {
 	success := 0
 	if snapshot.Success {
 		success = 1
@@ -380,6 +465,11 @@ func writeControllerMetrics(w metricWriter, snapshot controllerMetricsSnapshot) 
 	writeMetricHelp(w, "netloom_controller_reconcile_duration_milliseconds", "Duration of the last controller reconcile attempt in milliseconds.")
 	writeMetricType(w, "netloom_controller_reconcile_duration_milliseconds", "gauge")
 	fmt.Fprintf(w, "netloom_controller_reconcile_duration_milliseconds%s %d\n", baseLabels, snapshot.Duration.Milliseconds())
+	writeControllerCounter(w, "netloom_controller_reconcile_attempts_total", baseLabels, totals.Attempts)
+	writeControllerCounter(w, "netloom_controller_reconcile_success_total", baseLabels, totals.Successes)
+	writeControllerCounter(w, "netloom_controller_reconcile_failure_total", baseLabels, totals.Failures)
+	writeControllerDurationHistogram(w, fallbackMetricsLabel(snapshot.OVNHealthStatus, "disabled"), baseLabels, totals)
+	writeControllerFailurePhaseCounters(w, totals)
 	if !snapshot.Success {
 		fmt.Fprintf(w, "netloom_controller_reconcile_failure%s 1\n", prometheusLabels(map[string]string{
 			"phase": fallbackMetricsLabel(snapshot.Phase, "unknown"),
@@ -412,8 +502,19 @@ func writeControllerMetrics(w metricWriter, snapshot controllerMetricsSnapshot) 
 	fmt.Fprintf(w, "netloom_controller_ovn_operations_planned%s %d\n", baseLabels, snapshot.OVNOps)
 	writeMetricType(w, "netloom_controller_ovn_operations_executed", "gauge")
 	fmt.Fprintf(w, "netloom_controller_ovn_operations_executed%s %d\n", baseLabels, snapshot.OVNExecuted)
+	writeControllerCounter(w, "netloom_controller_ovn_operations_planned_total", baseLabels, totals.OVNOpsPlanned)
+	writeControllerCounter(w, "netloom_controller_ovn_operations_executed_total", baseLabels, totals.OVNOpsExecuted)
+	writeControllerCounter(w, "netloom_controller_lb_health_checked_total", baseLabels, totals.LBHealthChecked)
+	writeControllerCounter(w, "netloom_controller_lb_health_healthy_total", baseLabels, totals.LBHealthHealthy)
+	writeControllerCounter(w, "netloom_controller_lb_health_unhealthy_total", baseLabels, totals.LBHealthUnhealthy)
+	writeControllerCounter(w, "netloom_controller_ovn_health_checks_total", baseLabels, totals.OVNHealthChecks)
+	writeControllerCounter(w, "netloom_controller_ovn_health_failures_total", baseLabels, totals.OVNHealthFailures)
+	writeControllerCounter(w, "netloom_controller_ovn_health_latency_milliseconds_total", baseLabels, uint64(totals.OVNHealthLatencyTotal.Milliseconds()))
 	writeMetricType(w, "netloom_controller_ovn_cleanup_operations", "gauge")
 	fmt.Fprintf(w, "netloom_controller_ovn_cleanup_operations%s %d\n", baseLabels, snapshot.OVNCleanup.Operations)
+	writeControllerCounter(w, "netloom_controller_ovn_cleanup_operations_total", baseLabels, totals.OVNCleanupOperations)
+	writeControllerCounter(w, "netloom_controller_ovn_cleanup_stale_objects_total", baseLabels, totals.OVNCleanupStale)
+	writeControllerCounter(w, "netloom_controller_ovn_cleanup_changed_objects_total", baseLabels, totals.OVNCleanupChanged)
 	writeMetricType(w, "netloom_controller_ovn_cleanup_first_reconcile_gc", "gauge")
 	fmt.Fprintf(w, "netloom_controller_ovn_cleanup_first_reconcile_gc%s %d\n", baseLabels, boolMetric(snapshot.OVNCleanup.FirstReconcileGC))
 	writeMetricType(w, "netloom_controller_ovn_cleanup_stale_objects", "gauge")
@@ -440,6 +541,37 @@ func writeControllerMetrics(w metricWriter, snapshot controllerMetricsSnapshot) 
 	fmt.Fprintf(w, "netloom_controller_ovn_cleanup_stale_load_balancers%s %d\n", baseLabels, snapshot.OVNCleanup.StaleLoadBalancers)
 	writeMetricType(w, "netloom_controller_ovn_cleanup_changed_load_balancers", "gauge")
 	fmt.Fprintf(w, "netloom_controller_ovn_cleanup_changed_load_balancers%s %d\n", baseLabels, snapshot.OVNCleanup.ChangedLoadBalancers)
+}
+
+func writeControllerCounter(w metricWriter, name, labels string, value uint64) {
+	writeMetricType(w, name, "counter")
+	fmt.Fprintf(w, "%s%s %d\n", name, labels, value)
+}
+
+func writeControllerDurationHistogram(w metricWriter, ovnHealth, baseLabels string, totals controllerMetricsTotals) {
+	name := "netloom_controller_reconcile_duration_milliseconds_histogram"
+	writeMetricType(w, name, "histogram")
+	for i, bucket := range controllerReconcileDurationBuckets {
+		labels := prometheusLabels(map[string]string{
+			"le":         strconv.FormatInt(bucket.Milliseconds(), 10),
+			"ovn_health": ovnHealth,
+		})
+		fmt.Fprintf(w, "%s_bucket%s %d\n", name, labels, totals.DurationBuckets[i])
+	}
+	fmt.Fprintf(w, "%s_bucket%s %d\n", name, prometheusLabels(map[string]string{"le": "+Inf", "ovn_health": ovnHealth}), totals.Attempts)
+	fmt.Fprintf(w, "%s_sum%s %d\n", name, baseLabels, totals.DurationSum.Milliseconds())
+	fmt.Fprintf(w, "%s_count%s %d\n", name, baseLabels, totals.Attempts)
+}
+
+func writeControllerFailurePhaseCounters(w metricWriter, totals controllerMetricsTotals) {
+	phases := make([]string, 0, len(totals.FailurePhases))
+	for phase := range totals.FailurePhases {
+		phases = append(phases, phase)
+	}
+	sort.Strings(phases)
+	for _, phase := range phases {
+		writeControllerCounter(w, "netloom_controller_reconcile_failures_by_phase_total", prometheusLabels(map[string]string{"phase": phase}), totals.FailurePhases[phase])
+	}
 }
 
 type metricWriter interface {
@@ -482,6 +614,13 @@ func boolMetric(value bool) int {
 		return 1
 	}
 	return 0
+}
+
+func nonNegative(value int) int {
+	if value < 0 {
+		return 0
+	}
+	return value
 }
 
 func (r *stateFileReconciler) applyLoadBalancerHealthChecks(ctx context.Context, state *control.DesiredState) (control.LoadBalancerHealthSummary, error) {

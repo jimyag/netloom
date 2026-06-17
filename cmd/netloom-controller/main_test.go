@@ -368,6 +368,63 @@ func TestControllerMetricsExportsLatestFailure(t *testing.T) {
 	}
 }
 
+func TestControllerMetricsAccumulatesReconcileCountersAndBuckets(t *testing.T) {
+	metrics := newControllerMetrics()
+	metrics.observe(controllerMetricsSnapshot{
+		OVNHealthStatus:  "ok",
+		OVNHealthLatency: 20 * time.Millisecond,
+		OVNOps:           5,
+		OVNExecuted:      4,
+		OVNCleanup:       ovn.CleanupStats{Operations: 2, StaleEndpoints: 1, ChangedRoutes: 1},
+		HealthSummary:    control.LoadBalancerHealthSummary{Checked: 2, Healthy: 1, Unhealthy: 1},
+		Duration:         250 * time.Millisecond,
+		Success:          true,
+	})
+	metrics.observe(controllerMetricsSnapshot{
+		OVNHealthStatus:  "error",
+		OVNHealthLatency: 30 * time.Millisecond,
+		OVNOps:           3,
+		OVNExecuted:      1,
+		OVNCleanup:       ovn.CleanupStats{Operations: 1, StaleNATRules: 1},
+		Duration:         750 * time.Millisecond,
+		Success:          false,
+		Phase:            "ovn_health",
+		Error:            "ovn health check: failed",
+	})
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	metrics.handleMetrics(recorder, request)
+
+	output := recorder.Body.String()
+	for _, expected := range []string{
+		`netloom_controller_reconcile_attempts_total{ovn_health="error"} 2`,
+		`netloom_controller_reconcile_success_total{ovn_health="error"} 1`,
+		`netloom_controller_reconcile_failure_total{ovn_health="error"} 1`,
+		`netloom_controller_reconcile_failures_by_phase_total{phase="ovn_health"} 1`,
+		`netloom_controller_reconcile_duration_milliseconds_histogram_bucket{le="250",ovn_health="error"} 1`,
+		`netloom_controller_reconcile_duration_milliseconds_histogram_bucket{le="1000",ovn_health="error"} 2`,
+		`netloom_controller_reconcile_duration_milliseconds_histogram_bucket{le="+Inf",ovn_health="error"} 2`,
+		`netloom_controller_reconcile_duration_milliseconds_histogram_sum{ovn_health="error"} 1000`,
+		`netloom_controller_reconcile_duration_milliseconds_histogram_count{ovn_health="error"} 2`,
+		`netloom_controller_ovn_operations_planned_total{ovn_health="error"} 8`,
+		`netloom_controller_ovn_operations_executed_total{ovn_health="error"} 5`,
+		`netloom_controller_lb_health_checked_total{ovn_health="error"} 2`,
+		`netloom_controller_lb_health_healthy_total{ovn_health="error"} 1`,
+		`netloom_controller_lb_health_unhealthy_total{ovn_health="error"} 1`,
+		`netloom_controller_ovn_health_checks_total{ovn_health="error"} 2`,
+		`netloom_controller_ovn_health_failures_total{ovn_health="error"} 1`,
+		`netloom_controller_ovn_health_latency_milliseconds_total{ovn_health="error"} 50`,
+		`netloom_controller_ovn_cleanup_operations_total{ovn_health="error"} 3`,
+		`netloom_controller_ovn_cleanup_stale_objects_total{ovn_health="error"} 2`,
+		`netloom_controller_ovn_cleanup_changed_objects_total{ovn_health="error"} 1`,
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("cumulative metrics output missing %q:\n%s", expected, output)
+		}
+	}
+}
+
 func captureStdout(t *testing.T, fn func()) string {
 	t.Helper()
 	original := os.Stdout
