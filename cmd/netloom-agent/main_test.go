@@ -530,3 +530,57 @@ func TestAgentMetricsExportsLatestFailure(t *testing.T) {
 		}
 	}
 }
+
+func TestAgentMetricsAccumulatesReconcileCountersAndBuckets(t *testing.T) {
+	metrics := newAgentMetrics()
+	observeAgentReconcileResult(metrics, agent.ReconcileResult{
+		Node:              "node-a",
+		PolicyAdded:       2,
+		PolicyUpdated:     1,
+		PolicyDeleted:     1,
+		PolicyEvents:      4,
+		ConntrackExpired:  3,
+		PolicyRulePackets: 5,
+		PolicyRuleBytes:   512,
+		PolicyRuleDropped: 1,
+	}, "ebpf", 250*time.Millisecond)
+	observeAgentReconcileFailure(metrics, agent.ReconcileResult{
+		Node:            "node-a",
+		PolicyFailed:    1,
+		PolicyRollbacks: 1,
+		TCXFailed:       1,
+		TCXRollbacks:    1,
+	}, "ebpf", errors.New("attach failed"), 750*time.Millisecond)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	metrics.handleMetrics(recorder, request)
+
+	output := recorder.Body.String()
+	for _, expected := range []string{
+		`netloom_agent_reconcile_attempts_total{node="node-a",store="ebpf"} 2`,
+		`netloom_agent_reconcile_success_total{node="node-a",store="ebpf"} 1`,
+		`netloom_agent_reconcile_failure_total{node="node-a",store="ebpf"} 1`,
+		`netloom_agent_reconcile_duration_milliseconds_histogram_bucket{le="250",node="node-a",store="ebpf"} 1`,
+		`netloom_agent_reconcile_duration_milliseconds_histogram_bucket{le="1000",node="node-a",store="ebpf"} 2`,
+		`netloom_agent_reconcile_duration_milliseconds_histogram_bucket{le="+Inf",node="node-a",store="ebpf"} 2`,
+		`netloom_agent_reconcile_duration_milliseconds_histogram_sum{node="node-a",store="ebpf"} 1000`,
+		`netloom_agent_reconcile_duration_milliseconds_histogram_count{node="node-a",store="ebpf"} 2`,
+		`netloom_agent_policy_added_total{node="node-a",store="ebpf"} 2`,
+		`netloom_agent_policy_updated_total{node="node-a",store="ebpf"} 1`,
+		`netloom_agent_policy_deleted_total{node="node-a",store="ebpf"} 1`,
+		`netloom_agent_policy_events_total{node="node-a",store="ebpf"} 4`,
+		`netloom_agent_policy_failed_total{node="node-a",store="ebpf"} 1`,
+		`netloom_agent_policy_rollbacks_total{node="node-a",store="ebpf"} 1`,
+		`netloom_agent_tcx_failed_total{node="node-a",store="ebpf"} 1`,
+		`netloom_agent_tcx_rollbacks_total{node="node-a",store="ebpf"} 1`,
+		`netloom_agent_conntrack_expired_total{node="node-a",store="ebpf"} 3`,
+		`netloom_agent_policy_rule_packets_observed_total{node="node-a",store="ebpf"} 5`,
+		`netloom_agent_policy_rule_bytes_observed_total{node="node-a",store="ebpf"} 512`,
+		`netloom_agent_policy_rule_dropped_observed_total{node="node-a",store="ebpf"} 1`,
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("cumulative metrics output missing %q:\n%s", expected, output)
+		}
+	}
+}

@@ -315,6 +315,7 @@ func formatEndpointRuleStats(stats []dataplane.RuleMetrics) string {
 type agentMetrics struct {
 	mu       sync.RWMutex
 	snapshot agentMetricsSnapshot
+	totals   agentMetricsTotals
 	ready    bool
 }
 
@@ -326,8 +327,44 @@ type agentMetricsSnapshot struct {
 	Error    string
 }
 
+type agentMetricsTotals struct {
+	Attempts           uint64
+	Successes          uint64
+	Failures           uint64
+	DurationSum        time.Duration
+	DurationBuckets    []uint64
+	PolicyAdded        uint64
+	PolicyUpdated      uint64
+	PolicyDeleted      uint64
+	PolicyUnchanged    uint64
+	PolicyEvents       uint64
+	PolicyFailed       uint64
+	PolicyRollbacks    uint64
+	TCXFailed          uint64
+	TCXRollbacks       uint64
+	ProviderDegraded   uint64
+	ConntrackExpired   uint64
+	PolicyRulePackets  uint64
+	PolicyRuleBytes    uint64
+	PolicyRuleDropped  uint64
+	PolicyRuleRejected uint64
+}
+
+var agentReconcileDurationBuckets = []time.Duration{
+	10 * time.Millisecond,
+	50 * time.Millisecond,
+	100 * time.Millisecond,
+	250 * time.Millisecond,
+	500 * time.Millisecond,
+	time.Second,
+	2500 * time.Millisecond,
+	5 * time.Second,
+	10 * time.Second,
+	30 * time.Second,
+}
+
 func newAgentMetrics() *agentMetrics {
-	return &agentMetrics{}
+	return &agentMetrics{totals: agentMetricsTotals{DurationBuckets: make([]uint64, len(agentReconcileDurationBuckets))}}
 }
 
 func observeAgentReconcileResult(metrics *agentMetrics, result agent.ReconcileResult, storeName string, duration time.Duration) {
@@ -366,16 +403,53 @@ func (m *agentMetrics) observe(snapshot agentMetricsSnapshot) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.snapshot = snapshot
+	m.totals.observe(snapshot)
 	m.ready = true
 }
 
-func (m *agentMetrics) snapshotValue() (agentMetricsSnapshot, bool) {
+func (t *agentMetricsTotals) observe(snapshot agentMetricsSnapshot) {
+	t.Attempts++
+	if snapshot.Success {
+		t.Successes++
+	} else {
+		t.Failures++
+	}
+	t.DurationSum += snapshot.Duration
+	for i, bucket := range agentReconcileDurationBuckets {
+		if snapshot.Duration <= bucket {
+			t.DurationBuckets[i]++
+		}
+	}
+	result := snapshot.Result
+	t.PolicyAdded += uint64(nonNegative(result.PolicyAdded))
+	t.PolicyUpdated += uint64(nonNegative(result.PolicyUpdated))
+	t.PolicyDeleted += uint64(nonNegative(result.PolicyDeleted))
+	t.PolicyUnchanged += uint64(nonNegative(result.PolicyUnchanged))
+	t.PolicyEvents += uint64(nonNegative(result.PolicyEvents))
+	t.PolicyFailed += uint64(nonNegative(result.PolicyFailed))
+	t.PolicyRollbacks += uint64(nonNegative(result.PolicyRollbacks))
+	t.TCXFailed += uint64(nonNegative(result.TCXFailed))
+	t.TCXRollbacks += uint64(nonNegative(result.TCXRollbacks))
+	t.ProviderDegraded += uint64(nonNegative(result.ProviderDegraded))
+	t.ConntrackExpired += uint64(nonNegative(result.ConntrackExpired))
+	t.PolicyRulePackets += result.PolicyRulePackets
+	t.PolicyRuleBytes += result.PolicyRuleBytes
+	t.PolicyRuleDropped += result.PolicyRuleDropped
+	t.PolicyRuleRejected += result.PolicyRuleRejected
+}
+
+func (m *agentMetrics) snapshotValue() (agentMetricsSnapshot, agentMetricsTotals, bool) {
 	if m == nil {
-		return agentMetricsSnapshot{}, false
+		return agentMetricsSnapshot{}, agentMetricsTotals{}, false
 	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.snapshot, m.ready
+	return m.snapshot, cloneAgentMetricsTotals(m.totals), m.ready
+}
+
+func cloneAgentMetricsTotals(totals agentMetricsTotals) agentMetricsTotals {
+	totals.DurationBuckets = append([]uint64(nil), totals.DurationBuckets...)
+	return totals
 }
 
 func startAgentMetricsServer(ctx context.Context, addr string, metrics *agentMetrics) (func(), error) {
@@ -414,17 +488,17 @@ func startAgentMetricsServer(ctx context.Context, addr string, metrics *agentMet
 
 func (m *agentMetrics) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-	snapshot, ready := m.snapshotValue()
+	snapshot, totals, ready := m.snapshotValue()
 	if !ready {
 		writeMetricHelp(w, "netloom_agent_reconcile_ready", "Whether the agent has completed at least one reconcile attempt.")
 		writeMetricType(w, "netloom_agent_reconcile_ready", "gauge")
 		fmt.Fprintln(w, "netloom_agent_reconcile_ready 0")
 		return
 	}
-	writeAgentMetrics(w, snapshot)
+	writeAgentMetrics(w, snapshot, totals)
 }
 
-func writeAgentMetrics(w ioStringWriter, snapshot agentMetricsSnapshot) {
+func writeAgentMetrics(w ioStringWriter, snapshot agentMetricsSnapshot, totals agentMetricsTotals) {
 	result := snapshot.Result
 	baseLabels := prometheusLabels(map[string]string{
 		"node":  result.Node,
@@ -443,6 +517,10 @@ func writeAgentMetrics(w ioStringWriter, snapshot agentMetricsSnapshot) {
 	writeMetricHelp(w, "netloom_agent_reconcile_duration_milliseconds", "Duration of the last agent reconcile attempt in milliseconds.")
 	writeMetricType(w, "netloom_agent_reconcile_duration_milliseconds", "gauge")
 	fmt.Fprintf(w, "netloom_agent_reconcile_duration_milliseconds%s %d\n", baseLabels, snapshot.Duration.Milliseconds())
+	writeAgentCounter(w, "netloom_agent_reconcile_attempts_total", baseLabels, totals.Attempts)
+	writeAgentCounter(w, "netloom_agent_reconcile_success_total", baseLabels, totals.Successes)
+	writeAgentCounter(w, "netloom_agent_reconcile_failure_total", baseLabels, totals.Failures)
+	writeAgentDurationHistogram(w, result.Node, snapshot.Store, baseLabels, totals)
 	if !snapshot.Success && snapshot.Error != "" {
 		fmt.Fprintf(w, "netloom_agent_reconcile_last_error%s 1\n", prometheusLabels(map[string]string{
 			"node":  result.Node,
@@ -463,6 +541,21 @@ func writeAgentMetrics(w ioStringWriter, snapshot agentMetricsSnapshot) {
 	}), result.PolicyMapPressureMax)
 	writeMetricType(w, "netloom_agent_policy_map_pressure_endpoints", "gauge")
 	fmt.Fprintf(w, "netloom_agent_policy_map_pressure_endpoints%s %d\n", baseLabels, result.PolicyMapPressureEndpoints)
+	writeAgentCounter(w, "netloom_agent_policy_added_total", baseLabels, totals.PolicyAdded)
+	writeAgentCounter(w, "netloom_agent_policy_updated_total", baseLabels, totals.PolicyUpdated)
+	writeAgentCounter(w, "netloom_agent_policy_deleted_total", baseLabels, totals.PolicyDeleted)
+	writeAgentCounter(w, "netloom_agent_policy_unchanged_total", baseLabels, totals.PolicyUnchanged)
+	writeAgentCounter(w, "netloom_agent_policy_events_total", baseLabels, totals.PolicyEvents)
+	writeAgentCounter(w, "netloom_agent_policy_failed_total", baseLabels, totals.PolicyFailed)
+	writeAgentCounter(w, "netloom_agent_policy_rollbacks_total", baseLabels, totals.PolicyRollbacks)
+	writeAgentCounter(w, "netloom_agent_tcx_failed_total", baseLabels, totals.TCXFailed)
+	writeAgentCounter(w, "netloom_agent_tcx_rollbacks_total", baseLabels, totals.TCXRollbacks)
+	writeAgentCounter(w, "netloom_agent_provider_degraded_total", baseLabels, totals.ProviderDegraded)
+	writeAgentCounter(w, "netloom_agent_conntrack_expired_total", baseLabels, totals.ConntrackExpired)
+	writeAgentCounter(w, "netloom_agent_policy_rule_packets_observed_total", baseLabels, totals.PolicyRulePackets)
+	writeAgentCounter(w, "netloom_agent_policy_rule_bytes_observed_total", baseLabels, totals.PolicyRuleBytes)
+	writeAgentCounter(w, "netloom_agent_policy_rule_dropped_observed_total", baseLabels, totals.PolicyRuleDropped)
+	writeAgentCounter(w, "netloom_agent_policy_rule_rejected_observed_total", baseLabels, totals.PolicyRuleRejected)
 
 	writeMetricType(w, "netloom_agent_policy_rule_packets_total", "counter")
 	fmt.Fprintf(w, "netloom_agent_policy_rule_packets_total%s %d\n", baseLabels, result.PolicyRulePackets)
@@ -503,6 +596,27 @@ func writeAgentMetrics(w ioStringWriter, snapshot agentMetricsSnapshot) {
 	fmt.Fprintf(w, "netloom_agent_tcx_rollbacks%s %d\n", baseLabels, result.TCXRollbacks)
 }
 
+func writeAgentCounter(w ioStringWriter, name, labels string, value uint64) {
+	writeMetricType(w, name, "counter")
+	fmt.Fprintf(w, "%s%s %d\n", name, labels, value)
+}
+
+func writeAgentDurationHistogram(w ioStringWriter, node, store, baseLabels string, totals agentMetricsTotals) {
+	name := "netloom_agent_reconcile_duration_milliseconds_histogram"
+	writeMetricType(w, name, "histogram")
+	for i, bucket := range agentReconcileDurationBuckets {
+		labels := prometheusLabels(map[string]string{
+			"le":    strconv.FormatInt(bucket.Milliseconds(), 10),
+			"node":  node,
+			"store": store,
+		})
+		fmt.Fprintf(w, "%s_bucket%s %d\n", name, labels, totals.DurationBuckets[i])
+	}
+	fmt.Fprintf(w, "%s_bucket%s %d\n", name, prometheusLabels(map[string]string{"le": "+Inf", "node": node, "store": store}), totals.Attempts)
+	fmt.Fprintf(w, "%s_sum%s %d\n", name, baseLabels, totals.DurationSum.Milliseconds())
+	fmt.Fprintf(w, "%s_count%s %d\n", name, baseLabels, totals.Attempts)
+}
+
 type ioStringWriter interface {
 	Write([]byte) (int, error)
 }
@@ -529,6 +643,13 @@ func prometheusLabels(labels map[string]string) string {
 		parts = append(parts, key+"="+strconv.Quote(labels[key]))
 	}
 	return "{" + strings.Join(parts, ",") + "}"
+}
+
+func nonNegative(value int) int {
+	if value < 0 {
+		return 0
+	}
+	return value
 }
 
 func reconcileInterval() (time.Duration, error) {
