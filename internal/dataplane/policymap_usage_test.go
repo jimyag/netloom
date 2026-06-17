@@ -56,6 +56,9 @@ func TestSummarizePolicyMapUsageCalculatesPressureBands(t *testing.T) {
 	if summary.MaxPressurePercent != 81 {
 		t.Fatalf("max pressure = %d, want 81", summary.MaxPressurePercent)
 	}
+	if summary.MaxPressureEndpoint != "b" {
+		t.Fatalf("max pressure endpoint = %q, want b", summary.MaxPressureEndpoint)
+	}
 	if summary.PressureEndpoints != 1 {
 		t.Fatalf("pressure endpoints = %d, want 1", summary.PressureEndpoints)
 	}

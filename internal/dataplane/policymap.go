@@ -60,10 +60,11 @@ type PolicyMapUsage struct {
 }
 
 type PolicyMapUsageSummary struct {
-	Entries            uint32
-	Capacity           uint32
-	MaxPressurePercent uint32
-	PressureEndpoints  int
+	Entries             uint32
+	Capacity            uint32
+	MaxPressurePercent  uint32
+	MaxPressureEndpoint string
+	PressureEndpoints   int
 }
 
 const DefaultPolicyMapPressureThresholdPercent = 80
@@ -352,8 +353,9 @@ func SummarizePolicyMapUsage(usages []PolicyMapUsage) PolicyMapUsageSummary {
 		summary.Entries += usage.Entries
 		summary.Capacity += usage.Capacity
 		pressure := policyMapPressurePercent(usage)
-		if pressure > summary.MaxPressurePercent {
+		if pressure > summary.MaxPressurePercent || pressure == summary.MaxPressurePercent && pressure > 0 && (summary.MaxPressureEndpoint == "" || usage.EndpointID < summary.MaxPressureEndpoint) {
 			summary.MaxPressurePercent = pressure
+			summary.MaxPressureEndpoint = usage.EndpointID
 		}
 		if pressure >= DefaultPolicyMapPressureThresholdPercent {
 			summary.PressureEndpoints++
