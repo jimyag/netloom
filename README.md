@@ -232,7 +232,7 @@ agent 以周期 reconcile 模式运行时可设置 `NETLOOM_AGENT_METRICS_ADDR=:
 controller 以 `NETLOOM_STATE_FILE` 运行时可额外设置 `NETLOOM_LB_HEALTH_PROBE=1`，对开启 `health_check.enabled` 的 TCP LoadBalancer backend 做主动 TCP 探测，并在本轮 reconcile 前把失败 backend 标记为 unhealthy；显式 `healthy=false` 的 backend 视为人工摘除，不会被探测恢复。
 
 controller 使用真实 OVN backend 时会给每次 `ovn-nbctl` 调用设置默认 30 秒超时，避免 OVN NB 卡住时阻塞 reconcile；可通过 `NETLOOM_OVN_NBCTL_TIMEOUT_MS` 调整，设置为 `0` 表示只继承外部 context。NBCTL 瞬时失败默认会做 3 次退避重试，可通过 `NETLOOM_OVN_NBCTL_RETRY_ATTEMPTS`、`NETLOOM_OVN_NBCTL_RETRY_INITIAL_BACKOFF_MS`、`NETLOOM_OVN_NBCTL_RETRY_MAX_BACKOFF_MS` 调整，适用于 OVN DB 重启或 unix socket 短暂抖动场景。
-controller 以周期 reconcile 模式运行时可设置 `NETLOOM_CONTROLLER_METRICS_ADDR=:9090`，在 `/metrics` 暴露 Prometheus text metrics，在 `/healthz` 暴露简单健康检查。metrics 包含最近一轮 reconcile 是否成功、耗时、desired object 数量、policy entry 数量、LB health probe 汇总、OVN health latency、OVN planned/executed operation 数、OVN desired-state cleanup/drift 统计，以及累计 reconcile counters 和 latency histogram。
+controller 以周期 reconcile 模式运行时可设置 `NETLOOM_CONTROLLER_METRICS_ADDR=:9090`，在 `/metrics` 暴露 Prometheus text metrics，在 `/healthz` 暴露简单健康检查。metrics 包含最近一轮 reconcile 是否成功、耗时、desired object 数量、policy entry 数量、LB health probe 汇总、OVN health latency、OVN planned/executed operation 数、OVN desired-state cleanup/drift 统计、真实 OVN NB 中带 `external_ids:netloom_owner=netloom` 的 live managed row audit 统计，以及累计 reconcile counters 和 latency histogram；live audit 会按 Logical Switch/Router/Port/Policy/NAT/LB/HealthCheck/DHCP 分表输出，并标记重复或缺少身份字段的托管行。
 state-file controller 的失败日志会输出 `reconcile_phase`，用于区分 `ovn_health`、`load_state`、`lb_health` 和 `apply` 阶段失败，便于裸金属部署时快速判断是 OVN 可用性、配置文件、健康探测还是拓扑下发问题。
 
 ## 参与贡献

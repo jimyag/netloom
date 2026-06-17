@@ -88,6 +88,10 @@ type ovnHealthChecker interface {
 	HealthCheck(context.Context) (time.Duration, error)
 }
 
+type ovnAuditor interface {
+	AuditManagedObjects(context.Context) (ovn.AuditStats, error)
+}
+
 func newStateFileReconciler() (*stateFileReconciler, error) {
 	memory := control.NewMemoryBackend()
 	var executor ovn.Executor = ovn.NewRecorderExecutor()
@@ -163,9 +167,10 @@ func (r *stateFileReconciler) reconcile(ctx context.Context, path string) error 
 
 	ovnOps := len(r.ovnBackend.Operations()) - opsBefore
 	executed := r.executedOperations() - executedBefore
+	ovnAudit, ovnAuditStatus, ovnAuditError := r.auditOVN(ctx)
 	duration := time.Since(start)
 	fmt.Printf(
-		"netloom-controller reconciled desired state vpcs=%d subnets=%d endpoints=%d route_tables=%d policy_routes=%d gateways=%d nat_rules=%d load_balancers=%d security_groups=%d policy_entries=%d lb_health_checked=%d lb_health_healthy=%d lb_health_unhealthy=%d ovn_health=%s ovn_health_latency_ms=%d ovn_ops=%d ovn_executed=%d reconcile_duration_ms=%d\n",
+		"netloom-controller reconciled desired state vpcs=%d subnets=%d endpoints=%d route_tables=%d policy_routes=%d gateways=%d nat_rules=%d load_balancers=%d security_groups=%d policy_entries=%d lb_health_checked=%d lb_health_healthy=%d lb_health_unhealthy=%d ovn_health=%s ovn_health_latency_ms=%d ovn_ops=%d ovn_executed=%d ovn_audit=%s ovn_live_managed=%d ovn_live_duplicates=%d ovn_live_incomplete=%d ovn_audit_error=%s reconcile_duration_ms=%d\n",
 		len(state.VPCs),
 		len(state.Subnets),
 		len(state.Endpoints),
@@ -183,9 +188,14 @@ func (r *stateFileReconciler) reconcile(ctx context.Context, path string) error 
 		ovnHealthLatency.Milliseconds(),
 		ovnOps,
 		executed,
+		ovnAuditStatus,
+		ovnAudit.TotalManagedObjects(),
+		ovnAudit.DuplicateManagedRows,
+		ovnAudit.IncompleteManagedRows,
+		formatResultError(ovnAuditError),
 		duration.Milliseconds(),
 	)
-	r.observeReconcileSuccess(state, healthSummary, ovnHealthStatus, ovnHealthLatency, ovnOps, executed, duration)
+	r.observeReconcileSuccess(state, healthSummary, ovnHealthStatus, ovnHealthLatency, ovnOps, executed, ovnAuditStatus, ovnAuditError, ovnAudit, duration)
 	return nil
 }
 
@@ -221,7 +231,7 @@ func printControllerReconcileFailure(phase string, state control.DesiredState, h
 	)
 }
 
-func (r *stateFileReconciler) observeReconcileSuccess(state control.DesiredState, healthSummary control.LoadBalancerHealthSummary, ovnHealthStatus string, ovnHealthLatency time.Duration, ovnOps, executed int, duration time.Duration) {
+func (r *stateFileReconciler) observeReconcileSuccess(state control.DesiredState, healthSummary control.LoadBalancerHealthSummary, ovnHealthStatus string, ovnHealthLatency time.Duration, ovnOps, executed int, ovnAuditStatus, ovnAuditError string, ovnAudit ovn.AuditStats, duration time.Duration) {
 	if r == nil || r.metrics == nil {
 		return
 	}
@@ -234,6 +244,9 @@ func (r *stateFileReconciler) observeReconcileSuccess(state control.DesiredState
 		OVNOps:           ovnOps,
 		OVNExecuted:      executed,
 		OVNCleanup:       r.lastOVNCleanupStats(),
+		OVNAuditStatus:   fallbackMetricsLabel(ovnAuditStatus, "disabled"),
+		OVNAuditError:    ovnAuditError,
+		OVNAudit:         ovnAudit,
 		Duration:         duration,
 		Success:          true,
 	})
@@ -259,6 +272,7 @@ func (r *stateFileReconciler) observeReconcileFailure(phase string, state contro
 		OVNOps:           ovnOps,
 		OVNExecuted:      executed,
 		OVNCleanup:       r.lastOVNCleanupStats(),
+		OVNAuditStatus:   "disabled",
 		Duration:         duration,
 		Success:          false,
 		Phase:            phase,
@@ -271,6 +285,21 @@ func (r *stateFileReconciler) lastOVNCleanupStats() ovn.CleanupStats {
 		return ovn.CleanupStats{}
 	}
 	return r.ovnBackend.LastCleanupStats()
+}
+
+func (r *stateFileReconciler) auditOVN(ctx context.Context) (ovn.AuditStats, string, string) {
+	if r == nil || r.executor == nil {
+		return ovn.AuditStats{}, "disabled", ""
+	}
+	auditor, ok := r.executor.(ovnAuditor)
+	if !ok {
+		return ovn.AuditStats{}, "disabled", ""
+	}
+	stats, err := auditor.AuditManagedObjects(ctx)
+	if err != nil {
+		return ovn.AuditStats{}, "error", err.Error()
+	}
+	return stats, "ok", ""
 }
 
 type controllerMetrics struct {
@@ -289,6 +318,9 @@ type controllerMetricsSnapshot struct {
 	OVNOps           int
 	OVNExecuted      int
 	OVNCleanup       ovn.CleanupStats
+	OVNAuditStatus   string
+	OVNAuditError    string
+	OVNAudit         ovn.AuditStats
 	Duration         time.Duration
 	Success          bool
 	Phase            string
@@ -456,6 +488,10 @@ func writeControllerMetrics(w metricWriter, snapshot controllerMetricsSnapshot, 
 	baseLabels := prometheusLabels(map[string]string{
 		"ovn_health": fallbackMetricsLabel(snapshot.OVNHealthStatus, "disabled"),
 	})
+	auditLabels := prometheusLabels(map[string]string{
+		"ovn_audit":  fallbackMetricsLabel(snapshot.OVNAuditStatus, "disabled"),
+		"ovn_health": fallbackMetricsLabel(snapshot.OVNHealthStatus, "disabled"),
+	})
 	writeMetricHelp(w, "netloom_controller_reconcile_ready", "Whether the controller has completed at least one reconcile attempt.")
 	writeMetricType(w, "netloom_controller_reconcile_ready", "gauge")
 	fmt.Fprintln(w, "netloom_controller_reconcile_ready 1")
@@ -541,6 +577,36 @@ func writeControllerMetrics(w metricWriter, snapshot controllerMetricsSnapshot, 
 	fmt.Fprintf(w, "netloom_controller_ovn_cleanup_stale_load_balancers%s %d\n", baseLabels, snapshot.OVNCleanup.StaleLoadBalancers)
 	writeMetricType(w, "netloom_controller_ovn_cleanup_changed_load_balancers", "gauge")
 	fmt.Fprintf(w, "netloom_controller_ovn_cleanup_changed_load_balancers%s %d\n", baseLabels, snapshot.OVNCleanup.ChangedLoadBalancers)
+	writeMetricType(w, "netloom_controller_ovn_live_managed_objects", "gauge")
+	fmt.Fprintf(w, "netloom_controller_ovn_live_managed_objects%s %d\n", auditLabels, snapshot.OVNAudit.TotalManagedObjects())
+	writeMetricType(w, "netloom_controller_ovn_live_logical_switches", "gauge")
+	fmt.Fprintf(w, "netloom_controller_ovn_live_logical_switches%s %d\n", auditLabels, snapshot.OVNAudit.ManagedLogicalSwitches)
+	writeMetricType(w, "netloom_controller_ovn_live_logical_routers", "gauge")
+	fmt.Fprintf(w, "netloom_controller_ovn_live_logical_routers%s %d\n", auditLabels, snapshot.OVNAudit.ManagedLogicalRouters)
+	writeMetricType(w, "netloom_controller_ovn_live_logical_switch_ports", "gauge")
+	fmt.Fprintf(w, "netloom_controller_ovn_live_logical_switch_ports%s %d\n", auditLabels, snapshot.OVNAudit.ManagedLogicalSwitchPorts)
+	writeMetricType(w, "netloom_controller_ovn_live_logical_router_ports", "gauge")
+	fmt.Fprintf(w, "netloom_controller_ovn_live_logical_router_ports%s %d\n", auditLabels, snapshot.OVNAudit.ManagedLogicalRouterPorts)
+	writeMetricType(w, "netloom_controller_ovn_live_logical_router_policies", "gauge")
+	fmt.Fprintf(w, "netloom_controller_ovn_live_logical_router_policies%s %d\n", auditLabels, snapshot.OVNAudit.ManagedLogicalRouterPolicies)
+	writeMetricType(w, "netloom_controller_ovn_live_nat_rules", "gauge")
+	fmt.Fprintf(w, "netloom_controller_ovn_live_nat_rules%s %d\n", auditLabels, snapshot.OVNAudit.ManagedNATRules)
+	writeMetricType(w, "netloom_controller_ovn_live_load_balancers", "gauge")
+	fmt.Fprintf(w, "netloom_controller_ovn_live_load_balancers%s %d\n", auditLabels, snapshot.OVNAudit.ManagedLoadBalancers)
+	writeMetricType(w, "netloom_controller_ovn_live_load_balancer_health_checks", "gauge")
+	fmt.Fprintf(w, "netloom_controller_ovn_live_load_balancer_health_checks%s %d\n", auditLabels, snapshot.OVNAudit.ManagedLoadBalancerHealthChecks)
+	writeMetricType(w, "netloom_controller_ovn_live_dhcp_options", "gauge")
+	fmt.Fprintf(w, "netloom_controller_ovn_live_dhcp_options%s %d\n", auditLabels, snapshot.OVNAudit.ManagedDHCPOptions)
+	writeMetricType(w, "netloom_controller_ovn_live_duplicate_managed_rows", "gauge")
+	fmt.Fprintf(w, "netloom_controller_ovn_live_duplicate_managed_rows%s %d\n", auditLabels, snapshot.OVNAudit.DuplicateManagedRows)
+	writeMetricType(w, "netloom_controller_ovn_live_incomplete_managed_rows", "gauge")
+	fmt.Fprintf(w, "netloom_controller_ovn_live_incomplete_managed_rows%s %d\n", auditLabels, snapshot.OVNAudit.IncompleteManagedRows)
+	if snapshot.OVNAuditStatus == "error" {
+		fmt.Fprintf(w, "netloom_controller_ovn_audit_error%s 1\n", prometheusLabels(map[string]string{
+			"error":      snapshot.OVNAuditError,
+			"ovn_health": fallbackMetricsLabel(snapshot.OVNHealthStatus, "disabled"),
+		}))
+	}
 }
 
 func writeControllerCounter(w metricWriter, name, labels string, value uint64) {
@@ -607,6 +673,13 @@ func fallbackMetricsLabel(value, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func formatResultError(value string) string {
+	if value == "" {
+		return "none"
+	}
+	return strconv.Quote(value)
 }
 
 func boolMetric(value bool) int {

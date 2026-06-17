@@ -301,6 +301,20 @@ func TestControllerMetricsExportsLatestSuccess(t *testing.T) {
 			ChangedPolicyRoutes:  1,
 			ChangedLoadBalancers: 1,
 		},
+		OVNAuditStatus: "ok",
+		OVNAudit: ovn.AuditStats{
+			ManagedLogicalSwitches:          1,
+			ManagedLogicalRouters:           1,
+			ManagedLogicalSwitchPorts:       2,
+			ManagedLogicalRouterPorts:       1,
+			ManagedLogicalRouterPolicies:    1,
+			ManagedNATRules:                 1,
+			ManagedLoadBalancers:            1,
+			ManagedLoadBalancerHealthChecks: 1,
+			ManagedDHCPOptions:              1,
+			DuplicateManagedRows:            1,
+			IncompleteManagedRows:           2,
+		},
 		Duration: 125 * time.Millisecond,
 		Success:  true,
 	})
@@ -333,6 +347,14 @@ func TestControllerMetricsExportsLatestSuccess(t *testing.T) {
 		`netloom_controller_ovn_cleanup_changed_routes{ovn_health="ok"} 1`,
 		`netloom_controller_ovn_cleanup_changed_policy_routes{ovn_health="ok"} 1`,
 		`netloom_controller_ovn_cleanup_changed_load_balancers{ovn_health="ok"} 1`,
+		`netloom_controller_ovn_live_managed_objects{ovn_audit="ok",ovn_health="ok"} 10`,
+		`netloom_controller_ovn_live_logical_switches{ovn_audit="ok",ovn_health="ok"} 1`,
+		`netloom_controller_ovn_live_logical_switch_ports{ovn_audit="ok",ovn_health="ok"} 2`,
+		`netloom_controller_ovn_live_logical_router_policies{ovn_audit="ok",ovn_health="ok"} 1`,
+		`netloom_controller_ovn_live_nat_rules{ovn_audit="ok",ovn_health="ok"} 1`,
+		`netloom_controller_ovn_live_load_balancer_health_checks{ovn_audit="ok",ovn_health="ok"} 1`,
+		`netloom_controller_ovn_live_duplicate_managed_rows{ovn_audit="ok",ovn_health="ok"} 1`,
+		`netloom_controller_ovn_live_incomplete_managed_rows{ovn_audit="ok",ovn_health="ok"} 2`,
 	} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("metrics output missing %q:\n%s", expected, output)
