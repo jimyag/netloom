@@ -2,6 +2,7 @@ package dataplane
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"net/netip"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/rlimit"
 	"github.com/jimyag/netloom/internal/model"
@@ -205,6 +207,9 @@ func TestIPv4L4ACLRulesFromProgramProjectsRejectActionToDrop(t *testing.T) {
 	}
 	if rules[0].Source != netip.MustParseAddr("172.30.0.20") || rules[0].Protocol != 6 || rules[0].DestPort != 8080 || rules[0].Action != TCXDrop {
 		t.Fatalf("unexpected IPv4 reject projection: %+v", rules[0])
+	}
+	if rules[0].RuleCookie != stableCookie("reject-web") {
+		t.Fatalf("rule cookie = %d, want stable cookie for source rule", rules[0].RuleCookie)
 	}
 }
 
@@ -520,6 +525,9 @@ func TestIPv6L4ACLRulesFromProgramProjectsRejectActionToDrop(t *testing.T) {
 	}
 	if rules[0].Source != netip.MustParseAddr("fd00:10::20") || rules[0].SourceCIDR != netip.MustParsePrefix("fd00:10::20/128") || rules[0].Protocol != 6 || rules[0].DestPort != 8443 || rules[0].DestPortPrefixBits != 16 || rules[0].Action != TCXDrop {
 		t.Fatalf("unexpected IPv6 reject projection: %+v", rules[0])
+	}
+	if rules[0].RuleCookie != stableCookie("reject-v6-web") {
+		t.Fatalf("rule cookie = %d, want stable cookie for source rule", rules[0].RuleCookie)
 	}
 }
 
@@ -887,6 +895,9 @@ func TestIPv4L4ACLUsesLPMTrieMapSpec(t *testing.T) {
 	if spec.KeySize != 20 {
 		t.Fatalf("key size = %d, want 20 with local+peer IPv4 key", spec.KeySize)
 	}
+	if spec.ValueSize != uint32(binary.Size(TCXL4ACLValue{})) {
+		t.Fatalf("value size = %d, want TCXL4ACLValue size", spec.ValueSize)
+	}
 	if spec.Flags == 0 {
 		t.Fatal("LPM trie map should set no-prealloc flag")
 	}
@@ -900,8 +911,58 @@ func TestIPv6L4ACLUsesLPMTrieMapSpec(t *testing.T) {
 	if spec.KeySize != 44 {
 		t.Fatalf("key size = %d, want 44 with local+peer IPv6 key", spec.KeySize)
 	}
+	if spec.ValueSize != uint32(binary.Size(TCXL4ACLValue{})) {
+		t.Fatalf("value size = %d, want TCXL4ACLValue size", spec.ValueSize)
+	}
 	if spec.Flags == 0 {
 		t.Fatal("LPM trie map should set no-prealloc flag")
+	}
+}
+
+func TestTCXL4CounterInstructionsIncrementPacketAndByteCounters(t *testing.T) {
+	instructions := tcxL4CounterInstructions()
+	if len(instructions) != 4 {
+		t.Fatalf("counter instruction count = %d, want 4", len(instructions))
+	}
+	if instructions[0].OpCode.JumpOp() != asm.InvalidJumpOp || instructions[0].Dst != asm.R1 || instructions[0].Constant != 1 {
+		t.Fatalf("first counter instruction should set packet increment, got %s", instructions[0])
+	}
+	if instructions[1].OpCode.AtomicOp() != asm.AddAtomic || instructions[1].Dst != asm.R9 || instructions[1].Src != asm.R1 || instructions[1].Offset != 8 {
+		t.Fatalf("second counter instruction should atomic-add packets at offset 8, got %s", instructions[1])
+	}
+	if instructions[2].OpCode.Class() != asm.LdXClass || instructions[2].Dst != asm.R1 || instructions[2].Src != asm.R6 || instructions[2].Offset != 0 {
+		t.Fatalf("third counter instruction should load skb len into R1, got %s", instructions[2])
+	}
+	if instructions[3].OpCode.AtomicOp() != asm.AddAtomic || instructions[3].Dst != asm.R9 || instructions[3].Src != asm.R1 || instructions[3].Offset != 16 {
+		t.Fatalf("fourth counter instruction should atomic-add bytes at offset 16, got %s", instructions[3])
+	}
+}
+
+func TestTCXL4ProgramsRecordCountersBeforeReturningAction(t *testing.T) {
+	for name, instructions := range map[string]asm.Instructions{
+		"ipv4": ipv4L4ACLTCXInstructions(1, 26),
+		"ipv6": ipv6L4ACLTCXInstructions(1, 22),
+	} {
+		t.Run(name, func(t *testing.T) {
+			packetAdd, byteAdd, actionLoad := -1, -1, -1
+			for i, ins := range instructions {
+				if ins.OpCode.AtomicOp() == asm.AddAtomic && ins.Dst == asm.R9 && ins.Src == asm.R1 && ins.Offset == 8 {
+					packetAdd = i
+				}
+				if ins.OpCode.AtomicOp() == asm.AddAtomic && ins.Dst == asm.R9 && ins.Src == asm.R1 && ins.Offset == 16 {
+					byteAdd = i
+				}
+				if ins.OpCode.Class() == asm.LdXClass && ins.Dst == asm.R0 && ins.Src == asm.R9 && ins.Offset == 0 {
+					actionLoad = i
+				}
+			}
+			if packetAdd == -1 || byteAdd == -1 || actionLoad == -1 {
+				t.Fatalf("%s TCX program missing counter/action instructions: packets=%d bytes=%d action=%d", name, packetAdd, byteAdd, actionLoad)
+			}
+			if !(packetAdd < byteAdd && byteAdd < actionLoad) {
+				t.Fatalf("%s TCX program should update counters before returning action: packets=%d bytes=%d action=%d", name, packetAdd, byteAdd, actionLoad)
+			}
+		})
 	}
 }
 

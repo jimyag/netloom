@@ -118,6 +118,14 @@ type IPv4L4ACLRule struct {
 	DestPortPrefixBits uint8
 	Action             int32
 	Precedence         uint32
+	RuleCookie         uint32
+}
+
+type TCXL4ACLValue struct {
+	Action     int32
+	RuleCookie uint32
+	Packets    uint64
+	Bytes      uint64
 }
 
 type IPv6L4Key struct {
@@ -140,6 +148,7 @@ type IPv6L4ACLRule struct {
 	DestPortPrefixBits uint8
 	Action             int32
 	Precedence         uint32
+	RuleCookie         uint32
 }
 
 func NewConstantTCXProgram(action int32) (*ebpf.Program, error) {
@@ -299,7 +308,7 @@ func ipv4L4ACLMapSpec(ruleCount int) *ebpf.MapSpec {
 		Name:       "netloom_tcx_l4",
 		Type:       ebpf.LPMTrie,
 		KeySize:    20,
-		ValueSize:  4,
+		ValueSize:  uint32(binary.Size(TCXL4ACLValue{})),
 		MaxEntries: uint32(max(256, ruleCount)),
 		Flags:      unix.BPF_F_NO_PREALLOC,
 	}
@@ -310,7 +319,7 @@ func ipv6L4ACLMapSpec(ruleCount int) *ebpf.MapSpec {
 		Name:       "netloom_tcx_l4_v6",
 		Type:       ebpf.LPMTrie,
 		KeySize:    44,
-		ValueSize:  4,
+		ValueSize:  uint32(binary.Size(TCXL4ACLValue{})),
 		MaxEntries: uint32(max(256, ruleCount)),
 		Flags:      unix.BPF_F_NO_PREALLOC,
 	}
@@ -342,7 +351,7 @@ func putIPv4L4ACLRule(aclMap *ebpf.Map, rule IPv4L4ACLRule) error {
 		DestPort:  rule.DestPort,
 		PeerIP:    ipv4L4PeerKey(sourceCIDR.Addr()),
 	}
-	value := uint32(rule.Action)
+	value := TCXL4ACLValue{Action: rule.Action, RuleCookie: rule.RuleCookie}
 	return aclMap.Put(key, value)
 }
 
@@ -372,7 +381,7 @@ func putIPv6L4ACLRule(aclMap *ebpf.Map, rule IPv6L4ACLRule) error {
 		DestPort:  rule.DestPort,
 		PeerIP:    ipv6L4PeerKey(sourceCIDR.Addr()),
 	}
-	value := uint32(rule.Action)
+	value := TCXL4ACLValue{Action: rule.Action, RuleCookie: rule.RuleCookie}
 	return aclMap.Put(key, value)
 }
 
@@ -599,6 +608,7 @@ func appendIPv4L4ACLRulesFromProgram(rules *[]IPv4L4ACLRule, seen map[IPv4L4Key]
 				DestPortPrefixBits: icmpPrefixBits,
 				Action:             action,
 				Precedence:         tcxRulePrecedence(rule),
+				RuleCookie:         stableCookie(rule.ID),
 			}); err != nil {
 				return fmt.Errorf("rule %s: %w", rule.ID, err)
 			}
@@ -615,6 +625,7 @@ func appendIPv4L4ACLRulesFromProgram(rules *[]IPv4L4ACLRule, seen map[IPv4L4Key]
 				DestPortPrefixBits: 0,
 				Action:             action,
 				Precedence:         tcxRulePrecedence(rule),
+				RuleCookie:         stableCookie(rule.ID),
 			}); err != nil {
 				return fmt.Errorf("rule %s: %w", rule.ID, err)
 			}
@@ -635,6 +646,7 @@ func appendIPv4L4ACLRulesFromProgram(rules *[]IPv4L4ACLRule, seen map[IPv4L4Key]
 					DestPortPrefixBits: block.prefixBits,
 					Action:             action,
 					Precedence:         tcxRulePrecedence(rule),
+					RuleCookie:         stableCookie(rule.ID),
 				}); err != nil {
 					return fmt.Errorf("rule %s: %w", rule.ID, err)
 				}
@@ -686,6 +698,7 @@ func appendIPv6L4ACLRulesFromProgram(rules *[]IPv6L4ACLRule, seen map[IPv6L4Key]
 				DestPortPrefixBits: icmpPrefixBits,
 				Action:             action,
 				Precedence:         tcxRulePrecedence(rule),
+				RuleCookie:         stableCookie(rule.ID),
 			}); err != nil {
 				return fmt.Errorf("rule %s: %w", rule.ID, err)
 			}
@@ -702,6 +715,7 @@ func appendIPv6L4ACLRulesFromProgram(rules *[]IPv6L4ACLRule, seen map[IPv6L4Key]
 				DestPortPrefixBits: 0,
 				Action:             action,
 				Precedence:         tcxRulePrecedence(rule),
+				RuleCookie:         stableCookie(rule.ID),
 			}); err != nil {
 				return fmt.Errorf("rule %s: %w", rule.ID, err)
 			}
@@ -722,6 +736,7 @@ func appendIPv6L4ACLRulesFromProgram(rules *[]IPv6L4ACLRule, seen map[IPv6L4Key]
 					DestPortPrefixBits: block.prefixBits,
 					Action:             action,
 					Precedence:         tcxRulePrecedence(rule),
+					RuleCookie:         stableCookie(rule.ID),
 				}); err != nil {
 					return fmt.Errorf("rule %s: %w", rule.ID, err)
 				}
@@ -1032,7 +1047,7 @@ func NewIPv4L4ACLTCXProgramForDirection(aclMap *ebpf.Map, direction model.Direct
 
 func ipv4L4ACLTCXInstructions(aclMapFD int, peerOffset int32) asm.Instructions {
 	localOffset := localOffsetForIPv4Peer(peerOffset)
-	return asm.Instructions{
+	instructions := asm.Instructions{
 		asm.Mov.Reg(asm.R6, asm.R1),
 		asm.Mov.Imm(asm.R0, ipv4L4LookupPrefixLen),
 		asm.StoreMem(asm.RFP, -20, asm.R0, asm.Word),
@@ -1066,7 +1081,11 @@ func ipv4L4ACLTCXInstructions(aclMapFD int, peerOffset int32) asm.Instructions {
 		asm.Add.Imm(asm.R2, -20),
 		asm.FnMapLookupElem.Call(),
 		asm.JEq.Imm(asm.R0, 0, "pass"),
-		asm.LoadMem(asm.R0, asm.R0, 0, asm.Word),
+		asm.Mov.Reg(asm.R9, asm.R0),
+	}
+	instructions = append(instructions, tcxL4CounterInstructions()...)
+	instructions = append(instructions,
+		asm.LoadMem(asm.R0, asm.R9, 0, asm.Word),
 		asm.Return(),
 		asm.LoadInd(asm.R0, asm.R7, 14, asm.Half).WithSymbol("load_icmp"),
 		asm.JEq.Imm(asm.R0, 0x0304, "pass"),
@@ -1074,7 +1093,8 @@ func ipv4L4ACLTCXInstructions(aclMapFD int, peerOffset int32) asm.Instructions {
 		asm.Ja.Label("lookup"),
 		asm.Mov.Imm(asm.R0, TCXPass).WithSymbol("pass"),
 		asm.Return(),
-	}
+	)
+	return instructions
 }
 
 func NewIPv6L4ACLTCXProgramForDirection(aclMap *ebpf.Map, direction model.Direction) (*ebpf.Program, error) {
@@ -1093,7 +1113,7 @@ func NewIPv6L4ACLTCXProgramForDirection(aclMap *ebpf.Map, direction model.Direct
 
 func ipv6L4ACLTCXInstructions(aclMapFD int, peerOffset int32) asm.Instructions {
 	localOffset := localOffsetForIPv6Peer(peerOffset)
-	return asm.Instructions{
+	instructions := asm.Instructions{
 		asm.Mov.Reg(asm.R6, asm.R1),
 		asm.Mov.Imm(asm.R0, ipv6L4LookupPrefixLen),
 		asm.StoreMem(asm.RFP, -44, asm.R0, asm.Word),
@@ -1145,7 +1165,11 @@ func ipv6L4ACLTCXInstructions(aclMapFD int, peerOffset int32) asm.Instructions {
 		asm.Add.Imm(asm.R2, -44),
 		asm.FnMapLookupElem.Call(),
 		asm.JEq.Imm(asm.R0, 0, "pass"),
-		asm.LoadMem(asm.R0, asm.R0, 0, asm.Word),
+		asm.Mov.Reg(asm.R9, asm.R0),
+	}
+	instructions = append(instructions, tcxL4CounterInstructions()...)
+	instructions = append(instructions,
+		asm.LoadMem(asm.R0, asm.R9, 0, asm.Word),
 		asm.Return(),
 		asm.LoadAbs(54, asm.Half).WithSymbol("load_icmpv6"),
 		asm.JEq.Imm(asm.R0, 0x0200, "pass"),
@@ -1157,6 +1181,16 @@ func ipv6L4ACLTCXInstructions(aclMapFD int, peerOffset int32) asm.Instructions {
 		asm.Ja.Label("lookup"),
 		asm.Mov.Imm(asm.R0, TCXPass).WithSymbol("pass"),
 		asm.Return(),
+	)
+	return instructions
+}
+
+func tcxL4CounterInstructions() asm.Instructions {
+	return asm.Instructions{
+		asm.Mov.Imm(asm.R1, 1),
+		asm.AddAtomic.Mem(asm.R9, asm.R1, asm.DWord, 8),
+		asm.LoadMem(asm.R1, asm.R6, 0, asm.Word),
+		asm.AddAtomic.Mem(asm.R9, asm.R1, asm.DWord, 16),
 	}
 }
 
