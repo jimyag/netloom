@@ -336,6 +336,11 @@ security-group deny in tests and future agent output. Rules with `log` set, or
 with `action=log`, also emit a policy verdict event for both allow and drop
 decisions with the same remote identity and IP context, matching the Cilium
 idea that policy verdict observability is not limited to denied traffic.
+The eBPF policy-map value also carries packet and byte counter fields. The
+eBPF store implements the same policy telemetry interface by reading live pinned
+map values, classifying counters by rule cookie and action, and preserving those
+counters during drift checks so reconcile does not rewrite a healthy map merely
+because datapath counters changed.
 `action=reject` is preserved separately from `drop` in the policy map and
 userspace evaluator: matching packets return a `reject` verdict and generate a
 `policy-reject` drop event. The current TCX fast path still maps reject to drop

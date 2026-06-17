@@ -20,7 +20,7 @@ import (
 )
 
 const defaultPolicyMapMaxEntries = 16 * 1024
-const defaultPolicyMapSchemaVersion = 1
+const defaultPolicyMapSchemaVersion = 2
 const policyMapMetaFileSuffix = ".meta"
 
 type EBPFPolicyStoreConfig struct {
@@ -389,11 +389,19 @@ func (s *EBPFPolicyStore) policyMapDrifted(m *ebpf.Map, desired []PolicyMapEntry
 	}
 	for key, desiredValue := range desiredByKey {
 		actualValue, ok := actualByKey[key]
-		if !ok || actualValue != desiredValue {
+		if !ok || !policyEntrySemanticsEqual(actualValue, desiredValue) {
 			return true, nil
 		}
 	}
 	return false, nil
+}
+
+func policyEntrySemanticsEqual(left, right PolicyEntry) bool {
+	left.Packets = 0
+	left.Bytes = 0
+	right.Packets = 0
+	right.Bytes = 0
+	return left == right
 }
 
 func (s *EBPFPolicyStore) readPolicyMapEntries(m *ebpf.Map) ([]PolicyMapEntry, error) {
@@ -537,6 +545,36 @@ func (s *EBPFPolicyStore) PolicyMapUsage(_ context.Context) ([]PolicyMapUsage, e
 	return usages, nil
 }
 
+func (s *EBPFPolicyStore) PolicyRuleMetrics(ctx context.Context) ([]RuleMetrics, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	endpointIDs, err := s.managedEndpointIDsLocked()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]RuleMetrics, 0)
+	for _, endpointID := range endpointIDs {
+		entries, err := s.policyMapEntriesLocked(endpointID)
+		if err != nil {
+			return nil, fmt.Errorf("read policy rule metrics for endpoint %s: %w", endpointID, err)
+		}
+		for _, entry := range entries {
+			out = append(out, policyRuleMetricsFromEntry(endpointID, entry))
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].EndpointID != out[j].EndpointID {
+			return out[i].EndpointID < out[j].EndpointID
+		}
+		return out[i].RuleCookie < out[j].RuleCookie
+	})
+	return out, nil
+}
+
 func (s *EBPFPolicyStore) managedEndpointIDsLocked() ([]string, error) {
 	endpoints := make(map[string]struct{}, len(s.maps)+len(s.entries))
 	for endpointID := range s.maps {
@@ -571,28 +609,52 @@ func (s *EBPFPolicyStore) managedEndpointIDsLocked() ([]string, error) {
 }
 
 func (s *EBPFPolicyStore) policyMapEntryCountLocked(endpointID string) (uint32, error) {
+	entries, err := s.policyMapEntriesLocked(endpointID)
+	if err != nil {
+		return 0, err
+	}
+	return uint32(len(entries)), nil
+}
+
+func (s *EBPFPolicyStore) policyMapEntriesLocked(endpointID string) ([]PolicyMapEntry, error) {
 	if m := s.maps[endpointID]; m != nil {
-		entries, err := s.readPolicyMapEntries(m)
-		if err != nil {
-			return 0, err
-		}
-		return uint32(len(entries)), nil
+		return s.readPolicyMapEntries(m)
 	}
 	if s.pinRoot != "" {
 		loaded, err := s.loadPinnedPolicyMap(endpointID, s.pinnedPolicyMapPath(endpointID), s.pinnedPolicyMapMetadataPath(endpointID), s.policyMapSpec())
 		if err != nil {
-			return 0, err
+			return nil, err
 		}
 		if loaded != nil {
 			defer loaded.Close()
-			entries, err := s.readPolicyMapEntries(loaded)
-			if err != nil {
-				return 0, err
-			}
-			return uint32(len(entries)), nil
+			return s.readPolicyMapEntries(loaded)
 		}
 	}
-	return uint32(len(s.entries[endpointID])), nil
+	return append([]PolicyMapEntry(nil), s.entries[endpointID]...), nil
+}
+
+func policyRuleMetricsFromEntry(endpointID string, entry PolicyMapEntry) RuleMetrics {
+	metrics := RuleMetrics{
+		EndpointID: endpointID,
+		RuleCookie: entry.Value.RuleCookie,
+		Packets:    entry.Value.Packets,
+		Bytes:      entry.Value.Bytes,
+	}
+	switch {
+	case entry.Value.Reject != 0:
+		metrics.Dropped = entry.Value.Packets
+		metrics.Rejected = entry.Value.Packets
+		metrics.RejectDrops = entry.Value.Packets
+	case entry.Value.Deny != 0:
+		metrics.Dropped = entry.Value.Packets
+		metrics.DenyDrops = entry.Value.Packets
+	default:
+		metrics.Allowed = entry.Value.Packets
+	}
+	if entry.Value.Log != 0 {
+		metrics.Logged = entry.Value.Packets
+	}
+	return metrics
 }
 
 func (s *EBPFPolicyStore) policyMapMetadataRoot() string {

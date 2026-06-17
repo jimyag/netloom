@@ -647,6 +647,63 @@ func TestEBPFPolicyStorePinnedMapCanBeUpdatedAcrossReconciles(t *testing.T) {
 	}
 }
 
+func TestPolicyEntrySemanticsIgnoreCounters(t *testing.T) {
+	left := PolicyEntry{
+		Deny:       1,
+		Precedence: 10,
+		RuleCookie: 42,
+		Packets:    100,
+		Bytes:      6400,
+	}
+	right := PolicyEntry{
+		Deny:       1,
+		Precedence: 10,
+		RuleCookie: 42,
+		Packets:    1,
+		Bytes:      64,
+	}
+	if !policyEntrySemanticsEqual(left, right) {
+		t.Fatal("counter changes should not be treated as policy semantic drift")
+	}
+	right.Deny = 0
+	if policyEntrySemanticsEqual(left, right) {
+		t.Fatal("policy action changes should still be treated as semantic drift")
+	}
+}
+
+func TestPolicyRuleMetricsFromEntryClassifiesCounters(t *testing.T) {
+	endpointID := model.EndpointKey("prod", "endpoint-a")
+	cases := []struct {
+		name string
+		in   PolicyEntry
+		want RuleMetrics
+	}{
+		{
+			name: "allow",
+			in:   PolicyEntry{RuleCookie: 10, Packets: 2, Bytes: 128, Log: 1},
+			want: RuleMetrics{EndpointID: endpointID, RuleCookie: 10, Packets: 2, Bytes: 128, Allowed: 2, Logged: 2},
+		},
+		{
+			name: "drop",
+			in:   PolicyEntry{RuleCookie: 20, Packets: 3, Bytes: 192, Deny: 1},
+			want: RuleMetrics{EndpointID: endpointID, RuleCookie: 20, Packets: 3, Bytes: 192, Dropped: 3, DenyDrops: 3},
+		},
+		{
+			name: "reject",
+			in:   PolicyEntry{RuleCookie: 30, Packets: 4, Bytes: 256, Reject: 1},
+			want: RuleMetrics{EndpointID: endpointID, RuleCookie: 30, Packets: 4, Bytes: 256, Dropped: 4, Rejected: 4, RejectDrops: 4},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := policyRuleMetricsFromEntry(endpointID, PolicyMapEntry{Value: tc.in})
+			if got != tc.want {
+				t.Fatalf("metrics = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestEBPFPolicyStoreRepairsDriftedPinnedMapEntries(t *testing.T) {
 	requireEBPFTest(t)
 	endpointID := model.EndpointKey("prod", "endpoint-a")
@@ -687,6 +744,67 @@ func TestEBPFPolicyStoreRepairsDriftedPinnedMapEntries(t *testing.T) {
 	}
 	if got := canonicalPolicyEntries(liveEntries); len(got) != 1 || got[0].Key != desired[0].Key || got[0].Value != desired[0].Value {
 		t.Fatalf("live entries after drift repair = %+v, want %+v", got, desired)
+	}
+}
+
+func TestEBPFPolicyStorePolicyRuleMetricsReadsLivePinnedMapCounters(t *testing.T) {
+	requireEBPFTest(t)
+	endpointID := model.EndpointKey("prod", "endpoint-a")
+	tmp := t.TempDir()
+	store := NewEBPFPolicyStoreWithConfig(EBPFPolicyStoreConfig{
+		PinRoot:       tmp,
+		MaxEntries:    16,
+		SchemaVersion: 2,
+	})
+	t.Cleanup(func() { _ = store.Close() })
+
+	allow := PolicyMapEntry{
+		Key:   PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 10, Direction: DirectionIngress},
+		Value: PolicyEntry{Precedence: 10, RuleCookie: 10, Log: 1},
+	}
+	drop := PolicyMapEntry{
+		Key:   PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 20, Direction: DirectionIngress},
+		Value: PolicyEntry{Precedence: 20, RuleCookie: 20, Deny: 1},
+	}
+	replaceOrSkipIfUnprivileged(t, store, endpointID, []PolicyMapEntry{allow, drop})
+
+	allow.Value.Packets = 2
+	allow.Value.Bytes = 128
+	if err := store.maps[endpointID].Put(&allow.Key, &allow.Value); err != nil {
+		t.Fatalf("update allow counter in pinned map: %v", err)
+	}
+	drop.Value.Packets = 3
+	drop.Value.Bytes = 192
+	if err := store.maps[endpointID].Put(&drop.Key, &drop.Value); err != nil {
+		t.Fatalf("update drop counter in pinned map: %v", err)
+	}
+
+	metrics, err := store.PolicyRuleMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("PolicyRuleMetrics() error = %v", err)
+	}
+	if len(metrics) != 2 {
+		t.Fatalf("PolicyRuleMetrics() = %+v, want two rule buckets", metrics)
+	}
+	if metrics[0].RuleCookie != 10 || metrics[0].Packets != 2 || metrics[0].Bytes != 128 || metrics[0].Allowed != 2 || metrics[0].Logged != 2 {
+		t.Fatalf("allow metrics = %+v", metrics[0])
+	}
+	if metrics[1].RuleCookie != 20 || metrics[1].Packets != 3 || metrics[1].Bytes != 192 || metrics[1].Dropped != 3 || metrics[1].DenyDrops != 3 {
+		t.Fatalf("drop metrics = %+v", metrics[1])
+	}
+
+	recovered := NewEBPFPolicyStoreWithConfig(EBPFPolicyStoreConfig{
+		PinRoot:       tmp,
+		MaxEntries:    16,
+		SchemaVersion: 2,
+	})
+	t.Cleanup(func() { _ = recovered.Close() })
+	metrics, err = recovered.PolicyRuleMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("recovered PolicyRuleMetrics() error = %v", err)
+	}
+	if len(metrics) != 2 || metrics[0].Packets != 2 || metrics[1].Packets != 3 {
+		t.Fatalf("recovered metrics = %+v, want live pinned counters", metrics)
 	}
 }
 

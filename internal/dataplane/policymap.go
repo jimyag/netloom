@@ -37,6 +37,8 @@ type PolicyEntry struct {
 	RuleCookie      uint32
 	Reject          uint8
 	RequireIdentity uint8
+	Packets         uint64
+	Bytes           uint64
 }
 
 type PolicyMapEntry struct {
