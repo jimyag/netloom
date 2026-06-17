@@ -349,6 +349,13 @@ them into the normal `policy_rule_stats` telemetry output. Single-workload TCX
 counters are labelled with the endpoint ID; shared-interface counters are
 labelled with the TCX target identity. This exposes Cilium-style rule hit
 accounting without changing match semantics.
+In long-running state-file agent mode, `NETLOOM_AGENT_METRICS_ADDR` enables a
+Prometheus text endpoint with `/metrics` and `/healthz`. The scrape surface
+exports the latest reconcile success and duration, policy-map
+entries/capacity/pressure, aggregate rule counters, per-endpoint or per-TCX
+target rule counters, and TCX failure/rollback signals. This keeps the log
+output useful for humans while giving operators a stable metrics surface for
+alerts and dashboards.
 `action=reject` is preserved separately from `drop` in the policy map and
 userspace evaluator: matching packets return a `reject` verdict and generate a
 `policy-reject` drop event. The current TCX fast path still maps reject to drop

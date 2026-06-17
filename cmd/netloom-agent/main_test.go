@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -438,5 +440,93 @@ func TestFormatEndpointRuleStatsIncludesEndpointAndCounters(t *testing.T) {
 	expected := `"prod\x00pod-a"/42:p=2,b=256,a=2,d=0,r=0,nm=0,ct=1,est=1,log=1`
 	if formatted != expected {
 		t.Fatalf("formatted endpoint rule stats = %s, want %s", formatted, expected)
+	}
+}
+
+func TestAgentMetricsReportsNotReadyBeforeFirstReconcile(t *testing.T) {
+	metrics := newAgentMetrics()
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+
+	metrics.handleMetrics(recorder, request)
+
+	output := recorder.Body.String()
+	if !strings.Contains(output, "netloom_agent_reconcile_ready 0") {
+		t.Fatalf("metrics output missing not-ready gauge:\n%s", output)
+	}
+}
+
+func TestAgentMetricsExportsLatestPolicyAndTCXCounters(t *testing.T) {
+	metrics := newAgentMetrics()
+	observeAgentReconcileResult(metrics, agent.ReconcileResult{
+		Node:                       "node-a",
+		Endpoints:                  1,
+		Programs:                   1,
+		Entries:                    2,
+		PolicyMapEntries:           12,
+		PolicyMapCapacity:          16,
+		PolicyMapPressureMax:       75,
+		PolicyMapPressureEndpoint:  "prod\x00pod-a",
+		PolicyMapPressureEndpoints: 1,
+		PolicyRulePackets:          3,
+		PolicyRuleBytes:            384,
+		PolicyRuleAllowed:          2,
+		PolicyRuleDropped:          1,
+		PolicyRuleLogged:           1,
+		PolicyRuleStats: []dataplane.RuleMetrics{
+			{EndpointID: "prod\x00pod-a", RuleCookie: 7, Packets: 1, Bytes: 256, Dropped: 1, DenyDrops: 1},
+			{EndpointID: "tcx:iface=eth0 direction=ingress attach=2", RuleCookie: 42, Packets: 2, Bytes: 128, Allowed: 2, Logged: 1},
+		},
+		TCXEligible:      1,
+		TCXFailed:        0,
+		TCXRollbacks:     0,
+		TCXFailedTarget:  "",
+		TCXLastError:     "",
+		Datapath:         "not-requested",
+		TCX:              "attached:eth0:ingress:policy-l4",
+		ProviderNetworks: 0,
+	}, "ebpf", 250*time.Millisecond)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	metrics.handleMetrics(recorder, request)
+
+	output := recorder.Body.String()
+	for _, expected := range []string{
+		"netloom_agent_reconcile_ready 1",
+		`netloom_agent_reconcile_success{node="node-a",store="ebpf"} 1`,
+		`netloom_agent_reconcile_duration_milliseconds{node="node-a",store="ebpf"} 250`,
+		`netloom_agent_policy_map_entries{node="node-a",store="ebpf"} 12`,
+		`netloom_agent_policy_map_pressure_percent{endpoint="prod\x00pod-a",node="node-a",store="ebpf"} 75`,
+		`netloom_agent_policy_rule_packets_total{node="node-a",store="ebpf"} 3`,
+		`netloom_agent_policy_rule_dropped_total{node="node-a",store="ebpf"} 1`,
+		`netloom_agent_policy_rule_packets_by_rule_total{endpoint="prod\x00pod-a",node="node-a",rule_cookie="7",store="ebpf"} 1`,
+		`netloom_agent_policy_rule_packets_by_rule_total{endpoint="tcx:iface=eth0 direction=ingress attach=2",node="node-a",rule_cookie="42",store="ebpf"} 2`,
+		`netloom_agent_tcx_eligible{node="node-a",store="ebpf"} 1`,
+		`netloom_agent_tcx_failed{node="node-a",store="ebpf",target=""} 0`,
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("metrics output missing %q:\n%s", expected, output)
+		}
+	}
+}
+
+func TestAgentMetricsExportsLatestFailure(t *testing.T) {
+	metrics := newAgentMetrics()
+	observeAgentReconcileFailure(metrics, agent.ReconcileResult{Node: "node-a"}, "memory", errors.New("apply failed"), 125*time.Millisecond)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	metrics.handleMetrics(recorder, request)
+
+	output := recorder.Body.String()
+	for _, expected := range []string{
+		`netloom_agent_reconcile_success{node="node-a",store="memory"} 0`,
+		`netloom_agent_reconcile_duration_milliseconds{node="node-a",store="memory"} 125`,
+		`netloom_agent_reconcile_last_error{error="apply failed",node="node-a",store="memory"} 1`,
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("failure metrics output missing %q:\n%s", expected, output)
+		}
 	}
 }

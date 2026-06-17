@@ -5,10 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
+	"net/http"
 	"net/netip"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jimyag/netloom/internal/agent"
@@ -61,14 +65,20 @@ func runStateFile(ctx context.Context, path string) error {
 		return err
 	}
 	if interval == 0 {
-		return reconcileStateFileOnce(ctx, path, node, storeName, store, hold)
+		return reconcileStateFileOnce(ctx, path, node, storeName, store, hold, nil)
 	}
 	reconciler := agent.NewReconciler(store)
 	defer func() {
 		_ = reconciler.Close()
 	}()
+	metrics := newAgentMetrics()
+	if closeMetrics, err := startAgentMetricsServer(ctx, os.Getenv("NETLOOM_AGENT_METRICS_ADDR"), metrics); err != nil {
+		return err
+	} else {
+		defer closeMetrics()
+	}
 	reconcile := func() error {
-		return reconcileStateFile(ctx, path, node, storeName, reconciler)
+		return reconcileStateFile(ctx, path, node, storeName, reconciler, metrics)
 	}
 	for {
 		if err := reconcile(); err != nil {
@@ -84,20 +94,23 @@ func runStateFile(ctx context.Context, path string) error {
 	}
 }
 
-func reconcileStateFile(ctx context.Context, path, node, storeName string, reconciler *agent.Reconciler) error {
+func reconcileStateFile(ctx context.Context, path, node, storeName string, reconciler *agent.Reconciler, metrics *agentMetrics) error {
 	start := time.Now()
 	file, err := os.Open(path)
 	if err != nil {
+		observeAgentReconcileFailure(metrics, agent.ReconcileResult{Node: node}, storeName, err, time.Since(start))
 		return err
 	}
 	defer file.Close()
 
 	state, err := control.LoadDesiredStateJSON(file)
 	if err != nil {
+		observeAgentReconcileFailure(metrics, agent.ReconcileResult{Node: node}, storeName, err, time.Since(start))
 		return err
 	}
 	state, err = withDNSObservations(state)
 	if err != nil {
+		observeAgentReconcileFailure(metrics, agent.ReconcileResult{Node: node}, storeName, err, time.Since(start))
 		return err
 	}
 	result, err := reconciler.Reconcile(ctx, state, agent.ReconcileOptions{
@@ -108,27 +121,34 @@ func reconcileStateFile(ctx context.Context, path, node, storeName string, recon
 		LinuxDatapath: linuxDatapathOptions(),
 	})
 	if err != nil {
-		printReconcileFailure(result, storeName, err, time.Since(start))
+		duration := time.Since(start)
+		printReconcileFailure(result, storeName, err, duration)
+		observeAgentReconcileFailure(metrics, result, storeName, err, duration)
 		return err
 	}
-	printReconcileResult(result, storeName, time.Since(start))
+	duration := time.Since(start)
+	printReconcileResult(result, storeName, duration)
+	observeAgentReconcileResult(metrics, result, storeName, duration)
 	return nil
 }
 
-func reconcileStateFileOnce(ctx context.Context, path, node, storeName string, store agent.PolicyStore, hold time.Duration) error {
+func reconcileStateFileOnce(ctx context.Context, path, node, storeName string, store agent.PolicyStore, hold time.Duration, metrics *agentMetrics) error {
 	start := time.Now()
 	file, err := os.Open(path)
 	if err != nil {
+		observeAgentReconcileFailure(metrics, agent.ReconcileResult{Node: node}, storeName, err, time.Since(start))
 		return err
 	}
 	defer file.Close()
 
 	state, err := control.LoadDesiredStateJSON(file)
 	if err != nil {
+		observeAgentReconcileFailure(metrics, agent.ReconcileResult{Node: node}, storeName, err, time.Since(start))
 		return err
 	}
 	state, err = withDNSObservations(state)
 	if err != nil {
+		observeAgentReconcileFailure(metrics, agent.ReconcileResult{Node: node}, storeName, err, time.Since(start))
 		return err
 	}
 	result, err := agent.ReconcileNodeWithOptions(ctx, state, agent.ReconcileOptions{
@@ -140,10 +160,14 @@ func reconcileStateFileOnce(ctx context.Context, path, node, storeName string, s
 		LinuxDatapath: linuxDatapathOptions(),
 	})
 	if err != nil {
-		printReconcileFailure(result, storeName, err, time.Since(start))
+		duration := time.Since(start)
+		printReconcileFailure(result, storeName, err, duration)
+		observeAgentReconcileFailure(metrics, result, storeName, err, duration)
 		return err
 	}
-	printReconcileResult(result, storeName, time.Since(start))
+	duration := time.Since(start)
+	printReconcileResult(result, storeName, duration)
+	observeAgentReconcileResult(metrics, result, storeName, duration)
 	return nil
 }
 
@@ -286,6 +310,225 @@ func formatEndpointRuleStats(stats []dataplane.RuleMetrics) string {
 		parts = append(parts, fmt.Sprintf("%s/%d:p=%d,b=%d,a=%d,d=%d,r=%d,nm=%d,ct=%d,est=%d,log=%d", strconv.Quote(stat.EndpointID), stat.RuleCookie, stat.Packets, stat.Bytes, stat.Allowed, stat.Dropped, stat.Rejected, stat.NoMatchDrops, stat.Conntrack, stat.Established, stat.Logged))
 	}
 	return strings.Join(parts, ";")
+}
+
+type agentMetrics struct {
+	mu       sync.RWMutex
+	snapshot agentMetricsSnapshot
+	ready    bool
+}
+
+type agentMetricsSnapshot struct {
+	Result   agent.ReconcileResult
+	Store    string
+	Duration time.Duration
+	Success  bool
+	Error    string
+}
+
+func newAgentMetrics() *agentMetrics {
+	return &agentMetrics{}
+}
+
+func observeAgentReconcileResult(metrics *agentMetrics, result agent.ReconcileResult, storeName string, duration time.Duration) {
+	if metrics == nil {
+		return
+	}
+	metrics.observe(agentMetricsSnapshot{
+		Result:   result,
+		Store:    storeName,
+		Duration: duration,
+		Success:  true,
+	})
+}
+
+func observeAgentReconcileFailure(metrics *agentMetrics, result agent.ReconcileResult, storeName string, err error, duration time.Duration) {
+	if metrics == nil {
+		return
+	}
+	message := ""
+	if err != nil {
+		message = err.Error()
+	}
+	metrics.observe(agentMetricsSnapshot{
+		Result:   result,
+		Store:    storeName,
+		Duration: duration,
+		Success:  false,
+		Error:    message,
+	})
+}
+
+func (m *agentMetrics) observe(snapshot agentMetricsSnapshot) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.snapshot = snapshot
+	m.ready = true
+}
+
+func (m *agentMetrics) snapshotValue() (agentMetricsSnapshot, bool) {
+	if m == nil {
+		return agentMetricsSnapshot{}, false
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.snapshot, m.ready
+}
+
+func startAgentMetricsServer(ctx context.Context, addr string, metrics *agentMetrics) (func(), error) {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return func() {}, nil
+	}
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("listen agent metrics endpoint %s: %w", addr, err)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/metrics", metrics.handleMetrics)
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok\n"))
+	})
+	server := &http.Server{Handler: mux}
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = server.Shutdown(shutdownCtx)
+	}()
+	go func() {
+		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Printf("netloom-agent metrics endpoint stopped: %v", err)
+		}
+	}()
+	return func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = server.Shutdown(shutdownCtx)
+	}, nil
+}
+
+func (m *agentMetrics) handleMetrics(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	snapshot, ready := m.snapshotValue()
+	if !ready {
+		writeMetricHelp(w, "netloom_agent_reconcile_ready", "Whether the agent has completed at least one reconcile attempt.")
+		writeMetricType(w, "netloom_agent_reconcile_ready", "gauge")
+		fmt.Fprintln(w, "netloom_agent_reconcile_ready 0")
+		return
+	}
+	writeAgentMetrics(w, snapshot)
+}
+
+func writeAgentMetrics(w ioStringWriter, snapshot agentMetricsSnapshot) {
+	result := snapshot.Result
+	baseLabels := prometheusLabels(map[string]string{
+		"node":  result.Node,
+		"store": snapshot.Store,
+	})
+	success := 0
+	if snapshot.Success {
+		success = 1
+	}
+	writeMetricHelp(w, "netloom_agent_reconcile_ready", "Whether the agent has completed at least one reconcile attempt.")
+	writeMetricType(w, "netloom_agent_reconcile_ready", "gauge")
+	fmt.Fprintln(w, "netloom_agent_reconcile_ready 1")
+	writeMetricHelp(w, "netloom_agent_reconcile_success", "Whether the last agent reconcile attempt succeeded.")
+	writeMetricType(w, "netloom_agent_reconcile_success", "gauge")
+	fmt.Fprintf(w, "netloom_agent_reconcile_success%s %d\n", baseLabels, success)
+	writeMetricHelp(w, "netloom_agent_reconcile_duration_milliseconds", "Duration of the last agent reconcile attempt in milliseconds.")
+	writeMetricType(w, "netloom_agent_reconcile_duration_milliseconds", "gauge")
+	fmt.Fprintf(w, "netloom_agent_reconcile_duration_milliseconds%s %d\n", baseLabels, snapshot.Duration.Milliseconds())
+	if !snapshot.Success && snapshot.Error != "" {
+		fmt.Fprintf(w, "netloom_agent_reconcile_last_error%s 1\n", prometheusLabels(map[string]string{
+			"node":  result.Node,
+			"store": snapshot.Store,
+			"error": snapshot.Error,
+		}))
+	}
+
+	writeMetricType(w, "netloom_agent_policy_map_entries", "gauge")
+	fmt.Fprintf(w, "netloom_agent_policy_map_entries%s %d\n", baseLabels, result.PolicyMapEntries)
+	writeMetricType(w, "netloom_agent_policy_map_capacity", "gauge")
+	fmt.Fprintf(w, "netloom_agent_policy_map_capacity%s %d\n", baseLabels, result.PolicyMapCapacity)
+	writeMetricType(w, "netloom_agent_policy_map_pressure_percent", "gauge")
+	fmt.Fprintf(w, "netloom_agent_policy_map_pressure_percent%s %d\n", prometheusLabels(map[string]string{
+		"node":     result.Node,
+		"store":    snapshot.Store,
+		"endpoint": result.PolicyMapPressureEndpoint,
+	}), result.PolicyMapPressureMax)
+	writeMetricType(w, "netloom_agent_policy_map_pressure_endpoints", "gauge")
+	fmt.Fprintf(w, "netloom_agent_policy_map_pressure_endpoints%s %d\n", baseLabels, result.PolicyMapPressureEndpoints)
+
+	writeMetricType(w, "netloom_agent_policy_rule_packets_total", "counter")
+	fmt.Fprintf(w, "netloom_agent_policy_rule_packets_total%s %d\n", baseLabels, result.PolicyRulePackets)
+	writeMetricType(w, "netloom_agent_policy_rule_bytes_total", "counter")
+	fmt.Fprintf(w, "netloom_agent_policy_rule_bytes_total%s %d\n", baseLabels, result.PolicyRuleBytes)
+	writeMetricType(w, "netloom_agent_policy_rule_allowed_total", "counter")
+	fmt.Fprintf(w, "netloom_agent_policy_rule_allowed_total%s %d\n", baseLabels, result.PolicyRuleAllowed)
+	writeMetricType(w, "netloom_agent_policy_rule_dropped_total", "counter")
+	fmt.Fprintf(w, "netloom_agent_policy_rule_dropped_total%s %d\n", baseLabels, result.PolicyRuleDropped)
+	writeMetricType(w, "netloom_agent_policy_rule_rejected_total", "counter")
+	fmt.Fprintf(w, "netloom_agent_policy_rule_rejected_total%s %d\n", baseLabels, result.PolicyRuleRejected)
+	writeMetricType(w, "netloom_agent_policy_rule_logged_total", "counter")
+	fmt.Fprintf(w, "netloom_agent_policy_rule_logged_total%s %d\n", baseLabels, result.PolicyRuleLogged)
+	for _, stat := range result.PolicyRuleStats {
+		labels := prometheusLabels(map[string]string{
+			"node":        result.Node,
+			"store":       snapshot.Store,
+			"endpoint":    stat.EndpointID,
+			"rule_cookie": strconv.FormatUint(uint64(stat.RuleCookie), 10),
+		})
+		fmt.Fprintf(w, "netloom_agent_policy_rule_packets_by_rule_total%s %d\n", labels, stat.Packets)
+		fmt.Fprintf(w, "netloom_agent_policy_rule_bytes_by_rule_total%s %d\n", labels, stat.Bytes)
+		fmt.Fprintf(w, "netloom_agent_policy_rule_allowed_by_rule_total%s %d\n", labels, stat.Allowed)
+		fmt.Fprintf(w, "netloom_agent_policy_rule_dropped_by_rule_total%s %d\n", labels, stat.Dropped)
+		fmt.Fprintf(w, "netloom_agent_policy_rule_rejected_by_rule_total%s %d\n", labels, stat.Rejected)
+		fmt.Fprintf(w, "netloom_agent_policy_rule_logged_by_rule_total%s %d\n", labels, stat.Logged)
+	}
+
+	writeMetricType(w, "netloom_agent_tcx_eligible", "gauge")
+	fmt.Fprintf(w, "netloom_agent_tcx_eligible%s %d\n", baseLabels, result.TCXEligible)
+	writeMetricType(w, "netloom_agent_tcx_failed", "gauge")
+	fmt.Fprintf(w, "netloom_agent_tcx_failed%s %d\n", prometheusLabels(map[string]string{
+		"node":   result.Node,
+		"store":  snapshot.Store,
+		"target": result.TCXFailedTarget,
+	}), result.TCXFailed)
+	writeMetricType(w, "netloom_agent_tcx_rollbacks", "gauge")
+	fmt.Fprintf(w, "netloom_agent_tcx_rollbacks%s %d\n", baseLabels, result.TCXRollbacks)
+}
+
+type ioStringWriter interface {
+	Write([]byte) (int, error)
+}
+
+func writeMetricHelp(w ioStringWriter, name, help string) {
+	fmt.Fprintf(w, "# HELP %s %s\n", name, help)
+}
+
+func writeMetricType(w ioStringWriter, name, typ string) {
+	fmt.Fprintf(w, "# TYPE %s %s\n", name, typ)
+}
+
+func prometheusLabels(labels map[string]string) string {
+	if len(labels) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(labels))
+	for key := range labels {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, key+"="+strconv.Quote(labels[key]))
+	}
+	return "{" + strings.Join(parts, ",") + "}"
 }
 
 func reconcileInterval() (time.Duration, error) {
