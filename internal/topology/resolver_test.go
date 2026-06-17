@@ -333,6 +333,10 @@ func TestResolveLoadBalancerSelectionFieldsDriveBackendChoice(t *testing.T) {
 
 func TestResolveLoadBalancerRequiresBoundSourceSubnet(t *testing.T) {
 	state := State{
+		Subnets: map[string]model.Subnet{
+			"clients": {Name: "clients", VPC: "prod", CIDR: netip.MustParsePrefix("10.10.1.0/24")},
+			"apps":    {Name: "apps", VPC: "prod", CIDR: netip.MustParsePrefix("10.10.0.0/24")},
+		},
 		Endpoints: map[string]model.Endpoint{
 			"pod-a": {ID: "pod-a", VPC: "prod", Subnet: "clients", IP: netip.MustParseAddr("10.10.1.10")},
 		},
@@ -356,6 +360,48 @@ func TestResolveLoadBalancerRequiresBoundSourceSubnet(t *testing.T) {
 	}
 	if decision.Action != model.ActionDrop || decision.MatchedBy != "no-route" {
 		t.Fatalf("decision = %+v, want no-route drop", decision)
+	}
+}
+
+func TestResolveLoadBalancerBoundSourceSubnetMatchesCIDRWithoutEndpoint(t *testing.T) {
+	state := State{
+		Subnets: map[string]model.Subnet{
+			"apps": {Name: "apps", VPC: "prod", CIDR: netip.MustParsePrefix("10.10.0.0/24")},
+		},
+		LoadBalancers: map[string]model.LoadBalancer{
+			"web": func() model.LoadBalancer {
+				lb := testLoadBalancer("web", "10.96.0.10", 80, []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.20"), Port: 8080}})
+				lb.Subnets = []string{"apps"}
+				return lb
+			}(),
+		},
+	}
+	decision, err := Resolve(state, Packet{
+		VPC:      "prod",
+		Source:   netip.MustParseAddr("10.10.0.55"),
+		Dest:     netip.MustParseAddr("10.96.0.10"),
+		Protocol: model.ProtocolTCP,
+		DestPort: 80,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Action != model.ActionAllow || decision.MatchedBy != "load-balancer/web" || decision.Translated != netip.MustParseAddr("10.10.0.20") {
+		t.Fatalf("decision = %+v, want subnet-cidr scoped load balancer allow", decision)
+	}
+
+	decision, err = Resolve(state, Packet{
+		VPC:      "prod",
+		Source:   netip.MustParseAddr("10.10.1.55"),
+		Dest:     netip.MustParseAddr("10.96.0.10"),
+		Protocol: model.ProtocolTCP,
+		DestPort: 80,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Action != model.ActionDrop || decision.MatchedBy != "no-route" {
+		t.Fatalf("decision = %+v, want source outside bound subnet to miss load balancer", decision)
 	}
 }
 

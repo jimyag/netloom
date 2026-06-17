@@ -129,7 +129,7 @@ func resolveLoadBalancer(state State, packet Packet) (Decision, bool) {
 			if frontend.VIP != packet.Dest || frontend.Port != packet.DestPort || frontend.Protocol != packet.Protocol {
 				continue
 			}
-			if len(lb.Subnets) > 0 && !loadBalancerAllowsSourceSubnet(lb, sourceEndpoint) {
+			if len(lb.Subnets) > 0 && !loadBalancerAllowsSourceSubnet(state, lb, sourceEndpoint, packet.Source) {
 				continue
 			}
 			backends := healthyLoadBalancerBackends(frontend.Backends)
@@ -158,12 +158,24 @@ func findEndpointByIP(state State, vpc string, ip netip.Addr) model.Endpoint {
 	return model.Endpoint{}
 }
 
-func loadBalancerAllowsSourceSubnet(lb model.LoadBalancer, endpoint model.Endpoint) bool {
-	if endpoint.ID == "" {
+func loadBalancerAllowsSourceSubnet(state State, lb model.LoadBalancer, endpoint model.Endpoint, source netip.Addr) bool {
+	for _, subnet := range lb.Subnets {
+		if endpoint.ID != "" && endpoint.Subnet == subnet {
+			return true
+		}
+		if subnetContainsSource(state, lb.VPC, subnet, source) {
+			return true
+		}
+	}
+	return false
+}
+
+func subnetContainsSource(state State, vpc, subnet string, source netip.Addr) bool {
+	if !source.IsValid() {
 		return false
 	}
-	for _, subnet := range lb.Subnets {
-		if endpoint.Subnet == subnet {
+	for _, candidate := range state.Subnets {
+		if candidate.VPC == vpc && candidate.Name == subnet && candidate.CIDR.Contains(source) {
 			return true
 		}
 	}
