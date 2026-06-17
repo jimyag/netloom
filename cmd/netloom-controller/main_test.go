@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -255,6 +257,99 @@ func TestApplyLoadBalancerHealthChecksDisabledByDefault(t *testing.T) {
 	}
 	if summary.Checked != 0 || state.LoadBalancers[0].Ports[0].Backends[0].Healthy != nil {
 		t.Fatalf("summary/state = %+v/%+v, want no active probe by default", summary, state.LoadBalancers[0].Ports[0].Backends[0])
+	}
+}
+
+func TestControllerMetricsReportsNotReadyBeforeFirstReconcile(t *testing.T) {
+	metrics := newControllerMetrics()
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+
+	metrics.handleMetrics(recorder, request)
+
+	output := recorder.Body.String()
+	if !strings.Contains(output, "netloom_controller_reconcile_ready 0") {
+		t.Fatalf("metrics output missing not-ready gauge:\n%s", output)
+	}
+}
+
+func TestControllerMetricsExportsLatestSuccess(t *testing.T) {
+	metrics := newControllerMetrics()
+	metrics.observe(controllerMetricsSnapshot{
+		State: control.DesiredState{
+			VPCs:         []model.VPC{{Name: "prod"}},
+			Subnets:      []model.Subnet{{Name: "apps", VPC: "prod"}},
+			Endpoints:    []model.Endpoint{{ID: "pod-a", VPC: "prod", Subnet: "apps", IP: netip.MustParseAddr("10.10.0.10")}},
+			PolicyRoutes: []model.PolicyRoute{{Name: "via-fw", VPC: "prod"}},
+			LoadBalancers: []model.LoadBalancer{{
+				Name: "web",
+				VPC:  "prod",
+				VIP:  netip.MustParseAddr("10.96.0.10"),
+			}},
+		},
+		PolicyEntries:    2,
+		HealthSummary:    control.LoadBalancerHealthSummary{Checked: 2, Healthy: 1, Unhealthy: 1},
+		OVNHealthStatus:  "ok",
+		OVNHealthLatency: 25 * time.Millisecond,
+		OVNOps:           7,
+		OVNExecuted:      6,
+		Duration:         125 * time.Millisecond,
+		Success:          true,
+	})
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	metrics.handleMetrics(recorder, request)
+
+	output := recorder.Body.String()
+	for _, expected := range []string{
+		"netloom_controller_reconcile_ready 1",
+		`netloom_controller_reconcile_success{ovn_health="ok"} 1`,
+		`netloom_controller_reconcile_duration_milliseconds{ovn_health="ok"} 125`,
+		"netloom_controller_desired_vpcs 1",
+		"netloom_controller_desired_subnets 1",
+		"netloom_controller_desired_endpoints 1",
+		"netloom_controller_desired_policy_routes 1",
+		"netloom_controller_desired_load_balancers 1",
+		"netloom_controller_policy_entries 2",
+		"netloom_controller_lb_health_checked 2",
+		"netloom_controller_lb_health_healthy 1",
+		"netloom_controller_lb_health_unhealthy 1",
+		`netloom_controller_ovn_health_latency_milliseconds{ovn_health="ok"} 25`,
+		`netloom_controller_ovn_operations_planned{ovn_health="ok"} 7`,
+		`netloom_controller_ovn_operations_executed{ovn_health="ok"} 6`,
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("metrics output missing %q:\n%s", expected, output)
+		}
+	}
+}
+
+func TestControllerMetricsExportsLatestFailure(t *testing.T) {
+	metrics := newControllerMetrics()
+	metrics.observe(controllerMetricsSnapshot{
+		OVNHealthStatus:  "error",
+		OVNHealthLatency: 30 * time.Millisecond,
+		Duration:         40 * time.Millisecond,
+		Success:          false,
+		Phase:            "ovn_health",
+		Error:            "ovn health check: failed",
+	})
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	metrics.handleMetrics(recorder, request)
+
+	output := recorder.Body.String()
+	for _, expected := range []string{
+		`netloom_controller_reconcile_success{ovn_health="error"} 0`,
+		`netloom_controller_reconcile_duration_milliseconds{ovn_health="error"} 40`,
+		`netloom_controller_reconcile_failure{error="ovn health check: failed",phase="ovn_health"} 1`,
+		`netloom_controller_ovn_health_latency_milliseconds{ovn_health="error"} 30`,
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("failure metrics output missing %q:\n%s", expected, output)
+		}
 	}
 }
 

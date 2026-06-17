@@ -5,8 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
+	"net/http"
 	"os"
+	"sort"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/jimyag/netloom/internal/control"
@@ -57,6 +62,13 @@ func runStateFile(ctx context.Context, path string) error {
 	if interval == 0 {
 		return reconcile()
 	}
+	metrics := newControllerMetrics()
+	reconciler.metrics = metrics
+	if closeMetrics, err := startControllerMetricsServer(ctx, os.Getenv("NETLOOM_CONTROLLER_METRICS_ADDR"), metrics); err != nil {
+		return err
+	} else {
+		defer closeMetrics()
+	}
 	return runReconcileLoop(ctx, interval, failureBackoff, reconcile, func(err error) {
 		log.Printf("netloom-controller reconcile failed: %v", err)
 	})
@@ -69,6 +81,7 @@ type stateFileReconciler struct {
 	controller    *control.Controller
 	healthTracker *control.LoadBalancerHealthTracker
 	healthChecker ovnHealthChecker
+	metrics       *controllerMetrics
 }
 
 type ovnHealthChecker interface {
@@ -104,27 +117,36 @@ func (r *stateFileReconciler) reconcile(ctx context.Context, path string) error 
 	if r.healthChecker != nil {
 		latency, err := r.healthChecker.HealthCheck(ctx)
 		if err != nil {
-			printControllerReconcileFailure("ovn_health", state, control.LoadBalancerHealthSummary{}, "error", latency, 0, 0, fmt.Errorf("ovn health check: %w", err), time.Since(start))
-			return fmt.Errorf("ovn health check: %w", err)
+			reconcileErr := fmt.Errorf("ovn health check: %w", err)
+			duration := time.Since(start)
+			printControllerReconcileFailure("ovn_health", state, control.LoadBalancerHealthSummary{}, "error", latency, 0, 0, reconcileErr, duration)
+			r.observeReconcileFailure("ovn_health", state, control.LoadBalancerHealthSummary{}, "error", latency, 0, 0, reconcileErr, duration)
+			return reconcileErr
 		}
 		ovnHealthStatus = "ok"
 		ovnHealthLatency = latency
 	}
 	file, err := os.Open(path)
 	if err != nil {
-		printControllerReconcileFailure("load_state", state, control.LoadBalancerHealthSummary{}, ovnHealthStatus, ovnHealthLatency, 0, 0, err, time.Since(start))
+		duration := time.Since(start)
+		printControllerReconcileFailure("load_state", state, control.LoadBalancerHealthSummary{}, ovnHealthStatus, ovnHealthLatency, 0, 0, err, duration)
+		r.observeReconcileFailure("load_state", state, control.LoadBalancerHealthSummary{}, ovnHealthStatus, ovnHealthLatency, 0, 0, err, duration)
 		return err
 	}
 	defer file.Close()
 
 	state, err = control.LoadDesiredStateJSON(file)
 	if err != nil {
-		printControllerReconcileFailure("load_state", state, control.LoadBalancerHealthSummary{}, ovnHealthStatus, ovnHealthLatency, 0, 0, err, time.Since(start))
+		duration := time.Since(start)
+		printControllerReconcileFailure("load_state", state, control.LoadBalancerHealthSummary{}, ovnHealthStatus, ovnHealthLatency, 0, 0, err, duration)
+		r.observeReconcileFailure("load_state", state, control.LoadBalancerHealthSummary{}, ovnHealthStatus, ovnHealthLatency, 0, 0, err, duration)
 		return err
 	}
 	healthSummary, err := r.applyLoadBalancerHealthChecks(ctx, &state)
 	if err != nil {
-		printControllerReconcileFailure("lb_health", state, healthSummary, ovnHealthStatus, ovnHealthLatency, 0, 0, err, time.Since(start))
+		duration := time.Since(start)
+		printControllerReconcileFailure("lb_health", state, healthSummary, ovnHealthStatus, ovnHealthLatency, 0, 0, err, duration)
+		r.observeReconcileFailure("lb_health", state, healthSummary, ovnHealthStatus, ovnHealthLatency, 0, 0, err, duration)
 		return err
 	}
 
@@ -133,12 +155,15 @@ func (r *stateFileReconciler) reconcile(ctx context.Context, path string) error 
 	if err := r.controller.Reconcile(ctx, state); err != nil {
 		ovnOps := len(r.ovnBackend.Operations()) - opsBefore
 		executed := r.executedOperations() - executedBefore
-		printControllerReconcileFailure("apply", state, healthSummary, ovnHealthStatus, ovnHealthLatency, ovnOps, executed, err, time.Since(start))
+		duration := time.Since(start)
+		printControllerReconcileFailure("apply", state, healthSummary, ovnHealthStatus, ovnHealthLatency, ovnOps, executed, err, duration)
+		r.observeReconcileFailure("apply", state, healthSummary, ovnHealthStatus, ovnHealthLatency, ovnOps, executed, err, duration)
 		return err
 	}
 
 	ovnOps := len(r.ovnBackend.Operations()) - opsBefore
 	executed := r.executedOperations() - executedBefore
+	duration := time.Since(start)
 	fmt.Printf(
 		"netloom-controller reconciled desired state vpcs=%d subnets=%d endpoints=%d route_tables=%d policy_routes=%d gateways=%d nat_rules=%d load_balancers=%d security_groups=%d policy_entries=%d lb_health_checked=%d lb_health_healthy=%d lb_health_unhealthy=%d ovn_health=%s ovn_health_latency_ms=%d ovn_ops=%d ovn_executed=%d reconcile_duration_ms=%d\n",
 		len(state.VPCs),
@@ -158,8 +183,9 @@ func (r *stateFileReconciler) reconcile(ctx context.Context, path string) error 
 		ovnHealthLatency.Milliseconds(),
 		ovnOps,
 		executed,
-		time.Since(start).Milliseconds(),
+		duration.Milliseconds(),
 	)
+	r.observeReconcileSuccess(state, healthSummary, ovnHealthStatus, ovnHealthLatency, ovnOps, executed, duration)
 	return nil
 }
 
@@ -193,6 +219,224 @@ func printControllerReconcileFailure(phase string, state control.DesiredState, h
 		err.Error(),
 		duration.Milliseconds(),
 	)
+}
+
+func (r *stateFileReconciler) observeReconcileSuccess(state control.DesiredState, healthSummary control.LoadBalancerHealthSummary, ovnHealthStatus string, ovnHealthLatency time.Duration, ovnOps, executed int, duration time.Duration) {
+	if r == nil || r.metrics == nil {
+		return
+	}
+	r.metrics.observe(controllerMetricsSnapshot{
+		State:            state,
+		PolicyEntries:    countPolicyEntries(r.memory),
+		HealthSummary:    healthSummary,
+		OVNHealthStatus:  ovnHealthStatus,
+		OVNHealthLatency: ovnHealthLatency,
+		OVNOps:           ovnOps,
+		OVNExecuted:      executed,
+		Duration:         duration,
+		Success:          true,
+	})
+}
+
+func (r *stateFileReconciler) observeReconcileFailure(phase string, state control.DesiredState, healthSummary control.LoadBalancerHealthSummary, ovnHealthStatus string, ovnHealthLatency time.Duration, ovnOps, executed int, err error, duration time.Duration) {
+	if r == nil || r.metrics == nil {
+		return
+	}
+	if phase == "" {
+		phase = "unknown"
+	}
+	message := ""
+	if err != nil {
+		message = err.Error()
+	}
+	r.metrics.observe(controllerMetricsSnapshot{
+		State:            state,
+		PolicyEntries:    countDesiredPolicyEntries(state),
+		HealthSummary:    healthSummary,
+		OVNHealthStatus:  ovnHealthStatus,
+		OVNHealthLatency: ovnHealthLatency,
+		OVNOps:           ovnOps,
+		OVNExecuted:      executed,
+		Duration:         duration,
+		Success:          false,
+		Phase:            phase,
+		Error:            message,
+	})
+}
+
+type controllerMetrics struct {
+	mu       sync.RWMutex
+	snapshot controllerMetricsSnapshot
+	ready    bool
+}
+
+type controllerMetricsSnapshot struct {
+	State            control.DesiredState
+	PolicyEntries    int
+	HealthSummary    control.LoadBalancerHealthSummary
+	OVNHealthStatus  string
+	OVNHealthLatency time.Duration
+	OVNOps           int
+	OVNExecuted      int
+	Duration         time.Duration
+	Success          bool
+	Phase            string
+	Error            string
+}
+
+func newControllerMetrics() *controllerMetrics {
+	return &controllerMetrics{}
+}
+
+func (m *controllerMetrics) observe(snapshot controllerMetricsSnapshot) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.snapshot = snapshot
+	m.ready = true
+}
+
+func (m *controllerMetrics) snapshotValue() (controllerMetricsSnapshot, bool) {
+	if m == nil {
+		return controllerMetricsSnapshot{}, false
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.snapshot, m.ready
+}
+
+func startControllerMetricsServer(ctx context.Context, addr string, metrics *controllerMetrics) (func(), error) {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return func() {}, nil
+	}
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("listen controller metrics endpoint %s: %w", addr, err)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/metrics", metrics.handleMetrics)
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok\n"))
+	})
+	server := &http.Server{Handler: mux}
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = server.Shutdown(shutdownCtx)
+	}()
+	go func() {
+		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Printf("netloom-controller metrics endpoint stopped: %v", err)
+		}
+	}()
+	return func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = server.Shutdown(shutdownCtx)
+	}, nil
+}
+
+func (m *controllerMetrics) handleMetrics(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	snapshot, ready := m.snapshotValue()
+	if !ready {
+		writeMetricHelp(w, "netloom_controller_reconcile_ready", "Whether the controller has completed at least one reconcile attempt.")
+		writeMetricType(w, "netloom_controller_reconcile_ready", "gauge")
+		fmt.Fprintln(w, "netloom_controller_reconcile_ready 0")
+		return
+	}
+	writeControllerMetrics(w, snapshot)
+}
+
+func writeControllerMetrics(w metricWriter, snapshot controllerMetricsSnapshot) {
+	success := 0
+	if snapshot.Success {
+		success = 1
+	}
+	baseLabels := prometheusLabels(map[string]string{
+		"ovn_health": fallbackMetricsLabel(snapshot.OVNHealthStatus, "disabled"),
+	})
+	writeMetricHelp(w, "netloom_controller_reconcile_ready", "Whether the controller has completed at least one reconcile attempt.")
+	writeMetricType(w, "netloom_controller_reconcile_ready", "gauge")
+	fmt.Fprintln(w, "netloom_controller_reconcile_ready 1")
+	writeMetricHelp(w, "netloom_controller_reconcile_success", "Whether the last controller reconcile attempt succeeded.")
+	writeMetricType(w, "netloom_controller_reconcile_success", "gauge")
+	fmt.Fprintf(w, "netloom_controller_reconcile_success%s %d\n", baseLabels, success)
+	writeMetricHelp(w, "netloom_controller_reconcile_duration_milliseconds", "Duration of the last controller reconcile attempt in milliseconds.")
+	writeMetricType(w, "netloom_controller_reconcile_duration_milliseconds", "gauge")
+	fmt.Fprintf(w, "netloom_controller_reconcile_duration_milliseconds%s %d\n", baseLabels, snapshot.Duration.Milliseconds())
+	if !snapshot.Success {
+		fmt.Fprintf(w, "netloom_controller_reconcile_failure%s 1\n", prometheusLabels(map[string]string{
+			"phase": fallbackMetricsLabel(snapshot.Phase, "unknown"),
+			"error": snapshot.Error,
+		}))
+	}
+
+	writeMetricType(w, "netloom_controller_desired_vpcs", "gauge")
+	fmt.Fprintf(w, "netloom_controller_desired_vpcs %d\n", len(snapshot.State.VPCs))
+	writeMetricType(w, "netloom_controller_desired_subnets", "gauge")
+	fmt.Fprintf(w, "netloom_controller_desired_subnets %d\n", len(snapshot.State.Subnets))
+	writeMetricType(w, "netloom_controller_desired_endpoints", "gauge")
+	fmt.Fprintf(w, "netloom_controller_desired_endpoints %d\n", len(snapshot.State.Endpoints))
+	writeMetricType(w, "netloom_controller_desired_policy_routes", "gauge")
+	fmt.Fprintf(w, "netloom_controller_desired_policy_routes %d\n", len(snapshot.State.PolicyRoutes))
+	writeMetricType(w, "netloom_controller_desired_load_balancers", "gauge")
+	fmt.Fprintf(w, "netloom_controller_desired_load_balancers %d\n", len(snapshot.State.LoadBalancers))
+	writeMetricType(w, "netloom_controller_policy_entries", "gauge")
+	fmt.Fprintf(w, "netloom_controller_policy_entries %d\n", snapshot.PolicyEntries)
+
+	writeMetricType(w, "netloom_controller_lb_health_checked", "gauge")
+	fmt.Fprintf(w, "netloom_controller_lb_health_checked %d\n", snapshot.HealthSummary.Checked)
+	writeMetricType(w, "netloom_controller_lb_health_healthy", "gauge")
+	fmt.Fprintf(w, "netloom_controller_lb_health_healthy %d\n", snapshot.HealthSummary.Healthy)
+	writeMetricType(w, "netloom_controller_lb_health_unhealthy", "gauge")
+	fmt.Fprintf(w, "netloom_controller_lb_health_unhealthy %d\n", snapshot.HealthSummary.Unhealthy)
+	writeMetricType(w, "netloom_controller_ovn_health_latency_milliseconds", "gauge")
+	fmt.Fprintf(w, "netloom_controller_ovn_health_latency_milliseconds%s %d\n", baseLabels, snapshot.OVNHealthLatency.Milliseconds())
+	writeMetricType(w, "netloom_controller_ovn_operations_planned", "gauge")
+	fmt.Fprintf(w, "netloom_controller_ovn_operations_planned%s %d\n", baseLabels, snapshot.OVNOps)
+	writeMetricType(w, "netloom_controller_ovn_operations_executed", "gauge")
+	fmt.Fprintf(w, "netloom_controller_ovn_operations_executed%s %d\n", baseLabels, snapshot.OVNExecuted)
+}
+
+type metricWriter interface {
+	Write([]byte) (int, error)
+}
+
+func writeMetricHelp(w metricWriter, name, help string) {
+	fmt.Fprintf(w, "# HELP %s %s\n", name, help)
+}
+
+func writeMetricType(w metricWriter, name, typ string) {
+	fmt.Fprintf(w, "# TYPE %s %s\n", name, typ)
+}
+
+func prometheusLabels(labels map[string]string) string {
+	if len(labels) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(labels))
+	for key := range labels {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, key+"="+strconv.Quote(labels[key]))
+	}
+	return "{" + strings.Join(parts, ",") + "}"
+}
+
+func fallbackMetricsLabel(value, fallback string) string {
+	if value == "" {
+		return fallback
+	}
+	return value
 }
 
 func (r *stateFileReconciler) applyLoadBalancerHealthChecks(ctx context.Context, state *control.DesiredState) (control.LoadBalancerHealthSummary, error) {
