@@ -642,6 +642,101 @@ func TestDesiredStateRemoteEntityNoneProducesNoAgentEntries(t *testing.T) {
 	}
 }
 
+func TestDesiredStateLoggedPoliciesEmitRecorderEvents(t *testing.T) {
+	ctx := context.Background()
+	state, err := control.LoadDesiredStateJSON(strings.NewReader(`{
+  "vpcs": [{"name": "prod"}],
+  "subnets": [{"name": "apps", "vpc": "prod", "cidr": "10.10.0.0/24", "gateway": "10.10.0.1"}],
+  "endpoints": [{"id": "pod-a", "vpc": "prod", "subnet": "apps", "ip": "10.10.0.10", "node": "node-a", "security_groups": ["client"]}],
+  "security_groups": [{
+    "name": "client",
+    "vpc": "prod",
+    "rules": [
+      {
+        "id": "allow-logged",
+        "priority": 100,
+        "direction": "egress",
+        "protocol": "tcp",
+        "remote_cidr": "198.51.100.10/32",
+        "ports": [{"from": 443, "to": 443}],
+        "action": "allow",
+        "log": true
+      },
+      {
+        "id": "drop-logged",
+        "priority": 90,
+        "direction": "egress",
+        "protocol": "tcp",
+        "remote_cidr": "198.51.100.20/32",
+        "ports": [{"from": 8443, "to": 8443}],
+        "action": "drop",
+        "log": true
+      }
+    ]
+  }]
+}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	memoryBackend := control.NewMemoryBackend()
+	controller := control.NewController(memoryBackend, memoryBackend)
+	if err := controller.Reconcile(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+
+	program, ok := memoryBackend.PolicyProgram[model.EndpointKey("prod", "pod-a")]
+	if !ok {
+		t.Fatalf("expected policy program for pod-a, got %+v", memoryBackend.PolicyProgram)
+	}
+	entries, err := dataplane.EncodeProgram(program)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("encoded entries = %d, want 2 logged rules", len(entries))
+	}
+
+	recorder := dataplane.NewPolicyRecorder()
+	endpointID := model.EndpointKey("prod", "pod-a")
+	allow := dataplane.EvaluateObserved(endpointID, entries, dataplane.Packet{
+		Direction: dataplane.DirectionEgress,
+		Protocol:  6,
+		RemoteIP:  mustAddr(t, "198.51.100.10"),
+		DestPort:  443,
+	}, recorder)
+	drop := dataplane.EvaluateObserved(endpointID, entries, dataplane.Packet{
+		Direction: dataplane.DirectionEgress,
+		Protocol:  6,
+		RemoteIP:  mustAddr(t, "198.51.100.20"),
+		DestPort:  8443,
+	}, recorder)
+	noMatch := dataplane.EvaluateObserved(endpointID, entries, dataplane.Packet{
+		Direction: dataplane.DirectionEgress,
+		Protocol:  6,
+		RemoteIP:  mustAddr(t, "198.51.100.30"),
+		DestPort:  443,
+	}, recorder)
+	if allow.Verdict != dataplane.VerdictAllow || drop.Verdict != dataplane.VerdictDrop || noMatch.Verdict != dataplane.VerdictDrop {
+		t.Fatalf("unexpected verdicts allow=%+v drop=%+v noMatch=%+v", allow, drop, noMatch)
+	}
+
+	metrics := recorder.Metrics(endpointID)
+	if metrics.Allowed != 1 || metrics.Dropped != 2 || metrics.DenyDrops != 1 || metrics.NoMatchDrops != 1 || metrics.Logged != 2 {
+		t.Fatalf("unexpected logged policy metrics: %+v", metrics)
+	}
+	events := recorder.PolicyEvents()
+	if len(events) != 2 {
+		t.Fatalf("policy events = %d, want 2 logged events", len(events))
+	}
+	if events[0].Verdict != dataplane.VerdictAllow || events[0].DestPort != 443 || events[0].RemoteIP != mustAddr(t, "198.51.100.10") {
+		t.Fatalf("first logged policy event = %+v, want logged allow", events[0])
+	}
+	if events[1].Verdict != dataplane.VerdictDrop || events[1].DestPort != 8443 || events[1].RemoteIP != mustAddr(t, "198.51.100.20") {
+		t.Fatalf("second logged policy event = %+v, want logged drop", events[1])
+	}
+}
+
 func TestDesiredStateLoadBalancerSelectionFieldsDriveStableBackendChoice(t *testing.T) {
 	ctx := context.Background()
 	state, err := control.LoadDesiredStateJSON(strings.NewReader(`{
