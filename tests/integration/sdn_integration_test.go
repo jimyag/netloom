@@ -586,6 +586,62 @@ func TestDesiredStateRemovesLocalnetTagWhenProviderNetworkVLANIsCleared(t *testi
 	}
 }
 
+func TestDesiredStateRemoteEntityNoneProducesNoAgentEntries(t *testing.T) {
+	ctx := context.Background()
+	state, err := control.LoadDesiredStateJSON(strings.NewReader(`{
+  "vpcs": [{"name": "prod"}],
+  "subnets": [{"name": "apps", "vpc": "prod", "cidr": "10.10.0.0/24", "gateway": "10.10.0.1"}],
+  "endpoints": [{"id": "pod-a", "vpc": "prod", "subnet": "apps", "ip": "10.10.0.10", "node": "node-a", "security_groups": ["client"]}],
+  "security_groups": [{
+    "name": "client",
+    "vpc": "prod",
+    "rules": [{
+      "id": "allow-none",
+      "priority": 100,
+      "direction": "egress",
+      "protocol": "tcp",
+      "remote_entities": ["none"],
+      "ports": [{"from": 443, "to": 443}],
+      "action": "allow"
+    }]
+  }]
+}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	memoryBackend := control.NewMemoryBackend()
+	ovnRecorder := ovn.NewRecorderExecutor()
+	ovnBackend := ovn.NewBackend(ovnRecorder)
+	controller := control.NewController(control.MultiTopologyBackend{memoryBackend, ovnBackend}, memoryBackend)
+	if err := controller.Reconcile(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+
+	program, ok := memoryBackend.PolicyProgram[model.EndpointKey("prod", "pod-a")]
+	if !ok {
+		t.Fatalf("expected policy program for pod-a, got %+v", memoryBackend.PolicyProgram)
+	}
+	if len(program.Rules) != 0 || len(program.MapEntries) != 0 {
+		t.Fatalf("remote entity none should not produce compiled rules, got rules=%d entries=%d", len(program.Rules), len(program.MapEntries))
+	}
+
+	store := dataplane.NewInMemoryPolicyStore()
+	result, err := agent.ReconcileNode(ctx, state, "node-a", store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Endpoints != 1 || result.Programs != 1 || result.Entries != 0 || result.TCXEligible != 0 {
+		t.Fatalf("expected none entity to stay out of dataplane programming, got %+v", result)
+	}
+	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 0 {
+		t.Fatalf("entries = %d, want 0", len(entries))
+	}
+	if joined := stringifyOVNOps(ovnRecorder.Operations()); strings.Contains(joined, "acl") {
+		t.Fatalf("ovn planner must not grow ACL state for ebpf-only none entity rules:\n%s", joined)
+	}
+}
+
 func TestDesiredStateLoadBalancerSelectionFieldsDriveStableBackendChoice(t *testing.T) {
 	ctx := context.Background()
 	state, err := control.LoadDesiredStateJSON(strings.NewReader(`{
