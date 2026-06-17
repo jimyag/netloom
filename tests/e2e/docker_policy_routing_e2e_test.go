@@ -85,6 +85,71 @@ func TestDockerLinuxPolicyRoutingProgramsAndCleansRuntimeState(t *testing.T) {
 	waitForNodeBPolicyRouteCleanup(t, ctx, composeFile, rerouteTable, dropTable)
 }
 
+func TestDockerLinuxPolicyRoutingProgramsAndCleansECMPRuntimeState(t *testing.T) {
+	requireDockerE2E(t)
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker is not installed")
+	}
+
+	composeFile := filepath.Join("testdata", "..", "docker-compose.yaml")
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
+	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
+	startComposeLab(t, ctx, composeFile)
+	waitForOVN(t, ctx, composeFile)
+
+	ipVersion := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "sh", "-c", "apk add --no-cache iproute2 >/dev/null && ip -V")
+	if !strings.Contains(ipVersion, "iproute2") {
+		t.Fatalf("node-b did not install iproute2:\n%s", ipVersion)
+	}
+
+	statePath := "/tmp/netloom-policy-route-ecmp-state.json"
+	applyState := func(stateJSON string) string {
+		script := "cat >" + statePath + " <<'EOF'\n" + stateJSON + "\nEOF\n" +
+			"NETLOOM_STATE_FILE=" + statePath +
+			" NETLOOM_NODE_NAME=node-b" +
+			" NETLOOM_LINUX_DATAPATH=1" +
+			" NETLOOM_LINUX_DATAPATH_BACKEND=netlink" +
+			" NETLOOM_LINUX_DATAPATH_CLEANUP=1" +
+			" /netloom/bin/netloom-agent"
+		return run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "sh", "-c", script)
+	}
+
+	applyOutput := applyState(desiredLinuxPolicyRoutingECMPStateJSON())
+	if !strings.Contains(applyOutput, "policy_routes=1") {
+		t.Fatalf("ECMP policy-route reconcile did not program one route:\n%s", applyOutput)
+	}
+
+	rules := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "ip", "rule", "show")
+	if !strings.Contains(rules, "from 10.10.0.0/24 to 198.51.100.10 ipproto tcp dport 443") {
+		t.Fatalf("ECMP policy rule missing expected match:\n%s", rules)
+	}
+	rerouteTable := mustLookupTableForDestination(t, rules, "198.51.100.10")
+	rerouteTableState := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "ip", "route", "show", "table", rerouteTable)
+	for _, expected := range []string{
+		"198.51.100.10",
+		"nexthop via 172.30.0.11 dev eth0",
+		"nexthop via 172.30.0.12 dev eth0",
+	} {
+		if !strings.Contains(rerouteTableState, expected) {
+			t.Fatalf("ECMP reroute table %s missing %q:\n%s", rerouteTable, expected, rerouteTableState)
+		}
+	}
+
+	rerouteLookup := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "sh", "-c", "ip route get 198.51.100.10 from 10.10.0.11 ipproto tcp dport 443")
+	if !strings.Contains(rerouteLookup, "table "+rerouteTable) {
+		t.Fatalf("ECMP policy route lookup did not use reroute table %s:\n%s", rerouteTable, rerouteLookup)
+	}
+
+	cleanupOutput := applyState(desiredLinuxPolicyRoutingStateWithoutPoliciesJSON())
+	if !strings.Contains(cleanupOutput, "policy_routes=0") {
+		t.Fatalf("cleanup ECMP policy-route reconcile did not remove route:\n%s", cleanupOutput)
+	}
+	waitForNodeBPolicyRouteCleanup(t, ctx, composeFile, rerouteTable, rerouteTable)
+}
+
 func waitForNodeBPolicyRouteCleanup(t *testing.T, ctx context.Context, composeFile, rerouteTable, dropTable string) {
 	t.Helper()
 	cmd := "for i in $(seq 1 20); do " +
@@ -124,6 +189,18 @@ func desiredLinuxPolicyRoutingStateJSON() string {
   "policy_routes": [
     {"name": "https-via-fw", "vpc": "prod", "priority": 200, "match": {"source": "10.10.0.0/24", "destination": "198.51.100.10/32", "protocol": "tcp", "dst_ports": [{"from": 443, "to": 443}]}, "action": {"type": "reroute", "next_hops": ["172.30.0.11"]}},
     {"name": "deny-test", "vpc": "prod", "priority": 100, "match": {"source": "10.10.0.0/24", "destination": "203.0.113.0/24"}, "action": {"type": "drop"}}
+  ],
+  "security_groups": []
+}`
+}
+
+func desiredLinuxPolicyRoutingECMPStateJSON() string {
+	return `{
+  "vpcs": [{"name": "prod"}],
+  "subnets": [{"name": "apps", "vpc": "prod", "cidr": "10.10.0.0/24", "gateway": "10.10.0.1"}],
+  "endpoints": [{"id": "pod-b", "vpc": "prod", "subnet": "apps", "ip": "10.10.0.11", "node": "node-b", "security_groups": []}],
+  "policy_routes": [
+    {"name": "https-via-fw", "vpc": "prod", "priority": 200, "match": {"source": "10.10.0.0/24", "destination": "198.51.100.10/32", "protocol": "tcp", "dst_ports": [{"from": 443, "to": 443}]}, "action": {"type": "reroute", "next_hops": ["172.30.0.11", "172.30.0.12"]}}
   ],
   "security_groups": []
 }`
