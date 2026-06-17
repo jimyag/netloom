@@ -586,6 +586,50 @@ func TestDesiredStateRemovesLocalnetTagWhenProviderNetworkVLANIsCleared(t *testi
 	}
 }
 
+func TestDesiredStateProgramsDistributedGatewayWithoutChassisPin(t *testing.T) {
+	ctx := context.Background()
+	state, err := control.LoadDesiredStateJSON(strings.NewReader(`{
+  "vpcs": [{"name": "prod"}],
+  "subnets": [{"name": "apps", "vpc": "prod", "cidr": "10.10.0.0/24", "gateway": "10.10.0.1"}],
+  "gateways": [{"name": "gw-dist", "vpc": "prod", "node": "node-a", "external_if": "eth0", "lan_ip": "10.10.0.254", "distributed": true}]
+}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	memoryBackend := control.NewMemoryBackend()
+	ovnRecorder := ovn.NewRecorderExecutor()
+	ovnBackend := ovn.NewBackend(ovnRecorder)
+	controller := control.NewController(control.MultiTopologyBackend{memoryBackend, ovnBackend}, memoryBackend)
+	if err := controller.Reconcile(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+
+	gateway, ok := memoryBackend.Gateways["prod\x00gw-dist"]
+	if !ok {
+		t.Fatalf("distributed gateway was not reconciled: %+v", memoryBackend.Gateways)
+	}
+	if !gateway.Distributed || gateway.Node != "node-a" || gateway.ExternalIF != "eth0" || gateway.LANIP != netip.MustParseAddr("10.10.0.254") {
+		t.Fatalf("distributed gateway state = %+v, want distributed node-a eth0 10.10.0.254", gateway)
+	}
+
+	ovnOps := stringifyOVNOps(ovnRecorder.Operations())
+	for _, expected := range []string{
+		"external_ids:netloom_gateway=gw-dist",
+		"external_ids:netloom_external_if=eth0",
+		"external_ids:netloom_gateway_lan_ip=10.10.0.254",
+		"external_ids:netloom_gateway_distributed=true",
+		"remove logical_router nl_lr_prod options chassis",
+	} {
+		if !strings.Contains(ovnOps, expected) {
+			t.Fatalf("distributed gateway operations missing %q:\n%s", expected, ovnOps)
+		}
+	}
+	if strings.Contains(ovnOps, "options:chassis=node-a") {
+		t.Fatalf("distributed gateway must not pin chassis:\n%s", ovnOps)
+	}
+}
+
 func TestDesiredStateRemoteEntityNoneProducesNoAgentEntries(t *testing.T) {
 	ctx := context.Background()
 	state, err := control.LoadDesiredStateJSON(strings.NewReader(`{
