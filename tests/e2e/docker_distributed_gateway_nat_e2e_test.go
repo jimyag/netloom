@@ -69,6 +69,55 @@ func TestDockerControllerProgramsDistributedGatewayAndFloatingIPs(t *testing.T) 
 	}
 }
 
+func TestDockerControllerTransitionsDistributedGatewayAndCleansDistributedFloatingIP(t *testing.T) {
+	requireDockerE2E(t)
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker is not installed")
+	}
+
+	composeFile := filepath.Join("testdata", "..", "docker-compose.yaml")
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	cmdPattern := filepath.ToSlash(filepath.Join("..", "..", "cmd")) + "/..."
+	run(t, ctx, "env", "CGO_ENABLED=0", "go", "build", "-trimpath", "-o", filepath.Join("..", "..", "bin")+"/", cmdPattern)
+	startComposeLab(t, ctx, composeFile)
+	waitForOVN(t, ctx, composeFile)
+
+	applyState := func(path, stateJSON string) string {
+		script := "cat >" + path + " <<'EOF'\n" + stateJSON + "\nEOF\n" +
+			"NETLOOM_STATE_FILE=" + path +
+			" NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock" +
+			" /netloom/bin/netloom-controller"
+		return run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", script)
+	}
+
+	initialOutput := applyState("/tmp/netloom-distributed-gateway-initial.json", desiredStateWithDistributedGatewayAndFloatingIPsJSON())
+	if !strings.Contains(initialOutput, "reconciled desired state") {
+		t.Fatalf("initial distributed state reconcile failed:\n%s", initialOutput)
+	}
+	if got := activeManagedRows(t, ctx, composeFile, "NAT", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=dist", "external_ids:netloom_nat=web-fip"); len(got) != 1 {
+		t.Fatalf("expected one distributed fip row after initial reconcile, got %v", got)
+	}
+
+	updatedOutput := applyState("/tmp/netloom-distributed-gateway-updated.json", desiredStateWithCentralizedGatewayWithoutFloatingIPsJSON())
+	if !strings.Contains(updatedOutput, "reconciled desired state") {
+		t.Fatalf("updated centralized state reconcile failed:\n%s", updatedOutput)
+	}
+
+	routerExternalIDs := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "get", "logical_router", "nl_lr_dist", "external_ids")
+	if !strings.Contains(routerExternalIDs, `netloom_gateway_distributed="false"`) {
+		t.Fatalf("expected centralized gateway external_ids after update:\n%s", routerExternalIDs)
+	}
+	routerOptions := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "get", "logical_router", "nl_lr_dist", "options")
+	if !strings.Contains(routerOptions, "chassis=node-a") {
+		t.Fatalf("expected centralized gateway chassis pin after update:\n%s", routerOptions)
+	}
+	if got := activeManagedRows(t, ctx, composeFile, "NAT", "external_ids:netloom_owner=netloom", "external_ids:netloom_vpc=dist", "external_ids:netloom_nat=web-fip"); len(got) != 0 {
+		t.Fatalf("expected distributed fip row to be cleaned after update, got %v", got)
+	}
+}
+
 func desiredStateWithDistributedGatewayAndFloatingIPsJSON() string {
 	return `{
   "vpcs": [{"name": "dist"}],
@@ -80,5 +129,16 @@ func desiredStateWithDistributedGatewayAndFloatingIPsJSON() string {
   "nat_rules": [
     {"name": "web-fip", "vpc": "dist", "type": "dnat_and_snat", "external_ip": "198.51.100.31", "target_ip": "10.245.0.10", "logical_port": "nl_lp_dist_dist-pod-a", "external_mac": "0a:58:0a:f5:00:0a"}
   ]
+}`
+}
+
+func desiredStateWithCentralizedGatewayWithoutFloatingIPsJSON() string {
+	return `{
+  "vpcs": [{"name": "dist"}],
+  "subnets": [{"name": "apps", "vpc": "dist", "cidr": "10.245.0.0/24", "gateway": "10.245.0.1"}],
+  "endpoints": [
+    {"id": "dist-pod-a", "vpc": "dist", "subnet": "apps", "ip": "10.245.0.10", "mac": "0A:58:0A:F5:00:0A", "node": "node-a"}
+  ],
+  "gateways": [{"name": "gw-dist", "vpc": "dist", "node": "node-a", "external_if": "eth0", "lan_ip": "10.245.0.254", "distributed": false}]
 }`
 }
