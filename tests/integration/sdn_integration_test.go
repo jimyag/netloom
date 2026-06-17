@@ -648,7 +648,7 @@ func TestDesiredStateRemovesLocalnetTagWhenProviderNetworkVLANIsCleared(t *testi
 	if !strings.Contains(joined, "set logical_switch_port nl_ls_file_fileapps_to_fileapps_localnet tag=100") {
 		t.Fatalf("initial provider vlan programming missing tag set:\n%s", joined)
 	}
-	if !strings.Contains(joined, "remove logical_switch_port nl_ls_file_fileapps_to_fileapps_localnet tag") {
+	if !strings.Contains(joined, "clear logical_switch_port nl_ls_file_fileapps_to_fileapps_localnet tag") {
 		t.Fatalf("updated provider network should clear stale localnet tag:\n%s", joined)
 	}
 }

@@ -375,7 +375,7 @@ func TestPlannerClearsLocalnetTagWhenProviderNetworkVLANDisabled(t *testing.T) {
 	joined := stringify(planner.Operations())
 	for _, expected := range []string{
 		"lsp-add-localnet-port nl_ls_prod_apps nl_ls_prod_apps_to_apps_localnet physnet-a",
-		"remove logical_switch_port nl_ls_prod_apps_to_apps_localnet tag",
+		"clear logical_switch_port nl_ls_prod_apps_to_apps_localnet tag",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("provider network vlan disable operation missing %q:\n%s", expected, joined)
