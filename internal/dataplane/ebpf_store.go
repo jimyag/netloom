@@ -573,6 +573,53 @@ func (s *EBPFPolicyStore) PolicyMapDrift(ctx context.Context) ([]PolicyMapDrift,
 	return reports, nil
 }
 
+func (s *EBPFPolicyStore) PolicyEndpointStatuses(ctx context.Context) ([]PolicyEndpointStatus, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	endpointIDs, err := s.managedEndpointIDsLocked()
+	if err != nil {
+		return nil, err
+	}
+	statuses := make([]PolicyEndpointStatus, 0, len(endpointIDs))
+	for _, endpointID := range endpointIDs {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		live, err := s.policyMapEntriesLocked(endpointID)
+		if err != nil {
+			return nil, fmt.Errorf("read policy endpoint status for endpoint %s: %w", endpointID, err)
+		}
+		entries := uint32(len(live))
+		usage := PolicyMapUsage{
+			EndpointID: endpointID,
+			Entries:    entries,
+			Capacity:   s.maxEntries,
+		}
+		status := PolicyEndpointStatus{
+			EndpointID:      endpointID,
+			Revision:        s.revisions[endpointID],
+			Entries:         entries,
+			Capacity:        s.maxEntries,
+			PressurePercent: policyMapPressurePercent(usage),
+			Drift:           DiffPolicyMapEntries(endpointID, s.entries[endpointID], live),
+			LastStats:       s.lastStats[endpointID],
+		}
+		if event, ok := lastPolicyUpdateEvent(s.events, endpointID); ok {
+			status.LastEvent = event
+			status.HasLastEvent = true
+		}
+		statuses = append(statuses, status)
+	}
+	sort.Slice(statuses, func(i, j int) bool {
+		return statuses[i].EndpointID < statuses[j].EndpointID
+	})
+	return statuses, nil
+}
+
 func (s *EBPFPolicyStore) PolicyRuleMetrics(ctx context.Context) ([]RuleMetrics, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -29,6 +29,7 @@ type ReconcileResult struct {
 	PolicyMapDriftMissing      int
 	PolicyMapDriftExtra        int
 	PolicyMapDriftChanged      int
+	PolicyEndpointStatus       []dataplane.PolicyEndpointStatus
 	PolicyAdded                int
 	PolicyUpdated              int
 	PolicyDeleted              int
@@ -95,6 +96,10 @@ type PolicyUsageStore interface {
 
 type PolicyDriftStore interface {
 	PolicyMapDrift(context.Context) ([]dataplane.PolicyMapDrift, error)
+}
+
+type PolicyEndpointStatusStore interface {
+	PolicyEndpointStatuses(context.Context) ([]dataplane.PolicyEndpointStatus, error)
 }
 
 type PolicyRuleMetricsStore interface {
@@ -201,6 +206,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, state control.DesiredState, 
 		return result, err
 	}
 	if err := populatePolicyMapDriftResult(ctx, options.Store, &result); err != nil {
+		return result, err
+	}
+	if err := populatePolicyEndpointStatusResult(ctx, options.Store, &result); err != nil {
 		return result, err
 	}
 	if err := populatePolicyRuleMetricsResult(ctx, options, &result); err != nil {
@@ -402,6 +410,9 @@ func prepareReconcile(ctx context.Context, state control.DesiredState, options R
 	if err := populatePolicyMapDriftResult(ctx, options.Store, &result); err != nil {
 		return ReconcileResult{}, nil, nil, err
 	}
+	if err := populatePolicyEndpointStatusResult(ctx, options.Store, &result); err != nil {
+		return ReconcileResult{}, nil, nil, err
+	}
 	if err := populatePolicyRuleMetricsResult(ctx, options, &result); err != nil {
 		return ReconcileResult{}, nil, nil, err
 	}
@@ -496,6 +507,23 @@ func populatePolicyMapDriftResult(ctx context.Context, store PolicyStore, result
 	result.PolicyMapDriftMissing = summary.MissingEntries
 	result.PolicyMapDriftExtra = summary.ExtraEntries
 	result.PolicyMapDriftChanged = summary.ChangedEntries
+	return nil
+}
+
+func populatePolicyEndpointStatusResult(ctx context.Context, store PolicyStore, result *ReconcileResult) error {
+	if result == nil {
+		return nil
+	}
+	statusStore, ok := store.(PolicyEndpointStatusStore)
+	if !ok {
+		result.PolicyEndpointStatus = nil
+		return nil
+	}
+	statuses, err := statusStore.PolicyEndpointStatuses(ctx)
+	if err != nil {
+		return fmt.Errorf("read policy endpoint status: %w", err)
+	}
+	result.PolicyEndpointStatus = append([]dataplane.PolicyEndpointStatus(nil), statuses...)
 	return nil
 }
 

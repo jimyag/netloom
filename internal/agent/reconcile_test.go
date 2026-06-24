@@ -88,9 +88,10 @@ func (s *inventoryPolicyStore) EndpointIDs(_ context.Context) ([]string, error) 
 
 type usagePolicyStore struct {
 	*dataplane.InMemoryPolicyStore
-	usages []dataplane.PolicyMapUsage
-	drift  []dataplane.PolicyMapDrift
-	err    error
+	usages   []dataplane.PolicyMapUsage
+	drift    []dataplane.PolicyMapDrift
+	statuses []dataplane.PolicyEndpointStatus
+	err      error
 }
 
 func (s *usagePolicyStore) PolicyMapUsage(_ context.Context) ([]dataplane.PolicyMapUsage, error) {
@@ -105,6 +106,13 @@ func (s *usagePolicyStore) PolicyMapDrift(_ context.Context) ([]dataplane.Policy
 		return nil, s.err
 	}
 	return append([]dataplane.PolicyMapDrift(nil), s.drift...), nil
+}
+
+func (s *usagePolicyStore) PolicyEndpointStatuses(_ context.Context) ([]dataplane.PolicyEndpointStatus, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	return append([]dataplane.PolicyEndpointStatus(nil), s.statuses...), nil
 }
 
 type concurrentPolicyStore struct {
@@ -1068,6 +1076,19 @@ func TestReconcileNodeReportsPolicyMapPressureSummary(t *testing.T) {
 			{EndpointID: model.EndpointKey("prod", "pod-a"), Missing: 1, Extra: 2, Changed: 3, Drifted: true},
 			{EndpointID: model.EndpointKey("prod", "pod-b")},
 		},
+		statuses: []dataplane.PolicyEndpointStatus{
+			{
+				EndpointID:      model.EndpointKey("prod", "pod-a"),
+				Revision:        7,
+				Entries:         12,
+				Capacity:        16,
+				PressurePercent: 75,
+				Drift:           dataplane.PolicyMapDrift{EndpointID: model.EndpointKey("prod", "pod-a"), Missing: 1, Extra: 2, Changed: 3, Drifted: true},
+				LastStats:       dataplane.PolicyUpdateStats{Revision: 7, Updated: 1},
+				LastEvent:       dataplane.PolicyUpdateEvent{EndpointID: model.EndpointKey("prod", "pod-a"), Revision: 7, Success: true},
+				HasLastEvent:    true,
+			},
+		},
 	}
 	result, err := ReconcileNode(context.Background(), state, "node-a", store)
 	if err != nil {
@@ -1087,6 +1108,9 @@ func TestReconcileNodeReportsPolicyMapPressureSummary(t *testing.T) {
 	}
 	if result.PolicyMapDriftEndpoints != 1 || result.PolicyMapDriftMissing != 1 || result.PolicyMapDriftExtra != 2 || result.PolicyMapDriftChanged != 3 {
 		t.Fatalf("policy map drift summary = %+v, want one drifted endpoint", result)
+	}
+	if len(result.PolicyEndpointStatus) != 1 || result.PolicyEndpointStatus[0].EndpointID != model.EndpointKey("prod", "pod-a") || result.PolicyEndpointStatus[0].Revision != 7 || !result.PolicyEndpointStatus[0].Drift.Drifted || !result.PolicyEndpointStatus[0].HasLastEvent {
+		t.Fatalf("policy endpoint status = %+v, want endpoint lifecycle status", result.PolicyEndpointStatus)
 	}
 
 	store.usages = []dataplane.PolicyMapUsage{

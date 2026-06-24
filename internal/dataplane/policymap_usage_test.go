@@ -44,6 +44,39 @@ func TestInMemoryPolicyStoreExposesPolicyMapUsageSummary(t *testing.T) {
 	}
 }
 
+func TestInMemoryPolicyStoreReportsEndpointStatuses(t *testing.T) {
+	store := NewInMemoryPolicyStore()
+	endpointA := model.EndpointKey("prod", "pod-a")
+	entry := PolicyMapEntry{
+		Key:   PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 1, Direction: DirectionIngress},
+		Value: PolicyEntry{Precedence: 10, RuleCookie: 7},
+	}
+	if err := store.ReplaceEndpoint(context.Background(), endpointA, []PolicyMapEntry{entry}); err != nil {
+		t.Fatal(err)
+	}
+
+	statuses, err := store.PolicyEndpointStatuses(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(statuses) != 1 {
+		t.Fatalf("statuses = %d, want one endpoint status", len(statuses))
+	}
+	status := statuses[0]
+	if status.EndpointID != endpointA || status.Revision != 1 || status.Entries != 1 || status.Capacity != 0 || status.PressurePercent != 0 {
+		t.Fatalf("status = %+v, want endpoint revision and usage", status)
+	}
+	if status.Drift.Drifted || status.Drift.Missing != 0 || status.Drift.Extra != 0 || status.Drift.Changed != 0 {
+		t.Fatalf("drift = %+v, want clean in-memory status", status.Drift)
+	}
+	if status.LastStats.Revision != 1 || status.LastStats.Added != 1 {
+		t.Fatalf("last stats = %+v, want revision 1 add", status.LastStats)
+	}
+	if !status.HasLastEvent || !status.LastEvent.Success || status.LastEvent.EndpointID != endpointA || status.LastEvent.Revision != 1 {
+		t.Fatalf("last event = %+v has=%t, want successful endpoint event", status.LastEvent, status.HasLastEvent)
+	}
+}
+
 func TestSummarizePolicyMapUsageCalculatesPressureBands(t *testing.T) {
 	summary := SummarizePolicyMapUsage([]PolicyMapUsage{
 		{EndpointID: "a", Entries: 12, Capacity: 16},

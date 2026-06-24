@@ -96,6 +96,18 @@ type PolicyUpdateEvent struct {
 	Error            string
 }
 
+type PolicyEndpointStatus struct {
+	EndpointID      string
+	Revision        uint64
+	Entries         uint32
+	Capacity        uint32
+	PressurePercent uint32
+	Drift           PolicyMapDrift
+	LastStats       PolicyUpdateStats
+	LastEvent       PolicyUpdateEvent
+	HasLastEvent    bool
+}
+
 type PolicyUpdatePlan struct {
 	Add       []PolicyMapEntry
 	Update    []PolicyMapEntry
@@ -259,6 +271,45 @@ func (s *InMemoryPolicyStore) PolicyMapDrift(_ context.Context) ([]PolicyMapDrif
 		reports = append(reports, DiffPolicyMapEntries(endpointID, entries, entries))
 	}
 	return reports, nil
+}
+
+func (s *InMemoryPolicyStore) PolicyEndpointStatuses(_ context.Context) ([]PolicyEndpointStatus, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	endpoints := make(map[string]struct{}, len(s.endpoints)+len(s.revisions)+len(s.lastStats))
+	for endpointID := range s.endpoints {
+		endpoints[endpointID] = struct{}{}
+	}
+	for endpointID := range s.revisions {
+		endpoints[endpointID] = struct{}{}
+	}
+	for endpointID := range s.lastStats {
+		endpoints[endpointID] = struct{}{}
+	}
+	endpointIDs := make([]string, 0, len(endpoints))
+	for endpointID := range endpoints {
+		endpointIDs = append(endpointIDs, endpointID)
+	}
+	slices.Sort(endpointIDs)
+	statuses := make([]PolicyEndpointStatus, 0, len(endpointIDs))
+	for _, endpointID := range endpointIDs {
+		entries := s.endpoints[endpointID]
+		status := PolicyEndpointStatus{
+			EndpointID:      endpointID,
+			Revision:        s.revisions[endpointID],
+			Entries:         uint32(len(entries)),
+			Drift:           DiffPolicyMapEntries(endpointID, entries, entries),
+			LastStats:       s.lastStats[endpointID],
+			PressurePercent: policyMapPressurePercent(PolicyMapUsage{EndpointID: endpointID, Entries: uint32(len(entries))}),
+		}
+		if event, ok := lastPolicyUpdateEvent(s.events, endpointID); ok {
+			status.LastEvent = event
+			status.HasLastEvent = true
+		}
+		statuses = append(statuses, status)
+	}
+	return statuses, nil
 }
 
 func (s *InMemoryPolicyStore) SetFailAfter(operations int) {
@@ -436,6 +487,15 @@ func SummarizePolicyMapDrift(reports []PolicyMapDrift) PolicyMapDriftSummary {
 		summary.ChangedEntries += report.Changed
 	}
 	return summary
+}
+
+func lastPolicyUpdateEvent(events []PolicyUpdateEvent, endpointID string) (PolicyUpdateEvent, bool) {
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].EndpointID == endpointID {
+			return events[i], true
+		}
+	}
+	return PolicyUpdateEvent{}, false
 }
 
 func policyMapPressurePercent(usage PolicyMapUsage) uint32 {

@@ -648,6 +648,13 @@ func TestInMemoryPolicyStoreDeletesEndpoint(t *testing.T) {
 	if stats := store.LastStats(endpointA); stats != (PolicyUpdateStats{}) {
 		t.Fatalf("stats after delete = %+v, want zero", stats)
 	}
+	statuses, err := store.PolicyEndpointStatuses(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(statuses) != 0 {
+		t.Fatalf("endpoint statuses after delete = %+v, want none", statuses)
+	}
 }
 
 func TestInMemoryPolicyStoreReportsPolicyMapUsage(t *testing.T) {

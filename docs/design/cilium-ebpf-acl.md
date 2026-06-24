@@ -350,15 +350,19 @@ map values, classifying counters by rule cookie and action, and preserving those
 counters during drift checks so reconcile does not rewrite a healthy map merely
 because datapath counters changed. The same live-vs-desired comparison is
 available as policy-map drift telemetry with missing, extra, and changed entry
-counts. The TCX L4 ACL map value similarly carries the projected rule cookie,
-log flag, and packet and byte counters. IPv4 and IPv6 TCX programs atomically
-increment those counters after a successful LPM lookup and before returning the
-rule action. After a successful TCX reconcile, the agent reads the live
-attachment maps, aggregates counters by rule cookie, classifies logged hits from
-the value metadata, and merges them into the normal `policy_rule_stats`
-telemetry output. Single-workload TCX counters are labelled with the endpoint
-ID; shared-interface counters are labelled with the TCX target identity. This
-exposes Cilium-style rule hit accounting without changing match semantics.
+counts. The policy store also exposes endpoint-scoped lifecycle status that
+combines revision, map usage, pressure, drift, last update stats, and the last
+update event, so a future API or CLI can report a Cilium-style endpoint policy
+view without scraping reconcile logs. The TCX L4 ACL map value similarly carries
+the projected rule cookie, log flag, and packet and byte counters. IPv4 and IPv6
+TCX programs atomically increment those counters after a successful LPM lookup
+and before returning the rule action. After a successful TCX reconcile, the agent
+reads the live attachment maps, aggregates counters by rule cookie, classifies
+logged hits from the value metadata, and merges them into the normal
+`policy_rule_stats` telemetry output. Single-workload TCX counters are labelled
+with the endpoint ID; shared-interface counters are labelled with the TCX target
+identity. This exposes Cilium-style rule hit accounting without changing match
+semantics.
 In long-running state-file agent mode, `NETLOOM_AGENT_METRICS_ADDR` enables a
 Prometheus text endpoint with `/metrics` and `/healthz`. The scrape surface
 exports the latest reconcile success and duration, policy-map
