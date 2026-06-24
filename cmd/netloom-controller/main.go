@@ -83,6 +83,7 @@ type stateFileReconciler struct {
 	memory        *control.MemoryBackend
 	executor      ovn.Executor
 	ovnBackend    *ovn.Backend
+	ovnCleanup    ovnCleanupStatsReporter
 	ovnCloser     func()
 	controller    *control.Controller
 	healthTracker *control.LoadBalancerHealthTracker
@@ -97,7 +98,12 @@ type ovnTopologyRuntime struct {
 	backend    control.TopologyBackend
 	executor   ovn.Executor
 	ovnBackend *ovn.Backend
+	cleanup    ovnCleanupStatsReporter
 	close      func()
+}
+
+type ovnCleanupStatsReporter interface {
+	LastCleanupStats() ovn.CleanupStats
 }
 
 type ovnHealthChecker interface {
@@ -175,6 +181,7 @@ func newStateFileReconciler() (*stateFileReconciler, error) {
 		memory:        memory,
 		executor:      ovnRuntime.executor,
 		ovnBackend:    ovnRuntime.ovnBackend,
+		ovnCleanup:    ovnRuntime.cleanup,
 		ovnCloser:     ovnRuntime.close,
 		controller:    control.NewController(control.MultiTopologyBackend{memory, ovnRuntime.backend}, memory),
 		healthTracker: control.NewLoadBalancerHealthTracker(),
@@ -392,10 +399,10 @@ func (r *stateFileReconciler) observeReconcileFailure(phase string, state contro
 }
 
 func (r *stateFileReconciler) lastOVNCleanupStats() ovn.CleanupStats {
-	if r == nil || r.ovnBackend == nil {
+	if r == nil || r.ovnCleanup == nil {
 		return ovn.CleanupStats{}
 	}
-	return r.ovnBackend.LastCleanupStats()
+	return r.ovnCleanup.LastCleanupStats()
 }
 
 func (r *stateFileReconciler) auditOVN(ctx context.Context, desired topology.State) (ovn.AuditStats, string, string) {
@@ -980,6 +987,7 @@ func newOVNTopologyRuntimeFromEnv() (ovnTopologyRuntime, error) {
 			backend:    ovnBackend,
 			executor:   executor,
 			ovnBackend: ovnBackend,
+			cleanup:    ovnBackend,
 		}, nil
 	}
 	if backend != "libovsdb" {
@@ -989,8 +997,10 @@ func newOVNTopologyRuntimeFromEnv() (ovnTopologyRuntime, error) {
 	if err != nil {
 		return ovnTopologyRuntime{}, err
 	}
+	writer := ovn.NewLibOVSDBTopologyWriter(client)
 	return ovnTopologyRuntime{
-		backend: ovn.NewLibOVSDBTopologyWriter(client),
+		backend: writer,
+		cleanup: writer,
 		close:   closeFn,
 	}, nil
 }

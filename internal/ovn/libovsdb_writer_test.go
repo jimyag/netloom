@@ -5,10 +5,12 @@ import (
 	"net/netip"
 	"testing"
 
+	libovsdbclient "github.com/ovn-kubernetes/libovsdb/client"
 	"github.com/ovn-kubernetes/libovsdb/ovsdb"
 
 	"github.com/jimyag/netloom/internal/model"
 	"github.com/jimyag/netloom/internal/ovn/ovsdb/ovnnb"
+	"github.com/jimyag/netloom/internal/topology"
 )
 
 func TestLibOVSDBTopologyWriterEnsuresVPCLogicalRouter(t *testing.T) {
@@ -976,6 +978,230 @@ func TestLibOVSDBTopologyWriterEnsuresLoadBalancerAndHealthChecks(t *testing.T) 
 	})
 }
 
+func TestLibOVSDBTopologyWriterCleanupTopologyDeletesRemovedDesiredObjects(t *testing.T) {
+	ctx := context.Background()
+	client, closeFn := newTestOVNNBClient(t)
+	defer closeFn()
+
+	if _, err := client.MonitorAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	writer := NewLibOVSDBTopologyWriter(client)
+	subnet := model.Subnet{
+		Name:    "apps",
+		VPC:     "prod",
+		CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+		Gateway: netip.MustParseAddr("10.10.0.1"),
+		DHCP: model.DHCPOptions{
+			Enabled:   true,
+			LeaseTime: 3600,
+		},
+	}
+	endpoint := model.Endpoint{
+		ID:     "pod-a",
+		VPC:    "prod",
+		Subnet: "apps",
+		Node:   "node-a",
+		IP:     netip.MustParseAddr("10.10.0.20"),
+		MAC:    "02:00:00:00:00:20",
+	}
+	routeTable := model.RouteTable{
+		Name: "main",
+		VPC:  "prod",
+		Routes: []model.Route{{
+			Destination: netip.MustParsePrefix("10.20.0.0/24"),
+			NextHops:    []netip.Addr{netip.MustParseAddr("10.10.0.254")},
+		}},
+	}
+	policyRoute := model.PolicyRoute{
+		Name:     "egress-a",
+		VPC:      "prod",
+		Priority: 100,
+		Match: model.RouteMatch{
+			Source:      netip.MustParsePrefix("10.10.0.0/24"),
+			Destination: netip.MustParsePrefix("10.20.0.0/24"),
+		},
+		Action: model.RouteAction{Type: model.ActionReroute, NextHops: []netip.Addr{netip.MustParseAddr("10.10.0.253")}},
+	}
+	gateway := model.Gateway{
+		Name:        "gw-a",
+		VPC:         "prod",
+		Node:        "node-a",
+		ExternalIF:  "eth0",
+		LANIP:       netip.MustParseAddr("10.10.0.1"),
+		Distributed: false,
+	}
+	natRule := model.NATRule{
+		Name:       "egress",
+		VPC:        "prod",
+		Type:       model.ActionSNAT,
+		MatchCIDR:  netip.MustParsePrefix("10.10.0.0/24"),
+		ExternalIP: netip.MustParseAddr("198.51.100.10"),
+	}
+	lb := model.LoadBalancer{
+		Name:    "api",
+		VPC:     "prod",
+		VIP:     netip.MustParseAddr("10.96.0.10"),
+		Subnets: []string{"apps"},
+		Ports: []model.LoadBalancerPort{{
+			Port:     443,
+			Protocol: model.ProtocolTCP,
+			Backends: []model.LoadBalancerBackend{{
+				IP:   netip.MustParseAddr("10.10.0.20"),
+				Port: 8443,
+			}},
+		}},
+		HealthCheck: model.LoadBalancerHealthCheck{Enabled: true},
+	}
+	state := topology.State{
+		VPCs:          map[string]model.VPC{"prod": {Name: "prod"}},
+		Subnets:       map[string]model.Subnet{"prod/apps": subnet},
+		Endpoints:     map[string]model.Endpoint{model.EndpointKey("prod", "pod-a"): endpoint},
+		RouteTables:   map[string]model.RouteTable{"prod/main": routeTable},
+		PolicyRoutes:  []model.PolicyRoute{policyRoute},
+		Gateways:      map[string]model.Gateway{"prod/gw-a": gateway},
+		NATRules:      map[string]model.NATRule{"prod/egress": natRule},
+		LoadBalancers: map[string]model.LoadBalancer{"prod/api": lb},
+	}
+	if err := writer.CleanupTopology(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range []struct {
+		name string
+		fn   func() error
+	}{
+		{"vpc", func() error { return writer.EnsureVPC(ctx, state.VPCs["prod"]) }},
+		{"subnet", func() error { return writer.EnsureSubnet(ctx, subnet) }},
+		{"route table", func() error { return writer.EnsureRouteTable(ctx, routeTable) }},
+		{"policy route", func() error { return writer.EnsurePolicyRoute(ctx, policyRoute) }},
+		{"gateway", func() error { return writer.EnsureGateway(ctx, gateway) }},
+		{"endpoint", func() error { return writer.EnsureEndpoint(ctx, endpoint) }},
+		{"nat", func() error { return writer.EnsureNATRule(ctx, natRule) }},
+		{"load balancer", func() error { return writer.EnsureLoadBalancer(ctx, lb) }},
+	} {
+		if err := step.fn(); err != nil {
+			t.Fatalf("ensure %s: %v", step.name, err)
+		}
+	}
+	requireEventually(t, func() bool {
+		counts, err := managedOVNRowCounts(ctx, client)
+		return err == nil &&
+			counts["Logical_Router"] == 1 &&
+			counts["Logical_Switch"] == 1 &&
+			counts["Logical_Switch_Port"] == 2 &&
+			counts["Logical_Router_Port"] == 1 &&
+			counts["Logical_Router_Static_Route"] == 1 &&
+			counts["Logical_Router_Policy"] == 1 &&
+			counts["NAT"] == 1 &&
+			counts["Load_Balancer"] == 1 &&
+			counts["Load_Balancer_Health_Check"] == 1 &&
+			counts["DHCP_Options"] == 1
+	})
+
+	if err := writer.CleanupTopology(ctx, topology.State{}); err != nil {
+		t.Fatal(err)
+	}
+	requireEventually(t, func() bool {
+		counts, err := managedOVNRowCounts(ctx, client)
+		if err != nil {
+			return false
+		}
+		for _, count := range counts {
+			if count != 0 {
+				return false
+			}
+		}
+		return true
+	})
+	stats := writer.LastCleanupStats()
+	if stats.StaleVPCs != 1 ||
+		stats.StaleSubnets != 1 ||
+		stats.StaleEndpoints != 1 ||
+		stats.StaleRoutes != 1 ||
+		stats.StalePolicyRoutes != 1 ||
+		stats.StaleGateways != 1 ||
+		stats.StaleNATRules != 1 ||
+		stats.StaleLoadBalancers != 1 {
+		t.Fatalf("cleanup stats = %+v, want one stale object in every topology category", stats)
+	}
+}
+
+func TestLibOVSDBTopologyWriterFirstCleanupDeletesUnexpectedLiveObjects(t *testing.T) {
+	ctx := context.Background()
+	client, closeFn := newTestOVNNBClient(t)
+	defer closeFn()
+
+	if _, err := client.MonitorAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	writer := NewLibOVSDBTopologyWriter(client)
+	subnet := model.Subnet{
+		Name:    "apps",
+		VPC:     "prod",
+		CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+		Gateway: netip.MustParseAddr("10.10.0.1"),
+		DHCP:    model.DHCPOptions{Enabled: true},
+	}
+	endpoint := model.Endpoint{
+		ID:     "pod-a",
+		VPC:    "prod",
+		Subnet: "apps",
+		Node:   "node-a",
+		IP:     netip.MustParseAddr("10.10.0.20"),
+	}
+	routeTable := model.RouteTable{
+		Name: "main",
+		VPC:  "prod",
+		Routes: []model.Route{{
+			Destination: netip.MustParsePrefix("10.20.0.0/24"),
+			NextHops:    []netip.Addr{netip.MustParseAddr("10.10.0.254")},
+		}},
+	}
+	if err := writer.EnsureVPC(ctx, model.VPC{Name: "prod"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureSubnet(ctx, subnet); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureEndpoint(ctx, endpoint); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureRouteTable(ctx, routeTable); err != nil {
+		t.Fatal(err)
+	}
+	requireEventually(t, func() bool {
+		counts, err := managedOVNRowCounts(ctx, client)
+		return err == nil &&
+			counts["Logical_Router"] == 1 &&
+			counts["Logical_Switch"] == 1 &&
+			counts["Logical_Switch_Port"] == 2 &&
+			counts["Logical_Router_Port"] == 1 &&
+			counts["Logical_Router_Static_Route"] == 1 &&
+			counts["DHCP_Options"] == 1
+	})
+
+	gcWriter := NewLibOVSDBTopologyWriter(client)
+	if err := gcWriter.CleanupTopology(ctx, topology.State{}); err != nil {
+		t.Fatal(err)
+	}
+	requireEventually(t, func() bool {
+		counts, err := managedOVNRowCounts(ctx, client)
+		if err != nil {
+			return false
+		}
+		for _, count := range counts {
+			if count != 0 {
+				return false
+			}
+		}
+		return true
+	})
+	stats := gcWriter.LastCleanupStats()
+	if !stats.FirstReconcileGC || stats.Operations == 0 {
+		t.Fatalf("cleanup stats = %+v, want first reconcile GC operations", stats)
+	}
+}
+
 func TestLibOVSDBTopologyWriterUpdatesExistingVPCRouter(t *testing.T) {
 	ctx := context.Background()
 	client, closeFn := newTestOVNNBClient(t)
@@ -1027,4 +1253,59 @@ func loadBalancersByProtocol(rows []ovnnb.LoadBalancer) map[string]ovnnb.LoadBal
 		out[row.ExternalIDs["netloom_protocol"]] = row
 	}
 	return out
+}
+
+func managedOVNRowCounts(ctx context.Context, client libovsdbclient.Client) (map[string]int, error) {
+	counts := map[string]int{}
+	var routers []ovnnb.LogicalRouter
+	if err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return isNetloomManaged(row.ExternalIDs) }).List(ctx, &routers); err != nil {
+		return nil, err
+	}
+	counts["Logical_Router"] = len(routers)
+	var switches []ovnnb.LogicalSwitch
+	if err := client.WhereCache(func(row *ovnnb.LogicalSwitch) bool { return isNetloomManaged(row.ExternalIDs) }).List(ctx, &switches); err != nil {
+		return nil, err
+	}
+	counts["Logical_Switch"] = len(switches)
+	var switchPorts []ovnnb.LogicalSwitchPort
+	if err := client.WhereCache(func(row *ovnnb.LogicalSwitchPort) bool { return isNetloomManaged(row.ExternalIDs) }).List(ctx, &switchPorts); err != nil {
+		return nil, err
+	}
+	counts["Logical_Switch_Port"] = len(switchPorts)
+	var routerPorts []ovnnb.LogicalRouterPort
+	if err := client.WhereCache(func(row *ovnnb.LogicalRouterPort) bool { return isNetloomManaged(row.ExternalIDs) }).List(ctx, &routerPorts); err != nil {
+		return nil, err
+	}
+	counts["Logical_Router_Port"] = len(routerPorts)
+	var staticRoutes []ovnnb.LogicalRouterStaticRoute
+	if err := client.WhereCache(func(row *ovnnb.LogicalRouterStaticRoute) bool { return isNetloomManaged(row.ExternalIDs) }).List(ctx, &staticRoutes); err != nil {
+		return nil, err
+	}
+	counts["Logical_Router_Static_Route"] = len(staticRoutes)
+	var policies []ovnnb.LogicalRouterPolicy
+	if err := client.WhereCache(func(row *ovnnb.LogicalRouterPolicy) bool { return isNetloomManaged(row.ExternalIDs) }).List(ctx, &policies); err != nil {
+		return nil, err
+	}
+	counts["Logical_Router_Policy"] = len(policies)
+	var nats []ovnnb.NAT
+	if err := client.WhereCache(func(row *ovnnb.NAT) bool { return isNetloomManaged(row.ExternalIDs) }).List(ctx, &nats); err != nil {
+		return nil, err
+	}
+	counts["NAT"] = len(nats)
+	var lbs []ovnnb.LoadBalancer
+	if err := client.WhereCache(func(row *ovnnb.LoadBalancer) bool { return isNetloomManaged(row.ExternalIDs) }).List(ctx, &lbs); err != nil {
+		return nil, err
+	}
+	counts["Load_Balancer"] = len(lbs)
+	var checks []ovnnb.LoadBalancerHealthCheck
+	if err := client.WhereCache(func(row *ovnnb.LoadBalancerHealthCheck) bool { return isNetloomManaged(row.ExternalIDs) }).List(ctx, &checks); err != nil {
+		return nil, err
+	}
+	counts["Load_Balancer_Health_Check"] = len(checks)
+	var dhcp []ovnnb.DHCPOptions
+	if err := client.WhereCache(func(row *ovnnb.DHCPOptions) bool { return isNetloomManaged(row.ExternalIDs) }).List(ctx, &dhcp); err != nil {
+		return nil, err
+	}
+	counts["DHCP_Options"] = len(dhcp)
+	return counts, nil
 }
