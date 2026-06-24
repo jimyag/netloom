@@ -3,7 +3,9 @@ package ovn
 import (
 	"context"
 	"fmt"
+	"net/netip"
 	"reflect"
+	"sort"
 	"strings"
 
 	"github.com/ovn-kubernetes/libovsdb/client"
@@ -80,12 +82,8 @@ func (w *LibOVSDBTopologyWriter) EnsureSubnet(ctx context.Context, subnet model.
 		return fmt.Errorf("logical router %s must exist before subnet %s", routerName, subnet.Name)
 	}
 	ls := &ovnnb.LogicalSwitch{
-		Name: logicalSwitch(subnet.VPC, subnet.Name),
-		ExternalIDs: map[string]string{
-			"netloom_owner":  "netloom",
-			"netloom_vpc":    subnet.VPC,
-			"netloom_subnet": subnet.Name,
-		},
+		Name:        logicalSwitch(subnet.VPC, subnet.Name),
+		ExternalIDs: logicalSwitchExternalIDs(subnet),
 		OtherConfig: logicalSwitchOtherConfig(subnet),
 	}
 	existingSwitch, ok, err := w.logicalSwitchByName(ctx, ls.Name)
@@ -126,6 +124,67 @@ func (w *LibOVSDBTopologyWriter) EnsureSubnet(ctx context.Context, subnet model.
 	}
 	if opErrors, err := ovsdb.CheckOperationResults(results, ops); err != nil {
 		return fmt.Errorf("subnet %s/%s operation errors=%+v: %w", subnet.VPC, subnet.Name, opErrors, err)
+	}
+	return nil
+}
+
+func (w *LibOVSDBTopologyWriter) EnsureEndpoint(ctx context.Context, endpoint model.Endpoint) error {
+	if w == nil || w.client == nil {
+		return fmt.Errorf("libovsdb topology writer has no client")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	switchName := logicalSwitch(endpoint.VPC, endpoint.Subnet)
+	logicalSwitch, ok, err := w.logicalSwitchByName(ctx, switchName)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("logical switch %s must exist before endpoint %s", switchName, endpoint.ID)
+	}
+	address := endpointAddress(endpoint)
+	port := &ovnnb.LogicalSwitchPort{
+		Name:      logicalPort(endpoint.VPC, endpoint.ID),
+		Addresses: []string{address},
+		ExternalIDs: map[string]string{
+			"netloom_owner":    "netloom",
+			"netloom_endpoint": endpointExternalID(endpoint.VPC, endpoint.ID),
+			"netloom_node":     endpoint.Node,
+			"netloom_vpc":      endpoint.VPC,
+			"netloom_subnet":   endpoint.Subnet,
+		},
+	}
+	if endpoint.NormalizedMAC() != "" {
+		port.PortSecurity = []string{address}
+	}
+	var ops []ovsdb.Operation
+	portUUID, portOps, err := w.ensureEndpointSwitchPort(ctx, logicalSwitch.UUID, logicalSwitch.Ports, port)
+	if err != nil {
+		return err
+	}
+	ops = append(ops, portOps...)
+	nextPort, ok, err := w.logicalSwitchPortByName(ctx, port.Name)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		nextPort = &ovnnb.LogicalSwitchPort{UUID: portUUID}
+	}
+	dhcpOps, err := w.endpointDHCPOptionsOperations(ctx, endpoint, logicalSwitch.ExternalIDs, nextPort)
+	if err != nil {
+		return err
+	}
+	ops = append(ops, dhcpOps...)
+	if len(ops) == 0 {
+		return nil
+	}
+	results, err := w.client.Transact(ctx, ops...)
+	if err != nil {
+		return fmt.Errorf("transact endpoint %s/%s: %w", endpoint.VPC, endpoint.ID, err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, ops); err != nil {
+		return fmt.Errorf("endpoint %s/%s operation errors=%+v: %w", endpoint.VPC, endpoint.ID, opErrors, err)
 	}
 	return nil
 }
@@ -312,6 +371,60 @@ func (w *LibOVSDBTopologyWriter) ensureLogicalSwitchPort(ctx context.Context, sw
 	return existing.UUID, ops, nil
 }
 
+func (w *LibOVSDBTopologyWriter) ensureEndpointSwitchPort(ctx context.Context, switchUUID string, switchPorts []string, desired *ovnnb.LogicalSwitchPort) (string, []ovsdb.Operation, error) {
+	existing, ok, err := w.logicalSwitchPortByName(ctx, desired.Name)
+	if err != nil {
+		return "", nil, err
+	}
+	var ops []ovsdb.Operation
+	if !ok {
+		desired.UUID = ovsdbNamedUUID(desired.Name)
+		createOps, err := w.client.Create(desired)
+		if err != nil {
+			return "", nil, fmt.Errorf("create endpoint logical switch port %s: %w", desired.Name, err)
+		}
+		ops = append(ops, createOps...)
+		switchRow := &ovnnb.LogicalSwitch{UUID: switchUUID}
+		mutateOps, err := w.client.Where(switchRow).Mutate(switchRow, ovsmodel.Mutation{
+			Field:   &switchRow.Ports,
+			Mutator: ovsdb.MutateOperationInsert,
+			Value:   []string{desired.UUID},
+		})
+		if err != nil {
+			return "", nil, fmt.Errorf("attach endpoint logical switch port %s to switch %s: %w", desired.Name, switchUUID, err)
+		}
+		ops = append(ops, mutateOps...)
+		return desired.UUID, ops, nil
+	}
+	nextExternalIDs := mergeStringMap(existing.ExternalIDs, desired.ExternalIDs)
+	if !containsString(switchPorts, existing.UUID) {
+		switchRow := &ovnnb.LogicalSwitch{UUID: switchUUID}
+		mutateOps, err := w.client.Where(switchRow).Mutate(switchRow, ovsmodel.Mutation{
+			Field:   &switchRow.Ports,
+			Mutator: ovsdb.MutateOperationInsert,
+			Value:   []string{existing.UUID},
+		})
+		if err != nil {
+			return "", nil, fmt.Errorf("attach endpoint logical switch port %s to switch %s: %w", desired.Name, switchUUID, err)
+		}
+		ops = append(ops, mutateOps...)
+	}
+	if reflect.DeepEqual(existing.Addresses, desired.Addresses) &&
+		reflect.DeepEqual(existing.PortSecurity, desired.PortSecurity) &&
+		reflect.DeepEqual(existing.ExternalIDs, nextExternalIDs) {
+		return existing.UUID, ops, nil
+	}
+	existing.Addresses = desired.Addresses
+	existing.PortSecurity = desired.PortSecurity
+	existing.ExternalIDs = nextExternalIDs
+	updateOps, err := w.client.Where(existing).Update(existing, &existing.Addresses, &existing.PortSecurity, &existing.ExternalIDs)
+	if err != nil {
+		return "", nil, fmt.Errorf("update endpoint logical switch port %s: %w", desired.Name, err)
+	}
+	ops = append(ops, updateOps...)
+	return existing.UUID, ops, nil
+}
+
 func (w *LibOVSDBTopologyWriter) deleteLogicalSwitchPort(switchUUID string, port *ovnnb.LogicalSwitchPort) ([]ovsdb.Operation, error) {
 	switchRow := &ovnnb.LogicalSwitch{UUID: switchUUID}
 	mutateOps, err := w.client.Where(switchRow).Mutate(switchRow, ovsmodel.Mutation{
@@ -327,6 +440,138 @@ func (w *LibOVSDBTopologyWriter) deleteLogicalSwitchPort(switchUUID string, port
 		return nil, fmt.Errorf("delete logical switch port %s: %w", port.Name, err)
 	}
 	return append(mutateOps, deleteOps...), nil
+}
+
+func (w *LibOVSDBTopologyWriter) endpointDHCPOptionsOperations(ctx context.Context, endpoint model.Endpoint, switchExternalIDs map[string]string, port *ovnnb.LogicalSwitchPort) ([]ovsdb.Operation, error) {
+	var ops []ovsdb.Operation
+	for _, family := range []int{4, 6} {
+		desired, enabled, err := w.desiredEndpointDHCPOptions(ctx, endpoint, switchExternalIDs, family)
+		if err != nil {
+			return nil, err
+		}
+		nextOps, dhcpUUID, err := w.ensureEndpointDHCPOptions(ctx, endpoint, family, desired, enabled)
+		if err != nil {
+			return nil, err
+		}
+		ops = append(ops, nextOps...)
+		if family == 4 {
+			if !stringPointerValueEqual(port.Dhcpv4Options, dhcpUUID) {
+				port.Dhcpv4Options = optionalString(dhcpUUID)
+				bindOps, err := w.client.Where(port).Update(port, &port.Dhcpv4Options)
+				if err != nil {
+					return nil, fmt.Errorf("sync DHCPv4 options on port %s: %w", port.UUID, err)
+				}
+				ops = append(ops, bindOps...)
+			}
+			continue
+		}
+		if !stringPointerValueEqual(port.Dhcpv6Options, dhcpUUID) {
+			port.Dhcpv6Options = optionalString(dhcpUUID)
+			bindOps, err := w.client.Where(port).Update(port, &port.Dhcpv6Options)
+			if err != nil {
+				return nil, fmt.Errorf("sync DHCPv6 options on port %s: %w", port.UUID, err)
+			}
+			ops = append(ops, bindOps...)
+		}
+	}
+	return ops, nil
+}
+
+func (w *LibOVSDBTopologyWriter) desiredEndpointDHCPOptions(ctx context.Context, endpoint model.Endpoint, switchExternalIDs map[string]string, family int) (*ovnnb.DHCPOptions, bool, error) {
+	if switchExternalIDs["netloom_dhcp_enabled"] != "true" {
+		return nil, false, nil
+	}
+	if (family == 4 && !endpoint.IP.Is4()) || (family == 6 && !endpoint.IP.Is6()) {
+		return nil, false, nil
+	}
+	cidr := switchExternalIDs["netloom_cidr"]
+	gateway := switchExternalIDs["netloom_gateway"]
+	if cidr == "" || gateway == "" {
+		return nil, false, fmt.Errorf("logical switch %s/%s missing DHCP CIDR or gateway metadata", endpoint.VPC, endpoint.Subnet)
+	}
+	routerPort, ok, err := w.logicalRouterPortByName(ctx, routerPortName(logicalRouter(endpoint.VPC), endpoint.Subnet))
+	if err != nil {
+		return nil, false, err
+	}
+	if !ok {
+		return nil, false, fmt.Errorf("logical router port for subnet %s/%s must exist before endpoint DHCP", endpoint.VPC, endpoint.Subnet)
+	}
+	options := map[string]string{}
+	if family == 4 {
+		options["server_id"] = gateway
+		options["server_mac"] = routerPort.MAC
+		options["router"] = gateway
+		leaseTime := switchExternalIDs["netloom_dhcp_lease_time"]
+		if leaseTime == "" || leaseTime == "0" {
+			leaseTime = "3600"
+		}
+		options["lease_time"] = leaseTime
+		if mtu := switchExternalIDs["netloom_dhcp_mtu"]; mtu != "" && mtu != "0" {
+			options["mtu"] = mtu
+		}
+		addDHCPDNSOptions(options, switchExternalIDs, 4)
+	} else {
+		options["server_id"] = routerPort.MAC
+		addDHCPDNSOptions(options, switchExternalIDs, 6)
+	}
+	return &ovnnb.DHCPOptions{
+		UUID:    strings.TrimPrefix(dhcpOptionsUUID(endpoint, family), "@"),
+		Cidr:    cidr,
+		Options: options,
+		ExternalIDs: map[string]string{
+			"netloom_owner":       "netloom",
+			"netloom_subnet":      endpoint.Subnet,
+			"netloom_endpoint":    endpointExternalID(endpoint.VPC, endpoint.ID),
+			"netloom_vpc":         endpoint.VPC,
+			"netloom_dhcp_family": fmt.Sprint(family),
+		},
+	}, true, nil
+}
+
+func (w *LibOVSDBTopologyWriter) ensureEndpointDHCPOptions(ctx context.Context, endpoint model.Endpoint, family int, desired *ovnnb.DHCPOptions, enabled bool) ([]ovsdb.Operation, string, error) {
+	rows, err := w.endpointDHCPOptionsByFamily(ctx, endpoint, family)
+	if err != nil {
+		return nil, "", err
+	}
+	var ops []ovsdb.Operation
+	if !enabled {
+		for i := range rows {
+			deleteOps, err := w.client.Where(&rows[i]).Delete()
+			if err != nil {
+				return nil, "", fmt.Errorf("delete DHCP options %s: %w", rows[i].UUID, err)
+			}
+			ops = append(ops, deleteOps...)
+		}
+		return ops, "", nil
+	}
+	if len(rows) == 0 {
+		createOps, err := w.client.Create(desired)
+		if err != nil {
+			return nil, "", fmt.Errorf("create DHCP options for endpoint %s family %d: %w", endpoint.ID, family, err)
+		}
+		ops = append(ops, createOps...)
+		return ops, desired.UUID, nil
+	}
+	keep := rows[0]
+	nextExternalIDs := mergeStringMap(keep.ExternalIDs, desired.ExternalIDs)
+	if keep.Cidr != desired.Cidr || !reflect.DeepEqual(keep.Options, desired.Options) || !reflect.DeepEqual(keep.ExternalIDs, nextExternalIDs) {
+		keep.Cidr = desired.Cidr
+		keep.Options = desired.Options
+		keep.ExternalIDs = nextExternalIDs
+		updateOps, err := w.client.Where(&keep).Update(&keep, &keep.Cidr, &keep.Options, &keep.ExternalIDs)
+		if err != nil {
+			return nil, "", fmt.Errorf("update DHCP options %s: %w", keep.UUID, err)
+		}
+		ops = append(ops, updateOps...)
+	}
+	for i := 1; i < len(rows); i++ {
+		deleteOps, err := w.client.Where(&rows[i]).Delete()
+		if err != nil {
+			return nil, "", fmt.Errorf("delete duplicate DHCP options %s: %w", rows[i].UUID, err)
+		}
+		ops = append(ops, deleteOps...)
+	}
+	return ops, keep.UUID, nil
 }
 
 func (w *LibOVSDBTopologyWriter) logicalRouterByName(ctx context.Context, name string) (*ovnnb.LogicalRouter, bool, error) {
@@ -373,6 +618,21 @@ func (w *LibOVSDBTopologyWriter) logicalSwitchPortByName(ctx context.Context, na
 	return &ports[0], true, nil
 }
 
+func (w *LibOVSDBTopologyWriter) endpointDHCPOptionsByFamily(ctx context.Context, endpoint model.Endpoint, family int) ([]ovnnb.DHCPOptions, error) {
+	endpointID := endpointExternalID(endpoint.VPC, endpoint.ID)
+	var rows []ovnnb.DHCPOptions
+	if err := w.client.WhereCache(func(row *ovnnb.DHCPOptions) bool {
+		return row.ExternalIDs["netloom_owner"] == "netloom" &&
+			row.ExternalIDs["netloom_vpc"] == endpoint.VPC &&
+			row.ExternalIDs["netloom_endpoint"] == endpointID &&
+			row.ExternalIDs["netloom_dhcp_family"] == fmt.Sprint(family)
+	}).List(ctx, &rows); err != nil {
+		return nil, fmt.Errorf("list DHCP options for endpoint %s family %d from libovsdb cache: %w", endpoint.ID, family, err)
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].UUID < rows[j].UUID })
+	return rows, nil
+}
+
 func mergeStringMap(base map[string]string, overlay map[string]string) map[string]string {
 	out := make(map[string]string, len(base)+len(overlay))
 	for key, value := range base {
@@ -380,6 +640,23 @@ func mergeStringMap(base map[string]string, overlay map[string]string) map[strin
 	}
 	for key, value := range overlay {
 		out[key] = value
+	}
+	return out
+}
+
+func logicalSwitchExternalIDs(subnet model.Subnet) map[string]string {
+	out := map[string]string{
+		"netloom_owner":             "netloom",
+		"netloom_vpc":               subnet.VPC,
+		"netloom_subnet":            subnet.Name,
+		"netloom_cidr":              subnet.CIDR.String(),
+		"netloom_gateway":           subnet.Gateway.String(),
+		"netloom_dhcp_enabled":      fmt.Sprintf("%t", subnet.DHCP.Enabled),
+		"netloom_dhcp_lease_time":   fmt.Sprint(subnet.DHCP.LeaseTime),
+		"netloom_dhcp_mtu":          fmt.Sprint(subnet.DHCP.MTU),
+		"netloom_dhcp_dns_servers":  joinAddrs(subnet.DHCP.DNSServers),
+		"netloom_dhcp_domain_name":  subnet.DHCP.DomainName,
+		"netloom_dhcp_search_paths": strings.Join(subnet.DHCP.SearchDomains, ","),
 	}
 	return out
 }
@@ -411,6 +688,39 @@ func replaceLogicalSwitchIPAMConfig(base, desired map[string]string) map[string]
 	return out
 }
 
+func addDHCPDNSOptions(options map[string]string, switchExternalIDs map[string]string, family int) {
+	servers := splitCSV(switchExternalIDs["netloom_dhcp_dns_servers"])
+	filteredServers := make([]string, 0, len(servers))
+	for _, value := range servers {
+		addr, err := netip.ParseAddr(value)
+		if err != nil {
+			continue
+		}
+		if (family == 4 && addr.Is4()) || (family == 6 && addr.Is6()) {
+			filteredServers = append(filteredServers, addr.String())
+		}
+	}
+	if len(filteredServers) > 0 {
+		options["dns_server"] = ovnStringSetValues(filteredServers)
+	}
+	if family == 4 {
+		if domain := switchExternalIDs["netloom_dhcp_domain_name"]; domain != "" {
+			options["domain_name"] = domain
+		}
+		if domains := splitCSV(switchExternalIDs["netloom_dhcp_search_paths"]); len(domains) > 0 {
+			options["domain_search_list"] = ovnStringSetValues(domains)
+		}
+		return
+	}
+	domains := splitCSV(switchExternalIDs["netloom_dhcp_search_paths"])
+	if domain := switchExternalIDs["netloom_dhcp_domain_name"]; domain != "" && !containsString(domains, domain) {
+		domains = append(domains, domain)
+	}
+	if len(domains) > 0 {
+		options["domain_search"] = strings.Join(domains, ",")
+	}
+}
+
 func replaceManagedRouterPortRAConfig(base, desired map[string]string) map[string]string {
 	out := cloneStringMap(base)
 	if out == nil {
@@ -430,8 +740,45 @@ func equalIntPointers(a, b *int) bool {
 	return *a == *b
 }
 
+func optionalString(value string) *string {
+	if value == "" {
+		return nil
+	}
+	return &value
+}
+
+func stringPointerValueEqual(current *string, desired string) bool {
+	if current == nil {
+		return desired == ""
+	}
+	return *current == desired
+}
+
 func ovsdbNamedUUID(name string) string {
 	return strings.TrimPrefix(namedUUID(name), "@")
+}
+
+func joinAddrs(addrs []netip.Addr) string {
+	values := make([]string, 0, len(addrs))
+	for _, addr := range addrs {
+		values = append(values, addr.String())
+	}
+	return strings.Join(values, ",")
+}
+
+func splitCSV(value string) []string {
+	if value == "" {
+		return nil
+	}
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }
 
 func containsString(values []string, want string) bool {

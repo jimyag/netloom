@@ -277,6 +277,246 @@ func TestLibOVSDBTopologyWriterRepairsSubnetPortReferences(t *testing.T) {
 	})
 }
 
+func TestLibOVSDBTopologyWriterEnsuresEndpointWithDHCPv4(t *testing.T) {
+	ctx := context.Background()
+	client, closeFn := newTestOVNNBClient(t)
+	defer closeFn()
+
+	if _, err := client.MonitorAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	writer := NewLibOVSDBTopologyWriter(client)
+	if err := writer.EnsureVPC(ctx, model.VPC{Name: "prod"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureSubnet(ctx, model.Subnet{
+		Name:    "apps",
+		VPC:     "prod",
+		CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+		Gateway: netip.MustParseAddr("10.10.0.1"),
+		DHCP: model.DHCPOptions{
+			Enabled:       true,
+			LeaseTime:     7200,
+			MTU:           1400,
+			DNSServers:    []netip.Addr{netip.MustParseAddr("1.1.1.1"), netip.MustParseAddr("fd00::53")},
+			DomainName:    "svc.local",
+			SearchDomains: []string{"apps.local", "svc.local"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	endpoint := model.Endpoint{
+		ID:     "pod-a",
+		VPC:    "prod",
+		Subnet: "apps",
+		IP:     netip.MustParseAddr("10.10.0.20"),
+		MAC:    "02:00:00:00:00:20",
+		Node:   "node-a",
+	}
+	if err := writer.EnsureEndpoint(ctx, endpoint); err != nil {
+		t.Fatal(err)
+	}
+
+	var ports []ovnnb.LogicalSwitchPort
+	requireEventually(t, func() bool {
+		ports = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalSwitchPort) bool { return row.Name == logicalPort("prod", "pod-a") }).List(ctx, &ports)
+		return err == nil && len(ports) == 1 && ports[0].Dhcpv4Options != nil
+	})
+	port := ports[0]
+	if len(port.Addresses) != 1 || port.Addresses[0] != "02:00:00:00:00:20 10.10.0.20" {
+		t.Fatalf("endpoint port addresses = %+v, want static MAC/IP", port.Addresses)
+	}
+	if len(port.PortSecurity) != 1 || port.PortSecurity[0] != "02:00:00:00:00:20 10.10.0.20" {
+		t.Fatalf("endpoint port security = %+v, want static MAC/IP", port.PortSecurity)
+	}
+	var dhcpRows []ovnnb.DHCPOptions
+	requireEventually(t, func() bool {
+		dhcpRows = nil
+		err := client.WhereCache(func(row *ovnnb.DHCPOptions) bool {
+			return row.ExternalIDs["netloom_endpoint"] == endpointExternalID("prod", "pod-a")
+		}).List(ctx, &dhcpRows)
+		return err == nil && len(dhcpRows) == 1
+	})
+	dhcp := dhcpRows[0]
+	if *port.Dhcpv4Options != dhcp.UUID || port.Dhcpv6Options != nil {
+		t.Fatalf("endpoint DHCP bindings v4=%v v6=%v, want only DHCPv4 %s", port.Dhcpv4Options, port.Dhcpv6Options, dhcp.UUID)
+	}
+	if dhcp.Cidr != "10.10.0.0/24" ||
+		dhcp.Options["server_id"] != "10.10.0.1" ||
+		dhcp.Options["router"] != "10.10.0.1" ||
+		dhcp.Options["lease_time"] != "7200" ||
+		dhcp.Options["mtu"] != "1400" ||
+		dhcp.Options["dns_server"] != `["1.1.1.1"]` ||
+		dhcp.Options["domain_name"] != "svc.local" ||
+		dhcp.Options["domain_search_list"] != `["apps.local","svc.local"]` {
+		t.Fatalf("DHCPv4 options = %+v cidr=%s, want subnet DHCP projection", dhcp.Options, dhcp.Cidr)
+	}
+	if dhcp.ExternalIDs["netloom_dhcp_family"] != "4" || dhcp.ExternalIDs["netloom_vpc"] != "prod" {
+		t.Fatalf("DHCP external IDs = %+v, want managed endpoint identity", dhcp.ExternalIDs)
+	}
+
+	insertRows(t, ctx, client, &ovnnb.DHCPOptions{
+		Cidr:    "10.10.0.0/24",
+		Options: map[string]string{"lease_time": "60"},
+		ExternalIDs: map[string]string{
+			"netloom_owner":       "netloom",
+			"netloom_vpc":         "prod",
+			"netloom_endpoint":    endpointExternalID("prod", "pod-a"),
+			"netloom_dhcp_family": "4",
+		},
+	})
+	requireEventually(t, func() bool {
+		dhcpRows = nil
+		err := client.WhereCache(func(row *ovnnb.DHCPOptions) bool {
+			return row.ExternalIDs["netloom_endpoint"] == endpointExternalID("prod", "pod-a")
+		}).List(ctx, &dhcpRows)
+		return err == nil && len(dhcpRows) == 2
+	})
+	if err := writer.EnsureEndpoint(ctx, endpoint); err != nil {
+		t.Fatal(err)
+	}
+	requireEventually(t, func() bool {
+		dhcpRows = nil
+		err := client.WhereCache(func(row *ovnnb.DHCPOptions) bool {
+			return row.ExternalIDs["netloom_endpoint"] == endpointExternalID("prod", "pod-a")
+		}).List(ctx, &dhcpRows)
+		return err == nil && len(dhcpRows) == 1
+	})
+	ports = nil
+	requireEventually(t, func() bool {
+		err := client.WhereCache(func(row *ovnnb.LogicalSwitchPort) bool { return row.Name == logicalPort("prod", "pod-a") }).List(ctx, &ports)
+		return err == nil && len(ports) == 1 && ports[0].Dhcpv4Options != nil && *ports[0].Dhcpv4Options == dhcpRows[0].UUID
+	})
+}
+
+func TestLibOVSDBTopologyWriterClearsEndpointDHCPWhenSubnetDHCPDisabled(t *testing.T) {
+	ctx := context.Background()
+	client, closeFn := newTestOVNNBClient(t)
+	defer closeFn()
+
+	if _, err := client.MonitorAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	writer := NewLibOVSDBTopologyWriter(client)
+	subnet := model.Subnet{
+		Name:    "apps",
+		VPC:     "prod",
+		CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+		Gateway: netip.MustParseAddr("10.10.0.1"),
+		DHCP:    model.DHCPOptions{Enabled: true},
+	}
+	if err := writer.EnsureVPC(ctx, model.VPC{Name: "prod"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureSubnet(ctx, subnet); err != nil {
+		t.Fatal(err)
+	}
+	endpoint := model.Endpoint{
+		ID:     "pod-a",
+		VPC:    "prod",
+		Subnet: "apps",
+		IP:     netip.MustParseAddr("10.10.0.20"),
+		MAC:    "02:00:00:00:00:20",
+	}
+	if err := writer.EnsureEndpoint(ctx, endpoint); err != nil {
+		t.Fatal(err)
+	}
+	requireEventually(t, func() bool {
+		var rows []ovnnb.DHCPOptions
+		err := client.WhereCache(func(row *ovnnb.DHCPOptions) bool {
+			return row.ExternalIDs["netloom_endpoint"] == endpointExternalID("prod", "pod-a")
+		}).List(ctx, &rows)
+		return err == nil && len(rows) == 1
+	})
+
+	subnet.DHCP.Enabled = false
+	if err := writer.EnsureSubnet(ctx, subnet); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureEndpoint(ctx, endpoint); err != nil {
+		t.Fatal(err)
+	}
+	requireEventually(t, func() bool {
+		var rows []ovnnb.DHCPOptions
+		err := client.WhereCache(func(row *ovnnb.DHCPOptions) bool {
+			return row.ExternalIDs["netloom_endpoint"] == endpointExternalID("prod", "pod-a")
+		}).List(ctx, &rows)
+		return err == nil && len(rows) == 0
+	})
+	var ports []ovnnb.LogicalSwitchPort
+	requireEventually(t, func() bool {
+		ports = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalSwitchPort) bool { return row.Name == logicalPort("prod", "pod-a") }).List(ctx, &ports)
+		return err == nil && len(ports) == 1 && ports[0].Dhcpv4Options == nil && ports[0].Dhcpv6Options == nil
+	})
+}
+
+func TestLibOVSDBTopologyWriterEnsuresEndpointWithDHCPv6(t *testing.T) {
+	ctx := context.Background()
+	client, closeFn := newTestOVNNBClient(t)
+	defer closeFn()
+
+	if _, err := client.MonitorAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	writer := NewLibOVSDBTopologyWriter(client)
+	if err := writer.EnsureVPC(ctx, model.VPC{Name: "prod"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureSubnet(ctx, model.Subnet{
+		Name:    "v6",
+		VPC:     "prod",
+		CIDR:    netip.MustParsePrefix("fd00:10::/64"),
+		Gateway: netip.MustParseAddr("fd00:10::1"),
+		DHCP: model.DHCPOptions{
+			Enabled:       true,
+			DNSServers:    []netip.Addr{netip.MustParseAddr("fd00::53"), netip.MustParseAddr("1.1.1.1")},
+			DomainName:    "svc.local",
+			SearchDomains: []string{"apps.local"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	endpoint := model.Endpoint{
+		ID:     "pod-v6",
+		VPC:    "prod",
+		Subnet: "v6",
+		IP:     netip.MustParseAddr("fd00:10::20"),
+	}
+	if err := writer.EnsureEndpoint(ctx, endpoint); err != nil {
+		t.Fatal(err)
+	}
+
+	var ports []ovnnb.LogicalSwitchPort
+	requireEventually(t, func() bool {
+		ports = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalSwitchPort) bool { return row.Name == logicalPort("prod", "pod-v6") }).List(ctx, &ports)
+		return err == nil && len(ports) == 1 && ports[0].Dhcpv6Options != nil
+	})
+	if len(ports[0].Addresses) != 1 || ports[0].Addresses[0] != "dynamic fd00:10::20" {
+		t.Fatalf("IPv6 endpoint port addresses = %+v, want dynamic address binding", ports[0].Addresses)
+	}
+	var dhcpRows []ovnnb.DHCPOptions
+	requireEventually(t, func() bool {
+		dhcpRows = nil
+		err := client.WhereCache(func(row *ovnnb.DHCPOptions) bool {
+			return row.ExternalIDs["netloom_endpoint"] == endpointExternalID("prod", "pod-v6")
+		}).List(ctx, &dhcpRows)
+		return err == nil && len(dhcpRows) == 1
+	})
+	dhcp := dhcpRows[0]
+	if *ports[0].Dhcpv6Options != dhcp.UUID || ports[0].Dhcpv4Options != nil {
+		t.Fatalf("endpoint DHCP bindings v4=%v v6=%v, want only DHCPv6 %s", ports[0].Dhcpv4Options, ports[0].Dhcpv6Options, dhcp.UUID)
+	}
+	if dhcp.Cidr != "fd00:10::/64" ||
+		dhcp.Options["dns_server"] != `["fd00::53"]` ||
+		dhcp.Options["domain_search"] != "apps.local,svc.local" ||
+		dhcp.Options["server_id"] == "" {
+		t.Fatalf("DHCPv6 options = %+v cidr=%s, want IPv6 DHCP projection", dhcp.Options, dhcp.Cidr)
+	}
+}
+
 func TestLibOVSDBTopologyWriterUpdatesExistingVPCRouter(t *testing.T) {
 	ctx := context.Background()
 	client, closeFn := newTestOVNNBClient(t)
