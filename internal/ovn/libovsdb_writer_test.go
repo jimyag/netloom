@@ -855,6 +855,127 @@ func TestLibOVSDBTopologyWriterEnsuresNATRules(t *testing.T) {
 	})
 }
 
+func TestLibOVSDBTopologyWriterEnsuresLoadBalancerAndHealthChecks(t *testing.T) {
+	ctx := context.Background()
+	client, closeFn := newTestOVNNBClient(t)
+	defer closeFn()
+
+	if _, err := client.MonitorAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	writer := NewLibOVSDBTopologyWriter(client)
+	if err := writer.EnsureVPC(ctx, model.VPC{Name: "prod"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureSubnet(ctx, model.Subnet{
+		Name:    "apps",
+		VPC:     "prod",
+		CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+		Gateway: netip.MustParseAddr("10.10.0.1"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	lb := model.LoadBalancer{
+		Name:            "api",
+		VPC:             "prod",
+		VIP:             netip.MustParseAddr("10.96.0.10"),
+		Subnets:         []string{"apps"},
+		SessionAffinity: true,
+		AffinityTimeout: 120,
+		Ports: []model.LoadBalancerPort{{
+			Port:     443,
+			Protocol: model.ProtocolTCP,
+			Backends: []model.LoadBalancerBackend{
+				{IP: netip.MustParseAddr("10.10.0.20"), Port: 8443},
+				{IP: netip.MustParseAddr("10.10.0.21"), Port: 8443},
+			},
+		}, {
+			Port:     53,
+			Protocol: model.ProtocolUDP,
+			Backends: []model.LoadBalancerBackend{
+				{IP: netip.MustParseAddr("10.10.0.30"), Port: 5353},
+			},
+		}},
+		HealthCheck: model.LoadBalancerHealthCheck{
+			Enabled:      true,
+			Interval:     7,
+			Timeout:      3,
+			SuccessCount: 2,
+			FailureCount: 4,
+		},
+	}
+	if err := writer.EnsureLoadBalancer(ctx, lb); err != nil {
+		t.Fatal(err)
+	}
+
+	var lbs []ovnnb.LoadBalancer
+	requireEventually(t, func() bool {
+		lbs = nil
+		err := client.WhereCache(func(row *ovnnb.LoadBalancer) bool {
+			return row.ExternalIDs["netloom_vpc"] == "prod" && row.ExternalIDs["netloom_load_balancer"] == "api"
+		}).List(ctx, &lbs)
+		return err == nil && len(lbs) == 2
+	})
+	lbByProtocol := loadBalancersByProtocol(lbs)
+	tcpLB := lbByProtocol["tcp"]
+	if tcpLB.Name != loadBalancerProtocolName("prod", "api", model.ProtocolTCP) ||
+		tcpLB.Vips["10.96.0.10:443"] != "10.10.0.20:8443,10.10.0.21:8443" ||
+		tcpLB.Options["affinity_timeout"] != "120" ||
+		len(tcpLB.SelectionFields) != 1 ||
+		tcpLB.SelectionFields[0] != ovnnb.LoadBalancerSelectionFieldsIPSrc {
+		t.Fatalf("tcp load balancer = %+v, want vips, affinity, and selection fields", tcpLB)
+	}
+	udpLB := lbByProtocol["udp"]
+	if udpLB.Vips["10.96.0.10:53"] != "10.10.0.30:5353" {
+		t.Fatalf("udp load balancer = %+v, want DNS vip", udpLB)
+	}
+	var routers []ovnnb.LogicalRouter
+	requireEventually(t, func() bool {
+		routers = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("prod") }).List(ctx, &routers)
+		return err == nil && len(routers) == 1 && len(routers[0].LoadBalancer) == 2
+	})
+	var switches []ovnnb.LogicalSwitch
+	requireEventually(t, func() bool {
+		switches = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalSwitch) bool { return row.Name == logicalSwitch("prod", "apps") }).List(ctx, &switches)
+		return err == nil && len(switches) == 1 && len(switches[0].LoadBalancer) == 2
+	})
+	var checks []ovnnb.LoadBalancerHealthCheck
+	requireEventually(t, func() bool {
+		checks = nil
+		err := client.WhereCache(func(row *ovnnb.LoadBalancerHealthCheck) bool {
+			return row.ExternalIDs["netloom_vpc"] == "prod" && row.ExternalIDs["netloom_load_balancer"] == "api"
+		}).List(ctx, &checks)
+		return err == nil && len(checks) == 2
+	})
+	for _, check := range checks {
+		if check.Options["interval"] != "7" || check.Options["timeout"] != "3" || check.Options["success_count"] != "2" || check.Options["failure_count"] != "4" {
+			t.Fatalf("health check = %+v, want configured options", check)
+		}
+	}
+
+	lb.HealthCheck.Enabled = false
+	lb.Ports = lb.Ports[:1]
+	if err := writer.EnsureLoadBalancer(ctx, lb); err != nil {
+		t.Fatal(err)
+	}
+	requireEventually(t, func() bool {
+		checks = nil
+		err := client.WhereCache(func(row *ovnnb.LoadBalancerHealthCheck) bool {
+			return row.ExternalIDs["netloom_vpc"] == "prod" && row.ExternalIDs["netloom_load_balancer"] == "api"
+		}).List(ctx, &checks)
+		return err == nil && len(checks) == 0
+	})
+	requireEventually(t, func() bool {
+		lbs = nil
+		err := client.WhereCache(func(row *ovnnb.LoadBalancer) bool {
+			return row.ExternalIDs["netloom_vpc"] == "prod" && row.ExternalIDs["netloom_load_balancer"] == "api"
+		}).List(ctx, &lbs)
+		return err == nil && len(lbs) == 1 && lbs[0].ExternalIDs["netloom_protocol"] == "tcp" && len(lbs[0].HealthCheck) == 0
+	})
+}
+
 func TestLibOVSDBTopologyWriterUpdatesExistingVPCRouter(t *testing.T) {
 	ctx := context.Background()
 	client, closeFn := newTestOVNNBClient(t)
@@ -896,6 +1017,14 @@ func natRowsByName(rows []ovnnb.NAT) map[string]ovnnb.NAT {
 	out := make(map[string]ovnnb.NAT, len(rows))
 	for _, row := range rows {
 		out[row.ExternalIDs["netloom_nat"]] = row
+	}
+	return out
+}
+
+func loadBalancersByProtocol(rows []ovnnb.LoadBalancer) map[string]ovnnb.LoadBalancer {
+	out := make(map[string]ovnnb.LoadBalancer, len(rows))
+	for _, row := range rows {
+		out[row.ExternalIDs["netloom_protocol"]] = row
 	}
 	return out
 }

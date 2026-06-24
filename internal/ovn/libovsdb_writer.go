@@ -488,6 +488,60 @@ func (w *LibOVSDBTopologyWriter) EnsureNATRule(ctx context.Context, rule model.N
 	return nil
 }
 
+func (w *LibOVSDBTopologyWriter) EnsureLoadBalancer(ctx context.Context, lb model.LoadBalancer) error {
+	if w == nil || w.client == nil {
+		return fmt.Errorf("libovsdb topology writer has no client")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	router, ok, err := w.logicalRouterByName(ctx, logicalRouter(lb.VPC))
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("logical router %s must exist before load balancer %s", logicalRouter(lb.VPC), lb.Name)
+	}
+	switches, err := w.logicalSwitchesForLoadBalancer(ctx, lb)
+	if err != nil {
+		return err
+	}
+	var ops []ovsdb.Operation
+	frontendsByProtocol := loadBalancerFrontendsByProtocol(lb)
+	desiredLBNames := make(map[string]struct{})
+	for _, protocol := range sortedLoadBalancerProtocols(frontendsByProtocol) {
+		name := loadBalancerProtocolName(lb.VPC, lb.Name, protocol)
+		desiredLBNames[name] = struct{}{}
+		desired := desiredLoadBalancerRow(lb, protocol, frontendsByProtocol[protocol])
+		lbUUID, lbOps, err := w.ensureLoadBalancerRow(ctx, router, switches, desired)
+		if err != nil {
+			return err
+		}
+		ops = append(ops, lbOps...)
+		hcOps, err := w.syncLoadBalancerHealthChecks(ctx, lbUUID, lb, frontendsByProtocol[protocol])
+		if err != nil {
+			return err
+		}
+		ops = append(ops, hcOps...)
+	}
+	staleOps, err := w.deleteStaleLoadBalancers(ctx, router.UUID, switches, lb, desiredLBNames)
+	if err != nil {
+		return err
+	}
+	ops = append(ops, staleOps...)
+	if len(ops) == 0 {
+		return nil
+	}
+	results, err := w.client.Transact(ctx, ops...)
+	if err != nil {
+		return fmt.Errorf("transact load balancer %s/%s: %w", lb.VPC, lb.Name, err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, ops); err != nil {
+		return fmt.Errorf("load balancer %s/%s operation errors=%+v: %w", lb.VPC, lb.Name, opErrors, err)
+	}
+	return nil
+}
+
 func (w *LibOVSDBTopologyWriter) subnetPortOperations(ctx context.Context, router *ovnnb.LogicalRouter, logicalSwitch *ovnnb.LogicalSwitch, existingSwitch *ovnnb.LogicalSwitch, subnet model.Subnet) ([]ovsdb.Operation, error) {
 	switchUUID := logicalSwitch.UUID
 	switchPorts := logicalSwitch.Ports
@@ -816,6 +870,235 @@ func (w *LibOVSDBTopologyWriter) deleteNATRule(routerUUID string, nat *ovnnb.NAT
 	return append(mutateOps, deleteOps...), nil
 }
 
+func (w *LibOVSDBTopologyWriter) ensureLoadBalancerRow(ctx context.Context, router *ovnnb.LogicalRouter, switches []ovnnb.LogicalSwitch, desired ovnnb.LoadBalancer) (string, []ovsdb.Operation, error) {
+	existing, ok, err := w.loadBalancerByName(ctx, desired.Name)
+	if err != nil {
+		return "", nil, err
+	}
+	var ops []ovsdb.Operation
+	if !ok {
+		desired.UUID = ovsdbNamedUUID(desired.Name)
+		createOps, err := w.client.Create(&desired)
+		if err != nil {
+			return "", nil, fmt.Errorf("create load balancer %s: %w", desired.Name, err)
+		}
+		ops = append(ops, createOps...)
+		attachRouterOps, err := w.attachLoadBalancerToRouter(router, desired.UUID)
+		if err != nil {
+			return "", nil, err
+		}
+		ops = append(ops, attachRouterOps...)
+		for i := range switches {
+			attachSwitchOps, err := w.attachLoadBalancerToSwitch(&switches[i], desired.UUID)
+			if err != nil {
+				return "", nil, err
+			}
+			ops = append(ops, attachSwitchOps...)
+		}
+		return desired.UUID, ops, nil
+	}
+	nextExternalIDs := mergeStringMap(existing.ExternalIDs, desired.ExternalIDs)
+	nextOptions := replaceManagedLoadBalancerOptions(existing.Options, desired.Options)
+	if !containsString(router.LoadBalancer, existing.UUID) {
+		attachOps, err := w.attachLoadBalancerToRouter(router, existing.UUID)
+		if err != nil {
+			return "", nil, err
+		}
+		ops = append(ops, attachOps...)
+	}
+	for i := range switches {
+		if containsString(switches[i].LoadBalancer, existing.UUID) {
+			continue
+		}
+		attachOps, err := w.attachLoadBalancerToSwitch(&switches[i], existing.UUID)
+		if err != nil {
+			return "", nil, err
+		}
+		ops = append(ops, attachOps...)
+	}
+	if !reflect.DeepEqual(existing.Vips, desired.Vips) ||
+		!reflect.DeepEqual(existing.Protocol, desired.Protocol) ||
+		!reflect.DeepEqual(existing.SelectionFields, desired.SelectionFields) ||
+		!reflect.DeepEqual(existing.ExternalIDs, nextExternalIDs) ||
+		!reflect.DeepEqual(existing.Options, nextOptions) {
+		existing.Vips = desired.Vips
+		existing.Protocol = desired.Protocol
+		existing.SelectionFields = desired.SelectionFields
+		existing.ExternalIDs = nextExternalIDs
+		existing.Options = nextOptions
+		updateOps, err := w.client.Where(existing).Update(existing, &existing.Vips, &existing.Protocol, &existing.SelectionFields, &existing.ExternalIDs, &existing.Options)
+		if err != nil {
+			return "", nil, fmt.Errorf("update load balancer %s: %w", desired.Name, err)
+		}
+		ops = append(ops, updateOps...)
+	}
+	return existing.UUID, ops, nil
+}
+
+func (w *LibOVSDBTopologyWriter) attachLoadBalancerToRouter(router *ovnnb.LogicalRouter, lbUUID string) ([]ovsdb.Operation, error) {
+	return w.client.Where(router).Mutate(router, ovsmodel.Mutation{
+		Field:   &router.LoadBalancer,
+		Mutator: ovsdb.MutateOperationInsert,
+		Value:   []string{lbUUID},
+	})
+}
+
+func (w *LibOVSDBTopologyWriter) detachLoadBalancerFromRouter(routerUUID, lbUUID string) ([]ovsdb.Operation, error) {
+	router := &ovnnb.LogicalRouter{UUID: routerUUID}
+	return w.client.Where(router).Mutate(router, ovsmodel.Mutation{
+		Field:   &router.LoadBalancer,
+		Mutator: ovsdb.MutateOperationDelete,
+		Value:   []string{lbUUID},
+	})
+}
+
+func (w *LibOVSDBTopologyWriter) attachLoadBalancerToSwitch(sw *ovnnb.LogicalSwitch, lbUUID string) ([]ovsdb.Operation, error) {
+	return w.client.Where(sw).Mutate(sw, ovsmodel.Mutation{
+		Field:   &sw.LoadBalancer,
+		Mutator: ovsdb.MutateOperationInsert,
+		Value:   []string{lbUUID},
+	})
+}
+
+func (w *LibOVSDBTopologyWriter) detachLoadBalancerFromSwitch(switchUUID, lbUUID string) ([]ovsdb.Operation, error) {
+	sw := &ovnnb.LogicalSwitch{UUID: switchUUID}
+	return w.client.Where(sw).Mutate(sw, ovsmodel.Mutation{
+		Field:   &sw.LoadBalancer,
+		Mutator: ovsdb.MutateOperationDelete,
+		Value:   []string{lbUUID},
+	})
+}
+
+func (w *LibOVSDBTopologyWriter) syncLoadBalancerHealthChecks(ctx context.Context, lbUUID string, lb model.LoadBalancer, frontends []model.LoadBalancerFrontend) ([]ovsdb.Operation, error) {
+	existing, err := w.healthChecksByLoadBalancer(ctx, lb.VPC, lb.Name)
+	if err != nil {
+		return nil, err
+	}
+	existingByVIP := make(map[string][]ovnnb.LoadBalancerHealthCheck, len(existing))
+	for _, hc := range existing {
+		existingByVIP[hc.Vip] = append(existingByVIP[hc.Vip], hc)
+	}
+	desiredVIPs := make(map[string]struct{})
+	var ops []ovsdb.Operation
+	lbRow := &ovnnb.LoadBalancer{UUID: lbUUID}
+	if lb.HealthCheck.Enabled {
+		for _, frontend := range frontends {
+			desired := desiredLoadBalancerHealthCheck(lb, frontend)
+			desiredVIPs[desired.Vip] = struct{}{}
+			rows := existingByVIP[desired.Vip]
+			if len(rows) == 0 {
+				desired.UUID = ovsdbNamedUUID("nl_lbhc_" + lb.VPC + "_" + lb.Name + "_" + desired.Vip)
+				createOps, err := w.client.Create(&desired)
+				if err != nil {
+					return nil, fmt.Errorf("create load balancer health check %s: %w", desired.Vip, err)
+				}
+				ops = append(ops, createOps...)
+				attachOps, err := w.client.Where(lbRow).Mutate(lbRow, ovsmodel.Mutation{
+					Field:   &lbRow.HealthCheck,
+					Mutator: ovsdb.MutateOperationInsert,
+					Value:   []string{desired.UUID},
+				})
+				if err != nil {
+					return nil, fmt.Errorf("attach load balancer health check %s: %w", desired.UUID, err)
+				}
+				ops = append(ops, attachOps...)
+				continue
+			}
+			keep := rows[0]
+			nextExternalIDs := mergeStringMap(keep.ExternalIDs, desired.ExternalIDs)
+			if keep.Vip != desired.Vip || !reflect.DeepEqual(keep.Options, desired.Options) || !reflect.DeepEqual(keep.ExternalIDs, nextExternalIDs) {
+				keep.Vip = desired.Vip
+				keep.Options = desired.Options
+				keep.ExternalIDs = nextExternalIDs
+				updateOps, err := w.client.Where(&keep).Update(&keep, &keep.Vip, &keep.Options, &keep.ExternalIDs)
+				if err != nil {
+					return nil, fmt.Errorf("update load balancer health check %s: %w", keep.UUID, err)
+				}
+				ops = append(ops, updateOps...)
+			}
+			for i := 1; i < len(rows); i++ {
+				deleteOps, err := w.deleteLoadBalancerHealthCheck(lbUUID, &rows[i])
+				if err != nil {
+					return nil, err
+				}
+				ops = append(ops, deleteOps...)
+			}
+		}
+	}
+	for vip, rows := range existingByVIP {
+		if _, ok := desiredVIPs[vip]; ok {
+			continue
+		}
+		for i := range rows {
+			deleteOps, err := w.deleteLoadBalancerHealthCheck(lbUUID, &rows[i])
+			if err != nil {
+				return nil, err
+			}
+			ops = append(ops, deleteOps...)
+		}
+	}
+	return ops, nil
+}
+
+func (w *LibOVSDBTopologyWriter) deleteLoadBalancerHealthCheck(lbUUID string, hc *ovnnb.LoadBalancerHealthCheck) ([]ovsdb.Operation, error) {
+	lbRow := &ovnnb.LoadBalancer{UUID: lbUUID}
+	detachOps, err := w.client.Where(lbRow).Mutate(lbRow, ovsmodel.Mutation{
+		Field:   &lbRow.HealthCheck,
+		Mutator: ovsdb.MutateOperationDelete,
+		Value:   []string{hc.UUID},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("detach load balancer health check %s: %w", hc.UUID, err)
+	}
+	deleteOps, err := w.client.Where(hc).Delete()
+	if err != nil {
+		return nil, fmt.Errorf("delete load balancer health check %s: %w", hc.UUID, err)
+	}
+	return append(detachOps, deleteOps...), nil
+}
+
+func (w *LibOVSDBTopologyWriter) deleteStaleLoadBalancers(ctx context.Context, routerUUID string, switches []ovnnb.LogicalSwitch, lb model.LoadBalancer, desiredNames map[string]struct{}) ([]ovsdb.Operation, error) {
+	rows, err := w.loadBalancersByIdentity(ctx, lb.VPC, lb.Name)
+	if err != nil {
+		return nil, err
+	}
+	var ops []ovsdb.Operation
+	for i := range rows {
+		if _, ok := desiredNames[rows[i].Name]; ok {
+			continue
+		}
+		hcRows, err := w.healthChecksByLoadBalancerName(ctx, rows[i].Name, lb.VPC, lb.Name)
+		if err != nil {
+			return nil, err
+		}
+		for j := range hcRows {
+			deleteOps, err := w.deleteLoadBalancerHealthCheck(rows[i].UUID, &hcRows[j])
+			if err != nil {
+				return nil, err
+			}
+			ops = append(ops, deleteOps...)
+		}
+		detachRouterOps, err := w.detachLoadBalancerFromRouter(routerUUID, rows[i].UUID)
+		if err != nil {
+			return nil, err
+		}
+		ops = append(ops, detachRouterOps...)
+		for j := range switches {
+			detachSwitchOps, err := w.detachLoadBalancerFromSwitch(switches[j].UUID, rows[i].UUID)
+			if err != nil {
+				return nil, err
+			}
+			ops = append(ops, detachSwitchOps...)
+		}
+		deleteOps, err := w.client.Where(&rows[i]).Delete()
+		if err != nil {
+			return nil, fmt.Errorf("delete stale load balancer %s: %w", rows[i].Name, err)
+		}
+		ops = append(ops, deleteOps...)
+	}
+	return ops, nil
+}
+
 func (w *LibOVSDBTopologyWriter) endpointDHCPOptionsOperations(ctx context.Context, endpoint model.Endpoint, switchExternalIDs map[string]string, port *ovnnb.LogicalSwitchPort) ([]ovsdb.Operation, error) {
 	var ops []ovsdb.Operation
 	for _, family := range []int{4, 6} {
@@ -1060,6 +1343,66 @@ func (w *LibOVSDBTopologyWriter) natRulesByName(ctx context.Context, vpc, name s
 	return rows, nil
 }
 
+func (w *LibOVSDBTopologyWriter) loadBalancerByName(ctx context.Context, name string) (*ovnnb.LoadBalancer, bool, error) {
+	var rows []ovnnb.LoadBalancer
+	if err := w.client.WhereCache(func(row *ovnnb.LoadBalancer) bool { return row.Name == name }).List(ctx, &rows); err != nil {
+		return nil, false, fmt.Errorf("list load balancer %s from libovsdb cache: %w", name, err)
+	}
+	if len(rows) == 0 {
+		return nil, false, nil
+	}
+	return &rows[0], true, nil
+}
+
+func (w *LibOVSDBTopologyWriter) loadBalancersByIdentity(ctx context.Context, vpc, name string) ([]ovnnb.LoadBalancer, error) {
+	var rows []ovnnb.LoadBalancer
+	if err := w.client.WhereCache(func(row *ovnnb.LoadBalancer) bool {
+		return row.ExternalIDs["netloom_owner"] == "netloom" &&
+			row.ExternalIDs["netloom_vpc"] == vpc &&
+			row.ExternalIDs["netloom_load_balancer"] == name
+	}).List(ctx, &rows); err != nil {
+		return nil, fmt.Errorf("list load balancers %s/%s from libovsdb cache: %w", vpc, name, err)
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].Name < rows[j].Name })
+	return rows, nil
+}
+
+func (w *LibOVSDBTopologyWriter) healthChecksByLoadBalancer(ctx context.Context, vpc, name string) ([]ovnnb.LoadBalancerHealthCheck, error) {
+	return w.healthChecksByLoadBalancerName(ctx, "", vpc, name)
+}
+
+func (w *LibOVSDBTopologyWriter) healthChecksByLoadBalancerName(ctx context.Context, ovnLBName, vpc, name string) ([]ovnnb.LoadBalancerHealthCheck, error) {
+	var rows []ovnnb.LoadBalancerHealthCheck
+	if err := w.client.WhereCache(func(row *ovnnb.LoadBalancerHealthCheck) bool {
+		if row.ExternalIDs["netloom_owner"] != "netloom" ||
+			row.ExternalIDs["netloom_vpc"] != vpc ||
+			row.ExternalIDs["netloom_load_balancer"] != name {
+			return false
+		}
+		return ovnLBName == "" || row.ExternalIDs["netloom_ovn_load_balancer"] == ovnLBName
+	}).List(ctx, &rows); err != nil {
+		return nil, fmt.Errorf("list load balancer health checks %s/%s from libovsdb cache: %w", vpc, name, err)
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].UUID < rows[j].UUID })
+	return rows, nil
+}
+
+func (w *LibOVSDBTopologyWriter) logicalSwitchesForLoadBalancer(ctx context.Context, lb model.LoadBalancer) ([]ovnnb.LogicalSwitch, error) {
+	switches := make([]ovnnb.LogicalSwitch, 0, len(lb.Subnets))
+	for _, subnet := range lb.Subnets {
+		name := logicalSwitch(lb.VPC, subnet)
+		sw, ok, err := w.logicalSwitchByName(ctx, name)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, fmt.Errorf("logical switch %s must exist before load balancer %s", name, lb.Name)
+		}
+		switches = append(switches, *sw)
+	}
+	return switches, nil
+}
+
 func mergeStringMap(base map[string]string, overlay map[string]string) map[string]string {
 	out := make(map[string]string, len(base)+len(overlay))
 	for key, value := range base {
@@ -1274,6 +1617,107 @@ func preferredReferencedRow[T any](refs []string, rows []T, uuid func(T) string)
 		}
 	}
 	return 0
+}
+
+func desiredLoadBalancerRow(lb model.LoadBalancer, protocol model.Protocol, frontends []model.LoadBalancerFrontend) ovnnb.LoadBalancer {
+	ovnProtocol := ovnLoadBalancerProtocol(protocol)
+	return ovnnb.LoadBalancer{
+		Name:            loadBalancerProtocolName(lb.VPC, lb.Name, protocol),
+		Protocol:        &ovnProtocol,
+		Vips:            loadBalancerVIPMap(frontends),
+		Options:         loadBalancerOptionsMap(lb),
+		SelectionFields: ovnLoadBalancerSelectionFields(lb.EffectiveSelectionFields()),
+		ExternalIDs: map[string]string{
+			"netloom_owner":            "netloom",
+			"netloom_load_balancer":    lb.Name,
+			"netloom_vpc":              lb.VPC,
+			"netloom_protocol":         string(protocol),
+			"netloom_session_affinity": fmt.Sprintf("%t", lb.SessionAffinity),
+		},
+	}
+}
+
+func loadBalancerVIPMap(frontends []model.LoadBalancerFrontend) map[string]string {
+	out := make(map[string]string, len(frontends))
+	for _, frontend := range frontends {
+		out[loadBalancerFrontendVIP(frontend)] = loadBalancerFrontendBackends(frontend)
+	}
+	return out
+}
+
+func loadBalancerOptionsMap(lb model.LoadBalancer) map[string]string {
+	out := make(map[string]string)
+	if lb.SessionAffinity {
+		timeout := lb.AffinityTimeout
+		if timeout == 0 {
+			timeout = 10800
+		}
+		out["affinity_timeout"] = fmt.Sprint(timeout)
+	}
+	return out
+}
+
+func replaceManagedLoadBalancerOptions(base, desired map[string]string) map[string]string {
+	out := cloneStringMap(base)
+	if out == nil {
+		out = make(map[string]string)
+	}
+	delete(out, "affinity_timeout")
+	for key, value := range desired {
+		out[key] = value
+	}
+	return out
+}
+
+func ovnLoadBalancerProtocol(protocol model.Protocol) ovnnb.LoadBalancerProtocol {
+	if protocol == "" {
+		return ovnnb.LoadBalancerProtocolTCP
+	}
+	return ovnnb.LoadBalancerProtocol(protocol)
+}
+
+func ovnLoadBalancerSelectionFields(fields []string) []ovnnb.LoadBalancerSelectionFields {
+	out := make([]ovnnb.LoadBalancerSelectionFields, 0, len(fields))
+	for _, field := range fields {
+		out = append(out, ovnnb.LoadBalancerSelectionFields(field))
+	}
+	return out
+}
+
+func desiredLoadBalancerHealthCheck(lb model.LoadBalancer, frontend model.LoadBalancerFrontend) ovnnb.LoadBalancerHealthCheck {
+	hc := lb.HealthCheck
+	interval := hc.Interval
+	if interval == 0 {
+		interval = 5
+	}
+	timeout := hc.Timeout
+	if timeout == 0 {
+		timeout = 20
+	}
+	successCount := hc.SuccessCount
+	if successCount == 0 {
+		successCount = 3
+	}
+	failureCount := hc.FailureCount
+	if failureCount == 0 {
+		failureCount = 3
+	}
+	ovnLBName := loadBalancerProtocolName(lb.VPC, lb.Name, frontend.Protocol)
+	return ovnnb.LoadBalancerHealthCheck{
+		Vip: loadBalancerFrontendVIP(frontend),
+		Options: map[string]string{
+			"interval":      fmt.Sprint(interval),
+			"timeout":       fmt.Sprint(timeout),
+			"success_count": fmt.Sprint(successCount),
+			"failure_count": fmt.Sprint(failureCount),
+		},
+		ExternalIDs: map[string]string{
+			"netloom_owner":             "netloom",
+			"netloom_load_balancer":     lb.Name,
+			"netloom_ovn_load_balancer": ovnLBName,
+			"netloom_vpc":               lb.VPC,
+		},
+	}
 }
 
 func logicalSwitchOtherConfig(subnet model.Subnet) map[string]string {
