@@ -81,6 +81,7 @@ type stateFileReconciler struct {
 	controller    *control.Controller
 	healthTracker *control.LoadBalancerHealthTracker
 	healthChecker ovnHealthChecker
+	ovnHealth     ovnHealthTracker
 	metrics       *controllerMetrics
 }
 
@@ -90,6 +91,56 @@ type ovnHealthChecker interface {
 
 type ovnAuditor interface {
 	AuditManagedObjects(context.Context) (ovn.AuditStats, error)
+}
+
+type ovnHealthSnapshot struct {
+	Status               string
+	Latency              time.Duration
+	ConsecutiveFailures  int
+	ConsecutiveSuccesses int
+	Recovering           bool
+}
+
+type ovnHealthTracker struct {
+	consecutiveFailures  int
+	consecutiveSuccesses int
+	recovering           bool
+}
+
+func (t *ovnHealthTracker) recordSuccess(latency time.Duration) ovnHealthSnapshot {
+	wasFailing := t.consecutiveFailures > 0
+	t.consecutiveFailures = 0
+	t.consecutiveSuccesses++
+	t.recovering = wasFailing
+	status := "ok"
+	if t.recovering {
+		status = "recovering"
+	}
+	return t.snapshot(status, latency)
+}
+
+func (t *ovnHealthTracker) recordFailure(latency time.Duration) ovnHealthSnapshot {
+	t.consecutiveFailures++
+	t.consecutiveSuccesses = 0
+	t.recovering = false
+	return t.snapshot("error", latency)
+}
+
+func (t ovnHealthTracker) disabled() ovnHealthSnapshot {
+	return ovnHealthSnapshot{Status: "disabled"}
+}
+
+func (t ovnHealthTracker) snapshot(status string, latency time.Duration) ovnHealthSnapshot {
+	if status == "" {
+		status = "disabled"
+	}
+	return ovnHealthSnapshot{
+		Status:               status,
+		Latency:              latency,
+		ConsecutiveFailures:  t.consecutiveFailures,
+		ConsecutiveSuccesses: t.consecutiveSuccesses,
+		Recovering:           t.recovering,
+	}
 }
 
 func newStateFileReconciler() (*stateFileReconciler, error) {
@@ -115,26 +166,20 @@ func newStateFileReconciler() (*stateFileReconciler, error) {
 
 func (r *stateFileReconciler) reconcile(ctx context.Context, path string) error {
 	start := time.Now()
-	ovnHealthStatus := "disabled"
-	ovnHealthLatency := time.Duration(0)
+	ovnHealth := r.probeOVNHealth(ctx)
 	var state control.DesiredState
-	if r.healthChecker != nil {
-		latency, err := r.healthChecker.HealthCheck(ctx)
-		if err != nil {
-			reconcileErr := fmt.Errorf("ovn health check: %w", err)
-			duration := time.Since(start)
-			printControllerReconcileFailure("ovn_health", state, control.LoadBalancerHealthSummary{}, "error", latency, 0, 0, reconcileErr, duration)
-			r.observeReconcileFailure("ovn_health", state, control.LoadBalancerHealthSummary{}, "error", latency, 0, 0, reconcileErr, duration)
-			return reconcileErr
-		}
-		ovnHealthStatus = "ok"
-		ovnHealthLatency = latency
+	if ovnHealth.Snapshot.Status == "error" {
+		reconcileErr := fmt.Errorf("ovn health check: %w", ovnHealth.err)
+		duration := time.Since(start)
+		printControllerReconcileFailure("ovn_health", state, control.LoadBalancerHealthSummary{}, ovnHealth.Snapshot, 0, 0, reconcileErr, duration)
+		r.observeReconcileFailure("ovn_health", state, control.LoadBalancerHealthSummary{}, ovnHealth.Snapshot, 0, 0, reconcileErr, duration)
+		return reconcileErr
 	}
 	file, err := os.Open(path)
 	if err != nil {
 		duration := time.Since(start)
-		printControllerReconcileFailure("load_state", state, control.LoadBalancerHealthSummary{}, ovnHealthStatus, ovnHealthLatency, 0, 0, err, duration)
-		r.observeReconcileFailure("load_state", state, control.LoadBalancerHealthSummary{}, ovnHealthStatus, ovnHealthLatency, 0, 0, err, duration)
+		printControllerReconcileFailure("load_state", state, control.LoadBalancerHealthSummary{}, ovnHealth.Snapshot, 0, 0, err, duration)
+		r.observeReconcileFailure("load_state", state, control.LoadBalancerHealthSummary{}, ovnHealth.Snapshot, 0, 0, err, duration)
 		return err
 	}
 	defer file.Close()
@@ -142,15 +187,15 @@ func (r *stateFileReconciler) reconcile(ctx context.Context, path string) error 
 	state, err = control.LoadDesiredStateJSON(file)
 	if err != nil {
 		duration := time.Since(start)
-		printControllerReconcileFailure("load_state", state, control.LoadBalancerHealthSummary{}, ovnHealthStatus, ovnHealthLatency, 0, 0, err, duration)
-		r.observeReconcileFailure("load_state", state, control.LoadBalancerHealthSummary{}, ovnHealthStatus, ovnHealthLatency, 0, 0, err, duration)
+		printControllerReconcileFailure("load_state", state, control.LoadBalancerHealthSummary{}, ovnHealth.Snapshot, 0, 0, err, duration)
+		r.observeReconcileFailure("load_state", state, control.LoadBalancerHealthSummary{}, ovnHealth.Snapshot, 0, 0, err, duration)
 		return err
 	}
 	healthSummary, err := r.applyLoadBalancerHealthChecks(ctx, &state)
 	if err != nil {
 		duration := time.Since(start)
-		printControllerReconcileFailure("lb_health", state, healthSummary, ovnHealthStatus, ovnHealthLatency, 0, 0, err, duration)
-		r.observeReconcileFailure("lb_health", state, healthSummary, ovnHealthStatus, ovnHealthLatency, 0, 0, err, duration)
+		printControllerReconcileFailure("lb_health", state, healthSummary, ovnHealth.Snapshot, 0, 0, err, duration)
+		r.observeReconcileFailure("lb_health", state, healthSummary, ovnHealth.Snapshot, 0, 0, err, duration)
 		return err
 	}
 
@@ -160,8 +205,8 @@ func (r *stateFileReconciler) reconcile(ctx context.Context, path string) error 
 		ovnOps := len(r.ovnBackend.Operations()) - opsBefore
 		executed := r.executedOperations() - executedBefore
 		duration := time.Since(start)
-		printControllerReconcileFailure("apply", state, healthSummary, ovnHealthStatus, ovnHealthLatency, ovnOps, executed, err, duration)
-		r.observeReconcileFailure("apply", state, healthSummary, ovnHealthStatus, ovnHealthLatency, ovnOps, executed, err, duration)
+		printControllerReconcileFailure("apply", state, healthSummary, ovnHealth.Snapshot, ovnOps, executed, err, duration)
+		r.observeReconcileFailure("apply", state, healthSummary, ovnHealth.Snapshot, ovnOps, executed, err, duration)
 		return err
 	}
 
@@ -170,7 +215,7 @@ func (r *stateFileReconciler) reconcile(ctx context.Context, path string) error 
 	ovnAudit, ovnAuditStatus, ovnAuditError := r.auditOVN(ctx)
 	duration := time.Since(start)
 	fmt.Printf(
-		"netloom-controller reconciled desired state vpcs=%d subnets=%d endpoints=%d route_tables=%d policy_routes=%d gateways=%d nat_rules=%d load_balancers=%d security_groups=%d policy_entries=%d lb_health_checked=%d lb_health_healthy=%d lb_health_unhealthy=%d ovn_health=%s ovn_health_latency_ms=%d ovn_ops=%d ovn_executed=%d ovn_audit=%s ovn_live_managed=%d ovn_live_duplicates=%d ovn_live_incomplete=%d ovn_audit_error=%s reconcile_duration_ms=%d\n",
+		"netloom-controller reconciled desired state vpcs=%d subnets=%d endpoints=%d route_tables=%d policy_routes=%d gateways=%d nat_rules=%d load_balancers=%d security_groups=%d policy_entries=%d lb_health_checked=%d lb_health_healthy=%d lb_health_unhealthy=%d ovn_health=%s ovn_health_latency_ms=%d ovn_health_consecutive_failures=%d ovn_health_consecutive_successes=%d ovn_health_recovering=%d ovn_ops=%d ovn_executed=%d ovn_audit=%s ovn_live_managed=%d ovn_live_duplicates=%d ovn_live_incomplete=%d ovn_audit_error=%s reconcile_duration_ms=%d\n",
 		len(state.VPCs),
 		len(state.Subnets),
 		len(state.Endpoints),
@@ -184,8 +229,11 @@ func (r *stateFileReconciler) reconcile(ctx context.Context, path string) error 
 		healthSummary.Checked,
 		healthSummary.Healthy,
 		healthSummary.Unhealthy,
-		ovnHealthStatus,
-		ovnHealthLatency.Milliseconds(),
+		ovnHealth.Snapshot.Status,
+		ovnHealth.Snapshot.Latency.Milliseconds(),
+		ovnHealth.Snapshot.ConsecutiveFailures,
+		ovnHealth.Snapshot.ConsecutiveSuccesses,
+		boolMetric(ovnHealth.Snapshot.Recovering),
 		ovnOps,
 		executed,
 		ovnAuditStatus,
@@ -195,19 +243,35 @@ func (r *stateFileReconciler) reconcile(ctx context.Context, path string) error 
 		formatResultError(ovnAuditError),
 		duration.Milliseconds(),
 	)
-	r.observeReconcileSuccess(state, healthSummary, ovnHealthStatus, ovnHealthLatency, ovnOps, executed, ovnAuditStatus, ovnAuditError, ovnAudit, duration)
+	r.observeReconcileSuccess(state, healthSummary, ovnHealth.Snapshot, ovnOps, executed, ovnAuditStatus, ovnAuditError, ovnAudit, duration)
 	return nil
 }
 
-func printControllerReconcileFailure(phase string, state control.DesiredState, healthSummary control.LoadBalancerHealthSummary, ovnHealthStatus string, ovnHealthLatency time.Duration, ovnOps, executed int, err error, duration time.Duration) {
+type ovnHealthProbe struct {
+	Snapshot ovnHealthSnapshot
+	err      error
+}
+
+func (r *stateFileReconciler) probeOVNHealth(ctx context.Context) ovnHealthProbe {
+	if r == nil {
+		return ovnHealthProbe{Snapshot: ovnHealthTracker{}.disabled()}
+	}
+	if r.healthChecker == nil {
+		return ovnHealthProbe{Snapshot: r.ovnHealth.disabled()}
+	}
+	latency, err := r.healthChecker.HealthCheck(ctx)
+	if err != nil {
+		return ovnHealthProbe{Snapshot: r.ovnHealth.recordFailure(latency), err: err}
+	}
+	return ovnHealthProbe{Snapshot: r.ovnHealth.recordSuccess(latency)}
+}
+
+func printControllerReconcileFailure(phase string, state control.DesiredState, healthSummary control.LoadBalancerHealthSummary, ovnHealth ovnHealthSnapshot, ovnOps, executed int, err error, duration time.Duration) {
 	if phase == "" {
 		phase = "unknown"
 	}
-	if ovnHealthStatus == "" {
-		ovnHealthStatus = "disabled"
-	}
 	fmt.Printf(
-		"netloom-controller reconcile failed reconcile_phase=%s vpcs=%d subnets=%d endpoints=%d route_tables=%d policy_routes=%d gateways=%d nat_rules=%d load_balancers=%d security_groups=%d policy_entries=%d lb_health_checked=%d lb_health_healthy=%d lb_health_unhealthy=%d ovn_health=%s ovn_health_latency_ms=%d ovn_ops=%d ovn_executed=%d err=%q reconcile_duration_ms=%d\n",
+		"netloom-controller reconcile failed reconcile_phase=%s vpcs=%d subnets=%d endpoints=%d route_tables=%d policy_routes=%d gateways=%d nat_rules=%d load_balancers=%d security_groups=%d policy_entries=%d lb_health_checked=%d lb_health_healthy=%d lb_health_unhealthy=%d ovn_health=%s ovn_health_latency_ms=%d ovn_health_consecutive_failures=%d ovn_health_consecutive_successes=%d ovn_health_recovering=%d ovn_ops=%d ovn_executed=%d err=%q reconcile_duration_ms=%d\n",
 		phase,
 		len(state.VPCs),
 		len(state.Subnets),
@@ -222,8 +286,11 @@ func printControllerReconcileFailure(phase string, state control.DesiredState, h
 		healthSummary.Checked,
 		healthSummary.Healthy,
 		healthSummary.Unhealthy,
-		ovnHealthStatus,
-		ovnHealthLatency.Milliseconds(),
+		fallbackMetricsLabel(ovnHealth.Status, "disabled"),
+		ovnHealth.Latency.Milliseconds(),
+		ovnHealth.ConsecutiveFailures,
+		ovnHealth.ConsecutiveSuccesses,
+		boolMetric(ovnHealth.Recovering),
 		ovnOps,
 		executed,
 		err.Error(),
@@ -231,28 +298,31 @@ func printControllerReconcileFailure(phase string, state control.DesiredState, h
 	)
 }
 
-func (r *stateFileReconciler) observeReconcileSuccess(state control.DesiredState, healthSummary control.LoadBalancerHealthSummary, ovnHealthStatus string, ovnHealthLatency time.Duration, ovnOps, executed int, ovnAuditStatus, ovnAuditError string, ovnAudit ovn.AuditStats, duration time.Duration) {
+func (r *stateFileReconciler) observeReconcileSuccess(state control.DesiredState, healthSummary control.LoadBalancerHealthSummary, ovnHealth ovnHealthSnapshot, ovnOps, executed int, ovnAuditStatus, ovnAuditError string, ovnAudit ovn.AuditStats, duration time.Duration) {
 	if r == nil || r.metrics == nil {
 		return
 	}
 	r.metrics.observe(controllerMetricsSnapshot{
-		State:            state,
-		PolicyEntries:    countPolicyEntries(r.memory),
-		HealthSummary:    healthSummary,
-		OVNHealthStatus:  ovnHealthStatus,
-		OVNHealthLatency: ovnHealthLatency,
-		OVNOps:           ovnOps,
-		OVNExecuted:      executed,
-		OVNCleanup:       r.lastOVNCleanupStats(),
-		OVNAuditStatus:   fallbackMetricsLabel(ovnAuditStatus, "disabled"),
-		OVNAuditError:    ovnAuditError,
-		OVNAudit:         ovnAudit,
-		Duration:         duration,
-		Success:          true,
+		State:                         state,
+		PolicyEntries:                 countPolicyEntries(r.memory),
+		HealthSummary:                 healthSummary,
+		OVNHealthStatus:               ovnHealth.Status,
+		OVNHealthLatency:              ovnHealth.Latency,
+		OVNHealthConsecutiveFailures:  ovnHealth.ConsecutiveFailures,
+		OVNHealthConsecutiveSuccesses: ovnHealth.ConsecutiveSuccesses,
+		OVNHealthRecovering:           ovnHealth.Recovering,
+		OVNOps:                        ovnOps,
+		OVNExecuted:                   executed,
+		OVNCleanup:                    r.lastOVNCleanupStats(),
+		OVNAuditStatus:                fallbackMetricsLabel(ovnAuditStatus, "disabled"),
+		OVNAuditError:                 ovnAuditError,
+		OVNAudit:                      ovnAudit,
+		Duration:                      duration,
+		Success:                       true,
 	})
 }
 
-func (r *stateFileReconciler) observeReconcileFailure(phase string, state control.DesiredState, healthSummary control.LoadBalancerHealthSummary, ovnHealthStatus string, ovnHealthLatency time.Duration, ovnOps, executed int, err error, duration time.Duration) {
+func (r *stateFileReconciler) observeReconcileFailure(phase string, state control.DesiredState, healthSummary control.LoadBalancerHealthSummary, ovnHealth ovnHealthSnapshot, ovnOps, executed int, err error, duration time.Duration) {
 	if r == nil || r.metrics == nil {
 		return
 	}
@@ -264,19 +334,22 @@ func (r *stateFileReconciler) observeReconcileFailure(phase string, state contro
 		message = err.Error()
 	}
 	r.metrics.observe(controllerMetricsSnapshot{
-		State:            state,
-		PolicyEntries:    countDesiredPolicyEntries(state),
-		HealthSummary:    healthSummary,
-		OVNHealthStatus:  ovnHealthStatus,
-		OVNHealthLatency: ovnHealthLatency,
-		OVNOps:           ovnOps,
-		OVNExecuted:      executed,
-		OVNCleanup:       r.lastOVNCleanupStats(),
-		OVNAuditStatus:   "disabled",
-		Duration:         duration,
-		Success:          false,
-		Phase:            phase,
-		Error:            message,
+		State:                         state,
+		PolicyEntries:                 countDesiredPolicyEntries(state),
+		HealthSummary:                 healthSummary,
+		OVNHealthStatus:               ovnHealth.Status,
+		OVNHealthLatency:              ovnHealth.Latency,
+		OVNHealthConsecutiveFailures:  ovnHealth.ConsecutiveFailures,
+		OVNHealthConsecutiveSuccesses: ovnHealth.ConsecutiveSuccesses,
+		OVNHealthRecovering:           ovnHealth.Recovering,
+		OVNOps:                        ovnOps,
+		OVNExecuted:                   executed,
+		OVNCleanup:                    r.lastOVNCleanupStats(),
+		OVNAuditStatus:                "disabled",
+		Duration:                      duration,
+		Success:                       false,
+		Phase:                         phase,
+		Error:                         message,
 	})
 }
 
@@ -310,21 +383,24 @@ type controllerMetrics struct {
 }
 
 type controllerMetricsSnapshot struct {
-	State            control.DesiredState
-	PolicyEntries    int
-	HealthSummary    control.LoadBalancerHealthSummary
-	OVNHealthStatus  string
-	OVNHealthLatency time.Duration
-	OVNOps           int
-	OVNExecuted      int
-	OVNCleanup       ovn.CleanupStats
-	OVNAuditStatus   string
-	OVNAuditError    string
-	OVNAudit         ovn.AuditStats
-	Duration         time.Duration
-	Success          bool
-	Phase            string
-	Error            string
+	State                         control.DesiredState
+	PolicyEntries                 int
+	HealthSummary                 control.LoadBalancerHealthSummary
+	OVNHealthStatus               string
+	OVNHealthLatency              time.Duration
+	OVNHealthConsecutiveFailures  int
+	OVNHealthConsecutiveSuccesses int
+	OVNHealthRecovering           bool
+	OVNOps                        int
+	OVNExecuted                   int
+	OVNCleanup                    ovn.CleanupStats
+	OVNAuditStatus                string
+	OVNAuditError                 string
+	OVNAudit                      ovn.AuditStats
+	Duration                      time.Duration
+	Success                       bool
+	Phase                         string
+	Error                         string
 }
 
 type controllerMetricsTotals struct {
@@ -542,6 +618,12 @@ func writeControllerMetrics(w metricWriter, snapshot controllerMetricsSnapshot, 
 	fmt.Fprintf(w, "netloom_controller_lb_health_unhealthy %d\n", snapshot.HealthSummary.Unhealthy)
 	writeMetricType(w, "netloom_controller_ovn_health_latency_milliseconds", "gauge")
 	fmt.Fprintf(w, "netloom_controller_ovn_health_latency_milliseconds%s %d\n", baseLabels, snapshot.OVNHealthLatency.Milliseconds())
+	writeMetricType(w, "netloom_controller_ovn_health_consecutive_failures", "gauge")
+	fmt.Fprintf(w, "netloom_controller_ovn_health_consecutive_failures%s %d\n", baseLabels, snapshot.OVNHealthConsecutiveFailures)
+	writeMetricType(w, "netloom_controller_ovn_health_consecutive_successes", "gauge")
+	fmt.Fprintf(w, "netloom_controller_ovn_health_consecutive_successes%s %d\n", baseLabels, snapshot.OVNHealthConsecutiveSuccesses)
+	writeMetricType(w, "netloom_controller_ovn_health_recovering", "gauge")
+	fmt.Fprintf(w, "netloom_controller_ovn_health_recovering%s %d\n", baseLabels, boolMetric(snapshot.OVNHealthRecovering))
 	writeMetricType(w, "netloom_controller_ovn_operations_planned", "gauge")
 	fmt.Fprintf(w, "netloom_controller_ovn_operations_planned%s %d\n", baseLabels, snapshot.OVNOps)
 	writeMetricType(w, "netloom_controller_ovn_operations_executed", "gauge")

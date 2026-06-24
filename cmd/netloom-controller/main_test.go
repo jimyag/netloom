@@ -194,8 +194,9 @@ func TestPrintControllerReconcileFailureIncludesPhase(t *testing.T) {
 		}},
 	}
 	summary := control.LoadBalancerHealthSummary{Checked: 2, Healthy: 1, Unhealthy: 1}
+	ovnHealth := ovnHealthSnapshot{Status: "error", Latency: 25 * time.Millisecond, ConsecutiveFailures: 2}
 	output := captureStdout(t, func() {
-		printControllerReconcileFailure("ovn_health", state, summary, "error", 25*time.Millisecond, 3, 2, errors.New("boom"), 125*time.Millisecond)
+		printControllerReconcileFailure("ovn_health", state, summary, ovnHealth, 3, 2, errors.New("boom"), 125*time.Millisecond)
 	})
 
 	expected := []string{
@@ -209,6 +210,9 @@ func TestPrintControllerReconcileFailureIncludesPhase(t *testing.T) {
 		"lb_health_unhealthy=1",
 		"ovn_health=error",
 		"ovn_health_latency_ms=25",
+		"ovn_health_consecutive_failures=2",
+		"ovn_health_consecutive_successes=0",
+		"ovn_health_recovering=0",
 		"ovn_ops=3",
 		"ovn_executed=2",
 		"err=\"boom\"",
@@ -288,12 +292,13 @@ func TestControllerMetricsExportsLatestSuccess(t *testing.T) {
 				VIP:  netip.MustParseAddr("10.96.0.10"),
 			}},
 		},
-		PolicyEntries:    2,
-		HealthSummary:    control.LoadBalancerHealthSummary{Checked: 2, Healthy: 1, Unhealthy: 1},
-		OVNHealthStatus:  "ok",
-		OVNHealthLatency: 25 * time.Millisecond,
-		OVNOps:           7,
-		OVNExecuted:      6,
+		PolicyEntries:                 2,
+		HealthSummary:                 control.LoadBalancerHealthSummary{Checked: 2, Healthy: 1, Unhealthy: 1},
+		OVNHealthStatus:               "ok",
+		OVNHealthLatency:              25 * time.Millisecond,
+		OVNHealthConsecutiveSuccesses: 1,
+		OVNOps:                        7,
+		OVNExecuted:                   6,
 		OVNCleanup: ovn.CleanupStats{
 			Operations:           3,
 			StaleEndpoints:       1,
@@ -338,6 +343,9 @@ func TestControllerMetricsExportsLatestSuccess(t *testing.T) {
 		"netloom_controller_lb_health_healthy 1",
 		"netloom_controller_lb_health_unhealthy 1",
 		`netloom_controller_ovn_health_latency_milliseconds{ovn_health="ok"} 25`,
+		`netloom_controller_ovn_health_consecutive_failures{ovn_health="ok"} 0`,
+		`netloom_controller_ovn_health_consecutive_successes{ovn_health="ok"} 1`,
+		`netloom_controller_ovn_health_recovering{ovn_health="ok"} 0`,
 		`netloom_controller_ovn_operations_planned{ovn_health="ok"} 7`,
 		`netloom_controller_ovn_operations_executed{ovn_health="ok"} 6`,
 		`netloom_controller_ovn_cleanup_operations{ovn_health="ok"} 3`,
@@ -395,12 +403,13 @@ func TestControllerMetricsReportsOVNAuditErrorWithoutFailingReconcile(t *testing
 func TestControllerMetricsExportsLatestFailure(t *testing.T) {
 	metrics := newControllerMetrics()
 	metrics.observe(controllerMetricsSnapshot{
-		OVNHealthStatus:  "error",
-		OVNHealthLatency: 30 * time.Millisecond,
-		Duration:         40 * time.Millisecond,
-		Success:          false,
-		Phase:            "ovn_health",
-		Error:            "ovn health check: failed",
+		OVNHealthStatus:              "error",
+		OVNHealthLatency:             30 * time.Millisecond,
+		OVNHealthConsecutiveFailures: 1,
+		Duration:                     40 * time.Millisecond,
+		Success:                      false,
+		Phase:                        "ovn_health",
+		Error:                        "ovn health check: failed",
 	})
 
 	recorder := httptest.NewRecorder()
@@ -413,10 +422,63 @@ func TestControllerMetricsExportsLatestFailure(t *testing.T) {
 		`netloom_controller_reconcile_duration_milliseconds{ovn_health="error"} 40`,
 		`netloom_controller_reconcile_failure{error="ovn health check: failed",phase="ovn_health"} 1`,
 		`netloom_controller_ovn_health_latency_milliseconds{ovn_health="error"} 30`,
+		`netloom_controller_ovn_health_consecutive_failures{ovn_health="error"} 1`,
+		`netloom_controller_ovn_health_consecutive_successes{ovn_health="error"} 0`,
+		`netloom_controller_ovn_health_recovering{ovn_health="error"} 0`,
 	} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("failure metrics output missing %q:\n%s", expected, output)
 		}
+	}
+}
+
+func TestStateFileReconcilerTracksOVNHealthRecovery(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	if err := os.WriteFile(statePath, []byte(`{"vpcs":[{"name":"prod"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	checker := &sequenceHealthChecker{
+		results: []healthCheckResult{
+			{latency: 10 * time.Millisecond, err: errors.New("database unavailable")},
+			{latency: 15 * time.Millisecond},
+			{latency: 20 * time.Millisecond},
+		},
+	}
+	reconciler := &stateFileReconciler{
+		memory:        control.NewMemoryBackend(),
+		executor:      ovn.NewRecorderExecutor(),
+		ovnBackend:    ovn.NewBackend(ovn.NewRecorderExecutor()),
+		healthTracker: control.NewLoadBalancerHealthTracker(),
+		healthChecker: checker,
+		metrics:       newControllerMetrics(),
+	}
+	reconciler.controller = control.NewController(control.MultiTopologyBackend{reconciler.memory, reconciler.ovnBackend}, reconciler.memory)
+
+	if err := reconciler.reconcile(context.Background(), statePath); err == nil {
+		t.Fatal("expected first reconcile to fail health check")
+	}
+	snapshot, _, ready := reconciler.metrics.snapshotValue()
+	if !ready {
+		t.Fatal("expected metrics after failed reconcile")
+	}
+	if snapshot.OVNHealthStatus != "error" || snapshot.OVNHealthConsecutiveFailures != 1 || snapshot.OVNHealthRecovering {
+		t.Fatalf("first health snapshot = %+v, want one failure", snapshot)
+	}
+
+	if err := reconciler.reconcile(context.Background(), statePath); err != nil {
+		t.Fatalf("second reconcile should recover: %v", err)
+	}
+	snapshot, _, _ = reconciler.metrics.snapshotValue()
+	if snapshot.OVNHealthStatus != "recovering" || !snapshot.OVNHealthRecovering || snapshot.OVNHealthConsecutiveSuccesses != 1 {
+		t.Fatalf("second health snapshot = %+v, want recovering first success", snapshot)
+	}
+
+	if err := reconciler.reconcile(context.Background(), statePath); err != nil {
+		t.Fatalf("third reconcile should stay healthy: %v", err)
+	}
+	snapshot, _, _ = reconciler.metrics.snapshotValue()
+	if snapshot.OVNHealthStatus != "ok" || snapshot.OVNHealthRecovering || snapshot.OVNHealthConsecutiveSuccesses != 2 {
+		t.Fatalf("third health snapshot = %+v, want stable ok", snapshot)
 	}
 }
 
@@ -501,4 +563,23 @@ func captureStdout(t *testing.T, fn func()) string {
 		t.Fatal(err)
 	}
 	return output.String()
+}
+
+type healthCheckResult struct {
+	latency time.Duration
+	err     error
+}
+
+type sequenceHealthChecker struct {
+	results []healthCheckResult
+	next    int
+}
+
+func (c *sequenceHealthChecker) HealthCheck(context.Context) (time.Duration, error) {
+	if c.next >= len(c.results) {
+		return 0, nil
+	}
+	result := c.results[c.next]
+	c.next++
+	return result.latency, result.err
 }
