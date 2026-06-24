@@ -116,6 +116,37 @@ func TestNBCTLRetryMaxBackoffRejectsInvalidValue(t *testing.T) {
 	}
 }
 
+func TestLibOVSDBReconnectBackoffParsesMilliseconds(t *testing.T) {
+	t.Setenv("NETLOOM_OVN_LIBOVSDB_RECONNECT_INITIAL_BACKOFF_MS", "125")
+	initial, err := libovsdbReconnectInitialBackoff()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if initial != 125*time.Millisecond {
+		t.Fatalf("initial reconnect backoff = %s, want 125ms", initial)
+	}
+
+	t.Setenv("NETLOOM_OVN_LIBOVSDB_RECONNECT_MAX_BACKOFF_MS", "750")
+	maxBackoff, err := libovsdbReconnectMaxBackoff()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if maxBackoff != 750*time.Millisecond {
+		t.Fatalf("max reconnect backoff = %s, want 750ms", maxBackoff)
+	}
+}
+
+func TestLibOVSDBReconnectBackoffRejectsInvalidValue(t *testing.T) {
+	t.Setenv("NETLOOM_OVN_LIBOVSDB_RECONNECT_INITIAL_BACKOFF_MS", "soon")
+	if _, err := libovsdbReconnectInitialBackoff(); err == nil {
+		t.Fatal("expected invalid libovsdb initial reconnect backoff to fail")
+	}
+	t.Setenv("NETLOOM_OVN_LIBOVSDB_RECONNECT_MAX_BACKOFF_MS", "later")
+	if _, err := libovsdbReconnectMaxBackoff(); err == nil {
+		t.Fatal("expected invalid libovsdb max reconnect backoff to fail")
+	}
+}
+
 func TestReconcileFailureBackoffDefaultsToInterval(t *testing.T) {
 	backoff, err := reconcileFailureBackoff(750 * time.Millisecond)
 	if err != nil {

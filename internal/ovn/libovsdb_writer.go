@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/ovn-kubernetes/libovsdb/client"
 	ovsmodel "github.com/ovn-kubernetes/libovsdb/model"
@@ -18,11 +19,18 @@ import (
 )
 
 type LibOVSDBTopologyWriter struct {
-	client      client.Client
-	mu          sync.Mutex
-	last        desiredSnapshot
-	lastCleanup CleanupStats
-	seen        bool
+	client                  client.Client
+	clientCloser            func()
+	mu                      sync.Mutex
+	last                    desiredSnapshot
+	lastCleanup             CleanupStats
+	seen                    bool
+	reconnectEnabled        bool
+	reconnectInitialBackoff time.Duration
+	reconnectMaxBackoff     time.Duration
+	reconnectClient         func(context.Context) (client.Client, func(), error)
+	reconnectFailures       int
+	nextReconnect           time.Time
 }
 
 func NewLibOVSDBTopologyWriter(client client.Client) *LibOVSDBTopologyWriter {

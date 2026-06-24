@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/netip"
 	"testing"
+	"time"
 
 	libovsdbclient "github.com/ovn-kubernetes/libovsdb/client"
 	"github.com/ovn-kubernetes/libovsdb/ovsdb"
@@ -1218,6 +1219,55 @@ func TestLibOVSDBTopologyWriterHealthCheckUsesLibOVSDBEcho(t *testing.T) {
 	client.Disconnect()
 	if _, err := writer.HealthCheck(ctx); err == nil {
 		t.Fatal("expected disconnected libovsdb client health check to fail")
+	}
+}
+
+func TestLibOVSDBTopologyWriterHealthCheckReconnectsDisconnectedClient(t *testing.T) {
+	ctx := context.Background()
+	client, closeFn := newTestOVNNBClient(t)
+
+	if _, err := client.MonitorAll(ctx); err != nil {
+		closeFn()
+		t.Fatal(err)
+	}
+	writer := NewLibOVSDBTopologyWriter(client)
+	writer.EnableHealthReconnect(0, 0)
+	writer.SetHealthReconnectClientFactory(closeFn, func(context.Context) (libovsdbclient.Client, func(), error) {
+		nextClient, nextClose := newTestOVNNBClient(t)
+		if _, err := nextClient.MonitorAll(ctx); err != nil {
+			nextClose()
+			return nil, nil, err
+		}
+		return nextClient, nextClose, nil
+	})
+	t.Cleanup(writer.Close)
+
+	client.Disconnect()
+	if latency, err := writer.HealthCheck(ctx); err != nil {
+		t.Fatalf("health check should reconnect disconnected client: latency=%s err=%v", latency, err)
+	}
+	if client.Connected() {
+		t.Fatal("old client should remain disconnected after replacement")
+	}
+}
+
+func TestLibOVSDBReconnectBackoffCapsAtMax(t *testing.T) {
+	initial := 100 * time.Millisecond
+	maxBackoff := 250 * time.Millisecond
+	cases := []struct {
+		failures int
+		want     time.Duration
+	}{
+		{failures: 0, want: 0},
+		{failures: 1, want: 100 * time.Millisecond},
+		{failures: 2, want: 200 * time.Millisecond},
+		{failures: 3, want: 250 * time.Millisecond},
+		{failures: 20, want: 250 * time.Millisecond},
+	}
+	for _, tc := range cases {
+		if got := reconnectBackoff(initial, maxBackoff, tc.failures); got != tc.want {
+			t.Fatalf("reconnectBackoff(%d) = %s, want %s", tc.failures, got, tc.want)
+		}
 	}
 }
 

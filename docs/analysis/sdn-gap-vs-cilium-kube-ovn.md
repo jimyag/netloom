@@ -71,7 +71,7 @@ Netloom still drives OVN write operations primarily through command planning and
 What is missing:
 
 - typed cache/monitor write support beyond VPC logical routers, Subnet/Endpoint logical switch topology, DHCP_Options, static routes, policy routes, Gateway router metadata, NAT rows, Load_Balancer rows, Load_Balancer_Health_Check rows, and live managed-row audit
-- better HA/reconnect behavior against clustered OVN DB
+- clustered OVN DB leader/failover behavior beyond reconnecting a single libovsdb topology client
 
 Reference:
 
@@ -136,11 +136,10 @@ Kube-OVN has explicit leader/DB-health/recovery logic around OVN:
 - `/tmp/kube-ovn/pkg/ovn_leader_checker/ovn.go`
 - `/tmp/kube-ovn/pkg/ovnmonitor`
 
-Netloom now has `ovn-nbctl show` health probing, libovsdb `echo` health probing for direct OVSDB topology mode, command timeout/retry knobs, and controller metrics/log fields for consecutive OVN health failures, consecutive successes, and the first successful recovering reconcile after a failure.
+Netloom now has `ovn-nbctl show` health probing, libovsdb `echo` health probing for direct OVSDB topology mode, a reconnecting libovsdb topology health checker that rebuilds and re-monitors the Northbound client with configurable backoff after disconnects, command timeout/retry knobs, and controller metrics/log fields for consecutive OVN health failures, consecutive successes, and the first successful recovering reconcile after a failure.
 
 Netloom is still missing:
 
-- reconnect/backoff strategy beyond command retry and reconcile-loop failure backoff
 - leader/failover handling model
 - DB compaction / stale-state maintenance workflow
 

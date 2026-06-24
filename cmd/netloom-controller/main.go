@@ -1000,11 +1000,29 @@ func newOVNTopologyRuntimeFromEnv() (ovnTopologyRuntime, error) {
 		return ovnTopologyRuntime{}, err
 	}
 	writer := ovn.NewLibOVSDBTopologyWriter(client)
+	initialBackoff, err := libovsdbReconnectInitialBackoff()
+	if err != nil {
+		closeFn()
+		return ovnTopologyRuntime{}, err
+	}
+	maxBackoff, err := libovsdbReconnectMaxBackoff()
+	if err != nil {
+		closeFn()
+		return ovnTopologyRuntime{}, err
+	}
+	writer.EnableHealthReconnect(initialBackoff, maxBackoff)
+	writer.SetHealthReconnectClientFactory(closeFn, func(context.Context) (libovsdbclient.Client, func(), error) {
+		nextClient, nextClose, err := newOVNNBClientFromEnv("NETLOOM_OVN_TOPOLOGY_BACKEND=libovsdb reconnect")
+		if err != nil {
+			return nil, nil, err
+		}
+		return nextClient, nextClose, nil
+	})
 	return ovnTopologyRuntime{
 		backend: writer,
 		cleanup: writer,
 		health:  writer,
-		close:   closeFn,
+		close:   writer.Close,
 	}, nil
 }
 
@@ -1145,6 +1163,36 @@ func nbctlRetryMaxBackoff() (time.Duration, error) {
 	ms, err := strconv.Atoi(raw)
 	if err != nil {
 		return 0, fmt.Errorf("invalid NETLOOM_OVN_NBCTL_RETRY_MAX_BACKOFF_MS: %w", err)
+	}
+	if ms <= 0 {
+		return 0, nil
+	}
+	return time.Duration(ms) * time.Millisecond, nil
+}
+
+func libovsdbReconnectInitialBackoff() (time.Duration, error) {
+	raw := os.Getenv("NETLOOM_OVN_LIBOVSDB_RECONNECT_INITIAL_BACKOFF_MS")
+	if raw == "" {
+		return ovn.DefaultLibOVSDBReconnectInitialBackoff, nil
+	}
+	ms, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("invalid NETLOOM_OVN_LIBOVSDB_RECONNECT_INITIAL_BACKOFF_MS: %w", err)
+	}
+	if ms <= 0 {
+		return 0, nil
+	}
+	return time.Duration(ms) * time.Millisecond, nil
+}
+
+func libovsdbReconnectMaxBackoff() (time.Duration, error) {
+	raw := os.Getenv("NETLOOM_OVN_LIBOVSDB_RECONNECT_MAX_BACKOFF_MS")
+	if raw == "" {
+		return ovn.DefaultLibOVSDBReconnectMaxBackoff, nil
+	}
+	ms, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("invalid NETLOOM_OVN_LIBOVSDB_RECONNECT_MAX_BACKOFF_MS: %w", err)
 	}
 	if ms <= 0 {
 		return 0, nil
