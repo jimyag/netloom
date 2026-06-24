@@ -322,6 +322,8 @@ func TestControllerMetricsExportsLatestSuccess(t *testing.T) {
 			IncompleteManagedRows:           2,
 			MissingManagedRows:              3,
 			UnexpectedManagedRows:           4,
+			DriftedManagedRows:              5,
+			DriftedManagedFields:            6,
 		},
 		Duration: 125 * time.Millisecond,
 		Success:  true,
@@ -368,6 +370,8 @@ func TestControllerMetricsExportsLatestSuccess(t *testing.T) {
 		`netloom_controller_ovn_live_incomplete_managed_rows{ovn_audit="ok",ovn_health="ok"} 2`,
 		`netloom_controller_ovn_live_missing_managed_rows{ovn_audit="ok",ovn_health="ok"} 3`,
 		`netloom_controller_ovn_live_unexpected_managed_rows{ovn_audit="ok",ovn_health="ok"} 4`,
+		`netloom_controller_ovn_live_drifted_managed_rows{ovn_audit="ok",ovn_health="ok"} 5`,
+		`netloom_controller_ovn_live_drifted_managed_fields{ovn_audit="ok",ovn_health="ok"} 6`,
 		`netloom_controller_ovn_audit_checks_total{ovn_audit="ok",ovn_health="ok"} 1`,
 		`netloom_controller_ovn_audit_failures_total{ovn_audit="ok",ovn_health="ok"} 0`,
 	} {

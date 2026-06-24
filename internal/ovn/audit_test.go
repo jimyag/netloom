@@ -64,8 +64,8 @@ func TestAuditManagedRowsCountsDuplicatesAndIncompleteRows(t *testing.T) {
 	}
 
 	result := auditManagedRows("NAT", rows)
-	if result.rows != 4 {
-		t.Fatalf("rows = %d, want 4", result.rows)
+	if result.count != 4 {
+		t.Fatalf("rows = %d, want 4", result.count)
 	}
 	if result.duplicates != 1 {
 		t.Fatalf("duplicates = %d, want 1", result.duplicates)
@@ -82,7 +82,7 @@ func TestAuditLogicalSwitchPortIdentityAcceptsRouterAndLocalnetPorts(t *testing.
 	}
 
 	result := auditManagedRows("Logical_Switch_Port", rows)
-	if result.rows != 2 || result.incomplete != 0 || result.duplicates != 0 {
+	if result.count != 2 || result.incomplete != 0 || result.duplicates != 0 {
 		t.Fatalf("logical switch port audit = %+v, want two complete unique managed ports", result)
 	}
 }
@@ -139,6 +139,37 @@ func TestAuditManagedObjectsFromReaderReportsDesiredDrift(t *testing.T) {
 	}
 	if stats.MissingManagedRows != 2 {
 		t.Fatalf("missing managed rows = %d, want router and switch ports for subnet", stats.MissingManagedRows)
+	}
+}
+
+func TestAuditManagedObjectsFromReaderReportsFieldDrift(t *testing.T) {
+	endpointID := endpointExternalID("prod", "pod-a")
+	reader := fakeManagedOVNReader{rows: map[string][]ManagedOVNRow{
+		"Logical_Switch_Port": {
+			{Table: "Logical_Switch_Port", UUID: "lsp-pod-a", ExternalIDs: map[string]string{
+				"netloom_owner":    "netloom",
+				"netloom_vpc":      "prod",
+				"netloom_endpoint": endpointID,
+				"netloom_node":     "node-old",
+				"netloom_subnet":   "apps",
+			}},
+		},
+	}}
+	desired := topology.State{
+		Subnets: map[string]model.Subnet{
+			"prod/apps": {Name: "apps", VPC: "prod"},
+		},
+		Endpoints: map[string]model.Endpoint{
+			"prod/pod-a": {ID: "pod-a", VPC: "prod", Subnet: "apps", Node: "node-a"},
+		},
+	}
+
+	stats, err := AuditManagedObjectsFromReaderWithDesired(context.Background(), reader, desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.DriftedManagedRows != 1 || stats.DriftedManagedFields != 1 {
+		t.Fatalf("field drift = rows %d fields %d, want one node drift", stats.DriftedManagedRows, stats.DriftedManagedFields)
 	}
 }
 

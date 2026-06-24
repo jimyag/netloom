@@ -235,7 +235,7 @@ func (r *stateFileReconciler) reconcile(ctx context.Context, path string) error 
 	ovnAudit, ovnAuditStatus, ovnAuditError := r.auditOVN(ctx, r.memory.TopologyState())
 	duration := time.Since(start)
 	fmt.Printf(
-		"netloom-controller reconciled desired state vpcs=%d subnets=%d endpoints=%d route_tables=%d policy_routes=%d gateways=%d nat_rules=%d load_balancers=%d security_groups=%d policy_entries=%d lb_health_checked=%d lb_health_healthy=%d lb_health_unhealthy=%d ovn_health=%s ovn_health_latency_ms=%d ovn_health_consecutive_failures=%d ovn_health_consecutive_successes=%d ovn_health_recovering=%d ovn_ops=%d ovn_executed=%d ovn_audit=%s ovn_live_managed=%d ovn_live_duplicates=%d ovn_live_incomplete=%d ovn_live_missing=%d ovn_live_unexpected=%d ovn_audit_error=%s reconcile_duration_ms=%d\n",
+		"netloom-controller reconciled desired state vpcs=%d subnets=%d endpoints=%d route_tables=%d policy_routes=%d gateways=%d nat_rules=%d load_balancers=%d security_groups=%d policy_entries=%d lb_health_checked=%d lb_health_healthy=%d lb_health_unhealthy=%d ovn_health=%s ovn_health_latency_ms=%d ovn_health_consecutive_failures=%d ovn_health_consecutive_successes=%d ovn_health_recovering=%d ovn_ops=%d ovn_executed=%d ovn_audit=%s ovn_live_managed=%d ovn_live_duplicates=%d ovn_live_incomplete=%d ovn_live_missing=%d ovn_live_unexpected=%d ovn_live_drifted_rows=%d ovn_live_drifted_fields=%d ovn_audit_error=%s reconcile_duration_ms=%d\n",
 		len(state.VPCs),
 		len(state.Subnets),
 		len(state.Endpoints),
@@ -262,6 +262,8 @@ func (r *stateFileReconciler) reconcile(ctx context.Context, path string) error 
 		ovnAudit.IncompleteManagedRows,
 		ovnAudit.MissingManagedRows,
 		ovnAudit.UnexpectedManagedRows,
+		ovnAudit.DriftedManagedRows,
+		ovnAudit.DriftedManagedFields,
 		formatResultError(ovnAuditError),
 		duration.Milliseconds(),
 	)
@@ -734,6 +736,10 @@ func writeControllerMetrics(w metricWriter, snapshot controllerMetricsSnapshot, 
 	fmt.Fprintf(w, "netloom_controller_ovn_live_missing_managed_rows%s %d\n", auditLabels, snapshot.OVNAudit.MissingManagedRows)
 	writeMetricType(w, "netloom_controller_ovn_live_unexpected_managed_rows", "gauge")
 	fmt.Fprintf(w, "netloom_controller_ovn_live_unexpected_managed_rows%s %d\n", auditLabels, snapshot.OVNAudit.UnexpectedManagedRows)
+	writeMetricType(w, "netloom_controller_ovn_live_drifted_managed_rows", "gauge")
+	fmt.Fprintf(w, "netloom_controller_ovn_live_drifted_managed_rows%s %d\n", auditLabels, snapshot.OVNAudit.DriftedManagedRows)
+	writeMetricType(w, "netloom_controller_ovn_live_drifted_managed_fields", "gauge")
+	fmt.Fprintf(w, "netloom_controller_ovn_live_drifted_managed_fields%s %d\n", auditLabels, snapshot.OVNAudit.DriftedManagedFields)
 	writeControllerCounter(w, "netloom_controller_ovn_audit_checks_total", auditLabels, totals.OVNAuditChecks)
 	writeControllerCounter(w, "netloom_controller_ovn_audit_failures_total", auditLabels, totals.OVNAuditFailures)
 	if snapshot.OVNAuditStatus == "error" {

@@ -22,6 +22,8 @@ type AuditStats struct {
 	IncompleteManagedRows           int
 	MissingManagedRows              int
 	UnexpectedManagedRows           int
+	DriftedManagedRows              int
+	DriftedManagedFields            int
 }
 
 type ManagedOVNRow struct {
@@ -56,7 +58,7 @@ func AuditManagedObjectsFromReader(ctx context.Context, reader ManagedOVNReader)
 
 func AuditManagedObjectsFromReaderWithDesired(ctx context.Context, reader ManagedOVNReader, desired topology.State) (AuditStats, error) {
 	var stats AuditStats
-	expected := expectedManagedAuditIdentities(desired)
+	expected := expectedManagedAuditRows(desired)
 	seen := make(map[string]struct{})
 	for _, table := range managedAuditTables() {
 		rows, err := reader.ManagedOVNRows(ctx, table.name)
@@ -64,12 +66,17 @@ func AuditManagedObjectsFromReaderWithDesired(ctx context.Context, reader Manage
 			return AuditStats{}, err
 		}
 		result := auditManagedRows(table.name, rows)
-		table.addCount(&stats, result.rows)
+		table.addCount(&stats, result.count)
 		stats.DuplicateManagedRows += result.duplicates
 		stats.IncompleteManagedRows += result.incomplete
-		for _, identity := range result.identities {
-			if _, ok := expected[identity]; ok {
-				seen[identity] = struct{}{}
+		for _, row := range result.rows {
+			if expectedFields, ok := expected[row.identity]; ok {
+				seen[row.identity] = struct{}{}
+				driftedFields := countManagedFieldDrift(row.externalIDs, expectedFields)
+				if driftedFields != 0 {
+					stats.DriftedManagedRows++
+					stats.DriftedManagedFields += driftedFields
+				}
 			} else if len(expected) > 0 {
 				stats.UnexpectedManagedRows++
 			}
@@ -123,14 +130,19 @@ func (e *NBCTLExecutor) ManagedOVNRows(ctx context.Context, table string) ([]Man
 }
 
 type auditRowResult struct {
-	rows       int
+	count      int
 	duplicates int
 	incomplete int
-	identities []string
+	rows       []auditManagedRow
+}
+
+type auditManagedRow struct {
+	identity    string
+	externalIDs map[string]string
 }
 
 func auditManagedRows(table string, rows []ManagedOVNRow) auditRowResult {
-	result := auditRowResult{rows: len(rows)}
+	result := auditRowResult{count: len(rows)}
 	seen := make(map[string]struct{}, len(rows))
 	for _, row := range rows {
 		if row.UUID == "" || row.ExternalIDs == nil {
@@ -150,38 +162,75 @@ func auditManagedRows(table string, rows []ManagedOVNRow) auditRowResult {
 			continue
 		}
 		seen[identity] = struct{}{}
-		result.identities = append(result.identities, identity)
+		result.rows = append(result.rows, auditManagedRow{
+			identity:    identity,
+			externalIDs: row.ExternalIDs,
+		})
 	}
 	return result
 }
 
 func expectedManagedAuditIdentities(desired topology.State) map[string]struct{} {
+	rows := expectedManagedAuditRows(desired)
 	out := make(map[string]struct{})
+	for identity := range rows {
+		out[identity] = struct{}{}
+	}
+	return out
+}
+
+func expectedManagedAuditRows(desired topology.State) map[string]map[string]string {
+	out := make(map[string]map[string]string)
 	for name := range desired.VPCs {
-		addAuditIdentity(out, "Logical_Router", "netloom_vpc", name)
+		addAuditExpectedRow(out, "Logical_Router", "netloom_vpc", name)
 	}
 	for _, subnet := range desired.Subnets {
-		addAuditIdentity(out, "Logical_Switch", "netloom_vpc", subnet.VPC, "netloom_subnet", subnet.Name)
-		addAuditIdentity(out, "Logical_Router_Port", "netloom_subnet", subnet.Name)
-		addAuditIdentity(out, "Logical_Switch_Port", "netloom_subnet", subnet.Name, "netloom_role", "router")
+		addAuditExpectedRow(out, "Logical_Switch", "netloom_vpc", subnet.VPC, "netloom_subnet", subnet.Name)
+		addAuditExpectedRow(out, "Logical_Router_Port", "netloom_subnet", subnet.Name)
+		addAuditExpectedRow(out, "Logical_Switch_Port", "netloom_subnet", subnet.Name, "netloom_role", "router")
 		if subnet.ProviderNetwork != "" {
-			addAuditIdentity(out, "Logical_Switch_Port", "netloom_subnet", subnet.Name, "netloom_provider_network", subnet.ProviderNetwork)
+			addAuditExpectedRow(out, "Logical_Switch_Port", "netloom_subnet", subnet.Name, "netloom_provider_network", subnet.ProviderNetwork)
 		}
 	}
 	for _, endpoint := range desired.Endpoints {
-		addAuditIdentity(out, "Logical_Switch_Port", "netloom_vpc", endpoint.VPC, "netloom_endpoint", endpointExternalID(endpoint.VPC, endpoint.ID))
+		addAuditExpectedRow(out, "Logical_Switch_Port",
+			"netloom_vpc", endpoint.VPC,
+			"netloom_endpoint", endpointExternalID(endpoint.VPC, endpoint.ID),
+			"netloom_node", endpoint.Node,
+			"netloom_subnet", endpoint.Subnet,
+		)
 		if subnet, ok := desired.Subnets[subnetStateKey(endpoint.VPC, endpoint.Subnet)]; ok && subnet.DHCP.Enabled {
-			addAuditIdentity(out, "DHCP_Options", "netloom_vpc", endpoint.VPC, "netloom_endpoint", endpointExternalID(endpoint.VPC, endpoint.ID))
+			addAuditExpectedRow(out, "DHCP_Options",
+				"netloom_vpc", endpoint.VPC,
+				"netloom_endpoint", endpointExternalID(endpoint.VPC, endpoint.ID),
+				"netloom_subnet", endpoint.Subnet,
+			)
 		}
 	}
 	for _, route := range desired.PolicyRoutes {
-		addAuditIdentity(out, "Logical_Router_Policy", "netloom_vpc", route.VPC, "netloom_policy_route", route.Name)
+		addAuditExpectedRow(out, "Logical_Router_Policy", "netloom_vpc", route.VPC, "netloom_policy_route", route.Name)
 	}
 	for _, rule := range desired.NATRules {
-		addAuditIdentity(out, "NAT", "netloom_vpc", rule.VPC, "netloom_nat", rule.Name)
+		addAuditExpectedRow(out, "NAT", "netloom_vpc", rule.VPC, "netloom_nat", rule.Name)
 	}
 	for _, lb := range desired.LoadBalancers {
-		addAuditIdentity(out, "Load_Balancer", "netloom_vpc", lb.VPC, "netloom_load_balancer", lb.Name)
+		addAuditExpectedRow(out, "Load_Balancer",
+			"netloom_vpc", lb.VPC,
+			"netloom_load_balancer", lb.Name,
+			"netloom_session_affinity", fmt.Sprintf("%t", lb.SessionAffinity),
+		)
+	}
+	for _, gateway := range desired.Gateways {
+		fields := []string{
+			"netloom_vpc", gateway.VPC,
+			"netloom_gateway", gateway.Name,
+			"netloom_gateway_lan_ip", gateway.LANIP.String(),
+			"netloom_gateway_distributed", fmt.Sprintf("%t", gateway.Distributed),
+		}
+		if gateway.ExternalIF != "" {
+			fields = append(fields, "netloom_external_if", gateway.ExternalIF)
+		}
+		addAuditExpectedRow(out, "Logical_Router", fields...)
 	}
 	return out
 }
@@ -198,6 +247,38 @@ func addAuditIdentity(out map[string]struct{}, table string, keyValues ...string
 	if complete && identity != "" {
 		out[identity] = struct{}{}
 	}
+}
+
+func addAuditExpectedRow(out map[string]map[string]string, table string, keyValues ...string) {
+	if len(keyValues)%2 != 0 {
+		return
+	}
+	externalIDs := make(map[string]string, len(keyValues)/2)
+	for i := 0; i < len(keyValues); i += 2 {
+		externalIDs[keyValues[i]] = keyValues[i+1]
+	}
+	identity, complete := managedAuditIdentity(table, "", externalIDs)
+	if !complete || identity == "" {
+		return
+	}
+	expected := out[identity]
+	if expected == nil {
+		expected = make(map[string]string, len(externalIDs))
+		out[identity] = expected
+	}
+	for key, value := range externalIDs {
+		expected[key] = value
+	}
+}
+
+func countManagedFieldDrift(live, expected map[string]string) int {
+	drift := 0
+	for key, value := range expected {
+		if live[key] != value {
+			drift++
+		}
+	}
+	return drift
 }
 
 func parseManagedOVNRows(table string, rows []string) []ManagedOVNRow {
