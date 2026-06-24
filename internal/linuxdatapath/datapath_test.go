@@ -168,7 +168,7 @@ func TestPlanSyncsProviderBridgeMappingsToOVSDB(t *testing.T) {
 		{Command: "ip", Args: []string{"link", "set", link, "up"}},
 		{Command: "ovs-vsctl", Args: []string{"--may-exist", "add-br", bridge}},
 		{Command: "ovs-vsctl", Args: []string{"set", "bridge", bridge, "external_ids:netloom_owner=netloom", "external_ids:netloom_provider_network=physnet-a"}},
-		{Command: "ovs-vsctl", Args: []string{"--may-exist", "add-port", bridge, link}},
+		planProviderOVSDBPort(bridge, link),
 		{Command: "ovs-vsctl", Args: []string{"set", "interface", link, "external_ids:netloom_owner=netloom", "external_ids:netloom_provider_network=physnet-a", "external_ids:netloom_parent_device=eth1", "external_ids:netloom_vlan=100"}},
 		{Command: "ovs-vsctl", Args: []string{"set", "Open_vSwitch", ".", "external_ids:netloom_owner=netloom", "external_ids:ovn-bridge-mappings=physnet-a:" + bridge}},
 		{Command: "ip", Args: []string{"link", "set", "nl0", "up"}},
@@ -193,6 +193,21 @@ func TestPlanClearsProviderBridgeMappingsWhenOVSDBSyncHasNoProviders(t *testing.
 	}
 	if !reflect.DeepEqual(ops, want) {
 		t.Fatalf("ops = %#v, want %#v", ops, want)
+	}
+}
+
+func TestPlanProviderOVSDBPortRepairsWrongBridgeDrift(t *testing.T) {
+	op := planProviderOVSDBPort("nlbr-good", "nlv100")
+	script := strings.Join(op.Args, " ")
+	for _, expected := range []string{
+		"ovs-vsctl port-to-br nlv100",
+		"[ \"$current\" != nlbr-good ]",
+		"ovs-vsctl --if-exists del-port \"$current\" nlv100",
+		"ovs-vsctl --may-exist add-port nlbr-good nlv100",
+	} {
+		if !strings.Contains(script, expected) {
+			t.Fatalf("provider ovsdb port repair script missing %q:\n%s", expected, script)
+		}
 	}
 }
 

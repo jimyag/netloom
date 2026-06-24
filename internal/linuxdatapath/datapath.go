@@ -686,7 +686,7 @@ func planProviderOVSDBMappings(specs []providerNetworkLinkSpec) []Operation {
 		ops = append(ops,
 			ovsVSCTLOperation("--may-exist", "add-br", bridge),
 			ovsVSCTLOperation("set", "bridge", bridge, "external_ids:netloom_owner=netloom", "external_ids:netloom_provider_network="+spec.ProviderNetwork),
-			ovsVSCTLOperation("--may-exist", "add-port", bridge, spec.Name),
+			planProviderOVSDBPort(bridge, spec.Name),
 			ovsVSCTLOperation("set", "interface", spec.Name, "external_ids:netloom_owner=netloom", "external_ids:netloom_provider_network="+spec.ProviderNetwork, "external_ids:netloom_parent_device="+spec.ParentDevice, "external_ids:netloom_vlan="+strconv.Itoa(int(spec.VLAN))),
 		)
 	}
@@ -697,6 +697,10 @@ func planProviderOVSDBMappings(specs []providerNetworkLinkSpec) []Operation {
 	sort.Strings(mappings)
 	ops = append(ops, ovsVSCTLOperation("set", "Open_vSwitch", ".", "external_ids:netloom_owner=netloom", "external_ids:ovn-bridge-mappings="+strings.Join(mappings, ",")))
 	return ops
+}
+
+func planProviderOVSDBPort(bridge, link string) Operation {
+	return shellOperation("current=$(ovs-vsctl port-to-br " + shellQuote(link) + " 2>/dev/null || true); if [ -n \"$current\" ] && [ \"$current\" != " + shellQuote(bridge) + " ]; then ovs-vsctl --if-exists del-port \"$current\" " + shellQuote(link) + "; fi; ovs-vsctl --may-exist add-port " + shellQuote(bridge) + " " + shellQuote(link))
 }
 
 func ovsVSCTLOperation(args ...string) Operation {
