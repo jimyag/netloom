@@ -25,6 +25,7 @@ type ReconcileResult struct {
 	PolicyMapPressureMax       uint32
 	PolicyMapPressureEndpoint  string
 	PolicyMapPressureEndpoints int
+	PolicyPressureMitigated    int
 	PolicyMapDriftEndpoints    int
 	PolicyMapDriftMissing      int
 	PolicyMapDriftExtra        int
@@ -112,16 +113,17 @@ type PolicyRuleMetricsStore interface {
 }
 
 type ReconcileOptions struct {
-	Node             string
-	Store            PolicyStore
-	PolicyTelemetry  PolicyRuleMetricsStore
-	IdentityResolver policy.IdentityResolver
-	TCXInterface     string
-	TCXWorkload      bool
-	TCXHold          time.Duration
-	ConntrackIdle    time.Duration
-	PolicyGCMaxIdle  time.Duration
-	LinuxDatapath    *linuxdatapath.Options
+	Node                              string
+	Store                             PolicyStore
+	PolicyTelemetry                   PolicyRuleMetricsStore
+	IdentityResolver                  policy.IdentityResolver
+	TCXInterface                      string
+	TCXWorkload                       bool
+	TCXHold                           time.Duration
+	ConntrackIdle                     time.Duration
+	PolicyGCMaxIdle                   time.Duration
+	PolicyPressureMitigationThreshold uint32
+	LinuxDatapath                     *linuxdatapath.Options
 }
 
 type tcxTarget struct {
@@ -209,6 +211,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, state control.DesiredState, 
 		return result, err
 	}
 	if err := populatePolicyMapUsageResult(ctx, options.Store, &result); err != nil {
+		return result, err
+	}
+	if err := mitigatePolicyMapPressureResult(ctx, options.Store, programs, options.PolicyPressureMitigationThreshold, &result); err != nil {
 		return result, err
 	}
 	if err := populatePolicyMapDriftResult(ctx, options.Store, &result); err != nil {
@@ -413,6 +418,9 @@ func prepareReconcile(ctx context.Context, state control.DesiredState, options R
 	if err := populatePolicyMapUsageResult(ctx, options.Store, &result); err != nil {
 		return ReconcileResult{}, nil, nil, err
 	}
+	if err := mitigatePolicyMapPressureResult(ctx, options.Store, localPrograms, options.PolicyPressureMitigationThreshold, &result); err != nil {
+		return ReconcileResult{}, nil, nil, err
+	}
 	if err := populatePolicyMapDriftResult(ctx, options.Store, &result); err != nil {
 		return ReconcileResult{}, nil, nil, err
 	}
@@ -445,6 +453,42 @@ func prepareReconcile(ctx context.Context, state control.DesiredState, options R
 		}
 	}
 	return result, targets, localPrograms, nil
+}
+
+func mitigatePolicyMapPressureResult(ctx context.Context, store PolicyStore, programs []policy.Program, threshold uint32, result *ReconcileResult) error {
+	if result == nil || threshold == 0 || result.PolicyMapPressureMax < threshold {
+		return nil
+	}
+	inventory, ok := store.(PolicyEndpointInventory)
+	if !ok {
+		return nil
+	}
+	endpointIDs, err := inventory.EndpointIDs(ctx)
+	if err != nil {
+		return fmt.Errorf("list policy endpoints for pressure mitigation: %w", err)
+	}
+	keep := make(map[string]struct{}, len(programs))
+	for _, program := range programs {
+		keep[program.EndpointID] = struct{}{}
+	}
+	mitigated := 0
+	for _, endpointID := range endpointIDs {
+		if _, ok := keep[endpointID]; ok {
+			continue
+		}
+		if err := store.DeleteEndpoint(ctx, endpointID); err != nil {
+			return fmt.Errorf("mitigate policy map pressure by deleting endpoint %s: %w", endpointID, err)
+		}
+		mitigated++
+	}
+	result.PolicyPressureMitigated = mitigated
+	if mitigated == 0 {
+		return nil
+	}
+	if err := populatePolicyMapUsageResult(ctx, store, result); err != nil {
+		return err
+	}
+	return nil
 }
 
 func sweepPolicyEndpointsResult(ctx context.Context, store PolicyStore, programs []policy.Program, maxIdle time.Duration, result *ReconcileResult) error {

@@ -105,6 +105,17 @@ func TestConntrackIdleTimeoutDefaultsToReconcilerDefault(t *testing.T) {
 	}
 }
 
+func TestPolicyPressureMitigationThresholdParsesPercent(t *testing.T) {
+	t.Setenv("NETLOOM_POLICY_PRESSURE_MITIGATION_THRESHOLD", "85")
+	if got := policyPressureMitigationThreshold(); got != 85 {
+		t.Fatalf("policy pressure mitigation threshold = %d, want 85", got)
+	}
+	t.Setenv("NETLOOM_POLICY_PRESSURE_MITIGATION_THRESHOLD", "125")
+	if got := policyPressureMitigationThreshold(); got != 100 {
+		t.Fatalf("policy pressure mitigation threshold = %d, want capped 100", got)
+	}
+}
+
 func TestLinuxDatapathOptionsParsesBackend(t *testing.T) {
 	t.Setenv("NETLOOM_LINUX_DATAPATH", "1")
 	t.Setenv("NETLOOM_LINUX_DATAPATH_MODE", "netns")
@@ -556,6 +567,7 @@ func TestPrintReconcileResultIncludesPolicyMapUsageSummary(t *testing.T) {
 		PolicyMapPressureMax:       75,
 		PolicyMapPressureEndpoint:  "prod\x00pod-a",
 		PolicyMapPressureEndpoints: 0,
+		PolicyPressureMitigated:    2,
 		PolicyMapDriftEndpoints:    1,
 		PolicyMapDriftMissing:      2,
 		PolicyMapDriftExtra:        3,
@@ -610,6 +622,7 @@ func TestPrintReconcileResultIncludesPolicyMapUsageSummary(t *testing.T) {
 		"policy_map_pressure_max=75",
 		`policy_map_pressure_endpoint="prod\x00pod-a"`,
 		"policy_map_pressure_endpoints=0",
+		"policy_pressure_mitigated=2",
 		"policy_map_drift_endpoints=1",
 		"policy_map_drift_missing=2",
 		"policy_map_drift_extra=3",
@@ -1078,6 +1091,7 @@ func TestAgentMetricsExportsLatestPolicyAndTCXCounters(t *testing.T) {
 		PolicyMapPressureMax:       75,
 		PolicyMapPressureEndpoint:  "prod\x00pod-a",
 		PolicyMapPressureEndpoints: 1,
+		PolicyPressureMitigated:    2,
 		PolicyMapDriftEndpoints:    1,
 		PolicyMapDriftMissing:      2,
 		PolicyMapDriftExtra:        3,
@@ -1112,6 +1126,8 @@ func TestAgentMetricsExportsLatestPolicyAndTCXCounters(t *testing.T) {
 		`netloom_agent_reconcile_duration_milliseconds{node="node-a",store="ebpf"} 250`,
 		`netloom_agent_policy_map_entries{node="node-a",store="ebpf"} 12`,
 		`netloom_agent_policy_map_pressure_percent{endpoint="prod\x00pod-a",node="node-a",store="ebpf"} 75`,
+		`netloom_agent_policy_pressure_mitigated_endpoints{node="node-a",store="ebpf"} 2`,
+		`netloom_agent_policy_pressure_mitigated_endpoints_total{node="node-a",store="ebpf"} 2`,
 		`netloom_agent_policy_map_drift_endpoints{node="node-a",store="ebpf"} 1`,
 		`netloom_agent_policy_map_drift_missing_entries{node="node-a",store="ebpf"} 2`,
 		`netloom_agent_policy_map_drift_extra_entries{node="node-a",store="ebpf"} 3`,

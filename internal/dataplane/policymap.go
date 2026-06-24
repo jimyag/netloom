@@ -237,6 +237,19 @@ func (s *InMemoryPolicyStore) DeleteEndpoint(_ context.Context, endpointID strin
 	return nil
 }
 
+func (s *InMemoryPolicyStore) EndpointIDs(_ context.Context) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	endpoints := s.policyEndpointIDsLocked()
+	ids := make([]string, 0, len(endpoints))
+	for endpointID := range endpoints {
+		ids = append(ids, endpointID)
+	}
+	slices.Sort(ids)
+	return ids, nil
+}
+
 func (s *InMemoryPolicyStore) deleteEndpointLocked(endpointID string) {
 	delete(s.endpoints, endpointID)
 	delete(s.lastStats, endpointID)

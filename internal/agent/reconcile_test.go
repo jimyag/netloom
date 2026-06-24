@@ -312,6 +312,69 @@ func TestReconcileNodeSweepsIdlePolicyEndpoints(t *testing.T) {
 	}
 }
 
+func TestReconcileNodeMitigatesPolicyMapPressureByDeletingNonDesiredEndpoints(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:             "pod-a",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"web"},
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "allow-http",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("0.0.0.0/0"),
+				Ports:      []model.PortRange{{From: 80, To: 80}},
+				Action:     model.ActionAllow,
+			}},
+		}},
+	}
+	staleEndpoint := model.EndpointKey("prod", "stale")
+	store := &usagePolicyStore{
+		InMemoryPolicyStore: dataplane.NewInMemoryPolicyStore(),
+		usages: []dataplane.PolicyMapUsage{{
+			EndpointID: model.EndpointKey("prod", "pod-a"),
+			Entries:    1,
+			Capacity:   10,
+		}, {
+			EndpointID: staleEndpoint,
+			Entries:    8,
+			Capacity:   10,
+		}},
+	}
+	if err := store.ReplaceEndpoint(context.Background(), staleEndpoint, []dataplane.PolicyMapEntry{{
+		Key:   dataplane.PolicyKey{PrefixLen: dataplane.StaticPrefixBits, Direction: dataplane.DirectionIngress, RemoteIdentity: 42},
+		Value: dataplane.PolicyEntry{},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := ReconcileNodeWithOptions(context.Background(), state, ReconcileOptions{
+		Node:                              "node-a",
+		Store:                             store,
+		PolicyPressureMitigationThreshold: 80,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.PolicyPressureMitigated != 1 {
+		t.Fatalf("policy pressure mitigated = %d, want 1", result.PolicyPressureMitigated)
+	}
+	if entries := store.Entries(staleEndpoint); len(entries) != 0 {
+		t.Fatalf("stale endpoint entries = %d, want deleted", len(entries))
+	}
+	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) == 0 {
+		t.Fatal("desired endpoint policy was removed")
+	}
+}
+
 func TestReconcileNodeKeepsSameEndpointIDScopedByVPCInPolicyLifecycle(t *testing.T) {
 	state := control.DesiredState{
 		Endpoints: []model.Endpoint{

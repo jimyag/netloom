@@ -3,6 +3,7 @@ package dataplane
 import (
 	"context"
 	"net/netip"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -727,6 +728,29 @@ func TestInMemoryPolicyStoreReportsPolicyMapUsage(t *testing.T) {
 	}
 	if usages[1].EndpointID != endpointB || usages[1].Entries != 2 || usages[1].Capacity != 0 {
 		t.Fatalf("second usage = %+v, want pod-b with two entries and unknown capacity", usages[1])
+	}
+}
+
+func TestInMemoryPolicyStoreEndpointIDsReportsManagedEndpoints(t *testing.T) {
+	store := NewInMemoryPolicyStore()
+	endpointA := model.EndpointKey("prod", "pod-a")
+	endpointB := model.EndpointKey("prod", "pod-b")
+	for _, endpointID := range []string{endpointB, endpointA} {
+		if err := store.ReplaceEndpoint(context.Background(), endpointID, []PolicyMapEntry{{
+			Key:   PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 1, Direction: DirectionIngress},
+			Value: PolicyEntry{Precedence: 10},
+		}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	ids, err := store.EndpointIDs(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{endpointA, endpointB}
+	if !reflect.DeepEqual(ids, want) {
+		t.Fatalf("EndpointIDs() = %v, want %v", ids, want)
 	}
 }
 
