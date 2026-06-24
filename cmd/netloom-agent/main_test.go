@@ -237,6 +237,67 @@ func TestWithDNSObservationsPrunesExpiredRecords(t *testing.T) {
 	}
 }
 
+func TestRunPolicyStatusReportsEndpointLifecycleJSON(t *testing.T) {
+	statePath := writeAgentState(t, control.DesiredState{
+		VPCs: []model.VPC{{Name: "prod"}},
+		Subnets: []model.Subnet{{
+			Name:    "apps",
+			VPC:     "prod",
+			CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway: netip.MustParseAddr("10.10.0.1"),
+		}},
+		Endpoints: []model.Endpoint{{
+			ID:             "pod-a",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"web"},
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "allow-web",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("0.0.0.0/0"),
+				Ports:      []model.PortRange{{From: 80, To: 80}},
+				Action:     model.ActionAllow,
+			}},
+		}},
+	})
+
+	var out bytes.Buffer
+	if err := runPolicyStatus([]string{"-state", statePath, "-node", "node-a", "-endpoint", "pod-a"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	var got policyStatusOutput
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("decode policy-status output: %v\n%s", err, out.String())
+	}
+	if got.Node != "node-a" || got.Store != "memory" || got.EndpointCount != 1 {
+		t.Fatalf("policy status summary = %+v, want node-a memory with one endpoint", got)
+	}
+	if got.PolicyMapEntries == 0 || got.PolicyRevisionMax != 1 {
+		t.Fatalf("policy status policy summary = %+v, want programmed entries at revision 1", got)
+	}
+	if len(got.Statuses) != 1 {
+		t.Fatalf("statuses = %d, want one: %+v", len(got.Statuses), got.Statuses)
+	}
+	status := got.Statuses[0]
+	if status.EndpointID != model.EndpointKey("prod", "pod-a") || status.Revision != 1 || status.Entries == 0 {
+		t.Fatalf("endpoint status = %+v, want pod-a revision with entries", status)
+	}
+	if !status.HasLastEvent || !status.LastEvent.Success || status.LastEvent.Revision != 1 {
+		t.Fatalf("last event = %+v has=%t, want successful revision event", status.LastEvent, status.HasLastEvent)
+	}
+	if status.Drift.Drifted {
+		t.Fatalf("drift = %+v, want clean in-memory status", status.Drift)
+	}
+}
+
 func TestRunPolicyExplainReportsSelectorAllow(t *testing.T) {
 	statePath := writePolicyExplainState(t)
 	var stdout bytes.Buffer
@@ -394,6 +455,11 @@ func writePolicyExplainState(t *testing.T) string {
 			}},
 		}},
 	}
+	return writeAgentState(t, state)
+}
+
+func writeAgentState(t *testing.T, state control.DesiredState) string {
+	t.Helper()
 	data, err := json.Marshal(state)
 	if err != nil {
 		t.Fatal(err)

@@ -48,64 +48,64 @@ type PolicyMapEntry struct {
 }
 
 type PolicyUpdateStats struct {
-	Revision  uint64
-	Added     int
-	Updated   int
-	Deleted   int
-	Unchanged int
+	Revision  uint64 `json:"revision"`
+	Added     int    `json:"added"`
+	Updated   int    `json:"updated"`
+	Deleted   int    `json:"deleted"`
+	Unchanged int    `json:"unchanged"`
 }
 
 type PolicyMapUsage struct {
-	EndpointID string
-	Entries    uint32
-	Capacity   uint32
+	EndpointID string `json:"endpoint_id"`
+	Entries    uint32 `json:"entries"`
+	Capacity   uint32 `json:"capacity"`
 }
 
 type PolicyMapUsageSummary struct {
-	Entries             uint32
-	Capacity            uint32
-	MaxPressurePercent  uint32
-	MaxPressureEndpoint string
-	PressureEndpoints   int
+	Entries             uint32 `json:"entries"`
+	Capacity            uint32 `json:"capacity"`
+	MaxPressurePercent  uint32 `json:"max_pressure_percent"`
+	MaxPressureEndpoint string `json:"max_pressure_endpoint,omitempty"`
+	PressureEndpoints   int    `json:"pressure_endpoints"`
 }
 
 const DefaultPolicyMapPressureThresholdPercent = 80
 
 type PolicyMapDrift struct {
-	EndpointID string
-	Missing    int
-	Extra      int
-	Changed    int
-	Drifted    bool
+	EndpointID string `json:"endpoint_id"`
+	Missing    int    `json:"missing"`
+	Extra      int    `json:"extra"`
+	Changed    int    `json:"changed"`
+	Drifted    bool   `json:"drifted"`
 }
 
 type PolicyMapDriftSummary struct {
-	Endpoints        int
-	DriftedEndpoints int
-	MissingEntries   int
-	ExtraEntries     int
-	ChangedEntries   int
+	Endpoints        int `json:"endpoints"`
+	DriftedEndpoints int `json:"drifted_endpoints"`
+	MissingEntries   int `json:"missing_entries"`
+	ExtraEntries     int `json:"extra_entries"`
+	ChangedEntries   int `json:"changed_entries"`
 }
 
 type PolicyUpdateEvent struct {
-	EndpointID       string
-	PreviousRevision uint64
-	Revision         uint64
-	Stats            PolicyUpdateStats
-	Success          bool
-	Error            string
+	EndpointID       string            `json:"endpoint_id"`
+	PreviousRevision uint64            `json:"previous_revision"`
+	Revision         uint64            `json:"revision"`
+	Stats            PolicyUpdateStats `json:"stats"`
+	Success          bool              `json:"success"`
+	Error            string            `json:"error,omitempty"`
 }
 
 type PolicyEndpointStatus struct {
-	EndpointID      string
-	Revision        uint64
-	Entries         uint32
-	Capacity        uint32
-	PressurePercent uint32
-	Drift           PolicyMapDrift
-	LastStats       PolicyUpdateStats
-	LastEvent       PolicyUpdateEvent
-	HasLastEvent    bool
+	EndpointID      string            `json:"endpoint_id"`
+	Revision        uint64            `json:"revision"`
+	Entries         uint32            `json:"entries"`
+	Capacity        uint32            `json:"capacity"`
+	PressurePercent uint32            `json:"pressure_percent"`
+	Drift           PolicyMapDrift    `json:"drift"`
+	LastStats       PolicyUpdateStats `json:"last_stats"`
+	LastEvent       PolicyUpdateEvent `json:"last_event"`
+	HasLastEvent    bool              `json:"has_last_event"`
 }
 
 type PolicyUpdatePlan struct {

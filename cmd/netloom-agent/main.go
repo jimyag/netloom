@@ -44,6 +44,11 @@ func main() {
 				log.Fatal(err)
 			}
 			return
+		case "policy-status":
+			if err := runPolicyStatus(os.Args[2:], os.Stdout); err != nil {
+				log.Fatal(err)
+			}
+			return
 		case "route-explain":
 			if err := runRouteExplain(os.Args[2:], os.Stdout); err != nil {
 				log.Fatal(err)
@@ -83,6 +88,12 @@ type policyExplainOptions struct {
 	stateful       bool
 }
 
+type policyStatusOptions struct {
+	stateFile string
+	node      string
+	endpoint  string
+}
+
 type routeExplainOptions struct {
 	stateFile  string
 	vpc        string
@@ -91,6 +102,23 @@ type routeExplainOptions struct {
 	protocol   string
 	sourcePort uint
 	destPort   uint
+}
+
+type policyStatusOutput struct {
+	Node              string                           `json:"node"`
+	Store             string                           `json:"store"`
+	EndpointCount     int                              `json:"endpoint_count"`
+	PolicyMapEntries  uint32                           `json:"policy_map_entries"`
+	PolicyMapCapacity uint32                           `json:"policy_map_capacity"`
+	PressureMax       uint32                           `json:"pressure_max"`
+	PressureEndpoint  string                           `json:"pressure_endpoint,omitempty"`
+	PressureEndpoints int                              `json:"pressure_endpoints"`
+	DriftEndpoints    int                              `json:"drift_endpoints"`
+	DriftMissing      int                              `json:"drift_missing"`
+	DriftExtra        int                              `json:"drift_extra"`
+	DriftChanged      int                              `json:"drift_changed"`
+	PolicyRevisionMax uint64                           `json:"policy_revision_max"`
+	Statuses          []dataplane.PolicyEndpointStatus `json:"statuses"`
 }
 
 func runPolicyExplain(args []string, stdout io.Writer) error {
@@ -149,6 +177,71 @@ func runPolicyExplain(args []string, stdout io.Writer) error {
 	return encoder.Encode(explanation)
 }
 
+func runPolicyStatus(args []string, stdout io.Writer) error {
+	var opts policyStatusOptions
+	flags := flag.NewFlagSet("netloom-agent policy-status", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	flags.StringVar(&opts.stateFile, "state", os.Getenv("NETLOOM_STATE_FILE"), "desired-state JSON path")
+	flags.StringVar(&opts.node, "node", os.Getenv("NETLOOM_NODE_NAME"), "node name")
+	flags.StringVar(&opts.endpoint, "endpoint", "", "optional endpoint key or endpoint ID to include")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if opts.stateFile == "" {
+		return errors.New("missing -state or NETLOOM_STATE_FILE")
+	}
+	if strings.TrimSpace(opts.node) == "" {
+		hostname, err := os.Hostname()
+		if err != nil {
+			return err
+		}
+		opts.node = hostname
+	}
+
+	file, err := os.Open(opts.stateFile)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	state, err := control.LoadDesiredStateJSON(file)
+	if err != nil {
+		return err
+	}
+	state, err = withDNSObservations(state)
+	if err != nil {
+		return err
+	}
+	store, storeName, closeStore := policyStore()
+	defer closeStore()
+	result, err := agent.ReconcileNodeWithOptions(context.Background(), state, agent.ReconcileOptions{
+		Node:  opts.node,
+		Store: store,
+	})
+	if err != nil {
+		return err
+	}
+	statuses := filterPolicyEndpointStatuses(result.PolicyEndpointStatus, opts.endpoint, state.Endpoints)
+	output := policyStatusOutput{
+		Node:              result.Node,
+		Store:             storeName,
+		EndpointCount:     len(statuses),
+		PolicyMapEntries:  result.PolicyMapEntries,
+		PolicyMapCapacity: result.PolicyMapCapacity,
+		PressureMax:       result.PolicyMapPressureMax,
+		PressureEndpoint:  result.PolicyMapPressureEndpoint,
+		PressureEndpoints: result.PolicyMapPressureEndpoints,
+		DriftEndpoints:    result.PolicyMapDriftEndpoints,
+		DriftMissing:      result.PolicyMapDriftMissing,
+		DriftExtra:        result.PolicyMapDriftExtra,
+		DriftChanged:      result.PolicyMapDriftChanged,
+		PolicyRevisionMax: result.PolicyRevisionMax,
+		Statuses:          statuses,
+	}
+	encoder := json.NewEncoder(stdout)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(output)
+}
+
 func runRouteExplain(args []string, stdout io.Writer) error {
 	var opts routeExplainOptions
 	flags := flag.NewFlagSet("netloom-agent route-explain", flag.ContinueOnError)
@@ -182,6 +275,26 @@ func runRouteExplain(args []string, stdout io.Writer) error {
 	encoder := json.NewEncoder(stdout)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(decision)
+}
+
+func filterPolicyEndpointStatuses(statuses []dataplane.PolicyEndpointStatus, endpoint string, endpoints []model.Endpoint) []dataplane.PolicyEndpointStatus {
+	endpoint = strings.TrimSpace(endpoint)
+	if endpoint == "" {
+		return append([]dataplane.PolicyEndpointStatus(nil), statuses...)
+	}
+	keys := map[string]struct{}{endpoint: {}}
+	for _, candidate := range endpoints {
+		if candidate.ID == endpoint {
+			keys[model.EndpointKey(candidate.VPC, candidate.ID)] = struct{}{}
+		}
+	}
+	filtered := make([]dataplane.PolicyEndpointStatus, 0, len(statuses))
+	for _, status := range statuses {
+		if _, ok := keys[status.EndpointID]; ok {
+			filtered = append(filtered, status)
+		}
+	}
+	return filtered
 }
 
 func explainRouteFromState(state control.DesiredState, opts routeExplainOptions) (topology.Decision, error) {
