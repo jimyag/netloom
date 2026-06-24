@@ -103,12 +103,12 @@ For bare metal, this should become a native Netloom subsystem, not a CRD clone.
 
 ### 3. eBPF ACL datapath lacks Cilium-grade operational controls
 
-Netloom already has compile/store/evaluate/TCX attach. It also has policy-map pressure metrics, overflow rejection before programming, pinned-map drift repair that ignores counter-only changes, explicit live-vs-desired policy-map drift telemetry, attach/update rollback signals, per-endpoint usage accounting, endpoint-scoped lifecycle status with revision, drift, pressure, last stats, and last event, `netloom-agent policy-status` as a JSON CLI around that status view, and configurable non-desired endpoint policy-map aging/GC for long-running bare-metal agents. What it still lacks is the larger operational hardening layer Cilium has around policy maps.
+Netloom already has compile/store/evaluate/TCX attach. It also has policy-map pressure metrics, overflow rejection before programming, configurable fail-closed overflow remediation that clears an endpoint policy map when an oversized desired map cannot be installed, pinned-map drift repair that ignores counter-only changes, explicit live-vs-desired policy-map drift telemetry, attach/update rollback signals, per-endpoint usage accounting, endpoint-scoped lifecycle status with revision, drift, pressure, last stats, and last event, `netloom-agent policy-status` as a JSON CLI around that status view, a long-running `/policy/endpoints` HTTP API around the latest endpoint lifecycle status, and configurable non-desired endpoint policy-map aging/GC for long-running bare-metal agents. What it still lacks is the larger operational hardening layer Cilium has around policy maps.
 
 What is missing:
 
-- configurable overflow remediation beyond rejecting oversized endpoint maps
-- a long-running policy lifecycle API around the endpoint status view beyond the current CLI
+- active policy-map pressure mitigation before capacity is exhausted
+- richer per-endpoint policy lifecycle actions beyond read-only status
 
 Reference:
 

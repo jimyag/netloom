@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"os"
 	"sort"
 	"strconv"
@@ -105,20 +106,23 @@ type routeExplainOptions struct {
 }
 
 type policyStatusOutput struct {
-	Node              string                           `json:"node"`
-	Store             string                           `json:"store"`
-	EndpointCount     int                              `json:"endpoint_count"`
-	PolicyMapEntries  uint32                           `json:"policy_map_entries"`
-	PolicyMapCapacity uint32                           `json:"policy_map_capacity"`
-	PressureMax       uint32                           `json:"pressure_max"`
-	PressureEndpoint  string                           `json:"pressure_endpoint,omitempty"`
-	PressureEndpoints int                              `json:"pressure_endpoints"`
-	DriftEndpoints    int                              `json:"drift_endpoints"`
-	DriftMissing      int                              `json:"drift_missing"`
-	DriftExtra        int                              `json:"drift_extra"`
-	DriftChanged      int                              `json:"drift_changed"`
-	PolicyRevisionMax uint64                           `json:"policy_revision_max"`
-	Statuses          []dataplane.PolicyEndpointStatus `json:"statuses"`
+	Node                 string                           `json:"node"`
+	Store                string                           `json:"store"`
+	Ready                bool                             `json:"ready"`
+	LastReconcileSuccess bool                             `json:"last_reconcile_success"`
+	LastReconcileError   string                           `json:"last_reconcile_error,omitempty"`
+	EndpointCount        int                              `json:"endpoint_count"`
+	PolicyMapEntries     uint32                           `json:"policy_map_entries"`
+	PolicyMapCapacity    uint32                           `json:"policy_map_capacity"`
+	PressureMax          uint32                           `json:"pressure_max"`
+	PressureEndpoint     string                           `json:"pressure_endpoint,omitempty"`
+	PressureEndpoints    int                              `json:"pressure_endpoints"`
+	DriftEndpoints       int                              `json:"drift_endpoints"`
+	DriftMissing         int                              `json:"drift_missing"`
+	DriftExtra           int                              `json:"drift_extra"`
+	DriftChanged         int                              `json:"drift_changed"`
+	PolicyRevisionMax    uint64                           `json:"policy_revision_max"`
+	Statuses             []dataplane.PolicyEndpointStatus `json:"statuses"`
 }
 
 func runPolicyExplain(args []string, stdout io.Writer) error {
@@ -221,22 +225,7 @@ func runPolicyStatus(args []string, stdout io.Writer) error {
 		return err
 	}
 	statuses := filterPolicyEndpointStatuses(result.PolicyEndpointStatus, opts.endpoint, state.Endpoints)
-	output := policyStatusOutput{
-		Node:              result.Node,
-		Store:             storeName,
-		EndpointCount:     len(statuses),
-		PolicyMapEntries:  result.PolicyMapEntries,
-		PolicyMapCapacity: result.PolicyMapCapacity,
-		PressureMax:       result.PolicyMapPressureMax,
-		PressureEndpoint:  result.PolicyMapPressureEndpoint,
-		PressureEndpoints: result.PolicyMapPressureEndpoints,
-		DriftEndpoints:    result.PolicyMapDriftEndpoints,
-		DriftMissing:      result.PolicyMapDriftMissing,
-		DriftExtra:        result.PolicyMapDriftExtra,
-		DriftChanged:      result.PolicyMapDriftChanged,
-		PolicyRevisionMax: result.PolicyRevisionMax,
-		Statuses:          statuses,
-	}
+	output := policyStatusOutputFromResult(result, storeName, statuses)
 	encoder := json.NewEncoder(stdout)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(output)
@@ -283,6 +272,9 @@ func filterPolicyEndpointStatuses(statuses []dataplane.PolicyEndpointStatus, end
 		return append([]dataplane.PolicyEndpointStatus(nil), statuses...)
 	}
 	keys := map[string]struct{}{endpoint: {}}
+	if vpc, id, ok := strings.Cut(endpoint, "/"); ok && vpc != "" && id != "" {
+		keys[model.EndpointKey(vpc, id)] = struct{}{}
+	}
 	for _, candidate := range endpoints {
 		if candidate.ID == endpoint {
 			keys[model.EndpointKey(candidate.VPC, candidate.ID)] = struct{}{}
@@ -292,9 +284,32 @@ func filterPolicyEndpointStatuses(statuses []dataplane.PolicyEndpointStatus, end
 	for _, status := range statuses {
 		if _, ok := keys[status.EndpointID]; ok {
 			filtered = append(filtered, status)
+			continue
+		}
+		if vpc, id, ok := strings.Cut(status.EndpointID, "\x00"); ok && (id == endpoint || vpc+"/"+id == endpoint) {
+			filtered = append(filtered, status)
 		}
 	}
 	return filtered
+}
+
+func policyStatusOutputFromResult(result agent.ReconcileResult, storeName string, statuses []dataplane.PolicyEndpointStatus) policyStatusOutput {
+	return policyStatusOutput{
+		Node:              result.Node,
+		Store:             storeName,
+		EndpointCount:     len(statuses),
+		PolicyMapEntries:  result.PolicyMapEntries,
+		PolicyMapCapacity: result.PolicyMapCapacity,
+		PressureMax:       result.PolicyMapPressureMax,
+		PressureEndpoint:  result.PolicyMapPressureEndpoint,
+		PressureEndpoints: result.PolicyMapPressureEndpoints,
+		DriftEndpoints:    result.PolicyMapDriftEndpoints,
+		DriftMissing:      result.PolicyMapDriftMissing,
+		DriftExtra:        result.PolicyMapDriftExtra,
+		DriftChanged:      result.PolicyMapDriftChanged,
+		PolicyRevisionMax: result.PolicyRevisionMax,
+		Statuses:          statuses,
+	}
 }
 
 func explainRouteFromState(state control.DesiredState, opts routeExplainOptions) (topology.Decision, error) {
@@ -1005,6 +1020,8 @@ func startAgentMetricsServer(ctx context.Context, addr string, metrics *agentMet
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/metrics", metrics.handleMetrics)
+	mux.HandleFunc("/policy/endpoints", metrics.handlePolicyEndpoints)
+	mux.HandleFunc("/policy/endpoints/", metrics.handlePolicyEndpoints)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok\n"))
@@ -1026,6 +1043,44 @@ func startAgentMetricsServer(ctx context.Context, addr string, metrics *agentMet
 		defer cancel()
 		_ = server.Shutdown(shutdownCtx)
 	}, nil
+}
+
+func (m *agentMetrics) handlePolicyEndpoints(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "method not allowed"})
+		return
+	}
+	endpoint := strings.TrimSpace(r.URL.Query().Get("endpoint"))
+	if strings.HasPrefix(r.URL.Path, "/policy/endpoints/") {
+		pathEndpoint := strings.TrimPrefix(r.URL.Path, "/policy/endpoints/")
+		if decoded, err := url.PathUnescape(pathEndpoint); err == nil {
+			pathEndpoint = decoded
+		}
+		if strings.TrimSpace(pathEndpoint) != "" {
+			endpoint = strings.TrimSpace(pathEndpoint)
+		}
+	}
+	snapshot, _, ready := m.snapshotValue()
+	if !ready {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "policy endpoint status is not ready"})
+		return
+	}
+	statuses := filterPolicyEndpointStatuses(snapshot.Result.PolicyEndpointStatus, endpoint, nil)
+	if endpoint != "" && len(statuses) == 0 {
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "policy endpoint not found"})
+		return
+	}
+	output := policyStatusOutputFromResult(snapshot.Result, snapshot.Store, statuses)
+	output.Ready = true
+	output.LastReconcileSuccess = snapshot.Success
+	output.LastReconcileError = snapshot.Error
+	encoder := json.NewEncoder(w)
+	encoder.SetIndent("", "  ")
+	_ = encoder.Encode(output)
 }
 
 func (m *agentMetrics) handleMetrics(w http.ResponseWriter, _ *http.Request) {

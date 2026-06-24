@@ -761,6 +761,88 @@ func TestAgentMetricsReportsNotReadyBeforeFirstReconcile(t *testing.T) {
 	}
 }
 
+func TestPolicyEndpointAPIReportsNotReady(t *testing.T) {
+	metrics := newAgentMetrics()
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/policy/endpoints", nil)
+
+	metrics.handlePolicyEndpoints(recorder, request)
+
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", recorder.Code)
+	}
+	if !strings.Contains(recorder.Body.String(), "not ready") {
+		t.Fatalf("body missing not ready error: %s", recorder.Body.String())
+	}
+}
+
+func TestPolicyEndpointAPIReportsLifecycleStatus(t *testing.T) {
+	metrics := newAgentMetrics()
+	endpointID := model.EndpointKey("prod", "pod-a")
+	observeAgentReconcileResult(metrics, agent.ReconcileResult{
+		Node:                      "node-a",
+		PolicyMapEntries:          1,
+		PolicyMapCapacity:         16,
+		PolicyMapPressureMax:      6,
+		PolicyMapPressureEndpoint: endpointID,
+		PolicyRevisionMax:         3,
+		PolicyEndpointStatus: []dataplane.PolicyEndpointStatus{{
+			EndpointID:      endpointID,
+			Revision:        3,
+			Entries:         1,
+			Capacity:        16,
+			PressurePercent: 6,
+			LastStats:       dataplane.PolicyUpdateStats{Revision: 3, Added: 1},
+			LastEvent: dataplane.PolicyUpdateEvent{
+				EndpointID: endpointID,
+				Revision:   3,
+				Success:    true,
+			},
+			HasLastEvent: true,
+		}},
+	}, "ebpf", 25*time.Millisecond)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/policy/endpoints?endpoint=prod/pod-a", nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var got policyStatusOutput
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode policy endpoint API response: %v\n%s", err, recorder.Body.String())
+	}
+	if !got.Ready || !got.LastReconcileSuccess || got.Node != "node-a" || got.Store != "ebpf" {
+		t.Fatalf("policy endpoint API summary = %+v, want ready node-a ebpf success", got)
+	}
+	if got.EndpointCount != 1 || got.PolicyMapEntries != 1 || got.PolicyRevisionMax != 3 {
+		t.Fatalf("policy endpoint API counters = %+v, want one revision 3 endpoint", got)
+	}
+	if len(got.Statuses) != 1 || got.Statuses[0].EndpointID != endpointID || got.Statuses[0].Revision != 3 {
+		t.Fatalf("policy endpoint API statuses = %+v, want pod-a revision 3", got.Statuses)
+	}
+}
+
+func TestPolicyEndpointAPIReturnsNotFoundForUnknownEndpoint(t *testing.T) {
+	metrics := newAgentMetrics()
+	observeAgentReconcileResult(metrics, agent.ReconcileResult{
+		Node: "node-a",
+		PolicyEndpointStatus: []dataplane.PolicyEndpointStatus{{
+			EndpointID: model.EndpointKey("prod", "pod-a"),
+			Revision:   1,
+		}},
+	}, "memory", time.Millisecond)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/policy/endpoints?endpoint=prod/missing", nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestAgentMetricsExportsLatestPolicyAndTCXCounters(t *testing.T) {
 	metrics := newAgentMetrics()
 	observeAgentReconcileResult(metrics, agent.ReconcileResult{

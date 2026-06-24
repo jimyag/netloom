@@ -166,6 +166,19 @@ recovery requires the configured number of successful probes. Explicit
 fail-away behavior expected from OVN health-check state while keeping
 health-derived backend selection visible in the desired-state model.
 
+The eBPF policy store rejects oversized endpoint maps before programming by
+default. Operators can set `NETLOOM_EBPF_MAP_OVERFLOW_ACTION=clear` to use a
+fail-closed remediation path instead: when a desired endpoint policy exceeds the
+configured map capacity, the store clears that endpoint map, advances the policy
+revision, and records a remediated policy update event with the original
+overflow reason. Since the userspace evaluator and TCX policy model both drop
+traffic when no policy entry matches, this avoids preserving stale allows after
+a failed oversized update. Long-running agents expose the latest endpoint policy
+lifecycle view at `/policy/endpoints` on the existing metrics HTTP listener;
+the response includes the same revision, drift, pressure, last stats, and last
+event data as `netloom-agent policy-status`, and supports filtering with
+`?endpoint=pod-a` or `?endpoint=prod/pod-a`.
+
 The agent can also realize a minimal Linux L3 workload datapath from the same
 desired-state file. It has two modes:
 
