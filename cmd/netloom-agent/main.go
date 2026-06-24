@@ -1043,6 +1043,7 @@ func startAgentMetricsServer(ctx context.Context, addr string, metrics *agentMet
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/metrics", metrics.handleMetrics)
+	mux.HandleFunc("/policy/explain", metrics.handlePolicyExplain)
 	mux.HandleFunc("/policy/endpoints", metrics.handlePolicyEndpoints)
 	mux.HandleFunc("/policy/endpoints/", metrics.handlePolicyEndpoints)
 	mux.HandleFunc("/route/explain", metrics.handleRouteExplain)
@@ -1105,6 +1106,79 @@ func (m *agentMetrics) handlePolicyEndpoints(w http.ResponseWriter, r *http.Requ
 	encoder := json.NewEncoder(w)
 	encoder.SetIndent("", "  ")
 	_ = encoder.Encode(output)
+}
+
+func (m *agentMetrics) handlePolicyExplain(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "method not allowed"})
+		return
+	}
+	snapshot, _, ready := m.snapshotValue()
+	if !ready || !snapshot.Success {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "policy explain state is not ready"})
+		return
+	}
+	opts, err := policyExplainOptionsFromRequest(r)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	explanation, err := explainPolicyFromState(snapshot.State, opts)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	encoder := json.NewEncoder(w)
+	encoder.SetIndent("", "  ")
+	_ = encoder.Encode(explanation)
+}
+
+func policyExplainOptionsFromRequest(r *http.Request) (policyExplainOptions, error) {
+	query := r.URL.Query()
+	remoteIdentity, err := parseOptionalUintQuery(query.Get("remote-identity"), query.Get("remote_identity"))
+	if err != nil {
+		return policyExplainOptions{}, fmt.Errorf("invalid remote identity: %w", err)
+	}
+	sourcePort, err := parseOptionalUintQuery(query.Get("source-port"), query.Get("source_port"))
+	if err != nil {
+		return policyExplainOptions{}, fmt.Errorf("invalid source port: %w", err)
+	}
+	destPort, err := parseOptionalUintQuery(query.Get("dest-port"), query.Get("dest_port"))
+	if err != nil {
+		return policyExplainOptions{}, fmt.Errorf("invalid destination port: %w", err)
+	}
+	icmpType, err := parseOptionalIntQuery(query.Get("icmp-type"), query.Get("icmp_type"))
+	if err != nil {
+		return policyExplainOptions{}, fmt.Errorf("invalid icmp type: %w", err)
+	}
+	icmpCode, err := parseOptionalIntQuery(query.Get("icmp-code"), query.Get("icmp_code"))
+	if err != nil {
+		return policyExplainOptions{}, fmt.Errorf("invalid icmp code: %w", err)
+	}
+	stateful, err := parseOptionalBoolQuery(query.Get("stateful"))
+	if err != nil {
+		return policyExplainOptions{}, fmt.Errorf("invalid stateful value: %w", err)
+	}
+	return policyExplainOptions{
+		vpc:            query.Get("vpc"),
+		endpoint:       query.Get("endpoint"),
+		remoteEndpoint: firstNonEmptyQuery(query.Get("remote-endpoint"), query.Get("remote_endpoint")),
+		remoteVPC:      firstNonEmptyQuery(query.Get("remote-vpc"), query.Get("remote_vpc")),
+		remoteIdentity: remoteIdentity,
+		remoteIP:       firstNonEmptyQuery(query.Get("remote-ip"), query.Get("remote_ip")),
+		direction:      query.Get("direction"),
+		protocol:       query.Get("protocol"),
+		sourcePort:     sourcePort,
+		destPort:       destPort,
+		icmpType:       icmpType,
+		icmpCode:       icmpCode,
+		stateful:       stateful,
+	}, nil
 }
 
 func (m *agentMetrics) handleRouteExplain(w http.ResponseWriter, r *http.Request) {
@@ -1170,6 +1244,38 @@ func parseOptionalUintQuery(values ...string) (uint, error) {
 		return uint(parsed), nil
 	}
 	return 0, nil
+}
+
+func parseOptionalIntQuery(values ...string) (int, error) {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		parsed, err := strconv.Atoi(value)
+		if err != nil {
+			return 0, err
+		}
+		return parsed, nil
+	}
+	return 0, nil
+}
+
+func parseOptionalBoolQuery(value string) (bool, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false, nil
+	}
+	return strconv.ParseBool(value)
+}
+
+func firstNonEmptyQuery(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func (m *agentMetrics) handleMetrics(w http.ResponseWriter, _ *http.Request) {

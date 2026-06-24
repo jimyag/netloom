@@ -776,6 +776,90 @@ func TestPolicyEndpointAPIReportsNotReady(t *testing.T) {
 	}
 }
 
+func TestPolicyExplainAPIReportsNotReady(t *testing.T) {
+	metrics := newAgentMetrics()
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/policy/explain", nil)
+
+	metrics.handlePolicyExplain(recorder, request)
+
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", recorder.Code)
+	}
+	if !strings.Contains(recorder.Body.String(), "not ready") {
+		t.Fatalf("body missing not ready error: %s", recorder.Body.String())
+	}
+}
+
+func TestPolicyExplainAPIUsesLatestReconciledState(t *testing.T) {
+	metrics := newAgentMetrics()
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{
+			{
+				ID:             "pod-a",
+				VPC:            "prod",
+				Subnet:         "apps",
+				IP:             netip.MustParseAddr("10.10.0.10"),
+				Node:           "node-a",
+				SecurityGroups: []string{"web"},
+			},
+			{
+				ID:     "pod-b",
+				VPC:    "prod",
+				Subnet: "apps",
+				IP:     netip.MustParseAddr("10.10.0.11"),
+				Node:   "node-b",
+				Labels: model.Labels{"role": "client"},
+			},
+		},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:                     "allow-client-https",
+				Priority:               100,
+				Direction:              model.DirectionIngress,
+				Protocol:               model.ProtocolTCP,
+				RemoteEndpointSelector: model.Labels{"role": "client"},
+				Ports:                  []model.PortRange{{From: 443, To: 443}},
+				Action:                 model.ActionAllow,
+			}},
+		}},
+	}
+	observeAgentReconcileResultWithState(metrics, agent.ReconcileResult{Node: "node-a"}, "memory", time.Millisecond, state)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/policy/explain?vpc=prod&endpoint=pod-a&remote_endpoint=pod-b&direction=ingress&protocol=tcp&dest_port=443", nil)
+	metrics.handlePolicyExplain(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var explanation dataplane.PolicyExplanation
+	if err := json.Unmarshal(recorder.Body.Bytes(), &explanation); err != nil {
+		t.Fatalf("decode policy explain response: %v\n%s", err, recorder.Body.String())
+	}
+	if explanation.EndpointID != model.EndpointKey("prod", "pod-a") || explanation.Verdict != dataplane.VerdictAllow || explanation.Reason != dataplane.ExplainReasonPolicyAllow {
+		t.Fatalf("explanation = %+v, want selector allow", explanation)
+	}
+	if !explanation.Matched || explanation.RuleCookie == 0 {
+		t.Fatalf("explanation = %+v, want matched policy rule", explanation)
+	}
+}
+
+func TestPolicyExplainAPIReturnsBadRequestForInvalidPacket(t *testing.T) {
+	metrics := newAgentMetrics()
+	observeAgentReconcileResultWithState(metrics, agent.ReconcileResult{Node: "node-a"}, "memory", time.Millisecond, control.DesiredState{})
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/policy/explain?vpc=prod&endpoint=pod-a&direction=ingress&remote_identity=bad", nil)
+	metrics.handlePolicyExplain(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestRouteExplainAPIReportsNotReady(t *testing.T) {
 	metrics := newAgentMetrics()
 	recorder := httptest.NewRecorder()

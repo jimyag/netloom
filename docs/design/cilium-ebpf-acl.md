@@ -383,12 +383,13 @@ exports the latest reconcile success and duration, policy-map
 entries/capacity/pressure, policy-map drift, aggregate rule counters,
 per-endpoint or per-TCX target rule counters, cumulative policy
 add/update/delete/failure/rollback counters, a reconcile latency histogram, and
-TCX failure/rollback signals. The same listener also serves `/route/explain`,
-which evaluates packet query parameters against the latest successfully
-reconciled desired state for live topology, policy-route, NAT, LB, and gateway
-decision debugging. This keeps the log output useful for humans while giving
-operators a stable runtime surface for alerts, dashboards, and packet-path
-inspection.
+TCX failure/rollback signals. The same listener also serves `/policy/explain`
+and `/route/explain`: policy explanation evaluates endpoint, peer, protocol,
+port, ICMP, and stateful query parameters against the latest successfully
+reconciled desired state, while route explanation evaluates topology,
+policy-route, NAT, LB, and gateway decisions for packet query parameters. This
+keeps the log output useful for humans while giving operators a stable runtime
+surface for alerts, dashboards, and packet-path inspection.
 `action=reject` is preserved separately from `drop` in the policy map and
 userspace evaluator: matching packets return a `reject` verdict and generate a
 `policy-reject` drop event. The current TCX fast path still maps reject to drop
