@@ -212,6 +212,70 @@ func TestPlanProviderOVSDBMappingsDeduplicatesProviderBridgeMappings(t *testing.
 	}
 }
 
+func TestPlanCleansStaleProviderOVSDBBridgesWhenCleanupEnabled(t *testing.T) {
+	state := control.DesiredState{
+		ProviderNetworks: []model.ProviderNetwork{{
+			Name: "physnet-a",
+			Nodes: []model.ProviderNetworkNode{{
+				Node:      "node-a",
+				Interface: "eth1",
+			}},
+		}},
+		Subnets: []model.Subnet{{
+			Name:            "apps",
+			VPC:             "prod",
+			CIDR:            netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway:         netip.MustParseAddr("10.10.0.1"),
+			ProviderNetwork: "physnet-a",
+			VLAN:            100,
+		}},
+		Endpoints: []model.Endpoint{{
+			ID:     "pod-a",
+			VPC:    "prod",
+			Subnet: "apps",
+			IP:     netip.MustParseAddr("10.10.0.10"),
+			Node:   "node-a",
+		}},
+	}
+	ops, result, err := Plan(context.Background(), state, Options{
+		Node:         "node-a",
+		LocalDevice:  "nl0",
+		SyncOVSDB:    true,
+		CleanupStale: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.CleanupPlanned {
+		t.Fatal("cleanup was not marked as planned")
+	}
+	bridge := providerNetworkBridgeName("physnet-a")
+	joined := stringifyOps(ops)
+	for _, expected := range []string{
+		"external_ids:ovn-bridge-mappings=physnet-a:" + bridge,
+		"find bridge external_ids:netloom_owner=netloom",
+		"del-br \"$br\"",
+		keepSet([]string{bridge}),
+		"ip link del \"$link\"",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("provider ovsdb cleanup ops missing %q:\n%s", expected, joined)
+		}
+	}
+}
+
+func TestPlanProviderOVSDBCleanupDeduplicatesDesiredBridges(t *testing.T) {
+	bridge := providerNetworkBridgeName("physnet-a")
+	op := planProviderOVSDBCleanup([]providerNetworkLinkSpec{
+		{ProviderNetwork: "physnet-a", ParentDevice: "eth1", VLAN: 100, Name: "nlv100"},
+		{ProviderNetwork: "physnet-a", ParentDevice: "eth1", VLAN: 200, Name: "nlv200"},
+	})
+	script := strings.Join(op.Args, " ")
+	if strings.Count(script, bridge) != 1 {
+		t.Fatalf("cleanup script should keep bridge once, got %q", script)
+	}
+}
+
 func TestProviderOperStateReady(t *testing.T) {
 	tests := []struct {
 		state netlink.LinkOperState

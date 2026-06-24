@@ -278,6 +278,9 @@ func Plan(ctx context.Context, state control.DesiredState, options Options) ([]O
 		ops = append(ops, planProviderOVSDBMappings(providerSpecs)...)
 	}
 	if options.CleanupStale {
+		if options.SyncOVSDB {
+			ops = append(ops, planProviderOVSDBCleanup(providerSpecs))
+		}
 		ops = append(ops, planProviderNetworkLinkCleanup(providerSpecs))
 	}
 	if mode == "local" {
@@ -698,6 +701,21 @@ func planProviderOVSDBMappings(specs []providerNetworkLinkSpec) []Operation {
 
 func ovsVSCTLOperation(args ...string) Operation {
 	return Operation{Command: "ovs-vsctl", Args: args}
+}
+
+func planProviderOVSDBCleanup(specs []providerNetworkLinkSpec) Operation {
+	bridges := make([]string, 0, len(specs))
+	seen := make(map[string]struct{}, len(specs))
+	for _, spec := range specs {
+		bridge := providerNetworkBridgeName(spec.ProviderNetwork)
+		if _, ok := seen[bridge]; ok {
+			continue
+		}
+		seen[bridge] = struct{}{}
+		bridges = append(bridges, bridge)
+	}
+	sort.Strings(bridges)
+	return shellOperation("for br in $(ovs-vsctl --bare --columns=name find bridge external_ids:netloom_owner=netloom 2>/dev/null || true); do case '" + keepSet(bridges) + "' in *\" $br \"*) ;; *) ovs-vsctl --if-exists del-br \"$br\" ;; esac; done")
 }
 
 func planProviderNetworkLinkCleanup(specs []providerNetworkLinkSpec) Operation {

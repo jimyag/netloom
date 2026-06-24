@@ -80,6 +80,11 @@ func applyLocalNetlink(ctx context.Context, state control.DesiredState, options 
 			return result, err
 		}
 	}
+	if options.CleanupStale && options.SyncOVSDB {
+		if err := executeProviderOVSDBCleanup(ctx, options, providerSpecs); err != nil {
+			return result, err
+		}
+	}
 
 	localLink, err := root.LinkByName(options.LocalDevice)
 	if err != nil {
@@ -183,6 +188,11 @@ func applyNetNSNetlink(ctx context.Context, state control.DesiredState, options 
 	}
 	if options.SyncOVSDB {
 		if err := executeProviderOVSDBMappings(ctx, options, providerSpecs); err != nil {
+			return result, err
+		}
+	}
+	if options.CleanupStale && options.SyncOVSDB {
+		if err := executeProviderOVSDBCleanup(ctx, options, providerSpecs); err != nil {
 			return result, err
 		}
 	}
@@ -551,6 +561,17 @@ func executeProviderOVSDBMappings(ctx context.Context, options Options, specs []
 		if err := executor.Execute(ctx, op); err != nil {
 			return fmt.Errorf("sync provider OVSDB mapping: %w", err)
 		}
+	}
+	return nil
+}
+
+func executeProviderOVSDBCleanup(ctx context.Context, options Options, specs []providerNetworkLinkSpec) error {
+	executor := options.Executor
+	if executor == nil {
+		executor = CommandExecutor{}
+	}
+	if err := executor.Execute(ctx, planProviderOVSDBCleanup(specs)); err != nil {
+		return fmt.Errorf("cleanup provider OVSDB mapping: %w", err)
 	}
 	return nil
 }
