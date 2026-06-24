@@ -83,6 +83,7 @@ type stateFileReconciler struct {
 	memory        *control.MemoryBackend
 	executor      ovn.Executor
 	ovnBackend    *ovn.Backend
+	ovnCloser     func()
 	controller    *control.Controller
 	healthTracker *control.LoadBalancerHealthTracker
 	healthChecker ovnHealthChecker
@@ -90,6 +91,13 @@ type stateFileReconciler struct {
 	auditReader   ovn.ManagedOVNReader
 	auditCloser   func()
 	metrics       *controllerMetrics
+}
+
+type ovnTopologyRuntime struct {
+	backend    control.TopologyBackend
+	executor   ovn.Executor
+	ovnBackend *ovn.Backend
+	close      func()
 }
 
 type ovnHealthChecker interface {
@@ -152,35 +160,41 @@ func (t ovnHealthTracker) snapshot(status string, latency time.Duration) ovnHeal
 
 func newStateFileReconciler() (*stateFileReconciler, error) {
 	memory := control.NewMemoryBackend()
-	var executor ovn.Executor = ovn.NewRecorderExecutor()
-	if db := os.Getenv("NETLOOM_OVN_NBCTL_DB"); db != "" {
-		nbctl, err := newNBCTLExecutorFromEnv(db)
-		if err != nil {
-			return nil, err
-		}
-		executor = nbctl
-	}
-	auditReader, auditCloser, err := newOVNAuditReaderFromEnv()
+	ovnRuntime, err := newOVNTopologyRuntimeFromEnv()
 	if err != nil {
 		return nil, err
 	}
-	ovnBackend := ovn.NewBackend(executor)
+	auditReader, auditCloser, err := newOVNAuditReaderFromEnv()
+	if err != nil {
+		if ovnRuntime.close != nil {
+			ovnRuntime.close()
+		}
+		return nil, err
+	}
 	return &stateFileReconciler{
 		memory:        memory,
-		executor:      executor,
-		ovnBackend:    ovnBackend,
-		controller:    control.NewController(control.MultiTopologyBackend{memory, ovnBackend}, memory),
+		executor:      ovnRuntime.executor,
+		ovnBackend:    ovnRuntime.ovnBackend,
+		ovnCloser:     ovnRuntime.close,
+		controller:    control.NewController(control.MultiTopologyBackend{memory, ovnRuntime.backend}, memory),
 		healthTracker: control.NewLoadBalancerHealthTracker(),
-		healthChecker: executorHealthChecker(executor),
+		healthChecker: executorHealthChecker(ovnRuntime.executor),
 		auditReader:   auditReader,
 		auditCloser:   auditCloser,
 	}, nil
 }
 
 func (r *stateFileReconciler) Close() {
-	if r != nil && r.auditCloser != nil {
+	if r == nil {
+		return
+	}
+	if r.auditCloser != nil {
 		r.auditCloser()
 		r.auditCloser = nil
+	}
+	if r.ovnCloser != nil {
+		r.ovnCloser()
+		r.ovnCloser = nil
 	}
 }
 
@@ -219,10 +233,10 @@ func (r *stateFileReconciler) reconcile(ctx context.Context, path string) error 
 		return err
 	}
 
-	opsBefore := len(r.ovnBackend.Operations())
+	opsBefore := r.plannedOVNOperations()
 	executedBefore := r.executedOperations()
 	if err := r.controller.Reconcile(ctx, state); err != nil {
-		ovnOps := len(r.ovnBackend.Operations()) - opsBefore
+		ovnOps := r.plannedOVNOperations() - opsBefore
 		executed := r.executedOperations() - executedBefore
 		duration := time.Since(start)
 		printControllerReconcileFailure("apply", state, healthSummary, ovnHealth.Snapshot, ovnOps, executed, err, duration)
@@ -230,7 +244,7 @@ func (r *stateFileReconciler) reconcile(ctx context.Context, path string) error 
 		return err
 	}
 
-	ovnOps := len(r.ovnBackend.Operations()) - opsBefore
+	ovnOps := r.plannedOVNOperations() - opsBefore
 	executed := r.executedOperations() - executedBefore
 	ovnAudit, ovnAuditStatus, ovnAuditError := r.auditOVN(ctx, r.memory.TopologyState())
 	duration := time.Since(start)
@@ -850,8 +864,21 @@ func (r *stateFileReconciler) applyLoadBalancerHealthChecks(ctx context.Context,
 }
 
 func (r *stateFileReconciler) executedOperations() int {
+	if r == nil {
+		return 0
+	}
 	if recorder, ok := r.executor.(*ovn.RecorderExecutor); ok {
 		return len(recorder.Operations())
+	}
+	if r.ovnBackend == nil {
+		return 0
+	}
+	return len(r.ovnBackend.Operations())
+}
+
+func (r *stateFileReconciler) plannedOVNOperations() int {
+	if r == nil || r.ovnBackend == nil {
+		return 0
 	}
 	return len(r.ovnBackend.Operations())
 }
@@ -937,6 +964,37 @@ func executorHealthChecker(executor ovn.Executor) ovnHealthChecker {
 	return checker
 }
 
+func newOVNTopologyRuntimeFromEnv() (ovnTopologyRuntime, error) {
+	backend := strings.TrimSpace(os.Getenv("NETLOOM_OVN_TOPOLOGY_BACKEND"))
+	if backend == "" || backend == "nbctl" {
+		var executor ovn.Executor = ovn.NewRecorderExecutor()
+		if db := os.Getenv("NETLOOM_OVN_NBCTL_DB"); db != "" {
+			nbctl, err := newNBCTLExecutorFromEnv(db)
+			if err != nil {
+				return ovnTopologyRuntime{}, err
+			}
+			executor = nbctl
+		}
+		ovnBackend := ovn.NewBackend(executor)
+		return ovnTopologyRuntime{
+			backend:    ovnBackend,
+			executor:   executor,
+			ovnBackend: ovnBackend,
+		}, nil
+	}
+	if backend != "libovsdb" {
+		return ovnTopologyRuntime{}, fmt.Errorf("invalid NETLOOM_OVN_TOPOLOGY_BACKEND %q", backend)
+	}
+	client, closeFn, err := newOVNNBClientFromEnv("NETLOOM_OVN_TOPOLOGY_BACKEND=libovsdb")
+	if err != nil {
+		return ovnTopologyRuntime{}, err
+	}
+	return ovnTopologyRuntime{
+		backend: ovn.NewLibOVSDBTopologyWriter(client),
+		close:   closeFn,
+	}, nil
+}
+
 func newOVNAuditReaderFromEnv() (ovn.ManagedOVNReader, func(), error) {
 	backend := strings.TrimSpace(os.Getenv("NETLOOM_OVN_AUDIT_BACKEND"))
 	if backend == "" || backend == "nbctl" {
@@ -945,12 +1003,20 @@ func newOVNAuditReaderFromEnv() (ovn.ManagedOVNReader, func(), error) {
 	if backend != "libovsdb" {
 		return nil, nil, fmt.Errorf("invalid NETLOOM_OVN_AUDIT_BACKEND %q", backend)
 	}
+	client, closeFn, err := newOVNNBClientFromEnv("NETLOOM_OVN_AUDIT_BACKEND=libovsdb")
+	if err != nil {
+		return nil, nil, err
+	}
+	return ovn.NewLibOVSDBManagedReader(client), closeFn, nil
+}
+
+func newOVNNBClientFromEnv(owner string) (libovsdbclient.Client, func(), error) {
 	endpoint := strings.TrimSpace(os.Getenv("NETLOOM_OVN_LIBOVSDB_ENDPOINT"))
 	if endpoint == "" {
 		endpoint = strings.TrimSpace(os.Getenv("NETLOOM_OVN_NBCTL_DB"))
 	}
 	if endpoint == "" {
-		return nil, nil, fmt.Errorf("NETLOOM_OVN_AUDIT_BACKEND=libovsdb requires NETLOOM_OVN_LIBOVSDB_ENDPOINT or NETLOOM_OVN_NBCTL_DB")
+		return nil, nil, fmt.Errorf("%s requires NETLOOM_OVN_LIBOVSDB_ENDPOINT or NETLOOM_OVN_NBCTL_DB", owner)
 	}
 	dbModel, err := ovnnb.FullDatabaseModel()
 	if err != nil {
@@ -982,7 +1048,7 @@ func newOVNAuditReaderFromEnv() (ovn.ManagedOVNReader, func(), error) {
 		client.Close()
 		return nil, nil, fmt.Errorf("monitor OVN northbound libovsdb endpoint %s: %w", endpoint, err)
 	}
-	return ovn.NewLibOVSDBManagedReader(client), func() {
+	return client, func() {
 		client.Disconnect()
 		client.Close()
 	}, nil

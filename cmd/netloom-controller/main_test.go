@@ -459,9 +459,54 @@ func TestNewOVNAuditReaderRejectsInvalidBackend(t *testing.T) {
 
 func TestNewOVNAuditReaderRequiresEndpointForLibOVSDB(t *testing.T) {
 	t.Setenv("NETLOOM_OVN_AUDIT_BACKEND", "libovsdb")
+	t.Setenv("NETLOOM_OVN_LIBOVSDB_ENDPOINT", "")
+	t.Setenv("NETLOOM_OVN_NBCTL_DB", "")
 	_, _, err := newOVNAuditReaderFromEnv()
 	if err == nil {
 		t.Fatal("expected libovsdb audit backend without endpoint to fail")
+	}
+}
+
+func TestNewOVNTopologyRuntimeRejectsInvalidBackend(t *testing.T) {
+	t.Setenv("NETLOOM_OVN_TOPOLOGY_BACKEND", "shell")
+	_, err := newOVNTopologyRuntimeFromEnv()
+	if err == nil {
+		t.Fatal("expected invalid topology backend to fail")
+	}
+}
+
+func TestNewOVNTopologyRuntimeRequiresEndpointForLibOVSDB(t *testing.T) {
+	t.Setenv("NETLOOM_OVN_TOPOLOGY_BACKEND", "libovsdb")
+	t.Setenv("NETLOOM_OVN_LIBOVSDB_ENDPOINT", "")
+	t.Setenv("NETLOOM_OVN_NBCTL_DB", "")
+	_, err := newOVNTopologyRuntimeFromEnv()
+	if err == nil {
+		t.Fatal("expected libovsdb topology backend without endpoint to fail")
+	}
+}
+
+func TestStateFileReconcilerSupportsTopologyBackendWithoutOVNPlanner(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	if err := os.WriteFile(statePath, []byte(`{"vpcs":[{"name":"prod"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	memory := control.NewMemoryBackend()
+	reconciler := &stateFileReconciler{
+		memory:        memory,
+		healthTracker: control.NewLoadBalancerHealthTracker(),
+		controller:    control.NewController(memory, memory),
+		metrics:       newControllerMetrics(),
+	}
+
+	if err := reconciler.reconcile(context.Background(), statePath); err != nil {
+		t.Fatalf("reconcile with non-planner topology backend failed: %v", err)
+	}
+	snapshot, _, ready := reconciler.metrics.snapshotValue()
+	if !ready {
+		t.Fatal("expected metrics after reconcile")
+	}
+	if snapshot.OVNOps != 0 || snapshot.OVNExecuted != 0 {
+		t.Fatalf("ovn operation metrics = %d/%d, want 0/0", snapshot.OVNOps, snapshot.OVNExecuted)
 	}
 }
 
