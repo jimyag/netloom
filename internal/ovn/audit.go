@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
+
+	"github.com/jimyag/netloom/internal/topology"
 )
 
 type AuditStats struct {
@@ -18,6 +20,8 @@ type AuditStats struct {
 	ManagedDHCPOptions              int
 	DuplicateManagedRows            int
 	IncompleteManagedRows           int
+	MissingManagedRows              int
+	UnexpectedManagedRows           int
 }
 
 type ManagedOVNRow struct {
@@ -47,7 +51,13 @@ func (e *NBCTLExecutor) AuditManagedObjects(ctx context.Context) (AuditStats, er
 }
 
 func AuditManagedObjectsFromReader(ctx context.Context, reader ManagedOVNReader) (AuditStats, error) {
+	return AuditManagedObjectsFromReaderWithDesired(ctx, reader, topology.State{})
+}
+
+func AuditManagedObjectsFromReaderWithDesired(ctx context.Context, reader ManagedOVNReader, desired topology.State) (AuditStats, error) {
 	var stats AuditStats
+	expected := expectedManagedAuditIdentities(desired)
+	seen := make(map[string]struct{})
 	for _, table := range managedAuditTables() {
 		rows, err := reader.ManagedOVNRows(ctx, table.name)
 		if err != nil {
@@ -57,6 +67,20 @@ func AuditManagedObjectsFromReader(ctx context.Context, reader ManagedOVNReader)
 		table.addCount(&stats, result.rows)
 		stats.DuplicateManagedRows += result.duplicates
 		stats.IncompleteManagedRows += result.incomplete
+		for _, identity := range result.identities {
+			if _, ok := expected[identity]; ok {
+				seen[identity] = struct{}{}
+			} else if len(expected) > 0 {
+				stats.UnexpectedManagedRows++
+			}
+		}
+	}
+	if len(expected) > 0 {
+		for identity := range expected {
+			if _, ok := seen[identity]; !ok {
+				stats.MissingManagedRows++
+			}
+		}
 	}
 	return stats, nil
 }
@@ -102,6 +126,7 @@ type auditRowResult struct {
 	rows       int
 	duplicates int
 	incomplete int
+	identities []string
 }
 
 func auditManagedRows(table string, rows []ManagedOVNRow) auditRowResult {
@@ -125,8 +150,54 @@ func auditManagedRows(table string, rows []ManagedOVNRow) auditRowResult {
 			continue
 		}
 		seen[identity] = struct{}{}
+		result.identities = append(result.identities, identity)
 	}
 	return result
+}
+
+func expectedManagedAuditIdentities(desired topology.State) map[string]struct{} {
+	out := make(map[string]struct{})
+	for name := range desired.VPCs {
+		addAuditIdentity(out, "Logical_Router", "netloom_vpc", name)
+	}
+	for _, subnet := range desired.Subnets {
+		addAuditIdentity(out, "Logical_Switch", "netloom_vpc", subnet.VPC, "netloom_subnet", subnet.Name)
+		addAuditIdentity(out, "Logical_Router_Port", "netloom_subnet", subnet.Name)
+		addAuditIdentity(out, "Logical_Switch_Port", "netloom_subnet", subnet.Name, "netloom_role", "router")
+		if subnet.ProviderNetwork != "" {
+			addAuditIdentity(out, "Logical_Switch_Port", "netloom_subnet", subnet.Name, "netloom_provider_network", subnet.ProviderNetwork)
+		}
+	}
+	for _, endpoint := range desired.Endpoints {
+		addAuditIdentity(out, "Logical_Switch_Port", "netloom_vpc", endpoint.VPC, "netloom_endpoint", endpointExternalID(endpoint.VPC, endpoint.ID))
+		if subnet, ok := desired.Subnets[subnetStateKey(endpoint.VPC, endpoint.Subnet)]; ok && subnet.DHCP.Enabled {
+			addAuditIdentity(out, "DHCP_Options", "netloom_vpc", endpoint.VPC, "netloom_endpoint", endpointExternalID(endpoint.VPC, endpoint.ID))
+		}
+	}
+	for _, route := range desired.PolicyRoutes {
+		addAuditIdentity(out, "Logical_Router_Policy", "netloom_vpc", route.VPC, "netloom_policy_route", route.Name)
+	}
+	for _, rule := range desired.NATRules {
+		addAuditIdentity(out, "NAT", "netloom_vpc", rule.VPC, "netloom_nat", rule.Name)
+	}
+	for _, lb := range desired.LoadBalancers {
+		addAuditIdentity(out, "Load_Balancer", "netloom_vpc", lb.VPC, "netloom_load_balancer", lb.Name)
+	}
+	return out
+}
+
+func addAuditIdentity(out map[string]struct{}, table string, keyValues ...string) {
+	if len(keyValues)%2 != 0 {
+		return
+	}
+	externalIDs := make(map[string]string, len(keyValues)/2)
+	for i := 0; i < len(keyValues); i += 2 {
+		externalIDs[keyValues[i]] = keyValues[i+1]
+	}
+	identity, complete := managedAuditIdentity(table, "", externalIDs)
+	if complete && identity != "" {
+		out[identity] = struct{}{}
+	}
 }
 
 func parseManagedOVNRows(table string, rows []string) []ManagedOVNRow {

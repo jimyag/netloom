@@ -6,6 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/jimyag/netloom/internal/model"
+	"github.com/jimyag/netloom/internal/topology"
 )
 
 func TestNBCTLExecutorAuditManagedObjectsCountsLiveRows(t *testing.T) {
@@ -107,6 +110,35 @@ func TestAuditManagedObjectsFromReaderUsesTypedRows(t *testing.T) {
 	}
 	if stats.DuplicateManagedRows != 1 || stats.IncompleteManagedRows != 1 {
 		t.Fatalf("stats = %+v, want duplicate policy and incomplete load balancer", stats)
+	}
+}
+
+func TestAuditManagedObjectsFromReaderReportsDesiredDrift(t *testing.T) {
+	reader := fakeManagedOVNReader{rows: map[string][]ManagedOVNRow{
+		"Logical_Switch": {
+			{Table: "Logical_Switch", UUID: "ls-apps", ExternalIDs: map[string]string{"netloom_owner": "netloom", "netloom_vpc": "prod", "netloom_subnet": "apps"}},
+			{Table: "Logical_Switch", UUID: "ls-old", ExternalIDs: map[string]string{"netloom_owner": "netloom", "netloom_vpc": "prod", "netloom_subnet": "old"}},
+		},
+		"Logical_Router": {
+			{Table: "Logical_Router", UUID: "lr-prod", ExternalIDs: map[string]string{"netloom_owner": "netloom", "netloom_vpc": "prod"}},
+		},
+	}}
+	desired := topology.State{
+		VPCs: map[string]model.VPC{"prod": {Name: "prod"}},
+		Subnets: map[string]model.Subnet{
+			"prod/apps": {Name: "apps", VPC: "prod"},
+		},
+	}
+
+	stats, err := AuditManagedObjectsFromReaderWithDesired(context.Background(), reader, desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.UnexpectedManagedRows != 1 {
+		t.Fatalf("unexpected managed rows = %d, want stale logical switch", stats.UnexpectedManagedRows)
+	}
+	if stats.MissingManagedRows != 2 {
+		t.Fatalf("missing managed rows = %d, want router and switch ports for subnet", stats.MissingManagedRows)
 	}
 }
 

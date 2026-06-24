@@ -18,6 +18,7 @@ import (
 	"github.com/jimyag/netloom/internal/control"
 	"github.com/jimyag/netloom/internal/model"
 	"github.com/jimyag/netloom/internal/ovn"
+	"github.com/jimyag/netloom/internal/topology"
 )
 
 func TestReconcileIntervalParsesMilliseconds(t *testing.T) {
@@ -319,6 +320,8 @@ func TestControllerMetricsExportsLatestSuccess(t *testing.T) {
 			ManagedDHCPOptions:              1,
 			DuplicateManagedRows:            1,
 			IncompleteManagedRows:           2,
+			MissingManagedRows:              3,
+			UnexpectedManagedRows:           4,
 		},
 		Duration: 125 * time.Millisecond,
 		Success:  true,
@@ -363,6 +366,8 @@ func TestControllerMetricsExportsLatestSuccess(t *testing.T) {
 		`netloom_controller_ovn_live_load_balancer_health_checks{ovn_audit="ok",ovn_health="ok"} 1`,
 		`netloom_controller_ovn_live_duplicate_managed_rows{ovn_audit="ok",ovn_health="ok"} 1`,
 		`netloom_controller_ovn_live_incomplete_managed_rows{ovn_audit="ok",ovn_health="ok"} 2`,
+		`netloom_controller_ovn_live_missing_managed_rows{ovn_audit="ok",ovn_health="ok"} 3`,
+		`netloom_controller_ovn_live_unexpected_managed_rows{ovn_audit="ok",ovn_health="ok"} 4`,
 		`netloom_controller_ovn_audit_checks_total{ovn_audit="ok",ovn_health="ok"} 1`,
 		`netloom_controller_ovn_audit_failures_total{ovn_audit="ok",ovn_health="ok"} 0`,
 	} {
@@ -413,16 +418,30 @@ func TestAuditOVNUsesManagedReaderWhenConfigured(t *testing.T) {
 						"netloom_subnet": "apps",
 					},
 				},
+				{
+					Table: "Logical_Switch",
+					UUID:  "ls-stale",
+					ExternalIDs: map[string]string{
+						"netloom_owner":  "netloom",
+						"netloom_vpc":    "prod",
+						"netloom_subnet": "old",
+					},
+				},
 			},
 		}},
 	}
 
-	stats, status, message := reconciler.auditOVN(context.Background())
+	stats, status, message := reconciler.auditOVN(context.Background(), topology.State{
+		VPCs: map[string]model.VPC{"prod": {Name: "prod"}},
+		Subnets: map[string]model.Subnet{
+			"prod/apps": {Name: "apps", VPC: "prod"},
+		},
+	})
 	if status != "ok" || message != "" {
 		t.Fatalf("audit status/message = %q/%q, want ok", status, message)
 	}
-	if stats.ManagedLogicalSwitches != 1 || stats.TotalManagedObjects() != 1 {
-		t.Fatalf("audit stats = %+v, want one logical switch from managed reader", stats)
+	if stats.ManagedLogicalSwitches != 2 || stats.UnexpectedManagedRows != 1 || stats.MissingManagedRows != 3 {
+		t.Fatalf("audit stats = %+v, want live row drift from managed reader", stats)
 	}
 }
 
