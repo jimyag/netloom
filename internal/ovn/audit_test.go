@@ -53,11 +53,11 @@ esac
 }
 
 func TestAuditManagedRowsCountsDuplicatesAndIncompleteRows(t *testing.T) {
-	rows := []string{
-		`uuid-a,{netloom_owner=netloom,netloom_vpc=prod,netloom_nat=egress}`,
-		`uuid-b,{netloom_owner=netloom,netloom_vpc=prod,netloom_nat=egress}`,
-		`uuid-c,{netloom_owner=netloom,netloom_vpc=prod}`,
-		`malformed`,
+	rows := []ManagedOVNRow{
+		{Table: "NAT", UUID: "uuid-a", ExternalIDs: map[string]string{"netloom_owner": "netloom", "netloom_vpc": "prod", "netloom_nat": "egress"}},
+		{Table: "NAT", UUID: "uuid-b", ExternalIDs: map[string]string{"netloom_owner": "netloom", "netloom_vpc": "prod", "netloom_nat": "egress"}},
+		{Table: "NAT", UUID: "uuid-c", ExternalIDs: map[string]string{"netloom_owner": "netloom", "netloom_vpc": "prod"}},
+		{Table: "NAT"},
 	}
 
 	result := auditManagedRows("NAT", rows)
@@ -73,14 +73,40 @@ func TestAuditManagedRowsCountsDuplicatesAndIncompleteRows(t *testing.T) {
 }
 
 func TestAuditLogicalSwitchPortIdentityAcceptsRouterAndLocalnetPorts(t *testing.T) {
-	rows := []string{
-		`uuid-router,{netloom_owner=netloom,netloom_subnet=apps,netloom_role=router}`,
-		`uuid-localnet,{netloom_owner=netloom,netloom_subnet=apps,netloom_provider_network=physnet-a}`,
+	rows := []ManagedOVNRow{
+		{Table: "Logical_Switch_Port", UUID: "uuid-router", ExternalIDs: map[string]string{"netloom_owner": "netloom", "netloom_subnet": "apps", "netloom_role": "router"}},
+		{Table: "Logical_Switch_Port", UUID: "uuid-localnet", ExternalIDs: map[string]string{"netloom_owner": "netloom", "netloom_subnet": "apps", "netloom_provider_network": "physnet-a"}},
 	}
 
 	result := auditManagedRows("Logical_Switch_Port", rows)
 	if result.rows != 2 || result.incomplete != 0 || result.duplicates != 0 {
 		t.Fatalf("logical switch port audit = %+v, want two complete unique managed ports", result)
+	}
+}
+
+func TestAuditManagedObjectsFromReaderUsesTypedRows(t *testing.T) {
+	reader := fakeManagedOVNReader{rows: map[string][]ManagedOVNRow{
+		"Logical_Switch": {
+			{Table: "Logical_Switch", UUID: "ls-a", ExternalIDs: map[string]string{"netloom_owner": "netloom", "netloom_vpc": "prod", "netloom_subnet": "apps"}},
+		},
+		"Logical_Router_Policy": {
+			{Table: "Logical_Router_Policy", UUID: "policy-a", ExternalIDs: map[string]string{"netloom_owner": "netloom", "netloom_vpc": "prod", "netloom_policy_route": "via-fw"}},
+			{Table: "Logical_Router_Policy", UUID: "policy-b", ExternalIDs: map[string]string{"netloom_owner": "netloom", "netloom_vpc": "prod", "netloom_policy_route": "via-fw"}},
+		},
+		"Load_Balancer": {
+			{Table: "Load_Balancer", UUID: "lb-a", ExternalIDs: map[string]string{"netloom_owner": "netloom", "netloom_vpc": "prod"}},
+		},
+	}}
+
+	stats, err := AuditManagedObjectsFromReader(context.Background(), reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.ManagedLogicalSwitches != 1 || stats.ManagedLogicalRouterPolicies != 2 || stats.ManagedLoadBalancers != 1 {
+		t.Fatalf("stats = %+v, want typed reader counts", stats)
+	}
+	if stats.DuplicateManagedRows != 1 || stats.IncompleteManagedRows != 1 {
+		t.Fatalf("stats = %+v, want duplicate policy and incomplete load balancer", stats)
 	}
 }
 
@@ -100,4 +126,12 @@ func TestAuditStatsTotalManagedObjects(t *testing.T) {
 	if got := stats.TotalManagedObjects(); got != 17 {
 		t.Fatalf("total managed objects = %d, want 17", got)
 	}
+}
+
+type fakeManagedOVNReader struct {
+	rows map[string][]ManagedOVNRow
+}
+
+func (r fakeManagedOVNReader) ManagedOVNRows(_ context.Context, table string) ([]ManagedOVNRow, error) {
+	return append([]ManagedOVNRow(nil), r.rows[table]...), nil
 }

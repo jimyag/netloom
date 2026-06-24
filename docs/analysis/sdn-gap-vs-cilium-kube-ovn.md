@@ -65,7 +65,8 @@ These are the highest-signal gaps I see now.
 ### 1. Replace `ovn-nbctl` orchestration with a typed OVSDB client layer
 
 Netloom still drives OVN primarily through command planning and `ovn-nbctl` execution in
-[internal/ovn](/home/jimyag/src/github/jimyag/netloom/internal/ovn).
+[internal/ovn](/home/jimyag/src/github/jimyag/netloom/internal/ovn). It now has a typed managed-row audit seam:
+`ManagedOVNReader` returns `ManagedOVNRow` objects for live state accounting, and the current `ovn-nbctl` audit path adapts command output into that typed reader interface. This gives the controller audit code a stable boundary for a later `libovsdb` monitor/cache reader, but it is not yet a full typed OVN client.
 
 What is missing:
 
@@ -126,7 +127,7 @@ Netloom has drop/trace style events, policy-rule packet/byte counters in the eva
 
 What is missing:
 
-- typed OVSDB monitor/cache to replace the current `ovn-nbctl find` live audit path and expose field-level drift
+- typed OVSDB monitor/cache to replace the current `ovn-nbctl find` live audit adapter and expose field-level drift
 - API surface for policy and route explanations backed by live state
 
 This is product work, not just test work.

@@ -20,6 +20,16 @@ type AuditStats struct {
 	IncompleteManagedRows           int
 }
 
+type ManagedOVNRow struct {
+	Table       string
+	UUID        string
+	ExternalIDs map[string]string
+}
+
+type ManagedOVNReader interface {
+	ManagedOVNRows(context.Context, string) ([]ManagedOVNRow, error)
+}
+
 func (s AuditStats) TotalManagedObjects() int {
 	return s.ManagedLogicalSwitches +
 		s.ManagedLogicalRouters +
@@ -33,9 +43,13 @@ func (s AuditStats) TotalManagedObjects() int {
 }
 
 func (e *NBCTLExecutor) AuditManagedObjects(ctx context.Context) (AuditStats, error) {
+	return AuditManagedObjectsFromReader(ctx, e)
+}
+
+func AuditManagedObjectsFromReader(ctx context.Context, reader ManagedOVNReader) (AuditStats, error) {
 	var stats AuditStats
 	for _, table := range managedAuditTables() {
-		rows, err := e.managedAuditRows(ctx, table.name)
+		rows, err := reader.ManagedOVNRows(ctx, table.name)
 		if err != nil {
 			return AuditStats{}, err
 		}
@@ -66,7 +80,7 @@ func managedAuditTables() []managedAuditTable {
 	}
 }
 
-func (e *NBCTLExecutor) managedAuditRows(ctx context.Context, table string) ([]string, error) {
+func (e *NBCTLExecutor) ManagedOVNRows(ctx context.Context, table string) ([]ManagedOVNRow, error) {
 	args := append([]string(nil), e.BaseArgs...)
 	args = append(args,
 		"--format=csv",
@@ -81,7 +95,7 @@ func (e *NBCTLExecutor) managedAuditRows(ctx context.Context, table string) ([]s
 	if err != nil {
 		return nil, fmt.Errorf("audit managed %s: %w", table, err)
 	}
-	return splitAuditRows(string(output)), nil
+	return parseManagedOVNRows(table, splitAuditRows(string(output))), nil
 }
 
 type auditRowResult struct {
@@ -90,16 +104,15 @@ type auditRowResult struct {
 	incomplete int
 }
 
-func auditManagedRows(table string, rows []string) auditRowResult {
+func auditManagedRows(table string, rows []ManagedOVNRow) auditRowResult {
 	result := auditRowResult{rows: len(rows)}
 	seen := make(map[string]struct{}, len(rows))
 	for _, row := range rows {
-		uuid, externalIDs, ok := parseExternalIDsCSVRow(row)
-		if !ok {
+		if row.UUID == "" || row.ExternalIDs == nil {
 			result.incomplete++
 			continue
 		}
-		identity, complete := managedAuditIdentity(table, uuid, externalIDs)
+		identity, complete := managedAuditIdentity(table, row.UUID, row.ExternalIDs)
 		if !complete {
 			result.incomplete++
 			continue
@@ -114,6 +127,23 @@ func auditManagedRows(table string, rows []string) auditRowResult {
 		seen[identity] = struct{}{}
 	}
 	return result
+}
+
+func parseManagedOVNRows(table string, rows []string) []ManagedOVNRow {
+	out := make([]ManagedOVNRow, 0, len(rows))
+	for _, row := range rows {
+		uuid, externalIDs, ok := parseExternalIDsCSVRow(row)
+		if !ok {
+			out = append(out, ManagedOVNRow{Table: table})
+			continue
+		}
+		out = append(out, ManagedOVNRow{
+			Table:       table,
+			UUID:        uuid,
+			ExternalIDs: externalIDs,
+		})
+	}
+	return out
 }
 
 func managedAuditIdentity(table, uuid string, externalIDs map[string]string) (string, bool) {
