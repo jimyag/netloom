@@ -371,6 +371,123 @@ func (w *LibOVSDBTopologyWriter) EnsurePolicyRoute(ctx context.Context, route mo
 	return nil
 }
 
+func (w *LibOVSDBTopologyWriter) EnsureGateway(ctx context.Context, gateway model.Gateway) error {
+	if w == nil || w.client == nil {
+		return fmt.Errorf("libovsdb topology writer has no client")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	router, ok, err := w.logicalRouterByName(ctx, logicalRouter(gateway.VPC))
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("logical router %s must exist before gateway %s", logicalRouter(gateway.VPC), gateway.Name)
+	}
+	nextExternalIDs := mergeStringMap(router.ExternalIDs, gatewayExternalIDs(gateway))
+	nextOptions := gatewayRouterOptions(router.Options, gateway)
+	if reflect.DeepEqual(router.ExternalIDs, nextExternalIDs) && reflect.DeepEqual(router.Options, nextOptions) {
+		return nil
+	}
+	router.ExternalIDs = nextExternalIDs
+	router.Options = nextOptions
+	ops, err := w.client.Where(router).Update(router, &router.ExternalIDs, &router.Options)
+	if err != nil {
+		return fmt.Errorf("update gateway router %s: %w", router.Name, err)
+	}
+	results, err := w.client.Transact(ctx, ops...)
+	if err != nil {
+		return fmt.Errorf("transact gateway %s/%s: %w", gateway.VPC, gateway.Name, err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, ops); err != nil {
+		return fmt.Errorf("gateway %s/%s operation errors=%+v: %w", gateway.VPC, gateway.Name, opErrors, err)
+	}
+	return nil
+}
+
+func (w *LibOVSDBTopologyWriter) EnsureNATRule(ctx context.Context, rule model.NATRule) error {
+	if w == nil || w.client == nil {
+		return fmt.Errorf("libovsdb topology writer has no client")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	router, ok, err := w.logicalRouterByName(ctx, logicalRouter(rule.VPC))
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("logical router %s must exist before NAT rule %s", logicalRouter(rule.VPC), rule.Name)
+	}
+	existing, err := w.natRulesByName(ctx, rule.VPC, rule.Name)
+	if err != nil {
+		return err
+	}
+	desired := desiredNATRuleRow(rule)
+	var ops []ovsdb.Operation
+	if len(existing) == 0 {
+		desired.UUID = ovsdbNamedUUID("nl_nat_" + rule.VPC + "_" + rule.Name)
+		createOps, err := w.client.Create(&desired)
+		if err != nil {
+			return fmt.Errorf("create NAT rule %s/%s: %w", rule.VPC, rule.Name, err)
+		}
+		ops = append(ops, createOps...)
+		attachOps, err := w.attachNATRule(router, desired.UUID)
+		if err != nil {
+			return err
+		}
+		ops = append(ops, attachOps...)
+	} else {
+		keepIndex := preferredReferencedRow(router.Nat, existing, func(row ovnnb.NAT) string { return row.UUID })
+		keep := existing[keepIndex]
+		nextExternalIDs := mergeStringMap(keep.ExternalIDs, desired.ExternalIDs)
+		if !containsString(router.Nat, keep.UUID) {
+			attachOps, err := w.attachNATRule(router, keep.UUID)
+			if err != nil {
+				return err
+			}
+			ops = append(ops, attachOps...)
+		}
+		if natRowChanged(keep, desired, nextExternalIDs) {
+			keep.Type = desired.Type
+			keep.ExternalIP = desired.ExternalIP
+			keep.LogicalIP = desired.LogicalIP
+			keep.ExternalPortRange = desired.ExternalPortRange
+			keep.Options = desired.Options
+			keep.LogicalPort = desired.LogicalPort
+			keep.ExternalMAC = desired.ExternalMAC
+			keep.ExternalIDs = nextExternalIDs
+			updateOps, err := w.client.Where(&keep).Update(&keep, &keep.Type, &keep.ExternalIP, &keep.LogicalIP, &keep.ExternalPortRange, &keep.Options, &keep.LogicalPort, &keep.ExternalMAC, &keep.ExternalIDs)
+			if err != nil {
+				return fmt.Errorf("update NAT rule %s/%s: %w", rule.VPC, rule.Name, err)
+			}
+			ops = append(ops, updateOps...)
+		}
+		for i := range existing {
+			if i == keepIndex {
+				continue
+			}
+			deleteOps, err := w.deleteNATRule(router.UUID, &existing[i])
+			if err != nil {
+				return err
+			}
+			ops = append(ops, deleteOps...)
+		}
+	}
+	if len(ops) == 0 {
+		return nil
+	}
+	results, err := w.client.Transact(ctx, ops...)
+	if err != nil {
+		return fmt.Errorf("transact NAT rule %s/%s: %w", rule.VPC, rule.Name, err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, ops); err != nil {
+		return fmt.Errorf("NAT rule %s/%s operation errors=%+v: %w", rule.VPC, rule.Name, opErrors, err)
+	}
+	return nil
+}
+
 func (w *LibOVSDBTopologyWriter) subnetPortOperations(ctx context.Context, router *ovnnb.LogicalRouter, logicalSwitch *ovnnb.LogicalSwitch, existingSwitch *ovnnb.LogicalSwitch, subnet model.Subnet) ([]ovsdb.Operation, error) {
 	switchUUID := logicalSwitch.UUID
 	switchPorts := logicalSwitch.Ports
@@ -674,6 +791,31 @@ func (w *LibOVSDBTopologyWriter) deletePolicyRoute(routerUUID string, policy *ov
 	return append(mutateOps, deleteOps...), nil
 }
 
+func (w *LibOVSDBTopologyWriter) attachNATRule(router *ovnnb.LogicalRouter, natUUID string) ([]ovsdb.Operation, error) {
+	return w.client.Where(router).Mutate(router, ovsmodel.Mutation{
+		Field:   &router.Nat,
+		Mutator: ovsdb.MutateOperationInsert,
+		Value:   []string{natUUID},
+	})
+}
+
+func (w *LibOVSDBTopologyWriter) deleteNATRule(routerUUID string, nat *ovnnb.NAT) ([]ovsdb.Operation, error) {
+	router := &ovnnb.LogicalRouter{UUID: routerUUID}
+	mutateOps, err := w.client.Where(router).Mutate(router, ovsmodel.Mutation{
+		Field:   &router.Nat,
+		Mutator: ovsdb.MutateOperationDelete,
+		Value:   []string{nat.UUID},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("detach NAT rule %s from router %s: %w", nat.UUID, routerUUID, err)
+	}
+	deleteOps, err := w.client.Where(nat).Delete()
+	if err != nil {
+		return nil, fmt.Errorf("delete NAT rule %s: %w", nat.UUID, err)
+	}
+	return append(mutateOps, deleteOps...), nil
+}
+
 func (w *LibOVSDBTopologyWriter) endpointDHCPOptionsOperations(ctx context.Context, endpoint model.Endpoint, switchExternalIDs map[string]string, port *ovnnb.LogicalSwitchPort) ([]ovsdb.Operation, error) {
 	var ops []ovsdb.Operation
 	for _, family := range []int{4, 6} {
@@ -905,6 +1047,19 @@ func (w *LibOVSDBTopologyWriter) policyRoutesByName(ctx context.Context, vpc, na
 	return rows, nil
 }
 
+func (w *LibOVSDBTopologyWriter) natRulesByName(ctx context.Context, vpc, name string) ([]ovnnb.NAT, error) {
+	var rows []ovnnb.NAT
+	if err := w.client.WhereCache(func(row *ovnnb.NAT) bool {
+		return row.ExternalIDs["netloom_owner"] == "netloom" &&
+			row.ExternalIDs["netloom_vpc"] == vpc &&
+			row.ExternalIDs["netloom_nat"] == name
+	}).List(ctx, &rows); err != nil {
+		return nil, fmt.Errorf("list NAT rules %s/%s from libovsdb cache: %w", vpc, name, err)
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].UUID < rows[j].UUID })
+	return rows, nil
+}
+
 func mergeStringMap(base map[string]string, overlay map[string]string) map[string]string {
 	out := make(map[string]string, len(base)+len(overlay))
 	for key, value := range base {
@@ -1018,6 +1173,107 @@ func ovnPolicyRouteAction(action model.Action) ovnnb.LogicalRouterPolicyAction {
 	default:
 		return ovnnb.LogicalRouterPolicyActionDrop
 	}
+}
+
+func gatewayExternalIDs(gateway model.Gateway) map[string]string {
+	out := map[string]string{
+		"netloom_owner":               "netloom",
+		"netloom_gateway":             gateway.Name,
+		"netloom_gateway_lan_ip":      gateway.LANIP.String(),
+		"netloom_gateway_distributed": fmt.Sprintf("%t", gateway.Distributed),
+	}
+	if gateway.ExternalIF != "" {
+		out["netloom_external_if"] = gateway.ExternalIF
+	}
+	return out
+}
+
+func gatewayRouterOptions(base map[string]string, gateway model.Gateway) map[string]string {
+	out := cloneStringMap(base)
+	if out == nil {
+		out = make(map[string]string)
+	}
+	if gateway.Distributed {
+		delete(out, "chassis")
+		return out
+	}
+	out["chassis"] = gateway.Node
+	return out
+}
+
+func desiredNATRuleRow(rule model.NATRule) ovnnb.NAT {
+	row := ovnnb.NAT{
+		Type:       ovnNATType(rule.Type),
+		ExternalIP: rule.ExternalIP.String(),
+		LogicalIP:  natLogicalIP(rule),
+		ExternalIDs: map[string]string{
+			"netloom_owner": "netloom",
+			"netloom_nat":   rule.Name,
+			"netloom_vpc":   rule.VPC,
+		},
+	}
+	if rule.ExternalPort != 0 {
+		row.ExternalPortRange = fmt.Sprint(rule.ExternalPort)
+		row.ExternalIDs["netloom_external_port"] = fmt.Sprint(rule.ExternalPort)
+	}
+	if rule.TargetPort != 0 {
+		row.Options = map[string]string{"netloom_logical_port_range": fmt.Sprint(rule.TargetPort)}
+		row.ExternalIDs["netloom_target_port"] = fmt.Sprint(rule.TargetPort)
+	}
+	if rule.Protocol != "" && rule.Protocol != model.ProtocolAny {
+		if row.Options == nil {
+			row.Options = make(map[string]string)
+		}
+		row.Options["netloom_protocol"] = string(rule.Protocol)
+		row.ExternalIDs["netloom_protocol"] = string(rule.Protocol)
+	}
+	if rule.LogicalPort != "" {
+		row.LogicalPort = &rule.LogicalPort
+	}
+	if rule.ExternalMAC != "" {
+		row.ExternalMAC = &rule.ExternalMAC
+	}
+	return row
+}
+
+func natLogicalIP(rule model.NATRule) string {
+	if rule.Type == model.ActionSNAT {
+		return rule.MatchCIDR.String()
+	}
+	return rule.TargetIP.String()
+}
+
+func ovnNATType(action model.Action) ovnnb.NATType {
+	switch action {
+	case model.ActionSNAT:
+		return ovnnb.NATTypeSNAT
+	case model.ActionDNAT:
+		return ovnnb.NATTypeDNAT
+	case model.ActionDNATSNAT:
+		return ovnnb.NATTypeDNATAndSNAT
+	default:
+		return ovnnb.NATType(action)
+	}
+}
+
+func natRowChanged(current, desired ovnnb.NAT, nextExternalIDs map[string]string) bool {
+	return current.Type != desired.Type ||
+		current.ExternalIP != desired.ExternalIP ||
+		current.LogicalIP != desired.LogicalIP ||
+		current.ExternalPortRange != desired.ExternalPortRange ||
+		!reflect.DeepEqual(current.Options, desired.Options) ||
+		!stringPointerValueEqual(current.LogicalPort, pointerStringValue(desired.LogicalPort)) ||
+		!stringPointerValueEqual(current.ExternalMAC, pointerStringValue(desired.ExternalMAC)) ||
+		!reflect.DeepEqual(current.ExternalIDs, nextExternalIDs)
+}
+
+func preferredReferencedRow[T any](refs []string, rows []T, uuid func(T) string) int {
+	for i, row := range rows {
+		if containsString(refs, uuid(row)) {
+			return i
+		}
+	}
+	return 0
 }
 
 func logicalSwitchOtherConfig(subnet model.Subnet) map[string]string {
