@@ -996,6 +996,76 @@ func TestPolicyEndpointAPIReturnsNotFoundForUnknownEndpoint(t *testing.T) {
 	}
 }
 
+func TestPolicyEndpointAPIDeletesEndpointPolicyMap(t *testing.T) {
+	store := dataplane.NewInMemoryPolicyStore()
+	endpointID := model.EndpointKey("prod", "pod-a")
+	if err := store.ReplaceEndpoint(context.Background(), endpointID, []dataplane.PolicyMapEntry{{
+		Key: dataplane.PolicyKey{
+			PrefixLen:      dataplane.StaticPrefixBits,
+			Direction:      dataplane.DirectionIngress,
+			Protocol:       6,
+			RemoteIdentity: 42,
+		},
+		Value: dataplane.PolicyEntry{},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	metrics := newAgentMetrics(store)
+	observeAgentReconcileResult(metrics, agent.ReconcileResult{
+		Node: "node-a",
+		PolicyEndpointStatus: []dataplane.PolicyEndpointStatus{{
+			EndpointID: endpointID,
+			Revision:   1,
+			Entries:    1,
+		}},
+	}, "memory", time.Millisecond)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodDelete, "/policy/endpoints/prod/pod-a", nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var got policyEndpointActionOutput
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode policy endpoint action response: %v\n%s", err, recorder.Body.String())
+	}
+	if !got.Deleted || got.Action != "delete" || got.EndpointID != endpointID {
+		t.Fatalf("delete response = %+v, want endpoint delete", got)
+	}
+	statuses, err := store.PolicyEndpointStatuses(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(statuses) != 0 {
+		t.Fatalf("store statuses = %+v, want endpoint removed", statuses)
+	}
+	snapshot, _, ready := metrics.snapshotValue()
+	if !ready || len(snapshot.Result.PolicyEndpointStatus) != 0 {
+		t.Fatalf("snapshot statuses = %+v, want endpoint removed", snapshot.Result.PolicyEndpointStatus)
+	}
+}
+
+func TestPolicyEndpointAPIDeleteRequiresActionStore(t *testing.T) {
+	metrics := newAgentMetrics()
+	observeAgentReconcileResult(metrics, agent.ReconcileResult{
+		Node: "node-a",
+		PolicyEndpointStatus: []dataplane.PolicyEndpointStatus{{
+			EndpointID: model.EndpointKey("prod", "pod-a"),
+			Revision:   1,
+		}},
+	}, "memory", time.Millisecond)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodDelete, "/policy/endpoints/prod/pod-a", nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503; body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestAgentMetricsExportsLatestPolicyAndTCXCounters(t *testing.T) {
 	metrics := newAgentMetrics()
 	observeAgentReconcileResult(metrics, agent.ReconcileResult{

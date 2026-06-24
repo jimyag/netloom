@@ -125,6 +125,12 @@ type policyStatusOutput struct {
 	Statuses             []dataplane.PolicyEndpointStatus `json:"statuses"`
 }
 
+type policyEndpointActionOutput struct {
+	EndpointID string `json:"endpoint_id"`
+	Action     string `json:"action"`
+	Deleted    bool   `json:"deleted"`
+}
+
 func runPolicyExplain(args []string, stdout io.Writer) error {
 	var opts policyExplainOptions
 	flags := flag.NewFlagSet("netloom-agent policy-explain", flag.ContinueOnError)
@@ -641,7 +647,7 @@ func runStateFile(ctx context.Context, path string) error {
 	defer func() {
 		_ = reconciler.Close()
 	}()
-	metrics := newAgentMetrics()
+	metrics := newAgentMetrics(store)
 	if closeMetrics, err := startAgentMetricsServer(ctx, os.Getenv("NETLOOM_AGENT_METRICS_ADDR"), metrics); err != nil {
 		return err
 	} else {
@@ -889,6 +895,7 @@ type agentMetrics struct {
 	snapshot agentMetricsSnapshot
 	totals   agentMetricsTotals
 	ready    bool
+	store    agent.PolicyStore
 }
 
 type agentMetricsSnapshot struct {
@@ -937,8 +944,15 @@ var agentReconcileDurationBuckets = []time.Duration{
 	30 * time.Second,
 }
 
-func newAgentMetrics() *agentMetrics {
-	return &agentMetrics{totals: agentMetricsTotals{DurationBuckets: make([]uint64, len(agentReconcileDurationBuckets))}}
+func newAgentMetrics(store ...agent.PolicyStore) *agentMetrics {
+	var policyStore agent.PolicyStore
+	if len(store) > 0 {
+		policyStore = store[0]
+	}
+	return &agentMetrics{
+		totals: agentMetricsTotals{DurationBuckets: make([]uint64, len(agentReconcileDurationBuckets))},
+		store:  policyStore,
+	}
 }
 
 func observeAgentReconcileResult(metrics *agentMetrics, result agent.ReconcileResult, storeName string, duration time.Duration) {
@@ -1027,6 +1041,60 @@ func (m *agentMetrics) snapshotValue() (agentMetricsSnapshot, agentMetricsTotals
 	return m.snapshot, cloneAgentMetricsTotals(m.totals), m.ready
 }
 
+func (m *agentMetrics) deletePolicyEndpoint(ctx context.Context, endpoint string) (string, error) {
+	if m == nil || m.store == nil {
+		return "", errors.New("policy endpoint actions are not enabled")
+	}
+	endpointID, err := m.resolvePolicyEndpointID(endpoint)
+	if err != nil {
+		return "", err
+	}
+	if err := m.store.DeleteEndpoint(ctx, endpointID); err != nil {
+		return "", err
+	}
+	m.removePolicyEndpointStatus(endpointID)
+	return endpointID, nil
+}
+
+func (m *agentMetrics) resolvePolicyEndpointID(endpoint string) (string, error) {
+	endpoint = strings.TrimSpace(endpoint)
+	if endpoint == "" {
+		return "", errors.New("missing policy endpoint")
+	}
+	candidates := map[string]struct{}{endpoint: {}}
+	if vpc, id, ok := strings.Cut(endpoint, "/"); ok && vpc != "" && id != "" {
+		candidates[model.EndpointKey(vpc, id)] = struct{}{}
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if !m.ready {
+		return "", errors.New("policy endpoint status is not ready")
+	}
+	for _, status := range m.snapshot.Result.PolicyEndpointStatus {
+		if _, ok := candidates[status.EndpointID]; ok {
+			return status.EndpointID, nil
+		}
+		if vpc, id, ok := strings.Cut(status.EndpointID, "\x00"); ok && (id == endpoint || vpc+"/"+id == endpoint) {
+			return status.EndpointID, nil
+		}
+	}
+	return "", fmt.Errorf("policy endpoint %q not found", endpoint)
+}
+
+func (m *agentMetrics) removePolicyEndpointStatus(endpointID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	statuses := m.snapshot.Result.PolicyEndpointStatus
+	filtered := statuses[:0]
+	for _, status := range statuses {
+		if status.EndpointID == endpointID {
+			continue
+		}
+		filtered = append(filtered, status)
+	}
+	m.snapshot.Result.PolicyEndpointStatus = append([]dataplane.PolicyEndpointStatus(nil), filtered...)
+}
+
 func cloneAgentMetricsTotals(totals agentMetricsTotals) agentMetricsTotals {
 	totals.DurationBuckets = append([]uint64(nil), totals.DurationBuckets...)
 	return totals
@@ -1072,21 +1140,16 @@ func startAgentMetricsServer(ctx context.Context, addr string, metrics *agentMet
 
 func (m *agentMetrics) handlePolicyEndpoints(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+	if r.Method == http.MethodDelete {
+		m.handlePolicyEndpointDelete(w, r)
+		return
+	}
 	if r.Method != http.MethodGet {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "method not allowed"})
 		return
 	}
-	endpoint := strings.TrimSpace(r.URL.Query().Get("endpoint"))
-	if strings.HasPrefix(r.URL.Path, "/policy/endpoints/") {
-		pathEndpoint := strings.TrimPrefix(r.URL.Path, "/policy/endpoints/")
-		if decoded, err := url.PathUnescape(pathEndpoint); err == nil {
-			pathEndpoint = decoded
-		}
-		if strings.TrimSpace(pathEndpoint) != "" {
-			endpoint = strings.TrimSpace(pathEndpoint)
-		}
-	}
+	endpoint := policyEndpointFromRequest(r)
 	snapshot, _, ready := m.snapshotValue()
 	if !ready {
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -1106,6 +1169,50 @@ func (m *agentMetrics) handlePolicyEndpoints(w http.ResponseWriter, r *http.Requ
 	encoder := json.NewEncoder(w)
 	encoder.SetIndent("", "  ")
 	_ = encoder.Encode(output)
+}
+
+func (m *agentMetrics) handlePolicyEndpointDelete(w http.ResponseWriter, r *http.Request) {
+	endpoint := policyEndpointFromRequest(r)
+	if endpoint == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "missing policy endpoint"})
+		return
+	}
+	endpointID, err := m.deletePolicyEndpoint(r.Context(), endpoint)
+	if err != nil {
+		status := http.StatusInternalServerError
+		switch {
+		case strings.Contains(err.Error(), "not enabled"), strings.Contains(err.Error(), "not ready"):
+			status = http.StatusServiceUnavailable
+		case strings.Contains(err.Error(), "not found"):
+			status = http.StatusNotFound
+		case strings.Contains(err.Error(), "missing"):
+			status = http.StatusBadRequest
+		}
+		w.WriteHeader(status)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(policyEndpointActionOutput{
+		EndpointID: endpointID,
+		Action:     "delete",
+		Deleted:    true,
+	})
+}
+
+func policyEndpointFromRequest(r *http.Request) string {
+	endpoint := strings.TrimSpace(r.URL.Query().Get("endpoint"))
+	if strings.HasPrefix(r.URL.Path, "/policy/endpoints/") {
+		pathEndpoint := strings.TrimPrefix(r.URL.Path, "/policy/endpoints/")
+		if decoded, err := url.PathUnescape(pathEndpoint); err == nil {
+			pathEndpoint = decoded
+		}
+		if strings.TrimSpace(pathEndpoint) != "" {
+			endpoint = strings.TrimSpace(pathEndpoint)
+		}
+	}
+	return endpoint
 }
 
 func (m *agentMetrics) handlePolicyExplain(w http.ResponseWriter, r *http.Request) {
