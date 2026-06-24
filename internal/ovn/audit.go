@@ -12,21 +12,22 @@ import (
 )
 
 type AuditStats struct {
-	ManagedLogicalSwitches          int
-	ManagedLogicalRouters           int
-	ManagedLogicalSwitchPorts       int
-	ManagedLogicalRouterPorts       int
-	ManagedLogicalRouterPolicies    int
-	ManagedNATRules                 int
-	ManagedLoadBalancers            int
-	ManagedLoadBalancerHealthChecks int
-	ManagedDHCPOptions              int
-	DuplicateManagedRows            int
-	IncompleteManagedRows           int
-	MissingManagedRows              int
-	UnexpectedManagedRows           int
-	DriftedManagedRows              int
-	DriftedManagedFields            int
+	ManagedLogicalSwitches           int
+	ManagedLogicalRouters            int
+	ManagedLogicalSwitchPorts        int
+	ManagedLogicalRouterPorts        int
+	ManagedLogicalRouterPolicies     int
+	ManagedLogicalRouterStaticRoutes int
+	ManagedNATRules                  int
+	ManagedLoadBalancers             int
+	ManagedLoadBalancerHealthChecks  int
+	ManagedDHCPOptions               int
+	DuplicateManagedRows             int
+	IncompleteManagedRows            int
+	MissingManagedRows               int
+	UnexpectedManagedRows            int
+	DriftedManagedRows               int
+	DriftedManagedFields             int
 }
 
 type ManagedOVNRow struct {
@@ -46,6 +47,7 @@ func (s AuditStats) TotalManagedObjects() int {
 		s.ManagedLogicalSwitchPorts +
 		s.ManagedLogicalRouterPorts +
 		s.ManagedLogicalRouterPolicies +
+		s.ManagedLogicalRouterStaticRoutes +
 		s.ManagedNATRules +
 		s.ManagedLoadBalancers +
 		s.ManagedLoadBalancerHealthChecks +
@@ -112,6 +114,7 @@ func managedAuditTables() []managedAuditTable {
 		{"Logical_Switch_Port", func(s *AuditStats, n int) { s.ManagedLogicalSwitchPorts = n }},
 		{"Logical_Router_Port", func(s *AuditStats, n int) { s.ManagedLogicalRouterPorts = n }},
 		{"Logical_Router_Policy", func(s *AuditStats, n int) { s.ManagedLogicalRouterPolicies = n }},
+		{"Logical_Router_Static_Route", func(s *AuditStats, n int) { s.ManagedLogicalRouterStaticRoutes = n }},
 		{"NAT", func(s *AuditStats, n int) { s.ManagedNATRules = n }},
 		{"Load_Balancer", func(s *AuditStats, n int) { s.ManagedLoadBalancers = n }},
 		{"Load_Balancer_Health_Check", func(s *AuditStats, n int) { s.ManagedLoadBalancerHealthChecks = n }},
@@ -220,6 +223,17 @@ func expectedManagedAuditRows(desired topology.State) map[string]map[string]stri
 	for _, route := range desired.PolicyRoutes {
 		addAuditExpectedRow(out, "Logical_Router_Policy", "netloom_vpc", route.VPC, "netloom_policy_route", route.Name)
 	}
+	for _, table := range desired.RouteTables {
+		for _, route := range table.Routes {
+			for _, row := range desiredStaticRouteRows(table, route) {
+				addAuditExpectedRow(out, "Logical_Router_Static_Route",
+					"netloom_vpc", table.VPC,
+					"netloom_route_table", table.Name,
+					"netloom_route_key", row.ExternalIDs["netloom_route_key"],
+				)
+			}
+		}
+	}
 	for _, rule := range desired.NATRules {
 		addAuditExpectedRow(out, "NAT", "netloom_vpc", rule.VPC, "netloom_nat", rule.Name)
 	}
@@ -294,6 +308,37 @@ func expectedManagedAuditColumns(desired topology.State) map[string]map[string]s
 			fields["nexthops"] = strings.Join(row.Nexthops, ",")
 		}
 		addAuditExpectedColumns(out, "Logical_Router_Policy", fields, "netloom_vpc", route.VPC, "netloom_policy_route", route.Name)
+	}
+	for _, table := range desired.RouteTables {
+		for _, route := range table.Routes {
+			for _, row := range desiredStaticRouteRows(table, route) {
+				fields := map[string]string{
+					"ip_prefix":   row.IPPrefix,
+					"nexthop":     row.Nexthop,
+					"route_table": row.RouteTable,
+				}
+				if row.BFD != nil {
+					fields["bfd"] = *row.BFD
+				}
+				if len(row.Options) > 0 {
+					fields["options"] = mapField(row.Options)
+				}
+				if row.OutputPort != nil {
+					fields["output_port"] = *row.OutputPort
+				}
+				if row.Policy != nil {
+					fields["policy"] = *row.Policy
+				}
+				if len(row.SelectionFields) > 0 {
+					fields["selection_fields"] = staticRouteSelectionFieldsField(row.SelectionFields)
+				}
+				addAuditExpectedColumns(out, "Logical_Router_Static_Route", fields,
+					"netloom_vpc", table.VPC,
+					"netloom_route_table", table.Name,
+					"netloom_route_key", row.ExternalIDs["netloom_route_key"],
+				)
+			}
+		}
 	}
 	for _, rule := range desired.NATRules {
 		row := desiredNATRuleRow(rule)
@@ -443,6 +488,14 @@ func selectionFieldsField(values []ovnnb.LoadBalancerSelectionFields) string {
 	return stringSliceField(out)
 }
 
+func staticRouteSelectionFieldsField(values []ovnnb.LogicalRouterStaticRouteSelectionFields) string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		out = append(out, string(value))
+	}
+	return stringSliceField(out)
+}
+
 func parseManagedOVNRows(table string, rows []string) []ManagedOVNRow {
 	out := make([]ManagedOVNRow, 0, len(rows))
 	for _, row := range rows {
@@ -478,6 +531,8 @@ func managedAuditIdentity(table, uuid string, externalIDs map[string]string) (st
 		return auditIdentity(table, externalIDs, "netloom_subnet")
 	case "Logical_Router_Policy":
 		return auditIdentity(table, externalIDs, "netloom_vpc", "netloom_policy_route")
+	case "Logical_Router_Static_Route":
+		return auditIdentity(table, externalIDs, "netloom_vpc", "netloom_route_table", "netloom_route_key")
 	case "NAT":
 		return auditIdentity(table, externalIDs, "netloom_vpc", "netloom_nat")
 	case "Load_Balancer":

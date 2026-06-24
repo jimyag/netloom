@@ -742,6 +742,8 @@ func writeControllerMetrics(w metricWriter, snapshot controllerMetricsSnapshot, 
 	fmt.Fprintf(w, "netloom_controller_ovn_live_logical_router_ports%s %d\n", auditLabels, snapshot.OVNAudit.ManagedLogicalRouterPorts)
 	writeMetricType(w, "netloom_controller_ovn_live_logical_router_policies", "gauge")
 	fmt.Fprintf(w, "netloom_controller_ovn_live_logical_router_policies%s %d\n", auditLabels, snapshot.OVNAudit.ManagedLogicalRouterPolicies)
+	writeMetricType(w, "netloom_controller_ovn_live_logical_router_static_routes", "gauge")
+	fmt.Fprintf(w, "netloom_controller_ovn_live_logical_router_static_routes%s %d\n", auditLabels, snapshot.OVNAudit.ManagedLogicalRouterStaticRoutes)
 	writeMetricType(w, "netloom_controller_ovn_live_nat_rules", "gauge")
 	fmt.Fprintf(w, "netloom_controller_ovn_live_nat_rules%s %d\n", auditLabels, snapshot.OVNAudit.ManagedNATRules)
 	writeMetricType(w, "netloom_controller_ovn_live_load_balancers", "gauge")

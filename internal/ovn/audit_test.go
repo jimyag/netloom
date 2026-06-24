@@ -2,6 +2,7 @@ package ovn
 
 import (
 	"context"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -173,21 +174,59 @@ func TestAuditManagedObjectsFromReaderReportsFieldDrift(t *testing.T) {
 	}
 }
 
-func TestAuditStatsTotalManagedObjects(t *testing.T) {
-	stats := AuditStats{
-		ManagedLogicalSwitches:          1,
-		ManagedLogicalRouters:           1,
-		ManagedLogicalSwitchPorts:       2,
-		ManagedLogicalRouterPorts:       1,
-		ManagedLogicalRouterPolicies:    3,
-		ManagedNATRules:                 2,
-		ManagedLoadBalancers:            1,
-		ManagedLoadBalancerHealthChecks: 2,
-		ManagedDHCPOptions:              4,
+func TestAuditManagedObjectsFromReaderReportsStaticRouteColumnDrift(t *testing.T) {
+	reader := fakeManagedOVNReader{rows: map[string][]ManagedOVNRow{
+		"Logical_Router_Static_Route": {
+			{Table: "Logical_Router_Static_Route", UUID: "route-a", ExternalIDs: map[string]string{
+				"netloom_owner":       "netloom",
+				"netloom_vpc":         "prod",
+				"netloom_route_table": "main",
+				"netloom_route_key":   "10.20.0.0/24|10.10.0.253",
+			}, Fields: map[string]string{
+				"ip_prefix":   "10.20.0.0/24",
+				"nexthop":     "10.10.0.99",
+				"route_table": "main",
+			}},
+		},
+	}}
+	desired := topology.State{
+		RouteTables: map[string]model.RouteTable{
+			"prod/main": {
+				Name: "main",
+				VPC:  "prod",
+				Routes: []model.Route{{
+					Destination: netip.MustParsePrefix("10.20.0.0/24"),
+					NextHops:    []netip.Addr{netip.MustParseAddr("10.10.0.253")},
+				}},
+			},
+		},
 	}
 
-	if got := stats.TotalManagedObjects(); got != 17 {
-		t.Fatalf("total managed objects = %d, want 17", got)
+	stats, err := AuditManagedObjectsFromReaderWithDesired(context.Background(), reader, desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.ManagedLogicalRouterStaticRoutes != 1 || stats.DriftedManagedRows != 1 || stats.DriftedManagedFields != 1 {
+		t.Fatalf("static route audit stats = %+v, want one static route column drift", stats)
+	}
+}
+
+func TestAuditStatsTotalManagedObjects(t *testing.T) {
+	stats := AuditStats{
+		ManagedLogicalSwitches:           1,
+		ManagedLogicalRouters:            1,
+		ManagedLogicalSwitchPorts:        2,
+		ManagedLogicalRouterPorts:        1,
+		ManagedLogicalRouterPolicies:     3,
+		ManagedLogicalRouterStaticRoutes: 5,
+		ManagedNATRules:                  2,
+		ManagedLoadBalancers:             1,
+		ManagedLoadBalancerHealthChecks:  2,
+		ManagedDHCPOptions:               4,
+	}
+
+	if got := stats.TotalManagedObjects(); got != 22 {
+		t.Fatalf("total managed objects = %d, want 22", got)
 	}
 }
 

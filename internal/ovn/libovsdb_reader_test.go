@@ -123,18 +123,30 @@ func TestAuditManagedObjectsReportsColumnDriftFromLibOVSDBReader(t *testing.T) {
 		MatchCIDR:  netip.MustParsePrefix("10.10.0.0/24"),
 		ExternalIP: netip.MustParseAddr("198.51.100.10"),
 	}
+	routeTable := netloommodel.RouteTable{
+		Name: "main",
+		VPC:  "prod",
+		Routes: []netloommodel.Route{{
+			Destination: netip.MustParsePrefix("10.20.0.0/24"),
+			NextHops:    []netip.Addr{netip.MustParseAddr("10.10.0.253")},
+		}},
+	}
 	if err := writer.EnsureVPC(ctx, netloommodel.VPC{Name: "prod"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := writer.EnsureSubnet(ctx, subnet); err != nil {
 		t.Fatal(err)
 	}
+	if err := writer.EnsureRouteTable(ctx, routeTable); err != nil {
+		t.Fatal(err)
+	}
 	if err := writer.EnsureNATRule(ctx, nat); err != nil {
 		t.Fatal(err)
 	}
 	desired := topology.State{
-		VPCs:    map[string]netloommodel.VPC{"prod": {Name: "prod"}},
-		Subnets: map[string]netloommodel.Subnet{"prod/apps": subnet},
+		VPCs:        map[string]netloommodel.VPC{"prod": {Name: "prod"}},
+		Subnets:     map[string]netloommodel.Subnet{"prod/apps": subnet},
+		RouteTables: map[string]netloommodel.RouteTable{"prod/main": routeTable},
 		NATRules: map[string]netloommodel.NATRule{
 			"prod/egress": nat,
 		},
@@ -173,7 +185,24 @@ func TestAuditManagedObjectsReportsColumnDriftFromLibOVSDBReader(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var routes []ovnnb.LogicalRouterStaticRoute
+	if err := client.WhereCache(func(row *ovnnb.LogicalRouterStaticRoute) bool {
+		return row.ExternalIDs["netloom_vpc"] == "prod" &&
+			row.ExternalIDs["netloom_route_table"] == "main" &&
+			row.ExternalIDs["netloom_route_key"] == "10.20.0.0/24|10.10.0.253"
+	}).List(ctx, &routes); err != nil {
+		t.Fatal(err)
+	}
+	if len(routes) != 1 {
+		t.Fatalf("static routes = %d, want one", len(routes))
+	}
+	routes[0].Nexthop = "10.10.0.99"
+	updateRoute, err := client.Where(&routes[0]).Update(&routes[0], &routes[0].Nexthop)
+	if err != nil {
+		t.Fatal(err)
+	}
 	ops := append(updateSwitch, updateNAT...)
+	ops = append(ops, updateRoute...)
 	results, err := client.Transact(ctx, ops...)
 	if err != nil {
 		t.Fatal(err)
@@ -186,10 +215,10 @@ func TestAuditManagedObjectsReportsColumnDriftFromLibOVSDBReader(t *testing.T) {
 	requireEventually(t, func() bool {
 		var err error
 		stats, err = AuditManagedObjectsFromReaderWithDesired(ctx, reader, desired)
-		return err == nil && stats.DriftedManagedRows == 2 && stats.DriftedManagedFields == 2
+		return err == nil && stats.DriftedManagedRows == 3 && stats.DriftedManagedFields == 3
 	})
-	if stats.DriftedManagedRows != 2 || stats.DriftedManagedFields != 2 {
-		t.Fatalf("audit stats = %+v, want two column drifted managed rows", stats)
+	if stats.DriftedManagedRows != 3 || stats.DriftedManagedFields != 3 {
+		t.Fatalf("audit stats = %+v, want three column drifted managed rows", stats)
 	}
 }
 

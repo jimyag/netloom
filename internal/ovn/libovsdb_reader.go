@@ -78,6 +78,23 @@ func (r *LibOVSDBManagedReader) ManagedOVNRows(ctx context.Context, table string
 				"nexthops": stringSliceField(row.Nexthops),
 			}
 		}), nil
+	case "Logical_Router_Static_Route":
+		var rows []ovnnb.LogicalRouterStaticRoute
+		if err := r.client.WhereCache(func(row *ovnnb.LogicalRouterStaticRoute) bool { return isNetloomManaged(row.ExternalIDs) }).List(ctx, &rows); err != nil {
+			return nil, err
+		}
+		return managedOVNRowsFromModels(table, rows, func(row ovnnb.LogicalRouterStaticRoute) (string, map[string]string, map[string]string) {
+			return row.UUID, row.ExternalIDs, map[string]string{
+				"bfd":              pointerStringValue(row.BFD),
+				"ip_prefix":        row.IPPrefix,
+				"nexthop":          row.Nexthop,
+				"options":          mapField(row.Options),
+				"output_port":      pointerStringValue(row.OutputPort),
+				"policy":           pointerStaticRoutePolicyValue(row.Policy),
+				"route_table":      row.RouteTable,
+				"selection_fields": staticRouteSelectionFieldsField(row.SelectionFields),
+			}
+		}), nil
 	case "NAT":
 		var rows []ovnnb.NAT
 		if err := r.client.WhereCache(func(row *ovnnb.NAT) bool { return isNetloomManaged(row.ExternalIDs) }).List(ctx, &rows); err != nil {
@@ -156,6 +173,13 @@ func intPointerField(value *int) string {
 		return ""
 	}
 	return fmt.Sprint(*value)
+}
+
+func pointerStaticRoutePolicyValue(value *ovnnb.LogicalRouterStaticRoutePolicy) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }
 
 func cloneStringMap(in map[string]string) map[string]string {
