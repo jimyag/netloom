@@ -30,57 +30,104 @@ func (r *LibOVSDBManagedReader) ManagedOVNRows(ctx context.Context, table string
 		if err := r.client.WhereCache(func(row *ovnnb.LogicalSwitch) bool { return isNetloomManaged(row.ExternalIDs) }).List(ctx, &rows); err != nil {
 			return nil, err
 		}
-		return managedOVNRowsFromModels(table, rows, func(row ovnnb.LogicalSwitch) (string, map[string]string) { return row.UUID, row.ExternalIDs }), nil
+		return managedOVNRowsFromModels(table, rows, func(row ovnnb.LogicalSwitch) (string, map[string]string, map[string]string) {
+			return row.UUID, row.ExternalIDs, map[string]string{"name": row.Name, "other_config": mapField(row.OtherConfig)}
+		}), nil
 	case "Logical_Router":
 		var rows []ovnnb.LogicalRouter
 		if err := r.client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return isNetloomManaged(row.ExternalIDs) }).List(ctx, &rows); err != nil {
 			return nil, err
 		}
-		return managedOVNRowsFromModels(table, rows, func(row ovnnb.LogicalRouter) (string, map[string]string) { return row.UUID, row.ExternalIDs }), nil
+		return managedOVNRowsFromModels(table, rows, func(row ovnnb.LogicalRouter) (string, map[string]string, map[string]string) {
+			return row.UUID, row.ExternalIDs, map[string]string{"name": row.Name, "options": mapField(row.Options)}
+		}), nil
 	case "Logical_Switch_Port":
 		var rows []ovnnb.LogicalSwitchPort
 		if err := r.client.WhereCache(func(row *ovnnb.LogicalSwitchPort) bool { return isNetloomManaged(row.ExternalIDs) }).List(ctx, &rows); err != nil {
 			return nil, err
 		}
-		return managedOVNRowsFromModels(table, rows, func(row ovnnb.LogicalSwitchPort) (string, map[string]string) { return row.UUID, row.ExternalIDs }), nil
+		return managedOVNRowsFromModels(table, rows, func(row ovnnb.LogicalSwitchPort) (string, map[string]string, map[string]string) {
+			return row.UUID, row.ExternalIDs, map[string]string{
+				"name":          row.Name,
+				"type":          row.Type,
+				"addresses":     stringSliceField(row.Addresses),
+				"port_security": stringSliceField(row.PortSecurity),
+				"options":       mapField(row.Options),
+				"tag":           intPointerField(row.Tag),
+			}
+		}), nil
 	case "Logical_Router_Port":
 		var rows []ovnnb.LogicalRouterPort
 		if err := r.client.WhereCache(func(row *ovnnb.LogicalRouterPort) bool { return isNetloomManaged(row.ExternalIDs) }).List(ctx, &rows); err != nil {
 			return nil, err
 		}
-		return managedOVNRowsFromModels(table, rows, func(row ovnnb.LogicalRouterPort) (string, map[string]string) { return row.UUID, row.ExternalIDs }), nil
+		return managedOVNRowsFromModels(table, rows, func(row ovnnb.LogicalRouterPort) (string, map[string]string, map[string]string) {
+			return row.UUID, row.ExternalIDs, map[string]string{"name": row.Name, "mac": row.MAC, "networks": stringSliceField(row.Networks)}
+		}), nil
 	case "Logical_Router_Policy":
 		var rows []ovnnb.LogicalRouterPolicy
 		if err := r.client.WhereCache(func(row *ovnnb.LogicalRouterPolicy) bool { return isNetloomManaged(row.ExternalIDs) }).List(ctx, &rows); err != nil {
 			return nil, err
 		}
-		return managedOVNRowsFromModels(table, rows, func(row ovnnb.LogicalRouterPolicy) (string, map[string]string) { return row.UUID, row.ExternalIDs }), nil
+		return managedOVNRowsFromModels(table, rows, func(row ovnnb.LogicalRouterPolicy) (string, map[string]string, map[string]string) {
+			return row.UUID, row.ExternalIDs, map[string]string{
+				"priority": fmt.Sprint(row.Priority),
+				"match":    row.Match,
+				"action":   string(row.Action),
+				"nexthop":  pointerStringValue(row.Nexthop),
+				"nexthops": stringSliceField(row.Nexthops),
+			}
+		}), nil
 	case "NAT":
 		var rows []ovnnb.NAT
 		if err := r.client.WhereCache(func(row *ovnnb.NAT) bool { return isNetloomManaged(row.ExternalIDs) }).List(ctx, &rows); err != nil {
 			return nil, err
 		}
-		return managedOVNRowsFromModels(table, rows, func(row ovnnb.NAT) (string, map[string]string) { return row.UUID, row.ExternalIDs }), nil
+		return managedOVNRowsFromModels(table, rows, func(row ovnnb.NAT) (string, map[string]string, map[string]string) {
+			return row.UUID, row.ExternalIDs, map[string]string{
+				"type":                string(row.Type),
+				"external_ip":         row.ExternalIP,
+				"logical_ip":          row.LogicalIP,
+				"external_port_range": row.ExternalPortRange,
+				"logical_port":        pointerStringValue(row.LogicalPort),
+				"external_mac":        pointerStringValue(row.ExternalMAC),
+				"options":             mapField(row.Options),
+			}
+		}), nil
 	case "Load_Balancer":
 		var rows []ovnnb.LoadBalancer
 		if err := r.client.WhereCache(func(row *ovnnb.LoadBalancer) bool { return isNetloomManaged(row.ExternalIDs) }).List(ctx, &rows); err != nil {
 			return nil, err
 		}
-		return managedOVNRowsFromModels(table, rows, func(row ovnnb.LoadBalancer) (string, map[string]string) { return row.UUID, row.ExternalIDs }), nil
+		return managedOVNRowsFromModels(table, rows, func(row ovnnb.LoadBalancer) (string, map[string]string, map[string]string) {
+			protocol := ""
+			if row.Protocol != nil {
+				protocol = string(*row.Protocol)
+			}
+			return row.UUID, row.ExternalIDs, map[string]string{
+				"name":             row.Name,
+				"vips":             mapField(row.Vips),
+				"protocol":         protocol,
+				"options":          mapField(row.Options),
+				"selection_fields": selectionFieldsField(row.SelectionFields),
+			}
+		}), nil
 	case "Load_Balancer_Health_Check":
 		var rows []ovnnb.LoadBalancerHealthCheck
 		if err := r.client.WhereCache(func(row *ovnnb.LoadBalancerHealthCheck) bool { return isNetloomManaged(row.ExternalIDs) }).List(ctx, &rows); err != nil {
 			return nil, err
 		}
-		return managedOVNRowsFromModels(table, rows, func(row ovnnb.LoadBalancerHealthCheck) (string, map[string]string) {
-			return row.UUID, row.ExternalIDs
+		return managedOVNRowsFromModels(table, rows, func(row ovnnb.LoadBalancerHealthCheck) (string, map[string]string, map[string]string) {
+			return row.UUID, row.ExternalIDs, map[string]string{"vip": row.Vip, "options": mapField(row.Options)}
 		}), nil
 	case "DHCP_Options":
 		var rows []ovnnb.DHCPOptions
 		if err := r.client.WhereCache(func(row *ovnnb.DHCPOptions) bool { return isNetloomManaged(row.ExternalIDs) }).List(ctx, &rows); err != nil {
 			return nil, err
 		}
-		return managedOVNRowsFromModels(table, rows, func(row ovnnb.DHCPOptions) (string, map[string]string) { return row.UUID, row.ExternalIDs }), nil
+		return managedOVNRowsFromModels(table, rows, func(row ovnnb.DHCPOptions) (string, map[string]string, map[string]string) {
+			return row.UUID, row.ExternalIDs, map[string]string{"cidr": row.Cidr, "options": mapField(row.Options)}
+		}), nil
 	default:
 		return nil, fmt.Errorf("unsupported managed OVN table %s", table)
 	}
@@ -90,17 +137,25 @@ func isNetloomManaged(externalIDs map[string]string) bool {
 	return externalIDs["netloom_owner"] == "netloom"
 }
 
-func managedOVNRowsFromModels[T any](table string, rows []T, identity func(T) (string, map[string]string)) []ManagedOVNRow {
+func managedOVNRowsFromModels[T any](table string, rows []T, identity func(T) (string, map[string]string, map[string]string)) []ManagedOVNRow {
 	out := make([]ManagedOVNRow, 0, len(rows))
 	for _, row := range rows {
-		uuid, externalIDs := identity(row)
+		uuid, externalIDs, fields := identity(row)
 		out = append(out, ManagedOVNRow{
 			Table:       table,
 			UUID:        uuid,
 			ExternalIDs: cloneStringMap(externalIDs),
+			Fields:      cloneStringMap(fields),
 		})
 	}
 	return out
+}
+
+func intPointerField(value *int) string {
+	if value == nil {
+		return ""
+	}
+	return fmt.Sprint(*value)
 }
 
 func cloneStringMap(in map[string]string) map[string]string {

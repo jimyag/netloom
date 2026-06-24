@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"net/netip"
 	"os"
 	"testing"
 	"time"
@@ -15,7 +16,9 @@ import (
 	"github.com/ovn-kubernetes/libovsdb/ovsdb"
 	"github.com/ovn-kubernetes/libovsdb/server"
 
+	netloommodel "github.com/jimyag/netloom/internal/model"
 	"github.com/jimyag/netloom/internal/ovn/ovsdb/ovnnb"
+	"github.com/jimyag/netloom/internal/topology"
 )
 
 func TestLibOVSDBManagedReaderReadsManagedRowsFromCache(t *testing.T) {
@@ -95,6 +98,98 @@ func TestAuditManagedObjectsFromLibOVSDBReader(t *testing.T) {
 	}
 	if stats.DuplicateManagedRows != 1 || stats.IncompleteManagedRows != 1 {
 		t.Fatalf("audit stats = %+v, want duplicate policy route and incomplete DHCP row", stats)
+	}
+}
+
+func TestAuditManagedObjectsReportsColumnDriftFromLibOVSDBReader(t *testing.T) {
+	ctx := context.Background()
+	client, closeFn := newTestOVNNBClient(t)
+	defer closeFn()
+
+	if _, err := client.MonitorAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	writer := NewLibOVSDBTopologyWriter(client)
+	subnet := netloommodel.Subnet{
+		Name:    "apps",
+		VPC:     "prod",
+		CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+		Gateway: netip.MustParseAddr("10.10.0.1"),
+	}
+	nat := netloommodel.NATRule{
+		Name:       "egress",
+		VPC:        "prod",
+		Type:       netloommodel.ActionSNAT,
+		MatchCIDR:  netip.MustParsePrefix("10.10.0.0/24"),
+		ExternalIP: netip.MustParseAddr("198.51.100.10"),
+	}
+	if err := writer.EnsureVPC(ctx, netloommodel.VPC{Name: "prod"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureSubnet(ctx, subnet); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureNATRule(ctx, nat); err != nil {
+		t.Fatal(err)
+	}
+	desired := topology.State{
+		VPCs:    map[string]netloommodel.VPC{"prod": {Name: "prod"}},
+		Subnets: map[string]netloommodel.Subnet{"prod/apps": subnet},
+		NATRules: map[string]netloommodel.NATRule{
+			"prod/egress": nat,
+		},
+	}
+	reader := NewLibOVSDBManagedReader(client)
+	requireEventually(t, func() bool {
+		stats, err := AuditManagedObjectsFromReaderWithDesired(ctx, reader, desired)
+		return err == nil && stats.DriftedManagedRows == 0 && stats.DriftedManagedFields == 0
+	})
+
+	var switches []ovnnb.LogicalSwitch
+	if err := client.WhereCache(func(row *ovnnb.LogicalSwitch) bool {
+		return row.ExternalIDs["netloom_vpc"] == "prod" && row.ExternalIDs["netloom_subnet"] == "apps"
+	}).List(ctx, &switches); err != nil {
+		t.Fatal(err)
+	}
+	if len(switches) != 1 {
+		t.Fatalf("logical switches = %d, want one", len(switches))
+	}
+	switches[0].OtherConfig["subnet"] = "10.99.0.0/24"
+	updateSwitch, err := client.Where(&switches[0]).Update(&switches[0], &switches[0].OtherConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var nats []ovnnb.NAT
+	if err := client.WhereCache(func(row *ovnnb.NAT) bool {
+		return row.ExternalIDs["netloom_vpc"] == "prod" && row.ExternalIDs["netloom_nat"] == "egress"
+	}).List(ctx, &nats); err != nil {
+		t.Fatal(err)
+	}
+	if len(nats) != 1 {
+		t.Fatalf("NAT rows = %d, want one", len(nats))
+	}
+	nats[0].ExternalIP = "198.51.100.99"
+	updateNAT, err := client.Where(&nats[0]).Update(&nats[0], &nats[0].ExternalIP)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ops := append(updateSwitch, updateNAT...)
+	results, err := client.Transact(ctx, ops...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, ops); err != nil {
+		t.Fatalf("operation errors=%+v err=%v", opErrors, err)
+	}
+
+	var stats AuditStats
+	requireEventually(t, func() bool {
+		var err error
+		stats, err = AuditManagedObjectsFromReaderWithDesired(ctx, reader, desired)
+		return err == nil && stats.DriftedManagedRows == 2 && stats.DriftedManagedFields == 2
+	})
+	if stats.DriftedManagedRows != 2 || stats.DriftedManagedFields != 2 {
+		t.Fatalf("audit stats = %+v, want two column drifted managed rows", stats)
 	}
 }
 

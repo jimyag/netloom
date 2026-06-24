@@ -3,8 +3,11 @@ package ovn
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
+	"github.com/jimyag/netloom/internal/model"
+	"github.com/jimyag/netloom/internal/ovn/ovsdb/ovnnb"
 	"github.com/jimyag/netloom/internal/topology"
 )
 
@@ -30,6 +33,7 @@ type ManagedOVNRow struct {
 	Table       string
 	UUID        string
 	ExternalIDs map[string]string
+	Fields      map[string]string
 }
 
 type ManagedOVNReader interface {
@@ -59,6 +63,7 @@ func AuditManagedObjectsFromReader(ctx context.Context, reader ManagedOVNReader)
 func AuditManagedObjectsFromReaderWithDesired(ctx context.Context, reader ManagedOVNReader, desired topology.State) (AuditStats, error) {
 	var stats AuditStats
 	expected := expectedManagedAuditRows(desired)
+	expectedColumns := expectedManagedAuditColumns(desired)
 	seen := make(map[string]struct{})
 	for _, table := range managedAuditTables() {
 		rows, err := reader.ManagedOVNRows(ctx, table.name)
@@ -73,6 +78,9 @@ func AuditManagedObjectsFromReaderWithDesired(ctx context.Context, reader Manage
 			if expectedFields, ok := expected[row.identity]; ok {
 				seen[row.identity] = struct{}{}
 				driftedFields := countManagedFieldDrift(row.externalIDs, expectedFields)
+				if row.fields != nil {
+					driftedFields += countManagedFieldDrift(row.fields, expectedColumns[row.identity])
+				}
 				if driftedFields != 0 {
 					stats.DriftedManagedRows++
 					stats.DriftedManagedFields += driftedFields
@@ -139,6 +147,7 @@ type auditRowResult struct {
 type auditManagedRow struct {
 	identity    string
 	externalIDs map[string]string
+	fields      map[string]string
 }
 
 func auditManagedRows(table string, rows []ManagedOVNRow) auditRowResult {
@@ -165,6 +174,7 @@ func auditManagedRows(table string, rows []ManagedOVNRow) auditRowResult {
 		result.rows = append(result.rows, auditManagedRow{
 			identity:    identity,
 			externalIDs: row.ExternalIDs,
+			fields:      row.Fields,
 		})
 	}
 	return result
@@ -235,6 +245,122 @@ func expectedManagedAuditRows(desired topology.State) map[string]map[string]stri
 	return out
 }
 
+func expectedManagedAuditColumns(desired topology.State) map[string]map[string]string {
+	out := make(map[string]map[string]string)
+	for _, subnet := range desired.Subnets {
+		addAuditExpectedColumns(out, "Logical_Switch", logicalSwitchColumnFields(subnet), "netloom_vpc", subnet.VPC, "netloom_subnet", subnet.Name)
+		addAuditExpectedColumns(out, "Logical_Router_Port", map[string]string{
+			"mac":      deterministicMAC(subnet),
+			"networks": strings.Join([]string{subnet.Gateway.String() + "/" + fmt.Sprint(subnet.CIDR.Bits())}, ","),
+		}, "netloom_subnet", subnet.Name)
+		addAuditExpectedColumns(out, "Logical_Switch_Port", map[string]string{
+			"type":      "router",
+			"addresses": deterministicMAC(subnet),
+			"options":   mapField(map[string]string{"router-port": routerPortName(logicalRouter(subnet.VPC), subnet.Name)}),
+		}, "netloom_subnet", subnet.Name, "netloom_role", "router")
+		if subnet.ProviderNetwork != "" {
+			fields := map[string]string{
+				"type":      "localnet",
+				"addresses": "unknown",
+				"options":   mapField(map[string]string{"network_name": subnet.ProviderNetwork}),
+			}
+			if subnet.VLAN != 0 {
+				fields["tag"] = fmt.Sprint(subnet.VLAN)
+			}
+			addAuditExpectedColumns(out, "Logical_Switch_Port", fields, "netloom_subnet", subnet.Name, "netloom_provider_network", subnet.ProviderNetwork)
+		}
+	}
+	for _, endpoint := range desired.Endpoints {
+		fields := map[string]string{"addresses": endpointAddress(endpoint)}
+		if endpoint.NormalizedMAC() != "" {
+			fields["port_security"] = endpointAddress(endpoint)
+		}
+		addAuditExpectedColumns(out, "Logical_Switch_Port", fields,
+			"netloom_vpc", endpoint.VPC,
+			"netloom_endpoint", endpointExternalID(endpoint.VPC, endpoint.ID),
+		)
+	}
+	for _, route := range desired.PolicyRoutes {
+		row := desiredPolicyRouteRow(route)
+		fields := map[string]string{
+			"priority": fmt.Sprint(row.Priority),
+			"match":    row.Match,
+			"action":   string(row.Action),
+		}
+		if row.Nexthop != nil {
+			fields["nexthop"] = *row.Nexthop
+		}
+		if len(row.Nexthops) > 0 {
+			fields["nexthops"] = strings.Join(row.Nexthops, ",")
+		}
+		addAuditExpectedColumns(out, "Logical_Router_Policy", fields, "netloom_vpc", route.VPC, "netloom_policy_route", route.Name)
+	}
+	for _, rule := range desired.NATRules {
+		row := desiredNATRuleRow(rule)
+		fields := map[string]string{
+			"type":        string(row.Type),
+			"external_ip": row.ExternalIP,
+			"logical_ip":  row.LogicalIP,
+		}
+		if row.ExternalPortRange != "" {
+			fields["external_port_range"] = row.ExternalPortRange
+		}
+		if row.LogicalPort != nil {
+			fields["logical_port"] = *row.LogicalPort
+		}
+		if row.ExternalMAC != nil {
+			fields["external_mac"] = *row.ExternalMAC
+		}
+		if len(row.Options) > 0 {
+			fields["options"] = mapField(row.Options)
+		}
+		addAuditExpectedColumns(out, "NAT", fields, "netloom_vpc", rule.VPC, "netloom_nat", rule.Name)
+	}
+	for _, lb := range desired.LoadBalancers {
+		frontendsByProtocol := loadBalancerFrontendsByProtocol(lb)
+		for _, protocol := range sortedLoadBalancerProtocols(frontendsByProtocol) {
+			row := desiredLoadBalancerRow(lb, protocol, frontendsByProtocol[protocol])
+			fields := map[string]string{
+				"name":             row.Name,
+				"vips":             mapField(row.Vips),
+				"selection_fields": selectionFieldsField(row.SelectionFields),
+			}
+			if row.Protocol != nil {
+				fields["protocol"] = string(*row.Protocol)
+			}
+			if len(row.Options) > 0 {
+				fields["options"] = mapField(row.Options)
+			}
+			addAuditExpectedColumns(out, "Load_Balancer", fields, "netloom_vpc", lb.VPC, "netloom_load_balancer", lb.Name)
+			if lb.HealthCheck.Enabled {
+				for _, frontend := range frontendsByProtocol[protocol] {
+					hc := desiredLoadBalancerHealthCheck(lb, frontend)
+					addAuditExpectedColumns(out, "Load_Balancer_Health_Check", map[string]string{
+						"vip":     hc.Vip,
+						"options": mapField(hc.Options),
+					}, "netloom_vpc", lb.VPC, "netloom_load_balancer", lb.Name)
+				}
+			}
+		}
+	}
+	return out
+}
+
+func addAuditExpectedColumns(out map[string]map[string]string, table string, fields map[string]string, keyValues ...string) {
+	if len(fields) == 0 {
+		return
+	}
+	externalIDs := make(map[string]string, len(keyValues)/2)
+	for i := 0; i < len(keyValues)-1; i += 2 {
+		externalIDs[keyValues[i]] = keyValues[i+1]
+	}
+	identity, complete := managedAuditIdentity(table, "", externalIDs)
+	if !complete || identity == "" {
+		return
+	}
+	out[identity] = fields
+}
+
 func addAuditIdentity(out map[string]struct{}, table string, keyValues ...string) {
 	if len(keyValues)%2 != 0 {
 		return
@@ -279,6 +405,42 @@ func countManagedFieldDrift(live, expected map[string]string) int {
 		}
 	}
 	return drift
+}
+
+func logicalSwitchColumnFields(subnet model.Subnet) map[string]string {
+	fields := map[string]string{"other_config": mapField(logicalSwitchOtherConfig(subnet))}
+	return fields
+}
+
+func mapField(values map[string]string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, key+"="+values[key])
+	}
+	return strings.Join(parts, ",")
+}
+
+func stringSliceField(values []string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	return strings.Join(values, ",")
+}
+
+func selectionFieldsField(values []ovnnb.LoadBalancerSelectionFields) string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		out = append(out, string(value))
+	}
+	return stringSliceField(out)
 }
 
 func parseManagedOVNRows(table string, rows []string) []ManagedOVNRow {
