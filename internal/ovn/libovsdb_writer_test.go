@@ -517,6 +517,159 @@ func TestLibOVSDBTopologyWriterEnsuresEndpointWithDHCPv6(t *testing.T) {
 	}
 }
 
+func TestLibOVSDBTopologyWriterEnsuresRouteTableStaticRoutes(t *testing.T) {
+	ctx := context.Background()
+	client, closeFn := newTestOVNNBClient(t)
+	defer closeFn()
+
+	if _, err := client.MonitorAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	writer := NewLibOVSDBTopologyWriter(client)
+	if err := writer.EnsureVPC(ctx, model.VPC{Name: "prod"}); err != nil {
+		t.Fatal(err)
+	}
+	table := model.RouteTable{
+		Name: "main",
+		VPC:  "prod",
+		Routes: []model.Route{{
+			Destination: netip.MustParsePrefix("10.20.0.0/24"),
+			NextHops:    []netip.Addr{netip.MustParseAddr("10.10.0.253"), netip.MustParseAddr("10.10.0.254")},
+		}, {
+			Destination: netip.MustParsePrefix("10.30.0.0/24"),
+			Blackhole:   true,
+		}},
+	}
+	if err := writer.EnsureRouteTable(ctx, table); err != nil {
+		t.Fatal(err)
+	}
+
+	var routes []ovnnb.LogicalRouterStaticRoute
+	requireEventually(t, func() bool {
+		routes = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalRouterStaticRoute) bool {
+			return row.ExternalIDs["netloom_route_table"] == "main"
+		}).List(ctx, &routes)
+		return err == nil && len(routes) == 3
+	})
+	got := map[string]ovnnb.LogicalRouterStaticRoute{}
+	for _, route := range routes {
+		got[route.IPPrefix+"|"+route.Nexthop] = route
+		if route.RouteTable != "main" || route.ExternalIDs["netloom_vpc"] != "prod" {
+			t.Fatalf("static route = %+v, want route table ownership", route)
+		}
+	}
+	for _, key := range []string{"10.20.0.0/24|10.10.0.253", "10.20.0.0/24|10.10.0.254", "10.30.0.0/24|discard"} {
+		if _, ok := got[key]; !ok {
+			t.Fatalf("static routes missing %s from %+v", key, got)
+		}
+	}
+	keptECMPUUID := got["10.20.0.0/24|10.10.0.253"].UUID
+	var routers []ovnnb.LogicalRouter
+	requireEventually(t, func() bool {
+		routers = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("prod") }).List(ctx, &routers)
+		return err == nil && len(routers) == 1 && len(routers[0].StaticRoutes) == 3
+	})
+
+	table.Routes[0].NextHops = []netip.Addr{netip.MustParseAddr("10.10.0.253"), netip.MustParseAddr("10.10.0.252")}
+	table.Routes = table.Routes[:1]
+	if err := writer.EnsureRouteTable(ctx, table); err != nil {
+		t.Fatal(err)
+	}
+	requireEventually(t, func() bool {
+		routes = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalRouterStaticRoute) bool {
+			return row.ExternalIDs["netloom_route_table"] == "main"
+		}).List(ctx, &routes)
+		if err != nil || len(routes) != 2 {
+			return false
+		}
+		keys := map[string]struct{}{}
+		for _, route := range routes {
+			keys[route.IPPrefix+"|"+route.Nexthop] = struct{}{}
+		}
+		_, keep := keys["10.20.0.0/24|10.10.0.253"]
+		_, add := keys["10.20.0.0/24|10.10.0.252"]
+		_, staleHop := keys["10.20.0.0/24|10.10.0.254"]
+		_, staleBlackhole := keys["10.30.0.0/24|discard"]
+		return keep && add && !staleHop && !staleBlackhole &&
+			staticRoutesByKey(routes)["10.20.0.0/24|10.10.0.253"].UUID == keptECMPUUID
+	})
+}
+
+func TestLibOVSDBTopologyWriterEnsuresPolicyRouteByName(t *testing.T) {
+	ctx := context.Background()
+	client, closeFn := newTestOVNNBClient(t)
+	defer closeFn()
+
+	if _, err := client.MonitorAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	writer := NewLibOVSDBTopologyWriter(client)
+	if err := writer.EnsureVPC(ctx, model.VPC{Name: "prod"}); err != nil {
+		t.Fatal(err)
+	}
+	first := model.PolicyRoute{
+		Name:     "egress-a",
+		VPC:      "prod",
+		Priority: 100,
+		Match: model.RouteMatch{
+			Source:      netip.MustParsePrefix("10.10.0.0/24"),
+			Destination: netip.MustParsePrefix("10.20.0.0/24"),
+		},
+		Action: model.RouteAction{Type: model.ActionReroute, NextHops: []netip.Addr{netip.MustParseAddr("10.10.0.253")}},
+	}
+	second := first
+	second.Name = "egress-b"
+	second.Action = model.RouteAction{Type: model.ActionDrop}
+	if err := writer.EnsurePolicyRoute(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsurePolicyRoute(ctx, second); err != nil {
+		t.Fatal(err)
+	}
+
+	var policies []ovnnb.LogicalRouterPolicy
+	requireEventually(t, func() bool {
+		policies = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalRouterPolicy) bool {
+			return row.ExternalIDs["netloom_vpc"] == "prod" && row.ExternalIDs["netloom_policy_route"] != ""
+		}).List(ctx, &policies)
+		return err == nil && len(policies) == 2
+	})
+	byName := map[string]ovnnb.LogicalRouterPolicy{}
+	for _, policy := range policies {
+		byName[policy.ExternalIDs["netloom_policy_route"]] = policy
+	}
+	if byName["egress-a"].Action != ovnnb.LogicalRouterPolicyActionReroute ||
+		byName["egress-a"].Nexthop == nil ||
+		*byName["egress-a"].Nexthop != "10.10.0.253" ||
+		byName["egress-b"].Action != ovnnb.LogicalRouterPolicyActionDrop {
+		t.Fatalf("policies = %+v, want distinct name-owned route rows", byName)
+	}
+
+	first.Action = model.RouteAction{Type: model.ActionReroute, NextHops: []netip.Addr{netip.MustParseAddr("10.10.0.252"), netip.MustParseAddr("10.10.0.253")}}
+	if err := writer.EnsurePolicyRoute(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	requireEventually(t, func() bool {
+		policies = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalRouterPolicy) bool {
+			return row.ExternalIDs["netloom_vpc"] == "prod" && row.ExternalIDs["netloom_policy_route"] != ""
+		}).List(ctx, &policies)
+		if err != nil || len(policies) != 2 {
+			return false
+		}
+		for _, policy := range policies {
+			if policy.ExternalIDs["netloom_policy_route"] == "egress-a" {
+				return policy.Nexthop == nil && len(policy.Nexthops) == 2 && policy.Nexthops[0] == "10.10.0.252" && policy.Nexthops[1] == "10.10.0.253"
+			}
+		}
+		return false
+	})
+}
+
 func TestLibOVSDBTopologyWriterUpdatesExistingVPCRouter(t *testing.T) {
 	ctx := context.Background()
 	client, closeFn := newTestOVNNBClient(t)
@@ -544,4 +697,12 @@ func TestLibOVSDBTopologyWriterUpdatesExistingVPCRouter(t *testing.T) {
 	if externalIDs["custom"] != "keep" || externalIDs["netloom_owner"] != "netloom" || externalIDs["netloom_vpc"] != "prod" {
 		t.Fatalf("logical router external IDs after update = %+v, want preserved custom and netloom ownership", externalIDs)
 	}
+}
+
+func staticRoutesByKey(routes []ovnnb.LogicalRouterStaticRoute) map[string]ovnnb.LogicalRouterStaticRoute {
+	out := make(map[string]ovnnb.LogicalRouterStaticRoute, len(routes))
+	for _, route := range routes {
+		out[route.IPPrefix+"|"+route.Nexthop] = route
+	}
+	return out
 }

@@ -189,6 +189,188 @@ func (w *LibOVSDBTopologyWriter) EnsureEndpoint(ctx context.Context, endpoint mo
 	return nil
 }
 
+func (w *LibOVSDBTopologyWriter) EnsureRouteTable(ctx context.Context, table model.RouteTable) error {
+	if w == nil || w.client == nil {
+		return fmt.Errorf("libovsdb topology writer has no client")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	router, ok, err := w.logicalRouterByName(ctx, logicalRouter(table.VPC))
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("logical router %s must exist before route table %s", logicalRouter(table.VPC), table.Name)
+	}
+	existing, err := w.staticRoutesByRouteTable(ctx, table)
+	if err != nil {
+		return err
+	}
+	existingByKey := make(map[string][]ovnnb.LogicalRouterStaticRoute, len(existing))
+	for _, route := range existing {
+		key := staticRouteRowKey(route)
+		existingByKey[key] = append(existingByKey[key], route)
+	}
+	var ops []ovsdb.Operation
+	desiredKeys := make(map[string]struct{})
+	for _, route := range table.Routes {
+		for _, desired := range desiredStaticRouteRows(table, route) {
+			key := staticRouteRowKey(desired)
+			desiredKeys[key] = struct{}{}
+			rows := existingByKey[key]
+			if len(rows) == 0 {
+				desired.UUID = ovsdbNamedUUID("nl_route_" + table.VPC + "_" + table.Name + "_" + key)
+				createOps, err := w.client.Create(&desired)
+				if err != nil {
+					return fmt.Errorf("create static route %s: %w", key, err)
+				}
+				ops = append(ops, createOps...)
+				attachOps, err := w.attachStaticRoute(router, desired.UUID)
+				if err != nil {
+					return err
+				}
+				ops = append(ops, attachOps...)
+				continue
+			}
+			keep := rows[0]
+			nextExternalIDs := mergeStringMap(keep.ExternalIDs, desired.ExternalIDs)
+			if !containsString(router.StaticRoutes, keep.UUID) {
+				attachOps, err := w.attachStaticRoute(router, keep.UUID)
+				if err != nil {
+					return err
+				}
+				ops = append(ops, attachOps...)
+			}
+			if keep.IPPrefix != desired.IPPrefix ||
+				keep.Nexthop != desired.Nexthop ||
+				keep.RouteTable != desired.RouteTable ||
+				!reflect.DeepEqual(keep.ExternalIDs, nextExternalIDs) {
+				keep.IPPrefix = desired.IPPrefix
+				keep.Nexthop = desired.Nexthop
+				keep.RouteTable = desired.RouteTable
+				keep.ExternalIDs = nextExternalIDs
+				updateOps, err := w.client.Where(&keep).Update(&keep, &keep.IPPrefix, &keep.Nexthop, &keep.RouteTable, &keep.ExternalIDs)
+				if err != nil {
+					return fmt.Errorf("update static route %s: %w", key, err)
+				}
+				ops = append(ops, updateOps...)
+			}
+			for i := 1; i < len(rows); i++ {
+				deleteOps, err := w.deleteStaticRoute(router.UUID, &rows[i])
+				if err != nil {
+					return err
+				}
+				ops = append(ops, deleteOps...)
+			}
+		}
+	}
+	for key, rows := range existingByKey {
+		if _, ok := desiredKeys[key]; ok {
+			continue
+		}
+		for i := range rows {
+			deleteOps, err := w.deleteStaticRoute(router.UUID, &rows[i])
+			if err != nil {
+				return err
+			}
+			ops = append(ops, deleteOps...)
+		}
+	}
+	if len(ops) == 0 {
+		return nil
+	}
+	results, err := w.client.Transact(ctx, ops...)
+	if err != nil {
+		return fmt.Errorf("transact route table %s/%s: %w", table.VPC, table.Name, err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, ops); err != nil {
+		return fmt.Errorf("route table %s/%s operation errors=%+v: %w", table.VPC, table.Name, opErrors, err)
+	}
+	return nil
+}
+
+func (w *LibOVSDBTopologyWriter) EnsurePolicyRoute(ctx context.Context, route model.PolicyRoute) error {
+	if w == nil || w.client == nil {
+		return fmt.Errorf("libovsdb topology writer has no client")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	router, ok, err := w.logicalRouterByName(ctx, logicalRouter(route.VPC))
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("logical router %s must exist before policy route %s", logicalRouter(route.VPC), route.Name)
+	}
+	existing, err := w.policyRoutesByName(ctx, route.VPC, route.Name)
+	if err != nil {
+		return err
+	}
+	desired := desiredPolicyRouteRow(route)
+	var ops []ovsdb.Operation
+	if len(existing) == 0 {
+		desired.UUID = ovsdbNamedUUID("nl_policy_route_" + route.VPC + "_" + route.Name)
+		createOps, err := w.client.Create(&desired)
+		if err != nil {
+			return fmt.Errorf("create policy route %s/%s: %w", route.VPC, route.Name, err)
+		}
+		ops = append(ops, createOps...)
+		attachOps, err := w.attachPolicyRoute(router, desired.UUID)
+		if err != nil {
+			return err
+		}
+		ops = append(ops, attachOps...)
+	} else {
+		keep := existing[0]
+		nextExternalIDs := mergeStringMap(keep.ExternalIDs, desired.ExternalIDs)
+		if !containsString(router.Policies, keep.UUID) {
+			attachOps, err := w.attachPolicyRoute(router, keep.UUID)
+			if err != nil {
+				return err
+			}
+			ops = append(ops, attachOps...)
+		}
+		if keep.Priority != desired.Priority ||
+			keep.Match != desired.Match ||
+			keep.Action != desired.Action ||
+			!stringPointerValueEqual(keep.Nexthop, pointerStringValue(desired.Nexthop)) ||
+			!reflect.DeepEqual(keep.Nexthops, desired.Nexthops) ||
+			!reflect.DeepEqual(keep.ExternalIDs, nextExternalIDs) {
+			keep.Priority = desired.Priority
+			keep.Match = desired.Match
+			keep.Action = desired.Action
+			keep.Nexthop = desired.Nexthop
+			keep.Nexthops = desired.Nexthops
+			keep.ExternalIDs = nextExternalIDs
+			updateOps, err := w.client.Where(&keep).Update(&keep, &keep.Priority, &keep.Match, &keep.Action, &keep.Nexthop, &keep.Nexthops, &keep.ExternalIDs)
+			if err != nil {
+				return fmt.Errorf("update policy route %s/%s: %w", route.VPC, route.Name, err)
+			}
+			ops = append(ops, updateOps...)
+		}
+		for i := 1; i < len(existing); i++ {
+			deleteOps, err := w.deletePolicyRoute(router.UUID, &existing[i])
+			if err != nil {
+				return err
+			}
+			ops = append(ops, deleteOps...)
+		}
+	}
+	if len(ops) == 0 {
+		return nil
+	}
+	results, err := w.client.Transact(ctx, ops...)
+	if err != nil {
+		return fmt.Errorf("transact policy route %s/%s: %w", route.VPC, route.Name, err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, ops); err != nil {
+		return fmt.Errorf("policy route %s/%s operation errors=%+v: %w", route.VPC, route.Name, opErrors, err)
+	}
+	return nil
+}
+
 func (w *LibOVSDBTopologyWriter) subnetPortOperations(ctx context.Context, router *ovnnb.LogicalRouter, logicalSwitch *ovnnb.LogicalSwitch, existingSwitch *ovnnb.LogicalSwitch, subnet model.Subnet) ([]ovsdb.Operation, error) {
 	switchUUID := logicalSwitch.UUID
 	switchPorts := logicalSwitch.Ports
@@ -442,6 +624,56 @@ func (w *LibOVSDBTopologyWriter) deleteLogicalSwitchPort(switchUUID string, port
 	return append(mutateOps, deleteOps...), nil
 }
 
+func (w *LibOVSDBTopologyWriter) attachStaticRoute(router *ovnnb.LogicalRouter, routeUUID string) ([]ovsdb.Operation, error) {
+	return w.client.Where(router).Mutate(router, ovsmodel.Mutation{
+		Field:   &router.StaticRoutes,
+		Mutator: ovsdb.MutateOperationInsert,
+		Value:   []string{routeUUID},
+	})
+}
+
+func (w *LibOVSDBTopologyWriter) deleteStaticRoute(routerUUID string, route *ovnnb.LogicalRouterStaticRoute) ([]ovsdb.Operation, error) {
+	router := &ovnnb.LogicalRouter{UUID: routerUUID}
+	mutateOps, err := w.client.Where(router).Mutate(router, ovsmodel.Mutation{
+		Field:   &router.StaticRoutes,
+		Mutator: ovsdb.MutateOperationDelete,
+		Value:   []string{route.UUID},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("detach static route %s from router %s: %w", route.UUID, routerUUID, err)
+	}
+	deleteOps, err := w.client.Where(route).Delete()
+	if err != nil {
+		return nil, fmt.Errorf("delete static route %s: %w", route.UUID, err)
+	}
+	return append(mutateOps, deleteOps...), nil
+}
+
+func (w *LibOVSDBTopologyWriter) attachPolicyRoute(router *ovnnb.LogicalRouter, policyUUID string) ([]ovsdb.Operation, error) {
+	return w.client.Where(router).Mutate(router, ovsmodel.Mutation{
+		Field:   &router.Policies,
+		Mutator: ovsdb.MutateOperationInsert,
+		Value:   []string{policyUUID},
+	})
+}
+
+func (w *LibOVSDBTopologyWriter) deletePolicyRoute(routerUUID string, policy *ovnnb.LogicalRouterPolicy) ([]ovsdb.Operation, error) {
+	router := &ovnnb.LogicalRouter{UUID: routerUUID}
+	mutateOps, err := w.client.Where(router).Mutate(router, ovsmodel.Mutation{
+		Field:   &router.Policies,
+		Mutator: ovsdb.MutateOperationDelete,
+		Value:   []string{policy.UUID},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("detach policy route %s from router %s: %w", policy.UUID, routerUUID, err)
+	}
+	deleteOps, err := w.client.Where(policy).Delete()
+	if err != nil {
+		return nil, fmt.Errorf("delete policy route %s: %w", policy.UUID, err)
+	}
+	return append(mutateOps, deleteOps...), nil
+}
+
 func (w *LibOVSDBTopologyWriter) endpointDHCPOptionsOperations(ctx context.Context, endpoint model.Endpoint, switchExternalIDs map[string]string, port *ovnnb.LogicalSwitchPort) ([]ovsdb.Operation, error) {
 	var ops []ovsdb.Operation
 	for _, family := range []int{4, 6} {
@@ -449,7 +681,11 @@ func (w *LibOVSDBTopologyWriter) endpointDHCPOptionsOperations(ctx context.Conte
 		if err != nil {
 			return nil, err
 		}
-		nextOps, dhcpUUID, err := w.ensureEndpointDHCPOptions(ctx, endpoint, family, desired, enabled)
+		currentDHCPUUID := pointerStringValue(port.Dhcpv4Options)
+		if family == 6 {
+			currentDHCPUUID = pointerStringValue(port.Dhcpv6Options)
+		}
+		nextOps, dhcpUUID, err := w.ensureEndpointDHCPOptions(ctx, endpoint, family, desired, enabled, currentDHCPUUID)
 		if err != nil {
 			return nil, err
 		}
@@ -528,7 +764,7 @@ func (w *LibOVSDBTopologyWriter) desiredEndpointDHCPOptions(ctx context.Context,
 	}, true, nil
 }
 
-func (w *LibOVSDBTopologyWriter) ensureEndpointDHCPOptions(ctx context.Context, endpoint model.Endpoint, family int, desired *ovnnb.DHCPOptions, enabled bool) ([]ovsdb.Operation, string, error) {
+func (w *LibOVSDBTopologyWriter) ensureEndpointDHCPOptions(ctx context.Context, endpoint model.Endpoint, family int, desired *ovnnb.DHCPOptions, enabled bool, currentUUID string) ([]ovsdb.Operation, string, error) {
 	rows, err := w.endpointDHCPOptionsByFamily(ctx, endpoint, family)
 	if err != nil {
 		return nil, "", err
@@ -552,7 +788,14 @@ func (w *LibOVSDBTopologyWriter) ensureEndpointDHCPOptions(ctx context.Context, 
 		ops = append(ops, createOps...)
 		return ops, desired.UUID, nil
 	}
-	keep := rows[0]
+	keepIndex := 0
+	for i := range rows {
+		if rows[i].UUID == currentUUID {
+			keepIndex = i
+			break
+		}
+	}
+	keep := rows[keepIndex]
 	nextExternalIDs := mergeStringMap(keep.ExternalIDs, desired.ExternalIDs)
 	if keep.Cidr != desired.Cidr || !reflect.DeepEqual(keep.Options, desired.Options) || !reflect.DeepEqual(keep.ExternalIDs, nextExternalIDs) {
 		keep.Cidr = desired.Cidr
@@ -564,7 +807,10 @@ func (w *LibOVSDBTopologyWriter) ensureEndpointDHCPOptions(ctx context.Context, 
 		}
 		ops = append(ops, updateOps...)
 	}
-	for i := 1; i < len(rows); i++ {
+	for i := range rows {
+		if i == keepIndex {
+			continue
+		}
 		deleteOps, err := w.client.Where(&rows[i]).Delete()
 		if err != nil {
 			return nil, "", fmt.Errorf("delete duplicate DHCP options %s: %w", rows[i].UUID, err)
@@ -633,6 +879,32 @@ func (w *LibOVSDBTopologyWriter) endpointDHCPOptionsByFamily(ctx context.Context
 	return rows, nil
 }
 
+func (w *LibOVSDBTopologyWriter) staticRoutesByRouteTable(ctx context.Context, table model.RouteTable) ([]ovnnb.LogicalRouterStaticRoute, error) {
+	var rows []ovnnb.LogicalRouterStaticRoute
+	if err := w.client.WhereCache(func(row *ovnnb.LogicalRouterStaticRoute) bool {
+		return row.ExternalIDs["netloom_owner"] == "netloom" &&
+			row.ExternalIDs["netloom_vpc"] == table.VPC &&
+			row.ExternalIDs["netloom_route_table"] == table.Name
+	}).List(ctx, &rows); err != nil {
+		return nil, fmt.Errorf("list static routes for route table %s/%s from libovsdb cache: %w", table.VPC, table.Name, err)
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].UUID < rows[j].UUID })
+	return rows, nil
+}
+
+func (w *LibOVSDBTopologyWriter) policyRoutesByName(ctx context.Context, vpc, name string) ([]ovnnb.LogicalRouterPolicy, error) {
+	var rows []ovnnb.LogicalRouterPolicy
+	if err := w.client.WhereCache(func(row *ovnnb.LogicalRouterPolicy) bool {
+		return row.ExternalIDs["netloom_owner"] == "netloom" &&
+			row.ExternalIDs["netloom_vpc"] == vpc &&
+			row.ExternalIDs["netloom_policy_route"] == name
+	}).List(ctx, &rows); err != nil {
+		return nil, fmt.Errorf("list policy routes %s/%s from libovsdb cache: %w", vpc, name, err)
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].UUID < rows[j].UUID })
+	return rows, nil
+}
+
 func mergeStringMap(base map[string]string, overlay map[string]string) map[string]string {
 	out := make(map[string]string, len(base)+len(overlay))
 	for key, value := range base {
@@ -659,6 +931,93 @@ func logicalSwitchExternalIDs(subnet model.Subnet) map[string]string {
 		"netloom_dhcp_search_paths": strings.Join(subnet.DHCP.SearchDomains, ","),
 	}
 	return out
+}
+
+func desiredStaticRouteRows(table model.RouteTable, route model.Route) []ovnnb.LogicalRouterStaticRoute {
+	if route.Blackhole {
+		return []ovnnb.LogicalRouterStaticRoute{{
+			IPPrefix:   route.Destination.String(),
+			Nexthop:    "discard",
+			RouteTable: table.Name,
+			ExternalIDs: map[string]string{
+				"netloom_owner":       "netloom",
+				"netloom_vpc":         table.VPC,
+				"netloom_route_table": table.Name,
+				"netloom_route_key":   staticRouteKey(route.Destination.String(), "discard"),
+			},
+		}}
+	}
+	nextHops := route.RouteNextHops()
+	rows := make([]ovnnb.LogicalRouterStaticRoute, 0, len(nextHops))
+	for _, nextHop := range nextHops {
+		nextHopString := nextHop.String()
+		rows = append(rows, ovnnb.LogicalRouterStaticRoute{
+			IPPrefix:   route.Destination.String(),
+			Nexthop:    nextHopString,
+			RouteTable: table.Name,
+			ExternalIDs: map[string]string{
+				"netloom_owner":       "netloom",
+				"netloom_vpc":         table.VPC,
+				"netloom_route_table": table.Name,
+				"netloom_route_key":   staticRouteKey(route.Destination.String(), nextHopString),
+			},
+		})
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].Nexthop < rows[j].Nexthop })
+	return rows
+}
+
+func staticRouteRowKey(route ovnnb.LogicalRouterStaticRoute) string {
+	if key := route.ExternalIDs["netloom_route_key"]; key != "" {
+		return key
+	}
+	return staticRouteKey(route.IPPrefix, route.Nexthop)
+}
+
+func staticRouteKey(prefix, nextHop string) string {
+	return prefix + "|" + nextHop
+}
+
+func desiredPolicyRouteRow(route model.PolicyRoute) ovnnb.LogicalRouterPolicy {
+	action := ovnPolicyRouteAction(route.Action.Type)
+	row := ovnnb.LogicalRouterPolicy{
+		Priority: route.Priority,
+		Match:    policyRouteMatch(route.Match),
+		Action:   action,
+		ExternalIDs: map[string]string{
+			"netloom_owner":        "netloom",
+			"netloom_vpc":          route.VPC,
+			"netloom_policy_route": route.Name,
+			"netloom_action":       string(route.Action.Type),
+		},
+	}
+	if route.Action.Type == model.ActionReroute {
+		nextHops := route.Action.RerouteNextHops()
+		values := make([]string, 0, len(nextHops))
+		for _, nextHop := range nextHops {
+			values = append(values, nextHop.String())
+		}
+		sort.Strings(values)
+		if len(values) == 1 {
+			row.Nexthop = &values[0]
+		} else {
+			row.Nexthops = values
+		}
+	}
+	return row
+}
+
+func ovnPolicyRouteAction(action model.Action) ovnnb.LogicalRouterPolicyAction {
+	switch action {
+	case model.ActionReject:
+		return ovnnb.LogicalRouterPolicyActionDrop
+	case model.ActionReroute:
+		return ovnnb.LogicalRouterPolicyActionReroute
+	case model.ActionAllow:
+		return ovnnb.LogicalRouterPolicyActionAllow
+	default:
+		return ovnnb.LogicalRouterPolicyActionDrop
+	}
 }
 
 func logicalSwitchOtherConfig(subnet model.Subnet) map[string]string {
@@ -754,8 +1113,25 @@ func stringPointerValueEqual(current *string, desired string) bool {
 	return *current == desired
 }
 
+func pointerStringValue(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
 func ovsdbNamedUUID(name string) string {
-	return strings.TrimPrefix(namedUUID(name), "@")
+	replacer := strings.NewReplacer(
+		"/", "_",
+		":", "_",
+		".", "_",
+		"|", "_",
+		",", "_",
+		" ", "_",
+		"\x00", "_",
+		"-", "_h",
+	)
+	return ovnIdentifier(replacer.Replace(name))
 }
 
 func joinAddrs(addrs []netip.Addr) string {
