@@ -113,6 +113,7 @@ func TestLinuxDatapathOptionsParsesBackend(t *testing.T) {
 	t.Setenv("NETLOOM_POLICY_ROUTE_TABLE_BASE", "22000")
 	t.Setenv("NETLOOM_POLICY_ROUTE_TABLE_SIZE", "64")
 	t.Setenv("NETLOOM_PROVIDER_HEALTH_STRICT", "1")
+	t.Setenv("NETLOOM_OVSDB_SYNC", "1")
 
 	options := linuxDatapathOptions()
 	if options == nil {
@@ -135,6 +136,9 @@ func TestLinuxDatapathOptionsParsesBackend(t *testing.T) {
 	}
 	if !options.StrictProviderHealth {
 		t.Fatal("strict provider health should be enabled")
+	}
+	if !options.SyncOVSDB {
+		t.Fatal("ovsdb sync should be enabled")
 	}
 }
 

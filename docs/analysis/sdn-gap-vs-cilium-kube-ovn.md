@@ -83,15 +83,13 @@ This is the single most important control-plane refactor still missing.
 
 ### 2. Provider network management is still too thin for a product
 
-Netloom can create provider VLAN links from static mappings and it has tests for create/cleanup. But it does not have a real provider-network management subsystem.
+Netloom can create provider VLAN links, discover provider interface inventory, select ready candidate parent interfaces, report per-provider readiness/issues, and optionally sync local OVS `Open_vSwitch` database bridge mappings with `NETLOOM_OVSDB_SYNC=1`. When OVSDB sync is enabled, the agent creates deterministic OVS bridges, attaches managed provider VLAN links, annotates Bridge/Interface rows with Netloom `external_ids`, and writes `external_ids:ovn-bridge-mappings` for OVN localnet resolution.
 
 What is missing:
 
-- provider network inventory object/model
-- per-node readiness/status
-- automatic parent-interface discovery/validation
 - multi-provider isolation semantics beyond env-var mapping
-- richer failure reporting when underlay state drifts
+- richer failure reporting when underlay state drifts after OVS/OVN has already bound the provider bridge
+- lifecycle cleanup for stale Netloom-owned OVS bridges and bridge-mapping entries beyond clearing the desired mapping value
 
 Reference:
 

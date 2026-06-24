@@ -34,6 +34,7 @@ type Options struct {
 	NodeUnderlays        map[string][]netip.Addr
 	ProviderLinks        map[string]string
 	ProviderInventory    []ProviderInterface
+	SyncOVSDB            bool
 	NetNSPrefix          string
 	WorkloadIF           string
 	HostGateway          netip.Addr
@@ -273,6 +274,9 @@ func Plan(ctx context.Context, state control.DesiredState, options Options) ([]O
 	result.ProviderReady, result.ProviderDegraded = summarizeProviderLinkHealth(result.ProviderStatus)
 	result.ProviderNetworkStatus = summarizeProviderNetworkStatus(result.ProviderStatus, result.ProviderIssues)
 	ops = append(ops, planProviderNetworkLinks(providerSpecs)...)
+	if options.SyncOVSDB {
+		ops = append(ops, planProviderOVSDBMappings(providerSpecs)...)
+	}
 	if options.CleanupStale {
 		ops = append(ops, planProviderNetworkLinkCleanup(providerSpecs))
 	}
@@ -652,6 +656,10 @@ func providerNetworkLinkName(providerNetwork, parent string, vlan uint16) string
 	return shortName(providerLinkPrefix, providerNetwork+"|"+parent+"|"+strconv.Itoa(int(vlan)))
 }
 
+func providerNetworkBridgeName(providerNetwork string) string {
+	return shortName("nlbr", providerNetwork)
+}
+
 func planProviderNetworkLinks(specs []providerNetworkLinkSpec) []Operation {
 	ops := make([]Operation, 0, len(specs)*2)
 	for _, spec := range specs {
@@ -661,6 +669,35 @@ func planProviderNetworkLinks(specs []providerNetworkLinkSpec) []Operation {
 		)
 	}
 	return ops
+}
+
+func planProviderOVSDBMappings(specs []providerNetworkLinkSpec) []Operation {
+	if len(specs) == 0 {
+		return []Operation{ovsVSCTLOperation("set", "Open_vSwitch", ".", "external_ids:netloom_owner=netloom", "external_ids:ovn-bridge-mappings=")}
+	}
+	ops := make([]Operation, 0, len(specs)*4+1)
+	mappingSet := make(map[string]struct{}, len(specs))
+	for _, spec := range specs {
+		bridge := providerNetworkBridgeName(spec.ProviderNetwork)
+		mappingSet[spec.ProviderNetwork+":"+bridge] = struct{}{}
+		ops = append(ops,
+			ovsVSCTLOperation("--may-exist", "add-br", bridge),
+			ovsVSCTLOperation("set", "bridge", bridge, "external_ids:netloom_owner=netloom", "external_ids:netloom_provider_network="+spec.ProviderNetwork),
+			ovsVSCTLOperation("--may-exist", "add-port", bridge, spec.Name),
+			ovsVSCTLOperation("set", "interface", spec.Name, "external_ids:netloom_owner=netloom", "external_ids:netloom_provider_network="+spec.ProviderNetwork, "external_ids:netloom_parent_device="+spec.ParentDevice, "external_ids:netloom_vlan="+strconv.Itoa(int(spec.VLAN))),
+		)
+	}
+	mappings := make([]string, 0, len(mappingSet))
+	for mapping := range mappingSet {
+		mappings = append(mappings, mapping)
+	}
+	sort.Strings(mappings)
+	ops = append(ops, ovsVSCTLOperation("set", "Open_vSwitch", ".", "external_ids:netloom_owner=netloom", "external_ids:ovn-bridge-mappings="+strings.Join(mappings, ",")))
+	return ops
+}
+
+func ovsVSCTLOperation(args ...string) Operation {
+	return Operation{Command: "ovs-vsctl", Args: args}
 }
 
 func planProviderNetworkLinkCleanup(specs []providerNetworkLinkSpec) Operation {

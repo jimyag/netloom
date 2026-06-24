@@ -1606,6 +1606,7 @@ func linuxDatapathOptions() *linuxdatapath.Options {
 		LocalDevice:          getenvDefault("NETLOOM_DATAPATH_DEV", "lo"),
 		UnderlayDevice:       getenvDefault("NETLOOM_UNDERLAY_DEV", "eth0"),
 		ProviderLinks:        parseProviderLinks(os.Getenv("NETLOOM_PROVIDER_NETWORK_LINKS")),
+		SyncOVSDB:            os.Getenv("NETLOOM_OVSDB_SYNC") == "1",
 		NetNSPrefix:          getenvDefault("NETLOOM_NETNS_PREFIX", "nl"),
 		WorkloadIF:           getenvDefault("NETLOOM_WORKLOAD_IF", "eth0"),
 		NodeUnderlays:        parseNodeUnderlays(os.Getenv("NETLOOM_NODE_UNDERLAYS")),

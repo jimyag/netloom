@@ -128,6 +128,90 @@ func TestPlanReportsProviderNetworkCounts(t *testing.T) {
 	}
 }
 
+func TestPlanSyncsProviderBridgeMappingsToOVSDB(t *testing.T) {
+	state := control.DesiredState{
+		ProviderNetworks: []model.ProviderNetwork{{
+			Name: "physnet-a",
+			Nodes: []model.ProviderNetworkNode{{
+				Node:      "node-a",
+				Interface: "eth1",
+			}},
+		}},
+		Subnets: []model.Subnet{{
+			Name:            "apps",
+			VPC:             "prod",
+			CIDR:            netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway:         netip.MustParseAddr("10.10.0.1"),
+			ProviderNetwork: "physnet-a",
+			VLAN:            100,
+		}},
+		Endpoints: []model.Endpoint{{
+			ID:     "pod-a",
+			VPC:    "prod",
+			Subnet: "apps",
+			IP:     netip.MustParseAddr("10.10.0.10"),
+			Node:   "node-a",
+		}},
+	}
+	ops, _, err := Plan(context.Background(), state, Options{
+		Node:        "node-a",
+		LocalDevice: "nl0",
+		SyncOVSDB:   true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	link := providerNetworkLinkName("physnet-a", "eth1", 100)
+	bridge := providerNetworkBridgeName("physnet-a")
+	want := []Operation{
+		shellOperation("ip link show " + link + " >/dev/null 2>&1 || ip link add link eth1 name " + link + " type vlan id 100"),
+		{Command: "ip", Args: []string{"link", "set", link, "up"}},
+		{Command: "ovs-vsctl", Args: []string{"--may-exist", "add-br", bridge}},
+		{Command: "ovs-vsctl", Args: []string{"set", "bridge", bridge, "external_ids:netloom_owner=netloom", "external_ids:netloom_provider_network=physnet-a"}},
+		{Command: "ovs-vsctl", Args: []string{"--may-exist", "add-port", bridge, link}},
+		{Command: "ovs-vsctl", Args: []string{"set", "interface", link, "external_ids:netloom_owner=netloom", "external_ids:netloom_provider_network=physnet-a", "external_ids:netloom_parent_device=eth1", "external_ids:netloom_vlan=100"}},
+		{Command: "ovs-vsctl", Args: []string{"set", "Open_vSwitch", ".", "external_ids:netloom_owner=netloom", "external_ids:ovn-bridge-mappings=physnet-a:" + bridge}},
+		{Command: "ip", Args: []string{"link", "set", "nl0", "up"}},
+		{Command: "ip", Args: []string{"addr", "replace", "10.10.0.10/32", "dev", "nl0"}},
+	}
+	if !reflect.DeepEqual(ops, want) {
+		t.Fatalf("ops = %#v, want %#v", ops, want)
+	}
+}
+
+func TestPlanClearsProviderBridgeMappingsWhenOVSDBSyncHasNoProviders(t *testing.T) {
+	ops, _, err := Plan(context.Background(), control.DesiredState{}, Options{
+		Node:      "node-a",
+		SyncOVSDB: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Operation{
+		{Command: "ovs-vsctl", Args: []string{"set", "Open_vSwitch", ".", "external_ids:netloom_owner=netloom", "external_ids:ovn-bridge-mappings="}},
+		{Command: "ip", Args: []string{"link", "set", "lo", "up"}},
+	}
+	if !reflect.DeepEqual(ops, want) {
+		t.Fatalf("ops = %#v, want %#v", ops, want)
+	}
+}
+
+func TestPlanProviderOVSDBMappingsDeduplicatesProviderBridgeMappings(t *testing.T) {
+	bridge := providerNetworkBridgeName("physnet-a")
+	ops := planProviderOVSDBMappings([]providerNetworkLinkSpec{
+		{ProviderNetwork: "physnet-a", ParentDevice: "eth1", VLAN: 100, Name: "nlv100"},
+		{ProviderNetwork: "physnet-a", ParentDevice: "eth1", VLAN: 200, Name: "nlv200"},
+	})
+	if len(ops) == 0 {
+		t.Fatal("expected ovsdb operations")
+	}
+	last := ops[len(ops)-1]
+	want := Operation{Command: "ovs-vsctl", Args: []string{"set", "Open_vSwitch", ".", "external_ids:netloom_owner=netloom", "external_ids:ovn-bridge-mappings=physnet-a:" + bridge}}
+	if !reflect.DeepEqual(last, want) {
+		t.Fatalf("last op = %#v, want %#v", last, want)
+	}
+}
+
 func TestProviderOperStateReady(t *testing.T) {
 	tests := []struct {
 		state netlink.LinkOperState
