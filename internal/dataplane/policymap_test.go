@@ -840,3 +840,29 @@ func TestPolicyUpdateSequenceSkipsDeletePhaseDuringFullRewrite(t *testing.T) {
 		t.Fatalf("sequence = %v, want %v", got, want)
 	}
 }
+
+func TestParsePolicyMapOverflowAction(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want PolicyMapOverflowAction
+	}{
+		{name: "empty defaults to reject", raw: "", want: PolicyMapOverflowReject},
+		{name: "reject", raw: "reject", want: PolicyMapOverflowReject},
+		{name: "clear", raw: " clear ", want: PolicyMapOverflowClear},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ParsePolicyMapOverflowAction(tc.raw)
+			if err != nil {
+				t.Fatalf("ParsePolicyMapOverflowAction(%q) error = %v", tc.raw, err)
+			}
+			if got != tc.want {
+				t.Fatalf("ParsePolicyMapOverflowAction(%q) = %q, want %q", tc.raw, got, tc.want)
+			}
+		})
+	}
+	if _, err := ParsePolicyMapOverflowAction("trim"); err == nil {
+		t.Fatalf("ParsePolicyMapOverflowAction() accepted unsupported action")
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/netip"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -88,6 +89,24 @@ type PolicyMapDriftSummary struct {
 	ChangedEntries   int `json:"changed_entries"`
 }
 
+type PolicyMapOverflowAction string
+
+const (
+	PolicyMapOverflowReject PolicyMapOverflowAction = "reject"
+	PolicyMapOverflowClear  PolicyMapOverflowAction = "clear"
+)
+
+func ParsePolicyMapOverflowAction(value string) (PolicyMapOverflowAction, error) {
+	switch action := PolicyMapOverflowAction(strings.TrimSpace(value)); action {
+	case "", PolicyMapOverflowReject:
+		return PolicyMapOverflowReject, nil
+	case PolicyMapOverflowClear:
+		return PolicyMapOverflowClear, nil
+	default:
+		return "", fmt.Errorf("unsupported policy map overflow action %q", value)
+	}
+}
+
 type PolicyUpdateEvent struct {
 	EndpointID       string            `json:"endpoint_id"`
 	PreviousRevision uint64            `json:"previous_revision"`
@@ -95,6 +114,8 @@ type PolicyUpdateEvent struct {
 	Stats            PolicyUpdateStats `json:"stats"`
 	Success          bool              `json:"success"`
 	Error            string            `json:"error,omitempty"`
+	Remediated       bool              `json:"remediated,omitempty"`
+	Remediation      string            `json:"remediation,omitempty"`
 }
 
 type PolicyEndpointStatus struct {

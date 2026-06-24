@@ -32,6 +32,24 @@ func TestEBPFMapPinRootUsesExplicitEnv(t *testing.T) {
 	}
 }
 
+func TestPolicyStoreConfiguresEBPFMapOverflowAction(t *testing.T) {
+	t.Setenv("NETLOOM_POLICY_STORE", "ebpf")
+	t.Setenv("NETLOOM_EBPF_MAP_PIN_ROOT", t.TempDir())
+	t.Setenv("NETLOOM_EBPF_MAP_METADATA_ROOT", t.TempDir())
+	t.Setenv("NETLOOM_EBPF_MAP_OVERFLOW_ACTION", "clear")
+
+	store, name, closeStore := policyStore()
+	defer closeStore()
+
+	ebpfStore, ok := store.(*dataplane.EBPFPolicyStore)
+	if !ok || name != "ebpf" {
+		t.Fatalf("policyStore() = %T/%s, want eBPF store", store, name)
+	}
+	if got := ebpfStore.OverflowAction(); got != dataplane.PolicyMapOverflowClear {
+		t.Fatalf("overflow action = %q, want %q", got, dataplane.PolicyMapOverflowClear)
+	}
+}
+
 func TestEnsureDirAccessibleRejectsMissingPath(t *testing.T) {
 	if err := ensureDirAccessible(filepath.Join(t.TempDir(), "missing")); err == nil {
 		t.Fatal("ensureDirAccessible() should reject missing path")

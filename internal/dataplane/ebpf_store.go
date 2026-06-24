@@ -25,10 +25,11 @@ const defaultPolicyMapSchemaVersion = 2
 const policyMapMetaFileSuffix = ".meta"
 
 type EBPFPolicyStoreConfig struct {
-	MaxEntries    uint32
-	PinRoot       string
-	MetadataRoot  string
-	SchemaVersion uint32
+	MaxEntries     uint32
+	PinRoot        string
+	MetadataRoot   string
+	SchemaVersion  uint32
+	OverflowAction PolicyMapOverflowAction
 }
 
 type policyMapMetadata struct {
@@ -44,6 +45,7 @@ type EBPFPolicyStore struct {
 	pinRoot      string
 	metadataRoot string
 	schema       uint32
+	overflow     PolicyMapOverflowAction
 	maps         map[string]*ebpf.Map
 	entries      map[string][]PolicyMapEntry
 	lastStats    map[string]PolicyUpdateStats
@@ -73,11 +75,20 @@ func NewEBPFPolicyStoreWithConfig(cfg EBPFPolicyStoreConfig) *EBPFPolicyStore {
 	if metadataRoot != "" {
 		metadataRoot = filepath.Clean(metadataRoot)
 	}
+	overflow := cfg.OverflowAction
+	if overflow == "" {
+		overflow = PolicyMapOverflowReject
+	} else if parsed, err := ParsePolicyMapOverflowAction(string(overflow)); err == nil {
+		overflow = parsed
+	} else {
+		overflow = PolicyMapOverflowReject
+	}
 	return &EBPFPolicyStore{
 		maxEntries:   maxEntries,
 		pinRoot:      pinRoot,
 		metadataRoot: metadataRoot,
 		schema:       schema,
+		overflow:     overflow,
 		maps:         make(map[string]*ebpf.Map),
 		entries:      make(map[string][]PolicyMapEntry),
 		lastStats:    make(map[string]PolicyUpdateStats),
@@ -100,6 +111,9 @@ func (s *EBPFPolicyStore) ReplaceEndpoint(ctx context.Context, endpointID string
 	previousRevision := s.revisions[endpointID]
 	revision := previousRevision + 1
 	if err := s.validatePolicyMapCapacity(endpointID, entries); err != nil {
+		if s.overflow == PolicyMapOverflowClear {
+			return s.clearEndpointPolicyAfterOverflowLocked(ctx, endpointID, previousRevision, revision, err)
+		}
 		s.recordPolicyUpdateFailure(endpointID, previousRevision, revision, plan.Stats(), err)
 		return err
 	}
@@ -129,6 +143,46 @@ func (s *EBPFPolicyStore) ReplaceEndpoint(ctx context.Context, endpointID string
 	if old != nil && old != next {
 		old.Close()
 	}
+	if s.pinRoot != "" {
+		if err := s.writeMapMetadata(s.pinnedPolicyMapMetadataPath(endpointID), endpointID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *EBPFPolicyStore) clearEndpointPolicyAfterOverflowLocked(ctx context.Context, endpointID string, previousRevision, revision uint64, overflowErr error) error {
+	oldEntries := s.entries[endpointID]
+	clearPlan := PlanPolicyUpdate(oldEntries, nil)
+	oldMap := s.maps[endpointID]
+	if s.maps[endpointID] != nil || s.pinRoot != "" {
+		next, err := s.preparePolicyMapLocked(ctx, endpointID, nil, oldEntries, clearPlan)
+		if err != nil {
+			err = fmt.Errorf("clear eBPF policy map after overflow for endpoint %s: %w", endpointID, err)
+			s.recordPolicyUpdateFailure(endpointID, previousRevision, revision, clearPlan.Stats(), err)
+			return err
+		}
+		s.maps[endpointID] = next
+		if oldMap != nil && oldMap != next {
+			oldMap.Close()
+		}
+	}
+	stats := clearPlan.Stats()
+	stats.Revision = revision
+	s.entries[endpointID] = nil
+	s.revisions[endpointID] = revision
+	s.lastStats[endpointID] = stats
+	s.lastSeen[endpointID] = time.Now()
+	s.events = append(s.events, PolicyUpdateEvent{
+		EndpointID:       endpointID,
+		PreviousRevision: previousRevision,
+		Revision:         revision,
+		Stats:            stats,
+		Success:          true,
+		Remediated:       true,
+		Remediation:      string(PolicyMapOverflowClear),
+		Error:            overflowErr.Error(),
+	})
 	if s.pinRoot != "" {
 		if err := s.writeMapMetadata(s.pinnedPolicyMapMetadataPath(endpointID), endpointID); err != nil {
 			return err
@@ -573,6 +627,12 @@ func (s *EBPFPolicyStore) Events() []PolicyUpdateEvent {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]PolicyUpdateEvent(nil), s.events...)
+}
+
+func (s *EBPFPolicyStore) OverflowAction() PolicyMapOverflowAction {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.overflow
 }
 
 func (s *EBPFPolicyStore) PolicyMapUsage(_ context.Context) ([]PolicyMapUsage, error) {

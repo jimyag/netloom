@@ -1229,6 +1229,9 @@ func policyStore() (agent.PolicyStore, string, func()) {
 		if schemaVersion, err := parseUint32Env("NETLOOM_EBPF_MAP_SCHEMA_VERSION"); err == nil {
 			cfg.SchemaVersion = schemaVersion
 		}
+		if overflow, err := dataplane.ParsePolicyMapOverflowAction(os.Getenv("NETLOOM_EBPF_MAP_OVERFLOW_ACTION")); err == nil {
+			cfg.OverflowAction = overflow
+		}
 		cfg.PinRoot = ebpfMapPinRoot()
 		cfg.MetadataRoot = ebpfMapMetadataRoot()
 		store := dataplane.NewEBPFPolicyStoreWithConfig(cfg)
