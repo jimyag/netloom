@@ -104,15 +104,13 @@ For bare metal, this should become a native Netloom subsystem, not a CRD clone.
 
 ### 3. eBPF ACL datapath lacks Cilium-grade operational controls
 
-Netloom already has compile/store/evaluate/TCX attach. What it still lacks is the operational hardening layer Cilium has around policy maps.
+Netloom already has compile/store/evaluate/TCX attach. It also has policy-map pressure metrics, overflow rejection before programming, pinned-map drift repair that ignores counter-only changes, explicit live-vs-desired policy-map drift telemetry, attach/update rollback signals, and per-endpoint usage accounting. What it still lacks is the larger operational hardening layer Cilium has around policy maps.
 
 What is missing:
 
-- policy-map pressure metrics
-- overflow handling strategy
-- periodic full reconciliation of live map contents vs desired state
-- stronger attach/update rollback semantics exposed as product signals
-- per-endpoint policy-map usage accounting
+- configurable overflow remediation beyond rejecting oversized endpoint maps
+- policy-map garbage collection and aging policy for long-lived bare-metal agents
+- richer per-endpoint policy lifecycle APIs around revisions, drift, and recovery
 
 Reference:
 

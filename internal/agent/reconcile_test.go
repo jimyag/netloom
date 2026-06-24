@@ -89,6 +89,7 @@ func (s *inventoryPolicyStore) EndpointIDs(_ context.Context) ([]string, error) 
 type usagePolicyStore struct {
 	*dataplane.InMemoryPolicyStore
 	usages []dataplane.PolicyMapUsage
+	drift  []dataplane.PolicyMapDrift
 	err    error
 }
 
@@ -97,6 +98,13 @@ func (s *usagePolicyStore) PolicyMapUsage(_ context.Context) ([]dataplane.Policy
 		return nil, s.err
 	}
 	return append([]dataplane.PolicyMapUsage(nil), s.usages...), nil
+}
+
+func (s *usagePolicyStore) PolicyMapDrift(_ context.Context) ([]dataplane.PolicyMapDrift, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	return append([]dataplane.PolicyMapDrift(nil), s.drift...), nil
 }
 
 type concurrentPolicyStore struct {
@@ -1056,6 +1064,10 @@ func TestReconcileNodeReportsPolicyMapPressureSummary(t *testing.T) {
 			{EndpointID: model.EndpointKey("prod", "pod-a"), Entries: 12, Capacity: 16},
 			{EndpointID: model.EndpointKey("prod", "pod-b"), Entries: 8, Capacity: 16},
 		},
+		drift: []dataplane.PolicyMapDrift{
+			{EndpointID: model.EndpointKey("prod", "pod-a"), Missing: 1, Extra: 2, Changed: 3, Drifted: true},
+			{EndpointID: model.EndpointKey("prod", "pod-b")},
+		},
 	}
 	result, err := ReconcileNode(context.Background(), state, "node-a", store)
 	if err != nil {
@@ -1072,6 +1084,9 @@ func TestReconcileNodeReportsPolicyMapPressureSummary(t *testing.T) {
 	}
 	if result.PolicyMapPressureEndpoints != 0 {
 		t.Fatalf("policy map pressure endpoints = %d, want 0", result.PolicyMapPressureEndpoints)
+	}
+	if result.PolicyMapDriftEndpoints != 1 || result.PolicyMapDriftMissing != 1 || result.PolicyMapDriftExtra != 2 || result.PolicyMapDriftChanged != 3 {
+		t.Fatalf("policy map drift summary = %+v, want one drifted endpoint", result)
 	}
 
 	store.usages = []dataplane.PolicyMapUsage{

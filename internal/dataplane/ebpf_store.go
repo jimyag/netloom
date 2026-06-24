@@ -545,6 +545,34 @@ func (s *EBPFPolicyStore) PolicyMapUsage(_ context.Context) ([]PolicyMapUsage, e
 	return usages, nil
 }
 
+func (s *EBPFPolicyStore) PolicyMapDrift(ctx context.Context) ([]PolicyMapDrift, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	endpointIDs, err := s.managedEndpointIDsLocked()
+	if err != nil {
+		return nil, err
+	}
+	reports := make([]PolicyMapDrift, 0, len(endpointIDs))
+	for _, endpointID := range endpointIDs {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		live, err := s.policyMapEntriesLocked(endpointID)
+		if err != nil {
+			return nil, fmt.Errorf("read policy map drift for endpoint %s: %w", endpointID, err)
+		}
+		reports = append(reports, DiffPolicyMapEntries(endpointID, s.entries[endpointID], live))
+	}
+	sort.Slice(reports, func(i, j int) bool {
+		return reports[i].EndpointID < reports[j].EndpointID
+	})
+	return reports, nil
+}
+
 func (s *EBPFPolicyStore) PolicyRuleMetrics(ctx context.Context) ([]RuleMetrics, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -348,24 +348,25 @@ The eBPF policy-map value also carries packet and byte counter fields. The
 eBPF store implements the same policy telemetry interface by reading live pinned
 map values, classifying counters by rule cookie and action, and preserving those
 counters during drift checks so reconcile does not rewrite a healthy map merely
-because datapath counters changed. The TCX L4 ACL map value similarly carries
-the projected rule cookie, log flag, and packet and byte counters. IPv4 and
-IPv6 TCX programs atomically increment those counters after a successful LPM
-lookup and before returning the rule action. After a successful TCX reconcile,
-the agent reads the live attachment maps, aggregates counters by rule cookie,
-classifies logged hits from the value metadata, and merges them into the normal
-`policy_rule_stats` telemetry output. Single-workload TCX counters are labelled
-with the endpoint ID; shared-interface counters are labelled with the TCX target
-identity. This exposes Cilium-style rule hit accounting without changing match
-semantics.
+because datapath counters changed. The same live-vs-desired comparison is
+available as policy-map drift telemetry with missing, extra, and changed entry
+counts. The TCX L4 ACL map value similarly carries the projected rule cookie,
+log flag, and packet and byte counters. IPv4 and IPv6 TCX programs atomically
+increment those counters after a successful LPM lookup and before returning the
+rule action. After a successful TCX reconcile, the agent reads the live
+attachment maps, aggregates counters by rule cookie, classifies logged hits from
+the value metadata, and merges them into the normal `policy_rule_stats`
+telemetry output. Single-workload TCX counters are labelled with the endpoint
+ID; shared-interface counters are labelled with the TCX target identity. This
+exposes Cilium-style rule hit accounting without changing match semantics.
 In long-running state-file agent mode, `NETLOOM_AGENT_METRICS_ADDR` enables a
 Prometheus text endpoint with `/metrics` and `/healthz`. The scrape surface
 exports the latest reconcile success and duration, policy-map
-entries/capacity/pressure, aggregate rule counters, per-endpoint or per-TCX
-target rule counters, cumulative policy add/update/delete/failure/rollback
-counters, a reconcile latency histogram, and TCX failure/rollback signals. This
-keeps the log output useful for humans while giving operators a stable metrics
-surface for alerts and dashboards.
+entries/capacity/pressure, policy-map drift, aggregate rule counters,
+per-endpoint or per-TCX target rule counters, cumulative policy
+add/update/delete/failure/rollback counters, a reconcile latency histogram, and
+TCX failure/rollback signals. This keeps the log output useful for humans while
+giving operators a stable metrics surface for alerts and dashboards.
 `action=reject` is preserved separately from `drop` in the policy map and
 userspace evaluator: matching packets return a `reject` verdict and generate a
 `policy-reject` drop event. The current TCX fast path still maps reject to drop

@@ -71,6 +71,22 @@ type PolicyMapUsageSummary struct {
 
 const DefaultPolicyMapPressureThresholdPercent = 80
 
+type PolicyMapDrift struct {
+	EndpointID string
+	Missing    int
+	Extra      int
+	Changed    int
+	Drifted    bool
+}
+
+type PolicyMapDriftSummary struct {
+	Endpoints        int
+	DriftedEndpoints int
+	MissingEntries   int
+	ExtraEntries     int
+	ChangedEntries   int
+}
+
 type PolicyUpdateEvent struct {
 	EndpointID       string
 	PreviousRevision uint64
@@ -228,6 +244,23 @@ func (s *InMemoryPolicyStore) PolicyMapUsage(_ context.Context) ([]PolicyMapUsag
 	return usages, nil
 }
 
+func (s *InMemoryPolicyStore) PolicyMapDrift(_ context.Context) ([]PolicyMapDrift, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	endpointIDs := make([]string, 0, len(s.endpoints))
+	for endpointID := range s.endpoints {
+		endpointIDs = append(endpointIDs, endpointID)
+	}
+	slices.Sort(endpointIDs)
+	reports := make([]PolicyMapDrift, 0, len(endpointIDs))
+	for _, endpointID := range endpointIDs {
+		entries := s.endpoints[endpointID]
+		reports = append(reports, DiffPolicyMapEntries(endpointID, entries, entries))
+	}
+	return reports, nil
+}
+
 func (s *InMemoryPolicyStore) SetFailAfter(operations int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -362,6 +395,45 @@ func SummarizePolicyMapUsage(usages []PolicyMapUsage) PolicyMapUsageSummary {
 		if pressure >= DefaultPolicyMapPressureThresholdPercent {
 			summary.PressureEndpoints++
 		}
+	}
+	return summary
+}
+
+func DiffPolicyMapEntries(endpointID string, desired, live []PolicyMapEntry) PolicyMapDrift {
+	desiredByKey := entryMap(desired)
+	liveByKey := entryMap(live)
+	report := PolicyMapDrift{
+		EndpointID: endpointID,
+	}
+	for key, desiredEntry := range desiredByKey {
+		liveEntry, ok := liveByKey[key]
+		if !ok {
+			report.Missing++
+			continue
+		}
+		if !policyEntrySemanticsEqual(liveEntry.Value, desiredEntry.Value) {
+			report.Changed++
+		}
+	}
+	for key := range liveByKey {
+		if _, ok := desiredByKey[key]; !ok {
+			report.Extra++
+		}
+	}
+	report.Drifted = report.Missing != 0 || report.Extra != 0 || report.Changed != 0
+	return report
+}
+
+func SummarizePolicyMapDrift(reports []PolicyMapDrift) PolicyMapDriftSummary {
+	var summary PolicyMapDriftSummary
+	for _, report := range reports {
+		summary.Endpoints++
+		if report.Drifted {
+			summary.DriftedEndpoints++
+		}
+		summary.MissingEntries += report.Missing
+		summary.ExtraEntries += report.Extra
+		summary.ChangedEntries += report.Changed
 	}
 	return summary
 }

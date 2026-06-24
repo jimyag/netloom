@@ -25,6 +25,10 @@ type ReconcileResult struct {
 	PolicyMapPressureMax       uint32
 	PolicyMapPressureEndpoint  string
 	PolicyMapPressureEndpoints int
+	PolicyMapDriftEndpoints    int
+	PolicyMapDriftMissing      int
+	PolicyMapDriftExtra        int
+	PolicyMapDriftChanged      int
 	PolicyAdded                int
 	PolicyUpdated              int
 	PolicyDeleted              int
@@ -87,6 +91,10 @@ type PolicyEndpointInventory interface {
 
 type PolicyUsageStore interface {
 	PolicyMapUsage(context.Context) ([]dataplane.PolicyMapUsage, error)
+}
+
+type PolicyDriftStore interface {
+	PolicyMapDrift(context.Context) ([]dataplane.PolicyMapDrift, error)
 }
 
 type PolicyRuleMetricsStore interface {
@@ -190,6 +198,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, state control.DesiredState, 
 		return result, err
 	}
 	if err := populatePolicyMapUsageResult(ctx, options.Store, &result); err != nil {
+		return result, err
+	}
+	if err := populatePolicyMapDriftResult(ctx, options.Store, &result); err != nil {
 		return result, err
 	}
 	if err := populatePolicyRuleMetricsResult(ctx, options, &result); err != nil {
@@ -388,6 +399,9 @@ func prepareReconcile(ctx context.Context, state control.DesiredState, options R
 	if err := populatePolicyMapUsageResult(ctx, options.Store, &result); err != nil {
 		return ReconcileResult{}, nil, nil, err
 	}
+	if err := populatePolicyMapDriftResult(ctx, options.Store, &result); err != nil {
+		return ReconcileResult{}, nil, nil, err
+	}
 	if err := populatePolicyRuleMetricsResult(ctx, options, &result); err != nil {
 		return ReconcileResult{}, nil, nil, err
 	}
@@ -458,6 +472,30 @@ func populatePolicyMapUsageResult(ctx context.Context, store PolicyStore, result
 	result.PolicyMapPressureMax = summary.MaxPressurePercent
 	result.PolicyMapPressureEndpoint = summary.MaxPressureEndpoint
 	result.PolicyMapPressureEndpoints = summary.PressureEndpoints
+	return nil
+}
+
+func populatePolicyMapDriftResult(ctx context.Context, store PolicyStore, result *ReconcileResult) error {
+	if result == nil {
+		return nil
+	}
+	driftStore, ok := store.(PolicyDriftStore)
+	if !ok {
+		result.PolicyMapDriftEndpoints = 0
+		result.PolicyMapDriftMissing = 0
+		result.PolicyMapDriftExtra = 0
+		result.PolicyMapDriftChanged = 0
+		return nil
+	}
+	reports, err := driftStore.PolicyMapDrift(ctx)
+	if err != nil {
+		return fmt.Errorf("read policy map drift: %w", err)
+	}
+	summary := dataplane.SummarizePolicyMapDrift(reports)
+	result.PolicyMapDriftEndpoints = summary.DriftedEndpoints
+	result.PolicyMapDriftMissing = summary.MissingEntries
+	result.PolicyMapDriftExtra = summary.ExtraEntries
+	result.PolicyMapDriftChanged = summary.ChangedEntries
 	return nil
 }
 

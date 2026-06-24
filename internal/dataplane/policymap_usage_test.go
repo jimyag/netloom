@@ -63,3 +63,43 @@ func TestSummarizePolicyMapUsageCalculatesPressureBands(t *testing.T) {
 		t.Fatalf("pressure endpoints = %d, want 1", summary.PressureEndpoints)
 	}
 }
+
+func TestDiffPolicyMapEntriesClassifiesDrift(t *testing.T) {
+	desiredKeep := PolicyMapEntry{
+		Key:   PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 1, Direction: DirectionIngress},
+		Value: PolicyEntry{Precedence: 10, RuleCookie: 1},
+	}
+	desiredChanged := PolicyMapEntry{
+		Key:   PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 2, Direction: DirectionIngress},
+		Value: PolicyEntry{Precedence: 20, RuleCookie: 2, Deny: 1},
+	}
+	desiredMissing := PolicyMapEntry{
+		Key:   PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 3, Direction: DirectionIngress},
+		Value: PolicyEntry{Precedence: 30, RuleCookie: 3},
+	}
+	liveKeepWithCounters := desiredKeep
+	liveKeepWithCounters.Value.Packets = 99
+	liveKeepWithCounters.Value.Bytes = 4096
+	liveChanged := desiredChanged
+	liveChanged.Value.Deny = 0
+	liveExtra := PolicyMapEntry{
+		Key:   PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 4, Direction: DirectionIngress},
+		Value: PolicyEntry{Precedence: 40, RuleCookie: 4},
+	}
+
+	report := DiffPolicyMapEntries("prod/pod-a", []PolicyMapEntry{desiredKeep, desiredChanged, desiredMissing}, []PolicyMapEntry{liveKeepWithCounters, liveChanged, liveExtra})
+	if !report.Drifted || report.Missing != 1 || report.Extra != 1 || report.Changed != 1 {
+		t.Fatalf("drift report = %+v, want one missing, one extra and one changed entry", report)
+	}
+}
+
+func TestSummarizePolicyMapDriftAggregatesReports(t *testing.T) {
+	summary := SummarizePolicyMapDrift([]PolicyMapDrift{
+		{EndpointID: "a", Missing: 1, Drifted: true},
+		{EndpointID: "b"},
+		{EndpointID: "c", Extra: 2, Changed: 3, Drifted: true},
+	})
+	if summary.Endpoints != 3 || summary.DriftedEndpoints != 2 || summary.MissingEntries != 1 || summary.ExtraEntries != 2 || summary.ChangedEntries != 3 {
+		t.Fatalf("drift summary = %+v", summary)
+	}
+}
