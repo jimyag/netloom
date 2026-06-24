@@ -42,6 +42,9 @@ func TestLibOVSDBTopologyWriterEnsuresSubnetLogicalSwitch(t *testing.T) {
 		t.Fatal(err)
 	}
 	writer := NewLibOVSDBTopologyWriter(client)
+	if err := writer.EnsureVPC(ctx, model.VPC{Name: "prod"}); err != nil {
+		t.Fatal(err)
+	}
 	if err := writer.EnsureSubnet(ctx, model.Subnet{
 		Name:         "apps",
 		VPC:          "prod",
@@ -65,6 +68,39 @@ func TestLibOVSDBTopologyWriterEnsuresSubnetLogicalSwitch(t *testing.T) {
 	if sw.OtherConfig["subnet"] != "10.10.0.0/24" || sw.OtherConfig["exclude_ips"] != "10.10.0.1 10.10.0.10" {
 		t.Fatalf("logical switch other_config = %+v, want IPv4 IPAM config", sw.OtherConfig)
 	}
+	var routerPorts []ovnnb.LogicalRouterPort
+	requireEventually(t, func() bool {
+		routerPorts = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalRouterPort) bool {
+			return row.Name == routerPortName(logicalRouter("prod"), "apps")
+		}).List(ctx, &routerPorts)
+		return err == nil && len(routerPorts) == 1
+	})
+	if routerPorts[0].MAC == "" || len(routerPorts[0].Networks) != 1 || routerPorts[0].Networks[0] != "10.10.0.1/24" {
+		t.Fatalf("logical router port = %+v, want gateway MAC and network", routerPorts[0])
+	}
+	var switchPorts []ovnnb.LogicalSwitchPort
+	requireEventually(t, func() bool {
+		switchPorts = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalSwitchPort) bool {
+			return row.Name == switchRouterPortName(logicalSwitch("prod", "apps"), "apps")
+		}).List(ctx, &switchPorts)
+		return err == nil && len(switchPorts) == 1
+	})
+	if switchPorts[0].Type != "router" || switchPorts[0].Options["router-port"] != routerPorts[0].Name {
+		t.Fatalf("logical switch router port = %+v, want router port options", switchPorts[0])
+	}
+	var routers []ovnnb.LogicalRouter
+	requireEventually(t, func() bool {
+		routers = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("prod") }).List(ctx, &routers)
+		return err == nil && len(routers) == 1 && containsString(routers[0].Ports, routerPorts[0].UUID)
+	})
+	requireEventually(t, func() bool {
+		switches = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalSwitch) bool { return row.Name == logicalSwitch("prod", "apps") }).List(ctx, &switches)
+		return err == nil && len(switches) == 1 && containsString(switches[0].Ports, switchPorts[0].UUID)
+	})
 }
 
 func TestLibOVSDBTopologyWriterUpdatesSubnetIPAMConfig(t *testing.T) {
@@ -81,6 +117,9 @@ func TestLibOVSDBTopologyWriterUpdatesSubnetIPAMConfig(t *testing.T) {
 		OtherConfig: map[string]string{"subnet": "10.10.0.0/24", "exclude_ips": "10.10.0.1", "custom": "keep"},
 	})
 	writer := NewLibOVSDBTopologyWriter(client)
+	if err := writer.EnsureVPC(ctx, model.VPC{Name: "prod"}); err != nil {
+		t.Fatal(err)
+	}
 	if err := writer.EnsureSubnet(ctx, model.Subnet{
 		Name:    "apps",
 		VPC:     "prod",
@@ -109,6 +148,133 @@ func TestLibOVSDBTopologyWriterUpdatesSubnetIPAMConfig(t *testing.T) {
 	if sw.OtherConfig["custom"] != "keep" {
 		t.Fatalf("logical switch other_config = %+v, want custom key preserved", sw.OtherConfig)
 	}
+}
+
+func TestLibOVSDBTopologyWriterEnsuresSubnetLocalnetPort(t *testing.T) {
+	ctx := context.Background()
+	client, closeFn := newTestOVNNBClient(t)
+	defer closeFn()
+
+	if _, err := client.MonitorAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	writer := NewLibOVSDBTopologyWriter(client)
+	if err := writer.EnsureVPC(ctx, model.VPC{Name: "prod"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureSubnet(ctx, model.Subnet{
+		Name:            "apps",
+		VPC:             "prod",
+		CIDR:            netip.MustParsePrefix("10.10.0.0/24"),
+		Gateway:         netip.MustParseAddr("10.10.0.1"),
+		ProviderNetwork: "physnet-a",
+		VLAN:            100,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var ports []ovnnb.LogicalSwitchPort
+	requireEventually(t, func() bool {
+		ports = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalSwitchPort) bool {
+			return row.Name == localnetPortName(logicalSwitch("prod", "apps"), "apps")
+		}).List(ctx, &ports)
+		return err == nil && len(ports) == 1
+	})
+	port := ports[0]
+	if port.Type != "localnet" || port.Options["network_name"] != "physnet-a" || port.Tag == nil || *port.Tag != 100 {
+		t.Fatalf("localnet port = %+v, want provider network and VLAN tag", port)
+	}
+	var switches []ovnnb.LogicalSwitch
+	requireEventually(t, func() bool {
+		switches = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalSwitch) bool { return row.Name == logicalSwitch("prod", "apps") }).List(ctx, &switches)
+		return err == nil && len(switches) == 1 && containsString(switches[0].Ports, port.UUID)
+	})
+
+	if err := writer.EnsureSubnet(ctx, model.Subnet{
+		Name:    "apps",
+		VPC:     "prod",
+		CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+		Gateway: netip.MustParseAddr("10.10.0.1"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	requireEventually(t, func() bool {
+		ports = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalSwitchPort) bool {
+			return row.Name == localnetPortName(logicalSwitch("prod", "apps"), "apps")
+		}).List(ctx, &ports)
+		return err == nil && len(ports) == 0
+	})
+	requireEventually(t, func() bool {
+		switches = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalSwitch) bool { return row.Name == logicalSwitch("prod", "apps") }).List(ctx, &switches)
+		return err == nil && len(switches) == 1 && !containsString(switches[0].Ports, port.UUID)
+	})
+}
+
+func TestLibOVSDBTopologyWriterRepairsSubnetPortReferences(t *testing.T) {
+	ctx := context.Background()
+	client, closeFn := newTestOVNNBClient(t)
+	defer closeFn()
+
+	if _, err := client.MonitorAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	subnet := model.Subnet{
+		Name:    "apps",
+		VPC:     "prod",
+		CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+		Gateway: netip.MustParseAddr("10.10.0.1"),
+	}
+	routerPort := &ovnnb.LogicalRouterPort{
+		Name:     routerPortName(logicalRouter("prod"), "apps"),
+		MAC:      deterministicMAC(subnet),
+		Networks: []string{"10.10.0.1/24"},
+	}
+	switchPort := &ovnnb.LogicalSwitchPort{
+		Name:      switchRouterPortName(logicalSwitch("prod", "apps"), "apps"),
+		Type:      "router",
+		Addresses: []string{deterministicMAC(subnet)},
+		Options:   map[string]string{"router-port": routerPort.Name},
+	}
+	insertRows(t, ctx, client,
+		&ovnnb.LogicalRouter{Name: logicalRouter("prod")},
+		&ovnnb.LogicalSwitch{Name: logicalSwitch("prod", "apps")},
+		routerPort,
+		switchPort,
+	)
+
+	writer := NewLibOVSDBTopologyWriter(client)
+	if err := writer.EnsureSubnet(ctx, subnet); err != nil {
+		t.Fatal(err)
+	}
+
+	var routerPorts []ovnnb.LogicalRouterPort
+	requireEventually(t, func() bool {
+		routerPorts = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalRouterPort) bool { return row.Name == routerPort.Name }).List(ctx, &routerPorts)
+		return err == nil && len(routerPorts) == 1
+	})
+	var switchPorts []ovnnb.LogicalSwitchPort
+	requireEventually(t, func() bool {
+		switchPorts = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalSwitchPort) bool { return row.Name == switchPort.Name }).List(ctx, &switchPorts)
+		return err == nil && len(switchPorts) == 1
+	})
+	var routers []ovnnb.LogicalRouter
+	requireEventually(t, func() bool {
+		routers = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("prod") }).List(ctx, &routers)
+		return err == nil && len(routers) == 1 && containsString(routers[0].Ports, routerPorts[0].UUID)
+	})
+	var switches []ovnnb.LogicalSwitch
+	requireEventually(t, func() bool {
+		switches = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalSwitch) bool { return row.Name == logicalSwitch("prod", "apps") }).List(ctx, &switches)
+		return err == nil && len(switches) == 1 && containsString(switches[0].Ports, switchPorts[0].UUID)
+	})
 }
 
 func TestLibOVSDBTopologyWriterUpdatesExistingVPCRouter(t *testing.T) {
