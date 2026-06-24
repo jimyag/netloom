@@ -99,6 +99,7 @@ type ovnTopologyRuntime struct {
 	executor   ovn.Executor
 	ovnBackend *ovn.Backend
 	cleanup    ovnCleanupStatsReporter
+	health     ovnHealthChecker
 	close      func()
 }
 
@@ -185,7 +186,7 @@ func newStateFileReconciler() (*stateFileReconciler, error) {
 		ovnCloser:     ovnRuntime.close,
 		controller:    control.NewController(control.MultiTopologyBackend{memory, ovnRuntime.backend}, memory),
 		healthTracker: control.NewLoadBalancerHealthTracker(),
-		healthChecker: executorHealthChecker(ovnRuntime.executor),
+		healthChecker: ovnRuntime.health,
 		auditReader:   auditReader,
 		auditCloser:   auditCloser,
 	}, nil
@@ -988,6 +989,7 @@ func newOVNTopologyRuntimeFromEnv() (ovnTopologyRuntime, error) {
 			executor:   executor,
 			ovnBackend: ovnBackend,
 			cleanup:    ovnBackend,
+			health:     executorHealthChecker(executor),
 		}, nil
 	}
 	if backend != "libovsdb" {
@@ -1001,6 +1003,7 @@ func newOVNTopologyRuntimeFromEnv() (ovnTopologyRuntime, error) {
 	return ovnTopologyRuntime{
 		backend: writer,
 		cleanup: writer,
+		health:  writer,
 		close:   closeFn,
 	}, nil
 }

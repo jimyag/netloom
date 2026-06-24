@@ -1202,6 +1202,25 @@ func TestLibOVSDBTopologyWriterFirstCleanupDeletesUnexpectedLiveObjects(t *testi
 	}
 }
 
+func TestLibOVSDBTopologyWriterHealthCheckUsesLibOVSDBEcho(t *testing.T) {
+	ctx := context.Background()
+	client, closeFn := newTestOVNNBClient(t)
+	defer closeFn()
+
+	if _, err := client.MonitorAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	writer := NewLibOVSDBTopologyWriter(client)
+	if latency, err := writer.HealthCheck(ctx); err != nil {
+		t.Fatalf("health check failed: latency=%s err=%v", latency, err)
+	}
+
+	client.Disconnect()
+	if _, err := writer.HealthCheck(ctx); err == nil {
+		t.Fatal("expected disconnected libovsdb client health check to fail")
+	}
+}
+
 func TestLibOVSDBTopologyWriterUpdatesExistingVPCRouter(t *testing.T) {
 	ctx := context.Background()
 	client, closeFn := newTestOVNNBClient(t)
