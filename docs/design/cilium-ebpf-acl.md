@@ -365,8 +365,9 @@ because datapath counters changed. The same live-vs-desired comparison is
 available as policy-map drift telemetry with missing, extra, and changed entry
 counts. The policy store also exposes endpoint-scoped lifecycle status that
 combines revision, map usage, pressure, drift, last update stats, and the last
-update event, so a future API or CLI can report a Cilium-style endpoint policy
-view without scraping reconcile logs. The TCX L4 ACL map value similarly carries
+update event; `netloom-agent policy-status` and the long-running
+`/policy/endpoints` HTTP API both report that Cilium-style endpoint policy view
+without scraping reconcile logs. The TCX L4 ACL map value similarly carries
 the projected rule cookie, log flag, and packet and byte counters. IPv4 and IPv6
 TCX programs atomically increment those counters after a successful LPM lookup
 and before returning the rule action. After a successful TCX reconcile, the agent
@@ -382,8 +383,12 @@ exports the latest reconcile success and duration, policy-map
 entries/capacity/pressure, policy-map drift, aggregate rule counters,
 per-endpoint or per-TCX target rule counters, cumulative policy
 add/update/delete/failure/rollback counters, a reconcile latency histogram, and
-TCX failure/rollback signals. This keeps the log output useful for humans while
-giving operators a stable metrics surface for alerts and dashboards.
+TCX failure/rollback signals. The same listener also serves `/route/explain`,
+which evaluates packet query parameters against the latest successfully
+reconciled desired state for live topology, policy-route, NAT, LB, and gateway
+decision debugging. This keeps the log output useful for humans while giving
+operators a stable runtime surface for alerts, dashboards, and packet-path
+inspection.
 `action=reject` is preserved separately from `drop` in the policy map and
 userspace evaluator: matching packets return a `reject` verdict and generate a
 `policy-reject` drop event. The current TCX fast path still maps reject to drop

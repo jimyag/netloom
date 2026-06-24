@@ -776,6 +776,71 @@ func TestPolicyEndpointAPIReportsNotReady(t *testing.T) {
 	}
 }
 
+func TestRouteExplainAPIReportsNotReady(t *testing.T) {
+	metrics := newAgentMetrics()
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/route/explain", nil)
+
+	metrics.handleRouteExplain(recorder, request)
+
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", recorder.Code)
+	}
+	if !strings.Contains(recorder.Body.String(), "not ready") {
+		t.Fatalf("body missing not ready error: %s", recorder.Body.String())
+	}
+}
+
+func TestRouteExplainAPIUsesLatestReconciledState(t *testing.T) {
+	metrics := newAgentMetrics()
+	state := control.DesiredState{
+		PolicyRoutes: []model.PolicyRoute{{
+			Name:     "private-via-fw",
+			VPC:      "prod",
+			Priority: 100,
+			Match: model.RouteMatch{
+				Source:      netip.MustParsePrefix("10.10.0.0/24"),
+				Destination: netip.MustParsePrefix("172.16.0.0/16"),
+				Protocol:    model.ProtocolTCP,
+				DstPorts:    []model.PortRange{{From: 443, To: 443}},
+			},
+			Action: model.RouteAction{
+				Type:     model.ActionReroute,
+				NextHops: []netip.Addr{netip.MustParseAddr("10.10.0.253")},
+			},
+		}},
+	}
+	observeAgentReconcileResultWithState(metrics, agent.ReconcileResult{Node: "node-a"}, "memory", time.Millisecond, state)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/route/explain?vpc=prod&source=10.10.0.10&dest=172.16.0.20&protocol=tcp&dest_port=443", nil)
+	metrics.handleRouteExplain(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var decision topology.Decision
+	if err := json.Unmarshal(recorder.Body.Bytes(), &decision); err != nil {
+		t.Fatalf("decode route explain response: %v\n%s", err, recorder.Body.String())
+	}
+	if decision.Action != model.ActionReroute || decision.NextHop != netip.MustParseAddr("10.10.0.253") || decision.MatchedBy != "policy-route/private-via-fw" {
+		t.Fatalf("decision = %+v, want policy-route reroute via firewall", decision)
+	}
+}
+
+func TestRouteExplainAPIReturnsBadRequestForInvalidPacket(t *testing.T) {
+	metrics := newAgentMetrics()
+	observeAgentReconcileResultWithState(metrics, agent.ReconcileResult{Node: "node-a"}, "memory", time.Millisecond, control.DesiredState{})
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/route/explain?vpc=prod&source=bad&dest=172.16.0.20", nil)
+	metrics.handleRouteExplain(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestPolicyEndpointAPIReportsLifecycleStatus(t *testing.T) {
 	metrics := newAgentMetrics()
 	endpointID := model.EndpointKey("prod", "pod-a")

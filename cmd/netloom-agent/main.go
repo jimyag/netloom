@@ -410,6 +410,23 @@ func topologyStateFromDesired(state control.DesiredState) topology.State {
 	}
 }
 
+func cloneDesiredState(state control.DesiredState) control.DesiredState {
+	return control.DesiredState{
+		VPCs:             append([]model.VPC(nil), state.VPCs...),
+		Subnets:          append([]model.Subnet(nil), state.Subnets...),
+		Endpoints:        append([]model.Endpoint(nil), state.Endpoints...),
+		RouteTables:      append([]model.RouteTable(nil), state.RouteTables...),
+		PolicyRoutes:     append([]model.PolicyRoute(nil), state.PolicyRoutes...),
+		Gateways:         append([]model.Gateway(nil), state.Gateways...),
+		NATRules:         append([]model.NATRule(nil), state.NATRules...),
+		LoadBalancers:    append([]model.LoadBalancer(nil), state.LoadBalancers...),
+		SecurityGroups:   append([]model.SecurityGroup(nil), state.SecurityGroups...),
+		CIDRGroups:       append([]model.CIDRGroup(nil), state.CIDRGroups...),
+		ProviderNetworks: append([]model.ProviderNetwork(nil), state.ProviderNetworks...),
+		DNSRecords:       append([]model.DNSRecord(nil), state.DNSRecords...),
+	}
+}
+
 func explainPolicyFromState(state control.DesiredState, opts policyExplainOptions) (dataplane.PolicyExplanation, error) {
 	endpoint, ok := findEndpoint(state.Endpoints, opts.vpc, opts.endpoint)
 	if !ok {
@@ -682,7 +699,7 @@ func reconcileStateFile(ctx context.Context, path, node, storeName string, recon
 	}
 	duration := time.Since(start)
 	printReconcileResult(result, storeName, duration)
-	observeAgentReconcileResult(metrics, result, storeName, duration)
+	observeAgentReconcileResultWithState(metrics, result, storeName, duration, state)
 	return nil
 }
 
@@ -722,7 +739,7 @@ func reconcileStateFileOnce(ctx context.Context, path, node, storeName string, s
 	}
 	duration := time.Since(start)
 	printReconcileResult(result, storeName, duration)
-	observeAgentReconcileResult(metrics, result, storeName, duration)
+	observeAgentReconcileResultWithState(metrics, result, storeName, duration, state)
 	return nil
 }
 
@@ -877,6 +894,7 @@ type agentMetrics struct {
 type agentMetricsSnapshot struct {
 	Result   agent.ReconcileResult
 	Store    string
+	State    control.DesiredState
 	Duration time.Duration
 	Success  bool
 	Error    string
@@ -924,12 +942,17 @@ func newAgentMetrics() *agentMetrics {
 }
 
 func observeAgentReconcileResult(metrics *agentMetrics, result agent.ReconcileResult, storeName string, duration time.Duration) {
+	observeAgentReconcileResultWithState(metrics, result, storeName, duration, control.DesiredState{})
+}
+
+func observeAgentReconcileResultWithState(metrics *agentMetrics, result agent.ReconcileResult, storeName string, duration time.Duration, state control.DesiredState) {
 	if metrics == nil {
 		return
 	}
 	metrics.observe(agentMetricsSnapshot{
 		Result:   result,
 		Store:    storeName,
+		State:    cloneDesiredState(state),
 		Duration: duration,
 		Success:  true,
 	})
@@ -1022,6 +1045,7 @@ func startAgentMetricsServer(ctx context.Context, addr string, metrics *agentMet
 	mux.HandleFunc("/metrics", metrics.handleMetrics)
 	mux.HandleFunc("/policy/endpoints", metrics.handlePolicyEndpoints)
 	mux.HandleFunc("/policy/endpoints/", metrics.handlePolicyEndpoints)
+	mux.HandleFunc("/route/explain", metrics.handleRouteExplain)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok\n"))
@@ -1081,6 +1105,71 @@ func (m *agentMetrics) handlePolicyEndpoints(w http.ResponseWriter, r *http.Requ
 	encoder := json.NewEncoder(w)
 	encoder.SetIndent("", "  ")
 	_ = encoder.Encode(output)
+}
+
+func (m *agentMetrics) handleRouteExplain(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "method not allowed"})
+		return
+	}
+	snapshot, _, ready := m.snapshotValue()
+	if !ready || !snapshot.Success {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "route explain state is not ready"})
+		return
+	}
+	opts, err := routeExplainOptionsFromRequest(r)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	decision, err := explainRouteFromState(snapshot.State, opts)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	encoder := json.NewEncoder(w)
+	encoder.SetIndent("", "  ")
+	_ = encoder.Encode(decision)
+}
+
+func routeExplainOptionsFromRequest(r *http.Request) (routeExplainOptions, error) {
+	query := r.URL.Query()
+	sourcePort, err := parseOptionalUintQuery(query.Get("source-port"), query.Get("source_port"))
+	if err != nil {
+		return routeExplainOptions{}, fmt.Errorf("invalid source port: %w", err)
+	}
+	destPort, err := parseOptionalUintQuery(query.Get("dest-port"), query.Get("dest_port"))
+	if err != nil {
+		return routeExplainOptions{}, fmt.Errorf("invalid destination port: %w", err)
+	}
+	return routeExplainOptions{
+		vpc:        query.Get("vpc"),
+		source:     query.Get("source"),
+		dest:       query.Get("dest"),
+		protocol:   query.Get("protocol"),
+		sourcePort: sourcePort,
+		destPort:   destPort,
+	}, nil
+}
+
+func parseOptionalUintQuery(values ...string) (uint, error) {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		parsed, err := strconv.ParseUint(value, 10, 0)
+		if err != nil {
+			return 0, err
+		}
+		return uint(parsed), nil
+	}
+	return 0, nil
 }
 
 func (m *agentMetrics) handleMetrics(w http.ResponseWriter, _ *http.Request) {
