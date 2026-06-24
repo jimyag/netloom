@@ -400,6 +400,48 @@ func TestControllerMetricsReportsOVNAuditErrorWithoutFailingReconcile(t *testing
 	}
 }
 
+func TestAuditOVNUsesManagedReaderWhenConfigured(t *testing.T) {
+	reconciler := &stateFileReconciler{
+		auditReader: fakeControllerManagedOVNReader{rows: map[string][]ovn.ManagedOVNRow{
+			"Logical_Switch": {
+				{
+					Table: "Logical_Switch",
+					UUID:  "ls-a",
+					ExternalIDs: map[string]string{
+						"netloom_owner":  "netloom",
+						"netloom_vpc":    "prod",
+						"netloom_subnet": "apps",
+					},
+				},
+			},
+		}},
+	}
+
+	stats, status, message := reconciler.auditOVN(context.Background())
+	if status != "ok" || message != "" {
+		t.Fatalf("audit status/message = %q/%q, want ok", status, message)
+	}
+	if stats.ManagedLogicalSwitches != 1 || stats.TotalManagedObjects() != 1 {
+		t.Fatalf("audit stats = %+v, want one logical switch from managed reader", stats)
+	}
+}
+
+func TestNewOVNAuditReaderRejectsInvalidBackend(t *testing.T) {
+	t.Setenv("NETLOOM_OVN_AUDIT_BACKEND", "shell")
+	_, _, err := newOVNAuditReaderFromEnv()
+	if err == nil {
+		t.Fatal("expected invalid audit backend to fail")
+	}
+}
+
+func TestNewOVNAuditReaderRequiresEndpointForLibOVSDB(t *testing.T) {
+	t.Setenv("NETLOOM_OVN_AUDIT_BACKEND", "libovsdb")
+	_, _, err := newOVNAuditReaderFromEnv()
+	if err == nil {
+		t.Fatal("expected libovsdb audit backend without endpoint to fail")
+	}
+}
+
 func TestControllerMetricsExportsLatestFailure(t *testing.T) {
 	metrics := newControllerMetrics()
 	metrics.observe(controllerMetricsSnapshot{
@@ -582,4 +624,12 @@ func (c *sequenceHealthChecker) HealthCheck(context.Context) (time.Duration, err
 	result := c.results[c.next]
 	c.next++
 	return result.latency, result.err
+}
+
+type fakeControllerManagedOVNReader struct {
+	rows map[string][]ovn.ManagedOVNRow
+}
+
+func (r fakeControllerManagedOVNReader) ManagedOVNRows(_ context.Context, table string) ([]ovn.ManagedOVNRow, error) {
+	return append([]ovn.ManagedOVNRow(nil), r.rows[table]...), nil
 }

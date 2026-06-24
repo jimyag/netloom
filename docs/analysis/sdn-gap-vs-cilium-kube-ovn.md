@@ -66,12 +66,12 @@ These are the highest-signal gaps I see now.
 
 Netloom still drives OVN write operations primarily through command planning and `ovn-nbctl` execution in
 [internal/ovn](/home/jimyag/src/github/jimyag/netloom/internal/ovn). It now has a typed managed-row audit seam:
-`ManagedOVNReader` returns `ManagedOVNRow` objects for live state accounting, the current `ovn-nbctl` audit path adapts command output into that typed reader interface, and `LibOVSDBManagedReader` can read the same managed rows from a real libovsdb monitor/cache using Netloom-local OVN NB models under `internal/ovn/ovsdb/ovnnb`. Those models are pulled into this repository from Kube-OVN's generated OVSDB model package, so Netloom follows Kube-OVN's local model pattern without relying on a `go.mod` replace to the Kube-OVN fork. It is still not a full typed OVN write client.
+`ManagedOVNReader` returns `ManagedOVNRow` objects for live state accounting, the current `ovn-nbctl` audit path adapts command output into that typed reader interface, and `LibOVSDBManagedReader` can read the same managed rows from a real libovsdb monitor/cache using Netloom-local OVN NB models under `internal/ovn/ovsdb/ovnnb`. Those models are pulled into this repository from Kube-OVN's generated OVSDB model package, so Netloom follows Kube-OVN's local model pattern without relying on a `go.mod` replace to the Kube-OVN fork. The controller can now opt into this runtime path with `NETLOOM_OVN_AUDIT_BACKEND=libovsdb`. It is still not a full typed OVN write client.
 
 What is missing:
 
 - object-level CRUD by UUID instead of shell-command synthesis
-- typed cache/monitor support
+- typed cache/monitor support beyond live managed-row audit
 - stronger transactional updates for policy routes, static routes, NAT, LB health checks
 - better HA/reconnect behavior against clustered OVN DB
 
@@ -127,7 +127,7 @@ Netloom has drop/trace style events, policy-rule packet/byte counters in the eva
 
 What is missing:
 
-- wiring the libovsdb monitor/cache reader into the controller runtime and exposing field-level drift beyond managed-row counts
+- field-level drift telemetry beyond managed-row counts
 - API surface for policy and route explanations backed by live state
 
 This is product work, not just test work.

@@ -14,9 +14,12 @@ import (
 	"sync"
 	"time"
 
+	libovsdbclient "github.com/ovn-kubernetes/libovsdb/client"
+
 	"github.com/jimyag/netloom/internal/control"
 	"github.com/jimyag/netloom/internal/model"
 	"github.com/jimyag/netloom/internal/ovn"
+	"github.com/jimyag/netloom/internal/ovn/ovsdb/ovnnb"
 	"github.com/jimyag/netloom/internal/policy"
 )
 
@@ -56,6 +59,7 @@ func runStateFile(ctx context.Context, path string) error {
 	if err != nil {
 		return err
 	}
+	defer reconciler.Close()
 	reconcile := func() error {
 		return reconciler.reconcile(ctx, path)
 	}
@@ -82,6 +86,8 @@ type stateFileReconciler struct {
 	healthTracker *control.LoadBalancerHealthTracker
 	healthChecker ovnHealthChecker
 	ovnHealth     ovnHealthTracker
+	auditReader   ovn.ManagedOVNReader
+	auditCloser   func()
 	metrics       *controllerMetrics
 }
 
@@ -153,6 +159,10 @@ func newStateFileReconciler() (*stateFileReconciler, error) {
 		}
 		executor = nbctl
 	}
+	auditReader, auditCloser, err := newOVNAuditReaderFromEnv()
+	if err != nil {
+		return nil, err
+	}
 	ovnBackend := ovn.NewBackend(executor)
 	return &stateFileReconciler{
 		memory:        memory,
@@ -161,7 +171,16 @@ func newStateFileReconciler() (*stateFileReconciler, error) {
 		controller:    control.NewController(control.MultiTopologyBackend{memory, ovnBackend}, memory),
 		healthTracker: control.NewLoadBalancerHealthTracker(),
 		healthChecker: executorHealthChecker(executor),
+		auditReader:   auditReader,
+		auditCloser:   auditCloser,
 	}, nil
+}
+
+func (r *stateFileReconciler) Close() {
+	if r != nil && r.auditCloser != nil {
+		r.auditCloser()
+		r.auditCloser = nil
+	}
 }
 
 func (r *stateFileReconciler) reconcile(ctx context.Context, path string) error {
@@ -361,7 +380,17 @@ func (r *stateFileReconciler) lastOVNCleanupStats() ovn.CleanupStats {
 }
 
 func (r *stateFileReconciler) auditOVN(ctx context.Context) (ovn.AuditStats, string, string) {
-	if r == nil || r.executor == nil {
+	if r == nil {
+		return ovn.AuditStats{}, "disabled", ""
+	}
+	if r.auditReader != nil {
+		stats, err := ovn.AuditManagedObjectsFromReader(ctx, r.auditReader)
+		if err != nil {
+			return ovn.AuditStats{}, "error", err.Error()
+		}
+		return stats, "ok", ""
+	}
+	if r.executor == nil {
 		return ovn.AuditStats{}, "disabled", ""
 	}
 	auditor, ok := r.executor.(ovnAuditor)
@@ -886,6 +915,57 @@ func waitForNextAttempt(ctx context.Context, delay time.Duration) error {
 func executorHealthChecker(executor ovn.Executor) ovnHealthChecker {
 	checker, _ := executor.(ovnHealthChecker)
 	return checker
+}
+
+func newOVNAuditReaderFromEnv() (ovn.ManagedOVNReader, func(), error) {
+	backend := strings.TrimSpace(os.Getenv("NETLOOM_OVN_AUDIT_BACKEND"))
+	if backend == "" || backend == "nbctl" {
+		return nil, nil, nil
+	}
+	if backend != "libovsdb" {
+		return nil, nil, fmt.Errorf("invalid NETLOOM_OVN_AUDIT_BACKEND %q", backend)
+	}
+	endpoint := strings.TrimSpace(os.Getenv("NETLOOM_OVN_LIBOVSDB_ENDPOINT"))
+	if endpoint == "" {
+		endpoint = strings.TrimSpace(os.Getenv("NETLOOM_OVN_NBCTL_DB"))
+	}
+	if endpoint == "" {
+		return nil, nil, fmt.Errorf("NETLOOM_OVN_AUDIT_BACKEND=libovsdb requires NETLOOM_OVN_LIBOVSDB_ENDPOINT or NETLOOM_OVN_NBCTL_DB")
+	}
+	dbModel, err := ovnnb.FullDatabaseModel()
+	if err != nil {
+		return nil, nil, fmt.Errorf("build OVN northbound libovsdb model: %w", err)
+	}
+	client, err := libovsdbclient.NewOVSDBClient(dbModel, libovsdbclient.WithEndpoint(endpoint))
+	if err != nil {
+		return nil, nil, fmt.Errorf("create OVN northbound libovsdb client: %w", err)
+	}
+	timeout, err := nbctlTimeout()
+	if err != nil {
+		client.Close()
+		return nil, nil, err
+	}
+	connectCtx := context.Background()
+	cancel := func() {}
+	if timeout > 0 {
+		var cancelCtx context.CancelFunc
+		connectCtx, cancelCtx = context.WithTimeout(context.Background(), timeout)
+		cancel = cancelCtx
+	}
+	defer cancel()
+	if err := client.Connect(connectCtx); err != nil {
+		client.Close()
+		return nil, nil, fmt.Errorf("connect OVN northbound libovsdb endpoint %s: %w", endpoint, err)
+	}
+	if _, err := client.MonitorAll(connectCtx); err != nil {
+		client.Disconnect()
+		client.Close()
+		return nil, nil, fmt.Errorf("monitor OVN northbound libovsdb endpoint %s: %w", endpoint, err)
+	}
+	return ovn.NewLibOVSDBManagedReader(client), func() {
+		client.Disconnect()
+		client.Close()
+	}, nil
 }
 
 func newNBCTLExecutorFromEnv(db string) (*ovn.NBCTLExecutor, error) {
