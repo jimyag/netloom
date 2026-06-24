@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/jimyag/netloom/internal/model"
 	"github.com/jimyag/netloom/internal/policy"
@@ -131,6 +132,7 @@ type InMemoryPolicyStore struct {
 	mu        sync.Mutex
 	endpoints map[string][]PolicyMapEntry
 	lastStats map[string]PolicyUpdateStats
+	lastSeen  map[string]time.Time
 	revisions map[string]uint64
 	events    []PolicyUpdateEvent
 	failAfter int
@@ -140,6 +142,7 @@ func NewInMemoryPolicyStore() *InMemoryPolicyStore {
 	return &InMemoryPolicyStore{
 		endpoints: make(map[string][]PolicyMapEntry),
 		lastStats: make(map[string]PolicyUpdateStats),
+		lastSeen:  make(map[string]time.Time),
 		revisions: make(map[string]uint64),
 	}
 }
@@ -182,6 +185,7 @@ func (s *InMemoryPolicyStore) ReplaceEndpoint(_ context.Context, endpointID stri
 	s.endpoints[endpointID] = canonicalPolicyEntries(next)
 	s.revisions[endpointID] = revision
 	s.lastStats[endpointID] = stats
+	s.lastSeen[endpointID] = time.Now()
 	s.events = append(s.events, PolicyUpdateEvent{
 		EndpointID:       endpointID,
 		PreviousRevision: previousRevision,
@@ -208,10 +212,49 @@ func (s *InMemoryPolicyStore) DeleteEndpoint(_ context.Context, endpointID strin
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	s.deleteEndpointLocked(endpointID)
+	return nil
+}
+
+func (s *InMemoryPolicyStore) deleteEndpointLocked(endpointID string) {
 	delete(s.endpoints, endpointID)
 	delete(s.lastStats, endpointID)
+	delete(s.lastSeen, endpointID)
 	delete(s.revisions, endpointID)
-	return nil
+}
+
+func (s *InMemoryPolicyStore) SweepPolicyEndpoints(ctx context.Context, keep []string, maxIdle time.Duration) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	if maxIdle <= 0 {
+		return 0, nil
+	}
+	keepSet := make(map[string]struct{}, len(keep))
+	for _, endpointID := range keep {
+		keepSet[endpointID] = struct{}{}
+	}
+	now := time.Now()
+	swept := 0
+	for endpointID := range s.policyEndpointIDsLocked() {
+		if _, ok := keepSet[endpointID]; ok {
+			continue
+		}
+		lastSeen := s.lastSeen[endpointID]
+		if lastSeen.IsZero() {
+			lastSeen = now
+			s.lastSeen[endpointID] = lastSeen
+		}
+		if now.Sub(lastSeen) < maxIdle {
+			continue
+		}
+		s.deleteEndpointLocked(endpointID)
+		swept++
+	}
+	return swept, nil
 }
 
 func (s *InMemoryPolicyStore) Entries(endpointID string) []PolicyMapEntry {
@@ -277,16 +320,7 @@ func (s *InMemoryPolicyStore) PolicyEndpointStatuses(_ context.Context) ([]Polic
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	endpoints := make(map[string]struct{}, len(s.endpoints)+len(s.revisions)+len(s.lastStats))
-	for endpointID := range s.endpoints {
-		endpoints[endpointID] = struct{}{}
-	}
-	for endpointID := range s.revisions {
-		endpoints[endpointID] = struct{}{}
-	}
-	for endpointID := range s.lastStats {
-		endpoints[endpointID] = struct{}{}
-	}
+	endpoints := s.policyEndpointIDsLocked()
 	endpointIDs := make([]string, 0, len(endpoints))
 	for endpointID := range endpoints {
 		endpointIDs = append(endpointIDs, endpointID)
@@ -310,6 +344,23 @@ func (s *InMemoryPolicyStore) PolicyEndpointStatuses(_ context.Context) ([]Polic
 		statuses = append(statuses, status)
 	}
 	return statuses, nil
+}
+
+func (s *InMemoryPolicyStore) policyEndpointIDsLocked() map[string]struct{} {
+	endpoints := make(map[string]struct{}, len(s.endpoints)+len(s.revisions)+len(s.lastStats)+len(s.lastSeen))
+	for endpointID := range s.endpoints {
+		endpoints[endpointID] = struct{}{}
+	}
+	for endpointID := range s.revisions {
+		endpoints[endpointID] = struct{}{}
+	}
+	for endpointID := range s.lastStats {
+		endpoints[endpointID] = struct{}{}
+	}
+	for endpointID := range s.lastSeen {
+		endpoints[endpointID] = struct{}{}
+	}
+	return endpoints
 }
 
 func (s *InMemoryPolicyStore) SetFailAfter(operations int) {

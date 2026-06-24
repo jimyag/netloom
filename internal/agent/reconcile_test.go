@@ -86,6 +86,19 @@ func (s *inventoryPolicyStore) EndpointIDs(_ context.Context) ([]string, error) 
 	return append([]string(nil), s.endpoints...), nil
 }
 
+type sweepingPolicyStore struct {
+	scopedPolicyStore
+	keep    []string
+	maxIdle time.Duration
+	swept   int
+}
+
+func (s *sweepingPolicyStore) SweepPolicyEndpoints(_ context.Context, keep []string, maxIdle time.Duration) (int, error) {
+	s.keep = append([]string(nil), keep...)
+	s.maxIdle = maxIdle
+	return s.swept, nil
+}
+
 type usagePolicyStore struct {
 	*dataplane.InMemoryPolicyStore
 	usages   []dataplane.PolicyMapUsage
@@ -252,6 +265,50 @@ func TestReconcileNodeAppliesOnlyLocalEndpointPolicies(t *testing.T) {
 	}
 	if entries := store.Entries(model.EndpointKey("prod", "pod-b")); len(entries) != 0 {
 		t.Fatalf("pod-b entries = %d, want 0", len(entries))
+	}
+}
+
+func TestReconcileNodeSweepsIdlePolicyEndpoints(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:             "pod-a",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"web"},
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "allow-http",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("0.0.0.0/0"),
+				Ports:      []model.PortRange{{From: 80, To: 80}},
+				Action:     model.ActionAllow,
+			}},
+		}},
+	}
+	store := &sweepingPolicyStore{swept: 2}
+	result, err := ReconcileNodeWithOptions(context.Background(), state, ReconcileOptions{
+		Node:            "node-a",
+		Store:           store,
+		PolicyGCMaxIdle: time.Minute,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.PolicyGCEndpoints != 2 {
+		t.Fatalf("policy gc endpoints = %d, want 2", result.PolicyGCEndpoints)
+	}
+	if store.maxIdle != time.Minute {
+		t.Fatalf("max idle = %s, want 1m", store.maxIdle)
+	}
+	if len(store.keep) != 1 || store.keep[0] != model.EndpointKey("prod", "pod-a") {
+		t.Fatalf("keep set = %v, want pod-a endpoint key", store.keep)
 	}
 }
 

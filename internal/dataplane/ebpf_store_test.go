@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cilium/ebpf/rlimit"
 	"github.com/jimyag/netloom/internal/model"
@@ -139,6 +140,12 @@ func TestEBPFPolicyStorePinnedMapMetadataRoundTrip(t *testing.T) {
 	}
 	if decoded.MaxEntries != 16 {
 		t.Fatalf("metadata max entries = %d, want %d", decoded.MaxEntries, 16)
+	}
+	if decoded.UpdatedAt == "" {
+		t.Fatal("metadata updated_at should be set for policy aging")
+	}
+	if _, err := time.Parse(time.RFC3339Nano, decoded.UpdatedAt); err != nil {
+		t.Fatalf("metadata updated_at = %q is not RFC3339Nano: %v", decoded.UpdatedAt, err)
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 	"unsafe"
 
 	"github.com/cilium/ebpf"
@@ -34,6 +35,7 @@ type policyMapMetadata struct {
 	EndpointID    string `json:"endpoint_id,omitempty"`
 	SchemaVersion uint32 `json:"schema_version"`
 	MaxEntries    uint32 `json:"max_entries"`
+	UpdatedAt     string `json:"updated_at,omitempty"`
 }
 
 type EBPFPolicyStore struct {
@@ -45,6 +47,7 @@ type EBPFPolicyStore struct {
 	maps         map[string]*ebpf.Map
 	entries      map[string][]PolicyMapEntry
 	lastStats    map[string]PolicyUpdateStats
+	lastSeen     map[string]time.Time
 	revisions    map[string]uint64
 	events       []PolicyUpdateEvent
 }
@@ -78,6 +81,7 @@ func NewEBPFPolicyStoreWithConfig(cfg EBPFPolicyStoreConfig) *EBPFPolicyStore {
 		maps:         make(map[string]*ebpf.Map),
 		entries:      make(map[string][]PolicyMapEntry),
 		lastStats:    make(map[string]PolicyUpdateStats),
+		lastSeen:     make(map[string]time.Time),
 		revisions:    make(map[string]uint64),
 	}
 }
@@ -114,6 +118,7 @@ func (s *EBPFPolicyStore) ReplaceEndpoint(ctx context.Context, endpointID string
 	s.entries[endpointID] = canonicalPolicyEntries(entries)
 	s.revisions[endpointID] = revision
 	s.lastStats[endpointID] = stats
+	s.lastSeen[endpointID] = time.Now()
 	s.events = append(s.events, PolicyUpdateEvent{
 		EndpointID:       endpointID,
 		PreviousRevision: previousRevision,
@@ -123,6 +128,11 @@ func (s *EBPFPolicyStore) ReplaceEndpoint(ctx context.Context, endpointID string
 	})
 	if old != nil && old != next {
 		old.Close()
+	}
+	if s.pinRoot != "" {
+		if err := s.writeMapMetadata(s.pinnedPolicyMapMetadataPath(endpointID), endpointID); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -297,6 +307,7 @@ func (s *EBPFPolicyStore) writeMapMetadata(path, endpointID string) error {
 		EndpointID:    endpointID,
 		SchemaVersion: s.schema,
 		MaxEntries:    s.maxEntries,
+		UpdatedAt:     time.Now().UTC().Format(time.RFC3339Nano),
 	}
 	payload, err := json.Marshal(metadata)
 	if err != nil {
@@ -477,6 +488,10 @@ func (s *EBPFPolicyStore) DeleteEndpoint(ctx context.Context, endpointID string)
 	if endpointID == "" {
 		return fmt.Errorf("endpoint id is required")
 	}
+	return s.deleteEndpointLocked(endpointID)
+}
+
+func (s *EBPFPolicyStore) deleteEndpointLocked(endpointID string) error {
 	if s.pinRoot != "" {
 		if err := s.removePinnedMap(nil, s.pinnedPolicyMapPath(endpointID), s.pinnedPolicyMapMetadataPath(endpointID)); err != nil {
 			return fmt.Errorf("remove pinned eBPF map for endpoint %s: %w", endpointID, err)
@@ -490,8 +505,49 @@ func (s *EBPFPolicyStore) DeleteEndpoint(ctx context.Context, endpointID string)
 	delete(s.maps, endpointID)
 	delete(s.entries, endpointID)
 	delete(s.lastStats, endpointID)
+	delete(s.lastSeen, endpointID)
 	delete(s.revisions, endpointID)
 	return nil
+}
+
+func (s *EBPFPolicyStore) SweepPolicyEndpoints(ctx context.Context, keep []string, maxIdle time.Duration) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	if maxIdle <= 0 {
+		return 0, nil
+	}
+	endpointIDs, err := s.managedEndpointIDsLocked()
+	if err != nil {
+		return 0, err
+	}
+	keepSet := make(map[string]struct{}, len(keep))
+	for _, endpointID := range keep {
+		keepSet[endpointID] = struct{}{}
+	}
+	now := time.Now()
+	swept := 0
+	for _, endpointID := range endpointIDs {
+		if _, ok := keepSet[endpointID]; ok {
+			continue
+		}
+		lastSeen := s.policyEndpointLastSeenLocked(endpointID)
+		if lastSeen.IsZero() {
+			lastSeen = now
+			s.lastSeen[endpointID] = lastSeen
+		}
+		if now.Sub(lastSeen) < maxIdle {
+			continue
+		}
+		if err := s.deleteEndpointLocked(endpointID); err != nil {
+			return swept, err
+		}
+		swept++
+	}
+	return swept, nil
 }
 
 func (s *EBPFPolicyStore) LastStats(endpointID string) PolicyUpdateStats {
@@ -658,6 +714,9 @@ func (s *EBPFPolicyStore) managedEndpointIDsLocked() ([]string, error) {
 	for endpointID := range s.entries {
 		endpoints[endpointID] = struct{}{}
 	}
+	for endpointID := range s.lastSeen {
+		endpoints[endpointID] = struct{}{}
+	}
 	metadataRoot := s.policyMapMetadataRoot()
 	if metadataRoot != "" {
 		entries, err := os.ReadDir(metadataRoot)
@@ -681,6 +740,26 @@ func (s *EBPFPolicyStore) managedEndpointIDsLocked() ([]string, error) {
 	}
 	sort.Strings(ids)
 	return ids, nil
+}
+
+func (s *EBPFPolicyStore) policyEndpointLastSeenLocked(endpointID string) time.Time {
+	if lastSeen := s.lastSeen[endpointID]; !lastSeen.IsZero() {
+		return lastSeen
+	}
+	metadataPath := s.pinnedPolicyMapMetadataPath(endpointID)
+	if metadata, err := s.loadMapMetadata(metadataPath); err == nil {
+		if metadata.UpdatedAt != "" {
+			if updatedAt, err := time.Parse(time.RFC3339Nano, metadata.UpdatedAt); err == nil {
+				s.lastSeen[endpointID] = updatedAt
+				return updatedAt
+			}
+		}
+	}
+	if info, err := os.Stat(metadataPath); err == nil {
+		s.lastSeen[endpointID] = info.ModTime()
+		return info.ModTime()
+	}
+	return time.Time{}
 }
 
 func (s *EBPFPolicyStore) policyMapEntryCountLocked(endpointID string) (uint32, error) {
@@ -751,6 +830,7 @@ func (s *EBPFPolicyStore) Close() error {
 		delete(s.maps, endpointID)
 		delete(s.entries, endpointID)
 		delete(s.lastStats, endpointID)
+		delete(s.lastSeen, endpointID)
 		delete(s.revisions, endpointID)
 	}
 	return firstErr

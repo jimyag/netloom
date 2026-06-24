@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jimyag/netloom/internal/model"
 	"github.com/jimyag/netloom/internal/policy"
@@ -654,6 +655,41 @@ func TestInMemoryPolicyStoreDeletesEndpoint(t *testing.T) {
 	}
 	if len(statuses) != 0 {
 		t.Fatalf("endpoint statuses after delete = %+v, want none", statuses)
+	}
+}
+
+func TestInMemoryPolicyStoreSweepsIdleEndpoints(t *testing.T) {
+	store := NewInMemoryPolicyStore()
+	endpointKeep := model.EndpointKey("prod", "pod-a")
+	endpointFresh := model.EndpointKey("prod", "pod-b")
+	endpointStale := model.EndpointKey("prod", "pod-c")
+	entries := []PolicyMapEntry{{
+		Key:   PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 1, Direction: DirectionIngress},
+		Value: PolicyEntry{Precedence: 10},
+	}}
+	for _, endpointID := range []string{endpointKeep, endpointFresh, endpointStale} {
+		if err := store.ReplaceEndpoint(context.Background(), endpointID, entries); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store.mu.Lock()
+	store.lastSeen[endpointKeep] = time.Now().Add(-time.Hour)
+	store.lastSeen[endpointFresh] = time.Now()
+	store.lastSeen[endpointStale] = time.Now().Add(-time.Hour)
+	store.mu.Unlock()
+
+	swept, err := store.SweepPolicyEndpoints(context.Background(), []string{endpointKeep}, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if swept != 1 {
+		t.Fatalf("swept endpoints = %d, want one stale endpoint", swept)
+	}
+	if len(store.Entries(endpointStale)) != 0 {
+		t.Fatalf("stale endpoint entries still present")
+	}
+	if len(store.Entries(endpointKeep)) == 0 || len(store.Entries(endpointFresh)) == 0 {
+		t.Fatalf("kept or fresh endpoint was removed")
 	}
 }
 

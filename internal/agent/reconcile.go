@@ -30,6 +30,7 @@ type ReconcileResult struct {
 	PolicyMapDriftExtra        int
 	PolicyMapDriftChanged      int
 	PolicyEndpointStatus       []dataplane.PolicyEndpointStatus
+	PolicyGCEndpoints          int
 	PolicyAdded                int
 	PolicyUpdated              int
 	PolicyDeleted              int
@@ -102,6 +103,10 @@ type PolicyEndpointStatusStore interface {
 	PolicyEndpointStatuses(context.Context) ([]dataplane.PolicyEndpointStatus, error)
 }
 
+type PolicyEndpointSweeper interface {
+	SweepPolicyEndpoints(context.Context, []string, time.Duration) (int, error)
+}
+
 type PolicyRuleMetricsStore interface {
 	PolicyRuleMetrics(context.Context) ([]dataplane.RuleMetrics, error)
 }
@@ -115,6 +120,7 @@ type ReconcileOptions struct {
 	TCXWorkload      bool
 	TCXHold          time.Duration
 	ConntrackIdle    time.Duration
+	PolicyGCMaxIdle  time.Duration
 	LinuxDatapath    *linuxdatapath.Options
 }
 
@@ -416,6 +422,20 @@ func prepareReconcile(ctx context.Context, state control.DesiredState, options R
 	if err := populatePolicyRuleMetricsResult(ctx, options, &result); err != nil {
 		return ReconcileResult{}, nil, nil, err
 	}
+	if err := sweepPolicyEndpointsResult(ctx, options.Store, localPrograms, options.PolicyGCMaxIdle, &result); err != nil {
+		return ReconcileResult{}, nil, nil, err
+	}
+	if result.PolicyGCEndpoints != 0 {
+		if err := populatePolicyMapUsageResult(ctx, options.Store, &result); err != nil {
+			return ReconcileResult{}, nil, nil, err
+		}
+		if err := populatePolicyMapDriftResult(ctx, options.Store, &result); err != nil {
+			return ReconcileResult{}, nil, nil, err
+		}
+		if err := populatePolicyEndpointStatusResult(ctx, options.Store, &result); err != nil {
+			return ReconcileResult{}, nil, nil, err
+		}
+	}
 	var targets []tcxTarget
 	if options.TCXInterface != "" || options.TCXWorkload {
 		var err error
@@ -425,6 +445,26 @@ func prepareReconcile(ctx context.Context, state control.DesiredState, options R
 		}
 	}
 	return result, targets, localPrograms, nil
+}
+
+func sweepPolicyEndpointsResult(ctx context.Context, store PolicyStore, programs []policy.Program, maxIdle time.Duration, result *ReconcileResult) error {
+	if maxIdle <= 0 {
+		return nil
+	}
+	sweeper, ok := store.(PolicyEndpointSweeper)
+	if !ok {
+		return nil
+	}
+	keep := make([]string, 0, len(programs))
+	for _, program := range programs {
+		keep = append(keep, program.EndpointID)
+	}
+	swept, err := sweeper.SweepPolicyEndpoints(ctx, keep, maxIdle)
+	if err != nil {
+		return fmt.Errorf("sweep stale policy endpoints: %w", err)
+	}
+	result.PolicyGCEndpoints = swept
+	return nil
 }
 
 func recordPolicyEventsDelta(result *ReconcileResult, events []dataplane.PolicyUpdateEvent, from int, endpointID string) {
