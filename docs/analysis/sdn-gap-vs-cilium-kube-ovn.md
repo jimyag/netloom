@@ -64,9 +64,9 @@ These are the highest-signal gaps I see now.
 
 ### 1. Replace `ovn-nbctl` orchestration with a typed OVSDB client layer
 
-Netloom still drives OVN primarily through command planning and `ovn-nbctl` execution in
+Netloom still drives OVN write operations primarily through command planning and `ovn-nbctl` execution in
 [internal/ovn](/home/jimyag/src/github/jimyag/netloom/internal/ovn). It now has a typed managed-row audit seam:
-`ManagedOVNReader` returns `ManagedOVNRow` objects for live state accounting, and the current `ovn-nbctl` audit path adapts command output into that typed reader interface. This gives the controller audit code a stable boundary for a later `libovsdb` monitor/cache reader, but it is not yet a full typed OVN client.
+`ManagedOVNReader` returns `ManagedOVNRow` objects for live state accounting, the current `ovn-nbctl` audit path adapts command output into that typed reader interface, and `LibOVSDBManagedReader` can read the same managed rows from a real libovsdb monitor/cache using Netloom-local OVN NB models under `internal/ovn/ovsdb/ovnnb`. Those models are pulled into this repository from Kube-OVN's generated OVSDB model package, so Netloom follows Kube-OVN's local model pattern without relying on a `go.mod` replace to the Kube-OVN fork. It is still not a full typed OVN write client.
 
 What is missing:
 
@@ -127,7 +127,7 @@ Netloom has drop/trace style events, policy-rule packet/byte counters in the eva
 
 What is missing:
 
-- typed OVSDB monitor/cache to replace the current `ovn-nbctl find` live audit adapter and expose field-level drift
+- wiring the libovsdb monitor/cache reader into the controller runtime and exposing field-level drift beyond managed-row counts
 - API surface for policy and route explanations backed by live state
 
 This is product work, not just test work.
