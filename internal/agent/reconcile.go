@@ -300,6 +300,14 @@ func QuarantinePolicyEndpoint(ctx context.Context, state control.DesiredState, o
 	return status, nil
 }
 
+func UnquarantinePolicyEndpoint(ctx context.Context, state control.DesiredState, options ReconcileOptions, endpointID string) (dataplane.PolicyEndpointStatus, error) {
+	status, err := RegeneratePolicyEndpoint(ctx, state, options, endpointID)
+	if err != nil {
+		return dataplane.PolicyEndpointStatus{}, fmt.Errorf("unquarantine policy endpoint %s: %w", endpointID, err)
+	}
+	return status, nil
+}
+
 func quarantinePolicyMapEntries() []dataplane.PolicyMapEntry {
 	return []dataplane.PolicyMapEntry{
 		quarantinePolicyMapEntry(dataplane.DirectionIngress),

@@ -409,6 +409,65 @@ func TestQuarantinePolicyEndpointReplacesPolicyWithIngressAndEgressDrops(t *test
 	}
 }
 
+func TestUnquarantinePolicyEndpointRestoresDesiredPolicy(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:             "pod-a",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"web"},
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "allow-http",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("172.30.0.0/24"),
+				Ports:      []model.PortRange{{From: 80, To: 80}},
+				Action:     model.ActionAllow,
+			}},
+		}},
+	}
+	store := dataplane.NewInMemoryPolicyStore()
+	endpointID := model.EndpointKey("prod", "pod-a")
+	if _, err := QuarantinePolicyEndpoint(context.Background(), state, ReconcileOptions{
+		Node:  "node-a",
+		Store: store,
+	}, endpointID); err != nil {
+		t.Fatal(err)
+	}
+	quarantineRevision := store.Revision(endpointID)
+
+	status, err := UnquarantinePolicyEndpoint(context.Background(), state, ReconcileOptions{
+		Node:  "node-a",
+		Store: store,
+	}, endpointID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.EndpointID != endpointID || status.Revision != quarantineRevision+1 || status.Entries != 1 {
+		t.Fatalf("unquarantine status = %+v, want restored desired policy revision", status)
+	}
+	entries := store.Entries(endpointID)
+	if len(entries) != 1 || entries[0].RemoteCIDR != netip.MustParsePrefix("172.30.0.0/24") || entries[0].Value.Deny != 0 {
+		t.Fatalf("entries = %+v, want restored allow-http policy", entries)
+	}
+	decision := dataplane.Evaluate(entries, dataplane.Packet{
+		RemoteIP:  netip.MustParseAddr("172.30.0.10"),
+		Direction: dataplane.DirectionIngress,
+		Protocol:  6,
+		DestPort:  80,
+	})
+	if decision.Verdict != dataplane.VerdictAllow {
+		t.Fatalf("decision = %+v, want restored allow", decision)
+	}
+}
+
 func TestReconcileNodeSweepsIdlePolicyEndpoints(t *testing.T) {
 	state := control.DesiredState{
 		Endpoints: []model.Endpoint{{

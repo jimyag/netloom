@@ -177,7 +177,13 @@ a failed oversized update. Long-running agents expose the latest endpoint policy
 lifecycle view at `/policy/endpoints` on the existing metrics HTTP listener;
 the response includes the same revision, drift, pressure, last stats, and last
 event data as `netloom-agent policy-status`, and supports filtering with
-`?endpoint=pod-a` or `?endpoint=prod/pod-a`.
+`?endpoint=pod-a` or `?endpoint=prod/pod-a`. The same endpoint API supports
+operator lifecycle actions: `DELETE /policy/endpoints/{endpoint}` clears an
+endpoint map, `POST /policy/endpoints/{endpoint}/regenerate` restores desired
+policy from the latest successful state, `POST /policy/endpoints/{endpoint}/quarantine`
+installs ingress and egress deny-all entries, and
+`POST /policy/endpoints/{endpoint}/unquarantine` restores desired policy after
+isolation.
 
 The agent can also realize a minimal Linux L3 workload datapath from the same
 desired-state file. It has two modes:
@@ -367,7 +373,9 @@ counts. The policy store also exposes endpoint-scoped lifecycle status that
 combines revision, map usage, pressure, drift, last update stats, and the last
 update event; `netloom-agent policy-status` and the long-running
 `/policy/endpoints` HTTP API both report that Cilium-style endpoint policy view
-without scraping reconcile logs. The TCX L4 ACL map value similarly carries
+without scraping reconcile logs. The endpoint API also exposes explicit reset,
+regenerate, quarantine, and unquarantine actions for scoped remediation. The
+TCX L4 ACL map value similarly carries
 the projected rule cookie, log flag, and packet and byte counters. IPv4 and IPv6
 TCX programs atomically increment those counters after a successful LPM lookup
 and before returning the rule action. After a successful TCX reconcile, the agent

@@ -1293,6 +1293,81 @@ func TestPolicyEndpointAPIQuarantinesEndpointPolicyMap(t *testing.T) {
 	}
 }
 
+func TestPolicyEndpointAPIUnquarantinesEndpointPolicyMap(t *testing.T) {
+	endpointID := model.EndpointKey("prod", "pod-a")
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:             "pod-a",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"web"},
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "allow-http",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("172.30.0.0/24"),
+				Ports:      []model.PortRange{{From: 80, To: 80}},
+				Action:     model.ActionAllow,
+			}},
+		}},
+	}
+	store := dataplane.NewInMemoryPolicyStore()
+	if _, err := agent.QuarantinePolicyEndpoint(context.Background(), state, agent.ReconcileOptions{
+		Node:  "node-a",
+		Store: store,
+	}, endpointID); err != nil {
+		t.Fatal(err)
+	}
+	metrics := newAgentMetrics(store)
+	observeAgentReconcileResultWithState(metrics, agent.ReconcileResult{
+		Node: "node-a",
+		PolicyEndpointStatus: []dataplane.PolicyEndpointStatus{{
+			EndpointID: endpointID,
+			Revision:   1,
+			Entries:    2,
+		}},
+	}, "memory", time.Millisecond, state)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/policy/endpoints/prod/pod-a/unquarantine", nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var got policyEndpointActionOutput
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode policy endpoint action response: %v\n%s", err, recorder.Body.String())
+	}
+	if !got.Unquarantined || got.Action != "unquarantine" || got.EndpointID != endpointID || got.EndpointInfo.Revision != 2 || got.EndpointInfo.Entries != 1 {
+		t.Fatalf("unquarantine response = %+v, want endpoint restored", got)
+	}
+	entries := store.Entries(endpointID)
+	if len(entries) != 1 || entries[0].RemoteCIDR != netip.MustParsePrefix("172.30.0.0/24") || entries[0].Value.Deny != 0 {
+		t.Fatalf("entries = %+v, want restored desired policy", entries)
+	}
+	decision := dataplane.Evaluate(entries, dataplane.Packet{
+		RemoteIP:  netip.MustParseAddr("172.30.0.10"),
+		Direction: dataplane.DirectionIngress,
+		Protocol:  6,
+		DestPort:  80,
+	})
+	if decision.Verdict != dataplane.VerdictAllow {
+		t.Fatalf("decision = %+v, want restored allow", decision)
+	}
+	snapshot, _, ready := metrics.snapshotValue()
+	if !ready || len(snapshot.Result.PolicyEndpointStatus) != 1 || snapshot.Result.PolicyEndpointStatus[0].Revision != 2 || snapshot.Result.PolicyEndpointStatus[0].Entries != 1 {
+		t.Fatalf("snapshot statuses = %+v, want unquarantine status", snapshot.Result.PolicyEndpointStatus)
+	}
+}
+
 func TestPolicyEndpointAPIRejectsUnsupportedPostAction(t *testing.T) {
 	metrics := newAgentMetrics(dataplane.NewInMemoryPolicyStore())
 	observeAgentReconcileResult(metrics, agent.ReconcileResult{
