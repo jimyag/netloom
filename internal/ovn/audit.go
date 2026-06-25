@@ -313,24 +313,14 @@ func expectedManagedAuditColumns(desired topology.State) map[string]map[string]s
 		for _, route := range table.Routes {
 			for _, row := range desiredStaticRouteRows(table, route) {
 				fields := map[string]string{
-					"ip_prefix":   row.IPPrefix,
-					"nexthop":     row.Nexthop,
-					"route_table": row.RouteTable,
-				}
-				if row.BFD != nil {
-					fields["bfd"] = *row.BFD
-				}
-				if len(row.Options) > 0 {
-					fields["options"] = mapField(row.Options)
-				}
-				if row.OutputPort != nil {
-					fields["output_port"] = *row.OutputPort
-				}
-				if row.Policy != nil {
-					fields["policy"] = *row.Policy
-				}
-				if len(row.SelectionFields) > 0 {
-					fields["selection_fields"] = staticRouteSelectionFieldsField(row.SelectionFields)
+					"bfd":              pointerStringValue(row.BFD),
+					"ip_prefix":        row.IPPrefix,
+					"nexthop":          row.Nexthop,
+					"options":          mapField(row.Options),
+					"output_port":      pointerStringValue(row.OutputPort),
+					"policy":           pointerStaticRoutePolicyValue(row.Policy),
+					"route_table":      row.RouteTable,
+					"selection_fields": staticRouteSelectionFieldsField(row.SelectionFields),
 				}
 				addAuditExpectedColumns(out, "Logical_Router_Static_Route", fields,
 					"netloom_vpc", table.VPC,

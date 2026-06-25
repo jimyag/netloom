@@ -579,6 +579,32 @@ func TestLibOVSDBTopologyWriterEnsuresRouteTableStaticRoutes(t *testing.T) {
 
 	table.Routes[0].NextHops = []netip.Addr{netip.MustParseAddr("10.10.0.253"), netip.MustParseAddr("10.10.0.252")}
 	table.Routes = table.Routes[:1]
+	var driftedRoutes []ovnnb.LogicalRouterStaticRoute
+	if err := client.WhereCache(func(row *ovnnb.LogicalRouterStaticRoute) bool {
+		return row.ExternalIDs["netloom_route_key"] == "10.20.0.0/24|10.10.0.253"
+	}).List(ctx, &driftedRoutes); err != nil {
+		t.Fatal(err)
+	}
+	if len(driftedRoutes) != 1 {
+		t.Fatalf("drift target routes = %d, want one", len(driftedRoutes))
+	}
+	driftPolicy := ovnnb.LogicalRouterStaticRoutePolicySrcIP
+	driftedRoutes[0].RouteTable = "legacy"
+	driftedRoutes[0].Options = map[string]string{"ecmp_symmetric_reply": "true"}
+	driftedRoutes[0].Policy = &driftPolicy
+	driftedRoutes[0].SelectionFields = []ovnnb.LogicalRouterStaticRouteSelectionFields{ovnnb.LogicalRouterStaticRouteSelectionFieldsIPSrc}
+	driftOps, err := client.Where(&driftedRoutes[0]).Update(&driftedRoutes[0], &driftedRoutes[0].RouteTable, &driftedRoutes[0].Options, &driftedRoutes[0].Policy, &driftedRoutes[0].SelectionFields)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := client.Transact(ctx, driftOps...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, driftOps); err != nil {
+		t.Fatalf("operation errors=%+v err=%v", opErrors, err)
+	}
+
 	if err := writer.EnsureRouteTable(ctx, table); err != nil {
 		t.Fatal(err)
 	}
@@ -598,8 +624,13 @@ func TestLibOVSDBTopologyWriterEnsuresRouteTableStaticRoutes(t *testing.T) {
 		_, add := keys["10.20.0.0/24|10.10.0.252"]
 		_, staleHop := keys["10.20.0.0/24|10.10.0.254"]
 		_, staleBlackhole := keys["10.30.0.0/24|discard"]
+		keptRoute := staticRoutesByKey(routes)["10.20.0.0/24|10.10.0.253"]
 		return keep && add && !staleHop && !staleBlackhole &&
-			staticRoutesByKey(routes)["10.20.0.0/24|10.10.0.253"].UUID == keptECMPUUID
+			keptRoute.UUID == keptECMPUUID &&
+			keptRoute.RouteTable == "main" &&
+			len(keptRoute.Options) == 0 &&
+			keptRoute.Policy == nil &&
+			len(keptRoute.SelectionFields) == 0
 	})
 }
 

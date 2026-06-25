@@ -185,7 +185,8 @@ func TestAuditManagedObjectsFromReaderReportsStaticRouteColumnDrift(t *testing.T
 			}, Fields: map[string]string{
 				"ip_prefix":   "10.20.0.0/24",
 				"nexthop":     "10.10.0.99",
-				"route_table": "main",
+				"options":     "ecmp_symmetric_reply=true",
+				"route_table": "legacy",
 			}},
 		},
 	}}
@@ -206,8 +207,8 @@ func TestAuditManagedObjectsFromReaderReportsStaticRouteColumnDrift(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stats.ManagedLogicalRouterStaticRoutes != 1 || stats.DriftedManagedRows != 1 || stats.DriftedManagedFields != 1 {
-		t.Fatalf("static route audit stats = %+v, want one static route column drift", stats)
+	if stats.ManagedLogicalRouterStaticRoutes != 1 || stats.DriftedManagedRows != 1 || stats.DriftedManagedFields != 3 {
+		t.Fatalf("static route audit stats = %+v, want nexthop/options/route-table column drift", stats)
 	}
 }
 

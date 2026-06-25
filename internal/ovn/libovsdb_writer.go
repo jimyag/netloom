@@ -255,15 +255,17 @@ func (w *LibOVSDBTopologyWriter) EnsureRouteTable(ctx context.Context, table mod
 				}
 				ops = append(ops, attachOps...)
 			}
-			if keep.IPPrefix != desired.IPPrefix ||
-				keep.Nexthop != desired.Nexthop ||
-				keep.RouteTable != desired.RouteTable ||
-				!reflect.DeepEqual(keep.ExternalIDs, nextExternalIDs) {
+			if staticRouteRowChanged(keep, desired, nextExternalIDs) {
+				keep.BFD = desired.BFD
 				keep.IPPrefix = desired.IPPrefix
 				keep.Nexthop = desired.Nexthop
+				keep.Options = desired.Options
+				keep.OutputPort = desired.OutputPort
+				keep.Policy = desired.Policy
 				keep.RouteTable = desired.RouteTable
+				keep.SelectionFields = desired.SelectionFields
 				keep.ExternalIDs = nextExternalIDs
-				updateOps, err := w.client.Where(&keep).Update(&keep, &keep.IPPrefix, &keep.Nexthop, &keep.RouteTable, &keep.ExternalIDs)
+				updateOps, err := w.client.Where(&keep).Update(&keep, &keep.BFD, &keep.IPPrefix, &keep.Nexthop, &keep.Options, &keep.OutputPort, &keep.Policy, &keep.RouteTable, &keep.SelectionFields, &keep.ExternalIDs)
 				if err != nil {
 					return fmt.Errorf("update static route %s: %w", key, err)
 				}
@@ -1487,6 +1489,25 @@ func staticRouteRowKey(route ovnnb.LogicalRouterStaticRoute) string {
 
 func staticRouteKey(prefix, nextHop string) string {
 	return prefix + "|" + nextHop
+}
+
+func staticRouteRowChanged(current, desired ovnnb.LogicalRouterStaticRoute, nextExternalIDs map[string]string) bool {
+	return !stringPointerValueEqual(current.BFD, pointerStringValue(desired.BFD)) ||
+		current.IPPrefix != desired.IPPrefix ||
+		current.Nexthop != desired.Nexthop ||
+		!reflect.DeepEqual(current.Options, desired.Options) ||
+		!stringPointerValueEqual(current.OutputPort, pointerStringValue(desired.OutputPort)) ||
+		!staticRoutePolicyPointerValueEqual(current.Policy, desired.Policy) ||
+		current.RouteTable != desired.RouteTable ||
+		!reflect.DeepEqual(current.SelectionFields, desired.SelectionFields) ||
+		!reflect.DeepEqual(current.ExternalIDs, nextExternalIDs)
+}
+
+func staticRoutePolicyPointerValueEqual(current, desired *ovnnb.LogicalRouterStaticRoutePolicy) bool {
+	if current == nil || desired == nil {
+		return current == desired
+	}
+	return *current == *desired
 }
 
 func desiredPolicyRouteRow(route model.PolicyRoute) ovnnb.LogicalRouterPolicy {
