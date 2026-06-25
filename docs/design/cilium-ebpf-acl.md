@@ -278,16 +278,20 @@ the compact `cidrs` list or `entries` with per-CIDR `except_cidrs`; entry-level
 exceptions are subtracted before policy map entries are generated. The expanded
 entries share the same CIDR identity and CIDR fallback path as direct
 `remote_cidr` rules, so the userspace evaluator and TCX projection do not need
-a separate rule type.
+a separate rule type. Before entries are materialized, equivalent adjacent CIDRs
+from the same expanded rule are compacted into the shortest safe prefix. The
+compiler does not merge across different actions, priorities, ports, endpoint
+identities, services, FQDN names, or entities, so compaction reduces map pressure
+without widening policy intent.
 
 Direct `remote_cidr` rules also support Cilium `CIDRRule.ExceptCIDRs` style
 exceptions through `except_cidrs`. Validation requires every exception prefix
 to be contained by the parent CIDR and to use the same IP family. The compiler
 subtracts exceptions from the parent prefix and emits the minimal remaining
-CIDR set as independent policy entries. Rule-level exceptions are intentionally
-limited to direct CIDR rules and are rejected when combined with
-`remote_cidr_group`; reusable group-level exceptions belong on CIDRGroup
-`entries`.
+CIDR set as independent policy entries, then applies the same equivalent-CIDR
+compaction step where possible. Rule-level exceptions are intentionally limited
+to direct CIDR rules and are rejected when combined with `remote_cidr_group`;
+reusable group-level exceptions belong on CIDRGroup `entries`.
 
 FQDN egress policy follows Cilium's `toFQDNs` split between DNS-derived state
 and endpoint policy. A `SecurityGroupRule` can use `remote_fqdns` selectors with

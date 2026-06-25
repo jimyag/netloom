@@ -148,6 +148,7 @@ func CompileForEndpointWithContext(endpoint model.Endpoint, groups map[string]mo
 			if err != nil {
 				return Program{}, err
 			}
+			compiledRules = compactEquivalentCIDRRules(compiledRules)
 			for _, compiledRule := range compiledRules {
 				program.Rules = append(program.Rules, compiledRule)
 				entries, err := compileMapEntries(compiledRule, endpoint.VPC, resolver)
@@ -571,6 +572,147 @@ func expandCIDRExceptRule(base Rule, exceptCIDRs []netip.Prefix) []Rule {
 		out = append(out, expanded)
 	}
 	return out
+}
+
+func compactEquivalentCIDRRules(rules []Rule) []Rule {
+	if len(rules) < 2 {
+		return rules
+	}
+	groups := make(map[string][]Rule, len(rules))
+	order := make([]string, 0, len(rules))
+	for _, rule := range rules {
+		if !rule.RemoteCIDR.IsValid() {
+			key := ruleCompactionKey(rule)
+			if _, ok := groups[key]; !ok {
+				order = append(order, key)
+			}
+			groups[key] = append(groups[key], rule)
+			continue
+		}
+		key := ruleCompactionKey(rule)
+		if _, ok := groups[key]; !ok {
+			order = append(order, key)
+		}
+		groups[key] = append(groups[key], rule)
+	}
+	out := make([]Rule, 0, len(rules))
+	for _, key := range order {
+		group := groups[key]
+		if len(group) < 2 || !group[0].RemoteCIDR.IsValid() {
+			out = append(out, group...)
+			continue
+		}
+		cidrs := make([]netip.Prefix, 0, len(group))
+		template := group[0]
+		for _, rule := range group {
+			cidrs = append(cidrs, rule.RemoteCIDR.Masked())
+		}
+		for _, cidr := range compactCIDRs(cidrs) {
+			rule := template
+			rule.RemoteCIDR = cidr
+			out = append(out, rule)
+		}
+	}
+	return out
+}
+
+func ruleCompactionKey(rule Rule) string {
+	return strings.Join([]string{
+		rule.ID,
+		fmt.Sprintf("%d", rule.Tier),
+		fmt.Sprintf("%d", rule.Priority),
+		string(rule.Direction),
+		string(rule.Protocol),
+		rule.RemoteGroup,
+		rule.RemoteService,
+		rule.RemoteCIDRGroup,
+		rule.RemoteEntity,
+		rule.RemoteEndpoint,
+		rule.RemoteFQDN,
+		portRangesKey(rule.Ports),
+		strings.Join(rule.NamedPorts, ","),
+		uint8PtrKey(rule.ICMPType),
+		uint8PtrKey(rule.ICMPCode),
+		string(rule.Action),
+		fmt.Sprintf("%t", rule.Stateful),
+		fmt.Sprintf("%t", rule.Log),
+		rule.SecurityGroup,
+	}, "\x00")
+}
+
+func uint8PtrKey(value *uint8) string {
+	if value == nil {
+		return ""
+	}
+	return fmt.Sprintf("%d", *value)
+}
+
+func compactCIDRs(cidrs []netip.Prefix) []netip.Prefix {
+	if len(cidrs) < 2 {
+		return dedupeCIDRs(cidrs)
+	}
+	current := dedupeCIDRs(cidrs)
+	sortCIDRs(current)
+	for {
+		next, changed := compactCIDRsOnce(current)
+		sortCIDRs(next)
+		if !changed {
+			return next
+		}
+		current = next
+	}
+}
+
+func compactCIDRsOnce(cidrs []netip.Prefix) ([]netip.Prefix, bool) {
+	out := make([]netip.Prefix, 0, len(cidrs))
+	changed := false
+	for i := 0; i < len(cidrs); i++ {
+		if i+1 < len(cidrs) {
+			if parent, ok := mergeSiblingCIDRs(cidrs[i], cidrs[i+1]); ok {
+				out = append(out, parent)
+				changed = true
+				i++
+				continue
+			}
+		}
+		out = append(out, cidrs[i])
+	}
+	return dedupeCIDRs(out), changed
+}
+
+func mergeSiblingCIDRs(left, right netip.Prefix) (netip.Prefix, bool) {
+	left = left.Masked()
+	right = right.Masked()
+	if !left.IsValid() || !right.IsValid() || left == right {
+		return netip.Prefix{}, false
+	}
+	if left.Addr().Is4() != right.Addr().Is4() || left.Bits() != right.Bits() || left.Bits() == 0 {
+		return netip.Prefix{}, false
+	}
+	parentBits := left.Bits() - 1
+	leftParent := netip.PrefixFrom(left.Addr(), parentBits).Masked()
+	rightParent := netip.PrefixFrom(right.Addr(), parentBits).Masked()
+	if leftParent != rightParent {
+		return netip.Prefix{}, false
+	}
+	siblingA, siblingB := splitPrefix(leftParent)
+	if (left == siblingA && right == siblingB) || (left == siblingB && right == siblingA) {
+		return leftParent, true
+	}
+	return netip.Prefix{}, false
+}
+
+func sortCIDRs(cidrs []netip.Prefix) {
+	sort.SliceStable(cidrs, func(i, j int) bool {
+		left, right := cidrs[i], cidrs[j]
+		if left.Addr().Is4() != right.Addr().Is4() {
+			return left.Addr().Is4()
+		}
+		if cmp := left.Addr().Compare(right.Addr()); cmp != 0 {
+			return cmp < 0
+		}
+		return left.Bits() < right.Bits()
+	})
 }
 
 func subtractPrefix(base, except netip.Prefix) []netip.Prefix {

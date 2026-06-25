@@ -2032,6 +2032,84 @@ func TestCompileForEndpointWithContextExpandsRemoteCIDRGroup(t *testing.T) {
 	}
 }
 
+func TestCompileForEndpointWithContextCompactsEquivalentCIDRGroupRules(t *testing.T) {
+	endpoint := model.Endpoint{
+		ID:             "pod-a",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"web"},
+	}
+	program, err := CompileForEndpointWithContext(endpoint, map[string]model.SecurityGroup{
+		"web": {
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:              "corp",
+				Priority:        100,
+				Direction:       model.DirectionEgress,
+				Protocol:        model.ProtocolTCP,
+				Ports:           []model.PortRange{{From: 443, To: 443}},
+				RemoteCIDRGroup: "corp",
+				Action:          model.ActionAllow,
+			}},
+		},
+	}, CompileContext{CIDRGroups: []model.CIDRGroup{{
+		Name:  "corp",
+		VPC:   "prod",
+		CIDRs: []netip.Prefix{netip.MustParsePrefix("10.20.0.0/25"), netip.MustParsePrefix("10.20.0.128/25")},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(program.Rules) != 1 || program.Rules[0].RemoteCIDR != netip.MustParsePrefix("10.20.0.0/24") {
+		t.Fatalf("rules = %+v, want compacted /24", program.Rules)
+	}
+	if len(program.MapEntries) != 1 || program.MapEntries[0].RemoteCIDR != netip.MustParsePrefix("10.20.0.0/24") {
+		t.Fatalf("map entries = %+v, want one compacted /24 entry", program.MapEntries)
+	}
+}
+
+func TestCompileForEndpointDoesNotCompactCIDRsAcrossDifferentRuleActions(t *testing.T) {
+	endpoint := model.Endpoint{
+		ID:             "pod-a",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"web"},
+	}
+	program, err := CompileForEndpoint(endpoint, map[string]model.SecurityGroup{
+		"web": {
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "allow-left",
+				Priority:   100,
+				Direction:  model.DirectionEgress,
+				RemoteCIDR: netip.MustParsePrefix("10.20.0.0/25"),
+				Action:     model.ActionAllow,
+			}, {
+				ID:         "drop-right",
+				Priority:   100,
+				Direction:  model.DirectionEgress,
+				RemoteCIDR: netip.MustParsePrefix("10.20.0.128/25"),
+				Action:     model.ActionDrop,
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotCIDRs := []netip.Prefix{program.MapEntries[0].RemoteCIDR, program.MapEntries[1].RemoteCIDR}
+	sort.Slice(gotCIDRs, func(i, j int) bool { return gotCIDRs[i].String() < gotCIDRs[j].String() })
+	wantCIDRs := []netip.Prefix{netip.MustParsePrefix("10.20.0.0/25"), netip.MustParsePrefix("10.20.0.128/25")}
+	if len(program.MapEntries) != 2 || gotCIDRs[0] != wantCIDRs[0] || gotCIDRs[1] != wantCIDRs[1] {
+		t.Fatalf("map entries = %+v, want separate rule actions", program.MapEntries)
+	}
+}
+
 func TestCompileForEndpointWithContextRejectsDuplicateRemoteCIDRGroupNames(t *testing.T) {
 	endpoint := model.Endpoint{
 		ID:             "pod-a",
