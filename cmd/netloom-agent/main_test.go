@@ -1220,6 +1220,77 @@ func TestPolicyEndpointAPIRegenerateRequiresReadyDesiredState(t *testing.T) {
 	}
 }
 
+func TestPolicyEndpointAPIQuarantinesEndpointPolicyMap(t *testing.T) {
+	endpointID := model.EndpointKey("prod", "pod-a")
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:     "pod-a",
+			VPC:    "prod",
+			Subnet: "apps",
+			IP:     netip.MustParseAddr("10.10.0.10"),
+			Node:   "node-a",
+		}},
+	}
+	store := dataplane.NewInMemoryPolicyStore()
+	metrics := newAgentMetrics(store)
+	observeAgentReconcileResultWithState(metrics, agent.ReconcileResult{
+		Node: "node-a",
+		PolicyEndpointStatus: []dataplane.PolicyEndpointStatus{{
+			EndpointID: endpointID,
+			Revision:   1,
+			Entries:    1,
+		}},
+	}, "memory", time.Millisecond, state)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/policy/endpoints/prod/pod-a/quarantine", nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var got policyEndpointActionOutput
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode policy endpoint action response: %v\n%s", err, recorder.Body.String())
+	}
+	if !got.Quarantined || got.Action != "quarantine" || got.EndpointID != endpointID || got.EndpointInfo.Revision != 1 || got.EndpointInfo.Entries != 2 {
+		t.Fatalf("quarantine response = %+v, want endpoint quarantined", got)
+	}
+	entries := store.Entries(endpointID)
+	if len(entries) != 2 {
+		t.Fatalf("entries = %+v, want quarantine entries", entries)
+	}
+	decision := dataplane.Evaluate(entries, dataplane.Packet{
+		RemoteIdentity: 99,
+		RemoteIP:       netip.MustParseAddr("203.0.113.10"),
+		Direction:      dataplane.DirectionIngress,
+		Protocol:       6,
+		DestPort:       443,
+	})
+	if decision.Verdict != dataplane.VerdictDrop || decision.Match == nil || decision.Match.Value.Deny == 0 {
+		t.Fatalf("decision = %+v, want quarantine drop", decision)
+	}
+	snapshot, _, ready := metrics.snapshotValue()
+	if !ready || len(snapshot.Result.PolicyEndpointStatus) != 1 || snapshot.Result.PolicyEndpointStatus[0].Entries != 2 {
+		t.Fatalf("snapshot statuses = %+v, want quarantine status", snapshot.Result.PolicyEndpointStatus)
+	}
+}
+
+func TestPolicyEndpointAPIRejectsUnsupportedPostAction(t *testing.T) {
+	metrics := newAgentMetrics(dataplane.NewInMemoryPolicyStore())
+	observeAgentReconcileResult(metrics, agent.ReconcileResult{
+		Node: "node-a",
+	}, "memory", time.Millisecond)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/policy/endpoints/prod/pod-a?action=freeze", nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestAgentMetricsExportsLatestPolicyAndTCXCounters(t *testing.T) {
 	metrics := newAgentMetrics()
 	observeAgentReconcileResult(metrics, agent.ReconcileResult{

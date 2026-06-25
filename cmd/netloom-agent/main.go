@@ -130,6 +130,7 @@ type policyEndpointActionOutput struct {
 	Action       string                         `json:"action"`
 	Deleted      bool                           `json:"deleted,omitempty"`
 	Regenerated  bool                           `json:"regenerated,omitempty"`
+	Quarantined  bool                           `json:"quarantined,omitempty"`
 	EndpointInfo dataplane.PolicyEndpointStatus `json:"endpoint_status,omitempty"`
 }
 
@@ -1085,6 +1086,29 @@ func (m *agentMetrics) regeneratePolicyEndpoint(ctx context.Context, endpoint st
 	return status, nil
 }
 
+func (m *agentMetrics) quarantinePolicyEndpoint(ctx context.Context, endpoint string) (dataplane.PolicyEndpointStatus, error) {
+	if m == nil || m.store == nil {
+		return dataplane.PolicyEndpointStatus{}, errors.New("policy endpoint actions are not enabled")
+	}
+	snapshot, _, ready := m.snapshotValue()
+	if !ready || !snapshot.Success {
+		return dataplane.PolicyEndpointStatus{}, errors.New("policy endpoint state is not ready")
+	}
+	endpointID, err := resolvePolicyEndpointIDFromSnapshot(endpoint, snapshot)
+	if err != nil {
+		return dataplane.PolicyEndpointStatus{}, err
+	}
+	status, err := agent.QuarantinePolicyEndpoint(ctx, snapshot.State, agent.ReconcileOptions{
+		Node:  snapshot.Result.Node,
+		Store: m.store,
+	}, endpointID)
+	if err != nil {
+		return dataplane.PolicyEndpointStatus{}, err
+	}
+	m.upsertPolicyEndpointStatus(status)
+	return status, nil
+}
+
 func (m *agentMetrics) resolvePolicyEndpointID(endpoint string) (string, error) {
 	endpoint = strings.TrimSpace(endpoint)
 	if endpoint == "" {
@@ -1288,6 +1312,10 @@ func (m *agentMetrics) handlePolicyEndpointDelete(w http.ResponseWriter, r *http
 
 func (m *agentMetrics) handlePolicyEndpointRegenerate(w http.ResponseWriter, r *http.Request) {
 	endpoint, action := policyEndpointActionFromRequest(r)
+	if action == "quarantine" {
+		m.handlePolicyEndpointQuarantine(w, r, endpoint)
+		return
+	}
 	if action != "" && action != "regenerate" && action != "reconcile" {
 		w.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "unsupported policy endpoint action"})
@@ -1322,6 +1350,36 @@ func (m *agentMetrics) handlePolicyEndpointRegenerate(w http.ResponseWriter, r *
 	})
 }
 
+func (m *agentMetrics) handlePolicyEndpointQuarantine(w http.ResponseWriter, r *http.Request, endpoint string) {
+	if endpoint == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "missing policy endpoint"})
+		return
+	}
+	status, err := m.quarantinePolicyEndpoint(r.Context(), endpoint)
+	if err != nil {
+		statusCode := http.StatusInternalServerError
+		switch {
+		case strings.Contains(err.Error(), "not enabled"), strings.Contains(err.Error(), "not ready"):
+			statusCode = http.StatusServiceUnavailable
+		case strings.Contains(err.Error(), "not found"):
+			statusCode = http.StatusNotFound
+		case strings.Contains(err.Error(), "missing"), strings.Contains(err.Error(), "required"), strings.Contains(err.Error(), "assigned to node"):
+			statusCode = http.StatusBadRequest
+		}
+		w.WriteHeader(statusCode)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(policyEndpointActionOutput{
+		EndpointID:   status.EndpointID,
+		Action:       "quarantine",
+		Quarantined:  true,
+		EndpointInfo: status,
+	})
+}
+
 func policyEndpointFromRequest(r *http.Request) string {
 	endpoint := strings.TrimSpace(r.URL.Query().Get("endpoint"))
 	if strings.HasPrefix(r.URL.Path, "/policy/endpoints/") {
@@ -1345,7 +1403,7 @@ func policyEndpointActionFromRequest(r *http.Request) (string, string) {
 			pathEndpoint = decoded
 		}
 		pathEndpoint = strings.TrimSpace(pathEndpoint)
-		for _, suffix := range []string{"/regenerate", "/reconcile"} {
+		for _, suffix := range []string{"/regenerate", "/reconcile", "/quarantine"} {
 			if strings.HasSuffix(pathEndpoint, suffix) {
 				if action == "" {
 					action = strings.TrimPrefix(suffix, "/")

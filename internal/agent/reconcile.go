@@ -255,6 +255,72 @@ func RegeneratePolicyEndpoint(ctx context.Context, state control.DesiredState, o
 	return status, nil
 }
 
+func QuarantinePolicyEndpoint(ctx context.Context, state control.DesiredState, options ReconcileOptions, endpointID string) (dataplane.PolicyEndpointStatus, error) {
+	if options.Node == "" {
+		return dataplane.PolicyEndpointStatus{}, fmt.Errorf("node name is required")
+	}
+	if options.Store == nil {
+		return dataplane.PolicyEndpointStatus{}, fmt.Errorf("policy store is required")
+	}
+	if endpointID == "" {
+		return dataplane.PolicyEndpointStatus{}, fmt.Errorf("policy endpoint is required")
+	}
+	if err := validateAgentState(state); err != nil {
+		return dataplane.PolicyEndpointStatus{}, err
+	}
+	endpoint, ok := desiredEndpointByPolicyID(state.Endpoints, endpointID)
+	if !ok {
+		return dataplane.PolicyEndpointStatus{}, fmt.Errorf("policy endpoint %q not found in desired state", endpointID)
+	}
+	if endpoint.Node != options.Node {
+		return dataplane.PolicyEndpointStatus{}, fmt.Errorf("policy endpoint %q is assigned to node %q, not %q", endpointID, endpoint.Node, options.Node)
+	}
+	entries := quarantinePolicyMapEntries()
+	if err := options.Store.ReplaceEndpoint(ctx, endpointID, entries); err != nil {
+		return dataplane.PolicyEndpointStatus{}, fmt.Errorf("quarantine policy endpoint %s: %w", endpointID, err)
+	}
+	status := dataplane.PolicyEndpointStatus{
+		EndpointID: endpointID,
+		Entries:    uint32(len(entries)),
+	}
+	if statusStore, ok := options.Store.(PolicyEndpointStatusStore); ok {
+		statuses, err := statusStore.PolicyEndpointStatuses(ctx)
+		if err != nil {
+			return dataplane.PolicyEndpointStatus{}, fmt.Errorf("read quarantined policy endpoint status: %w", err)
+		}
+		for _, candidate := range statuses {
+			if candidate.EndpointID == endpointID {
+				return candidate, nil
+			}
+		}
+	}
+	return status, nil
+}
+
+func quarantinePolicyMapEntries() []dataplane.PolicyMapEntry {
+	return []dataplane.PolicyMapEntry{
+		quarantinePolicyMapEntry(dataplane.DirectionIngress),
+		quarantinePolicyMapEntry(dataplane.DirectionEgress),
+	}
+}
+
+func quarantinePolicyMapEntry(direction uint8) dataplane.PolicyMapEntry {
+	return dataplane.PolicyMapEntry{
+		Key: dataplane.PolicyKey{
+			PrefixLen:  dataplane.StaticPrefixBits,
+			Direction:  direction,
+			Protocol:   0,
+			DestPortBE: 0,
+		},
+		Value: dataplane.PolicyEntry{
+			Deny:        1,
+			L4PrefixLen: 0,
+			Precedence:  ^uint32(0),
+			RuleCookie:  0x51554152,
+		},
+	}
+}
+
 func (r *Reconciler) Reconcile(ctx context.Context, state control.DesiredState, options ReconcileOptions) (ReconcileResult, error) {
 	if r == nil {
 		return ReconcileResult{}, fmt.Errorf("reconciler is required")

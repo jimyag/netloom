@@ -336,6 +336,58 @@ func TestRegeneratePolicyEndpointRejectsRemoteNodeEndpoint(t *testing.T) {
 	}
 }
 
+func TestQuarantinePolicyEndpointReplacesPolicyWithIngressAndEgressDrops(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:     "pod-a",
+			VPC:    "prod",
+			Subnet: "apps",
+			IP:     netip.MustParseAddr("10.10.0.10"),
+			Node:   "node-a",
+		}},
+	}
+	store := dataplane.NewInMemoryPolicyStore()
+	endpointID := model.EndpointKey("prod", "pod-a")
+
+	status, err := QuarantinePolicyEndpoint(context.Background(), state, ReconcileOptions{
+		Node:  "node-a",
+		Store: store,
+	}, endpointID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.EndpointID != endpointID || status.Revision != 1 || status.Entries != 2 {
+		t.Fatalf("quarantine status = %+v, want two-entry revision", status)
+	}
+	if !status.HasLastEvent || !status.LastEvent.Success {
+		t.Fatalf("quarantine event = %+v has=%t, want successful event", status.LastEvent, status.HasLastEvent)
+	}
+	entries := store.Entries(endpointID)
+	if len(entries) != 2 {
+		t.Fatalf("entries = %+v, want ingress and egress quarantine entries", entries)
+	}
+	ingress := dataplane.Evaluate(entries, dataplane.Packet{
+		RemoteIdentity: 100,
+		RemoteIP:       netip.MustParseAddr("203.0.113.10"),
+		Direction:      dataplane.DirectionIngress,
+		Protocol:       6,
+		DestPort:       443,
+	})
+	egress := dataplane.Evaluate(entries, dataplane.Packet{
+		RemoteIdentity: 200,
+		RemoteIP:       netip.MustParseAddr("198.51.100.10"),
+		Direction:      dataplane.DirectionEgress,
+		Protocol:       17,
+		DestPort:       53,
+	})
+	if ingress.Verdict != dataplane.VerdictDrop || ingress.Match == nil || ingress.Match.Value.Deny == 0 {
+		t.Fatalf("ingress decision = %+v, want quarantine policy deny", ingress)
+	}
+	if egress.Verdict != dataplane.VerdictDrop || egress.Match == nil || egress.Match.Value.Deny == 0 {
+		t.Fatalf("egress decision = %+v, want quarantine policy deny", egress)
+	}
+}
+
 func TestReconcileNodeSweepsIdlePolicyEndpoints(t *testing.T) {
 	state := control.DesiredState{
 		Endpoints: []model.Endpoint{{
