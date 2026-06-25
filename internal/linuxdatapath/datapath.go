@@ -185,11 +185,13 @@ func Apply(ctx context.Context, state control.DesiredState, options Options) (Re
 				result.ProviderInventoryTotal, result.ProviderInventoryReady, result.ProviderInventoryDegraded = summarizeProviderInventory(inventory)
 				result.ProviderStatus = providerLinkStatusesFromInventory(providerSpecs, inventory)
 				result.ProviderReady, result.ProviderDegraded = summarizeProviderLinkHealth(result.ProviderStatus)
+				result.ProviderIssues = providerRuntimeIssues(result.ProviderStatus, result.ProviderIssues, options.Node)
 				result.ProviderNetworkStatus = summarizeProviderNetworkStatus(result.ProviderStatus, result.ProviderIssues)
 			}
 		} else {
 			result.ProviderStatus = providerLinkStatusesFromInventory(providerSpecs, options.ProviderInventory)
 			result.ProviderReady, result.ProviderDegraded = summarizeProviderLinkHealth(result.ProviderStatus)
+			result.ProviderIssues = providerRuntimeIssues(result.ProviderStatus, result.ProviderIssues, options.Node)
 			result.ProviderNetworkStatus = summarizeProviderNetworkStatus(result.ProviderStatus, result.ProviderIssues)
 		}
 	default:
@@ -610,6 +612,77 @@ func summarizeProviderNetworkStatus(statuses []ProviderLinkStatus, issues []Prov
 		})
 	}
 	return out
+}
+
+func providerRuntimeIssues(statuses []ProviderLinkStatus, existing []ProviderIssue, node string) []ProviderIssue {
+	out := append([]ProviderIssue(nil), existing...)
+	seen := make(map[string]struct{}, len(out))
+	for _, issue := range out {
+		seen[providerIssueKey(issue)] = struct{}{}
+	}
+	for _, status := range statuses {
+		for _, issue := range providerLinkStatusIssues(status, node) {
+			key := providerIssueKey(issue)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, issue)
+		}
+	}
+	return out
+}
+
+func providerLinkStatusIssues(status ProviderLinkStatus, node string) []ProviderIssue {
+	if status.Ready {
+		return nil
+	}
+	var issues []ProviderIssue
+	if reason := providerRuntimeReason("parent", status.ParentState); reason != "" {
+		issues = append(issues, ProviderIssue{
+			ProviderNetwork: status.ProviderNetwork,
+			Node:            node,
+			ParentDevice:    status.ParentDevice,
+			VLAN:            status.VLAN,
+			Reason:          reason,
+			Detail:          status.ParentState,
+		})
+	}
+	if reason := providerRuntimeReason("link", status.LinkState); reason != "" {
+		issues = append(issues, ProviderIssue{
+			ProviderNetwork: status.ProviderNetwork,
+			Node:            node,
+			ParentDevice:    status.ParentDevice,
+			VLAN:            status.VLAN,
+			Reason:          reason,
+			Detail:          status.LinkName + ":" + status.LinkState,
+		})
+	}
+	return issues
+}
+
+func providerRuntimeReason(kind, state string) string {
+	switch state {
+	case "", "up", "planned":
+		return ""
+	case "missing":
+		return kind + "-missing"
+	case "down":
+		return kind + "-down"
+	default:
+		return kind + "-drift"
+	}
+}
+
+func providerIssueKey(issue ProviderIssue) string {
+	return strings.Join([]string{
+		issue.ProviderNetwork,
+		issue.Node,
+		issue.ParentDevice,
+		strconv.Itoa(int(issue.VLAN)),
+		issue.Reason,
+		issue.Detail,
+	}, "\x00")
 }
 
 func providerInterfaceState(present, ready bool) string {

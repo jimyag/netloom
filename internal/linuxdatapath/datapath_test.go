@@ -549,6 +549,61 @@ func TestApplyCommandRefreshesProviderHealthAfterExecution(t *testing.T) {
 	}
 }
 
+func TestApplyCommandReportsProviderRuntimeLinkDrift(t *testing.T) {
+	previous := listSystemInterfaces
+	defer func() { listSystemInterfaces = previous }()
+
+	listSystemInterfaces = func() ([]net.Interface, error) {
+		return []net.Interface{{Name: "eth1", Flags: net.FlagUp}}, nil
+	}
+
+	state := control.DesiredState{
+		ProviderNetworks: []model.ProviderNetwork{{
+			Name: "physnet-a",
+			Nodes: []model.ProviderNetworkNode{{
+				Node:      "node-a",
+				Interface: "eth1",
+			}},
+		}},
+		Subnets: []model.Subnet{{
+			Name:            "apps",
+			VPC:             "prod",
+			CIDR:            netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway:         netip.MustParseAddr("10.10.0.1"),
+			ProviderNetwork: "physnet-a",
+			VLAN:            100,
+		}},
+		Endpoints: []model.Endpoint{{
+			ID:     "pod-a",
+			VPC:    "prod",
+			Subnet: "apps",
+			IP:     netip.MustParseAddr("10.10.0.10"),
+			Node:   "node-a",
+		}},
+	}
+	result, err := Apply(context.Background(), state, Options{
+		Node:        "node-a",
+		LocalDevice: "nl0",
+		Backend:     "command",
+		Executor:    noopCommandExecutor{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ProviderReady != 0 || result.ProviderDegraded != 1 {
+		t.Fatalf("provider health = ready:%d degraded:%d, want 0/1", result.ProviderReady, result.ProviderDegraded)
+	}
+	if len(result.ProviderIssues) != 1 || result.ProviderIssues[0].Reason != "link-missing" {
+		t.Fatalf("provider issues = %+v, want link-missing", result.ProviderIssues)
+	}
+	if result.ProviderIssues[0].ProviderNetwork != "physnet-a" || result.ProviderIssues[0].Node != "node-a" || result.ProviderIssues[0].ParentDevice != "eth1" || result.ProviderIssues[0].VLAN != 100 {
+		t.Fatalf("provider issue identity = %+v, want physnet-a eth1 vlan 100", result.ProviderIssues[0])
+	}
+	if len(result.ProviderNetworkStatus) != 1 || result.ProviderNetworkStatus[0].Ready || result.ProviderNetworkStatus[0].IssueCount != 1 || result.ProviderNetworkStatus[0].Reasons[0] != "link-missing" {
+		t.Fatalf("provider network status = %+v, want link-missing reason", result.ProviderNetworkStatus)
+	}
+}
+
 func TestApplyCommandReturnsPlannedProviderStatusWhenExecutorFails(t *testing.T) {
 	previous := listSystemInterfaces
 	defer func() { listSystemInterfaces = previous }()
@@ -607,6 +662,26 @@ func TestApplyCommandReturnsPlannedProviderStatusWhenExecutorFails(t *testing.T)
 	}
 	if result.ProviderStatus[0].ParentDevice != "eth1" || result.ProviderStatus[0].VLAN != 100 {
 		t.Fatalf("provider status[0] = %+v, want eth1 vlan 100", result.ProviderStatus[0])
+	}
+}
+
+func TestProviderRuntimeIssuesReportsParentAndLinkDrift(t *testing.T) {
+	issues := providerRuntimeIssues([]ProviderLinkStatus{{
+		ProviderNetwork: "physnet-a",
+		ParentDevice:    "eth1",
+		VLAN:            100,
+		LinkName:        "nlv-test",
+		ParentState:     "down",
+		LinkState:       "type-mismatch",
+	}}, nil, "node-a")
+	if len(issues) != 2 {
+		t.Fatalf("issues = %+v, want parent and link drift", issues)
+	}
+	if issues[0].Reason != "parent-down" || issues[1].Reason != "link-drift" {
+		t.Fatalf("issues = %+v, want parent-down and link-drift", issues)
+	}
+	if issues[0].Node != "node-a" || issues[1].Node != "node-a" {
+		t.Fatalf("issues = %+v, want node-a on runtime issues", issues)
 	}
 }
 
