@@ -268,6 +268,74 @@ func TestReconcileNodeAppliesOnlyLocalEndpointPolicies(t *testing.T) {
 	}
 }
 
+func TestRegeneratePolicyEndpointReplacesDesiredEndpointPolicy(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:             "pod-a",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"web"},
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "allow-http",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("172.30.0.0/24"),
+				Ports:      []model.PortRange{{From: 80, To: 80}},
+				Action:     model.ActionAllow,
+			}},
+		}},
+	}
+	store := dataplane.NewInMemoryPolicyStore()
+	endpointID := model.EndpointKey("prod", "pod-a")
+	if _, err := ReconcileNode(context.Background(), state, "node-a", store); err != nil {
+		t.Fatal(err)
+	}
+	before := store.Revision(endpointID)
+
+	status, err := RegeneratePolicyEndpoint(context.Background(), state, ReconcileOptions{
+		Node:  "node-a",
+		Store: store,
+	}, endpointID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.EndpointID != endpointID || status.Revision != before+1 || status.Entries != 1 {
+		t.Fatalf("regenerated status = %+v, want endpoint revision advanced", status)
+	}
+	if !status.HasLastEvent || !status.LastEvent.Success || status.LastEvent.Revision != before+1 {
+		t.Fatalf("regenerated event = %+v has=%t, want successful forced update event", status.LastEvent, status.HasLastEvent)
+	}
+	if entries := store.Entries(endpointID); len(entries) != 1 || entries[0].RemoteCIDR != netip.MustParsePrefix("172.30.0.0/24") {
+		t.Fatalf("entries = %+v, want regenerated desired policy", entries)
+	}
+}
+
+func TestRegeneratePolicyEndpointRejectsRemoteNodeEndpoint(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:     "pod-a",
+			VPC:    "prod",
+			Subnet: "apps",
+			IP:     netip.MustParseAddr("10.10.0.10"),
+			Node:   "node-b",
+		}},
+	}
+	_, err := RegeneratePolicyEndpoint(context.Background(), state, ReconcileOptions{
+		Node:  "node-a",
+		Store: dataplane.NewInMemoryPolicyStore(),
+	}, model.EndpointKey("prod", "pod-a"))
+	if err == nil || !strings.Contains(err.Error(), "assigned to node") {
+		t.Fatalf("error = %v, want remote node rejection", err)
+	}
+}
+
 func TestReconcileNodeSweepsIdlePolicyEndpoints(t *testing.T) {
 	state := control.DesiredState{
 		Endpoints: []model.Endpoint{{

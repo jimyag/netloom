@@ -1079,6 +1079,147 @@ func TestPolicyEndpointAPIDeleteRequiresActionStore(t *testing.T) {
 	}
 }
 
+func TestPolicyEndpointAPIRegeneratesEndpointPolicyMap(t *testing.T) {
+	endpointID := model.EndpointKey("prod", "pod-a")
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:             "pod-a",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"web"},
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "allow-http",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("172.30.0.0/24"),
+				Ports:      []model.PortRange{{From: 80, To: 80}},
+				Action:     model.ActionAllow,
+			}},
+		}},
+	}
+	store := dataplane.NewInMemoryPolicyStore()
+	if err := store.ReplaceEndpoint(context.Background(), endpointID, []dataplane.PolicyMapEntry{{
+		Key: dataplane.PolicyKey{
+			PrefixLen:      dataplane.StaticPrefixBits,
+			RemoteIdentity: 42,
+			Direction:      dataplane.DirectionIngress,
+		},
+		Value: dataplane.PolicyEntry{Deny: 1},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	metrics := newAgentMetrics(store)
+	observeAgentReconcileResultWithState(metrics, agent.ReconcileResult{
+		Node: "node-a",
+		PolicyEndpointStatus: []dataplane.PolicyEndpointStatus{{
+			EndpointID: endpointID,
+			Revision:   1,
+			Entries:    1,
+		}},
+	}, "memory", time.Millisecond, state)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/policy/endpoints/prod/pod-a/regenerate", nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var got policyEndpointActionOutput
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode policy endpoint action response: %v\n%s", err, recorder.Body.String())
+	}
+	if !got.Regenerated || got.Action != "regenerate" || got.EndpointID != endpointID || got.EndpointInfo.Revision != 2 {
+		t.Fatalf("regenerate response = %+v, want endpoint regenerated at revision 2", got)
+	}
+	entries := store.Entries(endpointID)
+	if len(entries) != 1 || entries[0].RemoteCIDR != netip.MustParsePrefix("172.30.0.0/24") || entries[0].Value.Deny != 0 {
+		t.Fatalf("entries = %+v, want regenerated allow-http policy", entries)
+	}
+	snapshot, _, ready := metrics.snapshotValue()
+	if !ready || len(snapshot.Result.PolicyEndpointStatus) != 1 || snapshot.Result.PolicyEndpointStatus[0].Revision != 2 {
+		t.Fatalf("snapshot statuses = %+v, want regenerated revision", snapshot.Result.PolicyEndpointStatus)
+	}
+}
+
+func TestPolicyEndpointAPIRegeneratesDesiredEndpointWithoutExistingStatus(t *testing.T) {
+	endpointID := model.EndpointKey("prod", "pod-a")
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:             "pod-a",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"web"},
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "allow-http",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("172.30.0.0/24"),
+				Ports:      []model.PortRange{{From: 80, To: 80}},
+				Action:     model.ActionAllow,
+			}},
+		}},
+	}
+	store := dataplane.NewInMemoryPolicyStore()
+	metrics := newAgentMetrics(store)
+	observeAgentReconcileResultWithState(metrics, agent.ReconcileResult{
+		Node: "node-a",
+	}, "memory", time.Millisecond, state)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/policy/endpoints/prod/pod-a/regenerate", nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var got policyEndpointActionOutput
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode policy endpoint action response: %v\n%s", err, recorder.Body.String())
+	}
+	if !got.Regenerated || got.EndpointID != endpointID || got.EndpointInfo.Revision != 1 {
+		t.Fatalf("regenerate response = %+v, want desired endpoint regenerated without prior status", got)
+	}
+	if entries := store.Entries(endpointID); len(entries) != 1 {
+		t.Fatalf("entries = %+v, want regenerated desired policy", entries)
+	}
+}
+
+func TestPolicyEndpointAPIRegenerateRequiresReadyDesiredState(t *testing.T) {
+	endpointID := model.EndpointKey("prod", "pod-a")
+	store := dataplane.NewInMemoryPolicyStore()
+	metrics := newAgentMetrics(store)
+	observeAgentReconcileFailure(metrics, agent.ReconcileResult{
+		Node: "node-a",
+		PolicyEndpointStatus: []dataplane.PolicyEndpointStatus{{
+			EndpointID: endpointID,
+			Revision:   1,
+		}},
+	}, "memory", errors.New("broken desired state"), time.Millisecond)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/policy/endpoints/prod/pod-a/regenerate", nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503; body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestAgentMetricsExportsLatestPolicyAndTCXCounters(t *testing.T) {
 	metrics := newAgentMetrics()
 	observeAgentReconcileResult(metrics, agent.ReconcileResult{
