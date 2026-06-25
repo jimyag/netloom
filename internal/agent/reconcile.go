@@ -16,63 +16,65 @@ import (
 )
 
 type ReconcileResult struct {
-	Node                       string
-	Endpoints                  int
-	Programs                   int
-	Entries                    int
-	PolicyMapEntries           uint32
-	PolicyMapCapacity          uint32
-	PolicyMapPressureMax       uint32
-	PolicyMapPressureEndpoint  string
-	PolicyMapPressureEndpoints int
-	PolicyPressureMitigated    int
-	PolicyMapDriftEndpoints    int
-	PolicyMapDriftMissing      int
-	PolicyMapDriftExtra        int
-	PolicyMapDriftChanged      int
-	PolicyEndpointStatus       []dataplane.PolicyEndpointStatus
-	PolicyGCEndpoints          int
-	PolicyAdded                int
-	PolicyUpdated              int
-	PolicyDeleted              int
-	PolicyUnchanged            int
-	PolicyEvents               int
-	PolicyFailed               int
-	PolicyRollbacks            int
-	PolicyFailedEndpoint       string
-	PolicyFailedRevision       uint64
-	PolicyRevisionMax          uint64
-	PolicyLastError            string
-	PolicyRulePackets          uint64
-	PolicyRuleBytes            uint64
-	PolicyRuleAllowed          uint64
-	PolicyRuleDropped          uint64
-	PolicyRuleRejected         uint64
-	PolicyRuleLogged           uint64
-	PolicyRuleStats            []dataplane.RuleMetrics
-	TCXFailed                  int
-	TCXRollbacks               int
-	TCXFailedTarget            string
-	TCXLastError               string
-	ConntrackExpired           int
-	TCXEligible                int
-	TCX                        string
-	Datapath                   string
-	LocalIPs                   int
-	RemoteRoutes               int
-	PolicyRoutes               int
-	ProviderNetworks           int
-	ProviderLinks              int
-	ProviderReady              int
-	ProviderDegraded           int
-	ProviderStatus             []linuxdatapath.ProviderLinkStatus
-	ProviderIssues             []linuxdatapath.ProviderIssue
-	ProviderNetworkStatus      []linuxdatapath.ProviderNetworkStatus
-	ProviderInventoryTotal     int
-	ProviderInventoryReady     int
-	ProviderInventoryDegraded  int
-	ProviderInventoryStatus    []linuxdatapath.ProviderInterface
-	Cleanup                    bool
+	Node                             string
+	Endpoints                        int
+	Programs                         int
+	Entries                          int
+	PolicyMapEntries                 uint32
+	PolicyMapCapacity                uint32
+	PolicyMapPressureMax             uint32
+	PolicyMapPressureEndpoint        string
+	PolicyMapPressureEndpoints       int
+	PolicyPressureMitigated          int
+	PolicyPressureQuarantined        int
+	PolicyPressureQuarantineEndpoint string
+	PolicyMapDriftEndpoints          int
+	PolicyMapDriftMissing            int
+	PolicyMapDriftExtra              int
+	PolicyMapDriftChanged            int
+	PolicyEndpointStatus             []dataplane.PolicyEndpointStatus
+	PolicyGCEndpoints                int
+	PolicyAdded                      int
+	PolicyUpdated                    int
+	PolicyDeleted                    int
+	PolicyUnchanged                  int
+	PolicyEvents                     int
+	PolicyFailed                     int
+	PolicyRollbacks                  int
+	PolicyFailedEndpoint             string
+	PolicyFailedRevision             uint64
+	PolicyRevisionMax                uint64
+	PolicyLastError                  string
+	PolicyRulePackets                uint64
+	PolicyRuleBytes                  uint64
+	PolicyRuleAllowed                uint64
+	PolicyRuleDropped                uint64
+	PolicyRuleRejected               uint64
+	PolicyRuleLogged                 uint64
+	PolicyRuleStats                  []dataplane.RuleMetrics
+	TCXFailed                        int
+	TCXRollbacks                     int
+	TCXFailedTarget                  string
+	TCXLastError                     string
+	ConntrackExpired                 int
+	TCXEligible                      int
+	TCX                              string
+	Datapath                         string
+	LocalIPs                         int
+	RemoteRoutes                     int
+	PolicyRoutes                     int
+	ProviderNetworks                 int
+	ProviderLinks                    int
+	ProviderReady                    int
+	ProviderDegraded                 int
+	ProviderStatus                   []linuxdatapath.ProviderLinkStatus
+	ProviderIssues                   []linuxdatapath.ProviderIssue
+	ProviderNetworkStatus            []linuxdatapath.ProviderNetworkStatus
+	ProviderInventoryTotal           int
+	ProviderInventoryReady           int
+	ProviderInventoryDegraded        int
+	ProviderInventoryStatus          []linuxdatapath.ProviderInterface
+	Cleanup                          bool
 }
 
 type PolicyStore interface {
@@ -123,6 +125,7 @@ type ReconcileOptions struct {
 	ConntrackIdle                     time.Duration
 	PolicyGCMaxIdle                   time.Duration
 	PolicyPressureMitigationThreshold uint32
+	PolicyPressureQuarantine          bool
 	LinuxDatapath                     *linuxdatapath.Options
 }
 
@@ -340,7 +343,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, state control.DesiredState, 
 	if err := populatePolicyMapUsageResult(ctx, options.Store, &result); err != nil {
 		return result, err
 	}
-	if err := mitigatePolicyMapPressureResult(ctx, options.Store, programs, options.PolicyPressureMitigationThreshold, &result); err != nil {
+	if err := mitigatePolicyMapPressureResult(ctx, options.Store, programs, options.PolicyPressureMitigationThreshold, options.PolicyPressureQuarantine, &result); err != nil {
 		return result, err
 	}
 	if err := populatePolicyMapDriftResult(ctx, options.Store, &result); err != nil {
@@ -545,7 +548,7 @@ func prepareReconcile(ctx context.Context, state control.DesiredState, options R
 	if err := populatePolicyMapUsageResult(ctx, options.Store, &result); err != nil {
 		return ReconcileResult{}, nil, nil, err
 	}
-	if err := mitigatePolicyMapPressureResult(ctx, options.Store, localPrograms, options.PolicyPressureMitigationThreshold, &result); err != nil {
+	if err := mitigatePolicyMapPressureResult(ctx, options.Store, localPrograms, options.PolicyPressureMitigationThreshold, options.PolicyPressureQuarantine, &result); err != nil {
 		return ReconcileResult{}, nil, nil, err
 	}
 	if err := populatePolicyMapDriftResult(ctx, options.Store, &result); err != nil {
@@ -582,7 +585,7 @@ func prepareReconcile(ctx context.Context, state control.DesiredState, options R
 	return result, targets, localPrograms, nil
 }
 
-func mitigatePolicyMapPressureResult(ctx context.Context, store PolicyStore, programs []policy.Program, threshold uint32, result *ReconcileResult) error {
+func mitigatePolicyMapPressureResult(ctx context.Context, store PolicyStore, programs []policy.Program, threshold uint32, quarantine bool, result *ReconcileResult) error {
 	if result == nil || threshold == 0 || result.PolicyMapPressureMax < threshold {
 		return nil
 	}
@@ -610,12 +613,29 @@ func mitigatePolicyMapPressureResult(ctx context.Context, store PolicyStore, pro
 	}
 	result.PolicyPressureMitigated = mitigated
 	if mitigated == 0 {
-		return nil
+		return quarantinePolicyMapPressureResult(ctx, store, keep, threshold, quarantine, result)
 	}
 	if err := populatePolicyMapUsageResult(ctx, store, result); err != nil {
 		return err
 	}
-	return nil
+	return quarantinePolicyMapPressureResult(ctx, store, keep, threshold, quarantine, result)
+}
+
+func quarantinePolicyMapPressureResult(ctx context.Context, store PolicyStore, keep map[string]struct{}, threshold uint32, quarantine bool, result *ReconcileResult) error {
+	if !quarantine || result == nil || result.PolicyMapPressureMax < threshold || result.PolicyMapPressureEndpoint == "" {
+		return nil
+	}
+	endpointID := result.PolicyMapPressureEndpoint
+	if _, ok := keep[endpointID]; !ok {
+		return nil
+	}
+	entries := quarantinePolicyMapEntries()
+	if err := store.ReplaceEndpoint(ctx, endpointID, entries); err != nil {
+		return fmt.Errorf("quarantine pressured policy endpoint %s: %w", endpointID, err)
+	}
+	result.PolicyPressureQuarantined = 1
+	result.PolicyPressureQuarantineEndpoint = endpointID
+	return populatePolicyMapUsageResult(ctx, store, result)
 }
 
 func sweepPolicyEndpointsResult(ctx context.Context, store PolicyStore, programs []policy.Program, maxIdle time.Duration, result *ReconcileResult) error {

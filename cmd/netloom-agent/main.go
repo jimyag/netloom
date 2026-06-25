@@ -699,6 +699,7 @@ func reconcileStateFile(ctx context.Context, path, node, storeName string, recon
 		ConntrackIdle:                     conntrackIdleTimeout(),
 		PolicyGCMaxIdle:                   policyGCMaxIdle(),
 		PolicyPressureMitigationThreshold: policyPressureMitigationThreshold(),
+		PolicyPressureQuarantine:          policyPressureQuarantine(),
 		LinuxDatapath:                     linuxDatapathOptions(),
 	})
 	if err != nil {
@@ -740,6 +741,7 @@ func reconcileStateFileOnce(ctx context.Context, path, node, storeName string, s
 		TCXHold:                           hold,
 		PolicyGCMaxIdle:                   policyGCMaxIdle(),
 		PolicyPressureMitigationThreshold: policyPressureMitigationThreshold(),
+		PolicyPressureQuarantine:          policyPressureQuarantine(),
 		LinuxDatapath:                     linuxDatapathOptions(),
 	})
 	if err != nil {
@@ -785,11 +787,11 @@ func withDNSObservationsAt(state control.DesiredState, now time.Time) (control.D
 }
 
 func printReconcileResult(result agent.ReconcileResult, storeName string, duration time.Duration) {
-	fmt.Printf("netloom-agent reconciled node policy node=%s store=%s endpoints=%d programs=%d entries=%d policy_map_entries=%d policy_map_capacity=%d policy_map_pressure_max=%d policy_map_pressure_endpoint=%s policy_map_pressure_endpoints=%d policy_pressure_mitigated=%d policy_map_drift_endpoints=%d policy_map_drift_missing=%d policy_map_drift_extra=%d policy_map_drift_changed=%d policy_gc_endpoints=%d policy_added=%d policy_updated=%d policy_deleted=%d policy_unchanged=%d policy_events=%d policy_failed=%d policy_rollbacks=%d policy_failed_endpoint=%s policy_failed_revision=%d policy_revision_max=%d policy_last_error=%s policy_rule_packets=%d policy_rule_bytes=%d policy_rule_allowed=%d policy_rule_dropped=%d policy_rule_rejected=%d policy_rule_logged=%d policy_rule_stats=%s conntrack_expired=%d tcx_eligible=%d tcx=%s tcx_failed=%d tcx_rollbacks=%d tcx_failed_target=%s tcx_last_error=%s datapath=%s local_ips=%d remote_routes=%d policy_routes=%d provider_networks=%d provider_links=%d provider_ready=%d provider_degraded=%d provider_status=%s provider_network_status=%s provider_issues=%s provider_inventory_total=%d provider_inventory_ready=%d provider_inventory_degraded=%d provider_inventory_status=%s cleanup=%t reconcile_duration_ms=%d\n", result.Node, storeName, result.Endpoints, result.Programs, result.Entries, result.PolicyMapEntries, result.PolicyMapCapacity, result.PolicyMapPressureMax, formatResultValue(result.PolicyMapPressureEndpoint), result.PolicyMapPressureEndpoints, result.PolicyPressureMitigated, result.PolicyMapDriftEndpoints, result.PolicyMapDriftMissing, result.PolicyMapDriftExtra, result.PolicyMapDriftChanged, result.PolicyGCEndpoints, result.PolicyAdded, result.PolicyUpdated, result.PolicyDeleted, result.PolicyUnchanged, result.PolicyEvents, result.PolicyFailed, result.PolicyRollbacks, formatResultValue(result.PolicyFailedEndpoint), result.PolicyFailedRevision, result.PolicyRevisionMax, formatResultError(result.PolicyLastError), result.PolicyRulePackets, result.PolicyRuleBytes, result.PolicyRuleAllowed, result.PolicyRuleDropped, result.PolicyRuleRejected, result.PolicyRuleLogged, formatEndpointRuleStats(result.PolicyRuleStats), result.ConntrackExpired, result.TCXEligible, result.TCX, result.TCXFailed, result.TCXRollbacks, formatResultValue(result.TCXFailedTarget), formatResultError(result.TCXLastError), result.Datapath, result.LocalIPs, result.RemoteRoutes, result.PolicyRoutes, result.ProviderNetworks, result.ProviderLinks, result.ProviderReady, result.ProviderDegraded, formatProviderStatus(result.ProviderStatus), formatProviderNetworkStatus(result.ProviderNetworkStatus), formatProviderIssues(result.ProviderIssues), result.ProviderInventoryTotal, result.ProviderInventoryReady, result.ProviderInventoryDegraded, formatProviderInventoryStatus(result.ProviderInventoryStatus), result.Cleanup, duration.Milliseconds())
+	fmt.Printf("netloom-agent reconciled node policy node=%s store=%s endpoints=%d programs=%d entries=%d policy_map_entries=%d policy_map_capacity=%d policy_map_pressure_max=%d policy_map_pressure_endpoint=%s policy_map_pressure_endpoints=%d policy_pressure_mitigated=%d policy_pressure_quarantined=%d policy_pressure_quarantine_endpoint=%s policy_map_drift_endpoints=%d policy_map_drift_missing=%d policy_map_drift_extra=%d policy_map_drift_changed=%d policy_gc_endpoints=%d policy_added=%d policy_updated=%d policy_deleted=%d policy_unchanged=%d policy_events=%d policy_failed=%d policy_rollbacks=%d policy_failed_endpoint=%s policy_failed_revision=%d policy_revision_max=%d policy_last_error=%s policy_rule_packets=%d policy_rule_bytes=%d policy_rule_allowed=%d policy_rule_dropped=%d policy_rule_rejected=%d policy_rule_logged=%d policy_rule_stats=%s conntrack_expired=%d tcx_eligible=%d tcx=%s tcx_failed=%d tcx_rollbacks=%d tcx_failed_target=%s tcx_last_error=%s datapath=%s local_ips=%d remote_routes=%d policy_routes=%d provider_networks=%d provider_links=%d provider_ready=%d provider_degraded=%d provider_status=%s provider_network_status=%s provider_issues=%s provider_inventory_total=%d provider_inventory_ready=%d provider_inventory_degraded=%d provider_inventory_status=%s cleanup=%t reconcile_duration_ms=%d\n", result.Node, storeName, result.Endpoints, result.Programs, result.Entries, result.PolicyMapEntries, result.PolicyMapCapacity, result.PolicyMapPressureMax, formatResultValue(result.PolicyMapPressureEndpoint), result.PolicyMapPressureEndpoints, result.PolicyPressureMitigated, result.PolicyPressureQuarantined, formatResultValue(result.PolicyPressureQuarantineEndpoint), result.PolicyMapDriftEndpoints, result.PolicyMapDriftMissing, result.PolicyMapDriftExtra, result.PolicyMapDriftChanged, result.PolicyGCEndpoints, result.PolicyAdded, result.PolicyUpdated, result.PolicyDeleted, result.PolicyUnchanged, result.PolicyEvents, result.PolicyFailed, result.PolicyRollbacks, formatResultValue(result.PolicyFailedEndpoint), result.PolicyFailedRevision, result.PolicyRevisionMax, formatResultError(result.PolicyLastError), result.PolicyRulePackets, result.PolicyRuleBytes, result.PolicyRuleAllowed, result.PolicyRuleDropped, result.PolicyRuleRejected, result.PolicyRuleLogged, formatEndpointRuleStats(result.PolicyRuleStats), result.ConntrackExpired, result.TCXEligible, result.TCX, result.TCXFailed, result.TCXRollbacks, formatResultValue(result.TCXFailedTarget), formatResultError(result.TCXLastError), result.Datapath, result.LocalIPs, result.RemoteRoutes, result.PolicyRoutes, result.ProviderNetworks, result.ProviderLinks, result.ProviderReady, result.ProviderDegraded, formatProviderStatus(result.ProviderStatus), formatProviderNetworkStatus(result.ProviderNetworkStatus), formatProviderIssues(result.ProviderIssues), result.ProviderInventoryTotal, result.ProviderInventoryReady, result.ProviderInventoryDegraded, formatProviderInventoryStatus(result.ProviderInventoryStatus), result.Cleanup, duration.Milliseconds())
 }
 
 func printReconcileFailure(result agent.ReconcileResult, storeName string, err error, duration time.Duration) {
-	fmt.Printf("netloom-agent reconcile failed node=%s store=%s endpoints=%d programs=%d entries=%d policy_map_entries=%d policy_map_capacity=%d policy_map_pressure_max=%d policy_map_pressure_endpoint=%s policy_map_pressure_endpoints=%d policy_pressure_mitigated=%d policy_map_drift_endpoints=%d policy_map_drift_missing=%d policy_map_drift_extra=%d policy_map_drift_changed=%d policy_gc_endpoints=%d policy_added=%d policy_updated=%d policy_deleted=%d policy_unchanged=%d policy_events=%d policy_failed=%d policy_rollbacks=%d policy_failed_endpoint=%s policy_failed_revision=%d policy_revision_max=%d policy_last_error=%s policy_rule_packets=%d policy_rule_bytes=%d policy_rule_allowed=%d policy_rule_dropped=%d policy_rule_rejected=%d policy_rule_logged=%d policy_rule_stats=%s tcx_eligible=%d tcx=%s tcx_failed=%d tcx_rollbacks=%d tcx_failed_target=%s tcx_last_error=%s provider_networks=%d provider_links=%d provider_ready=%d provider_degraded=%d provider_status=%s provider_network_status=%s provider_issues=%s provider_inventory_total=%d provider_inventory_ready=%d provider_inventory_degraded=%d provider_inventory_status=%s err=%s reconcile_duration_ms=%d\n", result.Node, storeName, result.Endpoints, result.Programs, result.Entries, result.PolicyMapEntries, result.PolicyMapCapacity, result.PolicyMapPressureMax, formatResultValue(result.PolicyMapPressureEndpoint), result.PolicyMapPressureEndpoints, result.PolicyPressureMitigated, result.PolicyMapDriftEndpoints, result.PolicyMapDriftMissing, result.PolicyMapDriftExtra, result.PolicyMapDriftChanged, result.PolicyGCEndpoints, result.PolicyAdded, result.PolicyUpdated, result.PolicyDeleted, result.PolicyUnchanged, result.PolicyEvents, result.PolicyFailed, result.PolicyRollbacks, formatResultValue(result.PolicyFailedEndpoint), result.PolicyFailedRevision, result.PolicyRevisionMax, formatResultError(result.PolicyLastError), result.PolicyRulePackets, result.PolicyRuleBytes, result.PolicyRuleAllowed, result.PolicyRuleDropped, result.PolicyRuleRejected, result.PolicyRuleLogged, formatEndpointRuleStats(result.PolicyRuleStats), result.TCXEligible, result.TCX, result.TCXFailed, result.TCXRollbacks, formatResultValue(result.TCXFailedTarget), formatResultError(result.TCXLastError), result.ProviderNetworks, result.ProviderLinks, result.ProviderReady, result.ProviderDegraded, formatProviderStatus(result.ProviderStatus), formatProviderNetworkStatus(result.ProviderNetworkStatus), formatProviderIssues(result.ProviderIssues), result.ProviderInventoryTotal, result.ProviderInventoryReady, result.ProviderInventoryDegraded, formatProviderInventoryStatus(result.ProviderInventoryStatus), formatResultError(fmt.Sprint(err)), duration.Milliseconds())
+	fmt.Printf("netloom-agent reconcile failed node=%s store=%s endpoints=%d programs=%d entries=%d policy_map_entries=%d policy_map_capacity=%d policy_map_pressure_max=%d policy_map_pressure_endpoint=%s policy_map_pressure_endpoints=%d policy_pressure_mitigated=%d policy_pressure_quarantined=%d policy_pressure_quarantine_endpoint=%s policy_map_drift_endpoints=%d policy_map_drift_missing=%d policy_map_drift_extra=%d policy_map_drift_changed=%d policy_gc_endpoints=%d policy_added=%d policy_updated=%d policy_deleted=%d policy_unchanged=%d policy_events=%d policy_failed=%d policy_rollbacks=%d policy_failed_endpoint=%s policy_failed_revision=%d policy_revision_max=%d policy_last_error=%s policy_rule_packets=%d policy_rule_bytes=%d policy_rule_allowed=%d policy_rule_dropped=%d policy_rule_rejected=%d policy_rule_logged=%d policy_rule_stats=%s tcx_eligible=%d tcx=%s tcx_failed=%d tcx_rollbacks=%d tcx_failed_target=%s tcx_last_error=%s provider_networks=%d provider_links=%d provider_ready=%d provider_degraded=%d provider_status=%s provider_network_status=%s provider_issues=%s provider_inventory_total=%d provider_inventory_ready=%d provider_inventory_degraded=%d provider_inventory_status=%s err=%s reconcile_duration_ms=%d\n", result.Node, storeName, result.Endpoints, result.Programs, result.Entries, result.PolicyMapEntries, result.PolicyMapCapacity, result.PolicyMapPressureMax, formatResultValue(result.PolicyMapPressureEndpoint), result.PolicyMapPressureEndpoints, result.PolicyPressureMitigated, result.PolicyPressureQuarantined, formatResultValue(result.PolicyPressureQuarantineEndpoint), result.PolicyMapDriftEndpoints, result.PolicyMapDriftMissing, result.PolicyMapDriftExtra, result.PolicyMapDriftChanged, result.PolicyGCEndpoints, result.PolicyAdded, result.PolicyUpdated, result.PolicyDeleted, result.PolicyUnchanged, result.PolicyEvents, result.PolicyFailed, result.PolicyRollbacks, formatResultValue(result.PolicyFailedEndpoint), result.PolicyFailedRevision, result.PolicyRevisionMax, formatResultError(result.PolicyLastError), result.PolicyRulePackets, result.PolicyRuleBytes, result.PolicyRuleAllowed, result.PolicyRuleDropped, result.PolicyRuleRejected, result.PolicyRuleLogged, formatEndpointRuleStats(result.PolicyRuleStats), result.TCXEligible, result.TCX, result.TCXFailed, result.TCXRollbacks, formatResultValue(result.TCXFailedTarget), formatResultError(result.TCXLastError), result.ProviderNetworks, result.ProviderLinks, result.ProviderReady, result.ProviderDegraded, formatProviderStatus(result.ProviderStatus), formatProviderNetworkStatus(result.ProviderNetworkStatus), formatProviderIssues(result.ProviderIssues), result.ProviderInventoryTotal, result.ProviderInventoryReady, result.ProviderInventoryDegraded, formatProviderInventoryStatus(result.ProviderInventoryStatus), formatResultError(fmt.Sprint(err)), duration.Milliseconds())
 }
 
 func formatResultValue(value string) string {
@@ -913,28 +915,29 @@ type agentMetricsSnapshot struct {
 }
 
 type agentMetricsTotals struct {
-	Attempts                uint64
-	Successes               uint64
-	Failures                uint64
-	DurationSum             time.Duration
-	DurationBuckets         []uint64
-	PolicyAdded             uint64
-	PolicyUpdated           uint64
-	PolicyDeleted           uint64
-	PolicyUnchanged         uint64
-	PolicyEvents            uint64
-	PolicyFailed            uint64
-	PolicyRollbacks         uint64
-	PolicyGCEndpoints       uint64
-	PolicyPressureMitigated uint64
-	TCXFailed               uint64
-	TCXRollbacks            uint64
-	ProviderDegraded        uint64
-	ConntrackExpired        uint64
-	PolicyRulePackets       uint64
-	PolicyRuleBytes         uint64
-	PolicyRuleDropped       uint64
-	PolicyRuleRejected      uint64
+	Attempts                  uint64
+	Successes                 uint64
+	Failures                  uint64
+	DurationSum               time.Duration
+	DurationBuckets           []uint64
+	PolicyAdded               uint64
+	PolicyUpdated             uint64
+	PolicyDeleted             uint64
+	PolicyUnchanged           uint64
+	PolicyEvents              uint64
+	PolicyFailed              uint64
+	PolicyRollbacks           uint64
+	PolicyGCEndpoints         uint64
+	PolicyPressureMitigated   uint64
+	PolicyPressureQuarantined uint64
+	TCXFailed                 uint64
+	TCXRollbacks              uint64
+	ProviderDegraded          uint64
+	ConntrackExpired          uint64
+	PolicyRulePackets         uint64
+	PolicyRuleBytes           uint64
+	PolicyRuleDropped         uint64
+	PolicyRuleRejected        uint64
 }
 
 var agentReconcileDurationBuckets = []time.Duration{
@@ -1029,6 +1032,7 @@ func (t *agentMetricsTotals) observe(snapshot agentMetricsSnapshot) {
 	t.PolicyRollbacks += uint64(nonNegative(result.PolicyRollbacks))
 	t.PolicyGCEndpoints += uint64(nonNegative(result.PolicyGCEndpoints))
 	t.PolicyPressureMitigated += uint64(nonNegative(result.PolicyPressureMitigated))
+	t.PolicyPressureQuarantined += uint64(nonNegative(result.PolicyPressureQuarantined))
 	t.TCXFailed += uint64(nonNegative(result.TCXFailed))
 	t.TCXRollbacks += uint64(nonNegative(result.TCXRollbacks))
 	t.ProviderDegraded += uint64(nonNegative(result.ProviderDegraded))
@@ -1656,6 +1660,14 @@ func writeAgentMetrics(w ioStringWriter, snapshot agentMetricsSnapshot, totals a
 	fmt.Fprintf(w, "netloom_agent_policy_gc_endpoints%s %d\n", baseLabels, result.PolicyGCEndpoints)
 	writeMetricType(w, "netloom_agent_policy_pressure_mitigated_endpoints", "gauge")
 	fmt.Fprintf(w, "netloom_agent_policy_pressure_mitigated_endpoints%s %d\n", baseLabels, result.PolicyPressureMitigated)
+	writeMetricType(w, "netloom_agent_policy_pressure_quarantined_endpoints", "gauge")
+	fmt.Fprintf(w, "netloom_agent_policy_pressure_quarantined_endpoints%s %d\n", baseLabels, result.PolicyPressureQuarantined)
+	writeMetricType(w, "netloom_agent_policy_pressure_quarantine_endpoint", "gauge")
+	fmt.Fprintf(w, "netloom_agent_policy_pressure_quarantine_endpoint%s %d\n", prometheusLabels(map[string]string{
+		"node":     result.Node,
+		"store":    snapshot.Store,
+		"endpoint": result.PolicyPressureQuarantineEndpoint,
+	}), result.PolicyPressureQuarantined)
 	writeAgentCounter(w, "netloom_agent_policy_added_total", baseLabels, totals.PolicyAdded)
 	writeAgentCounter(w, "netloom_agent_policy_updated_total", baseLabels, totals.PolicyUpdated)
 	writeAgentCounter(w, "netloom_agent_policy_deleted_total", baseLabels, totals.PolicyDeleted)
@@ -1665,6 +1677,7 @@ func writeAgentMetrics(w ioStringWriter, snapshot agentMetricsSnapshot, totals a
 	writeAgentCounter(w, "netloom_agent_policy_rollbacks_total", baseLabels, totals.PolicyRollbacks)
 	writeAgentCounter(w, "netloom_agent_policy_gc_endpoints_total", baseLabels, totals.PolicyGCEndpoints)
 	writeAgentCounter(w, "netloom_agent_policy_pressure_mitigated_endpoints_total", baseLabels, totals.PolicyPressureMitigated)
+	writeAgentCounter(w, "netloom_agent_policy_pressure_quarantined_endpoints_total", baseLabels, totals.PolicyPressureQuarantined)
 	writeAgentCounter(w, "netloom_agent_tcx_failed_total", baseLabels, totals.TCXFailed)
 	writeAgentCounter(w, "netloom_agent_tcx_rollbacks_total", baseLabels, totals.TCXRollbacks)
 	writeAgentCounter(w, "netloom_agent_provider_degraded_total", baseLabels, totals.ProviderDegraded)
@@ -1919,6 +1932,15 @@ func policyPressureMitigationThreshold() uint32 {
 		return 100
 	}
 	return uint32(value)
+}
+
+func policyPressureQuarantine() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("NETLOOM_POLICY_PRESSURE_QUARANTINE"))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 func linuxDatapathOptions() *linuxdatapath.Options {

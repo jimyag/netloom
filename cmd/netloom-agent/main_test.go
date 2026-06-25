@@ -116,6 +116,19 @@ func TestPolicyPressureMitigationThresholdParsesPercent(t *testing.T) {
 	}
 }
 
+func TestPolicyPressureQuarantineParsesEnabledValues(t *testing.T) {
+	for _, value := range []string{"1", "true", "yes", "on"} {
+		t.Setenv("NETLOOM_POLICY_PRESSURE_QUARANTINE", value)
+		if !policyPressureQuarantine() {
+			t.Fatalf("policy pressure quarantine = false for %q, want true", value)
+		}
+	}
+	t.Setenv("NETLOOM_POLICY_PRESSURE_QUARANTINE", "0")
+	if policyPressureQuarantine() {
+		t.Fatal("policy pressure quarantine = true, want false")
+	}
+}
+
 func TestLinuxDatapathOptionsParsesBackend(t *testing.T) {
 	t.Setenv("NETLOOM_LINUX_DATAPATH", "1")
 	t.Setenv("NETLOOM_LINUX_DATAPATH_MODE", "netns")
@@ -558,27 +571,29 @@ func TestPrintReconcileResultIncludesPolicyMapUsageSummary(t *testing.T) {
 	}()
 
 	printReconcileResult(agent.ReconcileResult{
-		Node:                       "node-a",
-		Endpoints:                  1,
-		Programs:                   1,
-		Entries:                    3,
-		PolicyMapEntries:           12,
-		PolicyMapCapacity:          16,
-		PolicyMapPressureMax:       75,
-		PolicyMapPressureEndpoint:  "prod\x00pod-a",
-		PolicyMapPressureEndpoints: 0,
-		PolicyPressureMitigated:    2,
-		PolicyMapDriftEndpoints:    1,
-		PolicyMapDriftMissing:      2,
-		PolicyMapDriftExtra:        3,
-		PolicyMapDriftChanged:      4,
-		PolicyFailedEndpoint:       "prod\x00pod-b",
-		PolicyFailedRevision:       3,
-		PolicyRulePackets:          3,
-		PolicyRuleBytes:            384,
-		PolicyRuleAllowed:          2,
-		PolicyRuleDropped:          1,
-		PolicyRuleLogged:           1,
+		Node:                             "node-a",
+		Endpoints:                        1,
+		Programs:                         1,
+		Entries:                          3,
+		PolicyMapEntries:                 12,
+		PolicyMapCapacity:                16,
+		PolicyMapPressureMax:             75,
+		PolicyMapPressureEndpoint:        "prod\x00pod-a",
+		PolicyMapPressureEndpoints:       0,
+		PolicyPressureMitigated:          2,
+		PolicyPressureQuarantined:        1,
+		PolicyPressureQuarantineEndpoint: "prod\x00pod-a",
+		PolicyMapDriftEndpoints:          1,
+		PolicyMapDriftMissing:            2,
+		PolicyMapDriftExtra:              3,
+		PolicyMapDriftChanged:            4,
+		PolicyFailedEndpoint:             "prod\x00pod-b",
+		PolicyFailedRevision:             3,
+		PolicyRulePackets:                3,
+		PolicyRuleBytes:                  384,
+		PolicyRuleAllowed:                2,
+		PolicyRuleDropped:                1,
+		PolicyRuleLogged:                 1,
 		PolicyRuleStats: []dataplane.RuleMetrics{
 			{EndpointID: "prod\x00pod-a", RuleCookie: 7, Packets: 1, Bytes: 256, Dropped: 1, DenyDrops: 1},
 			{EndpointID: "prod\x00pod-a", RuleCookie: 42, Packets: 2, Bytes: 128, Allowed: 2, Logged: 1},
@@ -623,6 +638,8 @@ func TestPrintReconcileResultIncludesPolicyMapUsageSummary(t *testing.T) {
 		`policy_map_pressure_endpoint="prod\x00pod-a"`,
 		"policy_map_pressure_endpoints=0",
 		"policy_pressure_mitigated=2",
+		"policy_pressure_quarantined=1",
+		`policy_pressure_quarantine_endpoint="prod\x00pod-a"`,
 		"policy_map_drift_endpoints=1",
 		"policy_map_drift_missing=2",
 		"policy_map_drift_extra=3",
@@ -1294,25 +1311,27 @@ func TestPolicyEndpointAPIRejectsUnsupportedPostAction(t *testing.T) {
 func TestAgentMetricsExportsLatestPolicyAndTCXCounters(t *testing.T) {
 	metrics := newAgentMetrics()
 	observeAgentReconcileResult(metrics, agent.ReconcileResult{
-		Node:                       "node-a",
-		Endpoints:                  1,
-		Programs:                   1,
-		Entries:                    2,
-		PolicyMapEntries:           12,
-		PolicyMapCapacity:          16,
-		PolicyMapPressureMax:       75,
-		PolicyMapPressureEndpoint:  "prod\x00pod-a",
-		PolicyMapPressureEndpoints: 1,
-		PolicyPressureMitigated:    2,
-		PolicyMapDriftEndpoints:    1,
-		PolicyMapDriftMissing:      2,
-		PolicyMapDriftExtra:        3,
-		PolicyMapDriftChanged:      4,
-		PolicyRulePackets:          3,
-		PolicyRuleBytes:            384,
-		PolicyRuleAllowed:          2,
-		PolicyRuleDropped:          1,
-		PolicyRuleLogged:           1,
+		Node:                             "node-a",
+		Endpoints:                        1,
+		Programs:                         1,
+		Entries:                          2,
+		PolicyMapEntries:                 12,
+		PolicyMapCapacity:                16,
+		PolicyMapPressureMax:             75,
+		PolicyMapPressureEndpoint:        "prod\x00pod-a",
+		PolicyMapPressureEndpoints:       1,
+		PolicyPressureMitigated:          2,
+		PolicyPressureQuarantined:        1,
+		PolicyPressureQuarantineEndpoint: "prod\x00pod-a",
+		PolicyMapDriftEndpoints:          1,
+		PolicyMapDriftMissing:            2,
+		PolicyMapDriftExtra:              3,
+		PolicyMapDriftChanged:            4,
+		PolicyRulePackets:                3,
+		PolicyRuleBytes:                  384,
+		PolicyRuleAllowed:                2,
+		PolicyRuleDropped:                1,
+		PolicyRuleLogged:                 1,
 		PolicyRuleStats: []dataplane.RuleMetrics{
 			{EndpointID: "prod\x00pod-a", RuleCookie: 7, Packets: 1, Bytes: 256, Dropped: 1, DenyDrops: 1},
 			{EndpointID: "tcx:iface=eth0 direction=ingress attach=2", RuleCookie: 42, Packets: 2, Bytes: 128, Allowed: 2, Logged: 1},
@@ -1340,6 +1359,9 @@ func TestAgentMetricsExportsLatestPolicyAndTCXCounters(t *testing.T) {
 		`netloom_agent_policy_map_pressure_percent{endpoint="prod\x00pod-a",node="node-a",store="ebpf"} 75`,
 		`netloom_agent_policy_pressure_mitigated_endpoints{node="node-a",store="ebpf"} 2`,
 		`netloom_agent_policy_pressure_mitigated_endpoints_total{node="node-a",store="ebpf"} 2`,
+		`netloom_agent_policy_pressure_quarantined_endpoints{node="node-a",store="ebpf"} 1`,
+		`netloom_agent_policy_pressure_quarantined_endpoints_total{node="node-a",store="ebpf"} 1`,
+		`netloom_agent_policy_pressure_quarantine_endpoint{endpoint="prod\x00pod-a",node="node-a",store="ebpf"} 1`,
 		`netloom_agent_policy_map_drift_endpoints{node="node-a",store="ebpf"} 1`,
 		`netloom_agent_policy_map_drift_missing_entries{node="node-a",store="ebpf"} 2`,
 		`netloom_agent_policy_map_drift_extra_entries{node="node-a",store="ebpf"} 3`,

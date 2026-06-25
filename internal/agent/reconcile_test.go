@@ -128,6 +128,27 @@ func (s *usagePolicyStore) PolicyEndpointStatuses(_ context.Context) ([]dataplan
 	return append([]dataplane.PolicyEndpointStatus(nil), s.statuses...), nil
 }
 
+type capacityPolicyStore struct {
+	*dataplane.InMemoryPolicyStore
+	capacity uint32
+}
+
+func (s *capacityPolicyStore) PolicyMapUsage(ctx context.Context) ([]dataplane.PolicyMapUsage, error) {
+	endpointIDs, err := s.EndpointIDs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	usages := make([]dataplane.PolicyMapUsage, 0, len(endpointIDs))
+	for _, endpointID := range endpointIDs {
+		usages = append(usages, dataplane.PolicyMapUsage{
+			EndpointID: endpointID,
+			Entries:    uint32(len(s.Entries(endpointID))),
+			Capacity:   s.capacity,
+		})
+	}
+	return usages, nil
+}
+
 type concurrentPolicyStore struct {
 	delay               time.Duration
 	delegate            *dataplane.InMemoryPolicyStore
@@ -492,6 +513,67 @@ func TestReconcileNodeMitigatesPolicyMapPressureByDeletingNonDesiredEndpoints(t 
 	}
 	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) == 0 {
 		t.Fatal("desired endpoint policy was removed")
+	}
+}
+
+func TestReconcileNodeQuarantinesDesiredEndpointWhenPolicyMapPressureRemainsHigh(t *testing.T) {
+	endpointID := model.EndpointKey("prod", "pod-a")
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:             "pod-a",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"web"},
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "allow-http",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("0.0.0.0/0"),
+				Ports:      []model.PortRange{{From: 80, To: 80}},
+				Action:     model.ActionAllow,
+			}},
+		}},
+	}
+	store := &capacityPolicyStore{
+		InMemoryPolicyStore: dataplane.NewInMemoryPolicyStore(),
+		capacity:            1,
+	}
+
+	result, err := ReconcileNodeWithOptions(context.Background(), state, ReconcileOptions{
+		Node:                              "node-a",
+		Store:                             store,
+		PolicyPressureMitigationThreshold: 80,
+		PolicyPressureQuarantine:          true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.PolicyPressureQuarantined != 1 {
+		t.Fatalf("policy pressure quarantined = %d, want 1", result.PolicyPressureQuarantined)
+	}
+	if result.PolicyPressureQuarantineEndpoint != endpointID {
+		t.Fatalf("policy pressure quarantine endpoint = %q, want %q", result.PolicyPressureQuarantineEndpoint, endpointID)
+	}
+	entries := store.Entries(endpointID)
+	if len(entries) != 2 {
+		t.Fatalf("quarantine entries = %d, want ingress and egress drops", len(entries))
+	}
+	directions := map[uint8]bool{}
+	for _, entry := range entries {
+		if entry.Value.Deny != 1 || entry.Value.Precedence != ^uint32(0) {
+			t.Fatalf("quarantine entry = %+v, want deny-all", entry)
+		}
+		directions[entry.Key.Direction] = true
+	}
+	if !directions[dataplane.DirectionIngress] || !directions[dataplane.DirectionEgress] {
+		t.Fatalf("quarantine directions = %v, want ingress and egress", directions)
 	}
 }
 
