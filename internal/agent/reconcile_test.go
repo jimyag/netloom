@@ -1466,6 +1466,18 @@ func TestRolloutPolicyEndpointsStopsAfterApplyFailure(t *testing.T) {
 		InMemoryPolicyStore: dataplane.NewInMemoryPolicyStore(),
 		failEndpoint:        model.EndpointKey("prod", "pod-b"),
 	}
+	oldEntries := []dataplane.PolicyMapEntry{{
+		Key: dataplane.PolicyKey{
+			PrefixLen:      dataplane.StaticPrefixBits + 24,
+			RemoteIdentity: 2,
+			Direction:      dataplane.DirectionIngress,
+		},
+		Value:      dataplane.PolicyEntry{Deny: 1, RuleCookie: 99},
+		RemoteCIDR: netip.MustParsePrefix("198.51.100.0/24"),
+	}}
+	if err := store.ReplaceEndpoint(context.Background(), model.EndpointKey("prod", "pod-a"), oldEntries); err != nil {
+		t.Fatal(err)
+	}
 
 	rollout, err := RolloutPolicyEndpoints(context.Background(), state, ReconcileOptions{
 		Node:  "node-a",
@@ -1481,18 +1493,18 @@ func TestRolloutPolicyEndpointsStopsAfterApplyFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rollout.Planned != 3 || rollout.Applied != 1 || rollout.Failed != 1 || rollout.Skipped != 1 {
-		t.Fatalf("rollout summary = %+v, want applied=1 failed=1 skipped=1", rollout)
+	if rollout.Planned != 3 || rollout.Applied != 1 || rollout.Failed != 1 || rollout.Skipped != 1 || rollout.RolledBack != 1 || rollout.RollbackFailed != 0 {
+		t.Fatalf("rollout summary = %+v, want applied=1 failed=1 skipped=1 rolled_back=1", rollout)
 	}
 	phases := []string{rollout.Items[0].Phase, rollout.Items[1].Phase, rollout.Items[2].Phase}
-	if !slices.Equal(phases, []string{"applied", "failed", "skipped"}) {
-		t.Fatalf("rollout phases = %+v, want applied failed skipped", phases)
+	if !slices.Equal(phases, []string{"rolled_back", "failed", "skipped"}) {
+		t.Fatalf("rollout phases = %+v, want rolled_back failed skipped", phases)
 	}
 	if rollout.Items[1].Error == "" {
 		t.Fatalf("failed rollout item = %+v, want error", rollout.Items[1])
 	}
-	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 1 {
-		t.Fatalf("pod-a entries = %+v, want applied policy", entries)
+	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); !slices.Equal(entries, oldEntries) {
+		t.Fatalf("pod-a entries = %+v, want rolled back entries %+v", entries, oldEntries)
 	}
 	if entries := store.Entries(model.EndpointKey("prod", "pod-c")); len(entries) != 0 {
 		t.Fatalf("pod-c entries = %+v, want skipped endpoint untouched", entries)

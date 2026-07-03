@@ -34,6 +34,8 @@ type ReconcileResult struct {
 	PolicyRolloutApplied             int
 	PolicyRolloutSkipped             int
 	PolicyRolloutFailed              int
+	PolicyRolloutRolledBack          int
+	PolicyRolloutRollbackFailed      int
 	PolicyRolloutStatus              []NamedPolicyEndpointRollout
 	PolicyMapDriftEndpoints          int
 	PolicyMapDriftMissing            int
@@ -171,6 +173,8 @@ type PolicyEndpointRollout struct {
 	Applied                  int                         `json:"applied"`
 	Skipped                  int                         `json:"skipped"`
 	Failed                   int                         `json:"failed"`
+	RolledBack               int                         `json:"rolled_back,omitempty"`
+	RollbackFailed           int                         `json:"rollback_failed,omitempty"`
 	Items                    []PolicyEndpointRolloutItem `json:"items"`
 }
 
@@ -351,7 +355,12 @@ func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, opt
 	if rolloutOptions.DryRun {
 		return rollout, nil
 	}
+	snapshots, err := snapshotRolloutPolicyEndpoints(ctx, options.Store, endpointIDs)
+	if err != nil {
+		return PolicyEndpointRollout{}, err
+	}
 	backend := dataplane.NewPolicyBackend(options.Store)
+	applied := make([]string, 0, len(rollout.Items))
 	for i, item := range rollout.Items {
 		if rollout.Failed != 0 {
 			item.Phase = "skipped"
@@ -364,10 +373,12 @@ func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, opt
 			item.Error = err.Error()
 			rollout.Failed++
 			rollout.Items[i] = item
+			rollbackRolloutPolicyEndpoints(ctx, options.Store, snapshots, applied, &rollout)
 			continue
 		}
 		item.Phase = "applied"
 		rollout.Applied++
+		applied = append(applied, item.EndpointID)
 		if status, ok, err := policyEndpointStatus(ctx, options.Store, item.EndpointID); err != nil {
 			return PolicyEndpointRollout{}, fmt.Errorf("read rolled out policy endpoint status: %w", err)
 		} else if ok {
@@ -381,6 +392,72 @@ func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, opt
 		rollout.Items[i] = item
 	}
 	return rollout, nil
+}
+
+type policyEndpointSnapshot struct {
+	entries []dataplane.PolicyMapEntry
+	exists  bool
+}
+
+func snapshotRolloutPolicyEndpoints(ctx context.Context, store PolicyStore, endpointIDs []string) (map[string]policyEndpointSnapshot, error) {
+	entryStore, ok := store.(PolicyEndpointEntryStore)
+	if !ok {
+		return nil, fmt.Errorf("policy rollout requires a snapshot-capable policy store")
+	}
+	exists := make(map[string]struct{}, len(endpointIDs))
+	if inventory, ok := store.(PolicyEndpointInventory); ok {
+		ids, err := inventory.EndpointIDs(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("snapshot policy rollout endpoint inventory: %w", err)
+		}
+		for _, endpointID := range ids {
+			exists[endpointID] = struct{}{}
+		}
+	}
+	snapshots := make(map[string]policyEndpointSnapshot, len(endpointIDs))
+	for _, endpointID := range endpointIDs {
+		_, existed := exists[endpointID]
+		snapshots[endpointID] = policyEndpointSnapshot{
+			entries: entryStore.Entries(endpointID),
+			exists:  existed,
+		}
+	}
+	return snapshots, nil
+}
+
+func rollbackRolloutPolicyEndpoints(ctx context.Context, store PolicyStore, snapshots map[string]policyEndpointSnapshot, applied []string, rollout *PolicyEndpointRollout) {
+	for i := len(applied) - 1; i >= 0; i-- {
+		endpointID := applied[i]
+		snapshot := snapshots[endpointID]
+		var err error
+		if snapshot.exists {
+			err = store.ReplaceEndpoint(ctx, endpointID, snapshot.entries)
+		} else {
+			err = store.DeleteEndpoint(ctx, endpointID)
+		}
+		itemIndex := rolloutPolicyEndpointItemIndex(rollout.Items, endpointID)
+		if err != nil {
+			rollout.RollbackFailed++
+			if itemIndex >= 0 {
+				rollout.Items[itemIndex].Phase = "rollback_failed"
+				rollout.Items[itemIndex].Error = err.Error()
+			}
+			continue
+		}
+		rollout.RolledBack++
+		if itemIndex >= 0 {
+			rollout.Items[itemIndex].Phase = "rolled_back"
+		}
+	}
+}
+
+func rolloutPolicyEndpointItemIndex(items []PolicyEndpointRolloutItem, endpointID string) int {
+	for i := range items {
+		if items[i].EndpointID == endpointID {
+			return i
+		}
+	}
+	return -1
 }
 
 func ApplyPolicyRollouts(ctx context.Context, state control.DesiredState, options ReconcileOptions) ([]NamedPolicyEndpointRollout, error) {
@@ -481,6 +558,8 @@ func ApplyPolicyRolloutResults(result *ReconcileResult, rollouts []NamedPolicyEn
 		result.PolicyRolloutApplied += rollout.Rollout.Applied
 		result.PolicyRolloutSkipped += rollout.Rollout.Skipped
 		result.PolicyRolloutFailed += rollout.Rollout.Failed
+		result.PolicyRolloutRolledBack += rollout.Rollout.RolledBack
+		result.PolicyRolloutRollbackFailed += rollout.Rollout.RollbackFailed
 	}
 }
 
