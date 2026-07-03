@@ -243,11 +243,15 @@ func expectedManagedAuditRows(desired topology.State) map[string]map[string]stri
 		addAuditExpectedRow(out, "NAT", "netloom_vpc", rule.VPC, "netloom_nat", rule.Name)
 	}
 	for _, lb := range desired.LoadBalancers {
-		addAuditExpectedRow(out, "Load_Balancer",
-			"netloom_vpc", lb.VPC,
-			"netloom_load_balancer", lb.Name,
-			"netloom_session_affinity", fmt.Sprintf("%t", lb.SessionAffinity),
-		)
+		frontendsByProtocol := loadBalancerFrontendsByProtocol(lb)
+		for _, protocol := range sortedLoadBalancerProtocols(frontendsByProtocol) {
+			addAuditExpectedRow(out, "Load_Balancer",
+				"netloom_vpc", lb.VPC,
+				"netloom_load_balancer", lb.Name,
+				"netloom_protocol", string(protocol),
+				"netloom_session_affinity", fmt.Sprintf("%t", lb.SessionAffinity),
+			)
+		}
 	}
 	for _, gateway := range desired.Gateways {
 		addAuditExpectedRow(out, "Logical_Router", gatewayAuditIdentityFields(gateway)...)
@@ -300,6 +304,20 @@ func expectedManagedAuditColumns(desired topology.State) map[string]map[string]s
 			}
 			addAuditExpectedColumns(out, "Logical_Switch_Port", fields, "netloom_subnet", subnet.Name, "netloom_provider_network", subnet.ProviderNetwork)
 		}
+	}
+	for vpc, names := range expectedRouterLoadBalancers(desired.LoadBalancers) {
+		addAuditExpectedColumns(out, "Logical_Router", map[string]string{
+			"load_balancers": stringSetField(names),
+		}, "netloom_vpc", vpc)
+	}
+	for key, names := range expectedSwitchLoadBalancers(desired.LoadBalancers) {
+		vpc, subnet, ok := splitStateKey(key)
+		if !ok {
+			continue
+		}
+		addAuditExpectedColumns(out, "Logical_Switch", map[string]string{
+			"load_balancers": stringSetField(names),
+		}, "netloom_vpc", vpc, "netloom_subnet", subnet)
 	}
 	for _, endpoint := range desired.Endpoints {
 		fields := map[string]string{
@@ -396,7 +414,11 @@ func expectedManagedAuditColumns(desired topology.State) map[string]map[string]s
 			if len(row.Options) > 0 {
 				fields["options"] = mapField(row.Options)
 			}
-			addAuditExpectedColumns(out, "Load_Balancer", fields, "netloom_vpc", lb.VPC, "netloom_load_balancer", lb.Name)
+			addAuditExpectedColumns(out, "Load_Balancer", fields,
+				"netloom_vpc", lb.VPC,
+				"netloom_load_balancer", lb.Name,
+				"netloom_protocol", string(protocol),
+			)
 			if lb.HealthCheck.Enabled {
 				for _, frontend := range frontendsByProtocol[protocol] {
 					hc := desiredLoadBalancerHealthCheck(lb, frontend)
@@ -430,7 +452,12 @@ func addAuditExpectedColumns(out map[string]map[string]string, table string, fie
 	if !complete || identity == "" {
 		return
 	}
-	out[identity] = fields
+	if out[identity] == nil {
+		out[identity] = make(map[string]string, len(fields))
+	}
+	for key, value := range fields {
+		out[identity][key] = value
+	}
 }
 
 func addAuditIdentity(out map[string]struct{}, table string, keyValues ...string) {
@@ -510,6 +537,26 @@ func stringSliceField(values []string) string {
 	return strings.Join(values, ",")
 }
 
+func stringSetField(values []string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return stringSliceField(out)
+}
+
 func selectionFieldsField(values []ovnnb.LoadBalancerSelectionFields) string {
 	out := make([]string, 0, len(values))
 	for _, value := range values {
@@ -533,6 +580,34 @@ func loadBalancerHealthCheckVIPsField(frontends []model.LoadBalancerFrontend) st
 	}
 	sort.Strings(vips)
 	return stringSliceField(vips)
+}
+
+func expectedRouterLoadBalancers(loadBalancers map[string]model.LoadBalancer) map[string][]string {
+	out := make(map[string][]string)
+	for _, lb := range loadBalancers {
+		names := loadBalancerProtocolNamesFromFrontends(lb.VPC, lb.Name, loadBalancerFrontendsByProtocol(lb))
+		out[lb.VPC] = append(out[lb.VPC], names...)
+	}
+	return out
+}
+
+func expectedSwitchLoadBalancers(loadBalancers map[string]model.LoadBalancer) map[string][]string {
+	out := make(map[string][]string)
+	for _, lb := range loadBalancers {
+		names := loadBalancerProtocolNamesFromFrontends(lb.VPC, lb.Name, loadBalancerFrontendsByProtocol(lb))
+		for _, subnet := range lb.Subnets {
+			out[subnetStateKey(lb.VPC, subnet)] = append(out[subnetStateKey(lb.VPC, subnet)], names...)
+		}
+	}
+	return out
+}
+
+func splitStateKey(key string) (string, string, bool) {
+	parts := strings.Split(key, "\x00")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", false
+	}
+	return parts[0], parts[1], true
 }
 
 func parseManagedOVNRows(table string, rows []string) []ManagedOVNRow {
@@ -586,7 +661,7 @@ func managedAuditIdentity(table, uuid string, externalIDs map[string]string) (st
 	case "NAT":
 		return auditIdentity(table, externalIDs, "netloom_vpc", "netloom_nat")
 	case "Load_Balancer":
-		return auditIdentity(table, externalIDs, "netloom_vpc", "netloom_load_balancer")
+		return auditIdentity(table, externalIDs, "netloom_vpc", "netloom_load_balancer", "netloom_protocol")
 	case "Load_Balancer_Health_Check":
 		if _, complete := auditIdentity(table, externalIDs, "netloom_vpc", "netloom_load_balancer"); !complete {
 			return "", false

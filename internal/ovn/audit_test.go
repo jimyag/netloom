@@ -88,6 +88,28 @@ func TestAuditLogicalSwitchPortIdentityAcceptsRouterAndLocalnetPorts(t *testing.
 	}
 }
 
+func TestAuditManagedRowsTreatsLoadBalancerProtocolsAsDistinct(t *testing.T) {
+	rows := []ManagedOVNRow{
+		{Table: "Load_Balancer", UUID: "lb-tcp", ExternalIDs: map[string]string{
+			"netloom_owner":         "netloom",
+			"netloom_vpc":           "prod",
+			"netloom_load_balancer": "api",
+			"netloom_protocol":      "tcp",
+		}},
+		{Table: "Load_Balancer", UUID: "lb-udp", ExternalIDs: map[string]string{
+			"netloom_owner":         "netloom",
+			"netloom_vpc":           "prod",
+			"netloom_load_balancer": "api",
+			"netloom_protocol":      "udp",
+		}},
+	}
+
+	result := auditManagedRows("Load_Balancer", rows)
+	if result.count != 2 || result.incomplete != 0 || result.duplicates != 0 || len(result.rows) != 2 {
+		t.Fatalf("load balancer audit = %+v, want distinct tcp/udp rows", result)
+	}
+}
+
 func TestAuditManagedObjectsFromReaderUsesTypedRows(t *testing.T) {
 	reader := fakeManagedOVNReader{rows: map[string][]ManagedOVNRow{
 		"Logical_Switch": {
@@ -111,6 +133,82 @@ func TestAuditManagedObjectsFromReaderUsesTypedRows(t *testing.T) {
 	}
 	if stats.DuplicateManagedRows != 1 || stats.IncompleteManagedRows != 1 {
 		t.Fatalf("stats = %+v, want duplicate policy and incomplete load balancer", stats)
+	}
+}
+
+func TestAuditManagedObjectsFromReaderReportsLoadBalancerParentAttachmentDrift(t *testing.T) {
+	subnet := model.Subnet{
+		Name:    "apps",
+		VPC:     "prod",
+		CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+		Gateway: netip.MustParseAddr("10.10.0.1"),
+	}
+	lb := model.LoadBalancer{
+		Name: "api",
+		VPC:  "prod",
+		VIP:  netip.MustParseAddr("10.96.0.10"),
+		Subnets: []string{
+			"apps",
+		},
+		Ports: []model.LoadBalancerPort{{
+			Port:     443,
+			Protocol: model.ProtocolTCP,
+			Backends: []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.20"), Port: 8443}},
+		}},
+	}
+	lbName := loadBalancerProtocolName("prod", "api", model.ProtocolTCP)
+	reader := fakeManagedOVNReader{rows: map[string][]ManagedOVNRow{
+		"Logical_Router": {
+			{Table: "Logical_Router", UUID: "lr-prod", ExternalIDs: map[string]string{
+				"netloom_owner": "netloom",
+				"netloom_vpc":   "prod",
+			}, Fields: map[string]string{
+				"name":           logicalRouter("prod"),
+				"load_balancers": "",
+			}},
+		},
+		"Logical_Switch": {
+			{Table: "Logical_Switch", UUID: "ls-apps", ExternalIDs: map[string]string{
+				"netloom_owner":  "netloom",
+				"netloom_vpc":    "prod",
+				"netloom_subnet": "apps",
+			}, Fields: map[string]string{
+				"name":           logicalSwitch("prod", "apps"),
+				"other_config":   mapField(logicalSwitchOtherConfig(subnet)),
+				"load_balancers": "",
+			}},
+		},
+		"Load_Balancer": {
+			{Table: "Load_Balancer", UUID: "lb-api", ExternalIDs: map[string]string{
+				"netloom_owner":            "netloom",
+				"netloom_vpc":              "prod",
+				"netloom_load_balancer":    "api",
+				"netloom_protocol":         "tcp",
+				"netloom_session_affinity": "false",
+			}, Fields: map[string]string{
+				"name":             lbName,
+				"vips":             "10.96.0.10:443=10.10.0.20:8443",
+				"protocol":         "tcp",
+				"selection_fields": "",
+			}},
+		},
+	}}
+	desired := topology.State{
+		VPCs: map[string]model.VPC{"prod": {Name: "prod"}},
+		Subnets: map[string]model.Subnet{
+			"prod/apps": subnet,
+		},
+		LoadBalancers: map[string]model.LoadBalancer{
+			"prod/api": lb,
+		},
+	}
+
+	stats, err := AuditManagedObjectsFromReaderWithDesired(context.Background(), reader, desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.DriftedManagedRows != 2 || stats.DriftedManagedFields != 2 {
+		t.Fatalf("load balancer parent attachment drift stats = %+v, want router and switch attachment drift", stats)
 	}
 }
 
@@ -355,7 +453,10 @@ func TestAuditManagedObjectsFromReaderReportsLoadBalancerHealthCheckAttachmentDr
 			{Table: "Logical_Router", UUID: "lr-prod", ExternalIDs: map[string]string{
 				"netloom_owner": "netloom",
 				"netloom_vpc":   "prod",
-			}, Fields: map[string]string{"name": logicalRouter("prod")}},
+			}, Fields: map[string]string{
+				"name":           logicalRouter("prod"),
+				"load_balancers": loadBalancerProtocolName("prod", "api", model.ProtocolTCP),
+			}},
 		},
 		"Load_Balancer": {
 			{Table: "Load_Balancer", UUID: "lb-api", ExternalIDs: map[string]string{

@@ -31,16 +31,32 @@ func (r *LibOVSDBManagedReader) ManagedOVNRows(ctx context.Context, table string
 		if err := r.client.WhereCache(func(row *ovnnb.LogicalSwitch) bool { return isNetloomManaged(row.ExternalIDs) }).List(ctx, &rows); err != nil {
 			return nil, err
 		}
+		loadBalancerNames, err := r.loadBalancerNames(ctx)
+		if err != nil {
+			return nil, err
+		}
 		return managedOVNRowsFromModels(table, rows, func(row ovnnb.LogicalSwitch) (string, map[string]string, map[string]string) {
-			return row.UUID, row.ExternalIDs, map[string]string{"name": row.Name, "other_config": mapField(row.OtherConfig)}
+			return row.UUID, row.ExternalIDs, map[string]string{
+				"name":           row.Name,
+				"other_config":   mapField(row.OtherConfig),
+				"load_balancers": loadBalancerNamesField(row.LoadBalancer, loadBalancerNames),
+			}
 		}), nil
 	case "Logical_Router":
 		var rows []ovnnb.LogicalRouter
 		if err := r.client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return isNetloomManaged(row.ExternalIDs) }).List(ctx, &rows); err != nil {
 			return nil, err
 		}
+		loadBalancerNames, err := r.loadBalancerNames(ctx)
+		if err != nil {
+			return nil, err
+		}
 		return managedOVNRowsFromModels(table, rows, func(row ovnnb.LogicalRouter) (string, map[string]string, map[string]string) {
-			return row.UUID, row.ExternalIDs, map[string]string{"name": row.Name, "options": mapField(row.Options)}
+			return row.UUID, row.ExternalIDs, map[string]string{
+				"name":           row.Name,
+				"options":        mapField(row.Options),
+				"load_balancers": loadBalancerNamesField(row.LoadBalancer, loadBalancerNames),
+			}
 		}), nil
 	case "Logical_Switch_Port":
 		var rows []ovnnb.LogicalSwitchPort
@@ -154,6 +170,32 @@ func (r *LibOVSDBManagedReader) ManagedOVNRows(ctx context.Context, table string
 	default:
 		return nil, fmt.Errorf("unsupported managed OVN table %s", table)
 	}
+}
+
+func (r *LibOVSDBManagedReader) loadBalancerNames(ctx context.Context) (map[string]string, error) {
+	var rows []ovnnb.LoadBalancer
+	if err := r.client.WhereCache(func(row *ovnnb.LoadBalancer) bool { return row.Name != "" }).List(ctx, &rows); err != nil {
+		return nil, err
+	}
+	out := make(map[string]string, len(rows))
+	for _, row := range rows {
+		out[row.UUID] = row.Name
+	}
+	return out, nil
+}
+
+func loadBalancerNamesField(uuids []string, nameByUUID map[string]string) string {
+	if len(uuids) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(uuids))
+	for _, uuid := range uuids {
+		if name := nameByUUID[uuid]; name != "" {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return stringSliceField(names)
 }
 
 func (r *LibOVSDBManagedReader) loadBalancerHealthCheckVIPs(ctx context.Context) (map[string]string, error) {
