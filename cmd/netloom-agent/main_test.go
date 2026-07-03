@@ -706,7 +706,23 @@ func TestPrintReconcileResultIncludesPolicyMapUsageSummary(t *testing.T) {
 			{ProviderNetwork: "physnet-b", ParentDevice: "bond0", VLAN: 200, LinkName: "nlv-b", Ready: false, ParentState: "up", LinkState: "down"},
 		},
 		ProviderNetworkStatus: []linuxdatapath.ProviderNetworkStatus{
-			{ProviderNetwork: "physnet-a", Ready: true, LinkCount: 1, ReadyLinks: 1, IssueCount: 0},
+			{
+				ProviderNetwork: "physnet-a",
+				Ready:           true,
+				LinkCount:       1,
+				ReadyLinks:      1,
+				IssueCount:      0,
+				TenantCount:     1,
+				SubnetCount:     1,
+				EndpointCount:   2,
+				TenantUsage: []linuxdatapath.ProviderTenantUsage{{
+					Tenant:       "prod",
+					Subnets:      1,
+					Endpoints:    2,
+					MaxSubnets:   2,
+					MaxEndpoints: 3,
+				}},
+			},
 			{ProviderNetwork: "physnet-b", Ready: false, LinkCount: 1, ReadyLinks: 0, IssueCount: 1, Reasons: []string{"type-mismatch"}},
 		},
 		ProviderInventoryTotal:    3,
@@ -767,7 +783,7 @@ func TestPrintReconcileResultIncludesPolicyMapUsageSummary(t *testing.T) {
 		"provider_ready=1",
 		"provider_degraded=1",
 		"provider_status=physnet-a:eth1:100:nlv-a:ready:up:up,physnet-b:bond0:200:nlv-b:pending:up:down",
-		"provider_network_status=physnet-a:ready:1/1:0:none,physnet-b:degraded:0/1:1:type-mismatch",
+		"provider_network_status=physnet-a:ready:1/1:0:none:tenants=1:subnets=1:endpoints=2:prod=ok:1/2:2/3,physnet-b:degraded:0/1:1:type-mismatch",
 		"provider_inventory_total=3",
 		"provider_inventory_ready=2",
 		"provider_inventory_degraded=1",
@@ -1933,6 +1949,16 @@ func TestAgentMetricsExportsLatestPolicyAndTCXCounters(t *testing.T) {
 		Datapath:         "not-requested",
 		TCX:              "attached:eth0:ingress:policy-l4",
 		ProviderNetworks: 0,
+		ProviderNetworkStatus: []linuxdatapath.ProviderNetworkStatus{{
+			ProviderNetwork: "physnet-a",
+			TenantUsage: []linuxdatapath.ProviderTenantUsage{{
+				Tenant:       "prod",
+				Subnets:      1,
+				Endpoints:    2,
+				MaxSubnets:   2,
+				MaxEndpoints: 3,
+			}},
+		}},
 	}, "ebpf", 250*time.Millisecond)
 
 	recorder := httptest.NewRecorder()
@@ -1961,6 +1987,11 @@ func TestAgentMetricsExportsLatestPolicyAndTCXCounters(t *testing.T) {
 		`netloom_agent_policy_rollout_slo_failed{node="node-a",store="ebpf"} 1`,
 		`netloom_agent_policy_rollout_probe_failed{node="node-a",store="ebpf"} 1`,
 		`netloom_agent_policy_rollout_paused{node="node-a",store="ebpf"} 1`,
+		`netloom_agent_provider_tenant_subnets{node="node-a",provider_network="physnet-a",store="ebpf",tenant="prod"} 1`,
+		`netloom_agent_provider_tenant_endpoints{node="node-a",provider_network="physnet-a",store="ebpf",tenant="prod"} 2`,
+		`netloom_agent_provider_tenant_max_subnets{node="node-a",provider_network="physnet-a",store="ebpf",tenant="prod"} 2`,
+		`netloom_agent_provider_tenant_max_endpoints{node="node-a",provider_network="physnet-a",store="ebpf",tenant="prod"} 3`,
+		`netloom_agent_provider_tenant_quota_exceeded{node="node-a",provider_network="physnet-a",store="ebpf",tenant="prod"} 0`,
 		`netloom_agent_policy_rollout_planned_endpoints_total{node="node-a",store="ebpf"} 3`,
 		`netloom_agent_policy_rollout_applied_endpoints_total{node="node-a",store="ebpf"} 2`,
 		`netloom_agent_policy_rollout_skipped_endpoints_total{node="node-a",store="ebpf"} 1`,

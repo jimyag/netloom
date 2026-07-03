@@ -3889,6 +3889,11 @@ func TestReconcileNodeReportsProviderNetworkCountsFromLinuxDatapath(t *testing.T
 				Node:      "node-a",
 				Interface: "eth1",
 			}},
+			TenantQuotas: []model.ProviderNetworkTenantQuota{{
+				Tenant:       "prod",
+				MaxSubnets:   1,
+				MaxEndpoints: 2,
+			}},
 		}},
 		Subnets: []model.Subnet{{
 			Name:            "apps",
@@ -3922,6 +3927,20 @@ func TestReconcileNodeReportsProviderNetworkCountsFromLinuxDatapath(t *testing.T
 	}
 	if result.ProviderNetworks != 1 || result.ProviderLinks != 1 {
 		t.Fatalf("provider counts = %+v, want provider_networks=1 provider_links=1", result)
+	}
+	if len(result.ProviderNetworkStatus) != 1 {
+		t.Fatalf("provider network status = %+v, want 1 entry", result.ProviderNetworkStatus)
+	}
+	status := result.ProviderNetworkStatus[0]
+	if status.TenantCount != 1 || status.SubnetCount != 1 || status.EndpointCount != 1 {
+		t.Fatalf("provider network status = %+v, want prod tenant usage", status)
+	}
+	if len(status.TenantUsage) != 1 {
+		t.Fatalf("tenant usage = %+v, want 1 entry", status.TenantUsage)
+	}
+	usage := status.TenantUsage[0]
+	if usage.Tenant != "prod" || usage.Subnets != 1 || usage.Endpoints != 1 || usage.MaxSubnets != 1 || usage.MaxEndpoints != 2 || usage.Exceeded {
+		t.Fatalf("tenant usage = %+v, want prod quota usage", usage)
 	}
 	if result.ProviderReady != 0 || result.ProviderDegraded != 1 {
 		t.Fatalf("provider health summary = %+v, want provider_ready=0 provider_degraded=1", result)

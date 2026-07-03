@@ -706,6 +706,9 @@ func validateObjectGraph(state DesiredState) error {
 		endpointIPs[ipKey] = endpoint.ID
 		endpoints[key] = endpoint
 	}
+	if err := validateProviderNetworkTenantQuotas(providerNetworks, subnets, state.Endpoints); err != nil {
+		return err
+	}
 	if err := validateSecurityGroupNamedPortReferences(state.SecurityGroups, state.Endpoints, securityGroups); err != nil {
 		return err
 	}
@@ -1248,6 +1251,66 @@ func routeMatchPortKey(ranges []model.PortRange) string {
 	}
 	sort.Strings(ports)
 	return strings.Join(ports, ",")
+}
+
+type providerTenantUsage struct {
+	subnets   int
+	endpoints int
+}
+
+func validateProviderNetworkTenantQuotas(providerNetworks map[string]model.ProviderNetwork, subnets map[string]model.Subnet, endpoints []model.Endpoint) error {
+	usage := providerNetworkTenantUsage(subnets, endpoints)
+	for providerName, provider := range providerNetworks {
+		providerUsage := usage[providerName]
+		for _, quota := range provider.TenantQuotas {
+			tenantUsage := providerUsage[quota.Tenant]
+			if quota.MaxSubnets > 0 && tenantUsage.subnets > quota.MaxSubnets {
+				return fmt.Errorf("provider network %q tenant %q uses %d subnets, exceeds max_subnets %d", providerName, quota.Tenant, tenantUsage.subnets, quota.MaxSubnets)
+			}
+			if quota.MaxEndpoints > 0 && tenantUsage.endpoints > quota.MaxEndpoints {
+				return fmt.Errorf("provider network %q tenant %q uses %d endpoints, exceeds max_endpoints %d", providerName, quota.Tenant, tenantUsage.endpoints, quota.MaxEndpoints)
+			}
+		}
+	}
+	return nil
+}
+
+func providerNetworkTenantUsage(subnets map[string]model.Subnet, endpoints []model.Endpoint) map[string]map[string]providerTenantUsage {
+	usage := make(map[string]map[string]providerTenantUsage)
+	subnetProviders := make(map[string]string, len(subnets))
+	for key, subnet := range subnets {
+		if subnet.ProviderNetwork == "" {
+			continue
+		}
+		subnetProviders[key] = subnet.ProviderNetwork
+		tenantUsage := providerTenantUsageFor(usage, subnet.ProviderNetwork, subnet.VPC)
+		tenantUsage.subnets++
+		setProviderTenantUsage(usage, subnet.ProviderNetwork, subnet.VPC, tenantUsage)
+	}
+	for _, endpoint := range endpoints {
+		providerName := subnetProviders[subnetKey(endpoint.VPC, endpoint.Subnet)]
+		if providerName == "" {
+			continue
+		}
+		tenantUsage := providerTenantUsageFor(usage, providerName, endpoint.VPC)
+		tenantUsage.endpoints++
+		setProviderTenantUsage(usage, providerName, endpoint.VPC, tenantUsage)
+	}
+	return usage
+}
+
+func providerTenantUsageFor(usage map[string]map[string]providerTenantUsage, provider, tenant string) providerTenantUsage {
+	if usage[provider] == nil {
+		usage[provider] = make(map[string]providerTenantUsage)
+	}
+	return usage[provider][tenant]
+}
+
+func setProviderTenantUsage(usage map[string]map[string]providerTenantUsage, provider, tenant string, value providerTenantUsage) {
+	if usage[provider] == nil {
+		usage[provider] = make(map[string]providerTenantUsage)
+	}
+	usage[provider][tenant] = value
 }
 
 func desiredTopologyState(state DesiredState) topology.State {

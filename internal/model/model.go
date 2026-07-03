@@ -52,10 +52,11 @@ type VPC struct {
 }
 
 type ProviderNetwork struct {
-	Name      string                `json:"name"`
-	Nodes     []ProviderNetworkNode `json:"nodes"`
-	Isolation string                `json:"isolation,omitempty"`
-	QoS       ProviderNetworkQoS    `json:"qos,omitempty"`
+	Name         string                       `json:"name"`
+	Nodes        []ProviderNetworkNode        `json:"nodes"`
+	Isolation    string                       `json:"isolation,omitempty"`
+	QoS          ProviderNetworkQoS           `json:"qos,omitempty"`
+	TenantQuotas []ProviderNetworkTenantQuota `json:"tenant_quotas,omitempty"`
 }
 
 type ProviderNetworkNode struct {
@@ -67,6 +68,12 @@ type ProviderNetworkNode struct {
 type ProviderNetworkQoS struct {
 	EgressRateBPS  uint64 `json:"egress_rate_bps,omitempty"`
 	EgressBurstBPS uint64 `json:"egress_burst_bps,omitempty"`
+}
+
+type ProviderNetworkTenantQuota struct {
+	Tenant       string `json:"tenant"`
+	MaxSubnets   int    `json:"max_subnets,omitempty"`
+	MaxEndpoints int    `json:"max_endpoints,omitempty"`
 }
 
 type Subnet struct {
@@ -295,6 +302,16 @@ func (p ProviderNetwork) Validate() error {
 	if err := p.QoS.Validate(); err != nil {
 		return fmt.Errorf("provider network qos: %w", err)
 	}
+	seenTenants := make(map[string]struct{}, len(p.TenantQuotas))
+	for i, quota := range p.TenantQuotas {
+		if err := quota.Validate(); err != nil {
+			return fmt.Errorf("provider network tenant quota %d: %w", i, err)
+		}
+		if _, ok := seenTenants[quota.Tenant]; ok {
+			return fmt.Errorf("provider network tenant quota %q is duplicated", quota.Tenant)
+		}
+		seenTenants[quota.Tenant] = struct{}{}
+	}
 	if len(p.Nodes) == 0 {
 		return errors.New("provider network nodes are required")
 	}
@@ -314,6 +331,22 @@ func (p ProviderNetwork) Validate() error {
 func (q ProviderNetworkQoS) Validate() error {
 	if q.EgressBurstBPS != 0 && q.EgressRateBPS == 0 {
 		return errors.New("egress_burst_bps requires egress_rate_bps")
+	}
+	return nil
+}
+
+func (q ProviderNetworkTenantQuota) Validate() error {
+	if q.Tenant == "" {
+		return errors.New("tenant is required")
+	}
+	if q.MaxSubnets < 0 {
+		return errors.New("max_subnets must not be negative")
+	}
+	if q.MaxEndpoints < 0 {
+		return errors.New("max_endpoints must not be negative")
+	}
+	if q.MaxSubnets == 0 && q.MaxEndpoints == 0 {
+		return errors.New("max_subnets or max_endpoints is required")
 	}
 	return nil
 }

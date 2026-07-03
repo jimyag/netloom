@@ -716,6 +716,34 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 			wantErr: "subnet \"apps\" references unknown provider network",
 		},
 		{
+			name: "provider tenant subnet quota exceeded",
+			mutate: func(state *DesiredState) {
+				state.ProviderNetworks = []model.ProviderNetwork{{
+					Name: "physnet-a",
+					Nodes: []model.ProviderNetworkNode{{
+						Node:      "node-a",
+						Interface: "eth1",
+					}},
+					TenantQuotas: []model.ProviderNetworkTenantQuota{{
+						Tenant:       "prod",
+						MaxEndpoints: 0,
+						MaxSubnets:   1,
+					}},
+				}}
+				state.Subnets[0].ProviderNetwork = "physnet-a"
+				state.Subnets[0].VLAN = 100
+				state.Subnets = append(state.Subnets, model.Subnet{
+					Name:            "db",
+					VPC:             "prod",
+					CIDR:            netip.MustParsePrefix("10.10.1.0/24"),
+					Gateway:         netip.MustParseAddr("10.10.1.1"),
+					ProviderNetwork: "physnet-a",
+					VLAN:            101,
+				})
+			},
+			wantErr: "provider network \"physnet-a\" tenant \"prod\" uses 2 subnets, exceeds max_subnets 1",
+		},
+		{
 			name: "duplicate security group",
 			mutate: func(state *DesiredState) {
 				state.SecurityGroups = append(state.SecurityGroups, state.SecurityGroups[0])

@@ -1048,6 +1048,15 @@ func providerNetworkStatusContainsReason(status ProviderNetworkStatus, reason st
 	return false
 }
 
+func providerNetworkStatusByName(statuses []ProviderNetworkStatus, name string) (ProviderNetworkStatus, bool) {
+	for _, status := range statuses {
+		if status.ProviderNetwork == name {
+			return status, true
+		}
+	}
+	return ProviderNetworkStatus{}, false
+}
+
 func TestProviderLinkFailureStatusReportsDriftReason(t *testing.T) {
 	spec := providerNetworkLinkSpec{
 		ProviderNetwork: "physnet-a",
@@ -1105,6 +1114,77 @@ func TestSummarizeProviderNetworkStatusAggregatesLinksAndIssues(t *testing.T) {
 	}
 	if got := statuses[2]; got.ProviderNetwork != "physnet-c" || got.Ready || got.LinkCount != 0 || got.ReadyLinks != 0 || got.IssueCount != 1 || got.Reasons[0] != "candidate-unresolved" {
 		t.Fatalf("status[2] = %+v", got)
+	}
+}
+
+func TestProviderNetworkStatusesIncludesTenantQuotaUsage(t *testing.T) {
+	state := control.DesiredState{
+		ProviderNetworks: []model.ProviderNetwork{{
+			Name: "physnet-a",
+			TenantQuotas: []model.ProviderNetworkTenantQuota{{
+				Tenant:       "prod",
+				MaxSubnets:   2,
+				MaxEndpoints: 3,
+			}},
+		}},
+		Subnets: []model.Subnet{{
+			Name:            "apps",
+			VPC:             "prod",
+			ProviderNetwork: "physnet-a",
+		}},
+		Endpoints: []model.Endpoint{
+			{ID: "pod-a", VPC: "prod", Subnet: "apps"},
+			{ID: "pod-b", VPC: "prod", Subnet: "apps"},
+		},
+	}
+
+	statuses := providerNetworkStatuses(state, []ProviderLinkStatus{{ProviderNetwork: "physnet-a", Ready: true}}, nil)
+	if len(statuses) != 1 {
+		t.Fatalf("statuses = %d, want 1", len(statuses))
+	}
+	status := statuses[0]
+	if !status.Ready || status.TenantCount != 1 || status.SubnetCount != 1 || status.EndpointCount != 2 {
+		t.Fatalf("provider network status = %+v, want ready with tenant usage", status)
+	}
+	if len(status.TenantUsage) != 1 {
+		t.Fatalf("tenant usage = %d, want 1", len(status.TenantUsage))
+	}
+	usage := status.TenantUsage[0]
+	if usage.Tenant != "prod" || usage.Subnets != 1 || usage.Endpoints != 2 || usage.MaxSubnets != 2 || usage.MaxEndpoints != 3 || usage.Exceeded {
+		t.Fatalf("tenant usage = %+v, want prod 1/2 subnets and 2/3 endpoints", usage)
+	}
+}
+
+func TestProviderNetworkStatusesMarksTenantQuotaExceeded(t *testing.T) {
+	state := control.DesiredState{
+		ProviderNetworks: []model.ProviderNetwork{{
+			Name: "physnet-a",
+			TenantQuotas: []model.ProviderNetworkTenantQuota{{
+				Tenant:       "prod",
+				MaxEndpoints: 1,
+			}},
+		}},
+		Subnets: []model.Subnet{{
+			Name:            "apps",
+			VPC:             "prod",
+			ProviderNetwork: "physnet-a",
+		}},
+		Endpoints: []model.Endpoint{
+			{ID: "pod-a", VPC: "prod", Subnet: "apps"},
+			{ID: "pod-b", VPC: "prod", Subnet: "apps"},
+		},
+	}
+
+	statuses := providerNetworkStatuses(state, []ProviderLinkStatus{{ProviderNetwork: "physnet-a", Ready: true}}, nil)
+	if len(statuses) != 1 {
+		t.Fatalf("statuses = %d, want 1", len(statuses))
+	}
+	status := statuses[0]
+	if status.Ready || status.IssueCount != 1 || !providerNetworkStatusContainsReason(status, "tenant-quota-exceeded") {
+		t.Fatalf("provider network status = %+v, want tenant quota exceeded", status)
+	}
+	if len(status.TenantUsage) != 1 || !status.TenantUsage[0].Exceeded {
+		t.Fatalf("tenant usage = %+v, want exceeded", status.TenantUsage)
 	}
 }
 
@@ -1530,7 +1610,8 @@ func TestPlanRejectsExclusiveProviderNetworkParentSharing(t *testing.T) {
 	if len(result.ProviderIssues) != 1 || result.ProviderIssues[0].Reason != "parent-isolation-conflict" || result.ProviderIssues[0].ParentDevice != "eth1" || result.ProviderIssues[0].Detail != "physnet-a" {
 		t.Fatalf("provider issues = %+v, want parent-isolation-conflict with physnet-a detail", result.ProviderIssues)
 	}
-	if len(result.ProviderNetworkStatus) != 1 || result.ProviderNetworkStatus[0].ProviderNetwork != "physnet-b" || result.ProviderNetworkStatus[0].Ready || !providerNetworkStatusContainsReason(result.ProviderNetworkStatus[0], "parent-isolation-conflict") {
+	status, ok := providerNetworkStatusByName(result.ProviderNetworkStatus, "physnet-b")
+	if !ok || status.Ready || !providerNetworkStatusContainsReason(status, "parent-isolation-conflict") {
 		t.Fatalf("provider network status = %+v, want physnet-b isolation conflict", result.ProviderNetworkStatus)
 	}
 }

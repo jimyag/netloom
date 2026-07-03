@@ -9,7 +9,7 @@ import (
 func TestLoadDesiredStateJSONDecodesSnakeCaseState(t *testing.T) {
 	state, err := LoadDesiredStateJSON(strings.NewReader(`{
 		"vpcs": [{"name": "prod"}],
-		"provider_networks": [{"name": "physnet-a", "isolation": "exclusive", "qos": {"egress_rate_bps": 1000000000, "egress_burst_bps": 64000}, "nodes": [{"node": "node-a", "interface": "bond0.100"}, {"node": "node-b", "interfaces": ["ens5", "eth1"]}]}],
+		"provider_networks": [{"name": "physnet-a", "isolation": "exclusive", "qos": {"egress_rate_bps": 1000000000, "egress_burst_bps": 64000}, "tenant_quotas": [{"tenant": "prod", "max_subnets": 2, "max_endpoints": 10}], "nodes": [{"node": "node-a", "interface": "bond0.100"}, {"node": "node-b", "interfaces": ["ens5", "eth1"]}]}],
 		"subnets": [{"name": "apps", "vpc": "prod", "cidr": "10.10.0.0/24", "gateway": "10.10.0.1", "exclude_cidrs": ["10.10.0.128/25"]}],
 		"endpoints": [{"id": "pod-a", "vpc": "prod", "subnet": "apps", "ip": "10.10.0.10", "node": "node-a", "security_groups": ["web"], "named_ports": [{"name": "http", "protocol": "tcp", "port": 8080}], "labels": {"app": "web", "env": "prod"}}],
 		"route_tables": [{"name": "main", "vpc": "prod", "routes": [{"destination": "0.0.0.0/0", "next_hops": ["10.10.0.253", "10.10.0.254"]}]}],
@@ -42,6 +42,9 @@ func TestLoadDesiredStateJSONDecodesSnakeCaseState(t *testing.T) {
 	}
 	if got := state.ProviderNetworks[0].QoS.EgressBurstBPS; got != 64000 {
 		t.Fatalf("provider network qos egress burst = %d, want 64000", got)
+	}
+	if got := state.ProviderNetworks[0].TenantQuotas[0]; got.Tenant != "prod" || got.MaxSubnets != 2 || got.MaxEndpoints != 10 {
+		t.Fatalf("provider network tenant quota = %+v, want prod 2/10", got)
 	}
 	if got := state.ProviderNetworks[0].Nodes[1].Interfaces[1]; got != "eth1" {
 		t.Fatalf("provider network node candidate interface = %s, want eth1", got)

@@ -55,7 +55,7 @@ func applyLocalNetlink(ctx context.Context, state control.DesiredState, options 
 	result.ProviderInventoryTotal, result.ProviderInventoryReady, result.ProviderInventoryDegraded = summarizeProviderInventory(options.ProviderInventory)
 	providerSpecs, err := desiredProviderNetworkLinkSpecs(state, options.Node, options.ProviderLinks, options.ProviderInventory)
 	if err != nil {
-		applyProviderPlanningIssue(&result, err)
+		applyProviderPlanningIssue(&result, state, err)
 		return result, err
 	}
 	result.ProviderNetworks, result.ProviderLinks = summarizeProviderNetworkSpecs(providerSpecs)
@@ -72,7 +72,7 @@ func applyLocalNetlink(ctx context.Context, state control.DesiredState, options 
 	}
 	result.ProviderReady, result.ProviderDegraded = summarizeProviderLinkHealth(result.ProviderStatus)
 	result.ProviderIssues = providerRuntimeIssues(result.ProviderStatus, result.ProviderIssues, options.Node)
-	result.ProviderNetworkStatus = summarizeProviderNetworkStatus(result.ProviderStatus, result.ProviderIssues)
+	result.ProviderNetworkStatus = providerNetworkStatuses(state, result.ProviderStatus, result.ProviderIssues)
 	if options.CleanupStale {
 		if err := cleanupStaleProviderNetworkLinks(root, providerSpecs); err != nil {
 			return Result{}, err
@@ -82,7 +82,7 @@ func applyLocalNetlink(ctx context.Context, state control.DesiredState, options 
 		if err := executeProviderOVSDBSync(ctx, options, providerSpecs, options.CleanupStale); err != nil {
 			return result, err
 		}
-		if err := appendProviderOVSDBIssues(ctx, &result, options, providerSpecs); err != nil {
+		if err := appendProviderOVSDBIssues(ctx, &result, state, options, providerSpecs); err != nil {
 			return result, err
 		}
 	}
@@ -165,7 +165,7 @@ func applyNetNSNetlink(ctx context.Context, state control.DesiredState, options 
 	result.ProviderInventoryTotal, result.ProviderInventoryReady, result.ProviderInventoryDegraded = summarizeProviderInventory(options.ProviderInventory)
 	providerSpecs, err := desiredProviderNetworkLinkSpecs(state, options.Node, options.ProviderLinks, options.ProviderInventory)
 	if err != nil {
-		applyProviderPlanningIssue(&result, err)
+		applyProviderPlanningIssue(&result, state, err)
 		return result, err
 	}
 	result.ProviderNetworks, result.ProviderLinks = summarizeProviderNetworkSpecs(providerSpecs)
@@ -182,7 +182,7 @@ func applyNetNSNetlink(ctx context.Context, state control.DesiredState, options 
 	}
 	result.ProviderReady, result.ProviderDegraded = summarizeProviderLinkHealth(result.ProviderStatus)
 	result.ProviderIssues = providerRuntimeIssues(result.ProviderStatus, result.ProviderIssues, options.Node)
-	result.ProviderNetworkStatus = summarizeProviderNetworkStatus(result.ProviderStatus, result.ProviderIssues)
+	result.ProviderNetworkStatus = providerNetworkStatuses(state, result.ProviderStatus, result.ProviderIssues)
 	if options.CleanupStale {
 		if err := cleanupStaleProviderNetworkLinks(root, providerSpecs); err != nil {
 			return Result{}, err
@@ -192,7 +192,7 @@ func applyNetNSNetlink(ctx context.Context, state control.DesiredState, options 
 		if err := executeProviderOVSDBSync(ctx, options, providerSpecs, options.CleanupStale); err != nil {
 			return result, err
 		}
-		if err := appendProviderOVSDBIssues(ctx, &result, options, providerSpecs); err != nil {
+		if err := appendProviderOVSDBIssues(ctx, &result, state, options, providerSpecs); err != nil {
 			return result, err
 		}
 	}
@@ -589,13 +589,13 @@ func executeProviderOVSDBCleanup(ctx context.Context, options Options, specs []p
 	return nil
 }
 
-func appendProviderOVSDBIssues(ctx context.Context, result *Result, options Options, specs []providerNetworkLinkSpec) error {
+func appendProviderOVSDBIssues(ctx context.Context, result *Result, state control.DesiredState, options Options, specs []providerNetworkLinkSpec) error {
 	statuses, err := providerOVSDBStatuses(ctx, options, specs)
 	if err != nil {
 		return err
 	}
 	result.ProviderIssues = providerOVSDBRuntimeIssues(result.ProviderIssues, statuses, options.Node)
-	result.ProviderNetworkStatus = summarizeProviderNetworkStatus(result.ProviderStatus, result.ProviderIssues)
+	result.ProviderNetworkStatus = providerNetworkStatuses(state, result.ProviderStatus, result.ProviderIssues)
 	return nil
 }
 

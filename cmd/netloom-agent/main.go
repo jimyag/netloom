@@ -932,9 +932,28 @@ func formatProviderNetworkStatus(statuses []linuxdatapath.ProviderNetworkStatus)
 		if len(status.Reasons) > 0 {
 			reasons = strings.Join(status.Reasons, "+")
 		}
-		parts = append(parts, fmt.Sprintf("%s:%s:%d/%d:%d:%s", status.ProviderNetwork, state, status.ReadyLinks, status.LinkCount, status.IssueCount, reasons))
+		usage := ""
+		if status.TenantCount > 0 {
+			usage = fmt.Sprintf(":tenants=%d:subnets=%d:endpoints=%d:%s", status.TenantCount, status.SubnetCount, status.EndpointCount, formatProviderTenantUsage(status.TenantUsage))
+		}
+		parts = append(parts, fmt.Sprintf("%s:%s:%d/%d:%d:%s%s", status.ProviderNetwork, state, status.ReadyLinks, status.LinkCount, status.IssueCount, reasons, usage))
 	}
 	return strings.Join(parts, ",")
+}
+
+func formatProviderTenantUsage(usages []linuxdatapath.ProviderTenantUsage) string {
+	if len(usages) == 0 {
+		return "none"
+	}
+	parts := make([]string, 0, len(usages))
+	for _, usage := range usages {
+		state := "ok"
+		if usage.Exceeded {
+			state = "exceeded"
+		}
+		parts = append(parts, fmt.Sprintf("%s=%s:%d/%d:%d/%d", usage.Tenant, state, usage.Subnets, usage.MaxSubnets, usage.Endpoints, usage.MaxEndpoints))
+	}
+	return strings.Join(parts, "+")
 }
 
 func fallbackProviderState(state string) string {
@@ -1979,6 +1998,30 @@ func writeAgentMetrics(w ioStringWriter, snapshot agentMetricsSnapshot, totals a
 	fmt.Fprintf(w, "netloom_agent_policy_rollout_probe_failed%s %d\n", baseLabels, result.PolicyRolloutProbeFailed)
 	writeMetricType(w, "netloom_agent_policy_rollout_paused", "gauge")
 	fmt.Fprintf(w, "netloom_agent_policy_rollout_paused%s %d\n", baseLabels, result.PolicyRolloutPaused)
+	writeMetricType(w, "netloom_agent_provider_tenant_subnets", "gauge")
+	writeMetricType(w, "netloom_agent_provider_tenant_endpoints", "gauge")
+	writeMetricType(w, "netloom_agent_provider_tenant_max_subnets", "gauge")
+	writeMetricType(w, "netloom_agent_provider_tenant_max_endpoints", "gauge")
+	writeMetricType(w, "netloom_agent_provider_tenant_quota_exceeded", "gauge")
+	for _, status := range result.ProviderNetworkStatus {
+		for _, usage := range status.TenantUsage {
+			labels := prometheusLabels(map[string]string{
+				"node":             result.Node,
+				"store":            snapshot.Store,
+				"provider_network": status.ProviderNetwork,
+				"tenant":           usage.Tenant,
+			})
+			exceeded := 0
+			if usage.Exceeded {
+				exceeded = 1
+			}
+			fmt.Fprintf(w, "netloom_agent_provider_tenant_subnets%s %d\n", labels, usage.Subnets)
+			fmt.Fprintf(w, "netloom_agent_provider_tenant_endpoints%s %d\n", labels, usage.Endpoints)
+			fmt.Fprintf(w, "netloom_agent_provider_tenant_max_subnets%s %d\n", labels, usage.MaxSubnets)
+			fmt.Fprintf(w, "netloom_agent_provider_tenant_max_endpoints%s %d\n", labels, usage.MaxEndpoints)
+			fmt.Fprintf(w, "netloom_agent_provider_tenant_quota_exceeded%s %d\n", labels, exceeded)
+		}
+	}
 	writeAgentCounter(w, "netloom_agent_policy_added_total", baseLabels, totals.PolicyAdded)
 	writeAgentCounter(w, "netloom_agent_policy_updated_total", baseLabels, totals.PolicyUpdated)
 	writeAgentCounter(w, "netloom_agent_policy_deleted_total", baseLabels, totals.PolicyDeleted)

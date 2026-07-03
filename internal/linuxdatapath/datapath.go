@@ -113,6 +113,19 @@ type ProviderNetworkStatus struct {
 	ReadyLinks      int
 	IssueCount      int
 	Reasons         []string
+	TenantCount     int
+	SubnetCount     int
+	EndpointCount   int
+	TenantUsage     []ProviderTenantUsage
+}
+
+type ProviderTenantUsage struct {
+	Tenant       string
+	Subnets      int
+	Endpoints    int
+	MaxSubnets   int
+	MaxEndpoints int
+	Exceeded     bool
 }
 
 type CommandExecutor struct{}
@@ -147,13 +160,13 @@ func (e *providerPlanningError) Error() string { return e.err.Error() }
 
 func (e *providerPlanningError) Unwrap() error { return e.err }
 
-func applyProviderPlanningIssue(result *Result, err error) {
+func applyProviderPlanningIssue(result *Result, state control.DesiredState, err error) {
 	var planningErr *providerPlanningError
 	if result == nil || !errors.As(err, &planningErr) {
 		return
 	}
 	result.ProviderIssues = append(result.ProviderIssues, planningErr.issue)
-	result.ProviderNetworkStatus = summarizeProviderNetworkStatus(result.ProviderStatus, result.ProviderIssues)
+	result.ProviderNetworkStatus = providerNetworkStatuses(state, result.ProviderStatus, result.ProviderIssues)
 }
 
 func (CommandExecutor) Execute(ctx context.Context, op Operation) error {
@@ -185,7 +198,7 @@ func Apply(ctx context.Context, state control.DesiredState, options Options) (Re
 		result.ProviderInventoryTotal, result.ProviderInventoryReady, result.ProviderInventoryDegraded = summarizeProviderInventory(options.ProviderInventory)
 		providerSpecs, err := desiredProviderNetworkLinkSpecs(state, options.Node, options.ProviderLinks, options.ProviderInventory)
 		if err != nil {
-			applyProviderPlanningIssue(&result, err)
+			applyProviderPlanningIssue(&result, state, err)
 			return result, err
 		}
 		planOptions := options
@@ -219,16 +232,16 @@ func Apply(ctx context.Context, state control.DesiredState, options Options) (Re
 				result.ProviderStatus = providerLinkStatusesFromInventory(providerSpecs, inventory)
 				result.ProviderReady, result.ProviderDegraded = summarizeProviderLinkHealth(result.ProviderStatus)
 				result.ProviderIssues = providerRuntimeIssues(result.ProviderStatus, result.ProviderIssues, options.Node)
-				result.ProviderNetworkStatus = summarizeProviderNetworkStatus(result.ProviderStatus, result.ProviderIssues)
+				result.ProviderNetworkStatus = providerNetworkStatuses(state, result.ProviderStatus, result.ProviderIssues)
 			}
 		} else {
 			result.ProviderStatus = providerLinkStatusesFromInventory(providerSpecs, options.ProviderInventory)
 			result.ProviderReady, result.ProviderDegraded = summarizeProviderLinkHealth(result.ProviderStatus)
 			result.ProviderIssues = providerRuntimeIssues(result.ProviderStatus, result.ProviderIssues, options.Node)
-			result.ProviderNetworkStatus = summarizeProviderNetworkStatus(result.ProviderStatus, result.ProviderIssues)
+			result.ProviderNetworkStatus = providerNetworkStatuses(state, result.ProviderStatus, result.ProviderIssues)
 		}
 		if options.SyncOVSDB {
-			if err := appendProviderOVSDBIssues(ctx, &result, options, providerSpecs); err != nil {
+			if err := appendProviderOVSDBIssues(ctx, &result, state, options, providerSpecs); err != nil {
 				return result, err
 			}
 		}
@@ -306,14 +319,14 @@ func Plan(ctx context.Context, state control.DesiredState, options Options) ([]O
 	var ops []Operation
 	providerSpecs, err := desiredProviderNetworkLinkSpecs(state, options.Node, options.ProviderLinks, options.ProviderInventory)
 	if err != nil {
-		applyProviderPlanningIssue(&result, err)
+		applyProviderPlanningIssue(&result, state, err)
 		return nil, result, err
 	}
 	result.ProviderNetworks, result.ProviderLinks = summarizeProviderNetworkSpecs(providerSpecs)
 	result.ProviderStatus = providerLinkStatuses(providerSpecs, false)
 	result.ProviderReady, result.ProviderDegraded = summarizeProviderLinkHealth(result.ProviderStatus)
 	result.ProviderIssues = providerOVSDBRuntimeIssues(result.ProviderIssues, options.ProviderOVSDBStatus, options.Node)
-	result.ProviderNetworkStatus = summarizeProviderNetworkStatus(result.ProviderStatus, result.ProviderIssues)
+	result.ProviderNetworkStatus = providerNetworkStatuses(state, result.ProviderStatus, result.ProviderIssues)
 	ops = append(ops, planProviderNetworkLinks(providerSpecs)...)
 	if options.SyncOVSDB {
 		ops = append(ops, planProviderOVSDBMappings(providerSpecs)...)
@@ -645,6 +658,11 @@ func summarizeProviderLinkHealth(statuses []ProviderLinkStatus) (ready, degraded
 	return ready, degraded
 }
 
+func providerNetworkStatuses(state control.DesiredState, statuses []ProviderLinkStatus, issues []ProviderIssue) []ProviderNetworkStatus {
+	out := summarizeProviderNetworkStatus(statuses, issues)
+	return applyProviderTenantUsage(out, providerTenantUsage(state))
+}
+
 func summarizeProviderNetworkStatus(statuses []ProviderLinkStatus, issues []ProviderIssue) []ProviderNetworkStatus {
 	type aggregate struct {
 		linkCount  int
@@ -695,6 +713,105 @@ func summarizeProviderNetworkStatus(statuses []ProviderLinkStatus, issues []Prov
 		})
 	}
 	return out
+}
+
+func applyProviderTenantUsage(statuses []ProviderNetworkStatus, usage map[string][]ProviderTenantUsage) []ProviderNetworkStatus {
+	statusByProvider := make(map[string]int, len(statuses))
+	for i := range statuses {
+		statusByProvider[statuses[i].ProviderNetwork] = i
+	}
+	for provider, tenantUsage := range usage {
+		index, ok := statusByProvider[provider]
+		if !ok {
+			statuses = append(statuses, ProviderNetworkStatus{ProviderNetwork: provider})
+			index = len(statuses) - 1
+			statusByProvider[provider] = index
+		}
+		sort.Slice(tenantUsage, func(i, j int) bool { return tenantUsage[i].Tenant < tenantUsage[j].Tenant })
+		statuses[index].TenantUsage = append([]ProviderTenantUsage(nil), tenantUsage...)
+		statuses[index].TenantCount = len(tenantUsage)
+		for _, tenant := range tenantUsage {
+			statuses[index].SubnetCount += tenant.Subnets
+			statuses[index].EndpointCount += tenant.Endpoints
+			if tenant.Exceeded {
+				statuses[index].Reasons = appendUniqueSorted(statuses[index].Reasons, "tenant-quota-exceeded")
+				statuses[index].IssueCount = len(statuses[index].Reasons)
+				statuses[index].Ready = false
+			}
+		}
+	}
+	sort.Slice(statuses, func(i, j int) bool { return statuses[i].ProviderNetwork < statuses[j].ProviderNetwork })
+	return statuses
+}
+
+func providerTenantUsage(state control.DesiredState) map[string][]ProviderTenantUsage {
+	quotaByProviderTenant := make(map[string]map[string]model.ProviderNetworkTenantQuota, len(state.ProviderNetworks))
+	for _, provider := range state.ProviderNetworks {
+		for _, quota := range provider.TenantQuotas {
+			if quotaByProviderTenant[provider.Name] == nil {
+				quotaByProviderTenant[provider.Name] = make(map[string]model.ProviderNetworkTenantQuota)
+			}
+			quotaByProviderTenant[provider.Name][quota.Tenant] = quota
+		}
+	}
+	subnetProvider := make(map[string]string, len(state.Subnets))
+	usageByProviderTenant := make(map[string]map[string]ProviderTenantUsage)
+	for _, subnet := range state.Subnets {
+		if subnet.ProviderNetwork == "" {
+			continue
+		}
+		subnetProvider[subnetStateKey(subnet.VPC, subnet.Name)] = subnet.ProviderNetwork
+		usage := providerTenantUsageFor(usageByProviderTenant, subnet.ProviderNetwork, subnet.VPC)
+		usage.Subnets++
+		setProviderTenantUsage(usageByProviderTenant, subnet.ProviderNetwork, subnet.VPC, usage)
+	}
+	for _, endpoint := range state.Endpoints {
+		providerName := subnetProvider[subnetStateKey(endpoint.VPC, endpoint.Subnet)]
+		if providerName == "" {
+			continue
+		}
+		usage := providerTenantUsageFor(usageByProviderTenant, providerName, endpoint.VPC)
+		usage.Endpoints++
+		setProviderTenantUsage(usageByProviderTenant, providerName, endpoint.VPC, usage)
+	}
+	out := make(map[string][]ProviderTenantUsage, len(usageByProviderTenant))
+	for provider, tenants := range usageByProviderTenant {
+		for tenant, usage := range tenants {
+			quota := quotaByProviderTenant[provider][tenant]
+			usage.Tenant = tenant
+			usage.MaxSubnets = quota.MaxSubnets
+			usage.MaxEndpoints = quota.MaxEndpoints
+			usage.Exceeded = (usage.MaxSubnets > 0 && usage.Subnets > usage.MaxSubnets) ||
+				(usage.MaxEndpoints > 0 && usage.Endpoints > usage.MaxEndpoints)
+			out[provider] = append(out[provider], usage)
+		}
+	}
+	return out
+}
+
+func providerTenantUsageFor(usage map[string]map[string]ProviderTenantUsage, provider, tenant string) ProviderTenantUsage {
+	if usage[provider] == nil {
+		usage[provider] = make(map[string]ProviderTenantUsage)
+	}
+	return usage[provider][tenant]
+}
+
+func setProviderTenantUsage(usage map[string]map[string]ProviderTenantUsage, provider, tenant string, value ProviderTenantUsage) {
+	if usage[provider] == nil {
+		usage[provider] = make(map[string]ProviderTenantUsage)
+	}
+	usage[provider][tenant] = value
+}
+
+func appendUniqueSorted(values []string, value string) []string {
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	values = append(values, value)
+	sort.Strings(values)
+	return values
 }
 
 func providerRuntimeIssues(statuses []ProviderLinkStatus, existing []ProviderIssue, node string) []ProviderIssue {
