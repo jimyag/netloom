@@ -356,6 +356,14 @@ func expectedManagedAuditColumns(desired topology.State) map[string]map[string]s
 		if endpoint.NormalizedMAC() != "" {
 			fields["port_security"] = endpointAddress(endpoint)
 		}
+		if subnet, ok := desired.Subnets[subnetStateKey(endpoint.VPC, endpoint.Subnet)]; ok && subnet.DHCP.Enabled {
+			if endpoint.IP.Is4() {
+				fields["dhcpv4_options"] = dhcpOptionsRef("4", subnet.CIDR.String())
+			}
+			if endpoint.IP.Is6() {
+				fields["dhcpv6_options"] = dhcpOptionsRef("6", subnet.CIDR.String())
+			}
+		}
 		addAuditExpectedColumns(out, "Logical_Switch_Port", fields,
 			"netloom_vpc", endpoint.VPC,
 			"netloom_endpoint", endpointExternalID(endpoint.VPC, endpoint.ID),

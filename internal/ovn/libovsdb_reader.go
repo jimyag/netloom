@@ -88,14 +88,20 @@ func (r *LibOVSDBManagedReader) ManagedOVNRows(ctx context.Context, table string
 		if err := r.client.WhereCache(func(row *ovnnb.LogicalSwitchPort) bool { return isNetloomManaged(row.ExternalIDs) }).List(ctx, &rows); err != nil {
 			return nil, err
 		}
+		dhcpOptions, err := r.dhcpOptionsRefs(ctx)
+		if err != nil {
+			return nil, err
+		}
 		return managedOVNRowsFromModels(table, rows, func(row ovnnb.LogicalSwitchPort) (string, map[string]string, map[string]string) {
 			return row.UUID, row.ExternalIDs, map[string]string{
-				"name":          row.Name,
-				"type":          row.Type,
-				"addresses":     stringSliceField(row.Addresses),
-				"port_security": stringSliceField(row.PortSecurity),
-				"options":       mapField(row.Options),
-				"tag":           intPointerField(row.Tag),
+				"name":           row.Name,
+				"type":           row.Type,
+				"addresses":      stringSliceField(row.Addresses),
+				"port_security":  stringSliceField(row.PortSecurity),
+				"options":        mapField(row.Options),
+				"tag":            intPointerField(row.Tag),
+				"dhcpv4_options": dhcpOptionsRefField(row.Dhcpv4Options, dhcpOptions),
+				"dhcpv6_options": dhcpOptionsRefField(row.Dhcpv6Options, dhcpOptions),
 			}
 		}), nil
 	case "Logical_Router_Port":
@@ -232,6 +238,32 @@ func portNamesField(uuids []string, nameByUUID map[string]string) string {
 		}
 	}
 	return stringSetField(names)
+}
+
+func (r *LibOVSDBManagedReader) dhcpOptionsRefs(ctx context.Context) (map[string]string, error) {
+	var rows []ovnnb.DHCPOptions
+	if err := r.client.WhereCache(func(row *ovnnb.DHCPOptions) bool { return row.Cidr != "" }).List(ctx, &rows); err != nil {
+		return nil, err
+	}
+	out := make(map[string]string, len(rows))
+	for _, row := range rows {
+		out[row.UUID] = dhcpOptionsRef(row.ExternalIDs["netloom_dhcp_family"], row.Cidr)
+	}
+	return out, nil
+}
+
+func dhcpOptionsRefField(uuid *string, refs map[string]string) string {
+	if uuid == nil {
+		return ""
+	}
+	return refs[*uuid]
+}
+
+func dhcpOptionsRef(family, cidr string) string {
+	if family == "" || cidr == "" {
+		return ""
+	}
+	return family + ":" + cidr
 }
 
 func (r *LibOVSDBManagedReader) loadBalancerNames(ctx context.Context) (map[string]string, error) {

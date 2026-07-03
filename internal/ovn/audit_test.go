@@ -743,6 +743,69 @@ func TestAuditManagedObjectsFromReaderReportsLoadBalancerHealthCheckAttachmentDr
 	}
 }
 
+func TestAuditManagedObjectsFromReaderReportsDHCPOptionAttachmentDrift(t *testing.T) {
+	subnet := model.Subnet{
+		Name:    "apps",
+		VPC:     "prod",
+		CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+		Gateway: netip.MustParseAddr("10.10.0.1"),
+		DHCP:    model.DHCPOptions{Enabled: true},
+	}
+	endpoint := model.Endpoint{
+		ID:     "pod-a",
+		VPC:    "prod",
+		Subnet: "apps",
+		Node:   "node-a",
+		IP:     netip.MustParseAddr("10.10.0.20"),
+		MAC:    "02:00:00:00:00:20",
+	}
+	reader := fakeManagedOVNReader{rows: map[string][]ManagedOVNRow{
+		"Logical_Switch_Port": {
+			{Table: "Logical_Switch_Port", UUID: "lsp-pod-a", ExternalIDs: map[string]string{
+				"netloom_owner":    "netloom",
+				"netloom_vpc":      "prod",
+				"netloom_endpoint": endpointExternalID("prod", "pod-a"),
+				"netloom_node":     "node-a",
+				"netloom_subnet":   "apps",
+			}, Fields: map[string]string{
+				"name":           logicalPort("prod", "pod-a"),
+				"addresses":      endpointAddress(endpoint),
+				"port_security":  endpointAddress(endpoint),
+				"dhcpv4_options": "",
+				"dhcpv6_options": "",
+			}},
+		},
+		"DHCP_Options": {
+			{Table: "DHCP_Options", UUID: "dhcp-pod-a", ExternalIDs: map[string]string{
+				"netloom_owner":       "netloom",
+				"netloom_vpc":         "prod",
+				"netloom_endpoint":    endpointExternalID("prod", "pod-a"),
+				"netloom_subnet":      "apps",
+				"netloom_dhcp_family": "4",
+			}, Fields: map[string]string{
+				"cidr": "10.10.0.0/24",
+			}},
+		},
+	}}
+	desired := topology.State{
+		VPCs: map[string]model.VPC{"prod": {Name: "prod"}},
+		Subnets: map[string]model.Subnet{
+			subnetStateKey("prod", "apps"): subnet,
+		},
+		Endpoints: map[string]model.Endpoint{
+			"prod/pod-a": endpoint,
+		},
+	}
+
+	stats, err := AuditManagedObjectsFromReaderWithDesired(context.Background(), reader, desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.DriftedManagedRows != 1 || stats.DriftedManagedFields != 1 {
+		t.Fatalf("DHCP option attachment drift stats = %+v, want one endpoint attachment field drift", stats)
+	}
+}
+
 func TestAuditStatsTotalManagedObjects(t *testing.T) {
 	stats := AuditStats{
 		ManagedLogicalSwitches:           1,
