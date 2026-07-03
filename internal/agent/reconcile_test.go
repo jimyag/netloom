@@ -1395,6 +1395,42 @@ func TestApplyPolicyRolloutsSkipsDisabledAndOtherNode(t *testing.T) {
 	}
 }
 
+func TestApplyPolicyRolloutsPassesSLOGateSettings(t *testing.T) {
+	state := rolloutPolicyState()
+	state.PolicyRollouts = []control.PolicyRollout{{
+		Name:                    "web-canary",
+		Node:                    "node-a",
+		Endpoints:               []string{"prod/pod-a", "prod/pod-b"},
+		BatchSize:               1,
+		SLOGated:                true,
+		SLODropThresholdPercent: 20,
+		SLOMinPackets:           10,
+	}}
+	store := dataplane.NewInMemoryPolicyStore()
+	telemetry := staticPolicyRuleMetrics{metrics: []dataplane.RuleMetrics{{
+		EndpointID: model.EndpointKey("prod", "pod-a"),
+		Packets:    50,
+		Rejected:   25,
+	}}}
+
+	rollouts, err := ApplyPolicyRollouts(context.Background(), state, ReconcileOptions{
+		Node:            "node-a",
+		Store:           store,
+		PolicyTelemetry: telemetry,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result ReconcileResult
+	ApplyPolicyRolloutResults(&result, rollouts)
+	if result.PolicyRollouts != 1 || result.PolicyRolloutSLOFailed != 1 || result.PolicyRolloutRolledBack != 1 || result.PolicyRolloutSkipped != 1 {
+		t.Fatalf("rollout result = %+v rollouts=%+v, want desired-state SLO rollback", result, rollouts)
+	}
+	if len(rollouts) != 1 || !rollouts[0].Rollout.SLOFailed || rollouts[0].Rollout.SLODropPercent != 50 {
+		t.Fatalf("rollouts = %+v, want SLO failure propagated", rollouts)
+	}
+}
+
 func TestRolloutPolicyEndpointsPressureAwareShrinksBatchSize(t *testing.T) {
 	state := rolloutPolicyState()
 	store := &rolloutPressurePolicyStore{
@@ -1511,6 +1547,81 @@ func TestRolloutPolicyEndpointsStopsAfterApplyFailure(t *testing.T) {
 	}
 }
 
+func TestRolloutPolicyEndpointsSLOGateRollsBackFailedCanary(t *testing.T) {
+	state := rolloutPolicyState()
+	store := dataplane.NewInMemoryPolicyStore()
+	telemetry := staticPolicyRuleMetrics{metrics: []dataplane.RuleMetrics{{
+		EndpointID: model.EndpointKey("prod", "pod-a"),
+		Packets:    100,
+		Dropped:    60,
+	}}}
+
+	rollout, err := RolloutPolicyEndpoints(context.Background(), state, ReconcileOptions{
+		Node:            "node-a",
+		Store:           store,
+		PolicyTelemetry: telemetry,
+	}, PolicyEndpointRolloutOptions{
+		EndpointIDs: []string{
+			model.EndpointKey("prod", "pod-a"),
+			model.EndpointKey("prod", "pod-b"),
+			model.EndpointKey("prod", "pod-c"),
+		},
+		BatchSize:               1,
+		SLOGated:                true,
+		SLODropThresholdPercent: 10,
+		SLOMinPackets:           10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rollout.SLOGated || !rollout.SLOFailed || rollout.SLODropPercent != 60 || rollout.SLOPackets != 100 || rollout.SLOError == "" {
+		t.Fatalf("rollout SLO = %+v, want failed 60%% over threshold", rollout)
+	}
+	if rollout.Applied != 1 || rollout.Failed != 1 || rollout.Skipped != 2 || rollout.RolledBack != 1 || rollout.RollbackFailed != 0 {
+		t.Fatalf("rollout summary = %+v, want canary rollback and skipped remaining endpoints", rollout)
+	}
+	phases := []string{rollout.Items[0].Phase, rollout.Items[1].Phase, rollout.Items[2].Phase}
+	if !slices.Equal(phases, []string{"rolled_back", "skipped", "skipped"}) {
+		t.Fatalf("rollout phases = %+v, want rolled_back skipped skipped", phases)
+	}
+	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 0 {
+		t.Fatalf("pod-a entries = %+v, want SLO rollback to remove canary policy", entries)
+	}
+}
+
+func TestRolloutPolicyEndpointsSLOGateWaitsForMinimumSamples(t *testing.T) {
+	state := rolloutPolicyState()
+	store := dataplane.NewInMemoryPolicyStore()
+	telemetry := staticPolicyRuleMetrics{metrics: []dataplane.RuleMetrics{{
+		EndpointID: model.EndpointKey("prod", "pod-a"),
+		Packets:    5,
+		Dropped:    5,
+	}}}
+
+	rollout, err := RolloutPolicyEndpoints(context.Background(), state, ReconcileOptions{
+		Node:            "node-a",
+		Store:           store,
+		PolicyTelemetry: telemetry,
+	}, PolicyEndpointRolloutOptions{
+		EndpointIDs: []string{
+			model.EndpointKey("prod", "pod-a"),
+		},
+		BatchSize:               1,
+		SLOGated:                true,
+		SLODropThresholdPercent: 10,
+		SLOMinPackets:           10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rollout.SLOFailed || rollout.Applied != 1 || rollout.RolledBack != 0 || rollout.SLOPackets != 5 || rollout.SLODropPercent != 100 {
+		t.Fatalf("rollout = %+v, want SLO sample below minimum without rollback", rollout)
+	}
+	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 1 {
+		t.Fatalf("pod-a entries = %+v, want canary policy kept while SLO waits for samples", entries)
+	}
+}
+
 type failingPolicyStore struct {
 	*dataplane.InMemoryPolicyStore
 	failEndpoint string
@@ -1530,6 +1641,14 @@ type rolloutPressurePolicyStore struct {
 
 func (s *rolloutPressurePolicyStore) PolicyMapUsage(context.Context) ([]dataplane.PolicyMapUsage, error) {
 	return append([]dataplane.PolicyMapUsage(nil), s.usage...), nil
+}
+
+type staticPolicyRuleMetrics struct {
+	metrics []dataplane.RuleMetrics
+}
+
+func (s staticPolicyRuleMetrics) PolicyRuleMetrics(context.Context) ([]dataplane.RuleMetrics, error) {
+	return append([]dataplane.RuleMetrics(nil), s.metrics...), nil
 }
 
 func rolloutPolicyState() control.DesiredState {

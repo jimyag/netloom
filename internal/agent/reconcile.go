@@ -36,6 +36,7 @@ type ReconcileResult struct {
 	PolicyRolloutFailed              int
 	PolicyRolloutRolledBack          int
 	PolicyRolloutRollbackFailed      int
+	PolicyRolloutSLOFailed           int
 	PolicyRolloutStatus              []NamedPolicyEndpointRollout
 	PolicyMapDriftEndpoints          int
 	PolicyMapDriftMissing            int
@@ -158,6 +159,9 @@ type PolicyEndpointRolloutOptions struct {
 	PressureAware             bool
 	PressureThresholdPercent  uint32
 	PressureAwareMinBatchSize int
+	SLOGated                  bool
+	SLODropThresholdPercent   uint32
+	SLOMinPackets             uint64
 }
 
 type PolicyEndpointRollout struct {
@@ -169,6 +173,13 @@ type PolicyEndpointRollout struct {
 	PressureThresholdPercent uint32                      `json:"pressure_threshold_percent,omitempty"`
 	PressureMaxPercent       uint32                      `json:"pressure_max_percent,omitempty"`
 	PressureEndpoint         string                      `json:"pressure_endpoint,omitempty"`
+	SLOGated                 bool                        `json:"slo_gated,omitempty"`
+	SLODropThresholdPercent  uint32                      `json:"slo_drop_threshold_percent,omitempty"`
+	SLOMinPackets            uint64                      `json:"slo_min_packets,omitempty"`
+	SLOPackets               uint64                      `json:"slo_packets,omitempty"`
+	SLODropPercent           uint32                      `json:"slo_drop_percent,omitempty"`
+	SLOFailed                bool                        `json:"slo_failed,omitempty"`
+	SLOError                 string                      `json:"slo_error,omitempty"`
 	Planned                  int                         `json:"planned"`
 	Applied                  int                         `json:"applied"`
 	Skipped                  int                         `json:"skipped"`
@@ -323,6 +334,9 @@ func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, opt
 		PressureThresholdPercent: pressure.threshold,
 		PressureMaxPercent:       pressure.maxPercent,
 		PressureEndpoint:         pressure.endpointID,
+		SLOGated:                 rolloutOptions.SLOGated,
+		SLODropThresholdPercent:  rolloutOptions.SLODropThresholdPercent,
+		SLOMinPackets:            rolloutOptions.SLOMinPackets,
 		Items:                    make([]PolicyEndpointRolloutItem, 0, len(endpointIDs)),
 	}
 	type preparedEndpoint struct {
@@ -390,8 +404,81 @@ func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, opt
 			}
 		}
 		rollout.Items[i] = item
+		if rolloutOptions.SLOGated && rolloutBatchComplete(rollout.Items, i) {
+			if failed, err := evaluateRolloutSLO(ctx, options, applied, rolloutOptions, &rollout); err != nil {
+				return PolicyEndpointRollout{}, err
+			} else if failed {
+				rollout.Failed++
+				rollbackRolloutPolicyEndpoints(ctx, options.Store, snapshots, applied, &rollout)
+			}
+		}
 	}
 	return rollout, nil
+}
+
+func rolloutBatchComplete(items []PolicyEndpointRolloutItem, index int) bool {
+	return index >= len(items)-1 || items[index+1].Batch != items[index].Batch
+}
+
+func evaluateRolloutSLO(ctx context.Context, options ReconcileOptions, applied []string, rolloutOptions PolicyEndpointRolloutOptions, rollout *PolicyEndpointRollout) (bool, error) {
+	telemetry := options.PolicyTelemetry
+	if telemetry == nil {
+		var ok bool
+		telemetry, ok = options.Store.(PolicyRuleMetricsStore)
+		if !ok {
+			return false, fmt.Errorf("slo-gated policy rollout requires policy rule telemetry")
+		}
+	}
+	stats, err := telemetry.PolicyRuleMetrics(ctx)
+	if err != nil {
+		return false, fmt.Errorf("read policy rollout SLO metrics: %w", err)
+	}
+	packets, drops := rolloutSLOPackets(stats, applied)
+	dropPercent := percentUint64(drops, packets)
+	rollout.SLOPackets = packets
+	rollout.SLODropPercent = dropPercent
+	if packets < rolloutOptions.SLOMinPackets {
+		return false, nil
+	}
+	if dropPercent <= rolloutOptions.SLODropThresholdPercent {
+		return false, nil
+	}
+	rollout.SLOFailed = true
+	rollout.SLOError = fmt.Sprintf("policy rollout SLO failed: drop_percent=%d threshold=%d packets=%d min_packets=%d", dropPercent, rolloutOptions.SLODropThresholdPercent, packets, rolloutOptions.SLOMinPackets)
+	return true, nil
+}
+
+func rolloutSLOPackets(stats []dataplane.RuleMetrics, endpointIDs []string) (uint64, uint64) {
+	endpoints := make(map[string]struct{}, len(endpointIDs))
+	for _, endpointID := range endpointIDs {
+		endpoints[endpointID] = struct{}{}
+	}
+	var packets, drops uint64
+	for _, stat := range stats {
+		if _, ok := endpoints[stat.EndpointID]; !ok {
+			continue
+		}
+		packets += stat.Packets
+		drops += maxUint64(stat.Dropped, stat.Rejected)
+	}
+	return packets, drops
+}
+
+func maxUint64(a, b uint64) uint64 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func percentUint64(part, total uint64) uint32 {
+	if total == 0 {
+		return 0
+	}
+	if part >= total {
+		return 100
+	}
+	return uint32(float64(part) * 100 / float64(total))
 }
 
 type policyEndpointSnapshot struct {
@@ -480,6 +567,9 @@ func ApplyPolicyRollouts(ctx context.Context, state control.DesiredState, option
 			PressureAware:             rollout.PressureAware,
 			PressureThresholdPercent:  rollout.PressureThresholdPercent,
 			PressureAwareMinBatchSize: rollout.PressureAwareMinBatchSize,
+			SLOGated:                  rollout.SLOGated,
+			SLODropThresholdPercent:   rollout.SLODropThresholdPercent,
+			SLOMinPackets:             rollout.SLOMinPackets,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("policy rollout %q: %w", rollout.Name, err)
@@ -560,6 +650,9 @@ func ApplyPolicyRolloutResults(result *ReconcileResult, rollouts []NamedPolicyEn
 		result.PolicyRolloutFailed += rollout.Rollout.Failed
 		result.PolicyRolloutRolledBack += rollout.Rollout.RolledBack
 		result.PolicyRolloutRollbackFailed += rollout.Rollout.RollbackFailed
+		if rollout.Rollout.SLOFailed {
+			result.PolicyRolloutSLOFailed++
+		}
 	}
 }
 

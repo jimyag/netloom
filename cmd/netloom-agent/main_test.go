@@ -677,6 +677,7 @@ func TestPrintReconcileResultIncludesPolicyMapUsageSummary(t *testing.T) {
 		PolicyRolloutFailed:              0,
 		PolicyRolloutRolledBack:          1,
 		PolicyRolloutRollbackFailed:      0,
+		PolicyRolloutSLOFailed:           1,
 		PolicyMapDriftEndpoints:          1,
 		PolicyMapDriftMissing:            2,
 		PolicyMapDriftExtra:              3,
@@ -739,6 +740,9 @@ func TestPrintReconcileResultIncludesPolicyMapUsageSummary(t *testing.T) {
 		"policy_rollout_applied=2",
 		"policy_rollout_skipped=1",
 		"policy_rollout_failed=0",
+		"policy_rollout_rolled_back=1",
+		"policy_rollout_rollback_failed=0",
+		"policy_rollout_slo_failed=1",
 		"policy_map_drift_endpoints=1",
 		"policy_map_drift_missing=2",
 		"policy_map_drift_extra=3",
@@ -1601,6 +1605,59 @@ func TestPolicyEndpointAPIRolloutAppliesMultipleEndpoints(t *testing.T) {
 	}
 }
 
+func TestPolicyEndpointAPIRolloutHonorsSLOGate(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{
+			{ID: "pod-a", VPC: "prod", Subnet: "apps", IP: netip.MustParseAddr("10.10.0.10"), Node: "node-a", SecurityGroups: []string{"web"}},
+			{ID: "pod-b", VPC: "prod", Subnet: "apps", IP: netip.MustParseAddr("10.10.0.11"), Node: "node-a", SecurityGroups: []string{"web"}},
+		},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "allow-http",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("172.30.0.0/24"),
+				Ports:      []model.PortRange{{From: 80, To: 80}},
+				Action:     model.ActionAllow,
+			}},
+		}},
+	}
+	store := &policyRolloutUsageStore{
+		InMemoryPolicyStore: dataplane.NewInMemoryPolicyStore(),
+		metrics: []dataplane.RuleMetrics{{
+			EndpointID: model.EndpointKey("prod", "pod-a"),
+			Packets:    100,
+			Dropped:    40,
+		}},
+	}
+	metrics := newAgentMetrics(store)
+	observeAgentReconcileResultWithState(metrics, agent.ReconcileResult{
+		Node: "node-a",
+	}, "memory", time.Millisecond, state)
+
+	body := bytes.NewBufferString(`{"endpoints":["prod/pod-a","prod/pod-b"],"batch_size":1,"slo_gated":true,"slo_drop_threshold_percent":10,"slo_min_packets":10}`)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/policy/endpoints/rollout", body)
+	metrics.handlePolicyEndpoints(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var got policyEndpointActionOutput
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode policy endpoint rollout response: %v\n%s", err, recorder.Body.String())
+	}
+	if got.RolledOut || !got.Rollout.SLOFailed || got.Rollout.SLODropPercent != 40 || got.Rollout.RolledBack != 1 || got.Rollout.Skipped != 1 {
+		t.Fatalf("rollout response = %+v, want SLO failure rollback", got)
+	}
+	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 0 {
+		t.Fatalf("pod-a entries = %+v, want SLO rollback", entries)
+	}
+}
+
 func TestPolicyEndpointAPIRolloutUsesPressureAwareBatchSize(t *testing.T) {
 	state := control.DesiredState{
 		Endpoints: []model.Endpoint{
@@ -1674,11 +1731,16 @@ func TestPolicyEndpointAPIRejectsUnsupportedPostAction(t *testing.T) {
 
 type policyRolloutUsageStore struct {
 	*dataplane.InMemoryPolicyStore
-	usage []dataplane.PolicyMapUsage
+	usage   []dataplane.PolicyMapUsage
+	metrics []dataplane.RuleMetrics
 }
 
 func (s *policyRolloutUsageStore) PolicyMapUsage(context.Context) ([]dataplane.PolicyMapUsage, error) {
 	return append([]dataplane.PolicyMapUsage(nil), s.usage...), nil
+}
+
+func (s *policyRolloutUsageStore) PolicyRuleMetrics(context.Context) ([]dataplane.RuleMetrics, error) {
+	return append([]dataplane.RuleMetrics(nil), s.metrics...), nil
 }
 
 func TestAgentMetricsExportsLatestPolicyAndTCXCounters(t *testing.T) {
@@ -1703,6 +1765,7 @@ func TestAgentMetricsExportsLatestPolicyAndTCXCounters(t *testing.T) {
 		PolicyRolloutFailed:              0,
 		PolicyRolloutRolledBack:          1,
 		PolicyRolloutRollbackFailed:      0,
+		PolicyRolloutSLOFailed:           1,
 		PolicyMapDriftEndpoints:          1,
 		PolicyMapDriftMissing:            2,
 		PolicyMapDriftExtra:              3,
@@ -1749,12 +1812,14 @@ func TestAgentMetricsExportsLatestPolicyAndTCXCounters(t *testing.T) {
 		`netloom_agent_policy_rollout_failed_endpoints{node="node-a",store="ebpf"} 0`,
 		`netloom_agent_policy_rollout_rolled_back_endpoints{node="node-a",store="ebpf"} 1`,
 		`netloom_agent_policy_rollout_rollback_failed_endpoints{node="node-a",store="ebpf"} 0`,
+		`netloom_agent_policy_rollout_slo_failed{node="node-a",store="ebpf"} 1`,
 		`netloom_agent_policy_rollout_planned_endpoints_total{node="node-a",store="ebpf"} 3`,
 		`netloom_agent_policy_rollout_applied_endpoints_total{node="node-a",store="ebpf"} 2`,
 		`netloom_agent_policy_rollout_skipped_endpoints_total{node="node-a",store="ebpf"} 1`,
 		`netloom_agent_policy_rollout_failed_endpoints_total{node="node-a",store="ebpf"} 0`,
 		`netloom_agent_policy_rollout_rolled_back_endpoints_total{node="node-a",store="ebpf"} 1`,
 		`netloom_agent_policy_rollout_rollback_failed_endpoints_total{node="node-a",store="ebpf"} 0`,
+		`netloom_agent_policy_rollout_slo_failed_total{node="node-a",store="ebpf"} 1`,
 		`netloom_agent_policy_map_drift_endpoints{node="node-a",store="ebpf"} 1`,
 		`netloom_agent_policy_map_drift_missing_entries{node="node-a",store="ebpf"} 2`,
 		`netloom_agent_policy_map_drift_extra_entries{node="node-a",store="ebpf"} 3`,

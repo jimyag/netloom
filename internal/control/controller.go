@@ -157,6 +157,9 @@ type PolicyRollout struct {
 	PressureAware             bool     `json:"pressure_aware"`
 	PressureThresholdPercent  uint32   `json:"pressure_threshold_percent"`
 	PressureAwareMinBatchSize int      `json:"pressure_aware_min_batch_size"`
+	SLOGated                  bool     `json:"slo_gated"`
+	SLODropThresholdPercent   uint32   `json:"slo_drop_threshold_percent"`
+	SLOMinPackets             uint64   `json:"slo_min_packets"`
 	Disabled                  bool     `json:"disabled,omitempty"`
 }
 
@@ -172,6 +175,9 @@ func (r PolicyRollout) Validate() error {
 	}
 	if r.PressureAwareMinBatchSize < 0 {
 		return fmt.Errorf("policy rollout %q pressure_aware_min_batch_size must not be negative", r.Name)
+	}
+	if r.SLODropThresholdPercent > 100 {
+		return fmt.Errorf("policy rollout %q slo_drop_threshold_percent must be <= 100", r.Name)
 	}
 	seen := make(map[string]struct{}, len(r.Endpoints))
 	for _, endpoint := range r.Endpoints {

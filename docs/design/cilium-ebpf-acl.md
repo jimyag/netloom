@@ -385,9 +385,13 @@ dry-run plan, regenerate, quarantine, unquarantine, and multi-endpoint rollout
 actions for scoped remediation and staged policy rollout. Rollout requests plan
 all requested endpoints first, support dry-run and configurable batch size, apply
 endpoint maps through the same policy backend path as reconcile, and stop on the
-first failed endpoint while reporting later endpoints as skipped. The TCX L4 ACL
-map value similarly carries the projected rule cookie, log flag, and packet and
-byte counters. IPv4 and IPv6
+first failed endpoint while reporting later endpoints as skipped. A rollout can
+also enable SLO gating; after each batch the agent reads policy rule telemetry
+for already-applied endpoints, compares drop/reject percentage with the
+configured threshold once enough packets have been observed, and rolls back the
+current rollout if the canary violates the SLO. The TCX L4 ACL map value
+similarly carries the projected rule cookie, log flag, and packet and byte
+counters. IPv4 and IPv6
 TCX programs atomically increment those counters after a successful LPM lookup
 and before returning the rule action. After a successful TCX reconcile, the agent
 reads the live attachment maps, aggregates counters by rule cookie, classifies
