@@ -55,12 +55,22 @@ func (r *LibOVSDBManagedReader) ManagedOVNRows(ctx context.Context, table string
 		if err != nil {
 			return nil, err
 		}
+		policyNames, err := r.policyNames(ctx)
+		if err != nil {
+			return nil, err
+		}
+		staticRouteKeys, err := r.staticRouteKeys(ctx)
+		if err != nil {
+			return nil, err
+		}
 		return managedOVNRowsFromModels(table, rows, func(row ovnnb.LogicalRouter) (string, map[string]string, map[string]string) {
 			return row.UUID, row.ExternalIDs, map[string]string{
 				"name":           row.Name,
 				"options":        mapField(row.Options),
 				"load_balancers": loadBalancerNamesField(row.LoadBalancer, loadBalancerNames),
 				"nat_rules":      natNamesField(row.Nat, natNames),
+				"policies":       policyNamesField(row.Policies, policyNames),
+				"static_routes":  staticRouteKeysField(row.StaticRoutes, staticRouteKeys),
 			}
 		}), nil
 	case "Logical_Switch_Port":
@@ -226,6 +236,60 @@ func natNamesField(uuids []string, nameByUUID map[string]string) string {
 		}
 	}
 	return stringSetField(names)
+}
+
+func (r *LibOVSDBManagedReader) policyNames(ctx context.Context) (map[string]string, error) {
+	var rows []ovnnb.LogicalRouterPolicy
+	if err := r.client.WhereCache(func(row *ovnnb.LogicalRouterPolicy) bool {
+		return row.ExternalIDs["netloom_policy_route"] != ""
+	}).List(ctx, &rows); err != nil {
+		return nil, err
+	}
+	out := make(map[string]string, len(rows))
+	for _, row := range rows {
+		out[row.UUID] = row.ExternalIDs["netloom_policy_route"]
+	}
+	return out, nil
+}
+
+func policyNamesField(uuids []string, nameByUUID map[string]string) string {
+	if len(uuids) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(uuids))
+	for _, uuid := range uuids {
+		if name := nameByUUID[uuid]; name != "" {
+			names = append(names, name)
+		}
+	}
+	return stringSetField(names)
+}
+
+func (r *LibOVSDBManagedReader) staticRouteKeys(ctx context.Context) (map[string]string, error) {
+	var rows []ovnnb.LogicalRouterStaticRoute
+	if err := r.client.WhereCache(func(row *ovnnb.LogicalRouterStaticRoute) bool {
+		return row.ExternalIDs["netloom_route_key"] != ""
+	}).List(ctx, &rows); err != nil {
+		return nil, err
+	}
+	out := make(map[string]string, len(rows))
+	for _, row := range rows {
+		out[row.UUID] = row.ExternalIDs["netloom_route_key"]
+	}
+	return out, nil
+}
+
+func staticRouteKeysField(uuids []string, keyByUUID map[string]string) string {
+	if len(uuids) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(uuids))
+	for _, uuid := range uuids {
+		if key := keyByUUID[uuid]; key != "" {
+			keys = append(keys, key)
+		}
+	}
+	return stringSetField(keys)
 }
 
 func (r *LibOVSDBManagedReader) loadBalancerHealthCheckVIPs(ctx context.Context) (map[string]string, error) {

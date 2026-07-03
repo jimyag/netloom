@@ -258,6 +258,86 @@ func TestAuditManagedObjectsFromReaderReportsNATParentAttachmentDrift(t *testing
 	}
 }
 
+func TestAuditManagedObjectsFromReaderReportsRouterPolicyAndStaticRouteAttachmentDrift(t *testing.T) {
+	policy := model.PolicyRoute{
+		Name:     "via-fw",
+		VPC:      "prod",
+		Priority: 100,
+		Match: model.RouteMatch{
+			Destination: netip.MustParsePrefix("10.20.0.0/24"),
+		},
+		Action: model.RouteAction{
+			Type: model.ActionReroute,
+			NextHops: []netip.Addr{
+				netip.MustParseAddr("10.10.0.254"),
+			},
+		},
+	}
+	routeTable := model.RouteTable{
+		Name: "main",
+		VPC:  "prod",
+		Routes: []model.Route{{
+			Destination: netip.MustParsePrefix("10.30.0.0/24"),
+			NextHops: []netip.Addr{
+				netip.MustParseAddr("10.10.0.253"),
+			},
+		}},
+	}
+	reader := fakeManagedOVNReader{rows: map[string][]ManagedOVNRow{
+		"Logical_Router": {
+			{Table: "Logical_Router", UUID: "lr-prod", ExternalIDs: map[string]string{
+				"netloom_owner": "netloom",
+				"netloom_vpc":   "prod",
+			}, Fields: map[string]string{
+				"name":          logicalRouter("prod"),
+				"policies":      "",
+				"static_routes": "",
+			}},
+		},
+		"Logical_Router_Policy": {
+			{Table: "Logical_Router_Policy", UUID: "policy-via-fw", ExternalIDs: map[string]string{
+				"netloom_owner":        "netloom",
+				"netloom_vpc":          "prod",
+				"netloom_policy_route": "via-fw",
+			}, Fields: map[string]string{
+				"priority": "100",
+				"match":    policyRouteMatch(policy.Match),
+				"action":   "reroute",
+				"nexthop":  "10.10.0.254",
+			}},
+		},
+		"Logical_Router_Static_Route": {
+			{Table: "Logical_Router_Static_Route", UUID: "route-main", ExternalIDs: map[string]string{
+				"netloom_owner":       "netloom",
+				"netloom_vpc":         "prod",
+				"netloom_route_table": "main",
+				"netloom_route_key":   "10.30.0.0/24|10.10.0.253",
+			}, Fields: map[string]string{
+				"ip_prefix":        "10.30.0.0/24",
+				"nexthop":          "10.10.0.253",
+				"options":          "",
+				"route_table":      "main",
+				"selection_fields": "",
+			}},
+		},
+	}}
+	desired := topology.State{
+		VPCs:         map[string]model.VPC{"prod": {Name: "prod"}},
+		PolicyRoutes: []model.PolicyRoute{policy},
+		RouteTables: map[string]model.RouteTable{
+			"prod/main": routeTable,
+		},
+	}
+
+	stats, err := AuditManagedObjectsFromReaderWithDesired(context.Background(), reader, desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.DriftedManagedRows != 1 || stats.DriftedManagedFields != 2 {
+		t.Fatalf("router policy/static route attachment drift stats = %+v, want one router row with two drifted fields", stats)
+	}
+}
+
 func TestAuditManagedObjectsFromReaderReportsDesiredDrift(t *testing.T) {
 	reader := fakeManagedOVNReader{rows: map[string][]ManagedOVNRow{
 		"Logical_Switch": {

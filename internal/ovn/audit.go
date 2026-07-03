@@ -315,6 +315,16 @@ func expectedManagedAuditColumns(desired topology.State) map[string]map[string]s
 			"nat_rules": stringSetField(names),
 		}, "netloom_vpc", vpc)
 	}
+	for vpc, names := range expectedRouterPolicies(desired.PolicyRoutes) {
+		addAuditExpectedColumns(out, "Logical_Router", map[string]string{
+			"policies": stringSetField(names),
+		}, "netloom_vpc", vpc)
+	}
+	for vpc, keys := range expectedRouterStaticRoutes(desired.RouteTables) {
+		addAuditExpectedColumns(out, "Logical_Router", map[string]string{
+			"static_routes": stringSetField(keys),
+		}, "netloom_vpc", vpc)
+	}
 	for key, names := range expectedSwitchLoadBalancers(desired.LoadBalancers) {
 		vpc, subnet, ok := splitStateKey(key)
 		if !ok {
@@ -600,6 +610,26 @@ func expectedRouterNATRules(rules map[string]model.NATRule) map[string][]string 
 	out := make(map[string][]string)
 	for _, rule := range rules {
 		out[rule.VPC] = append(out[rule.VPC], rule.Name)
+	}
+	return out
+}
+
+func expectedRouterPolicies(routes []model.PolicyRoute) map[string][]string {
+	out := make(map[string][]string)
+	for _, route := range routes {
+		out[route.VPC] = append(out[route.VPC], route.Name)
+	}
+	return out
+}
+
+func expectedRouterStaticRoutes(tables map[string]model.RouteTable) map[string][]string {
+	out := make(map[string][]string)
+	for _, table := range tables {
+		for _, route := range table.Routes {
+			for _, row := range desiredStaticRouteRows(table, route) {
+				out[table.VPC] = append(out[table.VPC], row.ExternalIDs["netloom_route_key"])
+			}
+		}
 	}
 	return out
 }
