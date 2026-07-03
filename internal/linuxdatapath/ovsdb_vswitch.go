@@ -181,6 +181,12 @@ func providerOVSDBQueueExternalIDs(spec providerNetworkLinkSpec, policy model.Pr
 	if len(policy.Ports) > 0 {
 		ids["netloom_queue_ports"] = providerOVSDBQueuePorts(policy.Ports)
 	}
+	if selector := providerOVSDBQueueLabels(policy.EndpointSelector); selector != "" {
+		ids["netloom_queue_endpoint_selector"] = selector
+	}
+	if expressions := providerOVSDBQueueExpressions(policy.EndpointExpressions); expressions != "" {
+		ids["netloom_queue_endpoint_expressions"] = expressions
+	}
 	return ids
 }
 
@@ -208,6 +214,43 @@ func providerOVSDBQueuePorts(ports []model.PortRange) string {
 		parts = append(parts, strconv.Itoa(int(port.From))+"-"+strconv.Itoa(int(port.To)))
 	}
 	return strings.Join(parts, ",")
+}
+
+func providerOVSDBQueueLabels(labels model.Labels) string {
+	if len(labels) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(labels))
+	for key := range labels {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, key+"="+labels[key])
+	}
+	return strings.Join(parts, ",")
+}
+
+func providerOVSDBQueueExpressions(expressions []model.LabelExpr) string {
+	if len(expressions) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(expressions))
+	for _, expression := range expressions {
+		values := append([]string(nil), expression.Values...)
+		sort.Strings(values)
+		parts = append(parts, expression.Key+":"+normalizeProviderQueueExpressionOperator(expression.Operator)+":"+strings.Join(values, ","))
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ";")
+}
+
+func normalizeProviderQueueExpressionOperator(operator string) string {
+	operator = strings.ToLower(strings.TrimSpace(operator))
+	operator = strings.ReplaceAll(operator, "_", "")
+	operator = strings.ReplaceAll(operator, "-", "")
+	return operator
 }
 
 func appendUniqueString(values []string, value string) []string {

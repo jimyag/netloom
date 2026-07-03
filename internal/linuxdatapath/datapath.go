@@ -412,13 +412,14 @@ type providerNetworkLinkSpec struct {
 }
 
 type providerQueueFlow struct {
-	Bridge   string
-	Tenant   string
-	CIDR     netip.Prefix
-	QueueID  int
-	Protocol model.Protocol
-	Port     uint16
-	Cookie   uint64
+	Bridge         string
+	Tenant         string
+	CIDR           netip.Prefix
+	QueueID        int
+	Protocol       model.Protocol
+	Port           uint16
+	EndpointScoped bool
+	Cookie         uint64
 }
 
 func desiredProviderNetworkLinkSpecs(state control.DesiredState, node string, mappings map[string]string, inventory []ProviderInterface) ([]providerNetworkLinkSpec, error) {
@@ -1139,7 +1140,7 @@ func desiredProviderQueueFlows(state control.DesiredState, specs []providerNetwo
 			if queue.Tenant != subnet.VPC {
 				continue
 			}
-			flows = append(flows, providerQueueFlowsForPolicy(subnet, queue)...)
+			flows = append(flows, providerQueueFlowsForPolicy(subnet, queue, state.Endpoints)...)
 		}
 	}
 	sort.Slice(flows, func(i, j int) bool {
@@ -1163,31 +1164,63 @@ func desiredProviderQueueFlows(state control.DesiredState, specs []providerNetwo
 	return flows
 }
 
-func providerQueueFlowsForPolicy(subnet model.Subnet, queue model.ProviderNetworkTenantQueuePolicy) []providerQueueFlow {
+func providerQueueFlowsForPolicy(subnet model.Subnet, queue model.ProviderNetworkTenantQueuePolicy, endpoints []model.Endpoint) []providerQueueFlow {
+	cidrs := providerQueueFlowCIDRs(subnet, queue, endpoints)
 	base := providerQueueFlow{
 		Bridge:   providerNetworkBridgeName(subnet.ProviderNetwork),
 		Tenant:   queue.Tenant,
-		CIDR:     subnet.CIDR,
 		QueueID:  queue.QueueID,
 		Protocol: queue.Protocol,
 	}
-	if len(queue.Ports) == 0 {
-		base.Cookie = providerQueueFlowCookieFor(base)
-		return []providerQueueFlow{base}
-	}
 	var flows []providerQueueFlow
-	for _, portRange := range queue.Ports {
-		for port := portRange.From; port <= portRange.To; port++ {
+	for _, cidr := range cidrs {
+		base.CIDR = cidr
+		base.EndpointScoped = providerQueuePolicyUsesEndpointSelector(queue)
+		if len(queue.Ports) == 0 {
 			flow := base
-			flow.Port = port
 			flow.Cookie = providerQueueFlowCookieFor(flow)
 			flows = append(flows, flow)
-			if port == ^uint16(0) {
-				break
+			continue
+		}
+		for _, portRange := range queue.Ports {
+			for port := portRange.From; port <= portRange.To; port++ {
+				flow := base
+				flow.Port = port
+				flow.Cookie = providerQueueFlowCookieFor(flow)
+				flows = append(flows, flow)
+				if port == ^uint16(0) {
+					break
+				}
 			}
 		}
 	}
 	return flows
+}
+
+func providerQueueFlowCIDRs(subnet model.Subnet, queue model.ProviderNetworkTenantQueuePolicy, endpoints []model.Endpoint) []netip.Prefix {
+	if !providerQueuePolicyUsesEndpointSelector(queue) {
+		return []netip.Prefix{subnet.CIDR}
+	}
+	var cidrs []netip.Prefix
+	for _, endpoint := range endpoints {
+		if endpoint.VPC != subnet.VPC || endpoint.Subnet != subnet.Name || !endpoint.IP.IsValid() {
+			continue
+		}
+		if !endpoint.Labels.MatchesSelector(queue.EndpointSelector, queue.EndpointExpressions) {
+			continue
+		}
+		bits := 128
+		if endpoint.IP.Is4() {
+			bits = 32
+		}
+		cidrs = append(cidrs, netip.PrefixFrom(endpoint.IP, bits))
+	}
+	sort.Slice(cidrs, func(i, j int) bool { return cidrs[i].String() < cidrs[j].String() })
+	return cidrs
+}
+
+func providerQueuePolicyUsesEndpointSelector(queue model.ProviderNetworkTenantQueuePolicy) bool {
+	return len(queue.EndpointSelector) != 0 || len(queue.EndpointExpressions) != 0
 }
 
 func providerVLANKey(provider string, vlan uint16) string {
@@ -1205,6 +1238,12 @@ func providerQueueFlowString(flow providerQueueFlow) string {
 }
 
 func providerQueueFlowPriority(flow providerQueueFlow) int {
+	if flow.EndpointScoped {
+		if flow.Protocol != "" || flow.Port != 0 {
+			return 230
+		}
+		return 225
+	}
 	if flow.Protocol != "" || flow.Port != 0 {
 		return 220
 	}
@@ -1245,6 +1284,8 @@ func providerQueueFlowCookieFor(flow providerQueueFlow) uint64 {
 	_, _ = hash.Write([]byte(flow.Protocol))
 	_, _ = hash.Write([]byte{0})
 	_, _ = hash.Write([]byte(strconv.Itoa(int(flow.Port))))
+	_, _ = hash.Write([]byte{0})
+	_, _ = hash.Write([]byte(strconv.FormatBool(flow.EndpointScoped)))
 	return providerQueueFlowCookie | (hash.Sum64() & ^providerQueueFlowCookieMask)
 }
 

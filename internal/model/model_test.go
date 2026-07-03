@@ -253,6 +253,16 @@ func TestProviderNetworkRejectsInvalidTenantQueues(t *testing.T) {
 			wantErr: "ports require protocol",
 		},
 		{
+			name: "invalid endpoint selector",
+			queues: []ProviderNetworkTenantQueuePolicy{{
+				Tenant:           "prod",
+				QueueID:          10,
+				EndpointSelector: Labels{"": "web"},
+				MaxRateBPS:       500000000,
+			}},
+			wantErr: "endpoint_selector: label key is required",
+		},
+		{
 			name: "large port range",
 			queues: []ProviderNetworkTenantQueuePolicy{{
 				Tenant:     "prod",
@@ -291,10 +301,18 @@ func TestProviderNetworkAcceptsMultipleTenantQueueSelectors(t *testing.T) {
 			QueueID:    10,
 			MaxRateBPS: 500000000,
 		}, {
-			Tenant:     "prod",
-			QueueID:    11,
-			Protocol:   ProtocolTCP,
-			Ports:      []PortRange{{From: 443, To: 443}},
+			Tenant:   "prod",
+			QueueID:  11,
+			Protocol: ProtocolTCP,
+			Ports:    []PortRange{{From: 443, To: 443}},
+			EndpointSelector: Labels{
+				"app": "web",
+			},
+			EndpointExpressions: []LabelExpr{{
+				Key:      "env",
+				Operator: "In",
+				Values:   []string{"prod"},
+			}},
 			MaxRateBPS: 100000000,
 		}},
 		Nodes: []ProviderNetworkNode{

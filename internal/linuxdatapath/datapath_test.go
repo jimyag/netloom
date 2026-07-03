@@ -411,10 +411,18 @@ func TestDesiredProviderOVSDBRowsBuildsTypedVSwitchRows(t *testing.T) {
 			Isolation:       "exclusive",
 			QoS:             model.ProviderNetworkQoS{EgressRateBPS: 1000000000, EgressBurstBPS: 64000},
 			TenantQueues: []model.ProviderNetworkTenantQueuePolicy{{
-				Tenant:     "prod",
-				QueueID:    10,
-				Protocol:   model.ProtocolTCP,
-				Ports:      []model.PortRange{{From: 443, To: 443}},
+				Tenant:   "prod",
+				QueueID:  10,
+				Protocol: model.ProtocolTCP,
+				Ports:    []model.PortRange{{From: 443, To: 443}},
+				EndpointSelector: model.Labels{
+					"app": "web",
+				},
+				EndpointExpressions: []model.LabelExpr{{
+					Key:      "env",
+					Operator: "In",
+					Values:   []string{"prod"},
+				}},
 				MaxRateBPS: 500000000,
 			}},
 		},
@@ -470,6 +478,9 @@ func TestDesiredProviderOVSDBRowsBuildsTypedVSwitchRows(t *testing.T) {
 	}
 	if rows.Queues[0].ExternalIDs["netloom_queue_protocol"] != "tcp" || rows.Queues[0].ExternalIDs["netloom_queue_ports"] != "443" {
 		t.Fatalf("queue external IDs = %+v, want tcp/443 selector", rows.Queues[0].ExternalIDs)
+	}
+	if rows.Queues[0].ExternalIDs["netloom_queue_endpoint_selector"] != "app=web" || rows.Queues[0].ExternalIDs["netloom_queue_endpoint_expressions"] != "env:in:prod" {
+		t.Fatalf("queue external IDs = %+v, want endpoint selector metadata", rows.Queues[0].ExternalIDs)
 	}
 	if got := rows.Queues[0].OtherConfig["max-rate"]; got != "500000000" {
 		t.Fatalf("queue max-rate = %q, want 500000000", got)
@@ -561,6 +572,13 @@ func TestPlanProgramsProviderTenantQueueFlows(t *testing.T) {
 				Protocol:   model.ProtocolTCP,
 				Ports:      []model.PortRange{{From: 443, To: 444}},
 				MaxRateBPS: 100000000,
+			}, {
+				Tenant:           "prod",
+				QueueID:          12,
+				Protocol:         model.ProtocolTCP,
+				Ports:            []model.PortRange{{From: 8443, To: 8443}},
+				EndpointSelector: model.Labels{"app": "web"},
+				MaxRateBPS:       100000000,
 			}},
 		}},
 		Subnets: []model.Subnet{{
@@ -570,6 +588,21 @@ func TestPlanProgramsProviderTenantQueueFlows(t *testing.T) {
 			Gateway:         netip.MustParseAddr("10.10.0.1"),
 			ProviderNetwork: "physnet-a",
 			VLAN:            100,
+		}},
+		Endpoints: []model.Endpoint{{
+			ID:     "pod-a",
+			VPC:    "prod",
+			Subnet: "baremetal",
+			IP:     netip.MustParseAddr("10.10.0.10"),
+			Node:   "node-a",
+			Labels: model.Labels{"app": "web"},
+		}, {
+			ID:     "pod-b",
+			VPC:    "prod",
+			Subnet: "baremetal",
+			IP:     netip.MustParseAddr("10.10.0.11"),
+			Node:   "node-a",
+			Labels: model.Labels{"app": "db"},
 		}},
 	}
 	ops, _, err := Plan(context.Background(), state, Options{
@@ -587,10 +620,14 @@ func TestPlanProgramsProviderTenantQueueFlows(t *testing.T) {
 		"table=0,priority=210,ip,nw_src=10.10.0.0/24,actions=set_queue:10,NORMAL",
 		"table=0,priority=220,tcp,nw_src=10.10.0.0/24,tp_dst=443,actions=set_queue:11,NORMAL",
 		"table=0,priority=220,tcp,nw_src=10.10.0.0/24,tp_dst=444,actions=set_queue:11,NORMAL",
+		"table=0,priority=230,tcp,nw_src=10.10.0.10/32,tp_dst=8443,actions=set_queue:12,NORMAL",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("provider tenant queue flow ops missing %q:\n%s", expected, joined)
 		}
+	}
+	if strings.Contains(joined, "nw_src=10.10.0.11/32,tp_dst=8443") {
+		t.Fatalf("provider tenant queue selector should not match pod-b:\n%s", joined)
 	}
 }
 

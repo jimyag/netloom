@@ -78,13 +78,15 @@ type ProviderNetworkTenantQuota struct {
 }
 
 type ProviderNetworkTenantQueuePolicy struct {
-	Tenant     string      `json:"tenant"`
-	QueueID    int         `json:"queue_id"`
-	Protocol   Protocol    `json:"protocol,omitempty"`
-	Ports      []PortRange `json:"ports,omitempty"`
-	MinRateBPS uint64      `json:"min_rate_bps,omitempty"`
-	MaxRateBPS uint64      `json:"max_rate_bps,omitempty"`
-	BurstBPS   uint64      `json:"burst_bps,omitempty"`
+	Tenant              string      `json:"tenant"`
+	QueueID             int         `json:"queue_id"`
+	Protocol            Protocol    `json:"protocol,omitempty"`
+	Ports               []PortRange `json:"ports,omitempty"`
+	EndpointSelector    Labels      `json:"endpoint_selector,omitempty"`
+	EndpointExpressions []LabelExpr `json:"endpoint_expressions,omitempty"`
+	MinRateBPS          uint64      `json:"min_rate_bps,omitempty"`
+	MaxRateBPS          uint64      `json:"max_rate_bps,omitempty"`
+	BurstBPS            uint64      `json:"burst_bps,omitempty"`
 }
 
 type Subnet struct {
@@ -405,6 +407,16 @@ func (q ProviderNetworkTenantQueuePolicy) Validate() error {
 	if q.BurstBPS != 0 && q.MaxRateBPS == 0 {
 		return errors.New("burst_bps requires max_rate_bps")
 	}
+	if len(q.EndpointSelector) > 0 {
+		if err := q.EndpointSelector.Validate(); err != nil {
+			return fmt.Errorf("endpoint_selector: %w", err)
+		}
+	}
+	for i, expression := range q.EndpointExpressions {
+		if err := expression.Validate(); err != nil {
+			return fmt.Errorf("endpoint_expression %d: %w", i, err)
+		}
+	}
 	return nil
 }
 
@@ -413,7 +425,43 @@ func providerNetworkTenantQueueSelectorKey(queue ProviderNetworkTenantQueuePolic
 	for _, port := range queue.Ports {
 		parts = append(parts, fmt.Sprintf("%d-%d", port.From, port.To))
 	}
+	if selector := labelsSelectorKey(queue.EndpointSelector); selector != "" {
+		parts = append(parts, "selector="+selector)
+	}
+	if expressions := labelExpressionsSelectorKey(queue.EndpointExpressions); expressions != "" {
+		parts = append(parts, "expressions="+expressions)
+	}
 	return strings.Join(parts, "|")
+}
+
+func labelsSelectorKey(labels Labels) string {
+	if len(labels) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(labels))
+	for key := range labels {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, key+"="+labels[key])
+	}
+	return strings.Join(parts, ",")
+}
+
+func labelExpressionsSelectorKey(expressions []LabelExpr) string {
+	if len(expressions) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(expressions))
+	for _, expression := range expressions {
+		values := append([]string(nil), expression.Values...)
+		slices.Sort(values)
+		parts = append(parts, expression.Key+":"+normalizeLabelExprOperator(expression.Operator)+":"+strings.Join(values, ","))
+	}
+	slices.Sort(parts)
+	return strings.Join(parts, ";")
 }
 
 func (n ProviderNetworkNode) Validate() error {
