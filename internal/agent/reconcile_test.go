@@ -1451,6 +1451,71 @@ func TestApplyPolicyRolloutsPassesSLOGateSettings(t *testing.T) {
 	}
 }
 
+func TestApplyPolicyRolloutsHonorsPausedRollout(t *testing.T) {
+	state := rolloutPolicyState()
+	state.PolicyRollouts = []control.PolicyRollout{{
+		Name:      "paused",
+		Node:      "node-a",
+		Endpoints: []string{"prod/pod-a", "prod/pod-b"},
+		BatchSize: 1,
+		Paused:    true,
+	}}
+	store := dataplane.NewInMemoryPolicyStore()
+
+	rollouts, err := ApplyPolicyRollouts(context.Background(), state, ReconcileOptions{
+		Node:  "node-a",
+		Store: store,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result ReconcileResult
+	ApplyPolicyRolloutResults(&result, rollouts)
+	if result.PolicyRollouts != 1 || result.PolicyRolloutPaused != 1 || result.PolicyRolloutApplied != 0 || result.PolicyRolloutSkipped != 2 {
+		t.Fatalf("rollout result = %+v rollouts=%+v, want paused without mutations", result, rollouts)
+	}
+	if len(rollouts) != 1 || !rollouts[0].Rollout.Paused || rollouts[0].Rollout.PausedAfterBatch != 0 {
+		t.Fatalf("rollouts = %+v, want explicitly paused rollout", rollouts)
+	}
+	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 0 {
+		t.Fatalf("pod-a entries = %+v, want no mutation while paused", entries)
+	}
+}
+
+func TestRolloutPolicyEndpointsPausesAfterBatch(t *testing.T) {
+	state := rolloutPolicyState()
+	store := dataplane.NewInMemoryPolicyStore()
+
+	rollout, err := RolloutPolicyEndpoints(context.Background(), state, ReconcileOptions{
+		Node:  "node-a",
+		Store: store,
+	}, PolicyEndpointRolloutOptions{
+		EndpointIDs: []string{
+			model.EndpointKey("prod", "pod-a"),
+			model.EndpointKey("prod", "pod-b"),
+			model.EndpointKey("prod", "pod-c"),
+		},
+		BatchSize:         1,
+		PauseAfterBatches: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rollout.Paused || rollout.PausedAfterBatch != 1 || rollout.Applied != 1 || rollout.Skipped != 2 || rollout.Failed != 0 {
+		t.Fatalf("rollout = %+v, want paused after first batch", rollout)
+	}
+	phases := []string{rollout.Items[0].Phase, rollout.Items[1].Phase, rollout.Items[2].Phase}
+	if !slices.Equal(phases, []string{"applied", "paused", "paused"}) {
+		t.Fatalf("rollout phases = %+v, want applied paused paused", phases)
+	}
+	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 1 {
+		t.Fatalf("pod-a entries = %+v, want first batch applied", entries)
+	}
+	if entries := store.Entries(model.EndpointKey("prod", "pod-b")); len(entries) != 0 {
+		t.Fatalf("pod-b entries = %+v, want paused endpoint untouched", entries)
+	}
+}
+
 func TestRolloutPolicyEndpointsPressureAwareShrinksBatchSize(t *testing.T) {
 	state := rolloutPolicyState()
 	store := &rolloutPressurePolicyStore{

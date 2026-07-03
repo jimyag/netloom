@@ -817,6 +817,18 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 			wantErr: "probe \"probe-a\" is duplicated",
 		},
 		{
+			name: "invalid policy rollout pause after batches",
+			mutate: func(state *DesiredState) {
+				state.PolicyRollouts = []PolicyRollout{{
+					Name:              "web-canary",
+					Endpoints:         []string{"prod/pod-a"},
+					BatchSize:         1,
+					PauseAfterBatches: -1,
+				}}
+			},
+			wantErr: "pause_after_batches must not be negative",
+		},
+		{
 			name: "remote group unknown",
 			mutate: func(state *DesiredState) {
 				state.SecurityGroups[0].Rules[0].RemoteCIDR = netip.Prefix{}

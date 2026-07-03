@@ -165,6 +165,8 @@ type PolicyRollout struct {
 	SLOWindowCount            int                  `json:"slo_window_count"`
 	SLOWindowIntervalMS       uint32               `json:"slo_window_interval_ms"`
 	Probes                    []PolicyRolloutProbe `json:"probes,omitempty"`
+	Paused                    bool                 `json:"paused,omitempty"`
+	PauseAfterBatches         int                  `json:"pause_after_batches,omitempty"`
 	Disabled                  bool                 `json:"disabled,omitempty"`
 }
 
@@ -196,6 +198,9 @@ func (r PolicyRollout) Validate() error {
 	}
 	if r.SLOWindowCount < 0 {
 		return fmt.Errorf("policy rollout %q slo_window_count must not be negative", r.Name)
+	}
+	if r.PauseAfterBatches < 0 {
+		return fmt.Errorf("policy rollout %q pause_after_batches must not be negative", r.Name)
 	}
 	seenProbes := make(map[string]struct{}, len(r.Probes))
 	for _, probe := range r.Probes {

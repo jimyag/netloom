@@ -39,6 +39,8 @@ type ReconcileResult struct {
 	PolicyRolloutRolledBack          int
 	PolicyRolloutRollbackFailed      int
 	PolicyRolloutSLOFailed           int
+	PolicyRolloutProbeFailed         int
+	PolicyRolloutPaused              int
 	PolicyRolloutStatus              []NamedPolicyEndpointRollout
 	PolicyMapDriftEndpoints          int
 	PolicyMapDriftMissing            int
@@ -167,6 +169,8 @@ type PolicyEndpointRolloutOptions struct {
 	SLOWindowCount            int
 	SLOWindowInterval         time.Duration
 	Probes                    []control.PolicyRolloutProbe
+	Paused                    bool
+	PauseAfterBatches         int
 }
 
 type PolicyEndpointRollout struct {
@@ -191,6 +195,9 @@ type PolicyEndpointRollout struct {
 	ProbeFailed              bool                        `json:"probe_failed,omitempty"`
 	ProbeError               string                      `json:"probe_error,omitempty"`
 	Probes                   []PolicyEndpointProbeResult `json:"probes,omitempty"`
+	Paused                   bool                        `json:"paused,omitempty"`
+	PauseAfterBatches        int                         `json:"pause_after_batches,omitempty"`
+	PausedAfterBatch         int                         `json:"paused_after_batch,omitempty"`
 	Planned                  int                         `json:"planned"`
 	Applied                  int                         `json:"applied"`
 	Skipped                  int                         `json:"skipped"`
@@ -368,6 +375,8 @@ func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, opt
 		SLOMinPackets:            rolloutOptions.SLOMinPackets,
 		SLOWindowCount:           normalizedSLOWindowCount(rolloutOptions.SLOWindowCount),
 		SLOWindowIntervalMS:      uint32(rolloutOptions.SLOWindowInterval / time.Millisecond),
+		Paused:                   rolloutOptions.Paused,
+		PauseAfterBatches:        rolloutOptions.PauseAfterBatches,
 		Items:                    make([]PolicyEndpointRolloutItem, 0, len(endpointIDs)),
 	}
 	type preparedEndpoint struct {
@@ -400,6 +409,10 @@ func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, opt
 	if rolloutOptions.DryRun {
 		return rollout, nil
 	}
+	if rolloutOptions.Paused {
+		pauseRolloutItems(&rollout, 0)
+		return rollout, nil
+	}
 	snapshots, err := snapshotRolloutPolicyEndpoints(ctx, options.Store, endpointIDs)
 	if err != nil {
 		return PolicyEndpointRollout{}, err
@@ -413,9 +426,16 @@ func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, opt
 	}
 	backend := dataplane.NewPolicyBackend(options.Store)
 	applied := make([]string, 0, len(rollout.Items))
+	completedBatches := 0
 	for i, item := range rollout.Items {
 		if rollout.Failed != 0 {
 			item.Phase = "skipped"
+			rollout.Skipped++
+			rollout.Items[i] = item
+			continue
+		}
+		if rollout.Paused {
+			item.Phase = "paused"
 			rollout.Skipped++
 			rollout.Items[i] = item
 			continue
@@ -460,8 +480,26 @@ func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, opt
 				rollbackRolloutPolicyEndpoints(ctx, options.Store, snapshots, applied, &rollout)
 			}
 		}
+		if rollout.Failed == 0 && rolloutBatchComplete(rollout.Items, i) {
+			completedBatches++
+			if rolloutOptions.PauseAfterBatches > 0 && completedBatches >= rolloutOptions.PauseAfterBatches && i < len(rollout.Items)-1 {
+				rollout.Paused = true
+				rollout.PausedAfterBatch = item.Batch
+			}
+		}
 	}
 	return rollout, nil
+}
+
+func pauseRolloutItems(rollout *PolicyEndpointRollout, afterBatch int) {
+	rollout.Paused = true
+	rollout.PausedAfterBatch = afterBatch
+	for i := range rollout.Items {
+		if rollout.Items[i].Phase == "planned" {
+			rollout.Items[i].Phase = "paused"
+			rollout.Skipped++
+		}
+	}
 }
 
 func rolloutBatchComplete(items []PolicyEndpointRolloutItem, index int) bool {
@@ -822,6 +860,8 @@ func ApplyPolicyRollouts(ctx context.Context, state control.DesiredState, option
 			SLOWindowCount:            rollout.SLOWindowCount,
 			SLOWindowInterval:         time.Duration(rollout.SLOWindowIntervalMS) * time.Millisecond,
 			Probes:                    append([]control.PolicyRolloutProbe(nil), rollout.Probes...),
+			Paused:                    rollout.Paused,
+			PauseAfterBatches:         rollout.PauseAfterBatches,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("policy rollout %q: %w", rollout.Name, err)
@@ -904,6 +944,12 @@ func ApplyPolicyRolloutResults(result *ReconcileResult, rollouts []NamedPolicyEn
 		result.PolicyRolloutRollbackFailed += rollout.Rollout.RollbackFailed
 		if rollout.Rollout.SLOFailed {
 			result.PolicyRolloutSLOFailed++
+		}
+		if rollout.Rollout.ProbeFailed {
+			result.PolicyRolloutProbeFailed++
+		}
+		if rollout.Rollout.Paused {
+			result.PolicyRolloutPaused++
 		}
 	}
 }
