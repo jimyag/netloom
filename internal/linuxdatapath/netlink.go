@@ -8,8 +8,10 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"os/exec"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/jimyag/netloom/internal/control"
@@ -80,6 +82,8 @@ func applyLocalNetlink(ctx context.Context, state control.DesiredState, options 
 		if err := executeProviderOVSDBMappings(ctx, options, providerSpecs); err != nil {
 			return result, err
 		}
+		result.ProviderIssues = providerOVSDBRuntimeIssues(result.ProviderIssues, providerOVSDBStatuses(ctx, options, providerSpecs), options.Node)
+		result.ProviderNetworkStatus = summarizeProviderNetworkStatus(result.ProviderStatus, result.ProviderIssues)
 	}
 	if options.CleanupStale && options.SyncOVSDB {
 		if err := executeProviderOVSDBCleanup(ctx, options, providerSpecs); err != nil {
@@ -192,6 +196,8 @@ func applyNetNSNetlink(ctx context.Context, state control.DesiredState, options 
 		if err := executeProviderOVSDBMappings(ctx, options, providerSpecs); err != nil {
 			return result, err
 		}
+		result.ProviderIssues = providerOVSDBRuntimeIssues(result.ProviderIssues, providerOVSDBStatuses(ctx, options, providerSpecs), options.Node)
+		result.ProviderNetworkStatus = summarizeProviderNetworkStatus(result.ProviderStatus, result.ProviderIssues)
 	}
 	if options.CleanupStale && options.SyncOVSDB {
 		if err := executeProviderOVSDBCleanup(ctx, options, providerSpecs); err != nil {
@@ -576,6 +582,94 @@ func executeProviderOVSDBCleanup(ctx context.Context, options Options, specs []p
 		return fmt.Errorf("cleanup provider OVSDB mapping: %w", err)
 	}
 	return nil
+}
+
+func providerOVSDBStatuses(ctx context.Context, options Options, specs []providerNetworkLinkSpec) []ProviderOVSDBStatus {
+	if len(options.ProviderOVSDBStatus) > 0 {
+		return append([]ProviderOVSDBStatus(nil), options.ProviderOVSDBStatus...)
+	}
+	return readProviderOVSDBStatuses(ctx, specs)
+}
+
+func readProviderOVSDBStatuses(ctx context.Context, specs []providerNetworkLinkSpec) []ProviderOVSDBStatus {
+	statuses := make([]ProviderOVSDBStatus, 0, len(specs))
+	mappings, mappingErr := ovsVSCTLRead(ctx, "get", "Open_vSwitch", ".", "external_ids:ovn-bridge-mappings")
+	for _, spec := range specs {
+		bridge := providerNetworkBridgeName(spec.ProviderNetwork)
+		status := ProviderOVSDBStatus{
+			ProviderNetwork: spec.ProviderNetwork,
+			Bridge:          bridge,
+			LinkName:        spec.Name,
+			ParentDevice:    spec.ParentDevice,
+			VLAN:            spec.VLAN,
+			BridgeState:     "up",
+			MappingState:    "up",
+			PortState:       "up",
+			InterfaceState:  "up",
+		}
+		if err := ovsVSCTLRun(ctx, "br-exists", bridge); err != nil {
+			status.BridgeState = "missing"
+		}
+		if mappingErr != nil || !ovsBridgeMappingsContain(mappings, spec.ProviderNetwork, bridge) {
+			status.MappingState = "missing"
+		}
+		currentBridge, err := ovsVSCTLRead(ctx, "port-to-br", spec.Name)
+		if err != nil {
+			status.PortState = "missing"
+		} else if strings.TrimSpace(currentBridge) != bridge {
+			status.PortState = "bridge-mismatch"
+		}
+		if status.InterfaceState == "up" {
+			status.InterfaceState = providerOVSDBInterfaceState(ctx, spec)
+		}
+		statuses = append(statuses, status)
+	}
+	return statuses
+}
+
+func providerOVSDBInterfaceState(ctx context.Context, spec providerNetworkLinkSpec) string {
+	for key, want := range map[string]string{
+		"netloom_owner":            "netloom",
+		"netloom_provider_network": spec.ProviderNetwork,
+		"netloom_parent_device":    spec.ParentDevice,
+		"netloom_vlan":             strconv.Itoa(int(spec.VLAN)),
+	} {
+		got, err := ovsVSCTLRead(ctx, "get", "interface", spec.Name, "external_ids:"+key)
+		if err != nil {
+			return "missing"
+		}
+		if ovsDBValue(got) != want {
+			return "external-ids-mismatch"
+		}
+	}
+	return "up"
+}
+
+func ovsBridgeMappingsContain(raw, providerNetwork, bridge string) bool {
+	for _, item := range strings.Split(ovsDBValue(raw), ",") {
+		if strings.TrimSpace(item) == providerNetwork+":"+bridge {
+			return true
+		}
+	}
+	return false
+}
+
+func ovsDBValue(raw string) string {
+	value := strings.TrimSpace(raw)
+	value = strings.Trim(value, `"`)
+	return value
+}
+
+func ovsVSCTLRun(ctx context.Context, args ...string) error {
+	return exec.CommandContext(ctx, "ovs-vsctl", args...).Run()
+}
+
+func ovsVSCTLRead(ctx context.Context, args ...string) (string, error) {
+	output, err := exec.CommandContext(ctx, "ovs-vsctl", args...).CombinedOutput()
+	if err != nil {
+		return "", err
+	}
+	return string(output), nil
 }
 
 func cleanupStaleManagedAddrs(handle *netlink.Handle, link netlink.Link, desired map[string]struct{}) error {

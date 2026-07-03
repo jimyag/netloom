@@ -34,6 +34,7 @@ type Options struct {
 	NodeUnderlays        map[string][]netip.Addr
 	ProviderLinks        map[string]string
 	ProviderInventory    []ProviderInterface
+	ProviderOVSDBStatus  []ProviderOVSDBStatus
 	SyncOVSDB            bool
 	NetNSPrefix          string
 	WorkloadIF           string
@@ -88,6 +89,19 @@ type ProviderIssue struct {
 	VLAN            uint16
 	Reason          string
 	Detail          string
+}
+
+type ProviderOVSDBStatus struct {
+	ProviderNetwork string
+	Bridge          string
+	LinkName        string
+	ParentDevice    string
+	VLAN            uint16
+	BridgeState     string
+	MappingState    string
+	PortState       string
+	InterfaceState  string
+	ControllerState string
 }
 
 type ProviderNetworkStatus struct {
@@ -274,6 +288,7 @@ func Plan(ctx context.Context, state control.DesiredState, options Options) ([]O
 	result.ProviderNetworks, result.ProviderLinks = summarizeProviderNetworkSpecs(providerSpecs)
 	result.ProviderStatus = providerLinkStatuses(providerSpecs, false)
 	result.ProviderReady, result.ProviderDegraded = summarizeProviderLinkHealth(result.ProviderStatus)
+	result.ProviderIssues = providerOVSDBRuntimeIssues(result.ProviderIssues, options.ProviderOVSDBStatus, options.Node)
 	result.ProviderNetworkStatus = summarizeProviderNetworkStatus(result.ProviderStatus, result.ProviderIssues)
 	ops = append(ops, planProviderNetworkLinks(providerSpecs)...)
 	if options.SyncOVSDB {
@@ -633,6 +648,68 @@ func providerRuntimeIssues(statuses []ProviderLinkStatus, existing []ProviderIss
 	return out
 }
 
+func providerOVSDBRuntimeIssues(existing []ProviderIssue, statuses []ProviderOVSDBStatus, node string) []ProviderIssue {
+	out := append([]ProviderIssue(nil), existing...)
+	seen := make(map[string]struct{}, len(out))
+	for _, issue := range out {
+		seen[providerIssueKey(issue)] = struct{}{}
+	}
+	for _, status := range statuses {
+		for _, issue := range providerOVSDBStatusIssues(status, node) {
+			key := providerIssueKey(issue)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, issue)
+		}
+	}
+	return out
+}
+
+func providerOVSDBStatusIssues(status ProviderOVSDBStatus, node string) []ProviderIssue {
+	var issues []ProviderIssue
+	for _, check := range []struct {
+		kind  string
+		state string
+	}{
+		{kind: "ovsdb-bridge", state: status.BridgeState},
+		{kind: "ovsdb-mapping", state: status.MappingState},
+		{kind: "ovsdb-port", state: status.PortState},
+		{kind: "ovsdb-interface", state: status.InterfaceState},
+		{kind: "ovsdb-controller", state: status.ControllerState},
+	} {
+		if reason := providerRuntimeReason(check.kind, check.state); reason != "" {
+			issues = append(issues, ProviderIssue{
+				ProviderNetwork: status.ProviderNetwork,
+				Node:            node,
+				ParentDevice:    status.ParentDevice,
+				VLAN:            status.VLAN,
+				Reason:          reason,
+				Detail:          providerOVSDBIssueDetail(status, check.kind, check.state),
+			})
+		}
+	}
+	return issues
+}
+
+func providerOVSDBIssueDetail(status ProviderOVSDBStatus, kind, state string) string {
+	switch kind {
+	case "ovsdb-bridge":
+		return status.Bridge + ":" + fallbackProviderState(state)
+	case "ovsdb-port":
+		return status.LinkName + ":" + fallbackProviderState(state)
+	case "ovsdb-interface":
+		return status.LinkName + ":" + fallbackProviderState(state)
+	case "ovsdb-mapping":
+		return status.ProviderNetwork + ":" + status.Bridge + ":" + fallbackProviderState(state)
+	case "ovsdb-controller":
+		return status.Bridge + ":" + fallbackProviderState(state)
+	default:
+		return fallbackProviderState(state)
+	}
+}
+
 func providerLinkStatusIssues(status ProviderLinkStatus, node string) []ProviderIssue {
 	if status.Ready {
 		return nil
@@ -696,10 +773,39 @@ func providerInterfaceState(present, ready bool) string {
 }
 
 func validateProviderHealth(result Result, options Options) error {
-	if !options.StrictProviderHealth || result.ProviderDegraded == 0 {
+	if !options.StrictProviderHealth || (result.ProviderDegraded == 0 && providerNetworkIssueCount(result.ProviderNetworkStatus) == 0) {
 		return nil
 	}
-	return fmt.Errorf("provider health degraded: ready=%d degraded=%d status=%s", result.ProviderReady, result.ProviderDegraded, summarizeProviderStatus(result.ProviderStatus))
+	return fmt.Errorf("provider health degraded: ready=%d degraded=%d status=%s issues=%s", result.ProviderReady, result.ProviderDegraded, summarizeProviderStatus(result.ProviderStatus), summarizeProviderNetworkIssues(result.ProviderNetworkStatus))
+}
+
+func providerNetworkIssueCount(statuses []ProviderNetworkStatus) int {
+	total := 0
+	for _, status := range statuses {
+		total += status.IssueCount
+	}
+	return total
+}
+
+func summarizeProviderNetworkIssues(statuses []ProviderNetworkStatus) string {
+	if len(statuses) == 0 {
+		return "none"
+	}
+	parts := make([]string, 0, len(statuses))
+	for _, status := range statuses {
+		if status.IssueCount == 0 {
+			continue
+		}
+		reasons := "none"
+		if len(status.Reasons) > 0 {
+			reasons = strings.Join(status.Reasons, "+")
+		}
+		parts = append(parts, fmt.Sprintf("%s:%d:%s", status.ProviderNetwork, status.IssueCount, reasons))
+	}
+	if len(parts) == 0 {
+		return "none"
+	}
+	return strings.Join(parts, ",")
 }
 
 func summarizeProviderStatus(statuses []ProviderLinkStatus) string {

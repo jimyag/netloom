@@ -83,12 +83,12 @@ This is the single most important control-plane refactor still missing.
 
 ### 2. Provider network management is still too thin for a product
 
-Netloom can create provider VLAN links, discover provider interface inventory, select ready candidate parent interfaces, report per-provider readiness/issues, and optionally sync local OVS `Open_vSwitch` database bridge mappings with `NETLOOM_OVSDB_SYNC=1`. It now turns runtime parent/link drift into explicit provider issues and network-level reasons such as `parent-down`, `link-missing`, and `link-drift`, so underlay breakage remains visible after initial planning succeeds. When OVSDB sync is enabled, the agent creates deterministic OVS bridges, attaches managed provider VLAN links, repairs managed port-to-bridge drift, annotates Bridge/Interface rows with Netloom `external_ids`, writes `external_ids:ovn-bridge-mappings` for OVN localnet resolution, and removes stale Netloom-owned provider bridges when cleanup mode is enabled.
+Netloom can create provider VLAN links, discover provider interface inventory, select ready candidate parent interfaces, report per-provider readiness/issues, and optionally sync local OVS `Open_vSwitch` database bridge mappings with `NETLOOM_OVSDB_SYNC=1`. It now turns runtime parent/link drift into explicit provider issues and network-level reasons such as `parent-down`, `link-missing`, and `link-drift`, so underlay breakage remains visible after initial planning succeeds. When OVSDB sync is enabled, the agent creates deterministic OVS bridges, attaches managed provider VLAN links, repairs managed port-to-bridge drift, annotates Bridge/Interface rows with Netloom `external_ids`, writes `external_ids:ovn-bridge-mappings` for OVN localnet resolution, and removes stale Netloom-owned provider bridges when cleanup mode is enabled. After writing local OVSDB state, the agent reads the Open_vSwitch DB back with `ovs-vsctl` and reports database drift as provider issues such as `ovsdb-bridge-missing`, `ovsdb-mapping-missing`, `ovsdb-port-drift`, and `ovsdb-interface-drift`; strict provider health also fails on those OVSDB-backed network issues.
 
 What is missing:
 
 - multi-provider isolation semantics beyond env-var mapping
-- deeper OVSDB runtime health reporting for bridge/controller connectivity and physical uplink loss
+- deeper clustered OVS/OVN controller connectivity reporting beyond per-bridge local OVSDB drift checks
 
 Reference:
 

@@ -685,6 +685,154 @@ func TestProviderRuntimeIssuesReportsParentAndLinkDrift(t *testing.T) {
 	}
 }
 
+func TestProviderOVSDBRuntimeIssuesReportsDatabaseDrift(t *testing.T) {
+	issues := providerOVSDBRuntimeIssues(nil, []ProviderOVSDBStatus{{
+		ProviderNetwork: "physnet-a",
+		Bridge:          "nlbr-a",
+		LinkName:        "nlv-a",
+		ParentDevice:    "eth1",
+		VLAN:            100,
+		BridgeState:     "up",
+		MappingState:    "missing",
+		PortState:       "bridge-mismatch",
+		InterfaceState:  "external-ids-mismatch",
+		ControllerState: "disconnected",
+	}}, "node-a")
+	if len(issues) != 4 {
+		t.Fatalf("issues = %+v, want four ovsdb drift issues", issues)
+	}
+	wantReasons := []string{"ovsdb-mapping-missing", "ovsdb-port-drift", "ovsdb-interface-drift", "ovsdb-controller-drift"}
+	for i, want := range wantReasons {
+		if issues[i].Reason != want {
+			t.Fatalf("issue[%d] = %+v, want reason %s", i, issues[i], want)
+		}
+		if issues[i].Node != "node-a" || issues[i].ProviderNetwork != "physnet-a" || issues[i].ParentDevice != "eth1" || issues[i].VLAN != 100 {
+			t.Fatalf("issue[%d] identity = %+v, want node-a physnet-a eth1 vlan 100", i, issues[i])
+		}
+	}
+}
+
+func TestApplyCommandReportsProviderOVSDBStatusIssues(t *testing.T) {
+	state := control.DesiredState{
+		ProviderNetworks: []model.ProviderNetwork{{
+			Name: "physnet-a",
+			Nodes: []model.ProviderNetworkNode{{
+				Node:      "node-a",
+				Interface: "eth1",
+			}},
+		}},
+		Subnets: []model.Subnet{{
+			Name:            "apps",
+			VPC:             "prod",
+			CIDR:            netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway:         netip.MustParseAddr("10.10.0.1"),
+			ProviderNetwork: "physnet-a",
+			VLAN:            100,
+		}},
+		Endpoints: []model.Endpoint{{
+			ID:     "pod-a",
+			VPC:    "prod",
+			Subnet: "apps",
+			IP:     netip.MustParseAddr("10.10.0.10"),
+			Node:   "node-a",
+		}},
+	}
+
+	result, err := Apply(context.Background(), state, Options{
+		Node:        "node-a",
+		LocalDevice: "nl0",
+		Backend:     "command",
+		ProviderOVSDBStatus: []ProviderOVSDBStatus{{
+			ProviderNetwork: "physnet-a",
+			Bridge:          providerNetworkBridgeName("physnet-a"),
+			LinkName:        providerNetworkLinkName("physnet-a", "eth1", 100),
+			ParentDevice:    "eth1",
+			VLAN:            100,
+			BridgeState:     "missing",
+			MappingState:    "up",
+			PortState:       "up",
+			InterfaceState:  "up",
+		}},
+		Executor: noopCommandExecutor{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !providerIssuesContainReason(result.ProviderIssues, "ovsdb-bridge-missing") {
+		t.Fatalf("provider issues = %+v, want ovsdb-bridge-missing", result.ProviderIssues)
+	}
+	if len(result.ProviderNetworkStatus) != 1 || result.ProviderNetworkStatus[0].Ready || !providerNetworkStatusContainsReason(result.ProviderNetworkStatus[0], "ovsdb-bridge-missing") {
+		t.Fatalf("provider network status = %+v, want ovsdb bridge issue", result.ProviderNetworkStatus)
+	}
+}
+
+func TestStrictProviderHealthFailsOnProviderOVSDBStatusIssue(t *testing.T) {
+	state := control.DesiredState{
+		ProviderNetworks: []model.ProviderNetwork{{
+			Name: "physnet-a",
+			Nodes: []model.ProviderNetworkNode{{
+				Node:      "node-a",
+				Interface: "eth1",
+			}},
+		}},
+		Subnets: []model.Subnet{{
+			Name:            "apps",
+			VPC:             "prod",
+			CIDR:            netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway:         netip.MustParseAddr("10.10.0.1"),
+			ProviderNetwork: "physnet-a",
+			VLAN:            100,
+		}},
+		Endpoints: []model.Endpoint{{
+			ID:     "pod-a",
+			VPC:    "prod",
+			Subnet: "apps",
+			IP:     netip.MustParseAddr("10.10.0.10"),
+			Node:   "node-a",
+		}},
+	}
+
+	_, err := Apply(context.Background(), state, Options{
+		Node:                 "node-a",
+		LocalDevice:          "nl0",
+		Backend:              "command",
+		StrictProviderHealth: true,
+		ProviderOVSDBStatus: []ProviderOVSDBStatus{{
+			ProviderNetwork: "physnet-a",
+			Bridge:          providerNetworkBridgeName("physnet-a"),
+			LinkName:        providerNetworkLinkName("physnet-a", "eth1", 100),
+			ParentDevice:    "eth1",
+			VLAN:            100,
+			BridgeState:     "up",
+			MappingState:    "missing",
+			PortState:       "up",
+			InterfaceState:  "up",
+		}},
+		Executor: noopCommandExecutor{},
+	})
+	if err == nil || !strings.Contains(err.Error(), "ovsdb-mapping-missing") {
+		t.Fatalf("err = %v, want strict provider health failure with ovsdb-mapping-missing", err)
+	}
+}
+
+func providerIssuesContainReason(issues []ProviderIssue, reason string) bool {
+	for _, issue := range issues {
+		if issue.Reason == reason {
+			return true
+		}
+	}
+	return false
+}
+
+func providerNetworkStatusContainsReason(status ProviderNetworkStatus, reason string) bool {
+	for _, got := range status.Reasons {
+		if got == reason {
+			return true
+		}
+	}
+	return false
+}
+
 func TestProviderLinkFailureStatusReportsDriftReason(t *testing.T) {
 	spec := providerNetworkLinkSpec{
 		ProviderNetwork: "physnet-a",
