@@ -310,6 +310,11 @@ func expectedManagedAuditColumns(desired topology.State) map[string]map[string]s
 			"load_balancers": stringSetField(names),
 		}, "netloom_vpc", vpc)
 	}
+	for vpc, names := range expectedRouterNATRules(desired.NATRules) {
+		addAuditExpectedColumns(out, "Logical_Router", map[string]string{
+			"nat_rules": stringSetField(names),
+		}, "netloom_vpc", vpc)
+	}
 	for key, names := range expectedSwitchLoadBalancers(desired.LoadBalancers) {
 		vpc, subnet, ok := splitStateKey(key)
 		if !ok {
@@ -587,6 +592,14 @@ func expectedRouterLoadBalancers(loadBalancers map[string]model.LoadBalancer) ma
 	for _, lb := range loadBalancers {
 		names := loadBalancerProtocolNamesFromFrontends(lb.VPC, lb.Name, loadBalancerFrontendsByProtocol(lb))
 		out[lb.VPC] = append(out[lb.VPC], names...)
+	}
+	return out
+}
+
+func expectedRouterNATRules(rules map[string]model.NATRule) map[string][]string {
+	out := make(map[string][]string)
+	for _, rule := range rules {
+		out[rule.VPC] = append(out[rule.VPC], rule.Name)
 	}
 	return out
 }

@@ -51,11 +51,16 @@ func (r *LibOVSDBManagedReader) ManagedOVNRows(ctx context.Context, table string
 		if err != nil {
 			return nil, err
 		}
+		natNames, err := r.natNames(ctx)
+		if err != nil {
+			return nil, err
+		}
 		return managedOVNRowsFromModels(table, rows, func(row ovnnb.LogicalRouter) (string, map[string]string, map[string]string) {
 			return row.UUID, row.ExternalIDs, map[string]string{
 				"name":           row.Name,
 				"options":        mapField(row.Options),
 				"load_balancers": loadBalancerNamesField(row.LoadBalancer, loadBalancerNames),
+				"nat_rules":      natNamesField(row.Nat, natNames),
 			}
 		}), nil
 	case "Logical_Switch_Port":
@@ -196,6 +201,31 @@ func loadBalancerNamesField(uuids []string, nameByUUID map[string]string) string
 	}
 	sort.Strings(names)
 	return stringSliceField(names)
+}
+
+func (r *LibOVSDBManagedReader) natNames(ctx context.Context) (map[string]string, error) {
+	var rows []ovnnb.NAT
+	if err := r.client.WhereCache(func(row *ovnnb.NAT) bool { return row.ExternalIDs["netloom_nat"] != "" }).List(ctx, &rows); err != nil {
+		return nil, err
+	}
+	out := make(map[string]string, len(rows))
+	for _, row := range rows {
+		out[row.UUID] = row.ExternalIDs["netloom_nat"]
+	}
+	return out, nil
+}
+
+func natNamesField(uuids []string, nameByUUID map[string]string) string {
+	if len(uuids) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(uuids))
+	for _, uuid := range uuids {
+		if name := nameByUUID[uuid]; name != "" {
+			names = append(names, name)
+		}
+	}
+	return stringSetField(names)
 }
 
 func (r *LibOVSDBManagedReader) loadBalancerHealthCheckVIPs(ctx context.Context) (map[string]string, error) {

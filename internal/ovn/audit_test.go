@@ -212,6 +212,52 @@ func TestAuditManagedObjectsFromReaderReportsLoadBalancerParentAttachmentDrift(t
 	}
 }
 
+func TestAuditManagedObjectsFromReaderReportsNATParentAttachmentDrift(t *testing.T) {
+	nat := model.NATRule{
+		Name:       "egress",
+		VPC:        "prod",
+		Type:       model.ActionSNAT,
+		MatchCIDR:  netip.MustParsePrefix("10.10.0.0/24"),
+		ExternalIP: netip.MustParseAddr("198.51.100.10"),
+	}
+	reader := fakeManagedOVNReader{rows: map[string][]ManagedOVNRow{
+		"Logical_Router": {
+			{Table: "Logical_Router", UUID: "lr-prod", ExternalIDs: map[string]string{
+				"netloom_owner": "netloom",
+				"netloom_vpc":   "prod",
+			}, Fields: map[string]string{
+				"name":      logicalRouter("prod"),
+				"nat_rules": "",
+			}},
+		},
+		"NAT": {
+			{Table: "NAT", UUID: "nat-egress", ExternalIDs: map[string]string{
+				"netloom_owner": "netloom",
+				"netloom_vpc":   "prod",
+				"netloom_nat":   "egress",
+			}, Fields: map[string]string{
+				"type":        "snat",
+				"external_ip": "198.51.100.10",
+				"logical_ip":  "10.10.0.0/24",
+			}},
+		},
+	}}
+	desired := topology.State{
+		VPCs: map[string]model.VPC{"prod": {Name: "prod"}},
+		NATRules: map[string]model.NATRule{
+			"prod/egress": nat,
+		},
+	}
+
+	stats, err := AuditManagedObjectsFromReaderWithDesired(context.Background(), reader, desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.DriftedManagedRows != 1 || stats.DriftedManagedFields != 1 {
+		t.Fatalf("NAT parent attachment drift stats = %+v, want one router NAT attachment drift", stats)
+	}
+}
+
 func TestAuditManagedObjectsFromReaderReportsDesiredDrift(t *testing.T) {
 	reader := fakeManagedOVNReader{rows: map[string][]ManagedOVNRow{
 		"Logical_Switch": {

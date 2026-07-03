@@ -466,6 +466,76 @@ func TestAuditManagedObjectsReportsLoadBalancerParentAttachmentDriftFromLibOVSDB
 	}
 }
 
+func TestAuditManagedObjectsReportsNATParentAttachmentDriftFromLibOVSDBReader(t *testing.T) {
+	ctx := context.Background()
+	client, closeFn := newTestOVNNBClient(t)
+	defer closeFn()
+
+	if _, err := client.MonitorAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	writer := NewLibOVSDBTopologyWriter(client)
+	nat := netloommodel.NATRule{
+		Name:       "egress",
+		VPC:        "prod",
+		Type:       netloommodel.ActionSNAT,
+		MatchCIDR:  netip.MustParsePrefix("10.10.0.0/24"),
+		ExternalIP: netip.MustParseAddr("198.51.100.10"),
+	}
+	if err := writer.EnsureVPC(ctx, netloommodel.VPC{Name: "prod"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureNATRule(ctx, nat); err != nil {
+		t.Fatal(err)
+	}
+	desired := topology.State{
+		VPCs: map[string]netloommodel.VPC{
+			"prod": {Name: "prod"},
+		},
+		NATRules: map[string]netloommodel.NATRule{
+			"prod/egress": nat,
+		},
+	}
+	reader := NewLibOVSDBManagedReader(client)
+	requireEventually(t, func() bool {
+		stats, err := AuditManagedObjectsFromReaderWithDesired(ctx, reader, desired)
+		return err == nil && stats.UnexpectedManagedRows == 0 && stats.MissingManagedRows == 0 &&
+			stats.DriftedManagedRows == 0 && stats.DriftedManagedFields == 0
+	})
+
+	var routers []ovnnb.LogicalRouter
+	if err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool {
+		return row.ExternalIDs["netloom_vpc"] == "prod"
+	}).List(ctx, &routers); err != nil {
+		t.Fatal(err)
+	}
+	if len(routers) != 1 {
+		t.Fatalf("logical routers = %d, want one", len(routers))
+	}
+	routers[0].Nat = nil
+	ops, err := client.Where(&routers[0]).Update(&routers[0], &routers[0].Nat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := client.Transact(ctx, ops...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, ops); err != nil {
+		t.Fatalf("operation errors=%+v err=%v", opErrors, err)
+	}
+
+	var stats AuditStats
+	requireEventually(t, func() bool {
+		var err error
+		stats, err = AuditManagedObjectsFromReaderWithDesired(ctx, reader, desired)
+		return err == nil && stats.DriftedManagedRows == 1 && stats.DriftedManagedFields == 1
+	})
+	if stats.DriftedManagedRows != 1 || stats.DriftedManagedFields != 1 {
+		t.Fatalf("audit stats = %+v, want one router NAT attachment drift", stats)
+	}
+}
+
 func newTestOVNNBClient(t *testing.T) (libovsdbclient.Client, func()) {
 	t.Helper()
 	clientModel, err := ovnnb.FullDatabaseModel()
