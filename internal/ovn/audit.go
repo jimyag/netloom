@@ -245,18 +245,22 @@ func expectedManagedAuditRows(desired topology.State) map[string]map[string]stri
 		)
 	}
 	for _, gateway := range desired.Gateways {
-		fields := []string{
-			"netloom_vpc", gateway.VPC,
-			"netloom_gateway", gateway.Name,
-			"netloom_gateway_lan_ip", gateway.LANIP.String(),
-			"netloom_gateway_distributed", fmt.Sprintf("%t", gateway.Distributed),
-		}
-		if gateway.ExternalIF != "" {
-			fields = append(fields, "netloom_external_if", gateway.ExternalIF)
-		}
-		addAuditExpectedRow(out, "Logical_Router", fields...)
+		addAuditExpectedRow(out, "Logical_Router", gatewayAuditIdentityFields(gateway)...)
 	}
 	return out
+}
+
+func gatewayAuditIdentityFields(gateway model.Gateway) []string {
+	fields := []string{
+		"netloom_vpc", gateway.VPC,
+		"netloom_gateway", gateway.Name,
+		"netloom_gateway_lan_ip", gateway.LANIP.String(),
+		"netloom_gateway_distributed", fmt.Sprintf("%t", gateway.Distributed),
+	}
+	if gateway.ExternalIF != "" {
+		fields = append(fields, "netloom_external_if", gateway.ExternalIF)
+	}
+	return fields
 }
 
 func expectedManagedAuditColumns(desired topology.State) map[string]map[string]string {
@@ -362,6 +366,13 @@ func expectedManagedAuditColumns(desired topology.State) map[string]map[string]s
 		}
 		addAuditExpectedColumns(out, "NAT", fields, "netloom_vpc", rule.VPC, "netloom_nat", rule.Name)
 	}
+	for _, gateway := range desired.Gateways {
+		fields := map[string]string{
+			"name":    logicalRouter(gateway.VPC),
+			"options": mapField(gatewayAuditRouterOptions(gateway)),
+		}
+		addAuditExpectedColumns(out, "Logical_Router", fields, gatewayAuditIdentityFields(gateway)...)
+	}
 	for _, lb := range desired.LoadBalancers {
 		frontendsByProtocol := loadBalancerFrontendsByProtocol(lb)
 		for _, protocol := range sortedLoadBalancerProtocols(frontendsByProtocol) {
@@ -390,6 +401,13 @@ func expectedManagedAuditColumns(desired topology.State) map[string]map[string]s
 		}
 	}
 	return out
+}
+
+func gatewayAuditRouterOptions(gateway model.Gateway) map[string]string {
+	if gateway.Distributed {
+		return nil
+	}
+	return map[string]string{"chassis": gateway.Node}
 }
 
 func addAuditExpectedColumns(out map[string]map[string]string, table string, fields map[string]string, keyValues ...string) {

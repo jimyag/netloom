@@ -237,6 +237,75 @@ func TestAuditManagedObjectsReportsColumnDriftFromLibOVSDBReader(t *testing.T) {
 	}
 }
 
+func TestAuditManagedObjectsReportsGatewayOptionsDriftFromLibOVSDBReader(t *testing.T) {
+	ctx := context.Background()
+	client, closeFn := newTestOVNNBClient(t)
+	defer closeFn()
+
+	if _, err := client.MonitorAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	writer := NewLibOVSDBTopologyWriter(client)
+	gateway := netloommodel.Gateway{
+		Name:       "gw-a",
+		VPC:        "prod",
+		Node:       "node-a",
+		ExternalIF: "eth0",
+		LANIP:      netip.MustParseAddr("10.10.0.1"),
+	}
+	if err := writer.EnsureVPC(ctx, netloommodel.VPC{Name: "prod"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureGateway(ctx, gateway); err != nil {
+		t.Fatal(err)
+	}
+	desired := topology.State{
+		VPCs: map[string]netloommodel.VPC{
+			"prod": {Name: "prod"},
+		},
+		Gateways: map[string]netloommodel.Gateway{
+			"prod/gw-a": gateway,
+		},
+	}
+	reader := NewLibOVSDBManagedReader(client)
+	requireEventually(t, func() bool {
+		stats, err := AuditManagedObjectsFromReaderWithDesired(ctx, reader, desired)
+		return err == nil && stats.DriftedManagedRows == 0 && stats.DriftedManagedFields == 0
+	})
+
+	var routers []ovnnb.LogicalRouter
+	if err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool {
+		return row.ExternalIDs["netloom_vpc"] == "prod"
+	}).List(ctx, &routers); err != nil {
+		t.Fatal(err)
+	}
+	if len(routers) != 1 {
+		t.Fatalf("logical routers = %d, want one", len(routers))
+	}
+	routers[0].Options["chassis"] = "node-b"
+	updateRouter, err := client.Where(&routers[0]).Update(&routers[0], &routers[0].Options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := client.Transact(ctx, updateRouter...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, updateRouter); err != nil {
+		t.Fatalf("operation errors=%+v err=%v", opErrors, err)
+	}
+
+	var stats AuditStats
+	requireEventually(t, func() bool {
+		var err error
+		stats, err = AuditManagedObjectsFromReaderWithDesired(ctx, reader, desired)
+		return err == nil && stats.DriftedManagedRows == 1 && stats.DriftedManagedFields == 1
+	})
+	if stats.DriftedManagedRows != 1 || stats.DriftedManagedFields != 1 {
+		t.Fatalf("audit stats = %+v, want one gateway options drift", stats)
+	}
+}
+
 func newTestOVNNBClient(t *testing.T) (libovsdbclient.Client, func()) {
 	t.Helper()
 	clientModel, err := ovnnb.FullDatabaseModel()

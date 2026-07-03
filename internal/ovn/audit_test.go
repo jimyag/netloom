@@ -297,6 +297,47 @@ func TestAuditManagedObjectsFromReaderReportsCoreNameColumnDrift(t *testing.T) {
 	}
 }
 
+func TestAuditManagedObjectsFromReaderReportsGatewayOptionsDrift(t *testing.T) {
+	gateway := model.Gateway{
+		Name:       "gw-a",
+		VPC:        "prod",
+		Node:       "node-a",
+		ExternalIF: "eth0",
+		LANIP:      netip.MustParseAddr("10.10.0.1"),
+	}
+	reader := fakeManagedOVNReader{rows: map[string][]ManagedOVNRow{
+		"Logical_Router": {
+			{Table: "Logical_Router", UUID: "lr-prod", ExternalIDs: map[string]string{
+				"netloom_owner":               "netloom",
+				"netloom_vpc":                 "prod",
+				"netloom_gateway":             "gw-a",
+				"netloom_external_if":         "eth0",
+				"netloom_gateway_lan_ip":      "10.10.0.1",
+				"netloom_gateway_distributed": "false",
+			}, Fields: map[string]string{
+				"name":    logicalRouter("prod"),
+				"options": "chassis=node-b",
+			}},
+		},
+	}}
+	desired := topology.State{
+		VPCs: map[string]model.VPC{
+			"prod": {Name: "prod"},
+		},
+		Gateways: map[string]model.Gateway{
+			"prod/gw-a": gateway,
+		},
+	}
+
+	stats, err := AuditManagedObjectsFromReaderWithDesired(context.Background(), reader, desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.DriftedManagedRows != 1 || stats.DriftedManagedFields != 1 {
+		t.Fatalf("gateway options drift stats = %+v, want one chassis option drift", stats)
+	}
+}
+
 func TestAuditStatsTotalManagedObjects(t *testing.T) {
 	stats := AuditStats{
 		ManagedLogicalSwitches:           1,
