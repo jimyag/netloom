@@ -36,6 +36,7 @@ type Options struct {
 	ProviderInventory    []ProviderInterface
 	ProviderOVSDBStatus  []ProviderOVSDBStatus
 	ProviderOVSDBSyncer  ProviderOVSDBSyncer
+	ProviderOVSDBReader  ProviderOVSDBStatusReader
 	SyncOVSDB            bool
 	NetNSPrefix          string
 	WorkloadIF           string
@@ -118,6 +119,10 @@ type CommandExecutor struct{}
 
 type ProviderOVSDBSyncer interface {
 	SyncProviderOVSDB(ctx context.Context, rows ProviderOVSDBDesiredRows, cleanup bool) error
+}
+
+type ProviderOVSDBStatusReader interface {
+	ReadProviderOVSDBStatus(ctx context.Context, rows ProviderOVSDBDesiredRows) ([]ProviderOVSDBStatus, error)
 }
 
 const (
@@ -221,6 +226,11 @@ func Apply(ctx context.Context, state control.DesiredState, options Options) (Re
 			result.ProviderReady, result.ProviderDegraded = summarizeProviderLinkHealth(result.ProviderStatus)
 			result.ProviderIssues = providerRuntimeIssues(result.ProviderStatus, result.ProviderIssues, options.Node)
 			result.ProviderNetworkStatus = summarizeProviderNetworkStatus(result.ProviderStatus, result.ProviderIssues)
+		}
+		if options.SyncOVSDB {
+			if err := appendProviderOVSDBIssues(ctx, &result, options, providerSpecs); err != nil {
+				return result, err
+			}
 		}
 	default:
 		return Result{}, fmt.Errorf("unsupported linux datapath backend %q", options.Backend)

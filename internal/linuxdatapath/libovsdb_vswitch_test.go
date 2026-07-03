@@ -117,6 +117,77 @@ func TestLibOVSDBProviderSyncerRepairsPortBridgeDrift(t *testing.T) {
 	}
 }
 
+func TestLibOVSDBProviderSyncerReadsProviderStatus(t *testing.T) {
+	client, cleanup := newTestVSwitchClient(t)
+	defer cleanup()
+	ctx := context.Background()
+	insertVSwitchRows(t, ctx, client, &vswitch.OpenvSwitch{})
+
+	rows := desiredProviderOVSDBRows([]providerNetworkLinkSpec{{
+		ProviderNetwork: "physnet-a",
+		ParentDevice:    "eth1",
+		VLAN:            100,
+		Name:            "nlv100",
+	}})
+	syncer := NewLibOVSDBProviderSyncer(client)
+	if err := syncer.SyncProviderOVSDB(ctx, rows, false); err != nil {
+		t.Fatal(err)
+	}
+	statuses, err := syncer.ReadProviderOVSDBStatus(ctx, rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(statuses) != 1 {
+		t.Fatalf("statuses = %+v, want one", statuses)
+	}
+	status := statuses[0]
+	if status.ProviderNetwork != "physnet-a" || status.BridgeState != "up" || status.MappingState != "up" || status.PortState != "up" || status.InterfaceState != "up" {
+		t.Fatalf("status = %+v, want all up", status)
+	}
+}
+
+func TestLibOVSDBProviderSyncerReadsProviderStatusDrift(t *testing.T) {
+	client, cleanup := newTestVSwitchClient(t)
+	defer cleanup()
+	ctx := context.Background()
+	insertVSwitchRows(t, ctx, client, &vswitch.OpenvSwitch{})
+
+	rows := desiredProviderOVSDBRows([]providerNetworkLinkSpec{{
+		ProviderNetwork: "physnet-a",
+		ParentDevice:    "eth1",
+		VLAN:            100,
+		Name:            "nlv100",
+	}})
+	syncer := NewLibOVSDBProviderSyncer(client)
+	if err := syncer.SyncProviderOVSDB(ctx, rows, false); err != nil {
+		t.Fatal(err)
+	}
+	root := singleVSwitchRoot(t, ctx, client)
+	root.ExternalIDs["ovn-bridge-mappings"] = ""
+	rootOps, err := client.Where(root).Update(root, &root.ExternalIDs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	iface := singleInterfaceByName(t, ctx, client, "nlv100")
+	iface.ExternalIDs["netloom_vlan"] = "200"
+	ifaceOps, err := client.Where(iface).Update(iface, &iface.ExternalIDs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transactVSwitchOps(t, ctx, client, append(rootOps, ifaceOps...))
+
+	statuses, err := syncer.ReadProviderOVSDBStatus(ctx, rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(statuses) != 1 {
+		t.Fatalf("statuses = %+v, want one", statuses)
+	}
+	if statuses[0].MappingState != "missing" || statuses[0].InterfaceState != "external-ids-mismatch" {
+		t.Fatalf("status = %+v, want mapping missing and interface drift", statuses[0])
+	}
+}
+
 func TestLibOVSDBProviderSyncerCleansStaleProviderRows(t *testing.T) {
 	client, cleanup := newTestVSwitchClient(t)
 	defer cleanup()

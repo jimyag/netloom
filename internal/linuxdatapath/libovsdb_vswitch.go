@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/ovn-kubernetes/libovsdb/client"
@@ -101,6 +102,91 @@ func (s *LibOVSDBProviderSyncer) SyncProviderOVSDB(ctx context.Context, rows Pro
 		ops = append(ops, cleanupOps...)
 	}
 	return s.transact(ctx, "sync provider Open_vSwitch OVSDB rows", ops)
+}
+
+func (s *LibOVSDBProviderSyncer) ReadProviderOVSDBStatus(ctx context.Context, rows ProviderOVSDBDesiredRows) ([]ProviderOVSDBStatus, error) {
+	if s == nil || s.client == nil {
+		return nil, fmt.Errorf("libovsdb provider syncer has no client")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	openvSwitch, _, err := s.openVSwitch(ctx)
+	if err != nil {
+		return nil, err
+	}
+	mappings := ""
+	if openvSwitch != nil {
+		mappings = openvSwitch.ExternalIDs["ovn-bridge-mappings"]
+	}
+	bridgeByName := make(map[string]vswitch.Bridge, len(rows.Bridges))
+	for _, bridge := range rows.Bridges {
+		bridgeByName[bridge.Name] = bridge
+	}
+	bridgeNameByPort := make(map[string]string, len(rows.Ports))
+	providerByBridge := make(map[string]string, len(rows.Bridges))
+	for _, bridge := range rows.Bridges {
+		provider := bridge.ExternalIDs["netloom_provider_network"]
+		providerByBridge[bridge.Name] = provider
+		for _, port := range bridge.Ports {
+			bridgeNameByPort[port] = bridge.Name
+		}
+	}
+	statuses := make([]ProviderOVSDBStatus, 0, len(rows.Ports))
+	for _, desiredPort := range rows.Ports {
+		bridgeName := bridgeNameByPort[desiredPort.Name]
+		spec, err := providerSpecFromDesiredPort(providerByBridge[bridgeName], desiredPort)
+		if err != nil {
+			return nil, err
+		}
+		status := ProviderOVSDBStatus{
+			ProviderNetwork: spec.ProviderNetwork,
+			Bridge:          bridgeName,
+			LinkName:        spec.Name,
+			ParentDevice:    spec.ParentDevice,
+			VLAN:            spec.VLAN,
+			BridgeState:     "up",
+			MappingState:    "up",
+			PortState:       "up",
+			InterfaceState:  "up",
+		}
+		bridge, ok, err := s.bridgeByName(ctx, bridgeName)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			status.BridgeState = "missing"
+		}
+		if !ovsBridgeMappingsContain(mappings, spec.ProviderNetwork, bridgeName) {
+			status.MappingState = "missing"
+		}
+		port, ok, err := s.portByName(ctx, spec.Name)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			status.PortState = "missing"
+			status.InterfaceState = "missing"
+			statuses = append(statuses, status)
+			continue
+		}
+		if status.BridgeState == "up" && !containsProviderString(bridge.Ports, port.UUID) {
+			status.PortState = "bridge-mismatch"
+		} else if !providerExternalIDsMatch(port.ExternalIDs, providerOVSDBLinkExternalIDs(spec)) {
+			status.PortState = "external-ids-mismatch"
+		}
+		iface, ok, err := s.interfaceByName(ctx, spec.Name)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			status.InterfaceState = "missing"
+		} else if !providerExternalIDsMatch(iface.ExternalIDs, providerOVSDBLinkExternalIDs(spec)) {
+			status.InterfaceState = "external-ids-mismatch"
+		}
+		statuses = append(statuses, status)
+	}
+	return statuses, nil
 }
 
 func (s *LibOVSDBProviderSyncer) ensureBridge(ctx context.Context, desired vswitch.Bridge) (string, []ovsdb.Operation, error) {
@@ -403,4 +489,34 @@ func containsProviderString(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func providerSpecFromDesiredPort(providerNetwork string, port vswitch.Port) (providerNetworkLinkSpec, error) {
+	parent := port.ExternalIDs["netloom_parent_device"]
+	vlanRaw := port.ExternalIDs["netloom_vlan"]
+	if providerNetwork == "" {
+		providerNetwork = port.ExternalIDs["netloom_provider_network"]
+	}
+	if providerNetwork == "" || parent == "" || vlanRaw == "" || port.Name == "" {
+		return providerNetworkLinkSpec{}, fmt.Errorf("provider OVSDB desired port %s is missing Netloom external IDs", port.Name)
+	}
+	vlan, err := strconv.Atoi(vlanRaw)
+	if err != nil || vlan < 0 || vlan > 4095 {
+		return providerNetworkLinkSpec{}, fmt.Errorf("provider OVSDB desired port %s has invalid VLAN %q", port.Name, vlanRaw)
+	}
+	return providerNetworkLinkSpec{
+		ProviderNetwork: providerNetwork,
+		ParentDevice:    parent,
+		VLAN:            uint16(vlan),
+		Name:            port.Name,
+	}, nil
+}
+
+func providerExternalIDsMatch(got map[string]string, want map[string]string) bool {
+	for key, value := range want {
+		if got[key] != value {
+			return false
+		}
+	}
+	return true
 }

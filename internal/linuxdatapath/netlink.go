@@ -79,14 +79,10 @@ func applyLocalNetlink(ctx context.Context, state control.DesiredState, options 
 		}
 	}
 	if options.SyncOVSDB {
-		if err := executeProviderOVSDBMappings(ctx, options, providerSpecs); err != nil {
+		if err := executeProviderOVSDBSync(ctx, options, providerSpecs, options.CleanupStale); err != nil {
 			return result, err
 		}
-		result.ProviderIssues = providerOVSDBRuntimeIssues(result.ProviderIssues, providerOVSDBStatuses(ctx, options, providerSpecs), options.Node)
-		result.ProviderNetworkStatus = summarizeProviderNetworkStatus(result.ProviderStatus, result.ProviderIssues)
-	}
-	if options.CleanupStale && options.SyncOVSDB {
-		if err := executeProviderOVSDBCleanup(ctx, options, providerSpecs); err != nil {
+		if err := appendProviderOVSDBIssues(ctx, &result, options, providerSpecs); err != nil {
 			return result, err
 		}
 	}
@@ -193,14 +189,10 @@ func applyNetNSNetlink(ctx context.Context, state control.DesiredState, options 
 		}
 	}
 	if options.SyncOVSDB {
-		if err := executeProviderOVSDBMappings(ctx, options, providerSpecs); err != nil {
+		if err := executeProviderOVSDBSync(ctx, options, providerSpecs, options.CleanupStale); err != nil {
 			return result, err
 		}
-		result.ProviderIssues = providerOVSDBRuntimeIssues(result.ProviderIssues, providerOVSDBStatuses(ctx, options, providerSpecs), options.Node)
-		result.ProviderNetworkStatus = summarizeProviderNetworkStatus(result.ProviderStatus, result.ProviderIssues)
-	}
-	if options.CleanupStale && options.SyncOVSDB {
-		if err := executeProviderOVSDBCleanup(ctx, options, providerSpecs); err != nil {
+		if err := appendProviderOVSDBIssues(ctx, &result, options, providerSpecs); err != nil {
 			return result, err
 		}
 	}
@@ -560,6 +552,19 @@ func cleanupStaleRemoteRoutes(root *netlink.Handle, desired map[string]struct{},
 	return nil
 }
 
+func executeProviderOVSDBSync(ctx context.Context, options Options, specs []providerNetworkLinkSpec, cleanup bool) error {
+	if options.ProviderOVSDBSyncer != nil {
+		return options.ProviderOVSDBSyncer.SyncProviderOVSDB(ctx, desiredProviderOVSDBRows(specs), cleanup)
+	}
+	if err := executeProviderOVSDBMappings(ctx, options, specs); err != nil {
+		return err
+	}
+	if cleanup {
+		return executeProviderOVSDBCleanup(ctx, options, specs)
+	}
+	return nil
+}
+
 func executeProviderOVSDBMappings(ctx context.Context, options Options, specs []providerNetworkLinkSpec) error {
 	executor := options.Executor
 	if executor == nil {
@@ -584,11 +589,24 @@ func executeProviderOVSDBCleanup(ctx context.Context, options Options, specs []p
 	return nil
 }
 
-func providerOVSDBStatuses(ctx context.Context, options Options, specs []providerNetworkLinkSpec) []ProviderOVSDBStatus {
-	if len(options.ProviderOVSDBStatus) > 0 {
-		return append([]ProviderOVSDBStatus(nil), options.ProviderOVSDBStatus...)
+func appendProviderOVSDBIssues(ctx context.Context, result *Result, options Options, specs []providerNetworkLinkSpec) error {
+	statuses, err := providerOVSDBStatuses(ctx, options, specs)
+	if err != nil {
+		return err
 	}
-	return readProviderOVSDBStatuses(ctx, specs)
+	result.ProviderIssues = providerOVSDBRuntimeIssues(result.ProviderIssues, statuses, options.Node)
+	result.ProviderNetworkStatus = summarizeProviderNetworkStatus(result.ProviderStatus, result.ProviderIssues)
+	return nil
+}
+
+func providerOVSDBStatuses(ctx context.Context, options Options, specs []providerNetworkLinkSpec) ([]ProviderOVSDBStatus, error) {
+	if len(options.ProviderOVSDBStatus) > 0 {
+		return append([]ProviderOVSDBStatus(nil), options.ProviderOVSDBStatus...), nil
+	}
+	if options.ProviderOVSDBReader != nil {
+		return options.ProviderOVSDBReader.ReadProviderOVSDBStatus(ctx, desiredProviderOVSDBRows(specs))
+	}
+	return readProviderOVSDBStatuses(ctx, specs), nil
 }
 
 func readProviderOVSDBStatuses(ctx context.Context, specs []providerNetworkLinkSpec) []ProviderOVSDBStatus {

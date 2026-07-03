@@ -236,6 +236,87 @@ func TestApplyCommandUsesDirectProviderOVSDBSyncer(t *testing.T) {
 	}
 }
 
+func TestExecuteProviderOVSDBSyncUsesDirectSyncer(t *testing.T) {
+	syncer := &recordingProviderOVSDBSyncer{}
+	err := executeProviderOVSDBSync(context.Background(), Options{
+		SyncOVSDB:           true,
+		ProviderOVSDBSyncer: syncer,
+		Executor: commandExecutorFunc(func(_ context.Context, op Operation) error {
+			t.Fatalf("direct provider OVSDB sync should avoid command op: %+v", op)
+			return nil
+		}),
+	}, []providerNetworkLinkSpec{{
+		ProviderNetwork: "physnet-a",
+		ParentDevice:    "eth1",
+		VLAN:            100,
+		Name:            "nlv100",
+	}}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if syncer.calls != 1 || !syncer.cleanup {
+		t.Fatalf("syncer calls=%d cleanup=%t, want one cleanup sync", syncer.calls, syncer.cleanup)
+	}
+}
+
+func TestApplyCommandUsesDirectProviderOVSDBStatusReader(t *testing.T) {
+	state := control.DesiredState{
+		ProviderNetworks: []model.ProviderNetwork{{
+			Name: "physnet-a",
+			Nodes: []model.ProviderNetworkNode{{
+				Node:      "node-a",
+				Interface: "eth1",
+			}},
+		}},
+		Subnets: []model.Subnet{{
+			Name:            "apps",
+			VPC:             "prod",
+			CIDR:            netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway:         netip.MustParseAddr("10.10.0.1"),
+			ProviderNetwork: "physnet-a",
+			VLAN:            100,
+		}},
+		Endpoints: []model.Endpoint{{
+			ID:     "pod-a",
+			VPC:    "prod",
+			Subnet: "apps",
+			IP:     netip.MustParseAddr("10.10.0.10"),
+			Node:   "node-a",
+		}},
+	}
+	reader := staticProviderOVSDBStatusReader{statuses: []ProviderOVSDBStatus{{
+		ProviderNetwork: "physnet-a",
+		Bridge:          providerNetworkBridgeName("physnet-a"),
+		LinkName:        providerNetworkLinkName("physnet-a", "eth1", 100),
+		ParentDevice:    "eth1",
+		VLAN:            100,
+		BridgeState:     "up",
+		MappingState:    "missing",
+		PortState:       "up",
+		InterfaceState:  "up",
+	}}}
+	result, err := Apply(context.Background(), state, Options{
+		Node:                 "node-a",
+		LocalDevice:          "nl0",
+		Backend:              "command",
+		ProviderInventory:    []ProviderInterface{{Name: "eth1", Ready: true}, {Name: providerNetworkLinkName("physnet-a", "eth1", 100), Ready: true}},
+		SyncOVSDB:            true,
+		ProviderOVSDBSyncer:  &recordingProviderOVSDBSyncer{},
+		ProviderOVSDBReader:  reader,
+		StrictProviderHealth: true,
+		Executor:             noopCommandExecutor{},
+	})
+	if err == nil || !strings.Contains(err.Error(), "ovsdb-mapping-missing") {
+		t.Fatalf("err = %v, want strict provider health failure with direct OVSDB reader issue", err)
+	}
+	if !providerIssuesContainReason(result.ProviderIssues, "ovsdb-mapping-missing") {
+		t.Fatalf("provider issues = %+v, want ovsdb-mapping-missing", result.ProviderIssues)
+	}
+	if len(result.ProviderNetworkStatus) != 1 || !providerNetworkStatusContainsReason(result.ProviderNetworkStatus[0], "ovsdb-mapping-missing") {
+		t.Fatalf("provider network status = %+v, want mapping issue", result.ProviderNetworkStatus)
+	}
+}
+
 type recordingProviderOVSDBSyncer struct {
 	calls   int
 	rows    ProviderOVSDBDesiredRows
@@ -247,6 +328,15 @@ func (s *recordingProviderOVSDBSyncer) SyncProviderOVSDB(_ context.Context, rows
 	s.rows = rows
 	s.cleanup = cleanup
 	return nil
+}
+
+type staticProviderOVSDBStatusReader struct {
+	statuses []ProviderOVSDBStatus
+	err      error
+}
+
+func (r staticProviderOVSDBStatusReader) ReadProviderOVSDBStatus(context.Context, ProviderOVSDBDesiredRows) ([]ProviderOVSDBStatus, error) {
+	return append([]ProviderOVSDBStatus(nil), r.statuses...), r.err
 }
 
 func TestPlanClearsProviderBridgeMappingsWhenOVSDBSyncHasNoProviders(t *testing.T) {

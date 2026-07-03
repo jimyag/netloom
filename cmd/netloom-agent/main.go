@@ -2245,7 +2245,9 @@ func linuxDatapathOptionsWithOVSDBSyncer(ctx context.Context) (*linuxdatapath.Op
 	if err != nil {
 		return nil, func() {}, err
 	}
-	options.ProviderOVSDBSyncer = linuxdatapath.NewLibOVSDBProviderSyncer(client)
+	providerOVSDB := linuxdatapath.NewLibOVSDBProviderSyncer(client)
+	options.ProviderOVSDBSyncer = providerOVSDB
+	options.ProviderOVSDBReader = providerOVSDB
 	return options, closeFn, nil
 }
 
