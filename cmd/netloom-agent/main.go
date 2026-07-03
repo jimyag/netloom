@@ -140,9 +140,12 @@ type policyEndpointActionOutput struct {
 }
 
 type policyEndpointRolloutRequest struct {
-	Endpoints []string `json:"endpoints"`
-	BatchSize int      `json:"batch_size"`
-	DryRun    bool     `json:"dry_run"`
+	Endpoints                 []string `json:"endpoints"`
+	BatchSize                 int      `json:"batch_size"`
+	DryRun                    bool     `json:"dry_run"`
+	PressureAware             bool     `json:"pressure_aware"`
+	PressureThresholdPercent  uint32   `json:"pressure_threshold_percent"`
+	PressureAwareMinBatchSize int      `json:"pressure_aware_min_batch_size"`
 }
 
 func runPolicyExplain(args []string, stdout io.Writer) error {
@@ -1185,9 +1188,12 @@ func (m *agentMetrics) rolloutPolicyEndpoints(ctx context.Context, request polic
 		Node:  snapshot.Result.Node,
 		Store: m.store,
 	}, agent.PolicyEndpointRolloutOptions{
-		EndpointIDs: endpoints,
-		BatchSize:   request.BatchSize,
-		DryRun:      request.DryRun,
+		EndpointIDs:               endpoints,
+		BatchSize:                 request.BatchSize,
+		DryRun:                    request.DryRun,
+		PressureAware:             request.PressureAware,
+		PressureThresholdPercent:  request.PressureThresholdPercent,
+		PressureAwareMinBatchSize: request.PressureAwareMinBatchSize,
 	})
 	if err != nil {
 		return agent.PolicyEndpointRollout{}, err

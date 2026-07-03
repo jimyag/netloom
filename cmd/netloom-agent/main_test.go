@@ -1502,6 +1502,62 @@ func TestPolicyEndpointAPIRolloutAppliesMultipleEndpoints(t *testing.T) {
 	}
 }
 
+func TestPolicyEndpointAPIRolloutUsesPressureAwareBatchSize(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{
+			{ID: "pod-a", VPC: "prod", Subnet: "apps", IP: netip.MustParseAddr("10.10.0.10"), Node: "node-a", SecurityGroups: []string{"web"}},
+			{ID: "pod-b", VPC: "prod", Subnet: "apps", IP: netip.MustParseAddr("10.10.0.11"), Node: "node-a", SecurityGroups: []string{"web"}},
+		},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "allow-http",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("172.30.0.0/24"),
+				Ports:      []model.PortRange{{From: 80, To: 80}},
+				Action:     model.ActionAllow,
+			}},
+		}},
+	}
+	store := &policyRolloutUsageStore{
+		InMemoryPolicyStore: dataplane.NewInMemoryPolicyStore(),
+		usage: []dataplane.PolicyMapUsage{{
+			EndpointID: model.EndpointKey("prod", "pod-a"),
+			Entries:    9,
+			Capacity:   10,
+		}},
+	}
+	metrics := newAgentMetrics(store)
+	observeAgentReconcileResultWithState(metrics, agent.ReconcileResult{
+		Node: "node-a",
+	}, "memory", time.Millisecond, state)
+
+	body := bytes.NewBufferString(`{"endpoints":["prod/pod-a","prod/pod-b"],"batch_size":2,"pressure_aware":true,"pressure_threshold_percent":80}`)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/policy/endpoints/rollout", body)
+	metrics.handlePolicyEndpoints(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var got policyEndpointActionOutput
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode policy endpoint rollout response: %v\n%s", err, recorder.Body.String())
+	}
+	if !got.Rollout.PressureAware || !got.Rollout.PressureAdjusted || got.Rollout.RequestedBatchSize != 2 || got.Rollout.BatchSize != 1 {
+		t.Fatalf("rollout = %+v, want pressure-aware batch shrink from 2 to 1", got.Rollout)
+	}
+	if got.Rollout.PressureMaxPercent != 90 || got.Rollout.PressureEndpoint != model.EndpointKey("prod", "pod-a") {
+		t.Fatalf("rollout pressure = %+v, want pod-a at 90%%", got.Rollout)
+	}
+	if len(got.Rollout.Items) != 2 || got.Rollout.Items[0].Batch != 1 || got.Rollout.Items[1].Batch != 2 {
+		t.Fatalf("rollout items = %+v, want one endpoint per pressure-adjusted batch", got.Rollout.Items)
+	}
+}
+
 func TestPolicyEndpointAPIRejectsUnsupportedPostAction(t *testing.T) {
 	metrics := newAgentMetrics(dataplane.NewInMemoryPolicyStore())
 	observeAgentReconcileResult(metrics, agent.ReconcileResult{
@@ -1515,6 +1571,15 @@ func TestPolicyEndpointAPIRejectsUnsupportedPostAction(t *testing.T) {
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400; body=%s", recorder.Code, recorder.Body.String())
 	}
+}
+
+type policyRolloutUsageStore struct {
+	*dataplane.InMemoryPolicyStore
+	usage []dataplane.PolicyMapUsage
+}
+
+func (s *policyRolloutUsageStore) PolicyMapUsage(context.Context) ([]dataplane.PolicyMapUsage, error) {
+	return append([]dataplane.PolicyMapUsage(nil), s.usage...), nil
 }
 
 func TestAgentMetricsExportsLatestPolicyAndTCXCounters(t *testing.T) {

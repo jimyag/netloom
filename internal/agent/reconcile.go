@@ -143,19 +143,28 @@ type PolicyEndpointPlan struct {
 }
 
 type PolicyEndpointRolloutOptions struct {
-	EndpointIDs []string
-	BatchSize   int
-	DryRun      bool
+	EndpointIDs               []string
+	BatchSize                 int
+	DryRun                    bool
+	PressureAware             bool
+	PressureThresholdPercent  uint32
+	PressureAwareMinBatchSize int
 }
 
 type PolicyEndpointRollout struct {
-	DryRun    bool                        `json:"dry_run"`
-	BatchSize int                         `json:"batch_size"`
-	Planned   int                         `json:"planned"`
-	Applied   int                         `json:"applied"`
-	Skipped   int                         `json:"skipped"`
-	Failed    int                         `json:"failed"`
-	Items     []PolicyEndpointRolloutItem `json:"items"`
+	DryRun                   bool                        `json:"dry_run"`
+	BatchSize                int                         `json:"batch_size"`
+	RequestedBatchSize       int                         `json:"requested_batch_size,omitempty"`
+	PressureAware            bool                        `json:"pressure_aware,omitempty"`
+	PressureAdjusted         bool                        `json:"pressure_adjusted,omitempty"`
+	PressureThresholdPercent uint32                      `json:"pressure_threshold_percent,omitempty"`
+	PressureMaxPercent       uint32                      `json:"pressure_max_percent,omitempty"`
+	PressureEndpoint         string                      `json:"pressure_endpoint,omitempty"`
+	Planned                  int                         `json:"planned"`
+	Applied                  int                         `json:"applied"`
+	Skipped                  int                         `json:"skipped"`
+	Failed                   int                         `json:"failed"`
+	Items                    []PolicyEndpointRolloutItem `json:"items"`
 }
 
 type PolicyEndpointRolloutItem struct {
@@ -284,14 +293,21 @@ func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, opt
 	if err != nil {
 		return PolicyEndpointRollout{}, err
 	}
-	batchSize := rolloutOptions.BatchSize
-	if batchSize <= 0 {
-		batchSize = 1
+	requestedBatchSize := normalizedRolloutBatchSize(rolloutOptions.BatchSize)
+	batchSize, pressure, err := pressureAwareRolloutBatchSize(ctx, options.Store, requestedBatchSize, rolloutOptions)
+	if err != nil {
+		return PolicyEndpointRollout{}, err
 	}
 	rollout := PolicyEndpointRollout{
-		DryRun:    rolloutOptions.DryRun,
-		BatchSize: batchSize,
-		Items:     make([]PolicyEndpointRolloutItem, 0, len(endpointIDs)),
+		DryRun:                   rolloutOptions.DryRun,
+		BatchSize:                batchSize,
+		RequestedBatchSize:       requestedBatchSize,
+		PressureAware:            rolloutOptions.PressureAware,
+		PressureAdjusted:         batchSize != requestedBatchSize,
+		PressureThresholdPercent: pressure.threshold,
+		PressureMaxPercent:       pressure.maxPercent,
+		PressureEndpoint:         pressure.endpointID,
+		Items:                    make([]PolicyEndpointRolloutItem, 0, len(endpointIDs)),
 	}
 	type preparedEndpoint struct {
 		program policy.Program
@@ -353,6 +369,54 @@ func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, opt
 		rollout.Items[i] = item
 	}
 	return rollout, nil
+}
+
+type rolloutPressureDecision struct {
+	threshold  uint32
+	maxPercent uint32
+	endpointID string
+}
+
+func pressureAwareRolloutBatchSize(ctx context.Context, store PolicyStore, requestedBatchSize int, options PolicyEndpointRolloutOptions) (int, rolloutPressureDecision, error) {
+	requestedBatchSize = normalizedRolloutBatchSize(requestedBatchSize)
+	decision := rolloutPressureDecision{}
+	if !options.PressureAware {
+		return requestedBatchSize, decision, nil
+	}
+	threshold := options.PressureThresholdPercent
+	if threshold == 0 {
+		threshold = dataplane.DefaultPolicyMapPressureThresholdPercent
+	}
+	if threshold > 100 {
+		threshold = 100
+	}
+	decision.threshold = threshold
+	usageStore, ok := store.(PolicyUsageStore)
+	if !ok {
+		return 0, decision, fmt.Errorf("policy map usage is required for pressure-aware rollout")
+	}
+	usages, err := usageStore.PolicyMapUsage(ctx)
+	if err != nil {
+		return 0, decision, fmt.Errorf("read policy map usage for pressure-aware rollout: %w", err)
+	}
+	summary := dataplane.SummarizePolicyMapUsage(usages)
+	decision.maxPercent = summary.MaxPressurePercent
+	decision.endpointID = summary.MaxPressureEndpoint
+	if summary.MaxPressurePercent < threshold {
+		return requestedBatchSize, decision, nil
+	}
+	minBatchSize := normalizedRolloutBatchSize(options.PressureAwareMinBatchSize)
+	if minBatchSize > requestedBatchSize {
+		minBatchSize = requestedBatchSize
+	}
+	return minBatchSize, decision, nil
+}
+
+func normalizedRolloutBatchSize(batchSize int) int {
+	if batchSize <= 0 {
+		return 1
+	}
+	return batchSize
 }
 
 func planPolicyEndpointEntries(endpointID string, desired []dataplane.PolicyMapEntry, store PolicyStore) (PolicyEndpointPlan, error) {
