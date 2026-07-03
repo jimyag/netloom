@@ -19,11 +19,14 @@ import (
 	"sync"
 	"time"
 
+	libovsdbclient "github.com/ovn-kubernetes/libovsdb/client"
+
 	"github.com/jimyag/netloom/internal/agent"
 	"github.com/jimyag/netloom/internal/control"
 	"github.com/jimyag/netloom/internal/dataplane"
 	"github.com/jimyag/netloom/internal/linuxdatapath"
 	"github.com/jimyag/netloom/internal/model"
+	"github.com/jimyag/netloom/internal/ovn/ovsdb/vswitch"
 	"github.com/jimyag/netloom/internal/policy"
 	"github.com/jimyag/netloom/internal/topology"
 	"golang.org/x/sys/unix"
@@ -707,6 +710,15 @@ func reconcileStateFile(ctx context.Context, path, node, storeName string, recon
 		observeAgentReconcileFailure(metrics, agent.ReconcileResult{Node: node}, storeName, err, time.Since(start))
 		return err
 	}
+	linuxOptions, closeLinuxOptions, err := linuxDatapathOptionsWithOVSDBSyncer(ctx)
+	if err != nil {
+		duration := time.Since(start)
+		result := agent.ReconcileResult{Node: node}
+		printReconcileFailure(result, storeName, err, duration)
+		observeAgentReconcileFailure(metrics, result, storeName, err, duration)
+		return err
+	}
+	defer closeLinuxOptions()
 	result, err := reconciler.Reconcile(ctx, state, agent.ReconcileOptions{
 		Node:                              node,
 		TCXInterface:                      os.Getenv("NETLOOM_TCX_IFACE"),
@@ -716,7 +728,7 @@ func reconcileStateFile(ctx context.Context, path, node, storeName string, recon
 		PolicyPressureMitigationThreshold: policyPressureMitigationThreshold(),
 		PolicyPressureQuarantine:          policyPressureQuarantine(),
 		DeferPolicyApply:                  agent.HasActivePolicyRollouts(state, node),
-		LinuxDatapath:                     linuxDatapathOptions(),
+		LinuxDatapath:                     linuxOptions,
 	})
 	if err != nil {
 		duration := time.Since(start)
@@ -760,6 +772,15 @@ func reconcileStateFileOnce(ctx context.Context, path, node, storeName string, s
 		observeAgentReconcileFailure(metrics, agent.ReconcileResult{Node: node}, storeName, err, time.Since(start))
 		return err
 	}
+	linuxOptions, closeLinuxOptions, err := linuxDatapathOptionsWithOVSDBSyncer(ctx)
+	if err != nil {
+		duration := time.Since(start)
+		result := agent.ReconcileResult{Node: node}
+		printReconcileFailure(result, storeName, err, duration)
+		observeAgentReconcileFailure(metrics, result, storeName, err, duration)
+		return err
+	}
+	defer closeLinuxOptions()
 	result, err := agent.ReconcileNodeWithOptions(ctx, state, agent.ReconcileOptions{
 		Node:                              node,
 		Store:                             store,
@@ -770,7 +791,7 @@ func reconcileStateFileOnce(ctx context.Context, path, node, storeName string, s
 		PolicyPressureMitigationThreshold: policyPressureMitigationThreshold(),
 		PolicyPressureQuarantine:          policyPressureQuarantine(),
 		DeferPolicyApply:                  agent.HasActivePolicyRollouts(state, node),
-		LinuxDatapath:                     linuxDatapathOptions(),
+		LinuxDatapath:                     linuxOptions,
 	})
 	if err != nil {
 		duration := time.Since(start)
@@ -2209,6 +2230,47 @@ func linuxDatapathOptions() *linuxdatapath.Options {
 		CleanupStale:         os.Getenv("NETLOOM_LINUX_DATAPATH_CLEANUP") == "1",
 		StrictProviderHealth: os.Getenv("NETLOOM_PROVIDER_HEALTH_STRICT") == "1",
 	}
+}
+
+func linuxDatapathOptionsWithOVSDBSyncer(ctx context.Context) (*linuxdatapath.Options, func(), error) {
+	options := linuxDatapathOptions()
+	if options == nil || !options.SyncOVSDB {
+		return options, func() {}, nil
+	}
+	endpoint := strings.TrimSpace(os.Getenv("NETLOOM_OVSDB_ENDPOINT"))
+	if endpoint == "" {
+		return options, func() {}, nil
+	}
+	client, closeFn, err := newOpenVSwitchClient(ctx, endpoint)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	options.ProviderOVSDBSyncer = linuxdatapath.NewLibOVSDBProviderSyncer(client)
+	return options, closeFn, nil
+}
+
+func newOpenVSwitchClient(ctx context.Context, endpoint string) (libovsdbclient.Client, func(), error) {
+	dbModel, err := vswitch.FullDatabaseModel()
+	if err != nil {
+		return nil, nil, fmt.Errorf("build Open_vSwitch libovsdb model: %w", err)
+	}
+	client, err := libovsdbclient.NewOVSDBClient(dbModel, libovsdbclient.WithEndpoint(endpoint))
+	if err != nil {
+		return nil, nil, fmt.Errorf("create Open_vSwitch libovsdb client: %w", err)
+	}
+	if err := client.Connect(ctx); err != nil {
+		client.Close()
+		return nil, nil, fmt.Errorf("connect Open_vSwitch libovsdb endpoint %s: %w", endpoint, err)
+	}
+	if _, err := client.MonitorAll(ctx); err != nil {
+		client.Disconnect()
+		client.Close()
+		return nil, nil, fmt.Errorf("monitor Open_vSwitch libovsdb endpoint %s: %w", endpoint, err)
+	}
+	return client, func() {
+		client.Disconnect()
+		client.Close()
+	}, nil
 }
 
 func getenvDefault(key, fallback string) string {

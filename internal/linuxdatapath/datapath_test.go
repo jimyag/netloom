@@ -181,6 +181,74 @@ func TestPlanSyncsProviderBridgeMappingsToOVSDB(t *testing.T) {
 	}
 }
 
+func TestApplyCommandUsesDirectProviderOVSDBSyncer(t *testing.T) {
+	state := control.DesiredState{
+		ProviderNetworks: []model.ProviderNetwork{{
+			Name: "physnet-a",
+			Nodes: []model.ProviderNetworkNode{{
+				Node:      "node-a",
+				Interface: "eth1",
+			}},
+		}},
+		Subnets: []model.Subnet{{
+			Name:            "apps",
+			VPC:             "prod",
+			CIDR:            netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway:         netip.MustParseAddr("10.10.0.1"),
+			ProviderNetwork: "physnet-a",
+			VLAN:            100,
+		}},
+		Endpoints: []model.Endpoint{{
+			ID:     "pod-a",
+			VPC:    "prod",
+			Subnet: "apps",
+			IP:     netip.MustParseAddr("10.10.0.10"),
+			Node:   "node-a",
+		}},
+	}
+	syncer := &recordingProviderOVSDBSyncer{}
+	var executed []Operation
+	_, err := Apply(context.Background(), state, Options{
+		Node:                "node-a",
+		LocalDevice:         "nl0",
+		Backend:             "command",
+		SyncOVSDB:           true,
+		ProviderOVSDBSyncer: syncer,
+		Executor: commandExecutorFunc(func(_ context.Context, op Operation) error {
+			executed = append(executed, op)
+			if op.Command == "ovs-vsctl" {
+				t.Fatalf("direct provider OVSDB syncer should avoid ovs-vsctl op: %+v", op)
+			}
+			return nil
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if syncer.calls != 1 || syncer.cleanup {
+		t.Fatalf("syncer calls=%d cleanup=%t, want one non-cleanup sync", syncer.calls, syncer.cleanup)
+	}
+	if got := syncer.rows.OpenVSwitch.ExternalIDs["ovn-bridge-mappings"]; !strings.Contains(got, "physnet-a:") {
+		t.Fatalf("syncer mappings = %q, want physnet-a mapping", got)
+	}
+	if len(executed) == 0 {
+		t.Fatal("expected non-OVSDB datapath operations to execute")
+	}
+}
+
+type recordingProviderOVSDBSyncer struct {
+	calls   int
+	rows    ProviderOVSDBDesiredRows
+	cleanup bool
+}
+
+func (s *recordingProviderOVSDBSyncer) SyncProviderOVSDB(_ context.Context, rows ProviderOVSDBDesiredRows, cleanup bool) error {
+	s.calls++
+	s.rows = rows
+	s.cleanup = cleanup
+	return nil
+}
+
 func TestPlanClearsProviderBridgeMappingsWhenOVSDBSyncHasNoProviders(t *testing.T) {
 	ops, _, err := Plan(context.Background(), control.DesiredState{}, Options{
 		Node:      "node-a",

@@ -35,6 +35,7 @@ type Options struct {
 	ProviderLinks        map[string]string
 	ProviderInventory    []ProviderInterface
 	ProviderOVSDBStatus  []ProviderOVSDBStatus
+	ProviderOVSDBSyncer  ProviderOVSDBSyncer
 	SyncOVSDB            bool
 	NetNSPrefix          string
 	WorkloadIF           string
@@ -115,6 +116,10 @@ type ProviderNetworkStatus struct {
 
 type CommandExecutor struct{}
 
+type ProviderOVSDBSyncer interface {
+	SyncProviderOVSDB(ctx context.Context, rows ProviderOVSDBDesiredRows, cleanup bool) error
+}
+
 const (
 	linuxMainRouteTable        = 254
 	linuxPolicyRuleProtocolID  = 186
@@ -178,8 +183,12 @@ func Apply(ctx context.Context, state control.DesiredState, options Options) (Re
 			applyProviderPlanningIssue(&result, err)
 			return result, err
 		}
+		planOptions := options
+		if options.ProviderOVSDBSyncer != nil {
+			planOptions.SyncOVSDB = false
+		}
 		var ops []Operation
-		ops, result, err = Plan(ctx, state, options)
+		ops, result, err = Plan(ctx, state, planOptions)
 		if err != nil {
 			return result, err
 		}
@@ -189,6 +198,11 @@ func Apply(ctx context.Context, state control.DesiredState, options Options) (Re
 		}
 		for _, op := range ops {
 			if err := executor.Execute(ctx, op); err != nil {
+				return result, err
+			}
+		}
+		if options.SyncOVSDB && options.ProviderOVSDBSyncer != nil {
+			if err := options.ProviderOVSDBSyncer.SyncProviderOVSDB(ctx, desiredProviderOVSDBRows(providerSpecs), options.CleanupStale); err != nil {
 				return result, err
 			}
 		}
