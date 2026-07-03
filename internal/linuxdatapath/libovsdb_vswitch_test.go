@@ -228,6 +228,64 @@ func TestLibOVSDBProviderSyncerReadsProviderStatusDrift(t *testing.T) {
 	}
 }
 
+func TestLibOVSDBProviderSyncerReadsProviderControllerDrift(t *testing.T) {
+	client, cleanup := newTestVSwitchClient(t)
+	defer cleanup()
+	ctx := context.Background()
+	insertVSwitchRows(t, ctx, client, &vswitch.OpenvSwitch{})
+
+	rows := desiredProviderOVSDBRows([]providerNetworkLinkSpec{{
+		ProviderNetwork: "physnet-a",
+		ParentDevice:    "eth1",
+		VLAN:            100,
+		Name:            "nlv100",
+	}})
+	syncer := NewLibOVSDBProviderSyncer(client)
+	if err := syncer.SyncProviderOVSDB(ctx, rows, false); err != nil {
+		t.Fatal(err)
+	}
+	bridge := singleBridgeByName(t, ctx, client, providerNetworkBridgeName("physnet-a"))
+	controller := &vswitch.Controller{
+		UUID:        "@ctl_physnet_a",
+		Target:      "tcp:192.0.2.10:6653",
+		IsConnected: false,
+	}
+	createController, err := client.Create(controller)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bridge.Controller = []string{controller.UUID}
+	updateBridge, err := client.Where(bridge).Update(bridge, &bridge.Controller)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ops := append(createController, updateBridge...)
+	transactVSwitchOps(t, ctx, client, ops)
+
+	statuses, err := syncer.ReadProviderOVSDBStatus(ctx, rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(statuses) != 1 || statuses[0].ControllerState != "disconnected" {
+		t.Fatalf("statuses = %+v, want disconnected controller", statuses)
+	}
+
+	controller = singleControllerByTarget(t, ctx, client, "tcp:192.0.2.10:6653")
+	controller.IsConnected = true
+	connectOps, err := client.Where(controller).Update(controller, &controller.IsConnected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transactVSwitchOps(t, ctx, client, connectOps)
+	statuses, err = syncer.ReadProviderOVSDBStatus(ctx, rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(statuses) != 1 || statuses[0].ControllerState != "up" {
+		t.Fatalf("statuses = %+v, want connected controller", statuses)
+	}
+}
+
 func TestLibOVSDBProviderSyncerReadsProviderQoSDrift(t *testing.T) {
 	client, cleanup := newTestVSwitchClient(t)
 	defer cleanup()
@@ -466,6 +524,26 @@ func singleQoSByProviderName(t *testing.T, ctx context.Context, client libovsdbc
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("qos %s rows = %+v, want one", name, rows)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func singleControllerByTarget(t *testing.T, ctx context.Context, client libovsdbclient.Client, target string) *vswitch.Controller {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		var rows []vswitch.Controller
+		if err := client.WhereCache(func(row *vswitch.Controller) bool {
+			return row.Target == target
+		}).List(ctx, &rows); err != nil {
+			t.Fatal(err)
+		}
+		if len(rows) == 1 {
+			return &rows[0]
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("controller %s rows = %+v, want one", target, rows)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

@@ -182,6 +182,12 @@ func (s *LibOVSDBProviderSyncer) ReadProviderOVSDBStatus(ctx context.Context, ro
 		}
 		if !ok {
 			status.BridgeState = "missing"
+		} else {
+			controllerState, err := s.bridgeControllerState(ctx, bridge)
+			if err != nil {
+				return nil, err
+			}
+			status.ControllerState = controllerState
 		}
 		if !ovsBridgeMappingsContain(mappings, spec.ProviderNetwork, bridgeName) {
 			status.MappingState = "missing"
@@ -245,6 +251,40 @@ func (s *LibOVSDBProviderSyncer) ensureQoS(ctx context.Context, desired vswitch.
 		return "", nil, fmt.Errorf("update OVS QoS %s: %w", name, err)
 	}
 	return existing.UUID, ops, nil
+}
+
+func (s *LibOVSDBProviderSyncer) bridgeControllerState(ctx context.Context, bridge *vswitch.Bridge) (string, error) {
+	if bridge == nil || len(bridge.Controller) == 0 {
+		return "", nil
+	}
+	connected := false
+	for _, controllerUUID := range bridge.Controller {
+		controller, ok, err := s.controllerByUUID(ctx, controllerUUID)
+		if err != nil {
+			return "", err
+		}
+		if !ok {
+			return "missing", nil
+		}
+		if controller.IsConnected {
+			connected = true
+		}
+	}
+	if connected {
+		return "up", nil
+	}
+	return "disconnected", nil
+}
+
+func (s *LibOVSDBProviderSyncer) controllerByUUID(ctx context.Context, uuid string) (*vswitch.Controller, bool, error) {
+	var rows []vswitch.Controller
+	if err := s.client.WhereCache(func(row *vswitch.Controller) bool { return row.UUID == uuid }).List(ctx, &rows); err != nil {
+		return nil, false, fmt.Errorf("list OVS controller %s: %w", uuid, err)
+	}
+	if len(rows) == 0 {
+		return nil, false, nil
+	}
+	return &rows[0], true, nil
 }
 
 func (s *LibOVSDBProviderSyncer) ensureBridge(ctx context.Context, desired vswitch.Bridge) (string, []ovsdb.Operation, error) {
