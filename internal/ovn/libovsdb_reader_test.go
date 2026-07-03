@@ -564,6 +564,76 @@ func TestAuditManagedObjectsReportsRouterAndSwitchPortAttachmentDriftFromLibOVSD
 	}
 }
 
+func TestAuditManagedObjectsReportsIPv6RouterPortRADriftFromLibOVSDBReader(t *testing.T) {
+	ctx := context.Background()
+	client, closeFn := newTestOVNNBClient(t)
+	defer closeFn()
+
+	if _, err := client.MonitorAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	writer := NewLibOVSDBTopologyWriter(client)
+	subnet := netloommodel.Subnet{
+		Name:    "apps-v6",
+		VPC:     "prod",
+		CIDR:    netip.MustParsePrefix("fd00:10::/64"),
+		Gateway: netip.MustParseAddr("fd00:10::1"),
+		DHCP:    netloommodel.DHCPOptions{Enabled: true},
+	}
+	if err := writer.EnsureVPC(ctx, netloommodel.VPC{Name: "prod"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureSubnet(ctx, subnet); err != nil {
+		t.Fatal(err)
+	}
+	desired := topology.State{
+		VPCs: map[string]netloommodel.VPC{
+			"prod": {Name: "prod"},
+		},
+		Subnets: map[string]netloommodel.Subnet{
+			subnetStateKey("prod", "apps-v6"): subnet,
+		},
+	}
+	reader := NewLibOVSDBManagedReader(client)
+	requireEventually(t, func() bool {
+		stats, err := AuditManagedObjectsFromReaderWithDesired(ctx, reader, desired)
+		return err == nil && stats.UnexpectedManagedRows == 0 && stats.MissingManagedRows == 0 &&
+			stats.DriftedManagedRows == 0 && stats.DriftedManagedFields == 0
+	})
+
+	var ports []ovnnb.LogicalRouterPort
+	if err := client.WhereCache(func(row *ovnnb.LogicalRouterPort) bool {
+		return row.ExternalIDs["netloom_subnet"] == "apps-v6"
+	}).List(ctx, &ports); err != nil {
+		t.Fatal(err)
+	}
+	if len(ports) != 1 {
+		t.Fatalf("logical router ports = %d, want one subnet router port", len(ports))
+	}
+	ports[0].Ipv6RaConfigs = nil
+	ops, err := client.Where(&ports[0]).Update(&ports[0], &ports[0].Ipv6RaConfigs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := client.Transact(ctx, ops...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, ops); err != nil {
+		t.Fatalf("operation errors=%+v err=%v", opErrors, err)
+	}
+
+	var stats AuditStats
+	requireEventually(t, func() bool {
+		var err error
+		stats, err = AuditManagedObjectsFromReaderWithDesired(ctx, reader, desired)
+		return err == nil && stats.DriftedManagedRows == 1 && stats.DriftedManagedFields == 1
+	})
+	if stats.DriftedManagedRows != 1 || stats.DriftedManagedFields != 1 {
+		t.Fatalf("audit stats = %+v, want one IPv6 router port RA config drift", stats)
+	}
+}
+
 func TestAuditManagedObjectsReportsDHCPOptionAttachmentDriftFromLibOVSDBReader(t *testing.T) {
 	ctx := context.Background()
 	client, closeFn := newTestOVNNBClient(t)

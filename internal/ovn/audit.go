@@ -287,9 +287,10 @@ func expectedManagedAuditColumns(desired topology.State) map[string]map[string]s
 	for _, subnet := range desired.Subnets {
 		addAuditExpectedColumns(out, "Logical_Switch", logicalSwitchColumnFields(subnet), "netloom_vpc", subnet.VPC, "netloom_subnet", subnet.Name)
 		addAuditExpectedColumns(out, "Logical_Router_Port", map[string]string{
-			"name":     routerPortName(logicalRouter(subnet.VPC), subnet.Name),
-			"mac":      deterministicMAC(subnet),
-			"networks": strings.Join([]string{subnet.Gateway.String() + "/" + fmt.Sprint(subnet.CIDR.Bits())}, ","),
+			"name":            routerPortName(logicalRouter(subnet.VPC), subnet.Name),
+			"mac":             deterministicMAC(subnet),
+			"networks":        strings.Join([]string{subnet.Gateway.String() + "/" + fmt.Sprint(subnet.CIDR.Bits())}, ","),
+			"ipv6_ra_configs": routerPortIPv6RAConfigsField(subnet),
 		}, "netloom_subnet", subnet.Name)
 		addAuditExpectedColumns(out, "Logical_Switch_Port", map[string]string{
 			"name":      switchRouterPortName(logicalSwitch(subnet.VPC, subnet.Name), subnet.Name),
@@ -549,6 +550,13 @@ func logicalSwitchColumnFields(subnet model.Subnet) map[string]string {
 		"other_config": mapField(logicalSwitchOtherConfig(subnet)),
 	}
 	return fields
+}
+
+func routerPortIPv6RAConfigsField(subnet model.Subnet) string {
+	if !subnet.CIDR.Addr().Is6() || !subnet.DHCP.Enabled {
+		return ""
+	}
+	return mapField(map[string]string{"address_mode": "dhcpv6_stateful"})
 }
 
 func mapField(values map[string]string) string {

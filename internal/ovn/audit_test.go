@@ -325,6 +325,43 @@ func TestAuditManagedObjectsFromReaderReportsRouterAndSwitchPortAttachmentDrift(
 	}
 }
 
+func TestAuditManagedObjectsFromReaderReportsIPv6RouterPortRADrift(t *testing.T) {
+	subnet := model.Subnet{
+		Name:    "apps-v6",
+		VPC:     "prod",
+		CIDR:    netip.MustParsePrefix("fd00:10::/64"),
+		Gateway: netip.MustParseAddr("fd00:10::1"),
+		DHCP:    model.DHCPOptions{Enabled: true},
+	}
+	reader := fakeManagedOVNReader{rows: map[string][]ManagedOVNRow{
+		"Logical_Router_Port": {
+			{Table: "Logical_Router_Port", UUID: "lrp-apps-v6", ExternalIDs: map[string]string{
+				"netloom_owner":  "netloom",
+				"netloom_subnet": "apps-v6",
+			}, Fields: map[string]string{
+				"name":            routerPortName(logicalRouter("prod"), "apps-v6"),
+				"mac":             deterministicMAC(subnet),
+				"networks":        "fd00:10::1/64",
+				"ipv6_ra_configs": "",
+			}},
+		},
+	}}
+	desired := topology.State{
+		VPCs: map[string]model.VPC{"prod": {Name: "prod"}},
+		Subnets: map[string]model.Subnet{
+			subnetStateKey("prod", "apps-v6"): subnet,
+		},
+	}
+
+	stats, err := AuditManagedObjectsFromReaderWithDesired(context.Background(), reader, desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.DriftedManagedRows != 1 || stats.DriftedManagedFields != 1 {
+		t.Fatalf("IPv6 router port RA drift stats = %+v, want one RA config field drift", stats)
+	}
+}
+
 func TestAuditManagedObjectsFromReaderReportsNATParentAttachmentDrift(t *testing.T) {
 	nat := model.NATRule{
 		Name:       "egress",
