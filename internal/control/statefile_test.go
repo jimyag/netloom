@@ -20,7 +20,7 @@ func TestLoadDesiredStateJSONDecodesSnakeCaseState(t *testing.T) {
 		"security_groups": [{"name": "web", "vpc": "prod", "tier": 1, "rules": [{"id": "allow-web", "priority": 10, "direction": "ingress", "protocol": "tcp", "remote_cidr": "10.10.1.0/24", "except_cidrs": ["10.10.1.128/25"], "ports": [{"from": 443, "to": 443}], "action": "allow", "stateful": true}, {"id": "allow-api", "priority": 20, "direction": "egress", "protocol": "tcp", "remote_fqdns": [{"match_name": "api.example.com"}, {"match_pattern": "*.svc.example.com"}], "ports": [{"from": 443, "to": 443}], "action": "allow"}, {"id": "allow-corp", "priority": 30, "direction": "egress", "protocol": "tcp", "remote_cidr_group": "corp", "ports": [{"from": 8443, "to": 8443}], "action": "allow"}, {"id": "allow-icmp-echo", "priority": 40, "direction": "egress", "protocol": "icmp", "remote_cidr": "198.51.100.0/24", "icmp_type": 8, "icmp_code": 0, "action": "allow"}, {"id": "allow-named-http", "priority": 50, "direction": "ingress", "protocol": "tcp", "remote_cidr": "10.10.1.0/24", "named_ports": ["http"], "action": "allow"}, {"id": "allow-world", "priority": 60, "direction": "egress", "protocol": "tcp", "remote_entities": ["world"], "ports": [{"from": 443, "to": 443}], "action": "allow"}, {"id": "allow-selector", "priority": 70, "direction": "ingress", "protocol": "tcp", "remote_endpoint_selector": {"app": "client"}, "remote_endpoint_expressions": [{"key": "env", "operator": "In", "values": ["prod"]}], "ports": [{"from": 9443, "to": 9443}], "action": "allow"}, {"id": "allow-service", "priority": 80, "direction": "egress", "protocol": "any", "remote_service": "web", "action": "allow"}]}],
 		"cidr_groups": [{"name": "corp", "vpc": "prod", "cidrs": ["10.20.0.0/16", "2001:db8::/64"], "entries": [{"cidr": "198.51.100.0/24", "except_cidrs": ["198.51.100.128/25"]}]}],
 		"dns_records": [{"name": "api.example.com", "ips": ["203.0.113.10"], "ttl_seconds": 60, "observed_at": "2026-05-30T12:00:00Z"}],
-		"policy_rollouts": [{"name": "web-canary", "node": "node-a", "endpoints": ["prod/pod-a"], "batch_size": 1, "pressure_aware": true, "pressure_threshold_percent": 80, "pressure_aware_min_batch_size": 1, "slo_gated": true, "slo_drop_threshold_percent": 5, "slo_min_packets": 100, "slo_window_count": 2, "slo_window_interval_ms": 250, "approval_required": true, "approved": true, "pause_after_batches": 1, "promotion_percent": 50, "probes": [{"name": "web-ready", "type": "http", "url": "http://127.0.0.1:8080/healthz", "expected_status": 204, "timeout_ms": 1000}]}]
+		"policy_rollouts": [{"name": "web-canary", "node": "node-a", "endpoints": ["prod/pod-a"], "batch_size": 1, "pressure_aware": true, "pressure_threshold_percent": 80, "pressure_aware_min_batch_size": 1, "slo_gated": true, "slo_drop_threshold_percent": 5, "slo_min_packets": 100, "slo_window_count": 2, "slo_window_interval_ms": 250, "approval_required": true, "approved": true, "approval_ref": "chg-1234", "pause_after_batches": 1, "promotion_percent": 50, "probes": [{"name": "web-ready", "type": "http", "url": "http://127.0.0.1:8080/healthz", "expected_status": 204, "timeout_ms": 1000}]}]
 	}`))
 	if err != nil {
 		t.Fatal(err)
@@ -144,6 +144,9 @@ func TestLoadDesiredStateJSONDecodesSnakeCaseState(t *testing.T) {
 	}
 	if !state.PolicyRollouts[0].ApprovalRequired || !state.PolicyRollouts[0].Approved {
 		t.Fatalf("policy rollout approval settings = %+v", state.PolicyRollouts[0])
+	}
+	if got := state.PolicyRollouts[0].ApprovalRef; got != "chg-1234" {
+		t.Fatalf("policy rollout approval_ref = %s, want chg-1234", got)
 	}
 	if state.PolicyRollouts[0].PauseAfterBatches != 1 {
 		t.Fatalf("policy rollout pause_after_batches = %d, want 1", state.PolicyRollouts[0].PauseAfterBatches)

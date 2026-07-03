@@ -1886,7 +1886,7 @@ func TestPolicyEndpointAPIRolloutRequiresApproval(t *testing.T) {
 		Node: "node-a",
 	}, "memory", time.Millisecond, state)
 
-	body := bytes.NewBufferString(`{"endpoints":["prod/pod-a"],"batch_size":1,"approval_required":true}`)
+	body := bytes.NewBufferString(`{"endpoints":["prod/pod-a"],"batch_size":1,"approval_required":true,"approval_ref":"chg-5678"}`)
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/policy/endpoints/rollout", body)
 	metrics.handlePolicyEndpoints(recorder, request)
@@ -1897,14 +1897,14 @@ func TestPolicyEndpointAPIRolloutRequiresApproval(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode policy endpoint rollout response: %v\n%s", err, recorder.Body.String())
 	}
-	if got.RolledOut || !got.Rollout.ApprovalRequired || !got.Rollout.ApprovalPending || !got.Rollout.Paused || got.Rollout.Applied != 0 || got.Rollout.Skipped != 1 {
+	if got.RolledOut || !got.Rollout.ApprovalRequired || !got.Rollout.ApprovalPending || !got.Rollout.Paused || got.Rollout.ApprovalRef != "chg-5678" || got.Rollout.Applied != 0 || got.Rollout.Skipped != 1 {
 		t.Fatalf("rollout response = %+v, want approval-gated paused rollout", got)
 	}
 	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 0 {
 		t.Fatalf("pod-a entries = %+v, want no mutation before approval", entries)
 	}
 
-	body = bytes.NewBufferString(`{"endpoints":["prod/pod-a"],"batch_size":1,"approval_required":true,"approved":true}`)
+	body = bytes.NewBufferString(`{"endpoints":["prod/pod-a"],"batch_size":1,"approval_required":true,"approved":true,"approval_ref":"chg-5678"}`)
 	recorder = httptest.NewRecorder()
 	request = httptest.NewRequest(http.MethodPost, "/policy/endpoints/rollout", body)
 	metrics.handlePolicyEndpoints(recorder, request)
@@ -1915,7 +1915,7 @@ func TestPolicyEndpointAPIRolloutRequiresApproval(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode approved rollout response: %v\n%s", err, recorder.Body.String())
 	}
-	if !got.RolledOut || !got.Rollout.Approved || got.Rollout.ApprovalPending || got.Rollout.Applied != 1 {
+	if !got.RolledOut || !got.Rollout.Approved || got.Rollout.ApprovalPending || got.Rollout.ApprovalRef != "chg-5678" || got.Rollout.Applied != 1 {
 		t.Fatalf("approved rollout response = %+v, want applied approval-gated rollout", got)
 	}
 	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 1 {

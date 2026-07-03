@@ -1490,6 +1490,7 @@ func TestApplyPolicyRolloutsRequiresApproval(t *testing.T) {
 		Endpoints:        []string{"prod/pod-a", "prod/pod-b"},
 		BatchSize:        1,
 		ApprovalRequired: true,
+		ApprovalRef:      "chg-1234",
 	}}
 	store := dataplane.NewInMemoryPolicyStore()
 
@@ -1505,7 +1506,7 @@ func TestApplyPolicyRolloutsRequiresApproval(t *testing.T) {
 	if result.PolicyRollouts != 1 || result.PolicyRolloutPaused != 1 || result.PolicyRolloutApplied != 0 || result.PolicyRolloutSkipped != 2 {
 		t.Fatalf("rollout result = %+v rollouts=%+v, want approval-gated pause", result, rollouts)
 	}
-	if len(rollouts) != 1 || !rollouts[0].Rollout.ApprovalRequired || !rollouts[0].Rollout.ApprovalPending || !rollouts[0].Rollout.Paused {
+	if len(rollouts) != 1 || !rollouts[0].Rollout.ApprovalRequired || !rollouts[0].Rollout.ApprovalPending || !rollouts[0].Rollout.Paused || rollouts[0].Rollout.ApprovalRef != "chg-1234" {
 		t.Fatalf("rollouts = %+v, want approval pending pause", rollouts)
 	}
 	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 0 {
@@ -1520,7 +1521,7 @@ func TestApplyPolicyRolloutsRequiresApproval(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rollouts) != 1 || !rollouts[0].Rollout.Approved || rollouts[0].Rollout.ApprovalPending || rollouts[0].Rollout.Applied != 2 {
+	if len(rollouts) != 1 || !rollouts[0].Rollout.Approved || rollouts[0].Rollout.ApprovalPending || rollouts[0].Rollout.Applied != 2 || rollouts[0].Rollout.ApprovalRef != "chg-1234" {
 		t.Fatalf("approved rollouts = %+v, want applied rollout", rollouts)
 	}
 	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 1 {

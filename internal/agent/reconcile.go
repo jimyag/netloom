@@ -171,6 +171,7 @@ type PolicyEndpointRolloutOptions struct {
 	Probes                    []control.PolicyRolloutProbe
 	ApprovalRequired          bool
 	Approved                  bool
+	ApprovalRef               string
 	Paused                    bool
 	PauseAfterBatches         int
 	PromotionPercent          uint32
@@ -200,6 +201,7 @@ type PolicyEndpointRollout struct {
 	Probes                   []PolicyEndpointProbeResult `json:"probes,omitempty"`
 	ApprovalRequired         bool                        `json:"approval_required,omitempty"`
 	Approved                 bool                        `json:"approved,omitempty"`
+	ApprovalRef              string                      `json:"approval_ref,omitempty"`
 	ApprovalPending          bool                        `json:"approval_pending,omitempty"`
 	Paused                   bool                        `json:"paused,omitempty"`
 	PauseAfterBatches        int                         `json:"pause_after_batches,omitempty"`
@@ -385,6 +387,7 @@ func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, opt
 		SLOWindowIntervalMS:      uint32(rolloutOptions.SLOWindowInterval / time.Millisecond),
 		ApprovalRequired:         rolloutOptions.ApprovalRequired,
 		Approved:                 rolloutOptions.Approved,
+		ApprovalRef:              rolloutOptions.ApprovalRef,
 		Paused:                   rolloutOptions.Paused,
 		PauseAfterBatches:        rolloutOptions.PauseAfterBatches,
 		PromotionPercent:         rolloutOptions.PromotionPercent,
@@ -903,6 +906,7 @@ func ApplyPolicyRollouts(ctx context.Context, state control.DesiredState, option
 			Probes:                    append([]control.PolicyRolloutProbe(nil), rollout.Probes...),
 			ApprovalRequired:          rollout.ApprovalRequired,
 			Approved:                  rollout.Approved,
+			ApprovalRef:               rollout.ApprovalRef,
 			Paused:                    rollout.Paused,
 			PauseAfterBatches:         rollout.PauseAfterBatches,
 			PromotionPercent:          rollout.PromotionPercent,

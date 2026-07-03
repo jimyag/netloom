@@ -385,8 +385,10 @@ dry-run plan, regenerate, quarantine, unquarantine, and multi-endpoint rollout
 actions for scoped remediation and staged policy rollout. Rollout requests plan
 all requested endpoints first, support dry-run and configurable batch size, apply
 endpoint maps through the same policy backend path as reconcile, and stop on the
-first failed endpoint while reporting later endpoints as skipped. A rollout can
-also enable SLO gating; after each batch the agent reads policy rule telemetry
+first failed endpoint while reporting later endpoints as skipped. Approval-gated
+rollouts can carry `approval_ref` so an external change request or approval
+ticket is preserved in the rollout response and history. A rollout can also
+enable SLO gating; after each batch the agent reads policy rule telemetry
 for already-applied endpoints, compares drop/reject percentage with the
 configured threshold once enough packets have been observed, and rolls back the
 current rollout if the canary violates the SLO. The TCX L4 ACL map value
