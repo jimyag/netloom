@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
@@ -169,7 +170,8 @@ func TestPlanSyncsProviderBridgeMappingsToOVSDB(t *testing.T) {
 		{Command: "ovs-vsctl", Args: []string{"--may-exist", "add-br", bridge}},
 		{Command: "ovs-vsctl", Args: []string{"set", "bridge", bridge, "external_ids:netloom_owner=netloom", "external_ids:netloom_provider_network=physnet-a"}},
 		planProviderOVSDBPort(bridge, link),
-		{Command: "ovs-vsctl", Args: []string{"set", "interface", link, "external_ids:netloom_owner=netloom", "external_ids:netloom_provider_network=physnet-a", "external_ids:netloom_parent_device=eth1", "external_ids:netloom_vlan=100"}},
+		{Command: "ovs-vsctl", Args: []string{"set", "port", link, "external_ids:netloom_owner=netloom", "external_ids:netloom_parent_device=eth1", "external_ids:netloom_provider_network=physnet-a", "external_ids:netloom_vlan=100"}},
+		{Command: "ovs-vsctl", Args: []string{"set", "interface", link, "external_ids:netloom_owner=netloom", "external_ids:netloom_parent_device=eth1", "external_ids:netloom_provider_network=physnet-a", "external_ids:netloom_vlan=100"}},
 		{Command: "ovs-vsctl", Args: []string{"set", "Open_vSwitch", ".", "external_ids:netloom_owner=netloom", "external_ids:ovn-bridge-mappings=physnet-a:" + bridge}},
 		{Command: "ip", Args: []string{"link", "set", "nl0", "up"}},
 		{Command: "ip", Args: []string{"addr", "replace", "10.10.0.10/32", "dev", "nl0"}},
@@ -224,6 +226,44 @@ func TestPlanProviderOVSDBMappingsDeduplicatesProviderBridgeMappings(t *testing.
 	want := Operation{Command: "ovs-vsctl", Args: []string{"set", "Open_vSwitch", ".", "external_ids:netloom_owner=netloom", "external_ids:ovn-bridge-mappings=physnet-a:" + bridge}}
 	if !reflect.DeepEqual(last, want) {
 		t.Fatalf("last op = %#v, want %#v", last, want)
+	}
+}
+
+func TestDesiredProviderOVSDBRowsBuildsTypedVSwitchRows(t *testing.T) {
+	bridgeA := providerNetworkBridgeName("physnet-a")
+	bridgeB := providerNetworkBridgeName("physnet-b")
+	rows := desiredProviderOVSDBRows([]providerNetworkLinkSpec{
+		{ProviderNetwork: "physnet-b", ParentDevice: "eth2", VLAN: 200, Name: "nlv200"},
+		{ProviderNetwork: "physnet-a", ParentDevice: "eth1", VLAN: 100, Name: "nlv100"},
+		{ProviderNetwork: "physnet-a", ParentDevice: "eth1", VLAN: 300, Name: "nlv300"},
+	})
+
+	if got, want := rows.OpenVSwitch.ExternalIDs["ovn-bridge-mappings"], "physnet-a:"+bridgeA+",physnet-b:"+bridgeB; got != want {
+		t.Fatalf("ovn-bridge-mappings = %q, want %q", got, want)
+	}
+	wantBridges := []string{bridgeA, bridgeB}
+	sort.Strings(wantBridges)
+	if !reflect.DeepEqual(rows.OpenVSwitch.Bridges, wantBridges) {
+		t.Fatalf("open_vswitch bridges = %#v", rows.OpenVSwitch.Bridges)
+	}
+	if len(rows.Bridges) != 2 || rows.Bridges[0].Name != wantBridges[0] || rows.Bridges[1].Name != wantBridges[1] {
+		t.Fatalf("bridges = %#v", rows.Bridges)
+	}
+	bridgePorts := make(map[string][]string, len(rows.Bridges))
+	for _, bridge := range rows.Bridges {
+		bridgePorts[bridge.ExternalIDs["netloom_provider_network"]] = bridge.Ports
+	}
+	if !reflect.DeepEqual(bridgePorts["physnet-a"], []string{"nlv100", "nlv300"}) {
+		t.Fatalf("bridge physnet-a ports = %#v", bridgePorts["physnet-a"])
+	}
+	if len(rows.Ports) != 3 || rows.Ports[0].Name != "nlv100" || rows.Ports[0].Interfaces[0] != "nlv100" {
+		t.Fatalf("ports = %#v", rows.Ports)
+	}
+	if got := rows.Interfaces[0].ExternalIDs["netloom_parent_device"]; got != "eth1" {
+		t.Fatalf("interface parent external id = %q, want eth1", got)
+	}
+	if got := rows.Interfaces[2].ExternalIDs["netloom_vlan"]; got != "300" {
+		t.Fatalf("interface vlan external id = %q, want 300", got)
 	}
 }
 

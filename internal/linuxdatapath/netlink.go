@@ -618,6 +618,8 @@ func readProviderOVSDBStatuses(ctx context.Context, specs []providerNetworkLinkS
 			status.PortState = "missing"
 		} else if strings.TrimSpace(currentBridge) != bridge {
 			status.PortState = "bridge-mismatch"
+		} else {
+			status.PortState = providerOVSDBPortState(ctx, spec)
 		}
 		if status.InterfaceState == "up" {
 			status.InterfaceState = providerOVSDBInterfaceState(ctx, spec)
@@ -627,13 +629,21 @@ func readProviderOVSDBStatuses(ctx context.Context, specs []providerNetworkLinkS
 	return statuses
 }
 
+func providerOVSDBPortState(ctx context.Context, spec providerNetworkLinkSpec) string {
+	for key, want := range providerOVSDBLinkExternalIDs(spec) {
+		got, err := ovsVSCTLRead(ctx, "get", "port", spec.Name, "external_ids:"+key)
+		if err != nil {
+			return "missing"
+		}
+		if ovsDBValue(got) != want {
+			return "external-ids-mismatch"
+		}
+	}
+	return "up"
+}
+
 func providerOVSDBInterfaceState(ctx context.Context, spec providerNetworkLinkSpec) string {
-	for key, want := range map[string]string{
-		"netloom_owner":            "netloom",
-		"netloom_provider_network": spec.ProviderNetwork,
-		"netloom_parent_device":    spec.ParentDevice,
-		"netloom_vlan":             strconv.Itoa(int(spec.VLAN)),
-	} {
+	for key, want := range providerOVSDBLinkExternalIDs(spec) {
 		got, err := ovsVSCTLRead(ctx, "get", "interface", spec.Name, "external_ids:"+key)
 		if err != nil {
 			return "missing"
@@ -643,6 +653,15 @@ func providerOVSDBInterfaceState(ctx context.Context, spec providerNetworkLinkSp
 		}
 	}
 	return "up"
+}
+
+func providerOVSDBLinkExternalIDs(spec providerNetworkLinkSpec) map[string]string {
+	return map[string]string{
+		"netloom_owner":            "netloom",
+		"netloom_provider_network": spec.ProviderNetwork,
+		"netloom_parent_device":    spec.ParentDevice,
+		"netloom_vlan":             strconv.Itoa(int(spec.VLAN)),
+	}
 }
 
 func ovsBridgeMappingsContain(raw, providerNetwork, bridge string) bool {

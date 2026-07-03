@@ -857,25 +857,42 @@ func planProviderOVSDBMappings(specs []providerNetworkLinkSpec) []Operation {
 	if len(specs) == 0 {
 		return []Operation{ovsVSCTLOperation("set", "Open_vSwitch", ".", "external_ids:netloom_owner=netloom", "external_ids:ovn-bridge-mappings=")}
 	}
-	ops := make([]Operation, 0, len(specs)*4+1)
-	mappingSet := make(map[string]struct{}, len(specs))
-	for _, spec := range specs {
-		bridge := providerNetworkBridgeName(spec.ProviderNetwork)
-		mappingSet[spec.ProviderNetwork+":"+bridge] = struct{}{}
+	rows := desiredProviderOVSDBRows(specs)
+	ops := make([]Operation, 0, len(rows.Bridges)+len(rows.Ports)*3+1)
+	bridgeByPort := make(map[string]string, len(rows.Ports))
+	for _, bridge := range rows.Bridges {
 		ops = append(ops,
-			ovsVSCTLOperation("--may-exist", "add-br", bridge),
-			ovsVSCTLOperation("set", "bridge", bridge, "external_ids:netloom_owner=netloom", "external_ids:netloom_provider_network="+spec.ProviderNetwork),
-			planProviderOVSDBPort(bridge, spec.Name),
-			ovsVSCTLOperation("set", "interface", spec.Name, "external_ids:netloom_owner=netloom", "external_ids:netloom_provider_network="+spec.ProviderNetwork, "external_ids:netloom_parent_device="+spec.ParentDevice, "external_ids:netloom_vlan="+strconv.Itoa(int(spec.VLAN))),
+			ovsVSCTLOperation("--may-exist", "add-br", bridge.Name),
+			ovsVSCTLOperation(append([]string{"set", "bridge", bridge.Name}, externalIDArgs(bridge.ExternalIDs)...)...),
+		)
+		for _, port := range bridge.Ports {
+			bridgeByPort[port] = bridge.Name
+		}
+	}
+	for _, port := range rows.Ports {
+		ops = append(ops,
+			planProviderOVSDBPort(bridgeByPort[port.Name], port.Name),
+			ovsVSCTLOperation(append([]string{"set", "port", port.Name}, externalIDArgs(port.ExternalIDs)...)...),
 		)
 	}
-	mappings := make([]string, 0, len(mappingSet))
-	for mapping := range mappingSet {
-		mappings = append(mappings, mapping)
+	for _, iface := range rows.Interfaces {
+		ops = append(ops, ovsVSCTLOperation(append([]string{"set", "interface", iface.Name}, externalIDArgs(iface.ExternalIDs)...)...))
 	}
-	sort.Strings(mappings)
-	ops = append(ops, ovsVSCTLOperation("set", "Open_vSwitch", ".", "external_ids:netloom_owner=netloom", "external_ids:ovn-bridge-mappings="+strings.Join(mappings, ",")))
+	ops = append(ops, ovsVSCTLOperation(append([]string{"set", "Open_vSwitch", "."}, externalIDArgs(rows.OpenVSwitch.ExternalIDs)...)...))
 	return ops
+}
+
+func externalIDArgs(values map[string]string) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	args := make([]string, 0, len(keys))
+	for _, key := range keys {
+		args = append(args, "external_ids:"+key+"="+values[key])
+	}
+	return args
 }
 
 func planProviderOVSDBPort(bridge, link string) Operation {
