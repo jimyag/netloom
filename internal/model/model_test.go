@@ -68,6 +68,8 @@ func TestCoreNetworkResourcesValidateRequiredFields(t *testing.T) {
 					TenantQueues: []ProviderNetworkTenantQueuePolicy{{
 						Tenant:     "prod",
 						QueueID:    10,
+						Protocol:   ProtocolTCP,
+						Ports:      []PortRange{{From: 443, To: 443}},
 						MinRateBPS: 100000000,
 						MaxRateBPS: 500000000,
 						BurstBPS:   64000,
@@ -215,7 +217,7 @@ func TestProviderNetworkRejectsInvalidTenantQueues(t *testing.T) {
 			wantErr: "min_rate_bps or max_rate_bps is required",
 		},
 		{
-			name: "duplicate tenant",
+			name: "duplicate selector",
 			queues: []ProviderNetworkTenantQueuePolicy{{
 				Tenant:     "prod",
 				QueueID:    10,
@@ -225,7 +227,7 @@ func TestProviderNetworkRejectsInvalidTenantQueues(t *testing.T) {
 				QueueID:    11,
 				MaxRateBPS: 500000000,
 			}},
-			wantErr: `provider network tenant queue "prod" is duplicated`,
+			wantErr: `provider network tenant queue selector "prod|" is duplicated`,
 		},
 		{
 			name: "duplicate queue id",
@@ -239,6 +241,27 @@ func TestProviderNetworkRejectsInvalidTenantQueues(t *testing.T) {
 				MaxRateBPS: 100000000,
 			}},
 			wantErr: "provider network tenant queue id 10 is duplicated",
+		},
+		{
+			name: "ports require protocol",
+			queues: []ProviderNetworkTenantQueuePolicy{{
+				Tenant:     "prod",
+				QueueID:    10,
+				Ports:      []PortRange{{From: 443, To: 443}},
+				MaxRateBPS: 500000000,
+			}},
+			wantErr: "ports require protocol",
+		},
+		{
+			name: "large port range",
+			queues: []ProviderNetworkTenantQueuePolicy{{
+				Tenant:     "prod",
+				QueueID:    10,
+				Protocol:   ProtocolTCP,
+				Ports:      []PortRange{{From: 1, To: 2000}},
+				MaxRateBPS: 500000000,
+			}},
+			wantErr: "range must not exceed 1024 ports",
 		},
 	}
 	for _, tt := range tests {
@@ -257,6 +280,29 @@ func TestProviderNetworkRejectsInvalidTenantQueues(t *testing.T) {
 				t.Fatalf("error %q does not contain %q", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestProviderNetworkAcceptsMultipleTenantQueueSelectors(t *testing.T) {
+	err := ProviderNetwork{
+		Name: "physnet-a",
+		TenantQueues: []ProviderNetworkTenantQueuePolicy{{
+			Tenant:     "prod",
+			QueueID:    10,
+			MaxRateBPS: 500000000,
+		}, {
+			Tenant:     "prod",
+			QueueID:    11,
+			Protocol:   ProtocolTCP,
+			Ports:      []PortRange{{From: 443, To: 443}},
+			MaxRateBPS: 100000000,
+		}},
+		Nodes: []ProviderNetworkNode{
+			{Node: "node-a", Interface: "bond0.100"},
+		},
+	}.Validate()
+	if err != nil {
+		t.Fatalf("Validate() error = %v", err)
 	}
 }
 

@@ -413,6 +413,8 @@ func TestDesiredProviderOVSDBRowsBuildsTypedVSwitchRows(t *testing.T) {
 			TenantQueues: []model.ProviderNetworkTenantQueuePolicy{{
 				Tenant:     "prod",
 				QueueID:    10,
+				Protocol:   model.ProtocolTCP,
+				Ports:      []model.PortRange{{From: 443, To: 443}},
 				MaxRateBPS: 500000000,
 			}},
 		},
@@ -465,6 +467,9 @@ func TestDesiredProviderOVSDBRowsBuildsTypedVSwitchRows(t *testing.T) {
 	}
 	if len(rows.Queues) != 1 || rows.Queues[0].ExternalIDs["netloom_provider_queue"] != "queue-nlv100-10" || rows.Queues[0].ExternalIDs["netloom_tenant"] != "prod" {
 		t.Fatalf("queue rows = %+v, want prod tenant queue", rows.Queues)
+	}
+	if rows.Queues[0].ExternalIDs["netloom_queue_protocol"] != "tcp" || rows.Queues[0].ExternalIDs["netloom_queue_ports"] != "443" {
+		t.Fatalf("queue external IDs = %+v, want tcp/443 selector", rows.Queues[0].ExternalIDs)
 	}
 	if got := rows.Queues[0].OtherConfig["max-rate"]; got != "500000000" {
 		t.Fatalf("queue max-rate = %q, want 500000000", got)
@@ -550,6 +555,12 @@ func TestPlanProgramsProviderTenantQueueFlows(t *testing.T) {
 				Tenant:     "prod",
 				QueueID:    10,
 				MaxRateBPS: 500000000,
+			}, {
+				Tenant:     "prod",
+				QueueID:    11,
+				Protocol:   model.ProtocolTCP,
+				Ports:      []model.PortRange{{From: 443, To: 444}},
+				MaxRateBPS: 100000000,
 			}},
 		}},
 		Subnets: []model.Subnet{{
@@ -574,6 +585,8 @@ func TestPlanProgramsProviderTenantQueueFlows(t *testing.T) {
 	for _, expected := range []string{
 		"ovs-ofctl --bundle add-flow " + bridge,
 		"table=0,priority=210,ip,nw_src=10.10.0.0/24,actions=set_queue:10,NORMAL",
+		"table=0,priority=220,tcp,nw_src=10.10.0.0/24,tp_dst=443,actions=set_queue:11,NORMAL",
+		"table=0,priority=220,tcp,nw_src=10.10.0.0/24,tp_dst=444,actions=set_queue:11,NORMAL",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("provider tenant queue flow ops missing %q:\n%s", expected, joined)
@@ -592,6 +605,8 @@ func TestPlanProgramsProviderTenantQueueIPv6Flows(t *testing.T) {
 			TenantQueues: []model.ProviderNetworkTenantQueuePolicy{{
 				Tenant:     "prod",
 				QueueID:    10,
+				Protocol:   model.ProtocolTCP,
+				Ports:      []model.PortRange{{From: 443, To: 443}},
 				MaxRateBPS: 500000000,
 			}},
 		}},
@@ -613,7 +628,7 @@ func TestPlanProgramsProviderTenantQueueIPv6Flows(t *testing.T) {
 		t.Fatal(err)
 	}
 	joined := stringifyOps(ops)
-	if !strings.Contains(joined, "table=0,priority=210,ipv6,ipv6_src=fd00:10::/64,actions=set_queue:10,NORMAL") {
+	if !strings.Contains(joined, "table=0,priority=220,tcp6,ipv6_src=fd00:10::/64,tp_dst=443,actions=set_queue:10,NORMAL") {
 		t.Fatalf("provider tenant queue IPv6 flow ops missing:\n%s", joined)
 	}
 }

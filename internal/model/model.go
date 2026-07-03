@@ -78,11 +78,13 @@ type ProviderNetworkTenantQuota struct {
 }
 
 type ProviderNetworkTenantQueuePolicy struct {
-	Tenant     string `json:"tenant"`
-	QueueID    int    `json:"queue_id"`
-	MinRateBPS uint64 `json:"min_rate_bps,omitempty"`
-	MaxRateBPS uint64 `json:"max_rate_bps,omitempty"`
-	BurstBPS   uint64 `json:"burst_bps,omitempty"`
+	Tenant     string      `json:"tenant"`
+	QueueID    int         `json:"queue_id"`
+	Protocol   Protocol    `json:"protocol,omitempty"`
+	Ports      []PortRange `json:"ports,omitempty"`
+	MinRateBPS uint64      `json:"min_rate_bps,omitempty"`
+	MaxRateBPS uint64      `json:"max_rate_bps,omitempty"`
+	BurstBPS   uint64      `json:"burst_bps,omitempty"`
 }
 
 type Subnet struct {
@@ -321,19 +323,20 @@ func (p ProviderNetwork) Validate() error {
 		}
 		seenTenants[quota.Tenant] = struct{}{}
 	}
-	seenQueueTenants := make(map[string]struct{}, len(p.TenantQueues))
+	seenQueueSelectors := make(map[string]struct{}, len(p.TenantQueues))
 	seenQueueIDs := make(map[int]struct{}, len(p.TenantQueues))
 	for i, queue := range p.TenantQueues {
 		if err := queue.Validate(); err != nil {
 			return fmt.Errorf("provider network tenant queue %d: %w", i, err)
 		}
-		if _, ok := seenQueueTenants[queue.Tenant]; ok {
-			return fmt.Errorf("provider network tenant queue %q is duplicated", queue.Tenant)
+		selector := providerNetworkTenantQueueSelectorKey(queue)
+		if _, ok := seenQueueSelectors[selector]; ok {
+			return fmt.Errorf("provider network tenant queue selector %q is duplicated", selector)
 		}
 		if _, ok := seenQueueIDs[queue.QueueID]; ok {
 			return fmt.Errorf("provider network tenant queue id %d is duplicated", queue.QueueID)
 		}
-		seenQueueTenants[queue.Tenant] = struct{}{}
+		seenQueueSelectors[selector] = struct{}{}
 		seenQueueIDs[queue.QueueID] = struct{}{}
 	}
 	if len(p.Nodes) == 0 {
@@ -379,6 +382,20 @@ func (q ProviderNetworkTenantQueuePolicy) Validate() error {
 	if q.Tenant == "" {
 		return errors.New("tenant is required")
 	}
+	if q.Protocol != "" && q.Protocol != ProtocolTCP && q.Protocol != ProtocolUDP {
+		return fmt.Errorf("protocol %q is invalid", q.Protocol)
+	}
+	if len(q.Ports) > 0 && q.Protocol == "" {
+		return errors.New("ports require protocol")
+	}
+	for i, port := range q.Ports {
+		if err := port.Validate(); err != nil {
+			return fmt.Errorf("port %d: %w", i, err)
+		}
+		if int(port.To)-int(port.From)+1 > 1024 {
+			return fmt.Errorf("port %d range must not exceed 1024 ports", i)
+		}
+	}
 	if q.QueueID < 0 {
 		return errors.New("queue_id must not be negative")
 	}
@@ -389,6 +406,14 @@ func (q ProviderNetworkTenantQueuePolicy) Validate() error {
 		return errors.New("burst_bps requires max_rate_bps")
 	}
 	return nil
+}
+
+func providerNetworkTenantQueueSelectorKey(queue ProviderNetworkTenantQueuePolicy) string {
+	parts := []string{queue.Tenant, string(queue.Protocol)}
+	for _, port := range queue.Ports {
+		parts = append(parts, fmt.Sprintf("%d-%d", port.From, port.To))
+	}
+	return strings.Join(parts, "|")
 }
 
 func (n ProviderNetworkNode) Validate() error {

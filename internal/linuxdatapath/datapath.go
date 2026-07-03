@@ -412,11 +412,13 @@ type providerNetworkLinkSpec struct {
 }
 
 type providerQueueFlow struct {
-	Bridge  string
-	Tenant  string
-	CIDR    netip.Prefix
-	QueueID int
-	Cookie  uint64
+	Bridge   string
+	Tenant   string
+	CIDR     netip.Prefix
+	QueueID  int
+	Protocol model.Protocol
+	Port     uint16
+	Cookie   uint64
 }
 
 func desiredProviderNetworkLinkSpecs(state control.DesiredState, node string, mappings map[string]string, inventory []ProviderInterface) ([]providerNetworkLinkSpec, error) {
@@ -1137,14 +1139,7 @@ func desiredProviderQueueFlows(state control.DesiredState, specs []providerNetwo
 			if queue.Tenant != subnet.VPC {
 				continue
 			}
-			flow := providerQueueFlow{
-				Bridge:  providerNetworkBridgeName(subnet.ProviderNetwork),
-				Tenant:  queue.Tenant,
-				CIDR:    subnet.CIDR,
-				QueueID: queue.QueueID,
-			}
-			flow.Cookie = providerQueueFlowCookieFor(flow)
-			flows = append(flows, flow)
+			flows = append(flows, providerQueueFlowsForPolicy(subnet, queue)...)
 		}
 	}
 	sort.Slice(flows, func(i, j int) bool {
@@ -1157,8 +1152,41 @@ func desiredProviderQueueFlows(state control.DesiredState, specs []providerNetwo
 		if flows[i].CIDR.String() != flows[j].CIDR.String() {
 			return flows[i].CIDR.String() < flows[j].CIDR.String()
 		}
+		if flows[i].Protocol != flows[j].Protocol {
+			return flows[i].Protocol < flows[j].Protocol
+		}
+		if flows[i].Port != flows[j].Port {
+			return flows[i].Port < flows[j].Port
+		}
 		return flows[i].QueueID < flows[j].QueueID
 	})
+	return flows
+}
+
+func providerQueueFlowsForPolicy(subnet model.Subnet, queue model.ProviderNetworkTenantQueuePolicy) []providerQueueFlow {
+	base := providerQueueFlow{
+		Bridge:   providerNetworkBridgeName(subnet.ProviderNetwork),
+		Tenant:   queue.Tenant,
+		CIDR:     subnet.CIDR,
+		QueueID:  queue.QueueID,
+		Protocol: queue.Protocol,
+	}
+	if len(queue.Ports) == 0 {
+		base.Cookie = providerQueueFlowCookieFor(base)
+		return []providerQueueFlow{base}
+	}
+	var flows []providerQueueFlow
+	for _, portRange := range queue.Ports {
+		for port := portRange.From; port <= portRange.To; port++ {
+			flow := base
+			flow.Port = port
+			flow.Cookie = providerQueueFlowCookieFor(flow)
+			flows = append(flows, flow)
+			if port == ^uint16(0) {
+				break
+			}
+		}
+	}
 	return flows
 }
 
@@ -1170,13 +1198,34 @@ func providerQueueFlowString(flow providerQueueFlow) string {
 	return strings.Join([]string{
 		"cookie=" + providerQueueFlowCookieHex(flow.Cookie),
 		"table=0",
-		"priority=210",
-		providerQueueFlowIPMatch(flow.CIDR),
+		"priority=" + strconv.Itoa(providerQueueFlowPriority(flow)),
+		providerQueueFlowMatch(flow),
 		"actions=set_queue:" + strconv.Itoa(flow.QueueID) + ",NORMAL",
 	}, ",")
 }
 
-func providerQueueFlowIPMatch(cidr netip.Prefix) string {
+func providerQueueFlowPriority(flow providerQueueFlow) int {
+	if flow.Protocol != "" || flow.Port != 0 {
+		return 220
+	}
+	return 210
+}
+
+func providerQueueFlowMatch(flow providerQueueFlow) string {
+	networkMatch := providerQueueFlowNetworkMatch(flow.CIDR, flow.Protocol)
+	if flow.Port == 0 {
+		return networkMatch
+	}
+	return networkMatch + ",tp_dst=" + strconv.Itoa(int(flow.Port))
+}
+
+func providerQueueFlowNetworkMatch(cidr netip.Prefix, protocol model.Protocol) string {
+	if protocol != "" {
+		if cidr.Addr().Is4() {
+			return string(protocol) + ",nw_src=" + cidr.String()
+		}
+		return string(protocol) + "6,ipv6_src=" + cidr.String()
+	}
 	if cidr.Addr().Is4() {
 		return "ip,nw_src=" + cidr.String()
 	}
@@ -1192,6 +1241,10 @@ func providerQueueFlowCookieFor(flow providerQueueFlow) uint64 {
 	_, _ = hash.Write([]byte(flow.CIDR.String()))
 	_, _ = hash.Write([]byte{0})
 	_, _ = hash.Write([]byte(strconv.Itoa(flow.QueueID)))
+	_, _ = hash.Write([]byte{0})
+	_, _ = hash.Write([]byte(flow.Protocol))
+	_, _ = hash.Write([]byte{0})
+	_, _ = hash.Write([]byte(strconv.Itoa(int(flow.Port))))
 	return providerQueueFlowCookie | (hash.Sum64() & ^providerQueueFlowCookieMask)
 }
 

@@ -175,6 +175,12 @@ func providerOVSDBQueueExternalIDs(spec providerNetworkLinkSpec, policy model.Pr
 	ids["netloom_provider_queue"] = providerOVSDBQueueName(spec, policy)
 	ids["netloom_tenant"] = policy.Tenant
 	ids["netloom_queue_id"] = strconv.Itoa(policy.QueueID)
+	if policy.Protocol != "" {
+		ids["netloom_queue_protocol"] = string(policy.Protocol)
+	}
+	if len(policy.Ports) > 0 {
+		ids["netloom_queue_ports"] = providerOVSDBQueuePorts(policy.Ports)
+	}
 	return ids
 }
 
@@ -190,6 +196,18 @@ func providerOVSDBQueueOtherConfig(policy model.ProviderNetworkTenantQueuePolicy
 		out["burst"] = strconv.FormatUint(policy.BurstBPS, 10)
 	}
 	return out
+}
+
+func providerOVSDBQueuePorts(ports []model.PortRange) string {
+	parts := make([]string, 0, len(ports))
+	for _, port := range ports {
+		if port.From == port.To {
+			parts = append(parts, strconv.Itoa(int(port.From)))
+			continue
+		}
+		parts = append(parts, strconv.Itoa(int(port.From))+"-"+strconv.Itoa(int(port.To)))
+	}
+	return strings.Join(parts, ",")
 }
 
 func appendUniqueString(values []string, value string) []string {

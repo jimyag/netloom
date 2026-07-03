@@ -109,6 +109,8 @@ func TestLibOVSDBProviderSyncerCreatesProviderTenantQueues(t *testing.T) {
 		TenantQueues: []model.ProviderNetworkTenantQueuePolicy{{
 			Tenant:     "prod",
 			QueueID:    10,
+			Protocol:   model.ProtocolTCP,
+			Ports:      []model.PortRange{{From: 443, To: 443}},
 			MinRateBPS: 100000000,
 			MaxRateBPS: 500000000,
 			BurstBPS:   64000,
@@ -132,6 +134,9 @@ func TestLibOVSDBProviderSyncerCreatesProviderTenantQueues(t *testing.T) {
 	}
 	if queue.ExternalIDs["netloom_tenant"] != "prod" || queue.ExternalIDs["netloom_queue_id"] != "10" {
 		t.Fatalf("queue external IDs = %+v, want tenant prod queue 10", queue.ExternalIDs)
+	}
+	if queue.ExternalIDs["netloom_queue_protocol"] != "tcp" || queue.ExternalIDs["netloom_queue_ports"] != "443" {
+		t.Fatalf("queue external IDs = %+v, want tcp/443 selector", queue.ExternalIDs)
 	}
 	if queue.OtherConfig["min-rate"] != "100000000" || queue.OtherConfig["max-rate"] != "500000000" || queue.OtherConfig["burst"] != "64000" {
 		t.Fatalf("queue other_config = %+v, want configured rates", queue.OtherConfig)
