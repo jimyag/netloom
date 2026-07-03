@@ -560,6 +560,10 @@ func TestReconcileStateFileOnceAppliesDesiredPolicyRollout(t *testing.T) {
 	})
 	store := dataplane.NewInMemoryPolicyStore()
 	metrics := newAgentMetrics(store)
+	historyPath := filepath.Join(t.TempDir(), "rollouts.jsonl")
+	if err := configurePolicyRolloutHistory(metrics, historyPath); err != nil {
+		t.Fatal(err)
+	}
 
 	oldStdout := os.Stdout
 	reader, writer, err := os.Pipe()
@@ -602,6 +606,17 @@ func TestReconcileStateFileOnceAppliesDesiredPolicyRollout(t *testing.T) {
 	snapshot, _, ready := metrics.snapshotValue()
 	if !ready || snapshot.Result.PolicyRolloutApplied != 1 {
 		t.Fatalf("metrics snapshot = %+v ready=%t, want rollout applied", snapshot.Result, ready)
+	}
+	history := metrics.policyRolloutHistory()
+	if len(history) != 1 || history[0].Source != "desired-state" || history[0].Name != "web-canary" || history[0].Rollout.Applied != 1 {
+		t.Fatalf("rollout history = %+v, want desired-state web-canary entry", history)
+	}
+	raw, err := os.ReadFile(historyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"source":"desired-state"`) || !strings.Contains(string(raw), `"name":"web-canary"`) {
+		t.Fatalf("history file = %s, want desired-state rollout entry", raw)
 	}
 }
 
@@ -1623,6 +1638,78 @@ func TestPolicyEndpointAPIRolloutAppliesMultipleEndpoints(t *testing.T) {
 	snapshot, _, ready := metrics.snapshotValue()
 	if !ready || len(snapshot.Result.PolicyEndpointStatus) != 2 {
 		t.Fatalf("snapshot statuses = %+v, want two rolled out endpoints", snapshot.Result.PolicyEndpointStatus)
+	}
+}
+
+func TestPolicyEndpointAPIRolloutPersistsHistory(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{
+			{ID: "pod-a", VPC: "prod", Subnet: "apps", IP: netip.MustParseAddr("10.10.0.10"), Node: "node-a", SecurityGroups: []string{"web"}},
+		},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "allow-http",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("172.30.0.0/24"),
+				Ports:      []model.PortRange{{From: 80, To: 80}},
+				Action:     model.ActionAllow,
+			}},
+		}},
+	}
+	store := dataplane.NewInMemoryPolicyStore()
+	historyPath := filepath.Join(t.TempDir(), "rollouts.jsonl")
+	metrics := newAgentMetrics(store)
+	if err := configurePolicyRolloutHistory(metrics, historyPath); err != nil {
+		t.Fatal(err)
+	}
+	observeAgentReconcileResultWithState(metrics, agent.ReconcileResult{
+		Node: "node-a",
+	}, "memory", time.Millisecond, state)
+
+	body := bytes.NewBufferString(`{"endpoints":["prod/pod-a"],"batch_size":1}`)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/policy/endpoints/rollout", body)
+	metrics.handlePolicyEndpoints(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	raw, err := os.ReadFile(historyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("history lines = %d, want 1: %s", len(lines), raw)
+	}
+	var persisted policyRolloutHistoryEntry
+	if err := json.Unmarshal([]byte(lines[0]), &persisted); err != nil {
+		t.Fatalf("decode persisted history: %v", err)
+	}
+	if persisted.Source != "manual" || persisted.Node != "node-a" || persisted.Store != "memory" || persisted.Rollout.Applied != 1 || persisted.Rollout.Planned != 1 {
+		t.Fatalf("persisted history = %+v, want manual applied rollout", persisted)
+	}
+
+	reloaded := newAgentMetrics(store)
+	if err := configurePolicyRolloutHistory(reloaded, historyPath); err != nil {
+		t.Fatal(err)
+	}
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/policy/endpoints/rollout/history", nil)
+	reloaded.handlePolicyEndpoints(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("history status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var output policyRolloutHistoryOutput
+	if err := json.Unmarshal(recorder.Body.Bytes(), &output); err != nil {
+		t.Fatalf("decode history response: %v\n%s", err, recorder.Body.String())
+	}
+	if !output.Ready || len(output.History) != 1 || output.History[0].Rollout.Applied != 1 {
+		t.Fatalf("history output = %+v, want reloaded rollout", output)
 	}
 }
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -140,6 +142,22 @@ type policyEndpointActionOutput struct {
 	Plan          agent.PolicyEndpointPlan       `json:"plan,omitempty"`
 	Rollout       agent.PolicyEndpointRollout    `json:"rollout,omitempty"`
 	EndpointInfo  dataplane.PolicyEndpointStatus `json:"endpoint_status,omitempty"`
+}
+
+type policyRolloutHistoryOutput struct {
+	Ready   bool                        `json:"ready"`
+	History []policyRolloutHistoryEntry `json:"history"`
+}
+
+type policyRolloutHistoryEntry struct {
+	ID          string                      `json:"id"`
+	Source      string                      `json:"source"`
+	Name        string                      `json:"name,omitempty"`
+	Node        string                      `json:"node,omitempty"`
+	Store       string                      `json:"store,omitempty"`
+	CompletedAt time.Time                   `json:"completed_at"`
+	DurationMS  int64                       `json:"duration_ms,omitempty"`
+	Rollout     agent.PolicyEndpointRollout `json:"rollout"`
 }
 
 type policyEndpointRolloutRequest struct {
@@ -678,6 +696,9 @@ func runStateFile(ctx context.Context, path string) error {
 		_ = reconciler.Close()
 	}()
 	metrics := newAgentMetrics(store)
+	if err := configurePolicyRolloutHistory(metrics, os.Getenv("NETLOOM_POLICY_ROLLOUT_HISTORY_FILE")); err != nil {
+		return err
+	}
 	if closeMetrics, err := startAgentMetricsServer(ctx, os.Getenv("NETLOOM_AGENT_METRICS_ADDR"), metrics); err != nil {
 		return err
 	} else {
@@ -745,6 +766,7 @@ func reconcileStateFile(ctx context.Context, path, node, storeName string, recon
 		observeAgentReconcileFailure(metrics, result, storeName, err, duration)
 		return err
 	}
+	var rolloutHistory []agent.NamedPolicyEndpointRollout
 	if rollouts, err := agent.ApplyPolicyRollouts(ctx, state, agent.ReconcileOptions{
 		Node:  node,
 		Store: metrics.store,
@@ -755,8 +777,10 @@ func reconcileStateFile(ctx context.Context, path, node, storeName string, recon
 		return err
 	} else {
 		agent.ApplyPolicyRolloutResults(&result, rollouts)
+		rolloutHistory = rollouts
 	}
 	duration := time.Since(start)
+	recordNamedPolicyRolloutHistory(metrics, "desired-state", rolloutHistory, result.Node, storeName, duration)
 	printReconcileResult(result, storeName, duration)
 	observeAgentReconcileResultWithState(metrics, result, storeName, duration, state)
 	return nil
@@ -808,6 +832,7 @@ func reconcileStateFileOnce(ctx context.Context, path, node, storeName string, s
 		observeAgentReconcileFailure(metrics, result, storeName, err, duration)
 		return err
 	}
+	var rolloutHistory []agent.NamedPolicyEndpointRollout
 	if rollouts, err := agent.ApplyPolicyRollouts(ctx, state, agent.ReconcileOptions{
 		Node:  node,
 		Store: store,
@@ -818,8 +843,10 @@ func reconcileStateFileOnce(ctx context.Context, path, node, storeName string, s
 		return err
 	} else {
 		agent.ApplyPolicyRolloutResults(&result, rollouts)
+		rolloutHistory = rollouts
 	}
 	duration := time.Since(start)
+	recordNamedPolicyRolloutHistory(metrics, "desired-state", rolloutHistory, result.Node, storeName, duration)
 	printReconcileResult(result, storeName, duration)
 	observeAgentReconcileResultWithState(metrics, result, storeName, duration, state)
 	return nil
@@ -986,11 +1013,13 @@ func formatEndpointRuleStats(stats []dataplane.RuleMetrics) string {
 }
 
 type agentMetrics struct {
-	mu       sync.RWMutex
-	snapshot agentMetricsSnapshot
-	totals   agentMetricsTotals
-	ready    bool
-	store    agent.PolicyStore
+	mu                 sync.RWMutex
+	snapshot           agentMetricsSnapshot
+	totals             agentMetricsTotals
+	ready              bool
+	store              agent.PolicyStore
+	rolloutHistoryPath string
+	rolloutHistory     []policyRolloutHistoryEntry
 }
 
 type agentMetricsSnapshot struct {
@@ -1058,6 +1087,127 @@ func newAgentMetrics(store ...agent.PolicyStore) *agentMetrics {
 	return &agentMetrics{
 		totals: agentMetricsTotals{DurationBuckets: make([]uint64, len(agentReconcileDurationBuckets))},
 		store:  policyStore,
+	}
+}
+
+func configurePolicyRolloutHistory(metrics *agentMetrics, path string) error {
+	if metrics == nil {
+		return nil
+	}
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil
+	}
+	history, err := loadPolicyRolloutHistory(path)
+	if err != nil {
+		return err
+	}
+	metrics.mu.Lock()
+	defer metrics.mu.Unlock()
+	metrics.rolloutHistoryPath = path
+	metrics.rolloutHistory = history
+	return nil
+}
+
+func loadPolicyRolloutHistory(path string) ([]policyRolloutHistoryEntry, error) {
+	file, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("open policy rollout history %s: %w", path, err)
+	}
+	defer file.Close()
+	var history []policyRolloutHistoryEntry
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var entry policyRolloutHistoryEntry
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			return nil, fmt.Errorf("decode policy rollout history %s: %w", path, err)
+		}
+		history = append(history, entry)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("read policy rollout history %s: %w", path, err)
+	}
+	return trimPolicyRolloutHistory(history), nil
+}
+
+func trimPolicyRolloutHistory(history []policyRolloutHistoryEntry) []policyRolloutHistoryEntry {
+	const limit = 128
+	if len(history) <= limit {
+		return append([]policyRolloutHistoryEntry(nil), history...)
+	}
+	return append([]policyRolloutHistoryEntry(nil), history[len(history)-limit:]...)
+}
+
+func (m *agentMetrics) recordPolicyRolloutHistory(entry policyRolloutHistoryEntry) error {
+	if m == nil {
+		return nil
+	}
+	if entry.ID == "" {
+		entry.ID = strconv.FormatInt(time.Now().UnixNano(), 10)
+	}
+	if entry.CompletedAt.IsZero() {
+		entry.CompletedAt = time.Now().UTC()
+	}
+	m.mu.Lock()
+	m.rolloutHistory = trimPolicyRolloutHistory(append(m.rolloutHistory, entry))
+	path := m.rolloutHistoryPath
+	m.mu.Unlock()
+	if path == "" {
+		return nil
+	}
+	if err := appendPolicyRolloutHistory(path, entry); err != nil {
+		return err
+	}
+	return nil
+}
+
+func appendPolicyRolloutHistory(path string, entry policyRolloutHistoryEntry) error {
+	if dir := filepath.Dir(path); dir != "." && dir != "" {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("create policy rollout history directory %s: %w", dir, err)
+		}
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return fmt.Errorf("open policy rollout history %s: %w", path, err)
+	}
+	defer file.Close()
+	encoder := json.NewEncoder(file)
+	if err := encoder.Encode(entry); err != nil {
+		return fmt.Errorf("write policy rollout history %s: %w", path, err)
+	}
+	return nil
+}
+
+func (m *agentMetrics) policyRolloutHistory() []policyRolloutHistoryEntry {
+	if m == nil {
+		return nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return append([]policyRolloutHistoryEntry(nil), m.rolloutHistory...)
+}
+
+func recordNamedPolicyRolloutHistory(metrics *agentMetrics, source string, rollouts []agent.NamedPolicyEndpointRollout, node, store string, duration time.Duration) {
+	for _, rollout := range rollouts {
+		if err := metrics.recordPolicyRolloutHistory(policyRolloutHistoryEntry{
+			Source:     source,
+			Name:       rollout.Name,
+			Node:       node,
+			Store:      store,
+			DurationMS: duration.Milliseconds(),
+			Rollout:    rollout.Rollout,
+		}); err != nil {
+			log.Printf("record policy rollout history: %v", err)
+		}
 	}
 }
 
@@ -1264,6 +1414,7 @@ func (m *agentMetrics) rolloutPolicyEndpoints(ctx context.Context, request polic
 	if m == nil || m.store == nil {
 		return agent.PolicyEndpointRollout{}, errors.New("policy endpoint actions are not enabled")
 	}
+	start := time.Now()
 	snapshot, _, ready := m.snapshotValue()
 	if !ready || !snapshot.Success {
 		return agent.PolicyEndpointRollout{}, errors.New("policy endpoint state is not ready")
@@ -1306,6 +1457,15 @@ func (m *agentMetrics) rolloutPolicyEndpoints(ctx context.Context, request polic
 				m.upsertPolicyEndpointStatus(item.Status)
 			}
 		}
+	}
+	if err := m.recordPolicyRolloutHistory(policyRolloutHistoryEntry{
+		Source:     "manual",
+		Node:       snapshot.Result.Node,
+		Store:      snapshot.Store,
+		DurationMS: time.Since(start).Milliseconds(),
+		Rollout:    rollout,
+	}); err != nil {
+		return agent.PolicyEndpointRollout{}, err
 	}
 	return rollout, nil
 }
@@ -1454,6 +1614,10 @@ func startAgentMetricsServer(ctx context.Context, addr string, metrics *agentMet
 
 func (m *agentMetrics) handlePolicyEndpoints(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+	if isPolicyRolloutHistoryRequest(r) {
+		m.handlePolicyRolloutHistory(w, r)
+		return
+	}
 	if r.Method == http.MethodDelete {
 		m.handlePolicyEndpointDelete(w, r)
 		return
@@ -1487,6 +1651,27 @@ func (m *agentMetrics) handlePolicyEndpoints(w http.ResponseWriter, r *http.Requ
 	encoder := json.NewEncoder(w)
 	encoder.SetIndent("", "  ")
 	_ = encoder.Encode(output)
+}
+
+func isPolicyRolloutHistoryRequest(r *http.Request) bool {
+	if r == nil || r.URL == nil {
+		return false
+	}
+	return strings.Trim(r.URL.Path, "/") == "policy/endpoints/rollout/history"
+}
+
+func (m *agentMetrics) handlePolicyRolloutHistory(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "method not allowed"})
+		return
+	}
+	encoder := json.NewEncoder(w)
+	encoder.SetIndent("", "  ")
+	_ = encoder.Encode(policyRolloutHistoryOutput{
+		Ready:   true,
+		History: m.policyRolloutHistory(),
+	})
 }
 
 func (m *agentMetrics) handlePolicyEndpointDelete(w http.ResponseWriter, r *http.Request) {
