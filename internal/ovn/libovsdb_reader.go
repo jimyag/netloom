@@ -3,6 +3,7 @@ package ovn
 import (
 	"context"
 	"fmt"
+	"sort"
 
 	"github.com/ovn-kubernetes/libovsdb/client"
 
@@ -116,17 +117,22 @@ func (r *LibOVSDBManagedReader) ManagedOVNRows(ctx context.Context, table string
 		if err := r.client.WhereCache(func(row *ovnnb.LoadBalancer) bool { return isNetloomManaged(row.ExternalIDs) }).List(ctx, &rows); err != nil {
 			return nil, err
 		}
+		healthCheckVIPs, err := r.loadBalancerHealthCheckVIPs(ctx)
+		if err != nil {
+			return nil, err
+		}
 		return managedOVNRowsFromModels(table, rows, func(row ovnnb.LoadBalancer) (string, map[string]string, map[string]string) {
 			protocol := ""
 			if row.Protocol != nil {
 				protocol = string(*row.Protocol)
 			}
 			return row.UUID, row.ExternalIDs, map[string]string{
-				"name":             row.Name,
-				"vips":             mapField(row.Vips),
-				"protocol":         protocol,
-				"options":          mapField(row.Options),
-				"selection_fields": selectionFieldsField(row.SelectionFields),
+				"name":              row.Name,
+				"vips":              mapField(row.Vips),
+				"protocol":          protocol,
+				"options":           mapField(row.Options),
+				"selection_fields":  selectionFieldsField(row.SelectionFields),
+				"health_check_vips": healthCheckVIPsField(row.HealthCheck, healthCheckVIPs),
 			}
 		}), nil
 	case "Load_Balancer_Health_Check":
@@ -148,6 +154,32 @@ func (r *LibOVSDBManagedReader) ManagedOVNRows(ctx context.Context, table string
 	default:
 		return nil, fmt.Errorf("unsupported managed OVN table %s", table)
 	}
+}
+
+func (r *LibOVSDBManagedReader) loadBalancerHealthCheckVIPs(ctx context.Context) (map[string]string, error) {
+	var rows []ovnnb.LoadBalancerHealthCheck
+	if err := r.client.WhereCache(func(row *ovnnb.LoadBalancerHealthCheck) bool { return row.Vip != "" }).List(ctx, &rows); err != nil {
+		return nil, err
+	}
+	out := make(map[string]string, len(rows))
+	for _, row := range rows {
+		out[row.UUID] = row.Vip
+	}
+	return out, nil
+}
+
+func healthCheckVIPsField(uuids []string, vipByUUID map[string]string) string {
+	if len(uuids) == 0 {
+		return ""
+	}
+	vips := make([]string, 0, len(uuids))
+	for _, uuid := range uuids {
+		if vip := vipByUUID[uuid]; vip != "" {
+			vips = append(vips, vip)
+		}
+	}
+	sort.Strings(vips)
+	return stringSliceField(vips)
 }
 
 func isNetloomManaged(externalIDs map[string]string) bool {

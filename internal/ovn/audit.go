@@ -66,6 +66,11 @@ func AuditManagedObjectsFromReaderWithDesired(ctx context.Context, reader Manage
 	var stats AuditStats
 	expected := expectedManagedAuditRows(desired)
 	expectedColumns := expectedManagedAuditColumns(desired)
+	for identity := range expectedColumns {
+		if _, ok := expected[identity]; !ok {
+			expected[identity] = nil
+		}
+	}
 	seen := make(map[string]struct{})
 	for _, table := range managedAuditTables() {
 		rows, err := reader.ManagedOVNRows(ctx, table.name)
@@ -161,7 +166,7 @@ func auditManagedRows(table string, rows []ManagedOVNRow) auditRowResult {
 			result.incomplete++
 			continue
 		}
-		identity, complete := managedAuditIdentity(table, row.UUID, row.ExternalIDs)
+		identity, complete := managedAuditIdentityForRow(table, row.UUID, row.ExternalIDs, row.Fields)
 		if !complete {
 			result.incomplete++
 			continue
@@ -382,6 +387,9 @@ func expectedManagedAuditColumns(desired topology.State) map[string]map[string]s
 				"vips":             mapField(row.Vips),
 				"selection_fields": selectionFieldsField(row.SelectionFields),
 			}
+			if lb.HealthCheck.Enabled {
+				fields["health_check_vips"] = loadBalancerHealthCheckVIPsField(frontendsByProtocol[protocol])
+			}
 			if row.Protocol != nil {
 				fields["protocol"] = string(*row.Protocol)
 			}
@@ -418,7 +426,7 @@ func addAuditExpectedColumns(out map[string]map[string]string, table string, fie
 	for i := 0; i < len(keyValues)-1; i += 2 {
 		externalIDs[keyValues[i]] = keyValues[i+1]
 	}
-	identity, complete := managedAuditIdentity(table, "", externalIDs)
+	identity, complete := managedAuditIdentityForRow(table, "", externalIDs, fields)
 	if !complete || identity == "" {
 		return
 	}
@@ -518,6 +526,15 @@ func staticRouteSelectionFieldsField(values []ovnnb.LogicalRouterStaticRouteSele
 	return stringSliceField(out)
 }
 
+func loadBalancerHealthCheckVIPsField(frontends []model.LoadBalancerFrontend) string {
+	vips := make([]string, 0, len(frontends))
+	for _, frontend := range frontends {
+		vips = append(vips, loadBalancerFrontendVIP(frontend))
+	}
+	sort.Strings(vips)
+	return stringSliceField(vips)
+}
+
 func parseManagedOVNRows(table string, rows []string) []ManagedOVNRow {
 	out := make([]ManagedOVNRow, 0, len(rows))
 	for _, row := range rows {
@@ -533,6 +550,17 @@ func parseManagedOVNRows(table string, rows []string) []ManagedOVNRow {
 		})
 	}
 	return out
+}
+
+func managedAuditIdentityForRow(table, uuid string, externalIDs, fields map[string]string) (string, bool) {
+	if table == "Load_Balancer_Health_Check" && fields["vip"] != "" {
+		identity, complete := auditIdentity(table, externalIDs, "netloom_vpc", "netloom_load_balancer")
+		if !complete {
+			return "", false
+		}
+		return identity + "\x00" + fields["vip"], true
+	}
+	return managedAuditIdentity(table, uuid, externalIDs)
 }
 
 func managedAuditIdentity(table, uuid string, externalIDs map[string]string) (string, bool) {
