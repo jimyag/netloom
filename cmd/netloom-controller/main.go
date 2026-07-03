@@ -90,6 +90,7 @@ type stateFileReconciler struct {
 	healthTracker *control.LoadBalancerHealthTracker
 	healthChecker ovnHealthChecker
 	ovnHealth     ovnHealthTracker
+	maintenance   ovnMaintenanceRunner
 	auditReader   ovn.ManagedOVNReader
 	auditCloser   func()
 	metrics       *controllerMetrics
@@ -129,6 +130,19 @@ type ovnHealthChecker interface {
 
 type ovnAuditor interface {
 	AuditManagedObjects(context.Context) (ovn.AuditStats, error)
+}
+
+type ovnMaintenanceRunner interface {
+	RunMaintenance(context.Context) ovnMaintenanceResult
+}
+
+type ovnMaintenanceResult struct {
+	Status    string
+	Attempted int
+	Succeeded int
+	Failed    int
+	Latency   time.Duration
+	Error     string
 }
 
 type ovnHealthSnapshot struct {
@@ -216,6 +230,7 @@ func newStateFileReconciler() (*stateFileReconciler, error) {
 		controller:    control.NewController(control.MultiTopologyBackend{memory, ovnRuntime.backend}, memory),
 		healthTracker: control.NewLoadBalancerHealthTracker(),
 		healthChecker: ovnRuntime.health,
+		maintenance:   newOVNMaintenanceFromEnv(),
 		auditReader:   auditReader,
 		auditCloser:   auditCloser,
 	}, nil
@@ -284,9 +299,10 @@ func (r *stateFileReconciler) reconcile(ctx context.Context, path string) error 
 	ovnOps := r.plannedOVNOperations() - opsBefore
 	executed := r.executedOperations() - executedBefore
 	ovnAudit, ovnAuditStatus, ovnAuditError := r.auditOVN(ctx, r.memory.TopologyState())
+	ovnMaintenance := r.runOVNMaintenance(ctx)
 	duration := time.Since(start)
 	fmt.Printf(
-		"netloom-controller reconciled desired state vpcs=%d subnets=%d endpoints=%d route_tables=%d policy_routes=%d gateways=%d nat_rules=%d load_balancers=%d security_groups=%d policy_entries=%d lb_health_checked=%d lb_health_healthy=%d lb_health_unhealthy=%d ovn_health=%s ovn_health_latency_ms=%d ovn_health_consecutive_failures=%d ovn_health_consecutive_successes=%d ovn_health_recovering=%d ovn_cluster_active_endpoint=%s ovn_cluster_leader_endpoint=%s ovn_cluster_leader_preferred=%d ovn_cluster_endpoints=%d ovn_cluster_failovers=%d ovn_ops=%d ovn_executed=%d ovn_audit=%s ovn_live_managed=%d ovn_live_duplicates=%d ovn_live_incomplete=%d ovn_live_missing=%d ovn_live_unexpected=%d ovn_live_drifted_rows=%d ovn_live_drifted_fields=%d ovn_audit_error=%s reconcile_duration_ms=%d\n",
+		"netloom-controller reconciled desired state vpcs=%d subnets=%d endpoints=%d route_tables=%d policy_routes=%d gateways=%d nat_rules=%d load_balancers=%d security_groups=%d policy_entries=%d lb_health_checked=%d lb_health_healthy=%d lb_health_unhealthy=%d ovn_health=%s ovn_health_latency_ms=%d ovn_health_consecutive_failures=%d ovn_health_consecutive_successes=%d ovn_health_recovering=%d ovn_cluster_active_endpoint=%s ovn_cluster_leader_endpoint=%s ovn_cluster_leader_preferred=%d ovn_cluster_endpoints=%d ovn_cluster_failovers=%d ovn_ops=%d ovn_executed=%d ovn_audit=%s ovn_live_managed=%d ovn_live_duplicates=%d ovn_live_incomplete=%d ovn_live_missing=%d ovn_live_unexpected=%d ovn_live_drifted_rows=%d ovn_live_drifted_fields=%d ovn_audit_error=%s ovn_maintenance=%s ovn_maintenance_attempted=%d ovn_maintenance_succeeded=%d ovn_maintenance_failed=%d ovn_maintenance_latency_ms=%d ovn_maintenance_error=%s reconcile_duration_ms=%d\n",
 		len(state.VPCs),
 		len(state.Subnets),
 		len(state.Endpoints),
@@ -321,9 +337,15 @@ func (r *stateFileReconciler) reconcile(ctx context.Context, path string) error 
 		ovnAudit.DriftedManagedRows,
 		ovnAudit.DriftedManagedFields,
 		formatResultError(ovnAuditError),
+		fallbackMetricsLabel(ovnMaintenance.Status, "disabled"),
+		ovnMaintenance.Attempted,
+		ovnMaintenance.Succeeded,
+		ovnMaintenance.Failed,
+		ovnMaintenance.Latency.Milliseconds(),
+		formatResultError(ovnMaintenance.Error),
 		duration.Milliseconds(),
 	)
-	r.observeReconcileSuccess(state, healthSummary, ovnHealth.Snapshot, ovnOps, executed, ovnAuditStatus, ovnAuditError, ovnAudit, duration)
+	r.observeReconcileSuccess(state, healthSummary, ovnHealth.Snapshot, ovnOps, executed, ovnAuditStatus, ovnAuditError, ovnAudit, ovnMaintenance, duration)
 	return nil
 }
 
@@ -396,7 +418,7 @@ func printControllerReconcileFailure(phase string, state control.DesiredState, h
 	)
 }
 
-func (r *stateFileReconciler) observeReconcileSuccess(state control.DesiredState, healthSummary control.LoadBalancerHealthSummary, ovnHealth ovnHealthSnapshot, ovnOps, executed int, ovnAuditStatus, ovnAuditError string, ovnAudit ovn.AuditStats, duration time.Duration) {
+func (r *stateFileReconciler) observeReconcileSuccess(state control.DesiredState, healthSummary control.LoadBalancerHealthSummary, ovnHealth ovnHealthSnapshot, ovnOps, executed int, ovnAuditStatus, ovnAuditError string, ovnAudit ovn.AuditStats, ovnMaintenance ovnMaintenanceResult, duration time.Duration) {
 	if r == nil || r.metrics == nil {
 		return
 	}
@@ -416,6 +438,7 @@ func (r *stateFileReconciler) observeReconcileSuccess(state control.DesiredState
 		OVNAuditStatus:                fallbackMetricsLabel(ovnAuditStatus, "disabled"),
 		OVNAuditError:                 ovnAuditError,
 		OVNAudit:                      ovnAudit,
+		OVNMaintenance:                ovnMaintenance,
 		Duration:                      duration,
 		Success:                       true,
 	})
@@ -446,6 +469,7 @@ func (r *stateFileReconciler) observeReconcileFailure(phase string, state contro
 		OVNExecuted:                   executed,
 		OVNCleanup:                    r.lastOVNCleanupStats(),
 		OVNAuditStatus:                "disabled",
+		OVNMaintenance:                ovnMaintenanceResult{Status: "disabled"},
 		Duration:                      duration,
 		Success:                       false,
 		Phase:                         phase,
@@ -492,6 +516,13 @@ func (r *stateFileReconciler) auditOVN(ctx context.Context, desired topology.Sta
 	return stats, "ok", ""
 }
 
+func (r *stateFileReconciler) runOVNMaintenance(ctx context.Context) ovnMaintenanceResult {
+	if r == nil || r.maintenance == nil {
+		return ovnMaintenanceResult{Status: "disabled"}
+	}
+	return r.maintenance.RunMaintenance(ctx)
+}
+
 type controllerMetrics struct {
 	mu       sync.RWMutex
 	snapshot controllerMetricsSnapshot
@@ -515,6 +546,7 @@ type controllerMetricsSnapshot struct {
 	OVNAuditStatus                string
 	OVNAuditError                 string
 	OVNAudit                      ovn.AuditStats
+	OVNMaintenance                ovnMaintenanceResult
 	Duration                      time.Duration
 	Success                       bool
 	Phase                         string
@@ -541,6 +573,10 @@ type controllerMetricsTotals struct {
 	OVNHealthLatencyTotal time.Duration
 	OVNAuditChecks        uint64
 	OVNAuditFailures      uint64
+	OVNMaintenanceRuns    uint64
+	OVNMaintenanceTargets uint64
+	OVNMaintenanceSuccess uint64
+	OVNMaintenanceFailure uint64
 }
 
 var controllerReconcileDurationBuckets = []time.Duration{
@@ -612,6 +648,12 @@ func (t *controllerMetricsTotals) observe(snapshot controllerMetricsSnapshot) {
 		if snapshot.OVNAuditStatus == "error" {
 			t.OVNAuditFailures++
 		}
+	}
+	if snapshot.OVNMaintenance.Status != "" && snapshot.OVNMaintenance.Status != "disabled" {
+		t.OVNMaintenanceRuns++
+		t.OVNMaintenanceTargets += uint64(nonNegative(snapshot.OVNMaintenance.Attempted))
+		t.OVNMaintenanceSuccess += uint64(nonNegative(snapshot.OVNMaintenance.Succeeded))
+		t.OVNMaintenanceFailure += uint64(nonNegative(snapshot.OVNMaintenance.Failed))
 	}
 }
 
@@ -770,6 +812,29 @@ func writeControllerMetrics(w metricWriter, snapshot controllerMetricsSnapshot, 
 	writeControllerCounter(w, "netloom_controller_ovn_health_checks_total", baseLabels, totals.OVNHealthChecks)
 	writeControllerCounter(w, "netloom_controller_ovn_health_failures_total", baseLabels, totals.OVNHealthFailures)
 	writeControllerCounter(w, "netloom_controller_ovn_health_latency_milliseconds_total", baseLabels, uint64(totals.OVNHealthLatencyTotal.Milliseconds()))
+	maintenanceLabels := prometheusLabels(map[string]string{
+		"ovn_health":      fallbackMetricsLabel(snapshot.OVNHealthStatus, "disabled"),
+		"ovn_maintenance": fallbackMetricsLabel(snapshot.OVNMaintenance.Status, "disabled"),
+	})
+	writeMetricType(w, "netloom_controller_ovn_maintenance_attempted", "gauge")
+	fmt.Fprintf(w, "netloom_controller_ovn_maintenance_attempted%s %d\n", maintenanceLabels, snapshot.OVNMaintenance.Attempted)
+	writeMetricType(w, "netloom_controller_ovn_maintenance_succeeded", "gauge")
+	fmt.Fprintf(w, "netloom_controller_ovn_maintenance_succeeded%s %d\n", maintenanceLabels, snapshot.OVNMaintenance.Succeeded)
+	writeMetricType(w, "netloom_controller_ovn_maintenance_failed", "gauge")
+	fmt.Fprintf(w, "netloom_controller_ovn_maintenance_failed%s %d\n", maintenanceLabels, snapshot.OVNMaintenance.Failed)
+	writeMetricType(w, "netloom_controller_ovn_maintenance_latency_milliseconds", "gauge")
+	fmt.Fprintf(w, "netloom_controller_ovn_maintenance_latency_milliseconds%s %d\n", maintenanceLabels, snapshot.OVNMaintenance.Latency.Milliseconds())
+	writeControllerCounter(w, "netloom_controller_ovn_maintenance_runs_total", maintenanceLabels, totals.OVNMaintenanceRuns)
+	writeControllerCounter(w, "netloom_controller_ovn_maintenance_targets_total", maintenanceLabels, totals.OVNMaintenanceTargets)
+	writeControllerCounter(w, "netloom_controller_ovn_maintenance_succeeded_total", maintenanceLabels, totals.OVNMaintenanceSuccess)
+	writeControllerCounter(w, "netloom_controller_ovn_maintenance_failed_total", maintenanceLabels, totals.OVNMaintenanceFailure)
+	if snapshot.OVNMaintenance.Error != "" {
+		fmt.Fprintf(w, "netloom_controller_ovn_maintenance_error%s 1\n", prometheusLabels(map[string]string{
+			"error":           snapshot.OVNMaintenance.Error,
+			"ovn_health":      fallbackMetricsLabel(snapshot.OVNHealthStatus, "disabled"),
+			"ovn_maintenance": fallbackMetricsLabel(snapshot.OVNMaintenance.Status, "disabled"),
+		}))
+	}
 	writeMetricType(w, "netloom_controller_ovn_cleanup_operations", "gauge")
 	fmt.Fprintf(w, "netloom_controller_ovn_cleanup_operations%s %d\n", baseLabels, snapshot.OVNCleanup.Operations)
 	writeControllerCounter(w, "netloom_controller_ovn_cleanup_operations_total", baseLabels, totals.OVNCleanupOperations)
@@ -1440,6 +1505,90 @@ func ovnLeaderProbeModeFromEnv() string {
 		return "cluster-status"
 	}
 	return "disabled"
+}
+
+type ovnDBMaintenanceTarget struct {
+	Target string
+	DB     string
+}
+
+type ovnDBMaintenance struct {
+	appctl  string
+	targets []ovnDBMaintenanceTarget
+}
+
+func newOVNMaintenanceFromEnv() ovnMaintenanceRunner {
+	targets := ovnDBMaintenanceTargetsFromEnv()
+	if len(targets) == 0 {
+		return nil
+	}
+	appctl := strings.TrimSpace(os.Getenv("NETLOOM_OVN_APPCTL_BIN"))
+	if appctl == "" {
+		appctl = "ovn-appctl"
+	}
+	return ovnDBMaintenance{appctl: appctl, targets: targets}
+}
+
+func ovnDBMaintenanceTargetsFromEnv() []ovnDBMaintenanceTarget {
+	raw := strings.TrimSpace(os.Getenv("NETLOOM_OVN_DB_COMPACT_TARGETS"))
+	if raw == "" {
+		return nil
+	}
+	items := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ';' || r == '\n' || r == '\t' || r == ' '
+	})
+	targets := make([]ovnDBMaintenanceTarget, 0, len(items))
+	seen := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		target, db, _ := strings.Cut(strings.TrimSpace(item), "=")
+		target = strings.TrimSpace(target)
+		db = strings.TrimSpace(db)
+		if target == "" {
+			continue
+		}
+		if db == "" {
+			db = ovnnb.DatabaseName
+		}
+		key := target + "|" + db
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		targets = append(targets, ovnDBMaintenanceTarget{Target: target, DB: db})
+	}
+	return targets
+}
+
+func (m ovnDBMaintenance) RunMaintenance(ctx context.Context) ovnMaintenanceResult {
+	if len(m.targets) == 0 {
+		return ovnMaintenanceResult{Status: "disabled"}
+	}
+	appctl := strings.TrimSpace(m.appctl)
+	if appctl == "" {
+		appctl = "ovn-appctl"
+	}
+	start := time.Now()
+	result := ovnMaintenanceResult{Status: "ok", Attempted: len(m.targets)}
+	var errs []string
+	for _, target := range m.targets {
+		output, err := exec.CommandContext(ctx, appctl, "-t", target.Target, "ovsdb-server/compact").CombinedOutput()
+		if err != nil && !ovnCompactDuplicateSnapshot(string(output)) {
+			result.Failed++
+			errs = append(errs, fmt.Sprintf("%s(%s): %v: %s", target.Target, target.DB, err, strings.TrimSpace(string(output))))
+			continue
+		}
+		result.Succeeded++
+	}
+	result.Latency = time.Since(start)
+	if result.Failed > 0 {
+		result.Status = "error"
+		result.Error = strings.Join(errs, "; ")
+	}
+	return result
+}
+
+func ovnCompactDuplicateSnapshot(output string) bool {
+	return strings.Contains(output, "not storing a duplicate snapshot")
 }
 
 func indexString(values []string, value string) int {

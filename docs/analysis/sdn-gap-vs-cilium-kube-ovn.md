@@ -133,11 +133,11 @@ Kube-OVN has explicit leader/DB-health/recovery logic around OVN:
 - `/tmp/kube-ovn/pkg/ovn_leader_checker/ovn.go`
 - `/tmp/kube-ovn/pkg/ovnmonitor`
 
-Netloom now has `ovn-nbctl show` health probing, libovsdb `echo` health probing for direct OVSDB topology mode, a reconnecting libovsdb topology health checker that rebuilds and re-monitors the Northbound client with configurable backoff after disconnects, comma/whitespace separated OVN Northbound libovsdb endpoint failover for initial connect and health reconnect, optional `NETLOOM_OVN_LEADER_STATUS_CMD` leader endpoint probing with leader-aware connection preference, built-in `ovn-appctl -t <target> cluster/status OVN_Northbound` leader probing through `NETLOOM_OVN_CLUSTER_STATUS_TARGETS`, command timeout/retry knobs, and controller metrics/log fields for consecutive OVN health failures, consecutive successes, the first successful recovering reconcile after a failure, active OVN endpoint, leader OVN endpoint, leader preference status, configured endpoint count, and failover count.
+Netloom now has `ovn-nbctl show` health probing, libovsdb `echo` health probing for direct OVSDB topology mode, a reconnecting libovsdb topology health checker that rebuilds and re-monitors the Northbound client with configurable backoff after disconnects, comma/whitespace separated OVN Northbound libovsdb endpoint failover for initial connect and health reconnect, optional `NETLOOM_OVN_LEADER_STATUS_CMD` leader endpoint probing with leader-aware connection preference, built-in `ovn-appctl -t <target> cluster/status OVN_Northbound` leader probing through `NETLOOM_OVN_CLUSTER_STATUS_TARGETS`, opt-in OVN DB compaction after successful reconcile through `NETLOOM_OVN_DB_COMPACT_TARGETS`, command timeout/retry knobs, and controller metrics/log fields for consecutive OVN health failures, consecutive successes, the first successful recovering reconcile after a failure, active OVN endpoint, leader OVN endpoint, leader preference status, configured endpoint count, failover count, and maintenance success/failure counts.
 
 Netloom is still missing:
 
-- DB compaction / stale-state maintenance workflow
+- richer stale-state maintenance workflows beyond desired-state orphan cleanup and opt-in DB compaction
 
 If this stays missing, the system will work in a lab but remain weak as a product.
 

@@ -253,6 +253,89 @@ esac
 	}
 }
 
+func TestOVNDBMaintenanceTargetsFromEnvParsesTargets(t *testing.T) {
+	t.Setenv("NETLOOM_OVN_DB_COMPACT_TARGETS", "/run/ovn/ovnnb_db.ctl=OVN_Northbound,/run/ovn/ovnsb_db.ctl=OVN_Southbound,/run/ovn/ovnnb_db.ctl=OVN_Northbound")
+	targets := ovnDBMaintenanceTargetsFromEnv()
+	if len(targets) != 2 {
+		t.Fatalf("targets = %#v, want 2 unique targets", targets)
+	}
+	if targets[0].Target != "/run/ovn/ovnnb_db.ctl" || targets[0].DB != "OVN_Northbound" {
+		t.Fatalf("target[0] = %#v", targets[0])
+	}
+	if targets[1].Target != "/run/ovn/ovnsb_db.ctl" || targets[1].DB != "OVN_Southbound" {
+		t.Fatalf("target[1] = %#v", targets[1])
+	}
+}
+
+func TestOVNDBMaintenanceRunsCompactTargets(t *testing.T) {
+	dir := t.TempDir()
+	appctl := filepath.Join(dir, "ovn-appctl")
+	logPath := filepath.Join(dir, "calls")
+	script := `#!/bin/sh
+printf '%s %s %s\n' "$1" "$2" "$3" >> "$NETLOOM_TEST_CALLS"
+exit 0
+`
+	if err := os.WriteFile(appctl, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NETLOOM_TEST_CALLS", logPath)
+	result := ovnDBMaintenance{
+		appctl: appctl,
+		targets: []ovnDBMaintenanceTarget{
+			{Target: "target-a", DB: "OVN_Northbound"},
+			{Target: "target-b", DB: "OVN_Southbound"},
+		},
+	}.RunMaintenance(context.Background())
+	if result.Status != "ok" || result.Attempted != 2 || result.Succeeded != 2 || result.Failed != 0 {
+		t.Fatalf("maintenance result = %+v, want two successful compactions", result)
+	}
+	raw, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.TrimSpace(string(raw)), "-t target-a ovsdb-server/compact\n-t target-b ovsdb-server/compact"; got != want {
+		t.Fatalf("appctl calls = %q, want %q", got, want)
+	}
+}
+
+func TestOVNDBMaintenanceTreatsDuplicateSnapshotAsSuccess(t *testing.T) {
+	dir := t.TempDir()
+	appctl := filepath.Join(dir, "ovn-appctl")
+	script := `#!/bin/sh
+printf 'not storing a duplicate snapshot\n'
+exit 1
+`
+	if err := os.WriteFile(appctl, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	result := ovnDBMaintenance{
+		appctl:  appctl,
+		targets: []ovnDBMaintenanceTarget{{Target: "target-a", DB: "OVN_Northbound"}},
+	}.RunMaintenance(context.Background())
+	if result.Status != "ok" || result.Succeeded != 1 || result.Failed != 0 {
+		t.Fatalf("maintenance result = %+v, want duplicate snapshot as success", result)
+	}
+}
+
+func TestOVNDBMaintenanceReportsFailures(t *testing.T) {
+	dir := t.TempDir()
+	appctl := filepath.Join(dir, "ovn-appctl")
+	script := `#!/bin/sh
+printf 'locked\n'
+exit 2
+`
+	if err := os.WriteFile(appctl, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	result := ovnDBMaintenance{
+		appctl:  appctl,
+		targets: []ovnDBMaintenanceTarget{{Target: "target-a", DB: "OVN_Northbound"}},
+	}.RunMaintenance(context.Background())
+	if result.Status != "error" || result.Succeeded != 0 || result.Failed != 1 || !strings.Contains(result.Error, "locked") {
+		t.Fatalf("maintenance result = %+v, want failed compaction with error output", result)
+	}
+}
+
 func TestLibOVSDBClusterConnectorPrefersProbedLeaderEndpoint(t *testing.T) {
 	attempts := make([]string, 0)
 	cluster := newLibOVSDBClusterConnector("test", []string{"tcp:a:6641", "tcp:b:6641"}, func(_ context.Context, _ string, endpoint string) (libovsdbclient.Client, func(), error) {
@@ -526,6 +609,12 @@ func TestControllerMetricsExportsLatestSuccess(t *testing.T) {
 			DriftedManagedRows:               5,
 			DriftedManagedFields:             6,
 		},
+		OVNMaintenance: ovnMaintenanceResult{
+			Status:    "ok",
+			Attempted: 2,
+			Succeeded: 2,
+			Latency:   15 * time.Millisecond,
+		},
 		Duration: 125 * time.Millisecond,
 		Success:  true,
 	})
@@ -559,6 +648,11 @@ func TestControllerMetricsExportsLatestSuccess(t *testing.T) {
 		`netloom_controller_ovn_cluster_failovers{ovn_health="ok"} 1`,
 		`netloom_controller_ovn_operations_planned{ovn_health="ok"} 7`,
 		`netloom_controller_ovn_operations_executed{ovn_health="ok"} 6`,
+		`netloom_controller_ovn_maintenance_attempted{ovn_health="ok",ovn_maintenance="ok"} 2`,
+		`netloom_controller_ovn_maintenance_succeeded{ovn_health="ok",ovn_maintenance="ok"} 2`,
+		`netloom_controller_ovn_maintenance_failed{ovn_health="ok",ovn_maintenance="ok"} 0`,
+		`netloom_controller_ovn_maintenance_latency_milliseconds{ovn_health="ok",ovn_maintenance="ok"} 15`,
+		`netloom_controller_ovn_maintenance_runs_total{ovn_health="ok",ovn_maintenance="ok"} 1`,
 		`netloom_controller_ovn_cleanup_operations{ovn_health="ok"} 3`,
 		`netloom_controller_ovn_cleanup_stale_objects{ovn_health="ok"} 1`,
 		`netloom_controller_ovn_cleanup_changed_objects{ovn_health="ok"} 3`,
