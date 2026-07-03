@@ -162,6 +162,8 @@ type PolicyEndpointRolloutOptions struct {
 	SLOGated                  bool
 	SLODropThresholdPercent   uint32
 	SLOMinPackets             uint64
+	SLOWindowCount            int
+	SLOWindowInterval         time.Duration
 }
 
 type PolicyEndpointRollout struct {
@@ -176,10 +178,13 @@ type PolicyEndpointRollout struct {
 	SLOGated                 bool                        `json:"slo_gated,omitempty"`
 	SLODropThresholdPercent  uint32                      `json:"slo_drop_threshold_percent,omitempty"`
 	SLOMinPackets            uint64                      `json:"slo_min_packets,omitempty"`
+	SLOWindowCount           int                         `json:"slo_window_count,omitempty"`
+	SLOWindowIntervalMS      uint32                      `json:"slo_window_interval_ms,omitempty"`
 	SLOPackets               uint64                      `json:"slo_packets,omitempty"`
 	SLODropPercent           uint32                      `json:"slo_drop_percent,omitempty"`
 	SLOFailed                bool                        `json:"slo_failed,omitempty"`
 	SLOError                 string                      `json:"slo_error,omitempty"`
+	SLOWindows               []PolicyEndpointSLOWindow   `json:"slo_windows,omitempty"`
 	Planned                  int                         `json:"planned"`
 	Applied                  int                         `json:"applied"`
 	Skipped                  int                         `json:"skipped"`
@@ -187,6 +192,15 @@ type PolicyEndpointRollout struct {
 	RolledBack               int                         `json:"rolled_back,omitempty"`
 	RollbackFailed           int                         `json:"rollback_failed,omitempty"`
 	Items                    []PolicyEndpointRolloutItem `json:"items"`
+}
+
+type PolicyEndpointSLOWindow struct {
+	Index       int    `json:"index"`
+	Packets     uint64 `json:"packets"`
+	Drops       uint64 `json:"drops"`
+	DropPercent uint32 `json:"drop_percent"`
+	Passed      bool   `json:"passed"`
+	Reason      string `json:"reason,omitempty"`
 }
 
 type PolicyEndpointRolloutItem struct {
@@ -337,6 +351,8 @@ func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, opt
 		SLOGated:                 rolloutOptions.SLOGated,
 		SLODropThresholdPercent:  rolloutOptions.SLODropThresholdPercent,
 		SLOMinPackets:            rolloutOptions.SLOMinPackets,
+		SLOWindowCount:           normalizedSLOWindowCount(rolloutOptions.SLOWindowCount),
+		SLOWindowIntervalMS:      uint32(rolloutOptions.SLOWindowInterval / time.Millisecond),
 		Items:                    make([]PolicyEndpointRolloutItem, 0, len(endpointIDs)),
 	}
 	type preparedEndpoint struct {
@@ -373,6 +389,13 @@ func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, opt
 	if err != nil {
 		return PolicyEndpointRollout{}, err
 	}
+	var sloBaseline []dataplane.RuleMetrics
+	if rolloutOptions.SLOGated && normalizedSLOWindowCount(rolloutOptions.SLOWindowCount) > 1 {
+		sloBaseline, err = rolloutSLOMetrics(ctx, options)
+		if err != nil {
+			return PolicyEndpointRollout{}, err
+		}
+	}
 	backend := dataplane.NewPolicyBackend(options.Store)
 	applied := make([]string, 0, len(rollout.Items))
 	for i, item := range rollout.Items {
@@ -405,9 +428,12 @@ func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, opt
 		}
 		rollout.Items[i] = item
 		if rolloutOptions.SLOGated && rolloutBatchComplete(rollout.Items, i) {
-			if failed, err := evaluateRolloutSLO(ctx, options, applied, rolloutOptions, &rollout); err != nil {
+			failed, nextBaseline, err := evaluateRolloutSLO(ctx, options, applied, rolloutOptions, sloBaseline, &rollout)
+			if err != nil {
 				return PolicyEndpointRollout{}, err
-			} else if failed {
+			}
+			sloBaseline = nextBaseline
+			if failed {
 				rollout.Failed++
 				rollbackRolloutPolicyEndpoints(ctx, options.Store, snapshots, applied, &rollout)
 			}
@@ -420,32 +446,116 @@ func rolloutBatchComplete(items []PolicyEndpointRolloutItem, index int) bool {
 	return index >= len(items)-1 || items[index+1].Batch != items[index].Batch
 }
 
-func evaluateRolloutSLO(ctx context.Context, options ReconcileOptions, applied []string, rolloutOptions PolicyEndpointRolloutOptions, rollout *PolicyEndpointRollout) (bool, error) {
+func evaluateRolloutSLO(ctx context.Context, options ReconcileOptions, applied []string, rolloutOptions PolicyEndpointRolloutOptions, baseline []dataplane.RuleMetrics, rollout *PolicyEndpointRollout) (bool, []dataplane.RuleMetrics, error) {
+	windowCount := normalizedSLOWindowCount(rolloutOptions.SLOWindowCount)
+	if windowCount > 1 {
+		return evaluateRolloutSLOWindows(ctx, options, applied, rolloutOptions, baseline, rollout)
+	}
+	stats, err := rolloutSLOMetrics(ctx, options)
+	if err != nil {
+		return false, nil, err
+	}
+	packets, drops := rolloutSLOPackets(stats, applied)
+	failed := applyRolloutSLOResult(packets, drops, rolloutOptions, rollout)
+	return failed, stats, nil
+}
+
+func evaluateRolloutSLOWindows(ctx context.Context, options ReconcileOptions, applied []string, rolloutOptions PolicyEndpointRolloutOptions, baseline []dataplane.RuleMetrics, rollout *PolicyEndpointRollout) (bool, []dataplane.RuleMetrics, error) {
+	previous := baseline
+	var totalPackets, totalDrops uint64
+	windowCount := normalizedSLOWindowCount(rolloutOptions.SLOWindowCount)
+	for i := 0; i < windowCount; i++ {
+		if i > 0 && rolloutOptions.SLOWindowInterval > 0 {
+			if err := waitRolloutSLOWindow(ctx, rolloutOptions.SLOWindowInterval); err != nil {
+				return false, previous, err
+			}
+		}
+		stats, err := rolloutSLOMetrics(ctx, options)
+		if err != nil {
+			return false, previous, err
+		}
+		packets, drops := rolloutSLODeltaPackets(previous, stats, applied)
+		totalPackets += packets
+		totalDrops += drops
+		dropPercent := percentUint64(drops, packets)
+		window := PolicyEndpointSLOWindow{
+			Index:       i + 1,
+			Packets:     packets,
+			Drops:       drops,
+			DropPercent: dropPercent,
+			Passed:      true,
+			Reason:      "ok",
+		}
+		previous = stats
+		if packets < rolloutOptions.SLOMinPackets {
+			window.Reason = "insufficient_samples"
+			rollout.SLOWindows = append(rollout.SLOWindows, window)
+			continue
+		}
+		if dropPercent > rolloutOptions.SLODropThresholdPercent {
+			window.Passed = false
+			window.Reason = "drop_threshold_exceeded"
+			rollout.SLOWindows = append(rollout.SLOWindows, window)
+			rollout.SLOPackets = totalPackets
+			rollout.SLODropPercent = percentUint64(totalDrops, totalPackets)
+			rollout.SLOFailed = true
+			rollout.SLOError = fmt.Sprintf("policy rollout SLO failed: window=%d drop_percent=%d threshold=%d packets=%d min_packets=%d", window.Index, dropPercent, rolloutOptions.SLODropThresholdPercent, packets, rolloutOptions.SLOMinPackets)
+			return true, previous, nil
+		}
+		rollout.SLOWindows = append(rollout.SLOWindows, window)
+	}
+	rollout.SLOPackets = totalPackets
+	rollout.SLODropPercent = percentUint64(totalDrops, totalPackets)
+	return false, previous, nil
+}
+
+func rolloutSLOMetrics(ctx context.Context, options ReconcileOptions) ([]dataplane.RuleMetrics, error) {
 	telemetry := options.PolicyTelemetry
 	if telemetry == nil {
 		var ok bool
 		telemetry, ok = options.Store.(PolicyRuleMetricsStore)
 		if !ok {
-			return false, fmt.Errorf("slo-gated policy rollout requires policy rule telemetry")
+			return nil, fmt.Errorf("slo-gated policy rollout requires policy rule telemetry")
 		}
 	}
 	stats, err := telemetry.PolicyRuleMetrics(ctx)
 	if err != nil {
-		return false, fmt.Errorf("read policy rollout SLO metrics: %w", err)
+		return nil, fmt.Errorf("read policy rollout SLO metrics: %w", err)
 	}
-	packets, drops := rolloutSLOPackets(stats, applied)
+	return stats, nil
+}
+
+func waitRolloutSLOWindow(ctx context.Context, interval time.Duration) error {
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func applyRolloutSLOResult(packets, drops uint64, rolloutOptions PolicyEndpointRolloutOptions, rollout *PolicyEndpointRollout) bool {
 	dropPercent := percentUint64(drops, packets)
 	rollout.SLOPackets = packets
 	rollout.SLODropPercent = dropPercent
 	if packets < rolloutOptions.SLOMinPackets {
-		return false, nil
+		return false
 	}
 	if dropPercent <= rolloutOptions.SLODropThresholdPercent {
-		return false, nil
+		return false
 	}
 	rollout.SLOFailed = true
 	rollout.SLOError = fmt.Sprintf("policy rollout SLO failed: drop_percent=%d threshold=%d packets=%d min_packets=%d", dropPercent, rolloutOptions.SLODropThresholdPercent, packets, rolloutOptions.SLOMinPackets)
-	return true, nil
+	return true
+}
+
+func normalizedSLOWindowCount(count int) int {
+	if count < 1 {
+		return 1
+	}
+	return count
 }
 
 func rolloutSLOPackets(stats []dataplane.RuleMetrics, endpointIDs []string) (uint64, uint64) {
@@ -462,6 +572,38 @@ func rolloutSLOPackets(stats []dataplane.RuleMetrics, endpointIDs []string) (uin
 		drops += maxUint64(stat.Dropped, stat.Rejected)
 	}
 	return packets, drops
+}
+
+func rolloutSLODeltaPackets(previous, current []dataplane.RuleMetrics, endpointIDs []string) (uint64, uint64) {
+	previousByRule := make(map[string]dataplane.RuleMetrics, len(previous))
+	for _, stat := range previous {
+		previousByRule[rolloutSLOMetricKey(stat)] = stat
+	}
+	endpoints := make(map[string]struct{}, len(endpointIDs))
+	for _, endpointID := range endpointIDs {
+		endpoints[endpointID] = struct{}{}
+	}
+	var packets, drops uint64
+	for _, stat := range current {
+		if _, ok := endpoints[stat.EndpointID]; !ok {
+			continue
+		}
+		prev := previousByRule[rolloutSLOMetricKey(stat)]
+		packets += saturatingCounterDelta(prev.Packets, stat.Packets)
+		drops += saturatingCounterDelta(maxUint64(prev.Dropped, prev.Rejected), maxUint64(stat.Dropped, stat.Rejected))
+	}
+	return packets, drops
+}
+
+func rolloutSLOMetricKey(stat dataplane.RuleMetrics) string {
+	return fmt.Sprintf("%s\x00%d", stat.EndpointID, stat.RuleCookie)
+}
+
+func saturatingCounterDelta(previous, current uint64) uint64 {
+	if current < previous {
+		return 0
+	}
+	return current - previous
 }
 
 func maxUint64(a, b uint64) uint64 {
@@ -570,6 +712,8 @@ func ApplyPolicyRollouts(ctx context.Context, state control.DesiredState, option
 			SLOGated:                  rollout.SLOGated,
 			SLODropThresholdPercent:   rollout.SLODropThresholdPercent,
 			SLOMinPackets:             rollout.SLOMinPackets,
+			SLOWindowCount:            rollout.SLOWindowCount,
+			SLOWindowInterval:         time.Duration(rollout.SLOWindowIntervalMS) * time.Millisecond,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("policy rollout %q: %w", rollout.Name, err)

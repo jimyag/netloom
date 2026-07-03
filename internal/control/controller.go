@@ -160,6 +160,8 @@ type PolicyRollout struct {
 	SLOGated                  bool     `json:"slo_gated"`
 	SLODropThresholdPercent   uint32   `json:"slo_drop_threshold_percent"`
 	SLOMinPackets             uint64   `json:"slo_min_packets"`
+	SLOWindowCount            int      `json:"slo_window_count"`
+	SLOWindowIntervalMS       uint32   `json:"slo_window_interval_ms"`
 	Disabled                  bool     `json:"disabled,omitempty"`
 }
 
@@ -178,6 +180,9 @@ func (r PolicyRollout) Validate() error {
 	}
 	if r.SLODropThresholdPercent > 100 {
 		return fmt.Errorf("policy rollout %q slo_drop_threshold_percent must be <= 100", r.Name)
+	}
+	if r.SLOWindowCount < 0 {
+		return fmt.Errorf("policy rollout %q slo_window_count must not be negative", r.Name)
 	}
 	seen := make(map[string]struct{}, len(r.Endpoints))
 	for _, endpoint := range r.Endpoints {

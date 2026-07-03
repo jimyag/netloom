@@ -1638,7 +1638,7 @@ func TestPolicyEndpointAPIRolloutHonorsSLOGate(t *testing.T) {
 		Node: "node-a",
 	}, "memory", time.Millisecond, state)
 
-	body := bytes.NewBufferString(`{"endpoints":["prod/pod-a","prod/pod-b"],"batch_size":1,"slo_gated":true,"slo_drop_threshold_percent":10,"slo_min_packets":10}`)
+	body := bytes.NewBufferString(`{"endpoints":["prod/pod-a","prod/pod-b"],"batch_size":1,"slo_gated":true,"slo_drop_threshold_percent":10,"slo_min_packets":10,"slo_window_count":1,"slo_window_interval_ms":250}`)
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/policy/endpoints/rollout", body)
 	metrics.handlePolicyEndpoints(recorder, request)
@@ -1652,6 +1652,9 @@ func TestPolicyEndpointAPIRolloutHonorsSLOGate(t *testing.T) {
 	}
 	if got.RolledOut || !got.Rollout.SLOFailed || got.Rollout.SLODropPercent != 40 || got.Rollout.RolledBack != 1 || got.Rollout.Skipped != 1 {
 		t.Fatalf("rollout response = %+v, want SLO failure rollback", got)
+	}
+	if got.Rollout.SLOWindowCount != 1 || got.Rollout.SLOWindowIntervalMS != 250 {
+		t.Fatalf("rollout SLO window settings = %+v, want request settings", got.Rollout)
 	}
 	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 0 {
 		t.Fatalf("pod-a entries = %+v, want SLO rollback", entries)

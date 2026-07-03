@@ -152,6 +152,8 @@ type policyEndpointRolloutRequest struct {
 	SLOGated                  bool     `json:"slo_gated"`
 	SLODropThresholdPercent   uint32   `json:"slo_drop_threshold_percent"`
 	SLOMinPackets             uint64   `json:"slo_min_packets"`
+	SLOWindowCount            int      `json:"slo_window_count"`
+	SLOWindowIntervalMS       uint32   `json:"slo_window_interval_ms"`
 }
 
 func runPolicyExplain(args []string, stdout io.Writer) error {
@@ -1261,6 +1263,8 @@ func (m *agentMetrics) rolloutPolicyEndpoints(ctx context.Context, request polic
 		SLOGated:                  request.SLOGated,
 		SLODropThresholdPercent:   request.SLODropThresholdPercent,
 		SLOMinPackets:             request.SLOMinPackets,
+		SLOWindowCount:            request.SLOWindowCount,
+		SLOWindowInterval:         time.Duration(request.SLOWindowIntervalMS) * time.Millisecond,
 	})
 	if err != nil {
 		return agent.PolicyEndpointRollout{}, err

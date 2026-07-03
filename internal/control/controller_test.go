@@ -775,6 +775,18 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 			wantErr: "slo_drop_threshold_percent must be <= 100",
 		},
 		{
+			name: "invalid policy rollout SLO window count",
+			mutate: func(state *DesiredState) {
+				state.PolicyRollouts = []PolicyRollout{{
+					Name:           "web-canary",
+					Endpoints:      []string{"prod/pod-a"},
+					BatchSize:      1,
+					SLOWindowCount: -1,
+				}}
+			},
+			wantErr: "slo_window_count must not be negative",
+		},
+		{
 			name: "remote group unknown",
 			mutate: func(state *DesiredState) {
 				state.SecurityGroups[0].Rules[0].RemoteCIDR = netip.Prefix{}

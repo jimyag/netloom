@@ -1403,15 +1403,29 @@ func TestApplyPolicyRolloutsPassesSLOGateSettings(t *testing.T) {
 		Endpoints:               []string{"prod/pod-a", "prod/pod-b"},
 		BatchSize:               1,
 		SLOGated:                true,
+		SLOWindowCount:          2,
+		SLOWindowIntervalMS:     1,
 		SLODropThresholdPercent: 20,
 		SLOMinPackets:           10,
 	}}
 	store := dataplane.NewInMemoryPolicyStore()
-	telemetry := staticPolicyRuleMetrics{metrics: []dataplane.RuleMetrics{{
-		EndpointID: model.EndpointKey("prod", "pod-a"),
-		Packets:    50,
-		Rejected:   25,
-	}}}
+	telemetry := newSequencePolicyRuleMetrics([][]dataplane.RuleMetrics{
+		{{
+			EndpointID: model.EndpointKey("prod", "pod-a"),
+			Packets:    100,
+			Rejected:   0,
+		}},
+		{{
+			EndpointID: model.EndpointKey("prod", "pod-a"),
+			Packets:    120,
+			Rejected:   1,
+		}},
+		{{
+			EndpointID: model.EndpointKey("prod", "pod-a"),
+			Packets:    140,
+			Rejected:   21,
+		}},
+	})
 
 	rollouts, err := ApplyPolicyRollouts(context.Background(), state, ReconcileOptions{
 		Node:            "node-a",
@@ -1426,8 +1440,11 @@ func TestApplyPolicyRolloutsPassesSLOGateSettings(t *testing.T) {
 	if result.PolicyRollouts != 1 || result.PolicyRolloutSLOFailed != 1 || result.PolicyRolloutRolledBack != 1 || result.PolicyRolloutSkipped != 1 {
 		t.Fatalf("rollout result = %+v rollouts=%+v, want desired-state SLO rollback", result, rollouts)
 	}
-	if len(rollouts) != 1 || !rollouts[0].Rollout.SLOFailed || rollouts[0].Rollout.SLODropPercent != 50 {
+	if len(rollouts) != 1 || !rollouts[0].Rollout.SLOFailed || rollouts[0].Rollout.SLODropPercent != 52 {
 		t.Fatalf("rollouts = %+v, want SLO failure propagated", rollouts)
+	}
+	if rollouts[0].Rollout.SLOWindowCount != 2 || rollouts[0].Rollout.SLOWindowIntervalMS != 1 {
+		t.Fatalf("rollout SLO window settings = %+v, want desired-state settings propagated", rollouts[0].Rollout)
 	}
 }
 
@@ -1622,6 +1639,62 @@ func TestRolloutPolicyEndpointsSLOGateWaitsForMinimumSamples(t *testing.T) {
 	}
 }
 
+func TestRolloutPolicyEndpointsSLOGateUsesMultiWindowDeltas(t *testing.T) {
+	state := rolloutPolicyState()
+	store := dataplane.NewInMemoryPolicyStore()
+	telemetry := newSequencePolicyRuleMetrics([][]dataplane.RuleMetrics{
+		{{
+			EndpointID: model.EndpointKey("prod", "pod-a"),
+			Packets:    100,
+			Dropped:    0,
+		}},
+		{{
+			EndpointID: model.EndpointKey("prod", "pod-a"),
+			Packets:    120,
+			Dropped:    1,
+		}},
+		{{
+			EndpointID: model.EndpointKey("prod", "pod-a"),
+			Packets:    140,
+			Dropped:    9,
+		}},
+	})
+
+	rollout, err := RolloutPolicyEndpoints(context.Background(), state, ReconcileOptions{
+		Node:            "node-a",
+		Store:           store,
+		PolicyTelemetry: telemetry,
+	}, PolicyEndpointRolloutOptions{
+		EndpointIDs: []string{
+			model.EndpointKey("prod", "pod-a"),
+			model.EndpointKey("prod", "pod-b"),
+		},
+		BatchSize:               1,
+		SLOGated:                true,
+		SLODropThresholdPercent: 10,
+		SLOMinPackets:           10,
+		SLOWindowCount:          2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rollout.SLOFailed || rollout.SLOPackets != 40 || rollout.SLODropPercent != 22 || rollout.RolledBack != 1 || rollout.Skipped != 1 {
+		t.Fatalf("rollout = %+v, want second SLO window rollback from delta samples", rollout)
+	}
+	if len(rollout.SLOWindows) != 2 {
+		t.Fatalf("SLO windows = %+v, want 2 windows", rollout.SLOWindows)
+	}
+	if first := rollout.SLOWindows[0]; !first.Passed || first.Packets != 20 || first.Drops != 1 || first.DropPercent != 5 {
+		t.Fatalf("first SLO window = %+v, want passing 1/20", first)
+	}
+	if second := rollout.SLOWindows[1]; second.Passed || second.Reason != "drop_threshold_exceeded" || second.Packets != 20 || second.Drops != 8 || second.DropPercent != 40 {
+		t.Fatalf("second SLO window = %+v, want failed 8/20", second)
+	}
+	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 0 {
+		t.Fatalf("pod-a entries = %+v, want SLO rollback", entries)
+	}
+}
+
 type failingPolicyStore struct {
 	*dataplane.InMemoryPolicyStore
 	failEndpoint string
@@ -1649,6 +1722,31 @@ type staticPolicyRuleMetrics struct {
 
 func (s staticPolicyRuleMetrics) PolicyRuleMetrics(context.Context) ([]dataplane.RuleMetrics, error) {
 	return append([]dataplane.RuleMetrics(nil), s.metrics...), nil
+}
+
+type sequencePolicyRuleMetrics struct {
+	mu      sync.Mutex
+	metrics [][]dataplane.RuleMetrics
+	next    int
+}
+
+func newSequencePolicyRuleMetrics(metrics [][]dataplane.RuleMetrics) *sequencePolicyRuleMetrics {
+	return &sequencePolicyRuleMetrics{metrics: metrics}
+}
+
+func (s *sequencePolicyRuleMetrics) PolicyRuleMetrics(context.Context) ([]dataplane.RuleMetrics, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.metrics) == 0 {
+		return nil, nil
+	}
+	index := s.next
+	if index >= len(s.metrics) {
+		index = len(s.metrics) - 1
+	} else {
+		s.next++
+	}
+	return append([]dataplane.RuleMetrics(nil), s.metrics[index]...), nil
 }
 
 func rolloutPolicyState() control.DesiredState {
