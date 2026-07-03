@@ -1237,6 +1237,85 @@ func TestPolicyEndpointAPIRegenerateRequiresReadyDesiredState(t *testing.T) {
 	}
 }
 
+func TestPolicyEndpointAPIPlansDesiredEndpointPolicyMap(t *testing.T) {
+	endpointID := model.EndpointKey("prod", "pod-a")
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:             "pod-a",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"web"},
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "allow-http",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("172.30.0.0/24"),
+				Ports:      []model.PortRange{{From: 80, To: 80}},
+				Action:     model.ActionAllow,
+			}},
+		}},
+	}
+	store := dataplane.NewInMemoryPolicyStore()
+	oldEntries := []dataplane.PolicyMapEntry{{
+		Key: dataplane.PolicyKey{
+			PrefixLen:      dataplane.StaticPrefixBits + 8,
+			RemoteIdentity: 42,
+			Direction:      dataplane.DirectionIngress,
+			Protocol:       6,
+		},
+		RemoteCIDR: netip.MustParsePrefix("198.51.100.0/24"),
+		Value: dataplane.PolicyEntry{
+			Deny:        1,
+			L4PrefixLen: 8,
+			Precedence:  100,
+		},
+	}}
+	if err := store.ReplaceEndpoint(context.Background(), endpointID, oldEntries); err != nil {
+		t.Fatal(err)
+	}
+	beforeRevision := store.Revision(endpointID)
+	metrics := newAgentMetrics(store)
+	observeAgentReconcileResultWithState(metrics, agent.ReconcileResult{
+		Node: "node-a",
+		PolicyEndpointStatus: []dataplane.PolicyEndpointStatus{{
+			EndpointID: endpointID,
+			Revision:   beforeRevision,
+			Entries:    1,
+		}},
+	}, "memory", time.Millisecond, state)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/policy/endpoints/prod/pod-a/plan", nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var got policyEndpointActionOutput
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode policy endpoint action response: %v\n%s", err, recorder.Body.String())
+	}
+	if !got.Planned || got.Action != "plan" || got.EndpointID != endpointID || !got.Plan.Changed {
+		t.Fatalf("plan response = %+v, want changed dry-run plan", got)
+	}
+	if got.Plan.Stats.Added != 1 || got.Plan.Stats.Deleted != 1 || got.Plan.CurrentEntries != 1 || got.Plan.DesiredEntries != 1 {
+		t.Fatalf("plan = %+v, want add/delete counts", got.Plan)
+	}
+	if revision := store.Revision(endpointID); revision != beforeRevision {
+		t.Fatalf("revision = %d, want unchanged %d", revision, beforeRevision)
+	}
+	if entries := store.Entries(endpointID); len(entries) != 1 || entries[0].RemoteCIDR != oldEntries[0].RemoteCIDR || entries[0].Value.Deny != 1 {
+		t.Fatalf("entries = %+v, want old entries preserved", entries)
+	}
+}
+
 func TestPolicyEndpointAPIQuarantinesEndpointPolicyMap(t *testing.T) {
 	endpointID := model.EndpointKey("prod", "pod-a")
 	state := control.DesiredState{

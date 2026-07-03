@@ -357,6 +357,72 @@ func TestRegeneratePolicyEndpointRejectsRemoteNodeEndpoint(t *testing.T) {
 	}
 }
 
+func TestPlanPolicyEndpointReportsDiffWithoutApplying(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:             "pod-a",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"web"},
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "allow-http",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("172.30.0.0/24"),
+				Ports:      []model.PortRange{{From: 80, To: 80}},
+				Action:     model.ActionAllow,
+			}},
+		}},
+	}
+	store := dataplane.NewInMemoryPolicyStore()
+	endpointID := model.EndpointKey("prod", "pod-a")
+	oldEntries := []dataplane.PolicyMapEntry{{
+		Key: dataplane.PolicyKey{
+			PrefixLen:      dataplane.StaticPrefixBits + 8,
+			RemoteIdentity: 42,
+			Direction:      dataplane.DirectionIngress,
+			Protocol:       6,
+		},
+		RemoteCIDR: netip.MustParsePrefix("198.51.100.0/24"),
+		Value: dataplane.PolicyEntry{
+			Deny:        1,
+			L4PrefixLen: 8,
+			Precedence:  100,
+		},
+	}}
+	if err := store.ReplaceEndpoint(context.Background(), endpointID, oldEntries); err != nil {
+		t.Fatal(err)
+	}
+	beforeRevision := store.Revision(endpointID)
+
+	plan, err := PlanPolicyEndpoint(context.Background(), state, ReconcileOptions{
+		Node:  "node-a",
+		Store: store,
+	}, endpointID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.EndpointID != endpointID || !plan.Changed || plan.CurrentEntries != 1 || plan.DesiredEntries != 1 {
+		t.Fatalf("plan = %+v, want one changed endpoint policy entry", plan)
+	}
+	if plan.Stats.Added != 1 || plan.Stats.Deleted != 1 || plan.Stats.Updated != 0 || plan.Stats.Unchanged != 0 {
+		t.Fatalf("plan stats = %+v, want add/delete dry-run", plan.Stats)
+	}
+	if revision := store.Revision(endpointID); revision != beforeRevision {
+		t.Fatalf("revision = %d, want unchanged %d", revision, beforeRevision)
+	}
+	if entries := store.Entries(endpointID); len(entries) != 1 || entries[0].RemoteCIDR != oldEntries[0].RemoteCIDR || entries[0].Value.Deny != 1 {
+		t.Fatalf("entries = %+v, want old entries preserved", entries)
+	}
+}
+
 func TestQuarantinePolicyEndpointReplacesPolicyWithIngressAndEgressDrops(t *testing.T) {
 	state := control.DesiredState{
 		Endpoints: []model.Endpoint{{

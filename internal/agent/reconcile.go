@@ -106,6 +106,10 @@ type PolicyEndpointStatusStore interface {
 	PolicyEndpointStatuses(context.Context) ([]dataplane.PolicyEndpointStatus, error)
 }
 
+type PolicyEndpointEntryStore interface {
+	Entries(endpointID string) []dataplane.PolicyMapEntry
+}
+
 type PolicyEndpointSweeper interface {
 	SweepPolicyEndpoints(context.Context, []string, time.Duration) (int, error)
 }
@@ -127,6 +131,14 @@ type ReconcileOptions struct {
 	PolicyPressureMitigationThreshold uint32
 	PolicyPressureQuarantine          bool
 	LinuxDatapath                     *linuxdatapath.Options
+}
+
+type PolicyEndpointPlan struct {
+	EndpointID     string                      `json:"endpoint_id"`
+	CurrentEntries int                         `json:"current_entries"`
+	DesiredEntries int                         `json:"desired_entries"`
+	Stats          dataplane.PolicyUpdateStats `json:"stats"`
+	Changed        bool                        `json:"changed"`
 }
 
 type tcxTarget struct {
@@ -198,42 +210,7 @@ func ReconcileNodeWithOptions(ctx context.Context, state control.DesiredState, o
 }
 
 func RegeneratePolicyEndpoint(ctx context.Context, state control.DesiredState, options ReconcileOptions, endpointID string) (dataplane.PolicyEndpointStatus, error) {
-	if options.Node == "" {
-		return dataplane.PolicyEndpointStatus{}, fmt.Errorf("node name is required")
-	}
-	if options.Store == nil {
-		return dataplane.PolicyEndpointStatus{}, fmt.Errorf("policy store is required")
-	}
-	if endpointID == "" {
-		return dataplane.PolicyEndpointStatus{}, fmt.Errorf("policy endpoint is required")
-	}
-	if err := validateAgentState(state); err != nil {
-		return dataplane.PolicyEndpointStatus{}, err
-	}
-	endpoint, ok := desiredEndpointByPolicyID(state.Endpoints, endpointID)
-	if !ok {
-		return dataplane.PolicyEndpointStatus{}, fmt.Errorf("policy endpoint %q not found in desired state", endpointID)
-	}
-	if endpoint.Node != options.Node {
-		return dataplane.PolicyEndpointStatus{}, fmt.Errorf("policy endpoint %q is assigned to node %q, not %q", endpointID, endpoint.Node, options.Node)
-	}
-	if err := endpoint.Validate(); err != nil {
-		return dataplane.PolicyEndpointStatus{}, err
-	}
-	resolver := options.IdentityResolver
-	if resolver == nil {
-		resolver = policy.NewIdentityCache()
-	}
-	groups := securityGroupsForEndpointVPC(state.SecurityGroups, endpoint.VPC)
-	program, err := policy.CompileForEndpointWithContext(endpoint, groups, policy.CompileContext{
-		Endpoints:        state.Endpoints,
-		Subnets:          state.Subnets,
-		Gateways:         state.Gateways,
-		Services:         state.LoadBalancers,
-		DNSRecords:       state.DNSRecords,
-		CIDRGroups:       state.CIDRGroups,
-		IdentityResolver: resolver,
-	})
+	program, err := compileEndpointPolicyProgram(state, options, endpointID)
 	if err != nil {
 		return dataplane.PolicyEndpointStatus{}, err
 	}
@@ -256,6 +233,34 @@ func RegeneratePolicyEndpoint(ctx context.Context, state control.DesiredState, o
 		}
 	}
 	return status, nil
+}
+
+func PlanPolicyEndpoint(ctx context.Context, state control.DesiredState, options ReconcileOptions, endpointID string) (PolicyEndpointPlan, error) {
+	if options.Store == nil {
+		return PolicyEndpointPlan{}, fmt.Errorf("policy store is required")
+	}
+	program, err := compileEndpointPolicyProgram(state, options, endpointID)
+	if err != nil {
+		return PolicyEndpointPlan{}, err
+	}
+	desired, err := dataplane.EncodeProgram(program)
+	if err != nil {
+		return PolicyEndpointPlan{}, err
+	}
+	entryStore, ok := options.Store.(PolicyEndpointEntryStore)
+	if !ok {
+		return PolicyEndpointPlan{}, fmt.Errorf("policy endpoint entries are not available")
+	}
+	current := entryStore.Entries(endpointID)
+	plan := dataplane.PlanPolicyUpdate(current, desired)
+	stats := plan.Stats()
+	return PolicyEndpointPlan{
+		EndpointID:     endpointID,
+		CurrentEntries: len(current),
+		DesiredEntries: len(desired),
+		Stats:          stats,
+		Changed:        stats.Added != 0 || stats.Updated != 0 || stats.Deleted != 0,
+	}, nil
 }
 
 func QuarantinePolicyEndpoint(ctx context.Context, state control.DesiredState, options ReconcileOptions, endpointID string) (dataplane.PolicyEndpointStatus, error) {
@@ -298,6 +303,45 @@ func QuarantinePolicyEndpoint(ctx context.Context, state control.DesiredState, o
 		}
 	}
 	return status, nil
+}
+
+func compileEndpointPolicyProgram(state control.DesiredState, options ReconcileOptions, endpointID string) (policy.Program, error) {
+	if options.Node == "" {
+		return policy.Program{}, fmt.Errorf("node name is required")
+	}
+	if options.Store == nil {
+		return policy.Program{}, fmt.Errorf("policy store is required")
+	}
+	if endpointID == "" {
+		return policy.Program{}, fmt.Errorf("policy endpoint is required")
+	}
+	if err := validateAgentState(state); err != nil {
+		return policy.Program{}, err
+	}
+	endpoint, ok := desiredEndpointByPolicyID(state.Endpoints, endpointID)
+	if !ok {
+		return policy.Program{}, fmt.Errorf("policy endpoint %q not found in desired state", endpointID)
+	}
+	if endpoint.Node != options.Node {
+		return policy.Program{}, fmt.Errorf("policy endpoint %q is assigned to node %q, not %q", endpointID, endpoint.Node, options.Node)
+	}
+	if err := endpoint.Validate(); err != nil {
+		return policy.Program{}, err
+	}
+	resolver := options.IdentityResolver
+	if resolver == nil {
+		resolver = policy.NewIdentityCache()
+	}
+	groups := securityGroupsForEndpointVPC(state.SecurityGroups, endpoint.VPC)
+	return policy.CompileForEndpointWithContext(endpoint, groups, policy.CompileContext{
+		Endpoints:        state.Endpoints,
+		Subnets:          state.Subnets,
+		Gateways:         state.Gateways,
+		Services:         state.LoadBalancers,
+		DNSRecords:       state.DNSRecords,
+		CIDRGroups:       state.CIDRGroups,
+		IdentityResolver: resolver,
+	})
 }
 
 func UnquarantinePolicyEndpoint(ctx context.Context, state control.DesiredState, options ReconcileOptions, endpointID string) (dataplane.PolicyEndpointStatus, error) {

@@ -610,6 +610,12 @@ func (s *EBPFPolicyStore) LastStats(endpointID string) PolicyUpdateStats {
 	return s.lastStats[endpointID]
 }
 
+func (s *EBPFPolicyStore) Entries(endpointID string) []PolicyMapEntry {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]PolicyMapEntry(nil), s.entries[endpointID]...)
+}
+
 func (s *EBPFPolicyStore) EndpointIDs(_ context.Context) ([]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
