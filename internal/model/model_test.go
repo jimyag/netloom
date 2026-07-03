@@ -65,6 +65,13 @@ func TestCoreNetworkResourcesValidateRequiredFields(t *testing.T) {
 						EgressRateBPS:  1000000000,
 						EgressBurstBPS: 64000,
 					},
+					TenantQueues: []ProviderNetworkTenantQueuePolicy{{
+						Tenant:     "prod",
+						QueueID:    10,
+						MinRateBPS: 100000000,
+						MaxRateBPS: 500000000,
+						BurstBPS:   64000,
+					}},
 					Nodes: []ProviderNetworkNode{
 						{Node: "node-a", Interface: "bond0.100"},
 					},
@@ -185,6 +192,66 @@ func TestCoreNetworkResourcesValidateRequiredFields(t *testing.T) {
 			err := tt.invalid()
 			if err == nil {
 				t.Fatal("expected invalid resource to fail")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error %q does not contain %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestProviderNetworkRejectsInvalidTenantQueues(t *testing.T) {
+	tests := []struct {
+		name    string
+		queues  []ProviderNetworkTenantQueuePolicy
+		wantErr string
+	}{
+		{
+			name: "missing rate",
+			queues: []ProviderNetworkTenantQueuePolicy{{
+				Tenant:  "prod",
+				QueueID: 10,
+			}},
+			wantErr: "min_rate_bps or max_rate_bps is required",
+		},
+		{
+			name: "duplicate tenant",
+			queues: []ProviderNetworkTenantQueuePolicy{{
+				Tenant:     "prod",
+				QueueID:    10,
+				MaxRateBPS: 500000000,
+			}, {
+				Tenant:     "prod",
+				QueueID:    11,
+				MaxRateBPS: 500000000,
+			}},
+			wantErr: `provider network tenant queue "prod" is duplicated`,
+		},
+		{
+			name: "duplicate queue id",
+			queues: []ProviderNetworkTenantQueuePolicy{{
+				Tenant:     "prod",
+				QueueID:    10,
+				MaxRateBPS: 500000000,
+			}, {
+				Tenant:     "dev",
+				QueueID:    10,
+				MaxRateBPS: 100000000,
+			}},
+			wantErr: "provider network tenant queue id 10 is duplicated",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ProviderNetwork{
+				Name:         "physnet-a",
+				TenantQueues: tt.queues,
+				Nodes: []ProviderNetworkNode{
+					{Node: "node-a", Interface: "bond0.100"},
+				},
+			}.Validate()
+			if err == nil {
+				t.Fatal("expected invalid tenant queues to fail")
 			}
 			if !strings.Contains(err.Error(), tt.wantErr) {
 				t.Fatalf("error %q does not contain %q", err, tt.wantErr)

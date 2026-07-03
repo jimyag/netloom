@@ -95,6 +95,49 @@ func TestLibOVSDBProviderSyncerCreatesProviderQoS(t *testing.T) {
 	}
 }
 
+func TestLibOVSDBProviderSyncerCreatesProviderTenantQueues(t *testing.T) {
+	client, cleanup := newTestVSwitchClient(t)
+	defer cleanup()
+	ctx := context.Background()
+	insertVSwitchRows(t, ctx, client, &vswitch.OpenvSwitch{})
+
+	rows := desiredProviderOVSDBRows([]providerNetworkLinkSpec{{
+		ProviderNetwork: "physnet-a",
+		ParentDevice:    "eth1",
+		VLAN:            100,
+		Name:            "nlv100",
+		TenantQueues: []model.ProviderNetworkTenantQueuePolicy{{
+			Tenant:     "prod",
+			QueueID:    10,
+			MinRateBPS: 100000000,
+			MaxRateBPS: 500000000,
+			BurstBPS:   64000,
+		}},
+	}})
+	if err := NewLibOVSDBProviderSyncer(client).SyncProviderOVSDB(ctx, rows, false); err != nil {
+		t.Fatal(err)
+	}
+
+	port := singlePortByName(t, ctx, client, "nlv100")
+	if port.QOS == nil {
+		t.Fatalf("port = %+v, want QoS ref", port)
+	}
+	qos := singleQoSByProviderName(t, ctx, client, "qos-nlv100")
+	if *port.QOS != qos.UUID {
+		t.Fatalf("port qos = %q, want %q", *port.QOS, qos.UUID)
+	}
+	queue := singleQueueByProviderName(t, ctx, client, "queue-nlv100-10")
+	if qos.Queues[10] != queue.UUID {
+		t.Fatalf("qos queues = %+v, want queue id 10 -> %s", qos.Queues, queue.UUID)
+	}
+	if queue.ExternalIDs["netloom_tenant"] != "prod" || queue.ExternalIDs["netloom_queue_id"] != "10" {
+		t.Fatalf("queue external IDs = %+v, want tenant prod queue 10", queue.ExternalIDs)
+	}
+	if queue.OtherConfig["min-rate"] != "100000000" || queue.OtherConfig["max-rate"] != "500000000" || queue.OtherConfig["burst"] != "64000" {
+		t.Fatalf("queue other_config = %+v, want configured rates", queue.OtherConfig)
+	}
+}
+
 func TestLibOVSDBProviderSyncerRepairsPortBridgeDrift(t *testing.T) {
 	client, cleanup := newTestVSwitchClient(t)
 	defer cleanup()
@@ -325,6 +368,47 @@ func TestLibOVSDBProviderSyncerReadsProviderQoSDrift(t *testing.T) {
 	}
 }
 
+func TestLibOVSDBProviderSyncerReadsProviderQueueDrift(t *testing.T) {
+	client, cleanup := newTestVSwitchClient(t)
+	defer cleanup()
+	ctx := context.Background()
+	insertVSwitchRows(t, ctx, client, &vswitch.OpenvSwitch{})
+
+	rows := desiredProviderOVSDBRows([]providerNetworkLinkSpec{{
+		ProviderNetwork: "physnet-a",
+		ParentDevice:    "eth1",
+		VLAN:            100,
+		Name:            "nlv100",
+		TenantQueues: []model.ProviderNetworkTenantQueuePolicy{{
+			Tenant:     "prod",
+			QueueID:    10,
+			MaxRateBPS: 500000000,
+		}},
+	}})
+	syncer := NewLibOVSDBProviderSyncer(client)
+	if err := syncer.SyncProviderOVSDB(ctx, rows, false); err != nil {
+		t.Fatal(err)
+	}
+	queue := singleQueueByProviderName(t, ctx, client, "queue-nlv100-10")
+	queue.OtherConfig["max-rate"] = "250000000"
+	queueOps, err := client.Where(queue).Update(queue, &queue.OtherConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transactVSwitchOps(t, ctx, client, queueOps)
+
+	statuses, err := syncer.ReadProviderOVSDBStatus(ctx, rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(statuses) != 1 {
+		t.Fatalf("statuses = %+v, want one", statuses)
+	}
+	if statuses[0].PortState != "qos-mismatch" {
+		t.Fatalf("status = %+v, want qos-mismatch", statuses[0])
+	}
+}
+
 func TestLibOVSDBProviderSyncerCleansStaleProviderRows(t *testing.T) {
 	client, cleanup := newTestVSwitchClient(t)
 	defer cleanup()
@@ -336,6 +420,11 @@ func TestLibOVSDBProviderSyncerCleansStaleProviderRows(t *testing.T) {
 		ParentDevice:    "eth1",
 		VLAN:            100,
 		Name:            "nlv100",
+		TenantQueues: []model.ProviderNetworkTenantQueuePolicy{{
+			Tenant:     "prod",
+			QueueID:    10,
+			MaxRateBPS: 500000000,
+		}},
 	}})
 	syncer := NewLibOVSDBProviderSyncer(client)
 	if err := syncer.SyncProviderOVSDB(ctx, rows, false); err != nil {
@@ -363,6 +452,9 @@ func TestLibOVSDBProviderSyncerCleansStaleProviderRows(t *testing.T) {
 	}
 	if countQoSByProviderName(t, ctx, client, "qos-nlv100") != 0 {
 		t.Fatal("stale provider qos was not deleted")
+	}
+	if countQueuesByProviderName(t, ctx, client, "queue-nlv100-10") != 0 {
+		t.Fatal("stale provider queue was not deleted")
 	}
 }
 
@@ -529,6 +621,26 @@ func singleQoSByProviderName(t *testing.T, ctx context.Context, client libovsdbc
 	}
 }
 
+func singleQueueByProviderName(t *testing.T, ctx context.Context, client libovsdbclient.Client, name string) *vswitch.Queue {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		var rows []vswitch.Queue
+		if err := client.WhereCache(func(row *vswitch.Queue) bool {
+			return row.ExternalIDs["netloom_provider_queue"] == name
+		}).List(ctx, &rows); err != nil {
+			t.Fatal(err)
+		}
+		if len(rows) == 1 {
+			return &rows[0]
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("queue %s rows = %+v, want one", name, rows)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func singleControllerByTarget(t *testing.T, ctx context.Context, client libovsdbclient.Client, target string) *vswitch.Controller {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
@@ -581,6 +693,17 @@ func countQoSByProviderName(t *testing.T, ctx context.Context, client libovsdbcl
 	var rows []vswitch.QoS
 	if err := client.WhereCache(func(row *vswitch.QoS) bool {
 		return row.ExternalIDs["netloom_provider_qos"] == name
+	}).List(ctx, &rows); err != nil {
+		t.Fatal(err)
+	}
+	return len(rows)
+}
+
+func countQueuesByProviderName(t *testing.T, ctx context.Context, client libovsdbclient.Client, name string) int {
+	t.Helper()
+	var rows []vswitch.Queue
+	if err := client.WhereCache(func(row *vswitch.Queue) bool {
+		return row.ExternalIDs["netloom_provider_queue"] == name
 	}).List(ctx, &rows); err != nil {
 		t.Fatal(err)
 	}

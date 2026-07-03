@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/jimyag/netloom/internal/model"
 	"github.com/jimyag/netloom/internal/ovn/ovsdb/vswitch"
 )
 
@@ -14,6 +15,7 @@ type ProviderOVSDBDesiredRows struct {
 	Ports       []vswitch.Port
 	Interfaces  []vswitch.Interface
 	QoS         []vswitch.QoS
+	Queues      []vswitch.Queue
 }
 
 func desiredProviderOVSDBRows(specs []providerNetworkLinkSpec) ProviderOVSDBDesiredRows {
@@ -21,6 +23,7 @@ func desiredProviderOVSDBRows(specs []providerNetworkLinkSpec) ProviderOVSDBDesi
 	portByName := make(map[string]vswitch.Port)
 	interfaceByName := make(map[string]vswitch.Interface)
 	qosByName := make(map[string]vswitch.QoS)
+	queueByName := make(map[string]vswitch.Queue)
 	mappingSet := make(map[string]struct{})
 
 	for _, spec := range specs {
@@ -48,16 +51,28 @@ func desiredProviderOVSDBRows(specs []providerNetworkLinkSpec) ProviderOVSDBDesi
 			Interfaces:  []string{spec.Name},
 			ExternalIDs: providerOVSDBLinkExternalIDs(spec),
 		}
-		if spec.QoS.EgressRateBPS != 0 {
+		if spec.QoS.EgressRateBPS != 0 || len(spec.TenantQueues) > 0 {
 			qosName := providerOVSDBQoSName(spec)
 			port := portByName[spec.Name]
 			port.QOS = &qosName
 			portByName[spec.Name] = port
-			qosByName[qosName] = vswitch.QoS{
+			qos := vswitch.QoS{
 				ExternalIDs: providerOVSDBQoSExternalIDs(spec),
 				Type:        "linux-htb",
 				OtherConfig: providerOVSDBQoSOtherConfig(spec),
 			}
+			if len(spec.TenantQueues) > 0 {
+				qos.Queues = make(map[int]string, len(spec.TenantQueues))
+				for _, policy := range spec.TenantQueues {
+					queueName := providerOVSDBQueueName(spec, policy)
+					qos.Queues[policy.QueueID] = queueName
+					queueByName[queueName] = vswitch.Queue{
+						ExternalIDs: providerOVSDBQueueExternalIDs(spec, policy),
+						OtherConfig: providerOVSDBQueueOtherConfig(policy),
+					}
+				}
+			}
+			qosByName[qosName] = qos
 		}
 		interfaceByName[spec.Name] = vswitch.Interface{
 			Name:        spec.Name,
@@ -97,6 +112,15 @@ func desiredProviderOVSDBRows(specs []providerNetworkLinkSpec) ProviderOVSDBDesi
 	for _, name := range qosNames {
 		qosRows = append(qosRows, qosByName[name])
 	}
+	queueNames := make([]string, 0, len(queueByName))
+	for name := range queueByName {
+		queueNames = append(queueNames, name)
+	}
+	sort.Strings(queueNames)
+	queueRows := make([]vswitch.Queue, 0, len(queueNames))
+	for _, name := range queueNames {
+		queueRows = append(queueRows, queueByName[name])
+	}
 
 	mappings := make([]string, 0, len(mappingSet))
 	for mapping := range mappingSet {
@@ -116,6 +140,7 @@ func desiredProviderOVSDBRows(specs []providerNetworkLinkSpec) ProviderOVSDBDesi
 		Ports:      ports,
 		Interfaces: interfaces,
 		QoS:        qosRows,
+		Queues:     queueRows,
 	}
 }
 
@@ -130,11 +155,39 @@ func providerOVSDBQoSExternalIDs(spec providerNetworkLinkSpec) map[string]string
 }
 
 func providerOVSDBQoSOtherConfig(spec providerNetworkLinkSpec) map[string]string {
-	out := map[string]string{
-		"max-rate": strconv.FormatUint(spec.QoS.EgressRateBPS, 10),
+	out := make(map[string]string, 2)
+	if spec.QoS.EgressRateBPS != 0 {
+		out["max-rate"] = strconv.FormatUint(spec.QoS.EgressRateBPS, 10)
 	}
 	if spec.QoS.EgressBurstBPS != 0 {
 		out["burst"] = strconv.FormatUint(spec.QoS.EgressBurstBPS, 10)
+	}
+	return out
+}
+
+func providerOVSDBQueueName(spec providerNetworkLinkSpec, policy model.ProviderNetworkTenantQueuePolicy) string {
+	return "queue-" + spec.Name + "-" + strconv.Itoa(policy.QueueID)
+}
+
+func providerOVSDBQueueExternalIDs(spec providerNetworkLinkSpec, policy model.ProviderNetworkTenantQueuePolicy) map[string]string {
+	ids := providerOVSDBLinkExternalIDs(spec)
+	ids["netloom_provider_qos"] = providerOVSDBQoSName(spec)
+	ids["netloom_provider_queue"] = providerOVSDBQueueName(spec, policy)
+	ids["netloom_tenant"] = policy.Tenant
+	ids["netloom_queue_id"] = strconv.Itoa(policy.QueueID)
+	return ids
+}
+
+func providerOVSDBQueueOtherConfig(policy model.ProviderNetworkTenantQueuePolicy) map[string]string {
+	out := make(map[string]string, 3)
+	if policy.MinRateBPS != 0 {
+		out["min-rate"] = strconv.FormatUint(policy.MinRateBPS, 10)
+	}
+	if policy.MaxRateBPS != 0 {
+		out["max-rate"] = strconv.FormatUint(policy.MaxRateBPS, 10)
+	}
+	if policy.BurstBPS != 0 {
+		out["burst"] = strconv.FormatUint(policy.BurstBPS, 10)
 	}
 	return out
 }

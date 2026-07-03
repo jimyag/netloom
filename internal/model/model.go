@@ -52,11 +52,12 @@ type VPC struct {
 }
 
 type ProviderNetwork struct {
-	Name         string                       `json:"name"`
-	Nodes        []ProviderNetworkNode        `json:"nodes"`
-	Isolation    string                       `json:"isolation,omitempty"`
-	QoS          ProviderNetworkQoS           `json:"qos,omitempty"`
-	TenantQuotas []ProviderNetworkTenantQuota `json:"tenant_quotas,omitempty"`
+	Name         string                             `json:"name"`
+	Nodes        []ProviderNetworkNode              `json:"nodes"`
+	Isolation    string                             `json:"isolation,omitempty"`
+	QoS          ProviderNetworkQoS                 `json:"qos,omitempty"`
+	TenantQuotas []ProviderNetworkTenantQuota       `json:"tenant_quotas,omitempty"`
+	TenantQueues []ProviderNetworkTenantQueuePolicy `json:"tenant_queues,omitempty"`
 }
 
 type ProviderNetworkNode struct {
@@ -74,6 +75,14 @@ type ProviderNetworkTenantQuota struct {
 	Tenant       string `json:"tenant"`
 	MaxSubnets   int    `json:"max_subnets,omitempty"`
 	MaxEndpoints int    `json:"max_endpoints,omitempty"`
+}
+
+type ProviderNetworkTenantQueuePolicy struct {
+	Tenant     string `json:"tenant"`
+	QueueID    int    `json:"queue_id"`
+	MinRateBPS uint64 `json:"min_rate_bps,omitempty"`
+	MaxRateBPS uint64 `json:"max_rate_bps,omitempty"`
+	BurstBPS   uint64 `json:"burst_bps,omitempty"`
 }
 
 type Subnet struct {
@@ -312,6 +321,21 @@ func (p ProviderNetwork) Validate() error {
 		}
 		seenTenants[quota.Tenant] = struct{}{}
 	}
+	seenQueueTenants := make(map[string]struct{}, len(p.TenantQueues))
+	seenQueueIDs := make(map[int]struct{}, len(p.TenantQueues))
+	for i, queue := range p.TenantQueues {
+		if err := queue.Validate(); err != nil {
+			return fmt.Errorf("provider network tenant queue %d: %w", i, err)
+		}
+		if _, ok := seenQueueTenants[queue.Tenant]; ok {
+			return fmt.Errorf("provider network tenant queue %q is duplicated", queue.Tenant)
+		}
+		if _, ok := seenQueueIDs[queue.QueueID]; ok {
+			return fmt.Errorf("provider network tenant queue id %d is duplicated", queue.QueueID)
+		}
+		seenQueueTenants[queue.Tenant] = struct{}{}
+		seenQueueIDs[queue.QueueID] = struct{}{}
+	}
 	if len(p.Nodes) == 0 {
 		return errors.New("provider network nodes are required")
 	}
@@ -347,6 +371,22 @@ func (q ProviderNetworkTenantQuota) Validate() error {
 	}
 	if q.MaxSubnets == 0 && q.MaxEndpoints == 0 {
 		return errors.New("max_subnets or max_endpoints is required")
+	}
+	return nil
+}
+
+func (q ProviderNetworkTenantQueuePolicy) Validate() error {
+	if q.Tenant == "" {
+		return errors.New("tenant is required")
+	}
+	if q.QueueID < 0 {
+		return errors.New("queue_id must not be negative")
+	}
+	if q.MinRateBPS == 0 && q.MaxRateBPS == 0 {
+		return errors.New("min_rate_bps or max_rate_bps is required")
+	}
+	if q.BurstBPS != 0 && q.MaxRateBPS == 0 {
+		return errors.New("burst_bps requires max_rate_bps")
 	}
 	return nil
 }

@@ -392,7 +392,19 @@ func TestDesiredProviderOVSDBRowsBuildsTypedVSwitchRows(t *testing.T) {
 	bridgeB := providerNetworkBridgeName("physnet-b")
 	rows := desiredProviderOVSDBRows([]providerNetworkLinkSpec{
 		{ProviderNetwork: "physnet-b", ParentDevice: "eth2", VLAN: 200, Name: "nlv200"},
-		{ProviderNetwork: "physnet-a", ParentDevice: "eth1", VLAN: 100, Name: "nlv100", Isolation: "exclusive", QoS: model.ProviderNetworkQoS{EgressRateBPS: 1000000000, EgressBurstBPS: 64000}},
+		{
+			ProviderNetwork: "physnet-a",
+			ParentDevice:    "eth1",
+			VLAN:            100,
+			Name:            "nlv100",
+			Isolation:       "exclusive",
+			QoS:             model.ProviderNetworkQoS{EgressRateBPS: 1000000000, EgressBurstBPS: 64000},
+			TenantQueues: []model.ProviderNetworkTenantQueuePolicy{{
+				Tenant:     "prod",
+				QueueID:    10,
+				MaxRateBPS: 500000000,
+			}},
+		},
 		{ProviderNetwork: "physnet-a", ParentDevice: "eth1", VLAN: 300, Name: "nlv300", Isolation: "exclusive"},
 	})
 
@@ -436,6 +448,15 @@ func TestDesiredProviderOVSDBRowsBuildsTypedVSwitchRows(t *testing.T) {
 	}
 	if got := rows.QoS[0].ExternalIDs["netloom_provider_qos"]; got != "qos-nlv100" {
 		t.Fatalf("qos external IDs = %+v, want qos-nlv100", rows.QoS[0].ExternalIDs)
+	}
+	if rows.QoS[0].Queues[10] != "queue-nlv100-10" {
+		t.Fatalf("qos queues = %+v, want tenant queue ref", rows.QoS[0].Queues)
+	}
+	if len(rows.Queues) != 1 || rows.Queues[0].ExternalIDs["netloom_provider_queue"] != "queue-nlv100-10" || rows.Queues[0].ExternalIDs["netloom_tenant"] != "prod" {
+		t.Fatalf("queue rows = %+v, want prod tenant queue", rows.Queues)
+	}
+	if got := rows.Queues[0].OtherConfig["max-rate"]; got != "500000000" {
+		t.Fatalf("queue max-rate = %q, want 500000000", got)
 	}
 	if got := rows.Interfaces[2].ExternalIDs["netloom_vlan"]; got != "300" {
 		t.Fatalf("interface vlan external id = %q, want 300", got)

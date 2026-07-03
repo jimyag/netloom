@@ -401,6 +401,7 @@ type providerNetworkLinkSpec struct {
 	Name            string
 	Isolation       string
 	QoS             model.ProviderNetworkQoS
+	TenantQueues    []model.ProviderNetworkTenantQueuePolicy
 }
 
 func desiredProviderNetworkLinkSpecs(state control.DesiredState, node string, mappings map[string]string, inventory []ProviderInterface) ([]providerNetworkLinkSpec, error) {
@@ -425,6 +426,7 @@ func desiredProviderNetworkLinkSpecs(state control.DesiredState, node string, ma
 	}
 	providerIsolation := providerNetworkIsolationByName(state.ProviderNetworks)
 	providerQoS := providerNetworkQoSByName(state.ProviderNetworks)
+	providerTenantQueues := providerNetworkTenantQueuesByName(state.ProviderNetworks)
 	seen := make(map[string]providerNetworkLinkSpec)
 	claimedLinks := make(map[string]providerNetworkLinkSpec)
 	claimedParents := make(map[string]providerNetworkLinkSpec)
@@ -455,6 +457,7 @@ func desiredProviderNetworkLinkSpecs(state control.DesiredState, node string, ma
 			Name:            providerNetworkLinkName(subnet.ProviderNetwork, parent, subnet.VLAN),
 			Isolation:       providerIsolation[subnet.ProviderNetwork],
 			QoS:             providerQoS[subnet.ProviderNetwork],
+			TenantQueues:    providerTenantQueues[subnet.ProviderNetwork],
 		}
 		if claimed, ok := claimedParents[parent]; ok && providerIsolationConflicts(claimed, spec) {
 			return nil, &providerPlanningError{
@@ -503,6 +506,14 @@ func providerNetworkQoSByName(providerNetworks []model.ProviderNetwork) map[stri
 	out := make(map[string]model.ProviderNetworkQoS, len(providerNetworks))
 	for _, providerNetwork := range providerNetworks {
 		out[providerNetwork.Name] = providerNetwork.QoS
+	}
+	return out
+}
+
+func providerNetworkTenantQueuesByName(providerNetworks []model.ProviderNetwork) map[string][]model.ProviderNetworkTenantQueuePolicy {
+	out := make(map[string][]model.ProviderNetworkTenantQueuePolicy, len(providerNetworks))
+	for _, providerNetwork := range providerNetworks {
+		out[providerNetwork.Name] = append([]model.ProviderNetworkTenantQueuePolicy(nil), providerNetwork.TenantQueues...)
 	}
 	return out
 }
