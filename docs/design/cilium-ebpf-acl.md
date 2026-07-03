@@ -381,9 +381,13 @@ combines revision, map usage, pressure, drift, last update stats, and the last
 update event; `netloom-agent policy-status` and the long-running
 `/policy/endpoints` HTTP API both report that Cilium-style endpoint policy view
 without scraping reconcile logs. The endpoint API also exposes explicit reset,
-dry-run plan, regenerate, quarantine, and unquarantine actions for scoped
-remediation and staged policy rollout. The TCX L4 ACL map value similarly carries
-the projected rule cookie, log flag, and packet and byte counters. IPv4 and IPv6
+dry-run plan, regenerate, quarantine, unquarantine, and multi-endpoint rollout
+actions for scoped remediation and staged policy rollout. Rollout requests plan
+all requested endpoints first, support dry-run and configurable batch size, apply
+endpoint maps through the same policy backend path as reconcile, and stop on the
+first failed endpoint while reporting later endpoints as skipped. The TCX L4 ACL
+map value similarly carries the projected rule cookie, log flag, and packet and
+byte counters. IPv4 and IPv6
 TCX programs atomically increment those counters after a successful LPM lookup
 and before returning the rule action. After a successful TCX reconcile, the agent
 reads the live attachment maps, aggregates counters by rule cookie, classifies

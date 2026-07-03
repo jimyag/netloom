@@ -1296,6 +1296,108 @@ func TestReconcileNodeReportsPolicyFailureAndRollbackSignals(t *testing.T) {
 	}
 }
 
+func TestRolloutPolicyEndpointsDryRunPlansWithoutApplying(t *testing.T) {
+	state := rolloutPolicyState()
+	store := dataplane.NewInMemoryPolicyStore()
+
+	rollout, err := RolloutPolicyEndpoints(context.Background(), state, ReconcileOptions{
+		Node:  "node-a",
+		Store: store,
+	}, PolicyEndpointRolloutOptions{
+		BatchSize: 2,
+		DryRun:    true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rollout.DryRun || rollout.BatchSize != 2 || rollout.Planned != 3 || rollout.Applied != 0 || rollout.Failed != 0 || rollout.Skipped != 0 {
+		t.Fatalf("rollout = %+v, want three planned dry-run items", rollout)
+	}
+	if len(rollout.Items) != 3 || rollout.Items[0].Batch != 1 || rollout.Items[1].Batch != 1 || rollout.Items[2].Batch != 2 {
+		t.Fatalf("rollout items = %+v, want two staged dry-run batches", rollout.Items)
+	}
+	if rollout.Items[0].Phase != "planned" || !rollout.Items[0].Plan.Changed || rollout.Items[0].Plan.DesiredEntries != 1 {
+		t.Fatalf("first rollout item = %+v, want planned changed endpoint", rollout.Items[0])
+	}
+	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 0 {
+		t.Fatalf("dry-run entries = %+v, want no live mutation", entries)
+	}
+}
+
+func TestRolloutPolicyEndpointsStopsAfterApplyFailure(t *testing.T) {
+	state := rolloutPolicyState()
+	store := &failingPolicyStore{
+		InMemoryPolicyStore: dataplane.NewInMemoryPolicyStore(),
+		failEndpoint:        model.EndpointKey("prod", "pod-b"),
+	}
+
+	rollout, err := RolloutPolicyEndpoints(context.Background(), state, ReconcileOptions{
+		Node:  "node-a",
+		Store: store,
+	}, PolicyEndpointRolloutOptions{
+		EndpointIDs: []string{
+			model.EndpointKey("prod", "pod-a"),
+			model.EndpointKey("prod", "pod-b"),
+			model.EndpointKey("prod", "pod-c"),
+		},
+		BatchSize: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rollout.Planned != 3 || rollout.Applied != 1 || rollout.Failed != 1 || rollout.Skipped != 1 {
+		t.Fatalf("rollout summary = %+v, want applied=1 failed=1 skipped=1", rollout)
+	}
+	phases := []string{rollout.Items[0].Phase, rollout.Items[1].Phase, rollout.Items[2].Phase}
+	if !slices.Equal(phases, []string{"applied", "failed", "skipped"}) {
+		t.Fatalf("rollout phases = %+v, want applied failed skipped", phases)
+	}
+	if rollout.Items[1].Error == "" {
+		t.Fatalf("failed rollout item = %+v, want error", rollout.Items[1])
+	}
+	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 1 {
+		t.Fatalf("pod-a entries = %+v, want applied policy", entries)
+	}
+	if entries := store.Entries(model.EndpointKey("prod", "pod-c")); len(entries) != 0 {
+		t.Fatalf("pod-c entries = %+v, want skipped endpoint untouched", entries)
+	}
+}
+
+type failingPolicyStore struct {
+	*dataplane.InMemoryPolicyStore
+	failEndpoint string
+}
+
+func (s *failingPolicyStore) ReplaceEndpoint(ctx context.Context, endpointID string, entries []dataplane.PolicyMapEntry) error {
+	if endpointID == s.failEndpoint {
+		return fmt.Errorf("forced rollout failure for %s", endpointID)
+	}
+	return s.InMemoryPolicyStore.ReplaceEndpoint(ctx, endpointID, entries)
+}
+
+func rolloutPolicyState() control.DesiredState {
+	return control.DesiredState{
+		Endpoints: []model.Endpoint{
+			{ID: "pod-a", VPC: "prod", Subnet: "apps", IP: netip.MustParseAddr("10.10.0.10"), Node: "node-a", SecurityGroups: []string{"web"}},
+			{ID: "pod-b", VPC: "prod", Subnet: "apps", IP: netip.MustParseAddr("10.10.0.11"), Node: "node-a", SecurityGroups: []string{"web"}},
+			{ID: "pod-c", VPC: "prod", Subnet: "apps", IP: netip.MustParseAddr("10.10.0.12"), Node: "node-a", SecurityGroups: []string{"web"}},
+		},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "allow-http",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("172.30.0.0/24"),
+				Ports:      []model.PortRange{{From: 80, To: 80}},
+				Action:     model.ActionAllow,
+			}},
+		}},
+	}
+}
+
 func TestReconcilerDeletesStaleEndpointPolicy(t *testing.T) {
 	state := control.DesiredState{
 		Endpoints: []model.Endpoint{{

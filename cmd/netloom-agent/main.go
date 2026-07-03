@@ -130,11 +130,19 @@ type policyEndpointActionOutput struct {
 	Action        string                         `json:"action"`
 	Deleted       bool                           `json:"deleted,omitempty"`
 	Planned       bool                           `json:"planned,omitempty"`
+	RolledOut     bool                           `json:"rolled_out,omitempty"`
 	Regenerated   bool                           `json:"regenerated,omitempty"`
 	Quarantined   bool                           `json:"quarantined,omitempty"`
 	Unquarantined bool                           `json:"unquarantined,omitempty"`
 	Plan          agent.PolicyEndpointPlan       `json:"plan,omitempty"`
+	Rollout       agent.PolicyEndpointRollout    `json:"rollout,omitempty"`
 	EndpointInfo  dataplane.PolicyEndpointStatus `json:"endpoint_status,omitempty"`
+}
+
+type policyEndpointRolloutRequest struct {
+	Endpoints []string `json:"endpoints"`
+	BatchSize int      `json:"batch_size"`
+	DryRun    bool     `json:"dry_run"`
 }
 
 func runPolicyExplain(args []string, stdout io.Writer) error {
@@ -1157,6 +1165,43 @@ func (m *agentMetrics) unquarantinePolicyEndpoint(ctx context.Context, endpoint 
 	return status, nil
 }
 
+func (m *agentMetrics) rolloutPolicyEndpoints(ctx context.Context, request policyEndpointRolloutRequest) (agent.PolicyEndpointRollout, error) {
+	if m == nil || m.store == nil {
+		return agent.PolicyEndpointRollout{}, errors.New("policy endpoint actions are not enabled")
+	}
+	snapshot, _, ready := m.snapshotValue()
+	if !ready || !snapshot.Success {
+		return agent.PolicyEndpointRollout{}, errors.New("policy endpoint state is not ready")
+	}
+	endpoints := make([]string, 0, len(request.Endpoints))
+	for _, endpoint := range request.Endpoints {
+		endpointID, err := resolvePolicyEndpointIDFromSnapshot(endpoint, snapshot)
+		if err != nil {
+			return agent.PolicyEndpointRollout{}, err
+		}
+		endpoints = append(endpoints, endpointID)
+	}
+	rollout, err := agent.RolloutPolicyEndpoints(ctx, snapshot.State, agent.ReconcileOptions{
+		Node:  snapshot.Result.Node,
+		Store: m.store,
+	}, agent.PolicyEndpointRolloutOptions{
+		EndpointIDs: endpoints,
+		BatchSize:   request.BatchSize,
+		DryRun:      request.DryRun,
+	})
+	if err != nil {
+		return agent.PolicyEndpointRollout{}, err
+	}
+	if !rollout.DryRun {
+		for _, item := range rollout.Items {
+			if item.Phase == "applied" {
+				m.upsertPolicyEndpointStatus(item.Status)
+			}
+		}
+	}
+	return rollout, nil
+}
+
 func (m *agentMetrics) resolvePolicyEndpointID(endpoint string) (string, error) {
 	endpoint = strings.TrimSpace(endpoint)
 	if endpoint == "" {
@@ -1360,6 +1405,10 @@ func (m *agentMetrics) handlePolicyEndpointDelete(w http.ResponseWriter, r *http
 
 func (m *agentMetrics) handlePolicyEndpointRegenerate(w http.ResponseWriter, r *http.Request) {
 	endpoint, action := policyEndpointActionFromRequest(r)
+	if endpoint == "rollout" || action == "rollout" {
+		m.handlePolicyEndpointRollout(w, r)
+		return
+	}
 	if action == "quarantine" {
 		m.handlePolicyEndpointQuarantine(w, r, endpoint)
 		return
@@ -1403,6 +1452,39 @@ func (m *agentMetrics) handlePolicyEndpointRegenerate(w http.ResponseWriter, r *
 		Action:       "regenerate",
 		Regenerated:  true,
 		EndpointInfo: status,
+	})
+}
+
+func (m *agentMetrics) handlePolicyEndpointRollout(w http.ResponseWriter, r *http.Request) {
+	var request policyEndpointRolloutRequest
+	if r.Body != nil && r.Body != http.NoBody {
+		decoder := json.NewDecoder(r.Body)
+		if err := decoder.Decode(&request); err != nil && !errors.Is(err, io.EOF) {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid rollout request"})
+			return
+		}
+	}
+	rollout, err := m.rolloutPolicyEndpoints(r.Context(), request)
+	if err != nil {
+		statusCode := http.StatusInternalServerError
+		switch {
+		case strings.Contains(err.Error(), "not enabled"), strings.Contains(err.Error(), "not ready"):
+			statusCode = http.StatusServiceUnavailable
+		case strings.Contains(err.Error(), "not found"):
+			statusCode = http.StatusNotFound
+		case strings.Contains(err.Error(), "missing"), strings.Contains(err.Error(), "required"), strings.Contains(err.Error(), "assigned to node"):
+			statusCode = http.StatusBadRequest
+		}
+		w.WriteHeader(statusCode)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(policyEndpointActionOutput{
+		Action:    "rollout",
+		RolledOut: !rollout.DryRun && rollout.Failed == 0,
+		Rollout:   rollout,
 	})
 }
 
@@ -1519,7 +1601,7 @@ func policyEndpointActionFromRequest(r *http.Request) (string, string) {
 			pathEndpoint = decoded
 		}
 		pathEndpoint = strings.TrimSpace(pathEndpoint)
-		for _, suffix := range []string{"/regenerate", "/reconcile", "/quarantine", "/unquarantine", "/plan", "/dry-run", "/preview"} {
+		for _, suffix := range []string{"/regenerate", "/reconcile", "/quarantine", "/unquarantine", "/plan", "/dry-run", "/preview", "/rollout"} {
 			if strings.HasSuffix(pathEndpoint, suffix) {
 				if action == "" {
 					action = strings.TrimPrefix(suffix, "/")

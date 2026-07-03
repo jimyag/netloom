@@ -1447,6 +1447,61 @@ func TestPolicyEndpointAPIUnquarantinesEndpointPolicyMap(t *testing.T) {
 	}
 }
 
+func TestPolicyEndpointAPIRolloutAppliesMultipleEndpoints(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{
+			{ID: "pod-a", VPC: "prod", Subnet: "apps", IP: netip.MustParseAddr("10.10.0.10"), Node: "node-a", SecurityGroups: []string{"web"}},
+			{ID: "pod-b", VPC: "prod", Subnet: "apps", IP: netip.MustParseAddr("10.10.0.11"), Node: "node-a", SecurityGroups: []string{"web"}},
+		},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "allow-http",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("172.30.0.0/24"),
+				Ports:      []model.PortRange{{From: 80, To: 80}},
+				Action:     model.ActionAllow,
+			}},
+		}},
+	}
+	store := dataplane.NewInMemoryPolicyStore()
+	metrics := newAgentMetrics(store)
+	observeAgentReconcileResultWithState(metrics, agent.ReconcileResult{
+		Node: "node-a",
+	}, "memory", time.Millisecond, state)
+
+	body := bytes.NewBufferString(`{"endpoints":["prod/pod-a","prod/pod-b"],"batch_size":1}`)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/policy/endpoints/rollout", body)
+	metrics.handlePolicyEndpoints(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var got policyEndpointActionOutput
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode policy endpoint rollout response: %v\n%s", err, recorder.Body.String())
+	}
+	if !got.RolledOut || got.Action != "rollout" || got.Rollout.Planned != 2 || got.Rollout.Applied != 2 || got.Rollout.Failed != 0 {
+		t.Fatalf("rollout response = %+v, want two applied endpoints", got)
+	}
+	if len(got.Rollout.Items) != 2 || got.Rollout.Items[0].Batch != 1 || got.Rollout.Items[1].Batch != 2 {
+		t.Fatalf("rollout items = %+v, want two staged batches", got.Rollout.Items)
+	}
+	for _, endpointID := range []string{model.EndpointKey("prod", "pod-a"), model.EndpointKey("prod", "pod-b")} {
+		if entries := store.Entries(endpointID); len(entries) != 1 {
+			t.Fatalf("entries for %s = %+v, want rolled out policy", endpointID, entries)
+		}
+	}
+	snapshot, _, ready := metrics.snapshotValue()
+	if !ready || len(snapshot.Result.PolicyEndpointStatus) != 2 {
+		t.Fatalf("snapshot statuses = %+v, want two rolled out endpoints", snapshot.Result.PolicyEndpointStatus)
+	}
+}
+
 func TestPolicyEndpointAPIRejectsUnsupportedPostAction(t *testing.T) {
 	metrics := newAgentMetrics(dataplane.NewInMemoryPolicyStore())
 	observeAgentReconcileResult(metrics, agent.ReconcileResult{

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
+	"strings"
 	"sync"
 	"time"
 
@@ -141,6 +142,31 @@ type PolicyEndpointPlan struct {
 	Changed        bool                        `json:"changed"`
 }
 
+type PolicyEndpointRolloutOptions struct {
+	EndpointIDs []string
+	BatchSize   int
+	DryRun      bool
+}
+
+type PolicyEndpointRollout struct {
+	DryRun    bool                        `json:"dry_run"`
+	BatchSize int                         `json:"batch_size"`
+	Planned   int                         `json:"planned"`
+	Applied   int                         `json:"applied"`
+	Skipped   int                         `json:"skipped"`
+	Failed    int                         `json:"failed"`
+	Items     []PolicyEndpointRolloutItem `json:"items"`
+}
+
+type PolicyEndpointRolloutItem struct {
+	EndpointID string                         `json:"endpoint_id"`
+	Batch      int                            `json:"batch"`
+	Phase      string                         `json:"phase"`
+	Plan       PolicyEndpointPlan             `json:"plan"`
+	Status     dataplane.PolicyEndpointStatus `json:"endpoint_status,omitempty"`
+	Error      string                         `json:"error,omitempty"`
+}
+
 type tcxTarget struct {
 	ifName          string
 	attach          ebpf.AttachType
@@ -247,7 +273,90 @@ func PlanPolicyEndpoint(ctx context.Context, state control.DesiredState, options
 	if err != nil {
 		return PolicyEndpointPlan{}, err
 	}
-	entryStore, ok := options.Store.(PolicyEndpointEntryStore)
+	return planPolicyEndpointEntries(endpointID, desired, options.Store)
+}
+
+func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, options ReconcileOptions, rolloutOptions PolicyEndpointRolloutOptions) (PolicyEndpointRollout, error) {
+	if options.Store == nil {
+		return PolicyEndpointRollout{}, fmt.Errorf("policy store is required")
+	}
+	endpointIDs, err := rolloutPolicyEndpointIDs(state, options, rolloutOptions.EndpointIDs)
+	if err != nil {
+		return PolicyEndpointRollout{}, err
+	}
+	batchSize := rolloutOptions.BatchSize
+	if batchSize <= 0 {
+		batchSize = 1
+	}
+	rollout := PolicyEndpointRollout{
+		DryRun:    rolloutOptions.DryRun,
+		BatchSize: batchSize,
+		Items:     make([]PolicyEndpointRolloutItem, 0, len(endpointIDs)),
+	}
+	type preparedEndpoint struct {
+		program policy.Program
+		plan    PolicyEndpointPlan
+	}
+	prepared := make([]preparedEndpoint, 0, len(endpointIDs))
+	for i, endpointID := range endpointIDs {
+		program, err := compileEndpointPolicyProgram(state, options, endpointID)
+		if err != nil {
+			return PolicyEndpointRollout{}, err
+		}
+		desired, err := dataplane.EncodeProgram(program)
+		if err != nil {
+			return PolicyEndpointRollout{}, err
+		}
+		plan, err := planPolicyEndpointEntries(endpointID, desired, options.Store)
+		if err != nil {
+			return PolicyEndpointRollout{}, err
+		}
+		prepared = append(prepared, preparedEndpoint{program: program, plan: plan})
+		rollout.Planned++
+		rollout.Items = append(rollout.Items, PolicyEndpointRolloutItem{
+			EndpointID: endpointID,
+			Batch:      rolloutBatch(i, batchSize),
+			Phase:      "planned",
+			Plan:       plan,
+		})
+	}
+	if rolloutOptions.DryRun {
+		return rollout, nil
+	}
+	backend := dataplane.NewPolicyBackend(options.Store)
+	for i, item := range rollout.Items {
+		if rollout.Failed != 0 {
+			item.Phase = "skipped"
+			rollout.Skipped++
+			rollout.Items[i] = item
+			continue
+		}
+		if err := backend.ApplyEndpointProgram(ctx, prepared[i].program); err != nil {
+			item.Phase = "failed"
+			item.Error = err.Error()
+			rollout.Failed++
+			rollout.Items[i] = item
+			continue
+		}
+		item.Phase = "applied"
+		rollout.Applied++
+		if status, ok, err := policyEndpointStatus(ctx, options.Store, item.EndpointID); err != nil {
+			return PolicyEndpointRollout{}, fmt.Errorf("read rolled out policy endpoint status: %w", err)
+		} else if ok {
+			item.Status = status
+		} else {
+			item.Status = dataplane.PolicyEndpointStatus{
+				EndpointID: item.EndpointID,
+				Entries:    uint32(item.Plan.DesiredEntries),
+			}
+		}
+		rollout.Items[i] = item
+	}
+	return rollout, nil
+}
+
+func planPolicyEndpointEntries(endpointID string, desired []dataplane.PolicyMapEntry, store PolicyStore) (PolicyEndpointPlan, error) {
+	entryStore, ok := store.(PolicyEndpointEntryStore)
 	if !ok {
 		return PolicyEndpointPlan{}, fmt.Errorf("policy endpoint entries are not available")
 	}
@@ -261,6 +370,61 @@ func PlanPolicyEndpoint(ctx context.Context, state control.DesiredState, options
 		Stats:          stats,
 		Changed:        stats.Added != 0 || stats.Updated != 0 || stats.Deleted != 0,
 	}, nil
+}
+
+func rolloutPolicyEndpointIDs(state control.DesiredState, options ReconcileOptions, requested []string) ([]string, error) {
+	if len(requested) > 0 {
+		return uniquePolicyEndpointIDs(requested), nil
+	}
+	if options.Node == "" {
+		return nil, fmt.Errorf("node name is required")
+	}
+	ids := make([]string, 0)
+	for _, endpoint := range state.Endpoints {
+		if endpoint.Node != options.Node {
+			continue
+		}
+		ids = append(ids, model.EndpointKey(endpoint.VPC, endpoint.ID))
+	}
+	return uniquePolicyEndpointIDs(ids), nil
+}
+
+func uniquePolicyEndpointIDs(ids []string) []string {
+	seen := make(map[string]struct{}, len(ids))
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
+}
+
+func rolloutBatch(index, batchSize int) int {
+	return index/batchSize + 1
+}
+
+func policyEndpointStatus(ctx context.Context, store PolicyStore, endpointID string) (dataplane.PolicyEndpointStatus, bool, error) {
+	statusStore, ok := store.(PolicyEndpointStatusStore)
+	if !ok {
+		return dataplane.PolicyEndpointStatus{}, false, nil
+	}
+	statuses, err := statusStore.PolicyEndpointStatuses(ctx)
+	if err != nil {
+		return dataplane.PolicyEndpointStatus{}, false, err
+	}
+	for _, status := range statuses {
+		if status.EndpointID == endpointID {
+			return status, true, nil
+		}
+	}
+	return dataplane.PolicyEndpointStatus{}, false, nil
 }
 
 func QuarantinePolicyEndpoint(ctx context.Context, state control.DesiredState, options ReconcileOptions, endpointID string) (dataplane.PolicyEndpointStatus, error) {
