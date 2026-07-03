@@ -1593,7 +1593,11 @@ func (m ovnDBMaintenance) RunMaintenance(ctx context.Context) ovnMaintenanceResu
 	result := ovnMaintenanceResult{Status: "ok", Attempted: len(m.targets)}
 	var errs []string
 	for _, target := range m.targets {
-		output, err := exec.CommandContext(ctx, appctl, "-t", target.Target, "ovsdb-server/compact").CombinedOutput()
+		args := []string{"-t", target.Target, "ovsdb-server/compact"}
+		if target.DB != "" {
+			args = append(args, target.DB)
+		}
+		output, err := exec.CommandContext(ctx, appctl, args...).CombinedOutput()
 		if err != nil && !ovnCompactDuplicateSnapshot(string(output)) {
 			result.Failed++
 			errs = append(errs, fmt.Sprintf("%s(%s): %v: %s", target.Target, target.DB, err, strings.TrimSpace(string(output))))

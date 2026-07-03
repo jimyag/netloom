@@ -272,7 +272,7 @@ func TestOVNDBMaintenanceRunsCompactTargets(t *testing.T) {
 	appctl := filepath.Join(dir, "ovn-appctl")
 	logPath := filepath.Join(dir, "calls")
 	script := `#!/bin/sh
-printf '%s %s %s\n' "$1" "$2" "$3" >> "$NETLOOM_TEST_CALLS"
+printf '%s %s %s %s\n' "$1" "$2" "$3" "$4" >> "$NETLOOM_TEST_CALLS"
 exit 0
 `
 	if err := os.WriteFile(appctl, []byte(script), 0o755); err != nil {
@@ -293,7 +293,7 @@ exit 0
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := strings.TrimSpace(string(raw)), "-t target-a ovsdb-server/compact\n-t target-b ovsdb-server/compact"; got != want {
+	if got, want := strings.TrimSpace(string(raw)), "-t target-a ovsdb-server/compact OVN_Northbound\n-t target-b ovsdb-server/compact OVN_Southbound"; got != want {
 		t.Fatalf("appctl calls = %q, want %q", got, want)
 	}
 }
