@@ -683,6 +683,13 @@ func providerOVSDBLinkExternalIDs(spec providerNetworkLinkSpec) map[string]strin
 	if spec.Isolation != "" {
 		ids["netloom_provider_isolation"] = spec.Isolation
 	}
+	if spec.QoS.EgressRateBPS != 0 {
+		ids["netloom_provider_qos"] = providerOVSDBQoSName(spec)
+		ids["netloom_provider_qos_egress_rate_bps"] = strconv.FormatUint(spec.QoS.EgressRateBPS, 10)
+	}
+	if spec.QoS.EgressBurstBPS != 0 {
+		ids["netloom_provider_qos_egress_burst_bps"] = strconv.FormatUint(spec.QoS.EgressBurstBPS, 10)
+	}
 	return ids
 }
 

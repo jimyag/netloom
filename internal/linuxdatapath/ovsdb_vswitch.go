@@ -2,6 +2,7 @@ package linuxdatapath
 
 import (
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/jimyag/netloom/internal/ovn/ovsdb/vswitch"
@@ -12,12 +13,14 @@ type ProviderOVSDBDesiredRows struct {
 	Bridges     []vswitch.Bridge
 	Ports       []vswitch.Port
 	Interfaces  []vswitch.Interface
+	QoS         []vswitch.QoS
 }
 
 func desiredProviderOVSDBRows(specs []providerNetworkLinkSpec) ProviderOVSDBDesiredRows {
 	bridgeByName := make(map[string]*vswitch.Bridge)
 	portByName := make(map[string]vswitch.Port)
 	interfaceByName := make(map[string]vswitch.Interface)
+	qosByName := make(map[string]vswitch.QoS)
 	mappingSet := make(map[string]struct{})
 
 	for _, spec := range specs {
@@ -44,6 +47,17 @@ func desiredProviderOVSDBRows(specs []providerNetworkLinkSpec) ProviderOVSDBDesi
 			Name:        spec.Name,
 			Interfaces:  []string{spec.Name},
 			ExternalIDs: providerOVSDBLinkExternalIDs(spec),
+		}
+		if spec.QoS.EgressRateBPS != 0 {
+			qosName := providerOVSDBQoSName(spec)
+			port := portByName[spec.Name]
+			port.QOS = &qosName
+			portByName[spec.Name] = port
+			qosByName[qosName] = vswitch.QoS{
+				ExternalIDs: providerOVSDBQoSExternalIDs(spec),
+				Type:        "linux-htb",
+				OtherConfig: providerOVSDBQoSOtherConfig(spec),
+			}
 		}
 		interfaceByName[spec.Name] = vswitch.Interface{
 			Name:        spec.Name,
@@ -74,6 +88,15 @@ func desiredProviderOVSDBRows(specs []providerNetworkLinkSpec) ProviderOVSDBDesi
 		ports = append(ports, portByName[name])
 		interfaces = append(interfaces, interfaceByName[name])
 	}
+	qosNames := make([]string, 0, len(qosByName))
+	for name := range qosByName {
+		qosNames = append(qosNames, name)
+	}
+	sort.Strings(qosNames)
+	qosRows := make([]vswitch.QoS, 0, len(qosNames))
+	for _, name := range qosNames {
+		qosRows = append(qosRows, qosByName[name])
+	}
 
 	mappings := make([]string, 0, len(mappingSet))
 	for mapping := range mappingSet {
@@ -92,7 +115,28 @@ func desiredProviderOVSDBRows(specs []providerNetworkLinkSpec) ProviderOVSDBDesi
 		Bridges:    bridges,
 		Ports:      ports,
 		Interfaces: interfaces,
+		QoS:        qosRows,
 	}
+}
+
+func providerOVSDBQoSName(spec providerNetworkLinkSpec) string {
+	return "qos-" + spec.Name
+}
+
+func providerOVSDBQoSExternalIDs(spec providerNetworkLinkSpec) map[string]string {
+	ids := providerOVSDBLinkExternalIDs(spec)
+	ids["netloom_provider_qos"] = providerOVSDBQoSName(spec)
+	return ids
+}
+
+func providerOVSDBQoSOtherConfig(spec providerNetworkLinkSpec) map[string]string {
+	out := map[string]string{
+		"max-rate": strconv.FormatUint(spec.QoS.EgressRateBPS, 10),
+	}
+	if spec.QoS.EgressBurstBPS != 0 {
+		out["burst"] = strconv.FormatUint(spec.QoS.EgressBurstBPS, 10)
+	}
+	return out
 }
 
 func appendUniqueString(values []string, value string) []string {

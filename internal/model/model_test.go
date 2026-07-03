@@ -61,6 +61,10 @@ func TestCoreNetworkResourcesValidateRequiredFields(t *testing.T) {
 				return ProviderNetwork{
 					Name:      "physnet-a",
 					Isolation: "exclusive",
+					QoS: ProviderNetworkQoS{
+						EgressRateBPS:  1000000000,
+						EgressBurstBPS: 64000,
+					},
 					Nodes: []ProviderNetworkNode{
 						{Node: "node-a", Interface: "bond0.100"},
 					},
@@ -97,6 +101,32 @@ func TestCoreNetworkResourcesValidateRequiredFields(t *testing.T) {
 				}.Validate()
 			},
 			wantErr: "provider network isolation",
+		},
+		{
+			name: "provider network qos",
+			valid: func() error {
+				return ProviderNetwork{
+					Name: "physnet-a",
+					QoS: ProviderNetworkQoS{
+						EgressRateBPS: 1000000000,
+					},
+					Nodes: []ProviderNetworkNode{
+						{Node: "node-a", Interface: "bond0.100"},
+					},
+				}.Validate()
+			},
+			invalid: func() error {
+				return ProviderNetwork{
+					Name: "physnet-a",
+					QoS: ProviderNetworkQoS{
+						EgressBurstBPS: 64000,
+					},
+					Nodes: []ProviderNetworkNode{
+						{Node: "node-a", Interface: "bond0.100"},
+					},
+				}.Validate()
+			},
+			wantErr: "provider network qos",
 		},
 		{
 			name: "gateway",

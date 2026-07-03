@@ -392,7 +392,7 @@ func TestDesiredProviderOVSDBRowsBuildsTypedVSwitchRows(t *testing.T) {
 	bridgeB := providerNetworkBridgeName("physnet-b")
 	rows := desiredProviderOVSDBRows([]providerNetworkLinkSpec{
 		{ProviderNetwork: "physnet-b", ParentDevice: "eth2", VLAN: 200, Name: "nlv200"},
-		{ProviderNetwork: "physnet-a", ParentDevice: "eth1", VLAN: 100, Name: "nlv100", Isolation: "exclusive"},
+		{ProviderNetwork: "physnet-a", ParentDevice: "eth1", VLAN: 100, Name: "nlv100", Isolation: "exclusive", QoS: model.ProviderNetworkQoS{EgressRateBPS: 1000000000, EgressBurstBPS: 64000}},
 		{ProviderNetwork: "physnet-a", ParentDevice: "eth1", VLAN: 300, Name: "nlv300", Isolation: "exclusive"},
 	})
 
@@ -427,6 +427,15 @@ func TestDesiredProviderOVSDBRowsBuildsTypedVSwitchRows(t *testing.T) {
 	}
 	if got := rows.Ports[0].ExternalIDs["netloom_provider_isolation"]; got != "exclusive" {
 		t.Fatalf("port isolation external id = %q, want exclusive", got)
+	}
+	if rows.Ports[0].QOS == nil || *rows.Ports[0].QOS != "qos-nlv100" {
+		t.Fatalf("port qos = %v, want qos-nlv100", rows.Ports[0].QOS)
+	}
+	if len(rows.QoS) != 1 || rows.QoS[0].Type != "linux-htb" || rows.QoS[0].OtherConfig["max-rate"] != "1000000000" || rows.QoS[0].OtherConfig["burst"] != "64000" {
+		t.Fatalf("qos rows = %+v, want linux-htb max-rate and burst", rows.QoS)
+	}
+	if got := rows.QoS[0].ExternalIDs["netloom_provider_qos"]; got != "qos-nlv100" {
+		t.Fatalf("qos external IDs = %+v, want qos-nlv100", rows.QoS[0].ExternalIDs)
 	}
 	if got := rows.Interfaces[2].ExternalIDs["netloom_vlan"]; got != "300" {
 		t.Fatalf("interface vlan external id = %q, want 300", got)

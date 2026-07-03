@@ -55,12 +55,18 @@ type ProviderNetwork struct {
 	Name      string                `json:"name"`
 	Nodes     []ProviderNetworkNode `json:"nodes"`
 	Isolation string                `json:"isolation,omitempty"`
+	QoS       ProviderNetworkQoS    `json:"qos,omitempty"`
 }
 
 type ProviderNetworkNode struct {
 	Node       string   `json:"node"`
 	Interface  string   `json:"interface"`
 	Interfaces []string `json:"interfaces,omitempty"`
+}
+
+type ProviderNetworkQoS struct {
+	EgressRateBPS  uint64 `json:"egress_rate_bps,omitempty"`
+	EgressBurstBPS uint64 `json:"egress_burst_bps,omitempty"`
 }
 
 type Subnet struct {
@@ -286,6 +292,9 @@ func (p ProviderNetwork) Validate() error {
 	if p.Isolation != "" && p.Isolation != "shared" && p.Isolation != "exclusive" {
 		return fmt.Errorf("provider network isolation %q is invalid", p.Isolation)
 	}
+	if err := p.QoS.Validate(); err != nil {
+		return fmt.Errorf("provider network qos: %w", err)
+	}
 	if len(p.Nodes) == 0 {
 		return errors.New("provider network nodes are required")
 	}
@@ -298,6 +307,13 @@ func (p ProviderNetwork) Validate() error {
 			return fmt.Errorf("provider network node %q is duplicated", node.Node)
 		}
 		seenNodes[node.Node] = struct{}{}
+	}
+	return nil
+}
+
+func (q ProviderNetworkQoS) Validate() error {
+	if q.EgressBurstBPS != 0 && q.EgressRateBPS == 0 {
+		return errors.New("egress_burst_bps requires egress_rate_bps")
 	}
 	return nil
 }

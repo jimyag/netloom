@@ -387,6 +387,7 @@ type providerNetworkLinkSpec struct {
 	VLAN            uint16
 	Name            string
 	Isolation       string
+	QoS             model.ProviderNetworkQoS
 }
 
 func desiredProviderNetworkLinkSpecs(state control.DesiredState, node string, mappings map[string]string, inventory []ProviderInterface) ([]providerNetworkLinkSpec, error) {
@@ -410,6 +411,7 @@ func desiredProviderNetworkLinkSpecs(state control.DesiredState, node string, ma
 		return nil, err
 	}
 	providerIsolation := providerNetworkIsolationByName(state.ProviderNetworks)
+	providerQoS := providerNetworkQoSByName(state.ProviderNetworks)
 	seen := make(map[string]providerNetworkLinkSpec)
 	claimedLinks := make(map[string]providerNetworkLinkSpec)
 	claimedParents := make(map[string]providerNetworkLinkSpec)
@@ -439,6 +441,7 @@ func desiredProviderNetworkLinkSpecs(state control.DesiredState, node string, ma
 			VLAN:            subnet.VLAN,
 			Name:            providerNetworkLinkName(subnet.ProviderNetwork, parent, subnet.VLAN),
 			Isolation:       providerIsolation[subnet.ProviderNetwork],
+			QoS:             providerQoS[subnet.ProviderNetwork],
 		}
 		if claimed, ok := claimedParents[parent]; ok && providerIsolationConflicts(claimed, spec) {
 			return nil, &providerPlanningError{
@@ -481,6 +484,14 @@ func desiredProviderNetworkLinkSpecs(state control.DesiredState, node string, ma
 		specs = append(specs, seen[key])
 	}
 	return specs, nil
+}
+
+func providerNetworkQoSByName(providerNetworks []model.ProviderNetwork) map[string]model.ProviderNetworkQoS {
+	out := make(map[string]model.ProviderNetworkQoS, len(providerNetworks))
+	for _, providerNetwork := range providerNetworks {
+		out[providerNetwork.Name] = providerNetwork.QoS
+	}
+	return out
 }
 
 func providerNetworkIsolationByName(providerNetworks []model.ProviderNetwork) map[string]string {

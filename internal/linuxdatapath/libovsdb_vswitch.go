@@ -12,6 +12,7 @@ import (
 	ovsmodel "github.com/ovn-kubernetes/libovsdb/model"
 	"github.com/ovn-kubernetes/libovsdb/ovsdb"
 
+	netloommodel "github.com/jimyag/netloom/internal/model"
 	"github.com/jimyag/netloom/internal/ovn/ovsdb/vswitch"
 )
 
@@ -47,6 +48,8 @@ func (s *LibOVSDBProviderSyncer) SyncProviderOVSDB(ctx context.Context, rows Pro
 	desiredBridgeRefs := make([]string, 0, len(rows.Bridges))
 	desiredBridgeSet := make(map[string]struct{}, len(rows.Bridges))
 	portsByBridge := make(map[string][]string, len(rows.Bridges))
+	qosUUIDByName := make(map[string]string, len(rows.QoS))
+	desiredQoSSet := make(map[string]struct{}, len(rows.QoS))
 	for _, bridge := range rows.Bridges {
 		desiredBridgeSet[bridge.Name] = struct{}{}
 		bridgeUUID, bridgeOps, err := s.ensureBridge(ctx, bridge)
@@ -58,8 +61,26 @@ func (s *LibOVSDBProviderSyncer) SyncProviderOVSDB(ctx context.Context, rows Pro
 		portsByBridge[bridge.Name] = append([]string(nil), bridge.Ports...)
 	}
 	sort.Strings(desiredBridgeRefs)
+	for _, qos := range rows.QoS {
+		name := qos.ExternalIDs["netloom_provider_qos"]
+		if name == "" {
+			return fmt.Errorf("provider QoS row is missing netloom_provider_qos external ID")
+		}
+		desiredQoSSet[name] = struct{}{}
+		qosUUID, qosOps, err := s.ensureQoS(ctx, qos)
+		if err != nil {
+			return err
+		}
+		ops = append(ops, qosOps...)
+		qosUUIDByName[name] = qosUUID
+	}
 
 	for _, port := range rows.Ports {
+		if port.QOS != nil {
+			if qosUUID := qosUUIDByName[*port.QOS]; qosUUID != "" {
+				port.QOS = &qosUUID
+			}
+		}
 		portUUID, portOps, err := s.ensurePort(ctx, port)
 		if err != nil {
 			return err
@@ -100,6 +121,11 @@ func (s *LibOVSDBProviderSyncer) SyncProviderOVSDB(ctx context.Context, rows Pro
 			return err
 		}
 		ops = append(ops, cleanupOps...)
+		qosOps, err := s.cleanupStaleProviderQoS(ctx, desiredQoSSet)
+		if err != nil {
+			return err
+		}
+		ops = append(ops, qosOps...)
 	}
 	return s.transact(ctx, "sync provider Open_vSwitch OVSDB rows", ops)
 }
@@ -174,6 +200,10 @@ func (s *LibOVSDBProviderSyncer) ReadProviderOVSDBStatus(ctx context.Context, ro
 			status.PortState = "bridge-mismatch"
 		} else if !providerExternalIDsMatch(port.ExternalIDs, providerOVSDBLinkExternalIDs(spec)) {
 			status.PortState = "external-ids-mismatch"
+		} else if ok, err := s.providerPortQoSMatches(ctx, port, spec); err != nil {
+			return nil, err
+		} else if !ok {
+			status.PortState = "qos-mismatch"
 		}
 		iface, ok, err := s.interfaceByName(ctx, spec.Name)
 		if err != nil {
@@ -187,6 +217,34 @@ func (s *LibOVSDBProviderSyncer) ReadProviderOVSDBStatus(ctx context.Context, ro
 		statuses = append(statuses, status)
 	}
 	return statuses, nil
+}
+
+func (s *LibOVSDBProviderSyncer) ensureQoS(ctx context.Context, desired vswitch.QoS) (string, []ovsdb.Operation, error) {
+	name := desired.ExternalIDs["netloom_provider_qos"]
+	existing, ok, err := s.qosByProviderName(ctx, name)
+	if err != nil {
+		return "", nil, err
+	}
+	if !ok {
+		desired.UUID = ovsdbProviderNamedUUID("qos", name)
+		ops, err := s.client.Create(&desired)
+		if err != nil {
+			return "", nil, fmt.Errorf("create OVS QoS %s: %w", name, err)
+		}
+		return desired.UUID, ops, nil
+	}
+	nextExternalIDs := mergeProviderStringMap(existing.ExternalIDs, desired.ExternalIDs)
+	if existing.Type == desired.Type && reflect.DeepEqual(existing.ExternalIDs, nextExternalIDs) && reflect.DeepEqual(existing.OtherConfig, desired.OtherConfig) {
+		return existing.UUID, nil, nil
+	}
+	existing.Type = desired.Type
+	existing.ExternalIDs = nextExternalIDs
+	existing.OtherConfig = desired.OtherConfig
+	ops, err := s.client.Where(existing).Update(existing, &existing.Type, &existing.ExternalIDs, &existing.OtherConfig)
+	if err != nil {
+		return "", nil, fmt.Errorf("update OVS QoS %s: %w", name, err)
+	}
+	return existing.UUID, ops, nil
 }
 
 func (s *LibOVSDBProviderSyncer) ensureBridge(ctx context.Context, desired vswitch.Bridge) (string, []ovsdb.Operation, error) {
@@ -241,12 +299,23 @@ func (s *LibOVSDBProviderSyncer) ensurePort(ctx context.Context, desired vswitch
 	}
 	nextExternalIDs := mergeProviderStringMap(existing.ExternalIDs, desired.ExternalIDs)
 	nextInterfaces := sortedUniqueStrings(append(existing.Interfaces, interfaceUUID))
-	if reflect.DeepEqual(existing.ExternalIDs, nextExternalIDs) && reflect.DeepEqual(sortedUniqueStrings(existing.Interfaces), nextInterfaces) {
+	nextQOS := desired.QOS
+	if desired.QOS == nil && existing.QOS != nil {
+		managed, err := s.qosUUIDIsNetloomManaged(ctx, *existing.QOS)
+		if err != nil {
+			return "", nil, err
+		}
+		if !managed {
+			nextQOS = existing.QOS
+		}
+	}
+	if reflect.DeepEqual(existing.ExternalIDs, nextExternalIDs) && reflect.DeepEqual(sortedUniqueStrings(existing.Interfaces), nextInterfaces) && stringPointersEqual(existing.QOS, nextQOS) {
 		return existing.UUID, ops, nil
 	}
 	existing.ExternalIDs = nextExternalIDs
 	existing.Interfaces = nextInterfaces
-	updateOps, err := s.client.Where(existing).Update(existing, &existing.ExternalIDs, &existing.Interfaces)
+	existing.QOS = nextQOS
+	updateOps, err := s.client.Where(existing).Update(existing, &existing.ExternalIDs, &existing.Interfaces, &existing.QOS)
 	if err != nil {
 		return "", nil, fmt.Errorf("update OVS port %s: %w", desired.Name, err)
 	}
@@ -360,6 +429,13 @@ func (s *LibOVSDBProviderSyncer) cleanupStaleProviderBridges(ctx context.Context
 					}
 					ops = append(ops, deleteIfaceOps...)
 				}
+				if port.QOS != nil {
+					deleteQOSOps, err := s.deleteQoSIfManaged(ctx, *port.QOS)
+					if err != nil {
+						return nil, err
+					}
+					ops = append(ops, deleteQOSOps...)
+				}
 				deletePortOps, err := s.client.Where(port).Delete()
 				if err != nil {
 					return nil, fmt.Errorf("delete stale OVS port %s: %w", port.Name, err)
@@ -372,6 +448,28 @@ func (s *LibOVSDBProviderSyncer) cleanupStaleProviderBridges(ctx context.Context
 			return nil, fmt.Errorf("delete stale OVS bridge %s: %w", bridges[i].Name, err)
 		}
 		ops = append(ops, deleteBridgeOps...)
+	}
+	return ops, nil
+}
+
+func (s *LibOVSDBProviderSyncer) cleanupStaleProviderQoS(ctx context.Context, desired map[string]struct{}) ([]ovsdb.Operation, error) {
+	var rows []vswitch.QoS
+	if err := s.client.WhereCache(func(row *vswitch.QoS) bool {
+		if row.ExternalIDs["netloom_owner"] != "netloom" || row.ExternalIDs["netloom_provider_qos"] == "" {
+			return false
+		}
+		_, ok := desired[row.ExternalIDs["netloom_provider_qos"]]
+		return !ok
+	}).List(ctx, &rows); err != nil {
+		return nil, fmt.Errorf("list stale OVS provider QoS rows: %w", err)
+	}
+	var ops []ovsdb.Operation
+	for i := range rows {
+		deleteOps, err := s.client.Where(&rows[i]).Delete()
+		if err != nil {
+			return nil, fmt.Errorf("delete stale OVS provider QoS %s: %w", rows[i].ExternalIDs["netloom_provider_qos"], err)
+		}
+		ops = append(ops, deleteOps...)
 	}
 	return ops, nil
 }
@@ -433,6 +531,54 @@ func (s *LibOVSDBProviderSyncer) interfaceByName(ctx context.Context, name strin
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].UUID < rows[j].UUID })
 	return &rows[0], true, nil
+}
+
+func (s *LibOVSDBProviderSyncer) qosByProviderName(ctx context.Context, name string) (*vswitch.QoS, bool, error) {
+	var rows []vswitch.QoS
+	if err := s.client.WhereCache(func(row *vswitch.QoS) bool {
+		return row.ExternalIDs["netloom_owner"] == "netloom" && row.ExternalIDs["netloom_provider_qos"] == name
+	}).List(ctx, &rows); err != nil {
+		return nil, false, fmt.Errorf("list OVS QoS %s: %w", name, err)
+	}
+	if len(rows) == 0 {
+		return nil, false, nil
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].UUID < rows[j].UUID })
+	return &rows[0], true, nil
+}
+
+func (s *LibOVSDBProviderSyncer) qosByUUID(ctx context.Context, uuid string) (*vswitch.QoS, bool, error) {
+	var rows []vswitch.QoS
+	if err := s.client.WhereCache(func(row *vswitch.QoS) bool { return row.UUID == uuid }).List(ctx, &rows); err != nil {
+		return nil, false, fmt.Errorf("list OVS QoS %s: %w", uuid, err)
+	}
+	if len(rows) == 0 {
+		return nil, false, nil
+	}
+	return &rows[0], true, nil
+}
+
+func (s *LibOVSDBProviderSyncer) qosUUIDIsNetloomManaged(ctx context.Context, uuid string) (bool, error) {
+	qos, ok, err := s.qosByUUID(ctx, uuid)
+	if err != nil || !ok {
+		return false, err
+	}
+	return qos.ExternalIDs["netloom_owner"] == "netloom" && qos.ExternalIDs["netloom_provider_qos"] != "", nil
+}
+
+func (s *LibOVSDBProviderSyncer) deleteQoSIfManaged(ctx context.Context, uuid string) ([]ovsdb.Operation, error) {
+	qos, ok, err := s.qosByUUID(ctx, uuid)
+	if err != nil || !ok {
+		return nil, err
+	}
+	if qos.ExternalIDs["netloom_owner"] != "netloom" || qos.ExternalIDs["netloom_provider_qos"] == "" {
+		return nil, nil
+	}
+	deleteOps, err := s.client.Where(qos).Delete()
+	if err != nil {
+		return nil, fmt.Errorf("delete OVS QoS %s: %w", uuid, err)
+	}
+	return deleteOps, nil
 }
 
 func (s *LibOVSDBProviderSyncer) transact(ctx context.Context, label string, ops []ovsdb.Operation) error {
@@ -509,7 +655,50 @@ func providerSpecFromDesiredPort(providerNetwork string, port vswitch.Port) (pro
 		ParentDevice:    parent,
 		VLAN:            uint16(vlan),
 		Name:            port.Name,
+		QoS:             providerQoSFromDesiredPort(port),
 	}, nil
+}
+
+func providerQoSFromDesiredPort(port vswitch.Port) netloommodel.ProviderNetworkQoS {
+	var qos netloommodel.ProviderNetworkQoS
+	rateRaw := port.ExternalIDs["netloom_provider_qos_egress_rate_bps"]
+	if rateRaw != "" {
+		rate, err := strconv.ParseUint(rateRaw, 10, 64)
+		if err == nil {
+			qos.EgressRateBPS = rate
+		}
+	}
+	burstRaw := port.ExternalIDs["netloom_provider_qos_egress_burst_bps"]
+	if burstRaw != "" {
+		burst, err := strconv.ParseUint(burstRaw, 10, 64)
+		if err == nil {
+			qos.EgressBurstBPS = burst
+		}
+	}
+	return qos
+}
+
+func (s *LibOVSDBProviderSyncer) providerPortQoSMatches(ctx context.Context, port *vswitch.Port, spec providerNetworkLinkSpec) (bool, error) {
+	if spec.QoS.EgressRateBPS == 0 {
+		return port.QOS == nil, nil
+	}
+	if port.QOS == nil {
+		return false, nil
+	}
+	qos, ok, err := s.qosByUUID(ctx, *port.QOS)
+	if err != nil || !ok {
+		return false, err
+	}
+	return qos.Type == "linux-htb" &&
+		providerExternalIDsMatch(qos.ExternalIDs, providerOVSDBQoSExternalIDs(spec)) &&
+		reflect.DeepEqual(qos.OtherConfig, providerOVSDBQoSOtherConfig(spec)), nil
+}
+
+func stringPointersEqual(a, b *string) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
 
 func providerExternalIDsMatch(got map[string]string, want map[string]string) bool {
