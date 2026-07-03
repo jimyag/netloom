@@ -1137,8 +1137,8 @@ func (c clusteredOVNHealthChecker) OVNClusterHealth() ovnClusterHealthSnapshot {
 }
 
 func newOVNTopologyRuntimeFromEnv() (ovnTopologyRuntime, error) {
-	backend := strings.TrimSpace(os.Getenv("NETLOOM_OVN_TOPOLOGY_BACKEND"))
-	if backend == "" || backend == "nbctl" {
+	backend := ovnTopologyBackendFromEnv()
+	if backend == "nbctl" {
 		var executor ovn.Executor = ovn.NewRecorderExecutor()
 		if db := os.Getenv("NETLOOM_OVN_NBCTL_DB"); db != "" {
 			nbctl, err := newNBCTLExecutorFromEnv(db)
@@ -1187,8 +1187,8 @@ func newOVNTopologyRuntimeFromEnv() (ovnTopologyRuntime, error) {
 }
 
 func newOVNAuditReaderFromEnv() (ovn.ManagedOVNReader, func(), error) {
-	backend := strings.TrimSpace(os.Getenv("NETLOOM_OVN_AUDIT_BACKEND"))
-	if backend == "" || backend == "nbctl" {
+	backend := ovnAuditBackendFromEnv()
+	if backend == "nbctl" {
 		return nil, nil, nil
 	}
 	if backend != "libovsdb" {
@@ -1199,6 +1199,28 @@ func newOVNAuditReaderFromEnv() (ovn.ManagedOVNReader, func(), error) {
 		return nil, nil, err
 	}
 	return ovn.NewLibOVSDBManagedReader(client), closeFn, nil
+}
+
+func ovnTopologyBackendFromEnv() string {
+	backend := strings.TrimSpace(os.Getenv("NETLOOM_OVN_TOPOLOGY_BACKEND"))
+	if backend != "" {
+		return backend
+	}
+	if len(ovnLibOVSDBEndpointsFromEnv()) > 0 {
+		return "libovsdb"
+	}
+	return "nbctl"
+}
+
+func ovnAuditBackendFromEnv() string {
+	backend := strings.TrimSpace(os.Getenv("NETLOOM_OVN_AUDIT_BACKEND"))
+	if backend != "" {
+		return backend
+	}
+	if len(ovnLibOVSDBEndpointsFromEnv()) > 0 {
+		return "libovsdb"
+	}
+	return "nbctl"
 }
 
 func newOVNNBClientFromEnv(owner string) (libovsdbclient.Client, func(), error) {

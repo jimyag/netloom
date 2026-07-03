@@ -776,6 +776,32 @@ func TestNewOVNTopologyRuntimeRejectsInvalidBackend(t *testing.T) {
 	}
 }
 
+func TestOVNTopologyBackendDefaultsToLibOVSDBWhenEndpointConfigured(t *testing.T) {
+	t.Setenv("NETLOOM_OVN_TOPOLOGY_BACKEND", "")
+	t.Setenv("NETLOOM_OVN_LIBOVSDB_ENDPOINT", "unix:/run/ovn/ovnnb_db.sock")
+	t.Setenv("NETLOOM_OVN_NBCTL_DB", "")
+	if got := ovnTopologyBackendFromEnv(); got != "libovsdb" {
+		t.Fatalf("topology backend = %q, want libovsdb", got)
+	}
+}
+
+func TestOVNTopologyBackendDefaultsToRecorderWithoutEndpoint(t *testing.T) {
+	t.Setenv("NETLOOM_OVN_TOPOLOGY_BACKEND", "")
+	t.Setenv("NETLOOM_OVN_LIBOVSDB_ENDPOINT", "")
+	t.Setenv("NETLOOM_OVN_NBCTL_DB", "")
+	if got := ovnTopologyBackendFromEnv(); got != "nbctl" {
+		t.Fatalf("topology backend = %q, want nbctl recorder", got)
+	}
+}
+
+func TestOVNTopologyBackendAllowsExplicitNBCTL(t *testing.T) {
+	t.Setenv("NETLOOM_OVN_TOPOLOGY_BACKEND", "nbctl")
+	t.Setenv("NETLOOM_OVN_LIBOVSDB_ENDPOINT", "unix:/run/ovn/ovnnb_db.sock")
+	if got := ovnTopologyBackendFromEnv(); got != "nbctl" {
+		t.Fatalf("topology backend = %q, want explicit nbctl", got)
+	}
+}
+
 func TestNewOVNTopologyRuntimeRequiresEndpointForLibOVSDB(t *testing.T) {
 	t.Setenv("NETLOOM_OVN_TOPOLOGY_BACKEND", "libovsdb")
 	t.Setenv("NETLOOM_OVN_LIBOVSDB_ENDPOINT", "")
@@ -783,6 +809,23 @@ func TestNewOVNTopologyRuntimeRequiresEndpointForLibOVSDB(t *testing.T) {
 	_, err := newOVNTopologyRuntimeFromEnv()
 	if err == nil {
 		t.Fatal("expected libovsdb topology backend without endpoint to fail")
+	}
+}
+
+func TestOVNAuditBackendDefaultsToLibOVSDBWhenEndpointConfigured(t *testing.T) {
+	t.Setenv("NETLOOM_OVN_AUDIT_BACKEND", "")
+	t.Setenv("NETLOOM_OVN_LIBOVSDB_ENDPOINT", "unix:/run/ovn/ovnnb_db.sock")
+	t.Setenv("NETLOOM_OVN_NBCTL_DB", "")
+	if got := ovnAuditBackendFromEnv(); got != "libovsdb" {
+		t.Fatalf("audit backend = %q, want libovsdb", got)
+	}
+}
+
+func TestOVNAuditBackendAllowsExplicitNBCTL(t *testing.T) {
+	t.Setenv("NETLOOM_OVN_AUDIT_BACKEND", "nbctl")
+	t.Setenv("NETLOOM_OVN_LIBOVSDB_ENDPOINT", "unix:/run/ovn/ovnnb_db.sock")
+	if got := ovnAuditBackendFromEnv(); got != "nbctl" {
+		t.Fatalf("audit backend = %q, want explicit nbctl", got)
 	}
 }
 
