@@ -165,6 +165,8 @@ type PolicyRollout struct {
 	SLOWindowCount            int                  `json:"slo_window_count"`
 	SLOWindowIntervalMS       uint32               `json:"slo_window_interval_ms"`
 	Probes                    []PolicyRolloutProbe `json:"probes,omitempty"`
+	ApprovalRequired          bool                 `json:"approval_required,omitempty"`
+	Approved                  bool                 `json:"approved,omitempty"`
 	Paused                    bool                 `json:"paused,omitempty"`
 	PauseAfterBatches         int                  `json:"pause_after_batches,omitempty"`
 	PromotionPercent          uint32               `json:"promotion_percent,omitempty"`

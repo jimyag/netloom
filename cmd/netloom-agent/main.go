@@ -173,6 +173,8 @@ type policyEndpointRolloutRequest struct {
 	SLOWindowCount            int                          `json:"slo_window_count"`
 	SLOWindowIntervalMS       uint32                       `json:"slo_window_interval_ms"`
 	Probes                    []control.PolicyRolloutProbe `json:"probes,omitempty"`
+	ApprovalRequired          bool                         `json:"approval_required,omitempty"`
+	Approved                  bool                         `json:"approved,omitempty"`
 	Paused                    bool                         `json:"paused,omitempty"`
 	PauseAfterBatches         int                          `json:"pause_after_batches,omitempty"`
 	PromotionPercent          uint32                       `json:"promotion_percent,omitempty"`
@@ -1444,6 +1446,8 @@ func (m *agentMetrics) rolloutPolicyEndpoints(ctx context.Context, request polic
 		SLOWindowCount:            request.SLOWindowCount,
 		SLOWindowInterval:         time.Duration(request.SLOWindowIntervalMS) * time.Millisecond,
 		Probes:                    append([]control.PolicyRolloutProbe(nil), request.Probes...),
+		ApprovalRequired:          request.ApprovalRequired,
+		Approved:                  request.Approved,
 		Paused:                    request.Paused,
 		PauseAfterBatches:         request.PauseAfterBatches,
 		PromotionPercent:          request.PromotionPercent,
@@ -1784,7 +1788,7 @@ func (m *agentMetrics) handlePolicyEndpointRollout(w http.ResponseWriter, r *htt
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(policyEndpointActionOutput{
 		Action:    "rollout",
-		RolledOut: !rollout.DryRun && rollout.Failed == 0,
+		RolledOut: !rollout.DryRun && rollout.Failed == 0 && !rollout.ApprovalPending,
 		Rollout:   rollout,
 	})
 }

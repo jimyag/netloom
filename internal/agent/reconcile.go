@@ -169,6 +169,8 @@ type PolicyEndpointRolloutOptions struct {
 	SLOWindowCount            int
 	SLOWindowInterval         time.Duration
 	Probes                    []control.PolicyRolloutProbe
+	ApprovalRequired          bool
+	Approved                  bool
 	Paused                    bool
 	PauseAfterBatches         int
 	PromotionPercent          uint32
@@ -196,6 +198,9 @@ type PolicyEndpointRollout struct {
 	ProbeFailed              bool                        `json:"probe_failed,omitempty"`
 	ProbeError               string                      `json:"probe_error,omitempty"`
 	Probes                   []PolicyEndpointProbeResult `json:"probes,omitempty"`
+	ApprovalRequired         bool                        `json:"approval_required,omitempty"`
+	Approved                 bool                        `json:"approved,omitempty"`
+	ApprovalPending          bool                        `json:"approval_pending,omitempty"`
 	Paused                   bool                        `json:"paused,omitempty"`
 	PauseAfterBatches        int                         `json:"pause_after_batches,omitempty"`
 	PausedAfterBatch         int                         `json:"paused_after_batch,omitempty"`
@@ -378,6 +383,8 @@ func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, opt
 		SLOMinPackets:            rolloutOptions.SLOMinPackets,
 		SLOWindowCount:           normalizedSLOWindowCount(rolloutOptions.SLOWindowCount),
 		SLOWindowIntervalMS:      uint32(rolloutOptions.SLOWindowInterval / time.Millisecond),
+		ApprovalRequired:         rolloutOptions.ApprovalRequired,
+		Approved:                 rolloutOptions.Approved,
 		Paused:                   rolloutOptions.Paused,
 		PauseAfterBatches:        rolloutOptions.PauseAfterBatches,
 		PromotionPercent:         rolloutOptions.PromotionPercent,
@@ -412,6 +419,11 @@ func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, opt
 		})
 	}
 	if rolloutOptions.DryRun {
+		return rollout, nil
+	}
+	if rolloutOptions.ApprovalRequired && !rolloutOptions.Approved {
+		rollout.ApprovalPending = true
+		pauseRolloutItems(&rollout, 0)
 		return rollout, nil
 	}
 	if rolloutOptions.Paused {
@@ -889,6 +901,8 @@ func ApplyPolicyRollouts(ctx context.Context, state control.DesiredState, option
 			SLOWindowCount:            rollout.SLOWindowCount,
 			SLOWindowInterval:         time.Duration(rollout.SLOWindowIntervalMS) * time.Millisecond,
 			Probes:                    append([]control.PolicyRolloutProbe(nil), rollout.Probes...),
+			ApprovalRequired:          rollout.ApprovalRequired,
+			Approved:                  rollout.Approved,
 			Paused:                    rollout.Paused,
 			PauseAfterBatches:         rollout.PauseAfterBatches,
 			PromotionPercent:          rollout.PromotionPercent,

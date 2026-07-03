@@ -1861,6 +1861,68 @@ func TestPolicyEndpointAPIRolloutPausesAfterBatch(t *testing.T) {
 	}
 }
 
+func TestPolicyEndpointAPIRolloutRequiresApproval(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{
+			{ID: "pod-a", VPC: "prod", Subnet: "apps", IP: netip.MustParseAddr("10.10.0.10"), Node: "node-a", SecurityGroups: []string{"web"}},
+		},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "allow-http",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("172.30.0.0/24"),
+				Ports:      []model.PortRange{{From: 80, To: 80}},
+				Action:     model.ActionAllow,
+			}},
+		}},
+	}
+	store := dataplane.NewInMemoryPolicyStore()
+	metrics := newAgentMetrics(store)
+	observeAgentReconcileResultWithState(metrics, agent.ReconcileResult{
+		Node: "node-a",
+	}, "memory", time.Millisecond, state)
+
+	body := bytes.NewBufferString(`{"endpoints":["prod/pod-a"],"batch_size":1,"approval_required":true}`)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/policy/endpoints/rollout", body)
+	metrics.handlePolicyEndpoints(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var got policyEndpointActionOutput
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode policy endpoint rollout response: %v\n%s", err, recorder.Body.String())
+	}
+	if got.RolledOut || !got.Rollout.ApprovalRequired || !got.Rollout.ApprovalPending || !got.Rollout.Paused || got.Rollout.Applied != 0 || got.Rollout.Skipped != 1 {
+		t.Fatalf("rollout response = %+v, want approval-gated paused rollout", got)
+	}
+	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 0 {
+		t.Fatalf("pod-a entries = %+v, want no mutation before approval", entries)
+	}
+
+	body = bytes.NewBufferString(`{"endpoints":["prod/pod-a"],"batch_size":1,"approval_required":true,"approved":true}`)
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPost, "/policy/endpoints/rollout", body)
+	metrics.handlePolicyEndpoints(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("approved status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	got = policyEndpointActionOutput{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode approved rollout response: %v\n%s", err, recorder.Body.String())
+	}
+	if !got.RolledOut || !got.Rollout.Approved || got.Rollout.ApprovalPending || got.Rollout.Applied != 1 {
+		t.Fatalf("approved rollout response = %+v, want applied approval-gated rollout", got)
+	}
+	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 1 {
+		t.Fatalf("pod-a entries = %+v, want applied after approval", entries)
+	}
+}
+
 func TestPolicyEndpointAPIRolloutUsesPromotionPercent(t *testing.T) {
 	state := control.DesiredState{
 		Endpoints: []model.Endpoint{
