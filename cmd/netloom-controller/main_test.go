@@ -168,6 +168,91 @@ func TestParseOVNLeaderEndpointFindsConfiguredEndpoint(t *testing.T) {
 	}
 }
 
+func TestParseOVNLeaderEndpointPrefersLeaderLineOverOtherEndpointMentions(t *testing.T) {
+	endpoints := []string{"tcp:a:6641", "tcp:b:6641"}
+	output := "connections: tcp:a:6641 tcp:b:6641\nleader: tcp:b:6641\n"
+	if got := parseOVNLeaderEndpoint(output, endpoints); got != "tcp:b:6641" {
+		t.Fatalf("leader endpoint = %q, want tcp:b:6641", got)
+	}
+}
+
+func TestOVNClusterStatusTargetsFromEnvParsesEndpointMappings(t *testing.T) {
+	t.Setenv("NETLOOM_OVN_CLUSTER_STATUS_TARGETS", "tcp:a:6641=/run/ovn/a.ctl, tcp:b:6641=ovnnb_db.ctl")
+	targets := ovnClusterStatusTargetsFromEnv()
+	if targets["tcp:a:6641"] != "/run/ovn/a.ctl" || targets["tcp:b:6641"] != "ovnnb_db.ctl" {
+		t.Fatalf("targets = %#v", targets)
+	}
+}
+
+func TestOVNClusterStatusIsLeader(t *testing.T) {
+	for _, output := range []string{
+		"Cluster ID: x\nRole: leader\n",
+		"Cluster ID: x\nLeader: self\n",
+	} {
+		if !ovnClusterStatusIsLeader(output) {
+			t.Fatalf("cluster status %q should be leader", output)
+		}
+	}
+	if ovnClusterStatusIsLeader("Cluster ID: x\nRole: follower\nLeader: 1234\n") {
+		t.Fatal("follower cluster status should not be leader")
+	}
+}
+
+func TestOVNClusterStatusLeaderProbePrefersLeaderEndpoint(t *testing.T) {
+	dir := t.TempDir()
+	appctl := filepath.Join(dir, "ovn-appctl")
+	script := `#!/bin/sh
+case "$2" in
+  target-b) printf 'Cluster ID: test\nRole: leader\n' ;;
+  *) printf 'Cluster ID: test\nRole: follower\n' ;;
+esac
+`
+	if err := os.WriteFile(appctl, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	probe := ovnClusterStatusLeaderProbe(appctl, "OVN_Northbound", map[string]string{
+		"tcp:a:6641": "target-a",
+		"tcp:b:6641": "target-b",
+	})
+	leader, err := probe(context.Background(), []string{"tcp:a:6641", "tcp:b:6641"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if leader != "tcp:b:6641" {
+		t.Fatalf("leader = %q, want tcp:b:6641", leader)
+	}
+}
+
+func TestOVNLeaderProbeFromEnvUsesClusterStatusTargets(t *testing.T) {
+	dir := t.TempDir()
+	appctl := filepath.Join(dir, "ovn-appctl")
+	script := `#!/bin/sh
+case "$2" in
+  target-a) printf 'Cluster ID: test\nLeader: self\n' ;;
+  *) printf 'Cluster ID: test\nRole: follower\n' ;;
+esac
+`
+	if err := os.WriteFile(appctl, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NETLOOM_OVN_APPCTL_BIN", appctl)
+	t.Setenv("NETLOOM_OVN_CLUSTER_STATUS_TARGETS", "tcp:a:6641=target-a,tcp:b:6641=target-b")
+	probe := ovnLeaderProbeFromEnv()
+	if probe == nil {
+		t.Fatal("expected cluster/status leader probe")
+	}
+	leader, err := probe(context.Background(), []string{"tcp:a:6641", "tcp:b:6641"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if leader != "tcp:a:6641" {
+		t.Fatalf("leader = %q, want tcp:a:6641", leader)
+	}
+	if mode := ovnLeaderProbeModeFromEnv(); mode != "cluster-status" {
+		t.Fatalf("leader probe mode = %q, want cluster-status", mode)
+	}
+}
+
 func TestLibOVSDBClusterConnectorPrefersProbedLeaderEndpoint(t *testing.T) {
 	attempts := make([]string, 0)
 	cluster := newLibOVSDBClusterConnector("test", []string{"tcp:a:6641", "tcp:b:6641"}, func(_ context.Context, _ string, endpoint string) (libovsdbclient.Client, func(), error) {

@@ -1315,9 +1315,25 @@ func newOVNNBClientForEndpoint(ctx context.Context, owner, endpoint string) (lib
 
 func ovnLeaderProbeFromEnv() ovnLeaderProbe {
 	command := strings.TrimSpace(os.Getenv("NETLOOM_OVN_LEADER_STATUS_CMD"))
-	if command == "" {
+	if command != "" {
+		return ovnLeaderCommandProbe(command)
+	}
+	targets := ovnClusterStatusTargetsFromEnv()
+	if len(targets) == 0 {
 		return nil
 	}
+	appctl := strings.TrimSpace(os.Getenv("NETLOOM_OVN_APPCTL_BIN"))
+	if appctl == "" {
+		appctl = "ovn-appctl"
+	}
+	db := strings.TrimSpace(os.Getenv("NETLOOM_OVN_CLUSTER_STATUS_DB"))
+	if db == "" {
+		db = ovnnb.DatabaseName
+	}
+	return ovnClusterStatusLeaderProbe(appctl, db, targets)
+}
+
+func ovnLeaderCommandProbe(command string) ovnLeaderProbe {
 	return func(ctx context.Context, endpoints []string) (string, error) {
 		output, err := exec.CommandContext(ctx, "sh", "-c", command).CombinedOutput()
 		if err != nil {
@@ -1331,12 +1347,54 @@ func ovnLeaderProbeFromEnv() ovnLeaderProbe {
 	}
 }
 
-func parseOVNLeaderEndpoint(output string, endpoints []string) string {
-	for _, endpoint := range endpoints {
-		if endpoint != "" && strings.Contains(output, endpoint) {
-			return endpoint
+func ovnClusterStatusLeaderProbe(appctl, db string, targets map[string]string) ovnLeaderProbe {
+	return func(ctx context.Context, endpoints []string) (string, error) {
+		var errs []string
+		for _, endpoint := range endpoints {
+			target := strings.TrimSpace(targets[endpoint])
+			if target == "" {
+				continue
+			}
+			output, err := exec.CommandContext(ctx, appctl, "-t", target, "cluster/status", db).CombinedOutput()
+			if err != nil {
+				errs = append(errs, fmt.Sprintf("%s: %v: %s", endpoint, err, strings.TrimSpace(string(output))))
+				continue
+			}
+			if ovnClusterStatusIsLeader(string(output)) {
+				return endpoint, nil
+			}
 		}
+		if len(errs) > 0 {
+			return "", fmt.Errorf("probe OVN cluster/status leader endpoint: %s", strings.Join(errs, "; "))
+		}
+		return "", fmt.Errorf("probe OVN cluster/status leader endpoint: no configured endpoint target reported leader")
 	}
+}
+
+func ovnClusterStatusTargetsFromEnv() map[string]string {
+	raw := strings.TrimSpace(os.Getenv("NETLOOM_OVN_CLUSTER_STATUS_TARGETS"))
+	if raw == "" {
+		return nil
+	}
+	out := make(map[string]string)
+	for _, item := range strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ';' || r == '\n' || r == '\t' || r == ' '
+	}) {
+		endpoint, target, ok := strings.Cut(strings.TrimSpace(item), "=")
+		if !ok {
+			continue
+		}
+		endpoint = strings.TrimSpace(endpoint)
+		target = strings.TrimSpace(target)
+		if endpoint == "" || target == "" {
+			continue
+		}
+		out[endpoint] = target
+	}
+	return out
+}
+
+func parseOVNLeaderEndpoint(output string, endpoints []string) string {
 	lines := strings.Split(output, "\n")
 	for _, line := range lines {
 		key, value, ok := strings.Cut(line, ":")
@@ -1348,7 +1406,40 @@ func parseOVNLeaderEndpoint(output string, endpoints []string) string {
 			return candidate
 		}
 	}
+	for _, endpoint := range endpoints {
+		if endpoint != "" && strings.Contains(output, endpoint) {
+			return endpoint
+		}
+	}
 	return ""
+}
+
+func ovnClusterStatusIsLeader(output string) bool {
+	for _, line := range strings.Split(output, "\n") {
+		key, value, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if strings.EqualFold(key, "Role") && strings.EqualFold(value, "leader") {
+			return true
+		}
+		if strings.EqualFold(key, "Leader") && strings.EqualFold(value, "self") {
+			return true
+		}
+	}
+	return false
+}
+
+func ovnLeaderProbeModeFromEnv() string {
+	if strings.TrimSpace(os.Getenv("NETLOOM_OVN_LEADER_STATUS_CMD")) != "" {
+		return "command"
+	}
+	if len(ovnClusterStatusTargetsFromEnv()) > 0 {
+		return "cluster-status"
+	}
+	return "disabled"
 }
 
 func indexString(values []string, value string) int {
