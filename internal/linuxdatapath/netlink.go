@@ -79,7 +79,7 @@ func applyLocalNetlink(ctx context.Context, state control.DesiredState, options 
 		}
 	}
 	if options.SyncOVSDB {
-		if err := executeProviderOVSDBSync(ctx, options, providerSpecs, options.CleanupStale); err != nil {
+		if err := executeProviderOVSDBSync(ctx, options, state, providerSpecs, options.CleanupStale); err != nil {
 			return result, err
 		}
 		if err := appendProviderOVSDBIssues(ctx, &result, state, options, providerSpecs); err != nil {
@@ -189,7 +189,7 @@ func applyNetNSNetlink(ctx context.Context, state control.DesiredState, options 
 		}
 	}
 	if options.SyncOVSDB {
-		if err := executeProviderOVSDBSync(ctx, options, providerSpecs, options.CleanupStale); err != nil {
+		if err := executeProviderOVSDBSync(ctx, options, state, providerSpecs, options.CleanupStale); err != nil {
 			return result, err
 		}
 		if err := appendProviderOVSDBIssues(ctx, &result, state, options, providerSpecs); err != nil {
@@ -552,11 +552,17 @@ func cleanupStaleRemoteRoutes(root *netlink.Handle, desired map[string]struct{},
 	return nil
 }
 
-func executeProviderOVSDBSync(ctx context.Context, options Options, specs []providerNetworkLinkSpec, cleanup bool) error {
+func executeProviderOVSDBSync(ctx context.Context, options Options, state control.DesiredState, specs []providerNetworkLinkSpec, cleanup bool) error {
 	if options.ProviderOVSDBSyncer != nil {
-		return options.ProviderOVSDBSyncer.SyncProviderOVSDB(ctx, desiredProviderOVSDBRows(specs), cleanup)
+		if err := options.ProviderOVSDBSyncer.SyncProviderOVSDB(ctx, desiredProviderOVSDBRows(specs), cleanup); err != nil {
+			return err
+		}
+		return executeProviderQueueFlows(ctx, options, state, specs, cleanup)
 	}
 	if err := executeProviderOVSDBMappings(ctx, options, specs); err != nil {
+		return err
+	}
+	if err := executeProviderQueueFlows(ctx, options, state, specs, cleanup); err != nil {
 		return err
 	}
 	if cleanup {
@@ -585,6 +591,25 @@ func executeProviderOVSDBCleanup(ctx context.Context, options Options, specs []p
 	}
 	if err := executor.Execute(ctx, planProviderOVSDBCleanup(specs)); err != nil {
 		return fmt.Errorf("cleanup provider OVSDB mapping: %w", err)
+	}
+	return nil
+}
+
+func executeProviderQueueFlows(ctx context.Context, options Options, state control.DesiredState, specs []providerNetworkLinkSpec, cleanup bool) error {
+	executor := options.Executor
+	if executor == nil {
+		executor = CommandExecutor{}
+	}
+	flows := desiredProviderQueueFlows(state, specs)
+	for _, op := range planProviderQueueFlows(state, specs) {
+		if err := executor.Execute(ctx, op); err != nil {
+			return fmt.Errorf("sync provider queue flow: %w", err)
+		}
+	}
+	if cleanup {
+		if err := executor.Execute(ctx, planProviderQueueFlowCleanup(specs, flows)); err != nil {
+			return fmt.Errorf("cleanup provider queue flow: %w", err)
+		}
 	}
 	return nil
 }

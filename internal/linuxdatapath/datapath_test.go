@@ -238,14 +238,22 @@ func TestApplyCommandUsesDirectProviderOVSDBSyncer(t *testing.T) {
 
 func TestExecuteProviderOVSDBSyncUsesDirectSyncer(t *testing.T) {
 	syncer := &recordingProviderOVSDBSyncer{}
+	var flowCleanupOps int
 	err := executeProviderOVSDBSync(context.Background(), Options{
 		SyncOVSDB:           true,
 		ProviderOVSDBSyncer: syncer,
 		Executor: commandExecutorFunc(func(_ context.Context, op Operation) error {
-			t.Fatalf("direct provider OVSDB sync should avoid command op: %+v", op)
+			if op.Command == "ovs-vsctl" {
+				t.Fatalf("direct provider OVSDB sync should avoid ovs-vsctl op: %+v", op)
+			}
+			if op.Command == "sh" && strings.Contains(strings.Join(op.Args, " "), "ovs-ofctl") {
+				flowCleanupOps++
+				return nil
+			}
+			t.Fatalf("unexpected direct provider OVSDB sync command op: %+v", op)
 			return nil
 		}),
-	}, []providerNetworkLinkSpec{{
+	}, control.DesiredState{}, []providerNetworkLinkSpec{{
 		ProviderNetwork: "physnet-a",
 		ParentDevice:    "eth1",
 		VLAN:            100,
@@ -256,6 +264,9 @@ func TestExecuteProviderOVSDBSyncUsesDirectSyncer(t *testing.T) {
 	}
 	if syncer.calls != 1 || !syncer.cleanup {
 		t.Fatalf("syncer calls=%d cleanup=%t, want one cleanup sync", syncer.calls, syncer.cleanup)
+	}
+	if flowCleanupOps != 1 {
+		t.Fatalf("flow cleanup ops = %d, want one", flowCleanupOps)
 	}
 }
 
@@ -524,6 +535,131 @@ func TestPlanProviderOVSDBCleanupDeduplicatesDesiredBridges(t *testing.T) {
 	script := strings.Join(op.Args, " ")
 	if strings.Count(script, bridge) != 1 {
 		t.Fatalf("cleanup script should keep bridge once, got %q", script)
+	}
+}
+
+func TestPlanProgramsProviderTenantQueueFlows(t *testing.T) {
+	state := control.DesiredState{
+		ProviderNetworks: []model.ProviderNetwork{{
+			Name: "physnet-a",
+			Nodes: []model.ProviderNetworkNode{{
+				Node:      "node-a",
+				Interface: "eth1",
+			}},
+			TenantQueues: []model.ProviderNetworkTenantQueuePolicy{{
+				Tenant:     "prod",
+				QueueID:    10,
+				MaxRateBPS: 500000000,
+			}},
+		}},
+		Subnets: []model.Subnet{{
+			Name:            "baremetal",
+			VPC:             "prod",
+			CIDR:            netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway:         netip.MustParseAddr("10.10.0.1"),
+			ProviderNetwork: "physnet-a",
+			VLAN:            100,
+		}},
+	}
+	ops, _, err := Plan(context.Background(), state, Options{
+		Node:        "node-a",
+		LocalDevice: "nl0",
+		SyncOVSDB:   true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bridge := providerNetworkBridgeName("physnet-a")
+	joined := stringifyOps(ops)
+	for _, expected := range []string{
+		"ovs-ofctl --bundle add-flow " + bridge,
+		"table=0,priority=210,ip,nw_src=10.10.0.0/24,actions=set_queue:10,NORMAL",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("provider tenant queue flow ops missing %q:\n%s", expected, joined)
+		}
+	}
+}
+
+func TestPlanProgramsProviderTenantQueueIPv6Flows(t *testing.T) {
+	state := control.DesiredState{
+		ProviderNetworks: []model.ProviderNetwork{{
+			Name: "physnet-a",
+			Nodes: []model.ProviderNetworkNode{{
+				Node:      "node-a",
+				Interface: "eth1",
+			}},
+			TenantQueues: []model.ProviderNetworkTenantQueuePolicy{{
+				Tenant:     "prod",
+				QueueID:    10,
+				MaxRateBPS: 500000000,
+			}},
+		}},
+		Subnets: []model.Subnet{{
+			Name:            "baremetal",
+			VPC:             "prod",
+			CIDR:            netip.MustParsePrefix("fd00:10::/64"),
+			Gateway:         netip.MustParseAddr("fd00:10::1"),
+			ProviderNetwork: "physnet-a",
+			VLAN:            100,
+		}},
+	}
+	ops, _, err := Plan(context.Background(), state, Options{
+		Node:        "node-a",
+		LocalDevice: "nl0",
+		SyncOVSDB:   true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := stringifyOps(ops)
+	if !strings.Contains(joined, "table=0,priority=210,ipv6,ipv6_src=fd00:10::/64,actions=set_queue:10,NORMAL") {
+		t.Fatalf("provider tenant queue IPv6 flow ops missing:\n%s", joined)
+	}
+}
+
+func TestPlanCleansStaleProviderTenantQueueFlows(t *testing.T) {
+	state := control.DesiredState{
+		ProviderNetworks: []model.ProviderNetwork{{
+			Name: "physnet-a",
+			Nodes: []model.ProviderNetworkNode{{
+				Node:      "node-a",
+				Interface: "eth1",
+			}},
+			TenantQueues: []model.ProviderNetworkTenantQueuePolicy{{
+				Tenant:     "prod",
+				QueueID:    10,
+				MaxRateBPS: 500000000,
+			}},
+		}},
+		Subnets: []model.Subnet{{
+			Name:            "baremetal",
+			VPC:             "prod",
+			CIDR:            netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway:         netip.MustParseAddr("10.10.0.1"),
+			ProviderNetwork: "physnet-a",
+			VLAN:            100,
+		}},
+	}
+	ops, _, err := Plan(context.Background(), state, Options{
+		Node:         "node-a",
+		LocalDevice:  "nl0",
+		SyncOVSDB:    true,
+		CleanupStale: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bridge := providerNetworkBridgeName("physnet-a")
+	joined := stringifyOps(ops)
+	for _, expected := range []string{
+		"dump-flows " + shellQuote(bridge) + " cookie=0x4e51000000000000/0xffff000000000000",
+		"ovs-ofctl --strict del-flows " + shellQuote(bridge) + " \"cookie=$cookie/-1\"",
+		" 0x4e51",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("provider tenant queue cleanup ops missing %q:\n%s", expected, joined)
+		}
 	}
 }
 

@@ -139,10 +139,12 @@ type ProviderOVSDBStatusReader interface {
 }
 
 const (
-	linuxMainRouteTable        = 254
-	linuxPolicyRuleProtocolID  = 186
-	linuxRemoteRouteProtocolID = 187
-	providerLinkPrefix         = "nlv"
+	linuxMainRouteTable         = 254
+	linuxPolicyRuleProtocolID   = 186
+	linuxRemoteRouteProtocolID  = 187
+	providerLinkPrefix          = "nlv"
+	providerQueueFlowCookie     = uint64(0x4e51000000000000)
+	providerQueueFlowCookieMask = uint64(0xffff000000000000)
 )
 
 var (
@@ -221,6 +223,9 @@ func Apply(ctx context.Context, state control.DesiredState, options Options) (Re
 		}
 		if options.SyncOVSDB && options.ProviderOVSDBSyncer != nil {
 			if err := options.ProviderOVSDBSyncer.SyncProviderOVSDB(ctx, desiredProviderOVSDBRows(providerSpecs), options.CleanupStale); err != nil {
+				return result, err
+			}
+			if err := executeProviderQueueFlows(ctx, options, state, providerSpecs, options.CleanupStale); err != nil {
 				return result, err
 			}
 		}
@@ -330,10 +335,12 @@ func Plan(ctx context.Context, state control.DesiredState, options Options) ([]O
 	ops = append(ops, planProviderNetworkLinks(providerSpecs)...)
 	if options.SyncOVSDB {
 		ops = append(ops, planProviderOVSDBMappings(providerSpecs)...)
+		ops = append(ops, planProviderQueueFlows(state, providerSpecs)...)
 	}
 	if options.CleanupStale {
 		if options.SyncOVSDB {
 			ops = append(ops, planProviderOVSDBCleanup(providerSpecs))
+			ops = append(ops, planProviderQueueFlowCleanup(providerSpecs, desiredProviderQueueFlows(state, providerSpecs)))
 		}
 		ops = append(ops, planProviderNetworkLinkCleanup(providerSpecs))
 	}
@@ -402,6 +409,14 @@ type providerNetworkLinkSpec struct {
 	Isolation       string
 	QoS             model.ProviderNetworkQoS
 	TenantQueues    []model.ProviderNetworkTenantQueuePolicy
+}
+
+type providerQueueFlow struct {
+	Bridge  string
+	Tenant  string
+	CIDR    netip.Prefix
+	QueueID int
+	Cookie  uint64
 }
 
 func desiredProviderNetworkLinkSpecs(state control.DesiredState, node string, mappings map[string]string, inventory []ProviderInterface) ([]providerNetworkLinkSpec, error) {
@@ -1078,6 +1093,129 @@ func planProviderOVSDBMappings(specs []providerNetworkLinkSpec) []Operation {
 	return ops
 }
 
+func planProviderQueueFlows(state control.DesiredState, specs []providerNetworkLinkSpec) []Operation {
+	flows := desiredProviderQueueFlows(state, specs)
+	ops := make([]Operation, 0, len(flows))
+	for _, flow := range flows {
+		ops = append(ops, ovsOFCTLOperation("--bundle", "add-flow", flow.Bridge, providerQueueFlowString(flow)))
+	}
+	return ops
+}
+
+func planProviderQueueFlowCleanup(specs []providerNetworkLinkSpec, flows []providerQueueFlow) Operation {
+	bridges := providerQueueFlowCleanupBridges(specs)
+	keep := make([]string, 0, len(flows))
+	for _, flow := range flows {
+		keep = append(keep, providerQueueFlowCookieHex(flow.Cookie))
+	}
+	sort.Strings(keep)
+	if len(bridges) == 0 {
+		return shellOperation("for br in $(ovs-vsctl --bare --columns=name find bridge external_ids:netloom_owner=netloom 2>/dev/null || true); do " + providerQueueFlowCleanupScript("$br", keep) + "; done")
+	}
+	parts := make([]string, 0, len(bridges))
+	for _, bridge := range bridges {
+		parts = append(parts, providerQueueFlowCleanupScript(shellQuote(bridge), keep))
+	}
+	return shellOperation(strings.Join(parts, "; "))
+}
+
+func desiredProviderQueueFlows(state control.DesiredState, specs []providerNetworkLinkSpec) []providerQueueFlow {
+	specByProviderVLAN := make(map[string]providerNetworkLinkSpec, len(specs))
+	for _, spec := range specs {
+		specByProviderVLAN[providerVLANKey(spec.ProviderNetwork, spec.VLAN)] = spec
+	}
+	var flows []providerQueueFlow
+	for _, subnet := range state.Subnets {
+		if subnet.ProviderNetwork == "" || subnet.VLAN == 0 || !subnet.CIDR.IsValid() {
+			continue
+		}
+		spec, ok := specByProviderVLAN[providerVLANKey(subnet.ProviderNetwork, subnet.VLAN)]
+		if !ok {
+			continue
+		}
+		for _, queue := range spec.TenantQueues {
+			if queue.Tenant != subnet.VPC {
+				continue
+			}
+			flow := providerQueueFlow{
+				Bridge:  providerNetworkBridgeName(subnet.ProviderNetwork),
+				Tenant:  queue.Tenant,
+				CIDR:    subnet.CIDR,
+				QueueID: queue.QueueID,
+			}
+			flow.Cookie = providerQueueFlowCookieFor(flow)
+			flows = append(flows, flow)
+		}
+	}
+	sort.Slice(flows, func(i, j int) bool {
+		if flows[i].Bridge != flows[j].Bridge {
+			return flows[i].Bridge < flows[j].Bridge
+		}
+		if flows[i].Tenant != flows[j].Tenant {
+			return flows[i].Tenant < flows[j].Tenant
+		}
+		if flows[i].CIDR.String() != flows[j].CIDR.String() {
+			return flows[i].CIDR.String() < flows[j].CIDR.String()
+		}
+		return flows[i].QueueID < flows[j].QueueID
+	})
+	return flows
+}
+
+func providerVLANKey(provider string, vlan uint16) string {
+	return provider + "|" + strconv.Itoa(int(vlan))
+}
+
+func providerQueueFlowString(flow providerQueueFlow) string {
+	return strings.Join([]string{
+		"cookie=" + providerQueueFlowCookieHex(flow.Cookie),
+		"table=0",
+		"priority=210",
+		providerQueueFlowIPMatch(flow.CIDR),
+		"actions=set_queue:" + strconv.Itoa(flow.QueueID) + ",NORMAL",
+	}, ",")
+}
+
+func providerQueueFlowIPMatch(cidr netip.Prefix) string {
+	if cidr.Addr().Is4() {
+		return "ip,nw_src=" + cidr.String()
+	}
+	return "ipv6,ipv6_src=" + cidr.String()
+}
+
+func providerQueueFlowCookieFor(flow providerQueueFlow) uint64 {
+	hash := fnv.New64a()
+	_, _ = hash.Write([]byte(flow.Bridge))
+	_, _ = hash.Write([]byte{0})
+	_, _ = hash.Write([]byte(flow.Tenant))
+	_, _ = hash.Write([]byte{0})
+	_, _ = hash.Write([]byte(flow.CIDR.String()))
+	_, _ = hash.Write([]byte{0})
+	_, _ = hash.Write([]byte(strconv.Itoa(flow.QueueID)))
+	return providerQueueFlowCookie | (hash.Sum64() & ^providerQueueFlowCookieMask)
+}
+
+func providerQueueFlowCookieHex(cookie uint64) string {
+	return fmt.Sprintf("0x%016x", cookie)
+}
+
+func providerQueueFlowCleanupBridges(specs []providerNetworkLinkSpec) []string {
+	seen := make(map[string]struct{}, len(specs))
+	for _, spec := range specs {
+		seen[providerNetworkBridgeName(spec.ProviderNetwork)] = struct{}{}
+	}
+	bridges := make([]string, 0, len(seen))
+	for bridge := range seen {
+		bridges = append(bridges, bridge)
+	}
+	sort.Strings(bridges)
+	return bridges
+}
+
+func providerQueueFlowCleanupScript(bridge string, keep []string) string {
+	return "for cookie in $(ovs-ofctl --names --no-stats dump-flows " + bridge + " cookie=" + providerQueueFlowCookieHex(providerQueueFlowCookie) + "/" + providerQueueFlowCookieHex(providerQueueFlowCookieMask) + " 2>/dev/null | sed -n 's/.*cookie=\\(0x[0-9a-fA-F]*\\).*/\\1/p'); do case '" + keepSet(keep) + "' in *\" $cookie \"*) ;; *) ovs-ofctl --strict del-flows " + bridge + " \"cookie=$cookie/-1\" ;; esac; done"
+}
+
 func externalIDArgs(values map[string]string) []string {
 	keys := make([]string, 0, len(values))
 	for key := range values {
@@ -1097,6 +1235,10 @@ func planProviderOVSDBPort(bridge, link string) Operation {
 
 func ovsVSCTLOperation(args ...string) Operation {
 	return Operation{Command: "ovs-vsctl", Args: args}
+}
+
+func ovsOFCTLOperation(args ...string) Operation {
+	return Operation{Command: "ovs-ofctl", Args: args}
 }
 
 func planProviderOVSDBCleanup(specs []providerNetworkLinkSpec) Operation {
