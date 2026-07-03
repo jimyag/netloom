@@ -146,6 +146,45 @@ type DesiredState struct {
 	SecurityGroups   []model.SecurityGroup   `json:"security_groups"`
 	CIDRGroups       []model.CIDRGroup       `json:"cidr_groups"`
 	DNSRecords       []model.DNSRecord       `json:"dns_records"`
+	PolicyRollouts   []PolicyRollout         `json:"policy_rollouts"`
+}
+
+type PolicyRollout struct {
+	Name                      string   `json:"name"`
+	Node                      string   `json:"node,omitempty"`
+	Endpoints                 []string `json:"endpoints,omitempty"`
+	BatchSize                 int      `json:"batch_size"`
+	PressureAware             bool     `json:"pressure_aware"`
+	PressureThresholdPercent  uint32   `json:"pressure_threshold_percent"`
+	PressureAwareMinBatchSize int      `json:"pressure_aware_min_batch_size"`
+	Disabled                  bool     `json:"disabled,omitempty"`
+}
+
+func (r PolicyRollout) Validate() error {
+	if r.Name == "" {
+		return fmt.Errorf("policy rollout name is required")
+	}
+	if r.BatchSize < 0 {
+		return fmt.Errorf("policy rollout %q batch_size must not be negative", r.Name)
+	}
+	if r.PressureThresholdPercent > 100 {
+		return fmt.Errorf("policy rollout %q pressure_threshold_percent must be <= 100", r.Name)
+	}
+	if r.PressureAwareMinBatchSize < 0 {
+		return fmt.Errorf("policy rollout %q pressure_aware_min_batch_size must not be negative", r.Name)
+	}
+	seen := make(map[string]struct{}, len(r.Endpoints))
+	for _, endpoint := range r.Endpoints {
+		endpoint = strings.TrimSpace(endpoint)
+		if endpoint == "" {
+			return fmt.Errorf("policy rollout %q endpoint is empty", r.Name)
+		}
+		if _, ok := seen[endpoint]; ok {
+			return fmt.Errorf("policy rollout %q endpoint %q is duplicated", r.Name, endpoint)
+		}
+		seen[endpoint] = struct{}{}
+	}
+	return nil
 }
 
 type Controller struct {
@@ -177,6 +216,9 @@ func (c *Controller) Reconcile(ctx context.Context, state DesiredState) error {
 		return err
 	}
 	if err := validateInboundVIPConflicts(state.NATRules, state.LoadBalancers); err != nil {
+		return err
+	}
+	if err := validatePolicyRollouts(state.PolicyRollouts); err != nil {
 		return err
 	}
 	if err := validateRouteTables(state.RouteTables); err != nil {
@@ -383,6 +425,20 @@ func inboundPortKeysPrefix(keys map[string]string, prefix string) string {
 		}
 	}
 	return ""
+}
+
+func validatePolicyRollouts(rollouts []PolicyRollout) error {
+	seen := make(map[string]struct{}, len(rollouts))
+	for _, rollout := range rollouts {
+		if err := rollout.Validate(); err != nil {
+			return err
+		}
+		if _, ok := seen[rollout.Name]; ok {
+			return fmt.Errorf("duplicate policy rollout name %q", rollout.Name)
+		}
+		seen[rollout.Name] = struct{}{}
+	}
+	return nil
 }
 
 func validateObjectGraph(state DesiredState) error {

@@ -29,6 +29,12 @@ type ReconcileResult struct {
 	PolicyPressureMitigated          int
 	PolicyPressureQuarantined        int
 	PolicyPressureQuarantineEndpoint string
+	PolicyRollouts                   int
+	PolicyRolloutPlanned             int
+	PolicyRolloutApplied             int
+	PolicyRolloutSkipped             int
+	PolicyRolloutFailed              int
+	PolicyRolloutStatus              []NamedPolicyEndpointRollout
 	PolicyMapDriftEndpoints          int
 	PolicyMapDriftMissing            int
 	PolicyMapDriftExtra              int
@@ -131,6 +137,7 @@ type ReconcileOptions struct {
 	PolicyGCMaxIdle                   time.Duration
 	PolicyPressureMitigationThreshold uint32
 	PolicyPressureQuarantine          bool
+	DeferPolicyApply                  bool
 	LinuxDatapath                     *linuxdatapath.Options
 }
 
@@ -174,6 +181,11 @@ type PolicyEndpointRolloutItem struct {
 	Plan       PolicyEndpointPlan             `json:"plan"`
 	Status     dataplane.PolicyEndpointStatus `json:"endpoint_status,omitempty"`
 	Error      string                         `json:"error,omitempty"`
+}
+
+type NamedPolicyEndpointRollout struct {
+	Name    string                `json:"name"`
+	Rollout PolicyEndpointRollout `json:"rollout"`
 }
 
 type tcxTarget struct {
@@ -369,6 +381,107 @@ func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, opt
 		rollout.Items[i] = item
 	}
 	return rollout, nil
+}
+
+func ApplyPolicyRollouts(ctx context.Context, state control.DesiredState, options ReconcileOptions) ([]NamedPolicyEndpointRollout, error) {
+	rollouts := activePolicyRolloutsForNode(state.PolicyRollouts, options.Node)
+	if len(rollouts) == 0 {
+		return nil, nil
+	}
+	if options.Store == nil {
+		return nil, fmt.Errorf("policy store is required")
+	}
+	out := make([]NamedPolicyEndpointRollout, 0, len(rollouts))
+	for _, rollout := range rollouts {
+		endpointIDs, err := rolloutEndpointIDs(state, rollout)
+		if err != nil {
+			return nil, fmt.Errorf("policy rollout %q: %w", rollout.Name, err)
+		}
+		result, err := RolloutPolicyEndpoints(ctx, state, options, PolicyEndpointRolloutOptions{
+			EndpointIDs:               endpointIDs,
+			BatchSize:                 rollout.BatchSize,
+			PressureAware:             rollout.PressureAware,
+			PressureThresholdPercent:  rollout.PressureThresholdPercent,
+			PressureAwareMinBatchSize: rollout.PressureAwareMinBatchSize,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("policy rollout %q: %w", rollout.Name, err)
+		}
+		out = append(out, NamedPolicyEndpointRollout{Name: rollout.Name, Rollout: result})
+		if result.Failed != 0 {
+			break
+		}
+	}
+	return out, nil
+}
+
+func activePolicyRolloutsForNode(rollouts []control.PolicyRollout, node string) []control.PolicyRollout {
+	out := make([]control.PolicyRollout, 0, len(rollouts))
+	for _, rollout := range rollouts {
+		if rollout.Disabled {
+			continue
+		}
+		if rollout.Node != "" && rollout.Node != node {
+			continue
+		}
+		out = append(out, rollout)
+	}
+	return out
+}
+
+func HasActivePolicyRollouts(state control.DesiredState, node string) bool {
+	return len(activePolicyRolloutsForNode(state.PolicyRollouts, node)) != 0
+}
+
+func rolloutEndpointIDs(state control.DesiredState, rollout control.PolicyRollout) ([]string, error) {
+	if len(rollout.Endpoints) == 0 {
+		return nil, nil
+	}
+	out := make([]string, 0, len(rollout.Endpoints))
+	for _, ref := range rollout.Endpoints {
+		endpointID, err := resolveDesiredEndpointRef(state.Endpoints, ref)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, endpointID)
+	}
+	return out, nil
+}
+
+func resolveDesiredEndpointRef(endpoints []model.Endpoint, ref string) (string, error) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return "", fmt.Errorf("endpoint reference is empty")
+	}
+	if strings.Contains(ref, "\x00") {
+		if _, ok := desiredEndpointByPolicyID(endpoints, ref); ok {
+			return ref, nil
+		}
+		return "", fmt.Errorf("endpoint %q not found in desired state", ref)
+	}
+	vpc, id, ok := strings.Cut(ref, "/")
+	if !ok || vpc == "" || id == "" {
+		return "", fmt.Errorf("endpoint reference %q must use vpc/id", ref)
+	}
+	endpointID := model.EndpointKey(vpc, id)
+	if _, ok := desiredEndpointByPolicyID(endpoints, endpointID); !ok {
+		return "", fmt.Errorf("endpoint %q not found in desired state", ref)
+	}
+	return endpointID, nil
+}
+
+func ApplyPolicyRolloutResults(result *ReconcileResult, rollouts []NamedPolicyEndpointRollout) {
+	if result == nil {
+		return
+	}
+	result.PolicyRollouts = len(rollouts)
+	result.PolicyRolloutStatus = append([]NamedPolicyEndpointRollout(nil), rollouts...)
+	for _, rollout := range rollouts {
+		result.PolicyRolloutPlanned += rollout.Rollout.Planned
+		result.PolicyRolloutApplied += rollout.Rollout.Applied
+		result.PolicyRolloutSkipped += rollout.Rollout.Skipped
+		result.PolicyRolloutFailed += rollout.Rollout.Failed
+	}
 }
 
 type rolloutPressureDecision struct {
@@ -776,23 +889,25 @@ func prepareReconcile(ctx context.Context, state control.DesiredState, options R
 		result.Endpoints++
 		result.Programs++
 		result.Entries += len(program.MapEntries)
-		if err := backend.ApplyEndpointProgram(ctx, program); err != nil {
+		if !options.DeferPolicyApply {
+			if err := backend.ApplyEndpointProgram(ctx, program); err != nil {
+				if eventStore != nil {
+					recordPolicyEventsDelta(&result, eventStore.Events(), beforeEvents, program.EndpointID)
+				}
+				return result, nil, nil, fmt.Errorf("apply policy program for endpoint %s in vpc %s: %w", endpoint.ID, endpoint.VPC, err)
+			}
 			if eventStore != nil {
 				recordPolicyEventsDelta(&result, eventStore.Events(), beforeEvents, program.EndpointID)
-			}
-			return result, nil, nil, fmt.Errorf("apply policy program for endpoint %s in vpc %s: %w", endpoint.ID, endpoint.VPC, err)
-		}
-		if eventStore != nil {
-			recordPolicyEventsDelta(&result, eventStore.Events(), beforeEvents, program.EndpointID)
-		} else if statsStore, ok := options.Store.(PolicyStatsStore); ok {
-			stats := statsStore.LastStats(program.EndpointID)
-			result.PolicyAdded += stats.Added
-			result.PolicyUpdated += stats.Updated
-			result.PolicyDeleted += stats.Deleted
-			result.PolicyUnchanged += stats.Unchanged
-			result.PolicyEvents++
-			if stats.Revision > result.PolicyRevisionMax {
-				result.PolicyRevisionMax = stats.Revision
+			} else if statsStore, ok := options.Store.(PolicyStatsStore); ok {
+				stats := statsStore.LastStats(program.EndpointID)
+				result.PolicyAdded += stats.Added
+				result.PolicyUpdated += stats.Updated
+				result.PolicyDeleted += stats.Deleted
+				result.PolicyUnchanged += stats.Unchanged
+				result.PolicyEvents++
+				if stats.Revision > result.PolicyRevisionMax {
+					result.PolicyRevisionMax = stats.Revision
+				}
 			}
 		}
 		localPrograms = append(localPrograms, program)
@@ -1143,6 +1258,21 @@ func validateAgentState(state control.DesiredState) error {
 			return fmt.Errorf("duplicate cidr group %q in vpc %s", group.Name, group.VPC)
 		}
 		cidrGroups[key] = struct{}{}
+	}
+	seenRollouts := make(map[string]struct{}, len(state.PolicyRollouts))
+	for _, rollout := range state.PolicyRollouts {
+		if err := rollout.Validate(); err != nil {
+			return err
+		}
+		if _, ok := seenRollouts[rollout.Name]; ok {
+			return fmt.Errorf("duplicate policy rollout name %q", rollout.Name)
+		}
+		seenRollouts[rollout.Name] = struct{}{}
+		for _, ref := range rollout.Endpoints {
+			if _, err := resolveDesiredEndpointRef(state.Endpoints, ref); err != nil {
+				return fmt.Errorf("policy rollout %q: %w", rollout.Name, err)
+			}
+		}
 	}
 	return nil
 }

@@ -1324,6 +1324,77 @@ func TestRolloutPolicyEndpointsDryRunPlansWithoutApplying(t *testing.T) {
 	}
 }
 
+func TestReconcileDefersPolicyApplyForDesiredStateRollout(t *testing.T) {
+	state := rolloutPolicyState()
+	state.PolicyRollouts = []control.PolicyRollout{{
+		Name:      "web-canary",
+		Node:      "node-a",
+		Endpoints: []string{"prod/pod-a", "prod/pod-b"},
+		BatchSize: 1,
+	}}
+	store := dataplane.NewInMemoryPolicyStore()
+
+	result, err := ReconcileNodeWithOptions(context.Background(), state, ReconcileOptions{
+		Node:             "node-a",
+		Store:            store,
+		DeferPolicyApply: HasActivePolicyRollouts(state, "node-a"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Programs != 3 || result.PolicyEvents != 0 {
+		t.Fatalf("deferred reconcile result = %+v, want programs compiled without policy events", result)
+	}
+	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 0 {
+		t.Fatalf("deferred pod-a entries = %+v, want no live mutation", entries)
+	}
+
+	rollouts, err := ApplyPolicyRollouts(context.Background(), state, ReconcileOptions{
+		Node:  "node-a",
+		Store: store,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ApplyPolicyRolloutResults(&result, rollouts)
+	if result.PolicyRollouts != 1 || result.PolicyRolloutPlanned != 2 || result.PolicyRolloutApplied != 2 || result.PolicyRolloutFailed != 0 {
+		t.Fatalf("rollout summary = %+v, want two applied endpoints", result)
+	}
+	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 1 {
+		t.Fatalf("pod-a entries = %+v, want applied policy", entries)
+	}
+	if entries := store.Entries(model.EndpointKey("prod", "pod-b")); len(entries) != 1 {
+		t.Fatalf("pod-b entries = %+v, want applied policy", entries)
+	}
+	if entries := store.Entries(model.EndpointKey("prod", "pod-c")); len(entries) != 0 {
+		t.Fatalf("pod-c entries = %+v, want rollout endpoint filter", entries)
+	}
+}
+
+func TestApplyPolicyRolloutsSkipsDisabledAndOtherNode(t *testing.T) {
+	state := rolloutPolicyState()
+	state.PolicyRollouts = []control.PolicyRollout{
+		{Name: "disabled", Node: "node-a", Endpoints: []string{"prod/pod-a"}, BatchSize: 1, Disabled: true},
+		{Name: "other-node", Node: "node-b", Endpoints: []string{"prod/pod-b"}, BatchSize: 1},
+		{Name: "active", Node: "node-a", Endpoints: []string{"prod/pod-c"}, BatchSize: 1},
+	}
+	store := dataplane.NewInMemoryPolicyStore()
+
+	rollouts, err := ApplyPolicyRollouts(context.Background(), state, ReconcileOptions{
+		Node:  "node-a",
+		Store: store,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rollouts) != 1 || rollouts[0].Name != "active" || rollouts[0].Rollout.Applied != 1 {
+		t.Fatalf("rollouts = %+v, want only active node rollout", rollouts)
+	}
+	if entries := store.Entries(model.EndpointKey("prod", "pod-c")); len(entries) != 1 {
+		t.Fatalf("pod-c entries = %+v, want applied policy", entries)
+	}
+}
+
 func TestRolloutPolicyEndpointsPressureAwareShrinksBatchSize(t *testing.T) {
 	state := rolloutPolicyState()
 	store := &rolloutPressurePolicyStore{

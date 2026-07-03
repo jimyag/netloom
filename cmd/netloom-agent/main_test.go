@@ -517,6 +517,93 @@ func writeAgentState(t *testing.T, state control.DesiredState) string {
 	return path
 }
 
+func TestReconcileStateFileOnceAppliesDesiredPolicyRollout(t *testing.T) {
+	statePath := writeAgentState(t, control.DesiredState{
+		Endpoints: []model.Endpoint{
+			{
+				ID:             "pod-a",
+				VPC:            "prod",
+				Subnet:         "apps",
+				IP:             netip.MustParseAddr("10.10.0.10"),
+				Node:           "node-a",
+				SecurityGroups: []string{"web"},
+			},
+			{
+				ID:             "pod-b",
+				VPC:            "prod",
+				Subnet:         "apps",
+				IP:             netip.MustParseAddr("10.10.0.11"),
+				Node:           "node-a",
+				SecurityGroups: []string{"web"},
+			},
+		},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "allow-http",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("172.30.0.0/24"),
+				Ports:      []model.PortRange{{From: 80, To: 80}},
+				Action:     model.ActionAllow,
+			}},
+		}},
+		PolicyRollouts: []control.PolicyRollout{{
+			Name:      "web-canary",
+			Node:      "node-a",
+			Endpoints: []string{"prod/pod-a"},
+			BatchSize: 1,
+		}},
+	})
+	store := dataplane.NewInMemoryPolicyStore()
+	metrics := newAgentMetrics(store)
+
+	oldStdout := os.Stdout
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = writer
+	defer func() {
+		os.Stdout = oldStdout
+	}()
+
+	err = reconcileStateFileOnce(context.Background(), statePath, "node-a", "memory", store, time.Second, metrics)
+	if closeErr := writer.Close(); closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	var buf bytes.Buffer
+	if _, copyErr := io.Copy(&buf, reader); copyErr != nil {
+		t.Fatal(copyErr)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := buf.String()
+	for _, expected := range []string{
+		"policy_rollouts=1",
+		"policy_rollout_planned=1",
+		"policy_rollout_applied=1",
+		"policy_rollout_failed=0",
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("output missing %q:\n%s", expected, output)
+		}
+	}
+	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 1 {
+		t.Fatalf("pod-a entries = %+v, want rollout applied policy", entries)
+	}
+	if entries := store.Entries(model.EndpointKey("prod", "pod-b")); len(entries) != 0 {
+		t.Fatalf("pod-b entries = %+v, want deferred non-rollout policy", entries)
+	}
+	snapshot, _, ready := metrics.snapshotValue()
+	if !ready || snapshot.Result.PolicyRolloutApplied != 1 {
+		t.Fatalf("metrics snapshot = %+v ready=%t, want rollout applied", snapshot.Result, ready)
+	}
+}
+
 func writeRouteExplainState(t *testing.T) string {
 	t.Helper()
 	state := control.DesiredState{
@@ -583,6 +670,11 @@ func TestPrintReconcileResultIncludesPolicyMapUsageSummary(t *testing.T) {
 		PolicyPressureMitigated:          2,
 		PolicyPressureQuarantined:        1,
 		PolicyPressureQuarantineEndpoint: "prod\x00pod-a",
+		PolicyRollouts:                   1,
+		PolicyRolloutPlanned:             3,
+		PolicyRolloutApplied:             2,
+		PolicyRolloutSkipped:             1,
+		PolicyRolloutFailed:              0,
 		PolicyMapDriftEndpoints:          1,
 		PolicyMapDriftMissing:            2,
 		PolicyMapDriftExtra:              3,
@@ -640,6 +732,11 @@ func TestPrintReconcileResultIncludesPolicyMapUsageSummary(t *testing.T) {
 		"policy_pressure_mitigated=2",
 		"policy_pressure_quarantined=1",
 		`policy_pressure_quarantine_endpoint="prod\x00pod-a"`,
+		"policy_rollouts=1",
+		"policy_rollout_planned=3",
+		"policy_rollout_applied=2",
+		"policy_rollout_skipped=1",
+		"policy_rollout_failed=0",
 		"policy_map_drift_endpoints=1",
 		"policy_map_drift_missing=2",
 		"policy_map_drift_extra=3",
@@ -1597,6 +1694,11 @@ func TestAgentMetricsExportsLatestPolicyAndTCXCounters(t *testing.T) {
 		PolicyPressureMitigated:          2,
 		PolicyPressureQuarantined:        1,
 		PolicyPressureQuarantineEndpoint: "prod\x00pod-a",
+		PolicyRollouts:                   1,
+		PolicyRolloutPlanned:             3,
+		PolicyRolloutApplied:             2,
+		PolicyRolloutSkipped:             1,
+		PolicyRolloutFailed:              0,
 		PolicyMapDriftEndpoints:          1,
 		PolicyMapDriftMissing:            2,
 		PolicyMapDriftExtra:              3,
@@ -1636,6 +1738,15 @@ func TestAgentMetricsExportsLatestPolicyAndTCXCounters(t *testing.T) {
 		`netloom_agent_policy_pressure_quarantined_endpoints{node="node-a",store="ebpf"} 1`,
 		`netloom_agent_policy_pressure_quarantined_endpoints_total{node="node-a",store="ebpf"} 1`,
 		`netloom_agent_policy_pressure_quarantine_endpoint{endpoint="prod\x00pod-a",node="node-a",store="ebpf"} 1`,
+		`netloom_agent_policy_rollouts{node="node-a",store="ebpf"} 1`,
+		`netloom_agent_policy_rollout_planned_endpoints{node="node-a",store="ebpf"} 3`,
+		`netloom_agent_policy_rollout_applied_endpoints{node="node-a",store="ebpf"} 2`,
+		`netloom_agent_policy_rollout_skipped_endpoints{node="node-a",store="ebpf"} 1`,
+		`netloom_agent_policy_rollout_failed_endpoints{node="node-a",store="ebpf"} 0`,
+		`netloom_agent_policy_rollout_planned_endpoints_total{node="node-a",store="ebpf"} 3`,
+		`netloom_agent_policy_rollout_applied_endpoints_total{node="node-a",store="ebpf"} 2`,
+		`netloom_agent_policy_rollout_skipped_endpoints_total{node="node-a",store="ebpf"} 1`,
+		`netloom_agent_policy_rollout_failed_endpoints_total{node="node-a",store="ebpf"} 0`,
 		`netloom_agent_policy_map_drift_endpoints{node="node-a",store="ebpf"} 1`,
 		`netloom_agent_policy_map_drift_missing_entries{node="node-a",store="ebpf"} 2`,
 		`netloom_agent_policy_map_drift_extra_entries{node="node-a",store="ebpf"} 3`,

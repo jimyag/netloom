@@ -740,6 +740,28 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 			wantErr: "duplicate cidr group name",
 		},
 		{
+			name: "duplicate policy rollout",
+			mutate: func(state *DesiredState) {
+				state.PolicyRollouts = []PolicyRollout{
+					{Name: "web-canary", Endpoints: []string{"prod/pod-a"}, BatchSize: 1},
+					{Name: "web-canary", Endpoints: []string{"prod/pod-a"}, BatchSize: 1},
+				}
+			},
+			wantErr: "duplicate policy rollout name",
+		},
+		{
+			name: "invalid policy rollout pressure threshold",
+			mutate: func(state *DesiredState) {
+				state.PolicyRollouts = []PolicyRollout{{
+					Name:                     "web-canary",
+					Endpoints:                []string{"prod/pod-a"},
+					BatchSize:                1,
+					PressureThresholdPercent: 101,
+				}}
+			},
+			wantErr: "pressure_threshold_percent must be <= 100",
+		},
+		{
 			name: "remote group unknown",
 			mutate: func(state *DesiredState) {
 				state.SecurityGroups[0].Rules[0].RemoteCIDR = netip.Prefix{}
