@@ -171,6 +171,20 @@ func TestAuditManagedObjectsReportsColumnDriftFromLibOVSDBReader(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var routers []ovnnb.LogicalRouter
+	if err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool {
+		return row.ExternalIDs["netloom_vpc"] == "prod"
+	}).List(ctx, &routers); err != nil {
+		t.Fatal(err)
+	}
+	if len(routers) != 1 {
+		t.Fatalf("logical routers = %d, want one", len(routers))
+	}
+	routers[0].Name = "renamed-prod-router"
+	updateRouter, err := client.Where(&routers[0]).Update(&routers[0], &routers[0].Name)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var nats []ovnnb.NAT
 	if err := client.WhereCache(func(row *ovnnb.NAT) bool {
 		return row.ExternalIDs["netloom_vpc"] == "prod" && row.ExternalIDs["netloom_nat"] == "egress"
@@ -201,7 +215,8 @@ func TestAuditManagedObjectsReportsColumnDriftFromLibOVSDBReader(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ops := append(updateSwitch, updateNAT...)
+	ops := append(updateSwitch, updateRouter...)
+	ops = append(ops, updateNAT...)
 	ops = append(ops, updateRoute...)
 	results, err := client.Transact(ctx, ops...)
 	if err != nil {
@@ -215,10 +230,10 @@ func TestAuditManagedObjectsReportsColumnDriftFromLibOVSDBReader(t *testing.T) {
 	requireEventually(t, func() bool {
 		var err error
 		stats, err = AuditManagedObjectsFromReaderWithDesired(ctx, reader, desired)
-		return err == nil && stats.DriftedManagedRows == 3 && stats.DriftedManagedFields == 3
+		return err == nil && stats.DriftedManagedRows == 4 && stats.DriftedManagedFields == 4
 	})
-	if stats.DriftedManagedRows != 3 || stats.DriftedManagedFields != 3 {
-		t.Fatalf("audit stats = %+v, want three column drifted managed rows", stats)
+	if stats.DriftedManagedRows != 4 || stats.DriftedManagedFields != 4 {
+		t.Fatalf("audit stats = %+v, want four column drifted managed rows", stats)
 	}
 }
 

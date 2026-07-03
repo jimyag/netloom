@@ -261,19 +261,27 @@ func expectedManagedAuditRows(desired topology.State) map[string]map[string]stri
 
 func expectedManagedAuditColumns(desired topology.State) map[string]map[string]string {
 	out := make(map[string]map[string]string)
+	for name := range desired.VPCs {
+		addAuditExpectedColumns(out, "Logical_Router", map[string]string{
+			"name": logicalRouter(name),
+		}, "netloom_vpc", name)
+	}
 	for _, subnet := range desired.Subnets {
 		addAuditExpectedColumns(out, "Logical_Switch", logicalSwitchColumnFields(subnet), "netloom_vpc", subnet.VPC, "netloom_subnet", subnet.Name)
 		addAuditExpectedColumns(out, "Logical_Router_Port", map[string]string{
+			"name":     routerPortName(logicalRouter(subnet.VPC), subnet.Name),
 			"mac":      deterministicMAC(subnet),
 			"networks": strings.Join([]string{subnet.Gateway.String() + "/" + fmt.Sprint(subnet.CIDR.Bits())}, ","),
 		}, "netloom_subnet", subnet.Name)
 		addAuditExpectedColumns(out, "Logical_Switch_Port", map[string]string{
+			"name":      switchRouterPortName(logicalSwitch(subnet.VPC, subnet.Name), subnet.Name),
 			"type":      "router",
 			"addresses": deterministicMAC(subnet),
 			"options":   mapField(map[string]string{"router-port": routerPortName(logicalRouter(subnet.VPC), subnet.Name)}),
 		}, "netloom_subnet", subnet.Name, "netloom_role", "router")
 		if subnet.ProviderNetwork != "" {
 			fields := map[string]string{
+				"name":      localnetPortName(logicalSwitch(subnet.VPC, subnet.Name), subnet.Name),
 				"type":      "localnet",
 				"addresses": "unknown",
 				"options":   mapField(map[string]string{"network_name": subnet.ProviderNetwork}),
@@ -285,7 +293,10 @@ func expectedManagedAuditColumns(desired topology.State) map[string]map[string]s
 		}
 	}
 	for _, endpoint := range desired.Endpoints {
-		fields := map[string]string{"addresses": endpointAddress(endpoint)}
+		fields := map[string]string{
+			"name":      logicalPort(endpoint.VPC, endpoint.ID),
+			"addresses": endpointAddress(endpoint),
+		}
 		if endpoint.NormalizedMAC() != "" {
 			fields["port_security"] = endpointAddress(endpoint)
 		}
@@ -443,7 +454,10 @@ func countManagedFieldDrift(live, expected map[string]string) int {
 }
 
 func logicalSwitchColumnFields(subnet model.Subnet) map[string]string {
-	fields := map[string]string{"other_config": mapField(logicalSwitchOtherConfig(subnet))}
+	fields := map[string]string{
+		"name":         logicalSwitch(subnet.VPC, subnet.Name),
+		"other_config": mapField(logicalSwitchOtherConfig(subnet)),
+	}
 	return fields
 }
 

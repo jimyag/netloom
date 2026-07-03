@@ -212,6 +212,91 @@ func TestAuditManagedObjectsFromReaderReportsStaticRouteColumnDrift(t *testing.T
 	}
 }
 
+func TestAuditManagedObjectsFromReaderReportsCoreNameColumnDrift(t *testing.T) {
+	subnet := model.Subnet{
+		Name:    "apps",
+		VPC:     "prod",
+		CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+		Gateway: netip.MustParseAddr("10.10.0.1"),
+	}
+	endpoint := model.Endpoint{
+		ID:     "pod-a",
+		VPC:    "prod",
+		Subnet: "apps",
+		IP:     netip.MustParseAddr("10.10.0.10"),
+		Node:   "node-a",
+	}
+	reader := fakeManagedOVNReader{rows: map[string][]ManagedOVNRow{
+		"Logical_Router": {
+			{Table: "Logical_Router", UUID: "lr-prod", ExternalIDs: map[string]string{
+				"netloom_owner": "netloom",
+				"netloom_vpc":   "prod",
+			}, Fields: map[string]string{"name": "renamed-router"}},
+		},
+		"Logical_Switch": {
+			{Table: "Logical_Switch", UUID: "ls-apps", ExternalIDs: map[string]string{
+				"netloom_owner":  "netloom",
+				"netloom_vpc":    "prod",
+				"netloom_subnet": "apps",
+			}, Fields: map[string]string{
+				"name":         "renamed-switch",
+				"other_config": mapField(logicalSwitchOtherConfig(subnet)),
+			}},
+		},
+		"Logical_Router_Port": {
+			{Table: "Logical_Router_Port", UUID: "lrp-apps", ExternalIDs: map[string]string{
+				"netloom_owner":  "netloom",
+				"netloom_subnet": "apps",
+			}, Fields: map[string]string{
+				"name":     "renamed-router-port",
+				"mac":      deterministicMAC(subnet),
+				"networks": "10.10.0.1/24",
+			}},
+		},
+		"Logical_Switch_Port": {
+			{Table: "Logical_Switch_Port", UUID: "lsp-router", ExternalIDs: map[string]string{
+				"netloom_owner":  "netloom",
+				"netloom_subnet": "apps",
+				"netloom_role":   "router",
+			}, Fields: map[string]string{
+				"name":      "renamed-switch-router-port",
+				"type":      "router",
+				"addresses": deterministicMAC(subnet),
+				"options":   mapField(map[string]string{"router-port": routerPortName(logicalRouter("prod"), "apps")}),
+			}},
+			{Table: "Logical_Switch_Port", UUID: "lsp-pod-a", ExternalIDs: map[string]string{
+				"netloom_owner":    "netloom",
+				"netloom_vpc":      "prod",
+				"netloom_endpoint": endpointExternalID("prod", "pod-a"),
+				"netloom_node":     "node-a",
+				"netloom_subnet":   "apps",
+			}, Fields: map[string]string{
+				"name":      "renamed-endpoint-port",
+				"addresses": endpointAddress(endpoint),
+			}},
+		},
+	}}
+	desired := topology.State{
+		VPCs: map[string]model.VPC{
+			"prod": {Name: "prod"},
+		},
+		Subnets: map[string]model.Subnet{
+			"prod/apps": subnet,
+		},
+		Endpoints: map[string]model.Endpoint{
+			"prod/pod-a": endpoint,
+		},
+	}
+
+	stats, err := AuditManagedObjectsFromReaderWithDesired(context.Background(), reader, desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.DriftedManagedRows != 5 || stats.DriftedManagedFields != 5 {
+		t.Fatalf("name column drift stats = %+v, want five drifted name fields", stats)
+	}
+}
+
 func TestAuditStatsTotalManagedObjects(t *testing.T) {
 	stats := AuditStats{
 		ManagedLogicalSwitches:           1,
