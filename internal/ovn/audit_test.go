@@ -164,6 +164,7 @@ func TestAuditManagedObjectsFromReaderReportsLoadBalancerParentAttachmentDrift(t
 				"netloom_vpc":   "prod",
 			}, Fields: map[string]string{
 				"name":           logicalRouter("prod"),
+				"ports":          routerPortName(logicalRouter("prod"), "apps"),
 				"load_balancers": "",
 			}},
 		},
@@ -175,7 +176,30 @@ func TestAuditManagedObjectsFromReaderReportsLoadBalancerParentAttachmentDrift(t
 			}, Fields: map[string]string{
 				"name":           logicalSwitch("prod", "apps"),
 				"other_config":   mapField(logicalSwitchOtherConfig(subnet)),
+				"ports":          switchRouterPortName(logicalSwitch("prod", "apps"), "apps"),
 				"load_balancers": "",
+			}},
+		},
+		"Logical_Router_Port": {
+			{Table: "Logical_Router_Port", UUID: "lrp-apps", ExternalIDs: map[string]string{
+				"netloom_owner":  "netloom",
+				"netloom_subnet": "apps",
+			}, Fields: map[string]string{
+				"name":     routerPortName(logicalRouter("prod"), "apps"),
+				"mac":      deterministicMAC(subnet),
+				"networks": "10.10.0.1/24",
+			}},
+		},
+		"Logical_Switch_Port": {
+			{Table: "Logical_Switch_Port", UUID: "lsp-router", ExternalIDs: map[string]string{
+				"netloom_owner":  "netloom",
+				"netloom_subnet": "apps",
+				"netloom_role":   "router",
+			}, Fields: map[string]string{
+				"name":      switchRouterPortName(logicalSwitch("prod", "apps"), "apps"),
+				"type":      "router",
+				"addresses": deterministicMAC(subnet),
+				"options":   mapField(map[string]string{"router-port": routerPortName(logicalRouter("prod"), "apps")}),
 			}},
 		},
 		"Load_Balancer": {
@@ -209,6 +233,95 @@ func TestAuditManagedObjectsFromReaderReportsLoadBalancerParentAttachmentDrift(t
 	}
 	if stats.DriftedManagedRows != 2 || stats.DriftedManagedFields != 2 {
 		t.Fatalf("load balancer parent attachment drift stats = %+v, want router and switch attachment drift", stats)
+	}
+}
+
+func TestAuditManagedObjectsFromReaderReportsRouterAndSwitchPortAttachmentDrift(t *testing.T) {
+	subnet := model.Subnet{
+		Name:    "apps",
+		VPC:     "prod",
+		CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+		Gateway: netip.MustParseAddr("10.10.0.1"),
+	}
+	endpoint := model.Endpoint{
+		ID:     "pod-a",
+		VPC:    "prod",
+		Subnet: "apps",
+		Node:   "node-a",
+		IP:     netip.MustParseAddr("10.10.0.20"),
+		MAC:    "02:00:00:00:00:20",
+	}
+	reader := fakeManagedOVNReader{rows: map[string][]ManagedOVNRow{
+		"Logical_Router": {
+			{Table: "Logical_Router", UUID: "lr-prod", ExternalIDs: map[string]string{
+				"netloom_owner": "netloom",
+				"netloom_vpc":   "prod",
+			}, Fields: map[string]string{
+				"name":  logicalRouter("prod"),
+				"ports": "",
+			}},
+		},
+		"Logical_Switch": {
+			{Table: "Logical_Switch", UUID: "ls-apps", ExternalIDs: map[string]string{
+				"netloom_owner":  "netloom",
+				"netloom_vpc":    "prod",
+				"netloom_subnet": "apps",
+			}, Fields: map[string]string{
+				"name":         logicalSwitch("prod", "apps"),
+				"other_config": mapField(logicalSwitchOtherConfig(subnet)),
+				"ports":        "",
+			}},
+		},
+		"Logical_Router_Port": {
+			{Table: "Logical_Router_Port", UUID: "lrp-apps", ExternalIDs: map[string]string{
+				"netloom_owner":  "netloom",
+				"netloom_subnet": "apps",
+			}, Fields: map[string]string{
+				"name":     routerPortName(logicalRouter("prod"), "apps"),
+				"mac":      deterministicMAC(subnet),
+				"networks": "10.10.0.1/24",
+			}},
+		},
+		"Logical_Switch_Port": {
+			{Table: "Logical_Switch_Port", UUID: "lsp-router", ExternalIDs: map[string]string{
+				"netloom_owner":  "netloom",
+				"netloom_subnet": "apps",
+				"netloom_role":   "router",
+			}, Fields: map[string]string{
+				"name":      switchRouterPortName(logicalSwitch("prod", "apps"), "apps"),
+				"type":      "router",
+				"addresses": deterministicMAC(subnet),
+				"options":   mapField(map[string]string{"router-port": routerPortName(logicalRouter("prod"), "apps")}),
+			}},
+			{Table: "Logical_Switch_Port", UUID: "lsp-pod-a", ExternalIDs: map[string]string{
+				"netloom_owner":    "netloom",
+				"netloom_vpc":      "prod",
+				"netloom_endpoint": endpointExternalID("prod", "pod-a"),
+				"netloom_node":     "node-a",
+				"netloom_subnet":   "apps",
+			}, Fields: map[string]string{
+				"name":          logicalPort("prod", "pod-a"),
+				"addresses":     endpointAddress(endpoint),
+				"port_security": endpointAddress(endpoint),
+			}},
+		},
+	}}
+	desired := topology.State{
+		VPCs: map[string]model.VPC{"prod": {Name: "prod"}},
+		Subnets: map[string]model.Subnet{
+			"prod/apps": subnet,
+		},
+		Endpoints: map[string]model.Endpoint{
+			"prod/pod-a": endpoint,
+		},
+	}
+
+	stats, err := AuditManagedObjectsFromReaderWithDesired(context.Background(), reader, desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.DriftedManagedRows != 2 || stats.DriftedManagedFields != 2 {
+		t.Fatalf("router/switch port attachment drift stats = %+v, want router and switch port attachment drift", stats)
 	}
 }
 
@@ -455,7 +568,10 @@ func TestAuditManagedObjectsFromReaderReportsCoreNameColumnDrift(t *testing.T) {
 			{Table: "Logical_Router", UUID: "lr-prod", ExternalIDs: map[string]string{
 				"netloom_owner": "netloom",
 				"netloom_vpc":   "prod",
-			}, Fields: map[string]string{"name": "renamed-router"}},
+			}, Fields: map[string]string{
+				"name":  "renamed-router",
+				"ports": routerPortName(logicalRouter("prod"), "apps"),
+			}},
 		},
 		"Logical_Switch": {
 			{Table: "Logical_Switch", UUID: "ls-apps", ExternalIDs: map[string]string{
@@ -465,6 +581,7 @@ func TestAuditManagedObjectsFromReaderReportsCoreNameColumnDrift(t *testing.T) {
 			}, Fields: map[string]string{
 				"name":         "renamed-switch",
 				"other_config": mapField(logicalSwitchOtherConfig(subnet)),
+				"ports":        stringSetField([]string{switchRouterPortName(logicalSwitch("prod", "apps"), "apps"), logicalPort("prod", "pod-a")}),
 			}},
 		},
 		"Logical_Router_Port": {

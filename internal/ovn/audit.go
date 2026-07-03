@@ -279,6 +279,11 @@ func expectedManagedAuditColumns(desired topology.State) map[string]map[string]s
 			"name": logicalRouter(name),
 		}, "netloom_vpc", name)
 	}
+	for vpc, names := range expectedRouterPorts(desired.Subnets) {
+		addAuditExpectedColumns(out, "Logical_Router", map[string]string{
+			"ports": stringSetField(names),
+		}, "netloom_vpc", vpc)
+	}
 	for _, subnet := range desired.Subnets {
 		addAuditExpectedColumns(out, "Logical_Switch", logicalSwitchColumnFields(subnet), "netloom_vpc", subnet.VPC, "netloom_subnet", subnet.Name)
 		addAuditExpectedColumns(out, "Logical_Router_Port", map[string]string{
@@ -304,6 +309,15 @@ func expectedManagedAuditColumns(desired topology.State) map[string]map[string]s
 			}
 			addAuditExpectedColumns(out, "Logical_Switch_Port", fields, "netloom_subnet", subnet.Name, "netloom_provider_network", subnet.ProviderNetwork)
 		}
+	}
+	for key, names := range expectedSwitchPorts(desired.Subnets, desired.Endpoints) {
+		vpc, subnet, ok := splitStateKey(key)
+		if !ok {
+			continue
+		}
+		addAuditExpectedColumns(out, "Logical_Switch", map[string]string{
+			"ports": stringSetField(names),
+		}, "netloom_vpc", vpc, "netloom_subnet", subnet)
 	}
 	for vpc, names := range expectedRouterLoadBalancers(desired.LoadBalancers) {
 		addAuditExpectedColumns(out, "Logical_Router", map[string]string{
@@ -595,6 +609,30 @@ func loadBalancerHealthCheckVIPsField(frontends []model.LoadBalancerFrontend) st
 	}
 	sort.Strings(vips)
 	return stringSliceField(vips)
+}
+
+func expectedRouterPorts(subnets map[string]model.Subnet) map[string][]string {
+	out := make(map[string][]string)
+	for _, subnet := range subnets {
+		out[subnet.VPC] = append(out[subnet.VPC], routerPortName(logicalRouter(subnet.VPC), subnet.Name))
+	}
+	return out
+}
+
+func expectedSwitchPorts(subnets map[string]model.Subnet, endpoints map[string]model.Endpoint) map[string][]string {
+	out := make(map[string][]string)
+	for _, subnet := range subnets {
+		key := subnetStateKey(subnet.VPC, subnet.Name)
+		out[key] = append(out[key], switchRouterPortName(logicalSwitch(subnet.VPC, subnet.Name), subnet.Name))
+		if subnet.ProviderNetwork != "" {
+			out[key] = append(out[key], localnetPortName(logicalSwitch(subnet.VPC, subnet.Name), subnet.Name))
+		}
+	}
+	for _, endpoint := range endpoints {
+		key := subnetStateKey(endpoint.VPC, endpoint.Subnet)
+		out[key] = append(out[key], logicalPort(endpoint.VPC, endpoint.ID))
+	}
+	return out
 }
 
 func expectedRouterLoadBalancers(loadBalancers map[string]model.LoadBalancer) map[string][]string {

@@ -466,6 +466,104 @@ func TestAuditManagedObjectsReportsLoadBalancerParentAttachmentDriftFromLibOVSDB
 	}
 }
 
+func TestAuditManagedObjectsReportsRouterAndSwitchPortAttachmentDriftFromLibOVSDBReader(t *testing.T) {
+	ctx := context.Background()
+	client, closeFn := newTestOVNNBClient(t)
+	defer closeFn()
+
+	if _, err := client.MonitorAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	writer := NewLibOVSDBTopologyWriter(client)
+	subnet := netloommodel.Subnet{
+		Name:    "apps",
+		VPC:     "prod",
+		CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+		Gateway: netip.MustParseAddr("10.10.0.1"),
+	}
+	endpoint := netloommodel.Endpoint{
+		ID:     "pod-a",
+		VPC:    "prod",
+		Subnet: "apps",
+		Node:   "node-a",
+		IP:     netip.MustParseAddr("10.10.0.20"),
+		MAC:    "02:00:00:00:00:20",
+	}
+	if err := writer.EnsureVPC(ctx, netloommodel.VPC{Name: "prod"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureSubnet(ctx, subnet); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureEndpoint(ctx, endpoint); err != nil {
+		t.Fatal(err)
+	}
+	desired := topology.State{
+		VPCs: map[string]netloommodel.VPC{
+			"prod": {Name: "prod"},
+		},
+		Subnets: map[string]netloommodel.Subnet{
+			"prod/apps": subnet,
+		},
+		Endpoints: map[string]netloommodel.Endpoint{
+			"prod/pod-a": endpoint,
+		},
+	}
+	reader := NewLibOVSDBManagedReader(client)
+	requireEventually(t, func() bool {
+		stats, err := AuditManagedObjectsFromReaderWithDesired(ctx, reader, desired)
+		return err == nil && stats.UnexpectedManagedRows == 0 && stats.MissingManagedRows == 0 &&
+			stats.DriftedManagedRows == 0 && stats.DriftedManagedFields == 0
+	})
+
+	var routers []ovnnb.LogicalRouter
+	if err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool {
+		return row.ExternalIDs["netloom_vpc"] == "prod"
+	}).List(ctx, &routers); err != nil {
+		t.Fatal(err)
+	}
+	if len(routers) != 1 {
+		t.Fatalf("logical routers = %d, want one", len(routers))
+	}
+	routers[0].Ports = nil
+	routerOps, err := client.Where(&routers[0]).Update(&routers[0], &routers[0].Ports)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var switches []ovnnb.LogicalSwitch
+	if err := client.WhereCache(func(row *ovnnb.LogicalSwitch) bool {
+		return row.ExternalIDs["netloom_vpc"] == "prod" && row.ExternalIDs["netloom_subnet"] == "apps"
+	}).List(ctx, &switches); err != nil {
+		t.Fatal(err)
+	}
+	if len(switches) != 1 {
+		t.Fatalf("logical switches = %d, want one", len(switches))
+	}
+	switches[0].Ports = nil
+	switchOps, err := client.Where(&switches[0]).Update(&switches[0], &switches[0].Ports)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ops := append(routerOps, switchOps...)
+	results, err := client.Transact(ctx, ops...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, ops); err != nil {
+		t.Fatalf("operation errors=%+v err=%v", opErrors, err)
+	}
+
+	var stats AuditStats
+	requireEventually(t, func() bool {
+		var err error
+		stats, err = AuditManagedObjectsFromReaderWithDesired(ctx, reader, desired)
+		return err == nil && stats.DriftedManagedRows == 2 && stats.DriftedManagedFields == 2
+	})
+	if stats.DriftedManagedRows != 2 || stats.DriftedManagedFields != 2 {
+		t.Fatalf("audit stats = %+v, want router and switch port attachment drift", stats)
+	}
+}
+
 func TestAuditManagedObjectsReportsNATParentAttachmentDriftFromLibOVSDBReader(t *testing.T) {
 	ctx := context.Background()
 	client, closeFn := newTestOVNNBClient(t)
