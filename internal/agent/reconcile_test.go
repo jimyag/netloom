@@ -3,6 +3,9 @@ package agent
 import (
 	"context"
 	"fmt"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -1692,6 +1695,89 @@ func TestRolloutPolicyEndpointsSLOGateUsesMultiWindowDeltas(t *testing.T) {
 	}
 	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 0 {
 		t.Fatalf("pod-a entries = %+v, want SLO rollback", entries)
+	}
+}
+
+func TestRolloutPolicyEndpointsProbeRollsBackFailedCanary(t *testing.T) {
+	state := rolloutPolicyState()
+	store := dataplane.NewInMemoryPolicyStore()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	rollout, err := RolloutPolicyEndpoints(context.Background(), state, ReconcileOptions{
+		Node:  "node-a",
+		Store: store,
+	}, PolicyEndpointRolloutOptions{
+		EndpointIDs: []string{
+			model.EndpointKey("prod", "pod-a"),
+			model.EndpointKey("prod", "pod-b"),
+		},
+		BatchSize: 1,
+		Probes: []control.PolicyRolloutProbe{{
+			Name:           "web-ready",
+			Type:           "http",
+			URL:            server.URL,
+			ExpectedStatus: http.StatusOK,
+			TimeoutMS:      1000,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rollout.ProbeFailed || rollout.ProbeError == "" || rollout.Failed != 1 || rollout.RolledBack != 1 || rollout.Skipped != 1 {
+		t.Fatalf("rollout = %+v, want failed probe rollback", rollout)
+	}
+	if len(rollout.Probes) != 1 || rollout.Probes[0].Passed || rollout.Probes[0].StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("probe results = %+v, want failed HTTP probe", rollout.Probes)
+	}
+	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 0 {
+		t.Fatalf("pod-a entries = %+v, want probe rollback", entries)
+	}
+}
+
+func TestRolloutPolicyEndpointsProbeAcceptsTCP(t *testing.T) {
+	state := rolloutPolicyState()
+	store := dataplane.NewInMemoryPolicyStore()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		conn, err := listener.Accept()
+		if err == nil {
+			_ = conn.Close()
+		}
+	}()
+
+	rollout, err := RolloutPolicyEndpoints(context.Background(), state, ReconcileOptions{
+		Node:  "node-a",
+		Store: store,
+	}, PolicyEndpointRolloutOptions{
+		EndpointIDs: []string{
+			model.EndpointKey("prod", "pod-a"),
+		},
+		BatchSize: 1,
+		Probes: []control.PolicyRolloutProbe{{
+			Name:      "tcp-ready",
+			Type:      "tcp",
+			Address:   listener.Addr().String(),
+			TimeoutMS: 1000,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-done
+	if rollout.ProbeFailed || rollout.Failed != 0 || rollout.Applied != 1 || rollout.RolledBack != 0 {
+		t.Fatalf("rollout = %+v, want successful TCP probe", rollout)
+	}
+	if len(rollout.Probes) != 1 || !rollout.Probes[0].Passed || rollout.Probes[0].Type != "tcp" {
+		t.Fatalf("probe results = %+v, want passed TCP probe", rollout.Probes)
 	}
 }
 

@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"fmt"
+	"net"
+	"net/http"
 	"net/netip"
 	"strings"
 	"sync"
@@ -164,6 +166,7 @@ type PolicyEndpointRolloutOptions struct {
 	SLOMinPackets             uint64
 	SLOWindowCount            int
 	SLOWindowInterval         time.Duration
+	Probes                    []control.PolicyRolloutProbe
 }
 
 type PolicyEndpointRollout struct {
@@ -185,6 +188,9 @@ type PolicyEndpointRollout struct {
 	SLOFailed                bool                        `json:"slo_failed,omitempty"`
 	SLOError                 string                      `json:"slo_error,omitempty"`
 	SLOWindows               []PolicyEndpointSLOWindow   `json:"slo_windows,omitempty"`
+	ProbeFailed              bool                        `json:"probe_failed,omitempty"`
+	ProbeError               string                      `json:"probe_error,omitempty"`
+	Probes                   []PolicyEndpointProbeResult `json:"probes,omitempty"`
 	Planned                  int                         `json:"planned"`
 	Applied                  int                         `json:"applied"`
 	Skipped                  int                         `json:"skipped"`
@@ -201,6 +207,15 @@ type PolicyEndpointSLOWindow struct {
 	DropPercent uint32 `json:"drop_percent"`
 	Passed      bool   `json:"passed"`
 	Reason      string `json:"reason,omitempty"`
+}
+
+type PolicyEndpointProbeResult struct {
+	Name       string `json:"name"`
+	Type       string `json:"type"`
+	Target     string `json:"target"`
+	Passed     bool   `json:"passed"`
+	StatusCode int    `json:"status_code,omitempty"`
+	Error      string `json:"error,omitempty"`
 }
 
 type PolicyEndpointRolloutItem struct {
@@ -438,6 +453,13 @@ func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, opt
 				rollbackRolloutPolicyEndpoints(ctx, options.Store, snapshots, applied, &rollout)
 			}
 		}
+		if rollout.Failed == 0 && len(rolloutOptions.Probes) != 0 && rolloutBatchComplete(rollout.Items, i) {
+			failed := evaluateRolloutProbes(ctx, rolloutOptions, &rollout)
+			if failed {
+				rollout.Failed++
+				rollbackRolloutPolicyEndpoints(ctx, options.Store, snapshots, applied, &rollout)
+			}
+		}
 	}
 	return rollout, nil
 }
@@ -606,6 +628,91 @@ func saturatingCounterDelta(previous, current uint64) uint64 {
 	return current - previous
 }
 
+func evaluateRolloutProbes(ctx context.Context, rolloutOptions PolicyEndpointRolloutOptions, rollout *PolicyEndpointRollout) bool {
+	for _, probe := range rolloutOptions.Probes {
+		result := executeRolloutProbe(ctx, probe)
+		rollout.Probes = append(rollout.Probes, result)
+		if !result.Passed {
+			rollout.ProbeFailed = true
+			rollout.ProbeError = fmt.Sprintf("policy rollout probe %q failed: %s", result.Name, result.Error)
+			return true
+		}
+	}
+	return false
+}
+
+func executeRolloutProbe(ctx context.Context, probe control.PolicyRolloutProbe) PolicyEndpointProbeResult {
+	timeout := rolloutProbeTimeout(probe.TimeoutMS)
+	probeCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	switch strings.ToLower(strings.TrimSpace(probe.Type)) {
+	case "http":
+		return executeHTTPRolloutProbe(probeCtx, probe)
+	case "tcp":
+		return executeTCPRolloutProbe(probeCtx, probe)
+	default:
+		return PolicyEndpointProbeResult{Name: probe.Name, Type: probe.Type, Passed: false, Error: "unsupported probe type"}
+	}
+}
+
+func executeHTTPRolloutProbe(ctx context.Context, probe control.PolicyRolloutProbe) PolicyEndpointProbeResult {
+	method := strings.ToUpper(strings.TrimSpace(probe.Method))
+	if method == "" {
+		method = http.MethodGet
+	}
+	expectedStatus := probe.ExpectedStatus
+	if expectedStatus == 0 {
+		expectedStatus = http.StatusOK
+	}
+	result := PolicyEndpointProbeResult{
+		Name:   probe.Name,
+		Type:   "http",
+		Target: probe.URL,
+	}
+	request, err := http.NewRequestWithContext(ctx, method, probe.URL, nil)
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+	defer response.Body.Close()
+	result.StatusCode = response.StatusCode
+	if response.StatusCode != expectedStatus {
+		result.Error = fmt.Sprintf("status=%d expected=%d", response.StatusCode, expectedStatus)
+		return result
+	}
+	result.Passed = true
+	return result
+}
+
+func executeTCPRolloutProbe(ctx context.Context, probe control.PolicyRolloutProbe) PolicyEndpointProbeResult {
+	result := PolicyEndpointProbeResult{
+		Name:   probe.Name,
+		Type:   "tcp",
+		Target: probe.Address,
+	}
+	var dialer net.Dialer
+	conn, err := dialer.DialContext(ctx, "tcp", probe.Address)
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+	_ = conn.Close()
+	result.Passed = true
+	return result
+}
+
+func rolloutProbeTimeout(timeoutMS uint32) time.Duration {
+	if timeoutMS == 0 {
+		return 2 * time.Second
+	}
+	return time.Duration(timeoutMS) * time.Millisecond
+}
+
 func maxUint64(a, b uint64) uint64 {
 	if a > b {
 		return a
@@ -714,6 +821,7 @@ func ApplyPolicyRollouts(ctx context.Context, state control.DesiredState, option
 			SLOMinPackets:             rollout.SLOMinPackets,
 			SLOWindowCount:            rollout.SLOWindowCount,
 			SLOWindowInterval:         time.Duration(rollout.SLOWindowIntervalMS) * time.Millisecond,
+			Probes:                    append([]control.PolicyRolloutProbe(nil), rollout.Probes...),
 		})
 		if err != nil {
 			return nil, fmt.Errorf("policy rollout %q: %w", rollout.Name, err)

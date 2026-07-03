@@ -143,17 +143,18 @@ type policyEndpointActionOutput struct {
 }
 
 type policyEndpointRolloutRequest struct {
-	Endpoints                 []string `json:"endpoints"`
-	BatchSize                 int      `json:"batch_size"`
-	DryRun                    bool     `json:"dry_run"`
-	PressureAware             bool     `json:"pressure_aware"`
-	PressureThresholdPercent  uint32   `json:"pressure_threshold_percent"`
-	PressureAwareMinBatchSize int      `json:"pressure_aware_min_batch_size"`
-	SLOGated                  bool     `json:"slo_gated"`
-	SLODropThresholdPercent   uint32   `json:"slo_drop_threshold_percent"`
-	SLOMinPackets             uint64   `json:"slo_min_packets"`
-	SLOWindowCount            int      `json:"slo_window_count"`
-	SLOWindowIntervalMS       uint32   `json:"slo_window_interval_ms"`
+	Endpoints                 []string                     `json:"endpoints"`
+	BatchSize                 int                          `json:"batch_size"`
+	DryRun                    bool                         `json:"dry_run"`
+	PressureAware             bool                         `json:"pressure_aware"`
+	PressureThresholdPercent  uint32                       `json:"pressure_threshold_percent"`
+	PressureAwareMinBatchSize int                          `json:"pressure_aware_min_batch_size"`
+	SLOGated                  bool                         `json:"slo_gated"`
+	SLODropThresholdPercent   uint32                       `json:"slo_drop_threshold_percent"`
+	SLOMinPackets             uint64                       `json:"slo_min_packets"`
+	SLOWindowCount            int                          `json:"slo_window_count"`
+	SLOWindowIntervalMS       uint32                       `json:"slo_window_interval_ms"`
+	Probes                    []control.PolicyRolloutProbe `json:"probes,omitempty"`
 }
 
 func runPolicyExplain(args []string, stdout io.Writer) error {
@@ -1265,6 +1266,7 @@ func (m *agentMetrics) rolloutPolicyEndpoints(ctx context.Context, request polic
 		SLOMinPackets:             request.SLOMinPackets,
 		SLOWindowCount:            request.SLOWindowCount,
 		SLOWindowInterval:         time.Duration(request.SLOWindowIntervalMS) * time.Millisecond,
+		Probes:                    append([]control.PolicyRolloutProbe(nil), request.Probes...),
 	})
 	if err != nil {
 		return agent.PolicyEndpointRollout{}, err

@@ -787,6 +787,36 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 			wantErr: "slo_window_count must not be negative",
 		},
 		{
+			name: "invalid policy rollout probe type",
+			mutate: func(state *DesiredState) {
+				state.PolicyRollouts = []PolicyRollout{{
+					Name:      "web-canary",
+					Endpoints: []string{"prod/pod-a"},
+					BatchSize: 1,
+					Probes: []PolicyRolloutProbe{{
+						Name: "probe-a",
+						Type: "icmp",
+					}},
+				}}
+			},
+			wantErr: "type must be http or tcp",
+		},
+		{
+			name: "duplicate policy rollout probe",
+			mutate: func(state *DesiredState) {
+				state.PolicyRollouts = []PolicyRollout{{
+					Name:      "web-canary",
+					Endpoints: []string{"prod/pod-a"},
+					BatchSize: 1,
+					Probes: []PolicyRolloutProbe{
+						{Name: "probe-a", Type: "tcp", Address: "127.0.0.1:80"},
+						{Name: "probe-a", Type: "tcp", Address: "127.0.0.1:81"},
+					},
+				}}
+			},
+			wantErr: "probe \"probe-a\" is duplicated",
+		},
+		{
 			name: "remote group unknown",
 			mutate: func(state *DesiredState) {
 				state.SecurityGroups[0].Rules[0].RemoteCIDR = netip.Prefix{}

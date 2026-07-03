@@ -3,7 +3,9 @@ package control
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/netip"
+	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -150,19 +152,30 @@ type DesiredState struct {
 }
 
 type PolicyRollout struct {
-	Name                      string   `json:"name"`
-	Node                      string   `json:"node,omitempty"`
-	Endpoints                 []string `json:"endpoints,omitempty"`
-	BatchSize                 int      `json:"batch_size"`
-	PressureAware             bool     `json:"pressure_aware"`
-	PressureThresholdPercent  uint32   `json:"pressure_threshold_percent"`
-	PressureAwareMinBatchSize int      `json:"pressure_aware_min_batch_size"`
-	SLOGated                  bool     `json:"slo_gated"`
-	SLODropThresholdPercent   uint32   `json:"slo_drop_threshold_percent"`
-	SLOMinPackets             uint64   `json:"slo_min_packets"`
-	SLOWindowCount            int      `json:"slo_window_count"`
-	SLOWindowIntervalMS       uint32   `json:"slo_window_interval_ms"`
-	Disabled                  bool     `json:"disabled,omitempty"`
+	Name                      string               `json:"name"`
+	Node                      string               `json:"node,omitempty"`
+	Endpoints                 []string             `json:"endpoints,omitempty"`
+	BatchSize                 int                  `json:"batch_size"`
+	PressureAware             bool                 `json:"pressure_aware"`
+	PressureThresholdPercent  uint32               `json:"pressure_threshold_percent"`
+	PressureAwareMinBatchSize int                  `json:"pressure_aware_min_batch_size"`
+	SLOGated                  bool                 `json:"slo_gated"`
+	SLODropThresholdPercent   uint32               `json:"slo_drop_threshold_percent"`
+	SLOMinPackets             uint64               `json:"slo_min_packets"`
+	SLOWindowCount            int                  `json:"slo_window_count"`
+	SLOWindowIntervalMS       uint32               `json:"slo_window_interval_ms"`
+	Probes                    []PolicyRolloutProbe `json:"probes,omitempty"`
+	Disabled                  bool                 `json:"disabled,omitempty"`
+}
+
+type PolicyRolloutProbe struct {
+	Name           string `json:"name"`
+	Type           string `json:"type"`
+	URL            string `json:"url,omitempty"`
+	Address        string `json:"address,omitempty"`
+	Method         string `json:"method,omitempty"`
+	ExpectedStatus int    `json:"expected_status,omitempty"`
+	TimeoutMS      uint32 `json:"timeout_ms,omitempty"`
 }
 
 func (r PolicyRollout) Validate() error {
@@ -184,6 +197,17 @@ func (r PolicyRollout) Validate() error {
 	if r.SLOWindowCount < 0 {
 		return fmt.Errorf("policy rollout %q slo_window_count must not be negative", r.Name)
 	}
+	seenProbes := make(map[string]struct{}, len(r.Probes))
+	for _, probe := range r.Probes {
+		if err := probe.Validate(r.Name); err != nil {
+			return err
+		}
+		name := strings.TrimSpace(probe.Name)
+		if _, ok := seenProbes[name]; ok {
+			return fmt.Errorf("policy rollout %q probe %q is duplicated", r.Name, name)
+		}
+		seenProbes[name] = struct{}{}
+	}
 	seen := make(map[string]struct{}, len(r.Endpoints))
 	for _, endpoint := range r.Endpoints {
 		endpoint = strings.TrimSpace(endpoint)
@@ -194,6 +218,38 @@ func (r PolicyRollout) Validate() error {
 			return fmt.Errorf("policy rollout %q endpoint %q is duplicated", r.Name, endpoint)
 		}
 		seen[endpoint] = struct{}{}
+	}
+	return nil
+}
+
+func (p PolicyRolloutProbe) Validate(rollout string) error {
+	name := strings.TrimSpace(p.Name)
+	if name == "" {
+		return fmt.Errorf("policy rollout %q probe name is required", rollout)
+	}
+	probeType := strings.ToLower(strings.TrimSpace(p.Type))
+	switch probeType {
+	case "http":
+		if strings.TrimSpace(p.URL) == "" {
+			return fmt.Errorf("policy rollout %q probe %q url is required", rollout, name)
+		}
+		parsed, err := url.Parse(p.URL)
+		if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+			return fmt.Errorf("policy rollout %q probe %q url must be http or https", rollout, name)
+		}
+		if p.ExpectedStatus < 0 || p.ExpectedStatus > 599 {
+			return fmt.Errorf("policy rollout %q probe %q expected_status must be between 0 and 599", rollout, name)
+		}
+	case "tcp":
+		if strings.TrimSpace(p.Address) == "" {
+			return fmt.Errorf("policy rollout %q probe %q address is required", rollout, name)
+		}
+		host, port, err := net.SplitHostPort(p.Address)
+		if err != nil || strings.TrimSpace(host) == "" || strings.TrimSpace(port) == "" {
+			return fmt.Errorf("policy rollout %q probe %q address must be host:port", rollout, name)
+		}
+	default:
+		return fmt.Errorf("policy rollout %q probe %q type must be http or tcp", rollout, name)
 	}
 	return nil
 }
