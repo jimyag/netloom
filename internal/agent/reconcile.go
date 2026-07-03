@@ -171,6 +171,7 @@ type PolicyEndpointRolloutOptions struct {
 	Probes                    []control.PolicyRolloutProbe
 	Paused                    bool
 	PauseAfterBatches         int
+	PromotionPercent          uint32
 }
 
 type PolicyEndpointRollout struct {
@@ -198,6 +199,8 @@ type PolicyEndpointRollout struct {
 	Paused                   bool                        `json:"paused,omitempty"`
 	PauseAfterBatches        int                         `json:"pause_after_batches,omitempty"`
 	PausedAfterBatch         int                         `json:"paused_after_batch,omitempty"`
+	PromotionPercent         uint32                      `json:"promotion_percent,omitempty"`
+	PromotionLimit           int                         `json:"promotion_limit,omitempty"`
 	Planned                  int                         `json:"planned"`
 	Applied                  int                         `json:"applied"`
 	Skipped                  int                         `json:"skipped"`
@@ -377,6 +380,8 @@ func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, opt
 		SLOWindowIntervalMS:      uint32(rolloutOptions.SLOWindowInterval / time.Millisecond),
 		Paused:                   rolloutOptions.Paused,
 		PauseAfterBatches:        rolloutOptions.PauseAfterBatches,
+		PromotionPercent:         rolloutOptions.PromotionPercent,
+		PromotionLimit:           rolloutPromotionLimit(len(endpointIDs), rolloutOptions.PromotionPercent),
 		Items:                    make([]PolicyEndpointRolloutItem, 0, len(endpointIDs)),
 	}
 	type preparedEndpoint struct {
@@ -482,7 +487,7 @@ func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, opt
 		}
 		if rollout.Failed == 0 && rolloutBatchComplete(rollout.Items, i) {
 			completedBatches++
-			if rolloutOptions.PauseAfterBatches > 0 && completedBatches >= rolloutOptions.PauseAfterBatches && i < len(rollout.Items)-1 {
+			if shouldPauseRolloutAfterItem(rollout, rolloutOptions, completedBatches, i) {
 				rollout.Paused = true
 				rollout.PausedAfterBatch = item.Batch
 			}
@@ -500,6 +505,30 @@ func pauseRolloutItems(rollout *PolicyEndpointRollout, afterBatch int) {
 			rollout.Skipped++
 		}
 	}
+}
+
+func shouldPauseRolloutAfterItem(rollout PolicyEndpointRollout, options PolicyEndpointRolloutOptions, completedBatches int, index int) bool {
+	if index >= len(rollout.Items)-1 {
+		return false
+	}
+	if options.PauseAfterBatches > 0 && completedBatches >= options.PauseAfterBatches {
+		return true
+	}
+	return rollout.PromotionLimit > 0 && rollout.Applied >= rollout.PromotionLimit
+}
+
+func rolloutPromotionLimit(endpointCount int, promotionPercent uint32) int {
+	if endpointCount <= 0 || promotionPercent == 0 || promotionPercent >= 100 {
+		return 0
+	}
+	limit := int((uint64(endpointCount)*uint64(promotionPercent) + 99) / 100)
+	if limit < 1 {
+		return 1
+	}
+	if limit > endpointCount {
+		return endpointCount
+	}
+	return limit
 }
 
 func rolloutBatchComplete(items []PolicyEndpointRolloutItem, index int) bool {
@@ -862,6 +891,7 @@ func ApplyPolicyRollouts(ctx context.Context, state control.DesiredState, option
 			Probes:                    append([]control.PolicyRolloutProbe(nil), rollout.Probes...),
 			Paused:                    rollout.Paused,
 			PauseAfterBatches:         rollout.PauseAfterBatches,
+			PromotionPercent:          rollout.PromotionPercent,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("policy rollout %q: %w", rollout.Name, err)

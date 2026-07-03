@@ -829,6 +829,18 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 			wantErr: "pause_after_batches must not be negative",
 		},
 		{
+			name: "invalid policy rollout promotion percent",
+			mutate: func(state *DesiredState) {
+				state.PolicyRollouts = []PolicyRollout{{
+					Name:             "web-canary",
+					Endpoints:        []string{"prod/pod-a"},
+					BatchSize:        1,
+					PromotionPercent: 101,
+				}}
+			},
+			wantErr: "promotion_percent must be <= 100",
+		},
+		{
 			name: "remote group unknown",
 			mutate: func(state *DesiredState) {
 				state.SecurityGroups[0].Rules[0].RemoteCIDR = netip.Prefix{}

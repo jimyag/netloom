@@ -1516,6 +1516,37 @@ func TestRolloutPolicyEndpointsPausesAfterBatch(t *testing.T) {
 	}
 }
 
+func TestRolloutPolicyEndpointsPausesAtPromotionPercent(t *testing.T) {
+	state := rolloutPolicyState()
+	store := dataplane.NewInMemoryPolicyStore()
+
+	rollout, err := RolloutPolicyEndpoints(context.Background(), state, ReconcileOptions{
+		Node:  "node-a",
+		Store: store,
+	}, PolicyEndpointRolloutOptions{
+		EndpointIDs: []string{
+			model.EndpointKey("prod", "pod-a"),
+			model.EndpointKey("prod", "pod-b"),
+			model.EndpointKey("prod", "pod-c"),
+		},
+		BatchSize:        1,
+		PromotionPercent: 34,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rollout.Paused || rollout.PromotionPercent != 34 || rollout.PromotionLimit != 2 || rollout.Applied != 2 || rollout.Skipped != 1 || rollout.Failed != 0 {
+		t.Fatalf("rollout = %+v, want paused after 34%% promotion limit", rollout)
+	}
+	phases := []string{rollout.Items[0].Phase, rollout.Items[1].Phase, rollout.Items[2].Phase}
+	if !slices.Equal(phases, []string{"applied", "applied", "paused"}) {
+		t.Fatalf("rollout phases = %+v, want applied applied paused", phases)
+	}
+	if entries := store.Entries(model.EndpointKey("prod", "pod-c")); len(entries) != 0 {
+		t.Fatalf("pod-c entries = %+v, want promotion-paused endpoint untouched", entries)
+	}
+}
+
 func TestRolloutPolicyEndpointsPressureAwareShrinksBatchSize(t *testing.T) {
 	state := rolloutPolicyState()
 	store := &rolloutPressurePolicyStore{

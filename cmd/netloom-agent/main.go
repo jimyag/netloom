@@ -157,6 +157,7 @@ type policyEndpointRolloutRequest struct {
 	Probes                    []control.PolicyRolloutProbe `json:"probes,omitempty"`
 	Paused                    bool                         `json:"paused,omitempty"`
 	PauseAfterBatches         int                          `json:"pause_after_batches,omitempty"`
+	PromotionPercent          uint32                       `json:"promotion_percent,omitempty"`
 }
 
 func runPolicyExplain(args []string, stdout io.Writer) error {
@@ -1275,6 +1276,7 @@ func (m *agentMetrics) rolloutPolicyEndpoints(ctx context.Context, request polic
 		Probes:                    append([]control.PolicyRolloutProbe(nil), request.Probes...),
 		Paused:                    request.Paused,
 		PauseAfterBatches:         request.PauseAfterBatches,
+		PromotionPercent:          request.PromotionPercent,
 	})
 	if err != nil {
 		return agent.PolicyEndpointRollout{}, err

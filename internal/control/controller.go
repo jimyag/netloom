@@ -167,6 +167,7 @@ type PolicyRollout struct {
 	Probes                    []PolicyRolloutProbe `json:"probes,omitempty"`
 	Paused                    bool                 `json:"paused,omitempty"`
 	PauseAfterBatches         int                  `json:"pause_after_batches,omitempty"`
+	PromotionPercent          uint32               `json:"promotion_percent,omitempty"`
 	Disabled                  bool                 `json:"disabled,omitempty"`
 }
 
@@ -201,6 +202,9 @@ func (r PolicyRollout) Validate() error {
 	}
 	if r.PauseAfterBatches < 0 {
 		return fmt.Errorf("policy rollout %q pause_after_batches must not be negative", r.Name)
+	}
+	if r.PromotionPercent > 100 {
+		return fmt.Errorf("policy rollout %q promotion_percent must be <= 100", r.Name)
 	}
 	seenProbes := make(map[string]struct{}, len(r.Probes))
 	for _, probe := range r.Probes {
