@@ -158,6 +158,36 @@ func TestOVNLibOVSDBEndpointsFromEnvParsesClusterList(t *testing.T) {
 	}
 }
 
+func TestParseOVNLeaderEndpointFindsConfiguredEndpoint(t *testing.T) {
+	endpoints := []string{"tcp:a:6641", "tcp:b:6641"}
+	if got := parseOVNLeaderEndpoint("cluster status\nleader: tcp:b:6641\n", endpoints); got != "tcp:b:6641" {
+		t.Fatalf("leader endpoint = %q, want tcp:b:6641", got)
+	}
+	if got := parseOVNLeaderEndpoint("leader: tcp:c:6641\n", endpoints); got != "" {
+		t.Fatalf("leader endpoint = %q, want empty for unconfigured endpoint", got)
+	}
+}
+
+func TestLibOVSDBClusterConnectorPrefersProbedLeaderEndpoint(t *testing.T) {
+	attempts := make([]string, 0)
+	cluster := newLibOVSDBClusterConnector("test", []string{"tcp:a:6641", "tcp:b:6641"}, func(_ context.Context, _ string, endpoint string) (libovsdbclient.Client, func(), error) {
+		attempts = append(attempts, endpoint)
+		return nil, func() {}, nil
+	}, func(context.Context, []string) (string, error) {
+		return "tcp:b:6641", nil
+	})
+	if _, _, err := cluster.Connect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(attempts, ",") != "tcp:b:6641" {
+		t.Fatalf("attempts = %+v, want leader endpoint first", attempts)
+	}
+	snapshot := cluster.Snapshot()
+	if snapshot.ActiveEndpoint != "tcp:b:6641" || snapshot.LeaderEndpoint != "tcp:b:6641" || !snapshot.LeaderPreferred {
+		t.Fatalf("cluster snapshot = %+v, want active leader preferred", snapshot)
+	}
+}
+
 func TestLibOVSDBClusterConnectorFailsOverEndpoints(t *testing.T) {
 	attempts := make([]string, 0)
 	cluster := newLibOVSDBClusterConnector("test", []string{"tcp:a:6641", "tcp:b:6641"}, func(_ context.Context, _ string, endpoint string) (libovsdbclient.Client, func(), error) {
@@ -166,7 +196,7 @@ func TestLibOVSDBClusterConnectorFailsOverEndpoints(t *testing.T) {
 			return nil, nil, errors.New("down")
 		}
 		return nil, func() {}, nil
-	})
+	}, nil)
 	if _, _, err := cluster.Connect(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -378,8 +408,10 @@ func TestControllerMetricsExportsLatestSuccess(t *testing.T) {
 		OVNHealthConsecutiveSuccesses: 1,
 		OVNCluster: ovnClusterHealthSnapshot{
 			ActiveEndpoint:      "tcp:10.0.0.2:6641",
+			LeaderEndpoint:      "tcp:10.0.0.2:6641",
 			ConfiguredEndpoints: 3,
 			Failovers:           1,
+			LeaderPreferred:     true,
 		},
 		OVNOps:      7,
 		OVNExecuted: 6,
@@ -436,6 +468,8 @@ func TestControllerMetricsExportsLatestSuccess(t *testing.T) {
 		`netloom_controller_ovn_health_consecutive_successes{ovn_health="ok"} 1`,
 		`netloom_controller_ovn_health_recovering{ovn_health="ok"} 0`,
 		`netloom_controller_ovn_cluster_active_endpoint{endpoint="tcp:10.0.0.2:6641",ovn_health="ok"} 1`,
+		`netloom_controller_ovn_cluster_leader_endpoint{endpoint="tcp:10.0.0.2:6641",ovn_health="ok"} 1`,
+		`netloom_controller_ovn_cluster_leader_preferred{ovn_health="ok"} 1`,
 		`netloom_controller_ovn_cluster_endpoints{ovn_health="ok"} 3`,
 		`netloom_controller_ovn_cluster_failovers{ovn_health="ok"} 1`,
 		`netloom_controller_ovn_operations_planned{ovn_health="ok"} 7`,

@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"sort"
 	"strconv"
 	"strings"
@@ -104,12 +105,15 @@ type ovnTopologyRuntime struct {
 }
 
 type libovsdbDialFunc func(context.Context, string, string) (libovsdbclient.Client, func(), error)
+type ovnLeaderProbe func(context.Context, []string) (string, error)
 
 type libovsdbClusterConnector struct {
 	mu           sync.Mutex
 	owner        string
 	endpoints    []string
 	dial         libovsdbDialFunc
+	leaderProbe  ovnLeaderProbe
+	leader       string
 	current      string
 	currentIndex int
 	failovers    int
@@ -138,8 +142,10 @@ type ovnHealthSnapshot struct {
 
 type ovnClusterHealthSnapshot struct {
 	ActiveEndpoint      string
+	LeaderEndpoint      string
 	ConfiguredEndpoints int
 	Failovers           int
+	LeaderPreferred     bool
 }
 
 type ovnHealthTracker struct {
@@ -280,7 +286,7 @@ func (r *stateFileReconciler) reconcile(ctx context.Context, path string) error 
 	ovnAudit, ovnAuditStatus, ovnAuditError := r.auditOVN(ctx, r.memory.TopologyState())
 	duration := time.Since(start)
 	fmt.Printf(
-		"netloom-controller reconciled desired state vpcs=%d subnets=%d endpoints=%d route_tables=%d policy_routes=%d gateways=%d nat_rules=%d load_balancers=%d security_groups=%d policy_entries=%d lb_health_checked=%d lb_health_healthy=%d lb_health_unhealthy=%d ovn_health=%s ovn_health_latency_ms=%d ovn_health_consecutive_failures=%d ovn_health_consecutive_successes=%d ovn_health_recovering=%d ovn_cluster_active_endpoint=%s ovn_cluster_endpoints=%d ovn_cluster_failovers=%d ovn_ops=%d ovn_executed=%d ovn_audit=%s ovn_live_managed=%d ovn_live_duplicates=%d ovn_live_incomplete=%d ovn_live_missing=%d ovn_live_unexpected=%d ovn_live_drifted_rows=%d ovn_live_drifted_fields=%d ovn_audit_error=%s reconcile_duration_ms=%d\n",
+		"netloom-controller reconciled desired state vpcs=%d subnets=%d endpoints=%d route_tables=%d policy_routes=%d gateways=%d nat_rules=%d load_balancers=%d security_groups=%d policy_entries=%d lb_health_checked=%d lb_health_healthy=%d lb_health_unhealthy=%d ovn_health=%s ovn_health_latency_ms=%d ovn_health_consecutive_failures=%d ovn_health_consecutive_successes=%d ovn_health_recovering=%d ovn_cluster_active_endpoint=%s ovn_cluster_leader_endpoint=%s ovn_cluster_leader_preferred=%d ovn_cluster_endpoints=%d ovn_cluster_failovers=%d ovn_ops=%d ovn_executed=%d ovn_audit=%s ovn_live_managed=%d ovn_live_duplicates=%d ovn_live_incomplete=%d ovn_live_missing=%d ovn_live_unexpected=%d ovn_live_drifted_rows=%d ovn_live_drifted_fields=%d ovn_audit_error=%s reconcile_duration_ms=%d\n",
 		len(state.VPCs),
 		len(state.Subnets),
 		len(state.Endpoints),
@@ -300,6 +306,8 @@ func (r *stateFileReconciler) reconcile(ctx context.Context, path string) error 
 		ovnHealth.Snapshot.ConsecutiveSuccesses,
 		boolMetric(ovnHealth.Snapshot.Recovering),
 		formatResultValue(ovnHealth.Snapshot.Cluster.ActiveEndpoint),
+		formatResultValue(ovnHealth.Snapshot.Cluster.LeaderEndpoint),
+		boolMetric(ovnHealth.Snapshot.Cluster.LeaderPreferred),
 		ovnHealth.Snapshot.Cluster.ConfiguredEndpoints,
 		ovnHealth.Snapshot.Cluster.Failovers,
 		ovnOps,
@@ -356,7 +364,7 @@ func printControllerReconcileFailure(phase string, state control.DesiredState, h
 		phase = "unknown"
 	}
 	fmt.Printf(
-		"netloom-controller reconcile failed reconcile_phase=%s vpcs=%d subnets=%d endpoints=%d route_tables=%d policy_routes=%d gateways=%d nat_rules=%d load_balancers=%d security_groups=%d policy_entries=%d lb_health_checked=%d lb_health_healthy=%d lb_health_unhealthy=%d ovn_health=%s ovn_health_latency_ms=%d ovn_health_consecutive_failures=%d ovn_health_consecutive_successes=%d ovn_health_recovering=%d ovn_cluster_active_endpoint=%s ovn_cluster_endpoints=%d ovn_cluster_failovers=%d ovn_ops=%d ovn_executed=%d err=%q reconcile_duration_ms=%d\n",
+		"netloom-controller reconcile failed reconcile_phase=%s vpcs=%d subnets=%d endpoints=%d route_tables=%d policy_routes=%d gateways=%d nat_rules=%d load_balancers=%d security_groups=%d policy_entries=%d lb_health_checked=%d lb_health_healthy=%d lb_health_unhealthy=%d ovn_health=%s ovn_health_latency_ms=%d ovn_health_consecutive_failures=%d ovn_health_consecutive_successes=%d ovn_health_recovering=%d ovn_cluster_active_endpoint=%s ovn_cluster_leader_endpoint=%s ovn_cluster_leader_preferred=%d ovn_cluster_endpoints=%d ovn_cluster_failovers=%d ovn_ops=%d ovn_executed=%d err=%q reconcile_duration_ms=%d\n",
 		phase,
 		len(state.VPCs),
 		len(state.Subnets),
@@ -377,6 +385,8 @@ func printControllerReconcileFailure(phase string, state control.DesiredState, h
 		ovnHealth.ConsecutiveSuccesses,
 		boolMetric(ovnHealth.Recovering),
 		formatResultValue(ovnHealth.Cluster.ActiveEndpoint),
+		formatResultValue(ovnHealth.Cluster.LeaderEndpoint),
+		boolMetric(ovnHealth.Cluster.LeaderPreferred),
 		ovnHealth.Cluster.ConfiguredEndpoints,
 		ovnHealth.Cluster.Failovers,
 		ovnOps,
@@ -737,6 +747,13 @@ func writeControllerMetrics(w metricWriter, snapshot controllerMetricsSnapshot, 
 		"endpoint":   fallbackMetricsLabel(snapshot.OVNCluster.ActiveEndpoint, "none"),
 		"ovn_health": fallbackMetricsLabel(snapshot.OVNHealthStatus, "disabled"),
 	}), boolMetric(snapshot.OVNCluster.ActiveEndpoint != ""))
+	writeMetricType(w, "netloom_controller_ovn_cluster_leader_endpoint", "gauge")
+	fmt.Fprintf(w, "netloom_controller_ovn_cluster_leader_endpoint%s %d\n", prometheusLabels(map[string]string{
+		"endpoint":   fallbackMetricsLabel(snapshot.OVNCluster.LeaderEndpoint, "none"),
+		"ovn_health": fallbackMetricsLabel(snapshot.OVNHealthStatus, "disabled"),
+	}), boolMetric(snapshot.OVNCluster.LeaderEndpoint != ""))
+	writeMetricType(w, "netloom_controller_ovn_cluster_leader_preferred", "gauge")
+	fmt.Fprintf(w, "netloom_controller_ovn_cluster_leader_preferred%s %d\n", baseLabels, boolMetric(snapshot.OVNCluster.LeaderPreferred))
 	writeMetricType(w, "netloom_controller_ovn_cluster_endpoints", "gauge")
 	fmt.Fprintf(w, "netloom_controller_ovn_cluster_endpoints%s %d\n", baseLabels, snapshot.OVNCluster.ConfiguredEndpoints)
 	writeMetricType(w, "netloom_controller_ovn_cluster_failovers", "gauge")
@@ -1132,7 +1149,7 @@ func newLibOVSDBClusterConnectorFromEnv(owner string) (*libovsdbClusterConnector
 	if len(endpoints) == 0 {
 		return nil, nil, nil, fmt.Errorf("%s requires NETLOOM_OVN_LIBOVSDB_ENDPOINT or NETLOOM_OVN_NBCTL_DB", owner)
 	}
-	cluster := newLibOVSDBClusterConnector(owner, endpoints, newOVNNBClientForEndpoint)
+	cluster := newLibOVSDBClusterConnector(owner, endpoints, newOVNNBClientForEndpoint, ovnLeaderProbeFromEnv())
 	client, closeFn, err := cluster.Connect(context.Background())
 	if err != nil {
 		return nil, nil, nil, err
@@ -1167,7 +1184,7 @@ func ovnLibOVSDBEndpointsFromEnv() []string {
 	return endpoints
 }
 
-func newLibOVSDBClusterConnector(owner string, endpoints []string, dial libovsdbDialFunc) *libovsdbClusterConnector {
+func newLibOVSDBClusterConnector(owner string, endpoints []string, dial libovsdbDialFunc, leaderProbe ovnLeaderProbe) *libovsdbClusterConnector {
 	if dial == nil {
 		dial = newOVNNBClientForEndpoint
 	}
@@ -1175,6 +1192,7 @@ func newLibOVSDBClusterConnector(owner string, endpoints []string, dial libovsdb
 		owner:        owner,
 		endpoints:    append([]string(nil), endpoints...),
 		dial:         dial,
+		leaderProbe:  leaderProbe,
 		currentIndex: -1,
 	}
 }
@@ -1190,6 +1208,11 @@ func (c *libovsdbClusterConnector) Connect(ctx context.Context) (libovsdbclient.
 		start = (c.currentIndex + 1) % len(c.endpoints)
 	}
 	c.mu.Unlock()
+	if leader := c.probeLeader(ctx); leader != "" {
+		if index := indexString(c.endpoints, leader); index >= 0 {
+			start = index
+		}
+	}
 
 	var errs []string
 	for offset := 0; offset < len(c.endpoints); offset++ {
@@ -1212,6 +1235,24 @@ func (c *libovsdbClusterConnector) Connect(ctx context.Context) (libovsdbclient.
 	return nil, nil, fmt.Errorf("connect OVN northbound libovsdb endpoints: %s", strings.Join(errs, "; "))
 }
 
+func (c *libovsdbClusterConnector) probeLeader(ctx context.Context) string {
+	if c == nil || c.leaderProbe == nil {
+		return ""
+	}
+	leader, err := c.leaderProbe(ctx, append([]string(nil), c.endpoints...))
+	if err != nil {
+		return ""
+	}
+	leader = strings.TrimSpace(leader)
+	if leader == "" {
+		return ""
+	}
+	c.mu.Lock()
+	c.leader = leader
+	c.mu.Unlock()
+	return leader
+}
+
 func (c *libovsdbClusterConnector) Snapshot() ovnClusterHealthSnapshot {
 	if c == nil {
 		return ovnClusterHealthSnapshot{}
@@ -1220,13 +1261,15 @@ func (c *libovsdbClusterConnector) Snapshot() ovnClusterHealthSnapshot {
 	defer c.mu.Unlock()
 	return ovnClusterHealthSnapshot{
 		ActiveEndpoint:      c.current,
+		LeaderEndpoint:      c.leader,
 		ConfiguredEndpoints: len(c.endpoints),
 		Failovers:           c.failovers,
+		LeaderPreferred:     c.leader != "" && c.current == c.leader,
 	}
 }
 
 func newOVNNBClientFromEndpoints(ctx context.Context, owner string, endpoints []string) (libovsdbclient.Client, func(), error) {
-	cluster := newLibOVSDBClusterConnector(owner, endpoints, newOVNNBClientForEndpoint)
+	cluster := newLibOVSDBClusterConnector(owner, endpoints, newOVNNBClientForEndpoint, nil)
 	return cluster.Connect(ctx)
 }
 
@@ -1268,6 +1311,53 @@ func newOVNNBClientForEndpoint(ctx context.Context, owner, endpoint string) (lib
 		client.Disconnect()
 		client.Close()
 	}, nil
+}
+
+func ovnLeaderProbeFromEnv() ovnLeaderProbe {
+	command := strings.TrimSpace(os.Getenv("NETLOOM_OVN_LEADER_STATUS_CMD"))
+	if command == "" {
+		return nil
+	}
+	return func(ctx context.Context, endpoints []string) (string, error) {
+		output, err := exec.CommandContext(ctx, "sh", "-c", command).CombinedOutput()
+		if err != nil {
+			return "", fmt.Errorf("probe OVN leader endpoint: %w: %s", err, strings.TrimSpace(string(output)))
+		}
+		leader := parseOVNLeaderEndpoint(string(output), endpoints)
+		if leader == "" {
+			return "", fmt.Errorf("probe OVN leader endpoint: no configured endpoint found in output")
+		}
+		return leader, nil
+	}
+}
+
+func parseOVNLeaderEndpoint(output string, endpoints []string) string {
+	for _, endpoint := range endpoints {
+		if endpoint != "" && strings.Contains(output, endpoint) {
+			return endpoint
+		}
+	}
+	lines := strings.Split(output, "\n")
+	for _, line := range lines {
+		key, value, ok := strings.Cut(line, ":")
+		if !ok || !strings.EqualFold(strings.TrimSpace(key), "leader") {
+			continue
+		}
+		candidate := strings.TrimSpace(value)
+		if indexString(endpoints, candidate) >= 0 {
+			return candidate
+		}
+	}
+	return ""
+}
+
+func indexString(values []string, value string) int {
+	for i, candidate := range values {
+		if candidate == value {
+			return i
+		}
+	}
+	return -1
 }
 
 func newNBCTLExecutorFromEnv(db string) (*ovn.NBCTLExecutor, error) {
