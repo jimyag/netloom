@@ -33,6 +33,9 @@ func desiredProviderOVSDBRows(specs []providerNetworkLinkSpec) ProviderOVSDBDesi
 					"netloom_provider_network": spec.ProviderNetwork,
 				},
 			}
+			if spec.Isolation != "" {
+				bridge.ExternalIDs["netloom_provider_isolation"] = spec.Isolation
+			}
 			bridgeByName[bridgeName] = bridge
 		}
 		bridge.Ports = appendUniqueString(bridge.Ports, spec.Name)

@@ -59,7 +59,8 @@ func TestCoreNetworkResourcesValidateRequiredFields(t *testing.T) {
 			name: "provider network",
 			valid: func() error {
 				return ProviderNetwork{
-					Name: "physnet-a",
+					Name:      "physnet-a",
+					Isolation: "exclusive",
 					Nodes: []ProviderNetworkNode{
 						{Node: "node-a", Interface: "bond0.100"},
 					},
@@ -74,6 +75,28 @@ func TestCoreNetworkResourcesValidateRequiredFields(t *testing.T) {
 				}.Validate()
 			},
 			wantErr: "provider network interface or interfaces are required",
+		},
+		{
+			name: "provider network isolation",
+			valid: func() error {
+				return ProviderNetwork{
+					Name:      "physnet-a",
+					Isolation: "shared",
+					Nodes: []ProviderNetworkNode{
+						{Node: "node-a", Interface: "bond0.100"},
+					},
+				}.Validate()
+			},
+			invalid: func() error {
+				return ProviderNetwork{
+					Name:      "physnet-a",
+					Isolation: "tenant",
+					Nodes: []ProviderNetworkNode{
+						{Node: "node-a", Interface: "bond0.100"},
+					},
+				}.Validate()
+			},
+			wantErr: "provider network isolation",
 		},
 		{
 			name: "gateway",

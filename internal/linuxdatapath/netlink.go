@@ -674,12 +674,16 @@ func providerOVSDBInterfaceState(ctx context.Context, spec providerNetworkLinkSp
 }
 
 func providerOVSDBLinkExternalIDs(spec providerNetworkLinkSpec) map[string]string {
-	return map[string]string{
+	ids := map[string]string{
 		"netloom_owner":            "netloom",
 		"netloom_provider_network": spec.ProviderNetwork,
 		"netloom_parent_device":    spec.ParentDevice,
 		"netloom_vlan":             strconv.Itoa(int(spec.VLAN)),
 	}
+	if spec.Isolation != "" {
+		ids["netloom_provider_isolation"] = spec.Isolation
+	}
+	return ids
 }
 
 func ovsBridgeMappingsContain(raw, providerNetwork, bridge string) bool {

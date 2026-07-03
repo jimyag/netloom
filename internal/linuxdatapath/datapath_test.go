@@ -392,8 +392,8 @@ func TestDesiredProviderOVSDBRowsBuildsTypedVSwitchRows(t *testing.T) {
 	bridgeB := providerNetworkBridgeName("physnet-b")
 	rows := desiredProviderOVSDBRows([]providerNetworkLinkSpec{
 		{ProviderNetwork: "physnet-b", ParentDevice: "eth2", VLAN: 200, Name: "nlv200"},
-		{ProviderNetwork: "physnet-a", ParentDevice: "eth1", VLAN: 100, Name: "nlv100"},
-		{ProviderNetwork: "physnet-a", ParentDevice: "eth1", VLAN: 300, Name: "nlv300"},
+		{ProviderNetwork: "physnet-a", ParentDevice: "eth1", VLAN: 100, Name: "nlv100", Isolation: "exclusive"},
+		{ProviderNetwork: "physnet-a", ParentDevice: "eth1", VLAN: 300, Name: "nlv300", Isolation: "exclusive"},
 	})
 
 	if got, want := rows.OpenVSwitch.ExternalIDs["ovn-bridge-mappings"], "physnet-a:"+bridgeA+",physnet-b:"+bridgeB; got != want {
@@ -414,11 +414,19 @@ func TestDesiredProviderOVSDBRowsBuildsTypedVSwitchRows(t *testing.T) {
 	if !reflect.DeepEqual(bridgePorts["physnet-a"], []string{"nlv100", "nlv300"}) {
 		t.Fatalf("bridge physnet-a ports = %#v", bridgePorts["physnet-a"])
 	}
+	for _, bridge := range rows.Bridges {
+		if bridge.ExternalIDs["netloom_provider_network"] == "physnet-a" && bridge.ExternalIDs["netloom_provider_isolation"] != "exclusive" {
+			t.Fatalf("bridge external IDs = %+v, want exclusive isolation", bridge.ExternalIDs)
+		}
+	}
 	if len(rows.Ports) != 3 || rows.Ports[0].Name != "nlv100" || rows.Ports[0].Interfaces[0] != "nlv100" {
 		t.Fatalf("ports = %#v", rows.Ports)
 	}
 	if got := rows.Interfaces[0].ExternalIDs["netloom_parent_device"]; got != "eth1" {
 		t.Fatalf("interface parent external id = %q, want eth1", got)
+	}
+	if got := rows.Ports[0].ExternalIDs["netloom_provider_isolation"]; got != "exclusive" {
+		t.Fatalf("port isolation external id = %q, want exclusive", got)
 	}
 	if got := rows.Interfaces[2].ExternalIDs["netloom_vlan"]; got != "300" {
 		t.Fatalf("interface vlan external id = %q, want 300", got)
@@ -1458,6 +1466,63 @@ func TestPlanRejectsConflictingProviderNetworksOnSameParentVLAN(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), `provider networks "physnet-a" and "physnet-b" both require parent eth1 vlan 100`) {
 		t.Fatalf("err = %v, want conflicting provider network failure", err)
+	}
+}
+
+func TestPlanRejectsExclusiveProviderNetworkParentSharing(t *testing.T) {
+	state := control.DesiredState{
+		ProviderNetworks: []model.ProviderNetwork{
+			{
+				Name:      "physnet-a",
+				Isolation: "exclusive",
+				Nodes: []model.ProviderNetworkNode{{
+					Node:      "node-a",
+					Interface: "eth1",
+				}},
+			},
+			{
+				Name: "physnet-b",
+				Nodes: []model.ProviderNetworkNode{{
+					Node:      "node-a",
+					Interface: "eth1",
+				}},
+			},
+		},
+		Subnets: []model.Subnet{
+			{
+				Name:            "baremetal-a",
+				VPC:             "prod",
+				CIDR:            netip.MustParsePrefix("10.10.0.0/24"),
+				Gateway:         netip.MustParseAddr("10.10.0.1"),
+				ProviderNetwork: "physnet-a",
+				VLAN:            100,
+			},
+			{
+				Name:            "baremetal-b",
+				VPC:             "prod",
+				CIDR:            netip.MustParsePrefix("10.20.0.0/24"),
+				Gateway:         netip.MustParseAddr("10.20.0.1"),
+				ProviderNetwork: "physnet-b",
+				VLAN:            200,
+			},
+		},
+		Endpoints: []model.Endpoint{
+			{ID: "pod-a", VPC: "prod", Subnet: "baremetal-a", IP: netip.MustParseAddr("10.10.0.10"), Node: "node-a"},
+			{ID: "pod-b", VPC: "prod", Subnet: "baremetal-b", IP: netip.MustParseAddr("10.20.0.10"), Node: "node-a"},
+		},
+	}
+	_, result, err := Plan(context.Background(), state, Options{
+		Node:        "node-a",
+		LocalDevice: "nl0",
+	})
+	if err == nil || !strings.Contains(err.Error(), `provider networks "physnet-a" and "physnet-b" cannot share exclusive parent eth1`) {
+		t.Fatalf("err = %v, want exclusive parent sharing failure", err)
+	}
+	if len(result.ProviderIssues) != 1 || result.ProviderIssues[0].Reason != "parent-isolation-conflict" || result.ProviderIssues[0].ParentDevice != "eth1" || result.ProviderIssues[0].Detail != "physnet-a" {
+		t.Fatalf("provider issues = %+v, want parent-isolation-conflict with physnet-a detail", result.ProviderIssues)
+	}
+	if len(result.ProviderNetworkStatus) != 1 || result.ProviderNetworkStatus[0].ProviderNetwork != "physnet-b" || result.ProviderNetworkStatus[0].Ready || !providerNetworkStatusContainsReason(result.ProviderNetworkStatus[0], "parent-isolation-conflict") {
+		t.Fatalf("provider network status = %+v, want physnet-b isolation conflict", result.ProviderNetworkStatus)
 	}
 }
 

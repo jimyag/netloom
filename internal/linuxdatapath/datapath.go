@@ -386,6 +386,7 @@ type providerNetworkLinkSpec struct {
 	ParentDevice    string
 	VLAN            uint16
 	Name            string
+	Isolation       string
 }
 
 func desiredProviderNetworkLinkSpecs(state control.DesiredState, node string, mappings map[string]string, inventory []ProviderInterface) ([]providerNetworkLinkSpec, error) {
@@ -408,8 +409,10 @@ func desiredProviderNetworkLinkSpecs(state control.DesiredState, node string, ma
 	if err != nil {
 		return nil, err
 	}
+	providerIsolation := providerNetworkIsolationByName(state.ProviderNetworks)
 	seen := make(map[string]providerNetworkLinkSpec)
 	claimedLinks := make(map[string]providerNetworkLinkSpec)
+	claimedParents := make(map[string]providerNetworkLinkSpec)
 	for _, subnet := range state.Subnets {
 		if subnet.ProviderNetwork == "" || subnet.VLAN == 0 {
 			continue
@@ -435,7 +438,22 @@ func desiredProviderNetworkLinkSpecs(state control.DesiredState, node string, ma
 			ParentDevice:    parent,
 			VLAN:            subnet.VLAN,
 			Name:            providerNetworkLinkName(subnet.ProviderNetwork, parent, subnet.VLAN),
+			Isolation:       providerIsolation[subnet.ProviderNetwork],
 		}
+		if claimed, ok := claimedParents[parent]; ok && providerIsolationConflicts(claimed, spec) {
+			return nil, &providerPlanningError{
+				issue: ProviderIssue{
+					ProviderNetwork: spec.ProviderNetwork,
+					Node:            node,
+					ParentDevice:    parent,
+					VLAN:            spec.VLAN,
+					Reason:          "parent-isolation-conflict",
+					Detail:          claimed.ProviderNetwork,
+				},
+				err: fmt.Errorf("provider networks %q and %q cannot share exclusive parent %s", claimed.ProviderNetwork, spec.ProviderNetwork, parent),
+			}
+		}
+		claimedParents[parent] = spec
 		linkKey := parent + "|" + strconv.Itoa(int(spec.VLAN))
 		if claimed, ok := claimedLinks[linkKey]; ok && claimed.ProviderNetwork != spec.ProviderNetwork {
 			return nil, &providerPlanningError{
@@ -463,6 +481,21 @@ func desiredProviderNetworkLinkSpecs(state control.DesiredState, node string, ma
 		specs = append(specs, seen[key])
 	}
 	return specs, nil
+}
+
+func providerNetworkIsolationByName(providerNetworks []model.ProviderNetwork) map[string]string {
+	out := make(map[string]string, len(providerNetworks))
+	for _, providerNetwork := range providerNetworks {
+		out[providerNetwork.Name] = providerNetwork.Isolation
+	}
+	return out
+}
+
+func providerIsolationConflicts(a, b providerNetworkLinkSpec) bool {
+	if a.ProviderNetwork == b.ProviderNetwork {
+		return false
+	}
+	return a.Isolation == "exclusive" || b.Isolation == "exclusive"
 }
 
 func providerLinkMappingsForNode(providerNetworks []model.ProviderNetwork, node string, fallback map[string]string, inventory []ProviderInterface) (map[string]string, error) {

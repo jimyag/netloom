@@ -52,8 +52,9 @@ type VPC struct {
 }
 
 type ProviderNetwork struct {
-	Name  string                `json:"name"`
-	Nodes []ProviderNetworkNode `json:"nodes"`
+	Name      string                `json:"name"`
+	Nodes     []ProviderNetworkNode `json:"nodes"`
+	Isolation string                `json:"isolation,omitempty"`
 }
 
 type ProviderNetworkNode struct {
@@ -281,6 +282,9 @@ func (v VPC) Validate() error {
 func (p ProviderNetwork) Validate() error {
 	if p.Name == "" {
 		return errors.New("provider network name is required")
+	}
+	if p.Isolation != "" && p.Isolation != "shared" && p.Isolation != "exclusive" {
+		return fmt.Errorf("provider network isolation %q is invalid", p.Isolation)
 	}
 	if len(p.Nodes) == 0 {
 		return errors.New("provider network nodes are required")
