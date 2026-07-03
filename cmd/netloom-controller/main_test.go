@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	libovsdbclient "github.com/ovn-kubernetes/libovsdb/client"
+
 	"github.com/jimyag/netloom/internal/control"
 	"github.com/jimyag/netloom/internal/model"
 	"github.com/jimyag/netloom/internal/ovn"
@@ -144,6 +146,51 @@ func TestLibOVSDBReconnectBackoffRejectsInvalidValue(t *testing.T) {
 	t.Setenv("NETLOOM_OVN_LIBOVSDB_RECONNECT_MAX_BACKOFF_MS", "later")
 	if _, err := libovsdbReconnectMaxBackoff(); err == nil {
 		t.Fatal("expected invalid libovsdb max reconnect backoff to fail")
+	}
+}
+
+func TestOVNLibOVSDBEndpointsFromEnvParsesClusterList(t *testing.T) {
+	t.Setenv("NETLOOM_OVN_LIBOVSDB_ENDPOINT", "tcp:10.0.0.1:6641, tcp:10.0.0.2:6641 tcp:10.0.0.1:6641")
+	endpoints := ovnLibOVSDBEndpointsFromEnv()
+	want := []string{"tcp:10.0.0.1:6641", "tcp:10.0.0.2:6641"}
+	if strings.Join(endpoints, ",") != strings.Join(want, ",") {
+		t.Fatalf("endpoints = %+v, want %+v", endpoints, want)
+	}
+}
+
+func TestLibOVSDBClusterConnectorFailsOverEndpoints(t *testing.T) {
+	attempts := make([]string, 0)
+	cluster := newLibOVSDBClusterConnector("test", []string{"tcp:a:6641", "tcp:b:6641"}, func(_ context.Context, _ string, endpoint string) (libovsdbclient.Client, func(), error) {
+		attempts = append(attempts, endpoint)
+		if endpoint == "tcp:a:6641" {
+			return nil, nil, errors.New("down")
+		}
+		return nil, func() {}, nil
+	})
+	if _, _, err := cluster.Connect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(attempts, ",") != "tcp:a:6641,tcp:b:6641" {
+		t.Fatalf("attempts = %+v, want first endpoint then failover endpoint", attempts)
+	}
+	snapshot := cluster.Snapshot()
+	if snapshot.ActiveEndpoint != "tcp:b:6641" || snapshot.ConfiguredEndpoints != 2 || snapshot.Failovers != 0 {
+		t.Fatalf("initial cluster snapshot = %+v, want active b without counted failover", snapshot)
+	}
+	attempts = attempts[:0]
+	cluster.dial = func(_ context.Context, _ string, endpoint string) (libovsdbclient.Client, func(), error) {
+		attempts = append(attempts, endpoint)
+		if endpoint == "tcp:a:6641" {
+			return nil, func() {}, nil
+		}
+		return nil, nil, errors.New("down")
+	}
+	if _, _, err := cluster.Connect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	snapshot = cluster.Snapshot()
+	if snapshot.ActiveEndpoint != "tcp:a:6641" || snapshot.Failovers != 1 {
+		t.Fatalf("failover cluster snapshot = %+v, want active a with one failover", snapshot)
 	}
 }
 
@@ -329,8 +376,13 @@ func TestControllerMetricsExportsLatestSuccess(t *testing.T) {
 		OVNHealthStatus:               "ok",
 		OVNHealthLatency:              25 * time.Millisecond,
 		OVNHealthConsecutiveSuccesses: 1,
-		OVNOps:                        7,
-		OVNExecuted:                   6,
+		OVNCluster: ovnClusterHealthSnapshot{
+			ActiveEndpoint:      "tcp:10.0.0.2:6641",
+			ConfiguredEndpoints: 3,
+			Failovers:           1,
+		},
+		OVNOps:      7,
+		OVNExecuted: 6,
 		OVNCleanup: ovn.CleanupStats{
 			Operations:           3,
 			StaleEndpoints:       1,
@@ -383,6 +435,9 @@ func TestControllerMetricsExportsLatestSuccess(t *testing.T) {
 		`netloom_controller_ovn_health_consecutive_failures{ovn_health="ok"} 0`,
 		`netloom_controller_ovn_health_consecutive_successes{ovn_health="ok"} 1`,
 		`netloom_controller_ovn_health_recovering{ovn_health="ok"} 0`,
+		`netloom_controller_ovn_cluster_active_endpoint{endpoint="tcp:10.0.0.2:6641",ovn_health="ok"} 1`,
+		`netloom_controller_ovn_cluster_endpoints{ovn_health="ok"} 3`,
+		`netloom_controller_ovn_cluster_failovers{ovn_health="ok"} 1`,
 		`netloom_controller_ovn_operations_planned{ovn_health="ok"} 7`,
 		`netloom_controller_ovn_operations_executed{ovn_health="ok"} 6`,
 		`netloom_controller_ovn_cleanup_operations{ovn_health="ok"} 3`,

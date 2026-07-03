@@ -132,11 +132,11 @@ Kube-OVN has explicit leader/DB-health/recovery logic around OVN:
 - `/tmp/kube-ovn/pkg/ovn_leader_checker/ovn.go`
 - `/tmp/kube-ovn/pkg/ovnmonitor`
 
-Netloom now has `ovn-nbctl show` health probing, libovsdb `echo` health probing for direct OVSDB topology mode, a reconnecting libovsdb topology health checker that rebuilds and re-monitors the Northbound client with configurable backoff after disconnects, command timeout/retry knobs, and controller metrics/log fields for consecutive OVN health failures, consecutive successes, and the first successful recovering reconcile after a failure.
+Netloom now has `ovn-nbctl show` health probing, libovsdb `echo` health probing for direct OVSDB topology mode, a reconnecting libovsdb topology health checker that rebuilds and re-monitors the Northbound client with configurable backoff after disconnects, comma/whitespace separated OVN Northbound libovsdb endpoint failover for initial connect and health reconnect, command timeout/retry knobs, and controller metrics/log fields for consecutive OVN health failures, consecutive successes, the first successful recovering reconcile after a failure, active OVN endpoint, configured endpoint count, and failover count.
 
 Netloom is still missing:
 
-- leader/failover handling model
+- true OVN leader role detection and leader-aware endpoint preference
 - DB compaction / stale-state maintenance workflow
 
 If this stays missing, the system will work in a lab but remain weak as a product.
