@@ -41,6 +41,21 @@ func TestLoadIdentityGroupObservationsJSONAcceptsDocumentAndArray(t *testing.T) 
 	}
 }
 
+func TestLoadIdentityGroupObservationFeedJSONAcceptsIncrementalPatches(t *testing.T) {
+	feed, err := LoadIdentityGroupObservationFeedJSON(strings.NewReader(`{"identity_group_patches":[{"op":"upsert","group":{"name":"frontend","vpc":"prod","source":"cmdb","endpoint_ids":["pod-a"]}},{"op":"delete","vpc":"prod","name":"old"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if feed.Snapshot || len(feed.Patches) != 2 || feed.Patches[0].Op != "upsert" || feed.Patches[1].Op != "delete" {
+		t.Fatalf("feed = %+v, want incremental upsert/delete patches", feed)
+	}
+
+	_, err = LoadIdentityGroupObservationsJSON(strings.NewReader(`{"identity_group_patches":[{"op":"delete","vpc":"prod","name":"old"}]}`))
+	if err == nil || !strings.Contains(err.Error(), "requires cached groups") {
+		t.Fatalf("err = %v, want cached groups error for legacy snapshot loader", err)
+	}
+}
+
 func TestLoadIdentityGroupObservationsHTTPUsesBearerToken(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -59,6 +74,63 @@ func TestLoadIdentityGroupObservationsHTTPUsesBearerToken(t *testing.T) {
 	}
 	if len(groups) != 1 || groups[0].Name != "frontend" || groups[0].Source != "cmdb" {
 		t.Fatalf("groups = %+v, want remote frontend group", groups)
+	}
+}
+
+func TestMergeIdentityGroupObservationsAppliesRemotePatchFeedToCache(t *testing.T) {
+	var requests int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if atomic.AddInt32(&requests, 1) == 1 {
+			w.Header().Set("ETag", `"snapshot"`)
+			_, _ = w.Write([]byte(`{"identity_groups":[{"name":"frontend","vpc":"prod","source":"cmdb","endpoint_ids":["pod-a"]},{"name":"backend","vpc":"prod","source":"cmdb","endpoint_ids":["pod-b"]}]}`))
+			return
+		}
+		w.Header().Set("ETag", `"patch-1"`)
+		_, _ = w.Write([]byte(`{"identity_group_patches":[{"op":"upsert","group":{"name":"frontend","vpc":"prod","source":"cmdb","endpoint_ids":["pod-c"]}},{"op":"delete","vpc":"prod","name":"backend"},{"op":"add","group":{"name":"worker","vpc":"prod","source":"cmdb","endpoint_ids":["pod-d"]}}]}`))
+	}))
+	defer server.Close()
+
+	cache := &IdentityGroupObservationCache{}
+	state, err := MergeIdentityGroupObservations(context.Background(), DesiredState{}, IdentityGroupObservationOptions{
+		URL:        server.URL,
+		HTTPClient: server.Client(),
+		Cache:      cache,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.IdentityGroups) != 2 || cache.ETag != `"snapshot"` {
+		t.Fatalf("state = %+v cache = %+v, want initial snapshot", state.IdentityGroups, cache)
+	}
+
+	state, err = MergeIdentityGroupObservations(context.Background(), DesiredState{}, IdentityGroupObservationOptions{
+		URL:        server.URL,
+		HTTPClient: server.Client(),
+		Cache:      cache,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.IdentityGroups) != 2 || state.IdentityGroups[0].Name != "frontend" || state.IdentityGroups[0].EndpointIDs[0] != "pod-c" || state.IdentityGroups[1].Name != "worker" {
+		t.Fatalf("identity groups = %+v, want patched frontend and worker only", state.IdentityGroups)
+	}
+	if cache.ETag != `"patch-1"` || len(cache.Groups) != 2 {
+		t.Fatalf("cache = %+v, want patched cache and patch etag", cache)
+	}
+}
+
+func TestMergeIdentityGroupObservationsRejectsRemotePatchFeedWithoutCache(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"identity_group_patches":[{"op":"delete","vpc":"prod","name":"backend"}]}`))
+	}))
+	defer server.Close()
+
+	_, err := MergeIdentityGroupObservations(context.Background(), DesiredState{}, IdentityGroupObservationOptions{
+		URL:        server.URL,
+		HTTPClient: server.Client(),
+	})
+	if err == nil || !strings.Contains(err.Error(), "requires cached groups") {
+		t.Fatalf("err = %v, want cached groups error", err)
 	}
 }
 
