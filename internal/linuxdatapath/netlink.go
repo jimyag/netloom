@@ -554,7 +554,7 @@ func cleanupStaleRemoteRoutes(root *netlink.Handle, desired map[string]struct{},
 
 func executeProviderOVSDBSync(ctx context.Context, options Options, state control.DesiredState, specs []providerNetworkLinkSpec, cleanup bool) error {
 	if options.ProviderOVSDBSyncer != nil {
-		if err := options.ProviderOVSDBSyncer.SyncProviderOVSDB(ctx, desiredProviderOVSDBRows(specs), cleanup); err != nil {
+		if err := options.ProviderOVSDBSyncer.SyncProviderOVSDB(ctx, desiredProviderOVSDBRowsForIdentityGroups(specs, state.IdentityGroups, state.Endpoints), cleanup); err != nil {
 			return err
 		}
 		return executeProviderQueueFlows(ctx, options, state, specs, cleanup)

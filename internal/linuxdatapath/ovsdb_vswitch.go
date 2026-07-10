@@ -3,6 +3,7 @@ package linuxdatapath
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"sort"
 	"strconv"
 	"strings"
@@ -22,6 +23,10 @@ type ProviderOVSDBDesiredRows struct {
 }
 
 func desiredProviderOVSDBRows(specs []providerNetworkLinkSpec) ProviderOVSDBDesiredRows {
+	return desiredProviderOVSDBRowsForIdentityGroups(specs, nil, nil)
+}
+
+func desiredProviderOVSDBRowsForIdentityGroups(specs []providerNetworkLinkSpec, identityGroups []model.IdentityGroup, endpoints []model.Endpoint) ProviderOVSDBDesiredRows {
 	bridgeByName := make(map[string]*vswitch.Bridge)
 	controllerByName := make(map[string]vswitch.Controller)
 	portByName := make(map[string]vswitch.Port)
@@ -155,13 +160,16 @@ func desiredProviderOVSDBRows(specs []providerNetworkLinkSpec) ProviderOVSDBDesi
 	}
 	sort.Strings(mappings)
 
+	rootExternalIDs := map[string]string{
+		"netloom_owner":           "netloom",
+		"ovn-bridge-mappings":     strings.Join(mappings, ","),
+		"netloom_identity_groups": providerOVSDBIdentityGroupsSnapshot(identityGroups, endpoints),
+	}
+
 	return ProviderOVSDBDesiredRows{
 		OpenVSwitch: vswitch.OpenvSwitch{
-			Bridges: bridgeNames,
-			ExternalIDs: map[string]string{
-				"netloom_owner":       "netloom",
-				"ovn-bridge-mappings": strings.Join(mappings, ","),
-			},
+			Bridges:     bridgeNames,
+			ExternalIDs: rootExternalIDs,
 		},
 		Bridges:     bridges,
 		Controllers: controllers,
@@ -170,6 +178,108 @@ func desiredProviderOVSDBRows(specs []providerNetworkLinkSpec) ProviderOVSDBDesi
 		QoS:         qosRows,
 		Queues:      queueRows,
 	}
+}
+
+type providerOVSDBIdentityGroupsSnapshotDoc struct {
+	Version int                               `json:"version"`
+	Groups  []providerOVSDBIdentityGroupState `json:"groups"`
+}
+
+type providerOVSDBIdentityGroupState struct {
+	VPC                 string                     `json:"vpc"`
+	Name                string                     `json:"name"`
+	Source              string                     `json:"source,omitempty"`
+	ObservedAt          string                     `json:"observed_at,omitempty"`
+	TTLSeconds          uint32                     `json:"ttl_seconds,omitempty"`
+	ExpiresAt           string                     `json:"expires_at,omitempty"`
+	EndpointIDs         []string                   `json:"endpoint_ids,omitempty"`
+	EndpointSelector    model.Labels               `json:"endpoint_selector,omitempty"`
+	EndpointExpressions []model.LabelExpr          `json:"endpoint_expressions,omitempty"`
+	ResolvedEndpoints   []providerOVSDBEndpointRef `json:"resolved_endpoints,omitempty"`
+}
+
+type providerOVSDBEndpointRef struct {
+	ID     string `json:"id"`
+	Subnet string `json:"subnet,omitempty"`
+	IP     string `json:"ip,omitempty"`
+	Node   string `json:"node,omitempty"`
+}
+
+func providerOVSDBIdentityGroupsSnapshot(groups []model.IdentityGroup, endpoints []model.Endpoint) string {
+	if len(groups) == 0 {
+		return ""
+	}
+	out := providerOVSDBIdentityGroupsSnapshotDoc{
+		Version: 1,
+		Groups:  make([]providerOVSDBIdentityGroupState, 0, len(groups)),
+	}
+	for _, group := range groups {
+		state := providerOVSDBIdentityGroupState{
+			VPC:                 group.VPC,
+			Name:                group.Name,
+			Source:              group.Source,
+			TTLSeconds:          group.TTLSeconds,
+			EndpointIDs:         append([]string(nil), group.EndpointIDs...),
+			EndpointSelector:    cloneLabels(group.EndpointSelector),
+			EndpointExpressions: append([]model.LabelExpr(nil), group.EndpointExpressions...),
+			ResolvedEndpoints:   providerOVSDBIdentityGroupEndpoints(group, endpoints),
+		}
+		sort.Strings(state.EndpointIDs)
+		if !group.ObservedAt.IsZero() {
+			state.ObservedAt = group.ObservedAt.UTC().Format("2006-01-02T15:04:05Z")
+		}
+		if expiresAt := group.ExpiresAt(); !expiresAt.IsZero() {
+			state.ExpiresAt = expiresAt.UTC().Format("2006-01-02T15:04:05Z")
+		}
+		out.Groups = append(out.Groups, state)
+	}
+	sort.Slice(out.Groups, func(i, j int) bool {
+		if out.Groups[i].VPC != out.Groups[j].VPC {
+			return out.Groups[i].VPC < out.Groups[j].VPC
+		}
+		return out.Groups[i].Name < out.Groups[j].Name
+	})
+	data, err := json.Marshal(out)
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+func providerOVSDBIdentityGroupEndpoints(group model.IdentityGroup, endpoints []model.Endpoint) []providerOVSDBEndpointRef {
+	refs := make([]providerOVSDBEndpointRef, 0)
+	for _, endpoint := range endpoints {
+		if !providerQueueEndpointMatchesIdentityGroup(group, endpoint) {
+			continue
+		}
+		ref := providerOVSDBEndpointRef{
+			ID:     endpoint.ID,
+			Subnet: endpoint.Subnet,
+			Node:   endpoint.Node,
+		}
+		if endpoint.IP.IsValid() {
+			ref.IP = endpoint.IP.String()
+		}
+		refs = append(refs, ref)
+	}
+	sort.Slice(refs, func(i, j int) bool {
+		if refs[i].ID != refs[j].ID {
+			return refs[i].ID < refs[j].ID
+		}
+		return refs[i].IP < refs[j].IP
+	})
+	return refs
+}
+
+func cloneLabels(labels model.Labels) model.Labels {
+	if len(labels) == 0 {
+		return nil
+	}
+	out := make(model.Labels, len(labels))
+	for key, value := range labels {
+		out[key] = value
+	}
+	return out
 }
 
 func providerOVSDBControllerName(providerNetwork, target string) string {

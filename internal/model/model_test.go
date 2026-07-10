@@ -367,6 +367,9 @@ func TestIdentityGroupValidation(t *testing.T) {
 	group := IdentityGroup{
 		Name:        "frontend-api",
 		VPC:         "prod",
+		Source:      "cmdb/team-a",
+		ObservedAt:  time.Date(2026, 7, 10, 1, 2, 3, 0, time.UTC),
+		TTLSeconds:  300,
 		EndpointIDs: []string{"pod-a"},
 		EndpointSelector: Labels{
 			"tier": "frontend",
@@ -390,6 +393,8 @@ func TestIdentityGroupValidation(t *testing.T) {
 		{name: "vpc required", group: IdentityGroup{Name: "frontend", EndpointIDs: []string{"pod-a"}}, wantErr: "vpc is required"},
 		{name: "membership required", group: IdentityGroup{Name: "frontend", VPC: "prod"}, wantErr: "requires endpoint_ids or endpoint selector"},
 		{name: "duplicate endpoint", group: IdentityGroup{Name: "frontend", VPC: "prod", EndpointIDs: []string{"pod-a", "pod-a"}}, wantErr: "duplicated"},
+		{name: "source whitespace", group: IdentityGroup{Name: "frontend", VPC: "prod", Source: " cmdb", EndpointIDs: []string{"pod-a"}}, wantErr: "source"},
+		{name: "ttl requires observed_at", group: IdentityGroup{Name: "frontend", VPC: "prod", TTLSeconds: 60, EndpointIDs: []string{"pod-a"}}, wantErr: "ttl_seconds requires observed_at"},
 		{name: "invalid selector", group: IdentityGroup{Name: "frontend", VPC: "prod", EndpointSelector: Labels{"": "frontend"}}, wantErr: "endpoint_selector"},
 		{name: "invalid expression", group: IdentityGroup{Name: "frontend", VPC: "prod", EndpointExpressions: []LabelExpr{{Key: "role", Operator: "In"}}}, wantErr: "requires values"},
 	}
@@ -403,6 +408,25 @@ func TestIdentityGroupValidation(t *testing.T) {
 				t.Fatalf("error %q does not contain %q", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestIdentityGroupExpiry(t *testing.T) {
+	group := IdentityGroup{
+		Name:        "frontend",
+		VPC:         "prod",
+		ObservedAt:  time.Date(2026, 7, 10, 1, 0, 0, 0, time.UTC),
+		TTLSeconds:  60,
+		EndpointIDs: []string{"pod-a"},
+	}
+	if got := group.ExpiresAt(); !got.Equal(time.Date(2026, 7, 10, 1, 1, 0, 0, time.UTC)) {
+		t.Fatalf("ExpiresAt() = %s, want 2026-07-10T01:01:00Z", got)
+	}
+	if group.Expired(time.Date(2026, 7, 10, 1, 0, 59, 0, time.UTC)) {
+		t.Fatal("group expired before expires_at")
+	}
+	if !group.Expired(time.Date(2026, 7, 10, 1, 1, 0, 0, time.UTC)) {
+		t.Fatal("group should expire at expires_at")
 	}
 }
 

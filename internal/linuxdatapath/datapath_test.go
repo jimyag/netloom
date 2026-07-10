@@ -173,7 +173,7 @@ func TestPlanSyncsProviderBridgeMappingsToOVSDB(t *testing.T) {
 		{Command: "ovs-vsctl", Args: []string{"set", "port", link, "external_ids:netloom_owner=netloom", "external_ids:netloom_parent_device=eth1", "external_ids:netloom_provider_network=physnet-a", "external_ids:netloom_vlan=100"}},
 		planProviderOVSDBClearManagedQoS(link),
 		{Command: "ovs-vsctl", Args: []string{"set", "interface", link, "external_ids:netloom_owner=netloom", "external_ids:netloom_parent_device=eth1", "external_ids:netloom_provider_network=physnet-a", "external_ids:netloom_vlan=100"}},
-		{Command: "ovs-vsctl", Args: []string{"set", "Open_vSwitch", ".", "external_ids:netloom_owner=netloom", "external_ids:ovn-bridge-mappings=physnet-a:" + bridge}},
+		{Command: "ovs-vsctl", Args: []string{"set", "Open_vSwitch", ".", "external_ids:netloom_identity_groups=", "external_ids:netloom_owner=netloom", "external_ids:ovn-bridge-mappings=physnet-a:" + bridge}},
 		{Command: "ip", Args: []string{"link", "set", "nl0", "up"}},
 		{Command: "ip", Args: []string{"addr", "replace", "10.10.0.10/32", "dev", "nl0"}},
 	}
@@ -467,7 +467,7 @@ func TestPlanClearsProviderBridgeMappingsWhenOVSDBSyncHasNoProviders(t *testing.
 		t.Fatal(err)
 	}
 	want := []Operation{
-		{Command: "ovs-vsctl", Args: []string{"set", "Open_vSwitch", ".", "external_ids:netloom_owner=netloom", "external_ids:ovn-bridge-mappings="}},
+		{Command: "ovs-vsctl", Args: []string{"set", "Open_vSwitch", ".", "external_ids:netloom_owner=netloom", "external_ids:ovn-bridge-mappings=", "external_ids:netloom_identity_groups="}},
 		{Command: "ip", Args: []string{"link", "set", "lo", "up"}},
 	}
 	if !reflect.DeepEqual(ops, want) {
@@ -500,7 +500,7 @@ func TestPlanProviderOVSDBMappingsDeduplicatesProviderBridgeMappings(t *testing.
 		t.Fatal("expected ovsdb operations")
 	}
 	last := ops[len(ops)-1]
-	want := Operation{Command: "ovs-vsctl", Args: []string{"set", "Open_vSwitch", ".", "external_ids:netloom_owner=netloom", "external_ids:ovn-bridge-mappings=physnet-a:" + bridge}}
+	want := Operation{Command: "ovs-vsctl", Args: []string{"set", "Open_vSwitch", ".", "external_ids:netloom_identity_groups=", "external_ids:netloom_owner=netloom", "external_ids:ovn-bridge-mappings=physnet-a:" + bridge}}
 	if !reflect.DeepEqual(last, want) {
 		t.Fatalf("last op = %#v, want %#v", last, want)
 	}

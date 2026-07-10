@@ -226,7 +226,7 @@ func Apply(ctx context.Context, state control.DesiredState, options Options) (Re
 			}
 		}
 		if options.SyncOVSDB && options.ProviderOVSDBSyncer != nil {
-			if err := options.ProviderOVSDBSyncer.SyncProviderOVSDB(ctx, desiredProviderOVSDBRows(providerSpecs), options.CleanupStale); err != nil {
+			if err := options.ProviderOVSDBSyncer.SyncProviderOVSDB(ctx, desiredProviderOVSDBRowsForIdentityGroups(providerSpecs, state.IdentityGroups, state.Endpoints), options.CleanupStale); err != nil {
 				return result, err
 			}
 			if err := executeProviderQueueFlows(ctx, options, state, providerSpecs, options.CleanupStale); err != nil {
@@ -338,7 +338,7 @@ func Plan(ctx context.Context, state control.DesiredState, options Options) ([]O
 	result.ProviderNetworkStatus = providerNetworkStatuses(state, result.ProviderStatus, result.ProviderIssues)
 	ops = append(ops, planProviderNetworkLinks(providerSpecs)...)
 	if options.SyncOVSDB {
-		ops = append(ops, planProviderOVSDBMappings(providerSpecs)...)
+		ops = append(ops, planProviderOVSDBMappingsForIdentityGroups(providerSpecs, state.IdentityGroups, state.Endpoints)...)
 		ops = append(ops, planProviderQueueFlows(state, providerSpecs)...)
 	}
 	if options.CleanupStale {
@@ -1092,10 +1092,14 @@ func planProviderNetworkLinks(specs []providerNetworkLinkSpec) []Operation {
 }
 
 func planProviderOVSDBMappings(specs []providerNetworkLinkSpec) []Operation {
+	return planProviderOVSDBMappingsForIdentityGroups(specs, nil, nil)
+}
+
+func planProviderOVSDBMappingsForIdentityGroups(specs []providerNetworkLinkSpec, identityGroups []model.IdentityGroup, endpoints []model.Endpoint) []Operation {
 	if len(specs) == 0 {
-		return []Operation{ovsVSCTLOperation("set", "Open_vSwitch", ".", "external_ids:netloom_owner=netloom", "external_ids:ovn-bridge-mappings=")}
+		return []Operation{ovsVSCTLOperation("set", "Open_vSwitch", ".", "external_ids:netloom_owner=netloom", "external_ids:ovn-bridge-mappings=", "external_ids:netloom_identity_groups=")}
 	}
-	rows := desiredProviderOVSDBRows(specs)
+	rows := desiredProviderOVSDBRowsForIdentityGroups(specs, identityGroups, endpoints)
 	ops := make([]Operation, 0, len(rows.Bridges)+len(rows.Ports)*3+len(rows.QoS)+1)
 	bridgeByPort := make(map[string]string, len(rows.Ports))
 	queueByName := make(map[string]vswitchQueue, len(rows.Queues))

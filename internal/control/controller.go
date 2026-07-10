@@ -9,11 +9,14 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/jimyag/netloom/internal/model"
 	"github.com/jimyag/netloom/internal/policy"
 	"github.com/jimyag/netloom/internal/topology"
 )
+
+var identityGroupNow = time.Now
 
 type TopologyBackend interface {
 	EnsureVPC(context.Context, model.VPC) error
@@ -573,6 +576,9 @@ func validateObjectGraph(state DesiredState) error {
 		if err := group.Validate(); err != nil {
 			return err
 		}
+		if group.Expired(identityGroupNow()) {
+			return fmt.Errorf("identity group %q in vpc %q expired at %s", group.Name, group.VPC, group.ExpiresAt().Format(time.RFC3339))
+		}
 		key := identityGroupKey(group.VPC, group.Name)
 		if _, ok := identityGroups[key]; ok {
 			return fmt.Errorf("duplicate identity group name %q in vpc %q", group.Name, group.VPC)
@@ -772,6 +778,9 @@ func validateObjectGraph(state DesiredState) error {
 		return err
 	}
 	if err := validateIdentityGroupEndpointReferences(identityGroups, endpoints); err != nil {
+		return err
+	}
+	if err := validateProviderTenantQueueIdentityGroupConflicts(providerNetworks, identityGroups, endpoints); err != nil {
 		return err
 	}
 	if err := validateSecurityGroupNamedPortReferences(state.SecurityGroups, state.Endpoints, securityGroups); err != nil {
@@ -1075,6 +1084,72 @@ func validateIdentityGroupEndpointReferences(groups map[string]model.IdentityGro
 		}
 	}
 	return nil
+}
+
+func validateProviderTenantQueueIdentityGroupConflicts(providerNetworks map[string]model.ProviderNetwork, groups map[string]model.IdentityGroup, endpoints map[string]model.Endpoint) error {
+	for _, providerNetwork := range providerNetworks {
+		for i := range providerNetwork.TenantQueues {
+			left := providerNetwork.TenantQueues[i]
+			if len(left.IdentityGroups) == 0 {
+				continue
+			}
+			leftEndpoints := providerTenantQueueIdentityGroupEndpoints(left, groups, endpoints)
+			if len(leftEndpoints) == 0 {
+				continue
+			}
+			for j := i + 1; j < len(providerNetwork.TenantQueues); j++ {
+				right := providerNetwork.TenantQueues[j]
+				if left.Tenant != right.Tenant || len(right.IdentityGroups) == 0 {
+					continue
+				}
+				if !protocolsMayOverlap(left.Protocol, right.Protocol) || !portRangesMayOverlap(left.Ports, right.Ports) {
+					continue
+				}
+				if endpointKey, ok := firstSharedEndpointKey(leftEndpoints, providerTenantQueueIdentityGroupEndpoints(right, groups, endpoints)); ok {
+					endpoint := endpoints[endpointKey]
+					return fmt.Errorf("provider network %q tenant %q identity group queues %d and %d both match endpoint %q", providerNetwork.Name, left.Tenant, left.QueueID, right.QueueID, endpoint.ID)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func providerTenantQueueIdentityGroupEndpoints(queue model.ProviderNetworkTenantQueuePolicy, groups map[string]model.IdentityGroup, endpoints map[string]model.Endpoint) map[string]struct{} {
+	out := make(map[string]struct{})
+	for _, groupName := range queue.IdentityGroups {
+		group, ok := groups[identityGroupKey(queue.Tenant, groupName)]
+		if !ok {
+			continue
+		}
+		for key, endpoint := range endpoints {
+			if identityGroupMatchesEndpoint(group, endpoint) {
+				out[key] = struct{}{}
+			}
+		}
+	}
+	return out
+}
+
+func identityGroupMatchesEndpoint(group model.IdentityGroup, endpoint model.Endpoint) bool {
+	if group.VPC != endpoint.VPC {
+		return false
+	}
+	for _, endpointID := range group.EndpointIDs {
+		if endpointID == endpoint.ID {
+			return true
+		}
+	}
+	return endpoint.Labels.MatchesSelector(group.EndpointSelector, group.EndpointExpressions)
+}
+
+func firstSharedEndpointKey(left, right map[string]struct{}) (string, bool) {
+	for key := range left {
+		if _, ok := right[key]; ok {
+			return key, true
+		}
+	}
+	return "", false
 }
 
 func endpointDefinesNamedPort(endpoint model.Endpoint, protocol model.Protocol, name string) bool {

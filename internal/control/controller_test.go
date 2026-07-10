@@ -669,6 +669,10 @@ func TestControllerAllowsRemoteServiceAnyProtocolExplicitPort(t *testing.T) {
 }
 
 func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
+	oldNow := identityGroupNow
+	identityGroupNow = func() time.Time { return time.Date(2026, 7, 10, 1, 2, 0, 0, time.UTC) }
+	defer func() { identityGroupNow = oldNow }()
+
 	tests := []struct {
 		name    string
 		mutate  func(*DesiredState)
@@ -770,6 +774,56 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 				}}
 			},
 			wantErr: `identity group "frontend-api" references unknown endpoint "missing" in vpc "prod"`,
+		},
+		{
+			name: "identity group expired",
+			mutate: func(state *DesiredState) {
+				state.IdentityGroups = []model.IdentityGroup{{
+					Name:        "frontend-api",
+					VPC:         "prod",
+					ObservedAt:  time.Date(2026, 7, 10, 1, 0, 0, 0, time.UTC),
+					TTLSeconds:  60,
+					EndpointIDs: []string{"pod-a"},
+				}}
+			},
+			wantErr: `identity group "frontend-api" in vpc "prod" expired at 2026-07-10T01:01:00Z`,
+		},
+		{
+			name: "provider identity group queue conflict",
+			mutate: func(state *DesiredState) {
+				state.IdentityGroups = []model.IdentityGroup{{
+					Name:        "frontend-api",
+					VPC:         "prod",
+					EndpointIDs: []string{"pod-a"},
+				}, {
+					Name:        "payments-api",
+					VPC:         "prod",
+					EndpointIDs: []string{"pod-a"},
+				}}
+				state.ProviderNetworks = []model.ProviderNetwork{{
+					Name: "physnet-a",
+					Nodes: []model.ProviderNetworkNode{{
+						Node:      "node-a",
+						Interface: "eth1",
+					}},
+					TenantQueues: []model.ProviderNetworkTenantQueuePolicy{{
+						Tenant:         "prod",
+						QueueID:        10,
+						Protocol:       model.ProtocolTCP,
+						Ports:          []model.PortRange{{From: 443, To: 443}},
+						IdentityGroups: []string{"frontend-api"},
+						MaxRateBPS:     500000000,
+					}, {
+						Tenant:         "prod",
+						QueueID:        11,
+						Protocol:       model.ProtocolTCP,
+						Ports:          []model.PortRange{{From: 443, To: 443}},
+						IdentityGroups: []string{"payments-api"},
+						MaxRateBPS:     250000000,
+					}},
+				}}
+			},
+			wantErr: `provider network "physnet-a" tenant "prod" identity group queues 10 and 11 both match endpoint "pod-a"`,
 		},
 		{
 			name: "duplicate provider network controller target",

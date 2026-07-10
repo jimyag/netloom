@@ -96,6 +96,9 @@ type ProviderNetworkTenantQueuePolicy struct {
 type IdentityGroup struct {
 	Name                string      `json:"name"`
 	VPC                 string      `json:"vpc"`
+	Source              string      `json:"source,omitempty"`
+	ObservedAt          time.Time   `json:"observed_at,omitempty"`
+	TTLSeconds          uint32      `json:"ttl_seconds,omitempty"`
 	EndpointIDs         []string    `json:"endpoint_ids,omitempty"`
 	EndpointSelector    Labels      `json:"endpoint_selector,omitempty"`
 	EndpointExpressions []LabelExpr `json:"endpoint_expressions,omitempty"`
@@ -503,6 +506,12 @@ func (g IdentityGroup) Validate() error {
 	if strings.TrimSpace(g.VPC) == "" {
 		return errors.New("identity group vpc is required")
 	}
+	if strings.TrimSpace(g.Source) != g.Source {
+		return fmt.Errorf("identity group source %q must not have leading or trailing whitespace", g.Source)
+	}
+	if g.TTLSeconds != 0 && g.ObservedAt.IsZero() {
+		return errors.New("identity group ttl_seconds requires observed_at")
+	}
 	seenEndpoints := make(map[string]struct{}, len(g.EndpointIDs))
 	for _, endpoint := range g.EndpointIDs {
 		if strings.TrimSpace(endpoint) == "" {
@@ -530,6 +539,21 @@ func (g IdentityGroup) Validate() error {
 		return errors.New("identity group requires endpoint_ids or endpoint selector")
 	}
 	return nil
+}
+
+func (g IdentityGroup) ExpiresAt() time.Time {
+	if g.TTLSeconds == 0 || g.ObservedAt.IsZero() {
+		return time.Time{}
+	}
+	return g.ObservedAt.Add(time.Duration(g.TTLSeconds) * time.Second)
+}
+
+func (g IdentityGroup) Expired(now time.Time) bool {
+	expiresAt := g.ExpiresAt()
+	if expiresAt.IsZero() {
+		return false
+	}
+	return !now.Before(expiresAt)
 }
 
 func labelsSelectorKey(labels Labels) string {

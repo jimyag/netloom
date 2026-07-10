@@ -2,8 +2,10 @@ package linuxdatapath
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math/rand"
+	"net/netip"
 	"os"
 	"strings"
 	"testing"
@@ -367,6 +369,87 @@ func TestLibOVSDBProviderSyncerCreatesProviderTenantQueues(t *testing.T) {
 	}
 	if queue.ExternalIDs["netloom_tenant"] != "prod" || queue.OtherConfig["min-rate"] != "100000000" || len(queue.OtherConfig) != 1 {
 		t.Fatalf("queue after update = external_ids:%+v other_config:%+v, want selector metadata removed and min-rate preserved", queue.ExternalIDs, queue.OtherConfig)
+	}
+}
+
+func TestLibOVSDBProviderSyncerPersistsIdentityGroupsOnOpenVSwitch(t *testing.T) {
+	client, cleanup := newTestVSwitchClient(t)
+	defer cleanup()
+	ctx := context.Background()
+	insertVSwitchRows(t, ctx, client, &vswitch.OpenvSwitch{})
+
+	rows := desiredProviderOVSDBRowsForIdentityGroups([]providerNetworkLinkSpec{{
+		ProviderNetwork: "physnet-a",
+		ParentDevice:    "eth1",
+		VLAN:            100,
+		Name:            "nlv100",
+		TenantQueues: []model.ProviderNetworkTenantQueuePolicy{{
+			Tenant:         "prod",
+			QueueID:        10,
+			IdentityGroups: []string{"frontend-api"},
+			MaxRateBPS:     500000000,
+		}},
+	}}, []model.IdentityGroup{{
+		Name:        "frontend-api",
+		VPC:         "prod",
+		Source:      "cmdb/team-a",
+		ObservedAt:  time.Date(2026, 7, 10, 1, 2, 3, 0, time.UTC),
+		TTLSeconds:  300,
+		EndpointIDs: []string{"pod-a"},
+		EndpointSelector: model.Labels{
+			"tier": "frontend",
+		},
+	}}, []model.Endpoint{{
+		ID:     "pod-a",
+		VPC:    "prod",
+		Subnet: "apps",
+		IP:     netip.MustParseAddr("10.10.0.10"),
+		Node:   "node-a",
+	}, {
+		ID:     "pod-b",
+		VPC:    "prod",
+		Subnet: "apps",
+		IP:     netip.MustParseAddr("10.10.0.11"),
+		Node:   "node-a",
+		Labels: model.Labels{
+			"tier": "frontend",
+		},
+	}})
+	if err := NewLibOVSDBProviderSyncer(client).SyncProviderOVSDB(ctx, rows, false); err != nil {
+		t.Fatal(err)
+	}
+
+	root := singleVSwitchRoot(t, ctx, client)
+	raw := root.ExternalIDs["netloom_identity_groups"]
+	if raw == "" {
+		t.Fatalf("root external IDs = %+v, want identity group snapshot", root.ExternalIDs)
+	}
+	var snapshot providerOVSDBIdentityGroupsSnapshotDoc
+	if err := json.Unmarshal([]byte(raw), &snapshot); err != nil {
+		t.Fatalf("identity group snapshot JSON = %q: %v", raw, err)
+	}
+	if snapshot.Version != 1 || len(snapshot.Groups) != 1 {
+		t.Fatalf("snapshot = %+v, want one v1 identity group", snapshot)
+	}
+	group := snapshot.Groups[0]
+	if group.VPC != "prod" || group.Name != "frontend-api" || group.Source != "cmdb/team-a" || group.TTLSeconds != 300 || group.ExpiresAt != "2026-07-10T01:07:03Z" {
+		t.Fatalf("snapshot group = %+v, want persisted source and ttl metadata", group)
+	}
+	if len(group.ResolvedEndpoints) != 2 || group.ResolvedEndpoints[0].ID != "pod-a" || group.ResolvedEndpoints[0].IP != "10.10.0.10" || group.ResolvedEndpoints[1].ID != "pod-b" {
+		t.Fatalf("snapshot resolved endpoints = %+v, want pod-a and pod-b", group.ResolvedEndpoints)
+	}
+
+	if err := NewLibOVSDBProviderSyncer(client).SyncProviderOVSDB(ctx, desiredProviderOVSDBRows([]providerNetworkLinkSpec{{
+		ProviderNetwork: "physnet-a",
+		ParentDevice:    "eth1",
+		VLAN:            100,
+		Name:            "nlv100",
+	}}), false); err != nil {
+		t.Fatal(err)
+	}
+	root = singleVSwitchRoot(t, ctx, client)
+	if root.ExternalIDs["netloom_identity_groups"] != "" {
+		t.Fatalf("root external IDs = %+v, want identity group snapshot cleared", root.ExternalIDs)
 	}
 }
 
