@@ -1413,6 +1413,9 @@ func TestApplyPolicyRolloutsResumesAppliedEndpoints(t *testing.T) {
 	if rollout.Items[0].EndpointID != podA || rollout.Items[0].Phase != "resumed_applied" {
 		t.Fatalf("first rollout item = %+v, want resumed pod-a", rollout.Items[0])
 	}
+	if rollout.Items[0].Reason != "resumed_applied" {
+		t.Fatalf("first rollout item reason = %q, want resumed_applied", rollout.Items[0].Reason)
+	}
 	if rollout.Items[1].Phase != "applied" {
 		t.Fatalf("second rollout item = %+v, want newly applied pod-b", rollout.Items[1])
 	}
@@ -1527,6 +1530,9 @@ func TestApplyPolicyRolloutsHonorsPausedRollout(t *testing.T) {
 	if len(rollouts) != 1 || !rollouts[0].Rollout.Paused || rollouts[0].Rollout.PausedAfterBatch != 0 {
 		t.Fatalf("rollouts = %+v, want explicitly paused rollout", rollouts)
 	}
+	if reasons := []string{rollouts[0].Rollout.Items[0].Reason, rollouts[0].Rollout.Items[1].Reason}; !slices.Equal(reasons, []string{"operator_paused", "operator_paused"}) {
+		t.Fatalf("paused rollout item reasons = %+v, want operator_paused", reasons)
+	}
 	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 0 {
 		t.Fatalf("pod-a entries = %+v, want no mutation while paused", entries)
 	}
@@ -1558,6 +1564,9 @@ func TestApplyPolicyRolloutsRequiresApproval(t *testing.T) {
 	}
 	if len(rollouts) != 1 || !rollouts[0].Rollout.ApprovalRequired || !rollouts[0].Rollout.ApprovalPending || !rollouts[0].Rollout.Paused || rollouts[0].Rollout.ApprovalRef != "chg-1234" {
 		t.Fatalf("rollouts = %+v, want approval pending pause", rollouts)
+	}
+	if reasons := []string{rollouts[0].Rollout.Items[0].Reason, rollouts[0].Rollout.Items[1].Reason}; !slices.Equal(reasons, []string{"approval_pending", "approval_pending"}) {
+		t.Fatalf("approval rollout item reasons = %+v, want approval_pending", reasons)
 	}
 	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 0 {
 		t.Fatalf("pod-a entries = %+v, want no mutation before approval", entries)
@@ -1605,6 +1614,9 @@ func TestApplyPolicyRolloutsRequiresAcknowledgement(t *testing.T) {
 	}
 	if len(rollouts) != 1 || !rollouts[0].Rollout.AckRequired || !rollouts[0].Rollout.AckPending || !rollouts[0].Rollout.Paused || rollouts[0].Rollout.AckRef != "ack-1234" {
 		t.Fatalf("rollouts = %+v, want ack pending pause", rollouts)
+	}
+	if reasons := []string{rollouts[0].Rollout.Items[0].Reason, rollouts[0].Rollout.Items[1].Reason}; !slices.Equal(reasons, []string{"ack_pending", "ack_pending"}) {
+		t.Fatalf("ack rollout item reasons = %+v, want ack_pending", reasons)
 	}
 	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 0 {
 		t.Fatalf("pod-a entries = %+v, want no mutation before ack", entries)
@@ -2024,6 +2036,10 @@ func TestRolloutPolicyEndpointsPausesAfterBatch(t *testing.T) {
 	if !slices.Equal(phases, []string{"applied", "paused", "paused"}) {
 		t.Fatalf("rollout phases = %+v, want applied paused paused", phases)
 	}
+	reasons := []string{rollout.Items[0].Reason, rollout.Items[1].Reason, rollout.Items[2].Reason}
+	if !slices.Equal(reasons, []string{"", "pause_after_batch", "pause_after_batch"}) {
+		t.Fatalf("rollout reasons = %+v, want pause_after_batch for paused endpoints", reasons)
+	}
 	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 1 {
 		t.Fatalf("pod-a entries = %+v, want first batch applied", entries)
 	}
@@ -2057,6 +2073,10 @@ func TestRolloutPolicyEndpointsPausesAtPromotionPercent(t *testing.T) {
 	phases := []string{rollout.Items[0].Phase, rollout.Items[1].Phase, rollout.Items[2].Phase}
 	if !slices.Equal(phases, []string{"applied", "applied", "paused"}) {
 		t.Fatalf("rollout phases = %+v, want applied applied paused", phases)
+	}
+	reasons := []string{rollout.Items[0].Reason, rollout.Items[1].Reason, rollout.Items[2].Reason}
+	if !slices.Equal(reasons, []string{"", "", "promotion_limit"}) {
+		t.Fatalf("rollout reasons = %+v, want promotion_limit for paused endpoint", reasons)
 	}
 	if entries := store.Entries(model.EndpointKey("prod", "pod-c")); len(entries) != 0 {
 		t.Fatalf("pod-c entries = %+v, want promotion-paused endpoint untouched", entries)
@@ -2168,6 +2188,10 @@ func TestRolloutPolicyEndpointsStopsAfterApplyFailure(t *testing.T) {
 	if !slices.Equal(phases, []string{"rolled_back", "failed", "skipped"}) {
 		t.Fatalf("rollout phases = %+v, want rolled_back failed skipped", phases)
 	}
+	reasons := []string{rollout.Items[0].Reason, rollout.Items[1].Reason, rollout.Items[2].Reason}
+	if !slices.Equal(reasons, []string{"rollback", "apply_failed", "rollout_failed"}) {
+		t.Fatalf("rollout reasons = %+v, want rollback apply_failed rollout_failed", reasons)
+	}
 	if rollout.Items[1].Error == "" {
 		t.Fatalf("failed rollout item = %+v, want error", rollout.Items[1])
 	}
@@ -2215,6 +2239,10 @@ func TestRolloutPolicyEndpointsSLOGateRollsBackFailedCanary(t *testing.T) {
 	phases := []string{rollout.Items[0].Phase, rollout.Items[1].Phase, rollout.Items[2].Phase}
 	if !slices.Equal(phases, []string{"rolled_back", "skipped", "skipped"}) {
 		t.Fatalf("rollout phases = %+v, want rolled_back skipped skipped", phases)
+	}
+	reasons := []string{rollout.Items[0].Reason, rollout.Items[1].Reason, rollout.Items[2].Reason}
+	if !slices.Equal(reasons, []string{"slo_failed", "rollout_failed", "rollout_failed"}) {
+		t.Fatalf("rollout reasons = %+v, want slo_failed then rollout_failed", reasons)
 	}
 	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 0 {
 		t.Fatalf("pod-a entries = %+v, want SLO rollback to remove canary policy", entries)
@@ -2343,6 +2371,10 @@ func TestRolloutPolicyEndpointsProbeRollsBackFailedCanary(t *testing.T) {
 	}
 	if len(rollout.Probes) != 1 || rollout.Probes[0].Passed || rollout.Probes[0].StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("probe results = %+v, want failed HTTP probe", rollout.Probes)
+	}
+	reasons := []string{rollout.Items[0].Reason, rollout.Items[1].Reason}
+	if !slices.Equal(reasons, []string{"probe_failed", "rollout_failed"}) {
+		t.Fatalf("rollout reasons = %+v, want probe_failed then rollout_failed", reasons)
 	}
 	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 0 {
 		t.Fatalf("pod-a entries = %+v, want probe rollback", entries)

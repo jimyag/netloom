@@ -288,6 +288,7 @@ type PolicyEndpointRolloutItem struct {
 	EndpointID string                         `json:"endpoint_id"`
 	Batch      int                            `json:"batch"`
 	Phase      string                         `json:"phase"`
+	Reason     string                         `json:"reason,omitempty"`
 	Plan       PolicyEndpointPlan             `json:"plan"`
 	Status     dataplane.PolicyEndpointStatus `json:"endpoint_status,omitempty"`
 	Error      string                         `json:"error,omitempty"`
@@ -481,7 +482,7 @@ func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, opt
 	}
 	if rolloutOptions.ApprovalRequired && !rolloutOptions.Approved {
 		rollout.ApprovalPending = true
-		pauseRolloutItems(&rollout, 0)
+		pauseRolloutItems(&rollout, 0, "approval_pending")
 		return syncPolicyRolloutChangeStatus(ctx, rolloutOptions, endpointIDs, rollout), nil
 	}
 	if rolloutOptions.ApprovalRequired && rolloutOptions.Approved {
@@ -495,13 +496,13 @@ func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, opt
 			if err != nil {
 				rollout.ApprovalCallbackError = err.Error()
 				rollout.ApprovalPending = true
-				pauseRolloutItems(&rollout, 0)
+				pauseRolloutItems(&rollout, 0, "approval_callback_error")
 				return syncPolicyRolloutChangeStatus(ctx, rolloutOptions, endpointIDs, rollout), nil
 			}
 			if !approved {
 				rollout.ApprovalCallbackError = "approval callback rejected rollout"
 				rollout.ApprovalPending = true
-				pauseRolloutItems(&rollout, 0)
+				pauseRolloutItems(&rollout, 0, "approval_callback_rejected")
 				return syncPolicyRolloutChangeStatus(ctx, rolloutOptions, endpointIDs, rollout), nil
 			}
 			rollout.ApprovalCallbackApproved = true
@@ -514,7 +515,7 @@ func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, opt
 		if err != nil {
 			rollout.ChangePollError = err.Error()
 			rollout.ApprovalPending = true
-			pauseRolloutItems(&rollout, 0)
+			pauseRolloutItems(&rollout, 0, "change_poll_error")
 			return syncPolicyRolloutChangeStatus(ctx, rolloutOptions, endpointIDs, rollout), nil
 		}
 		if !allowed {
@@ -524,18 +525,18 @@ func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, opt
 			rollout.ChangePollStatus = status
 			rollout.ChangePollError = "external change status is " + status
 			rollout.ApprovalPending = true
-			pauseRolloutItems(&rollout, 0)
+			pauseRolloutItems(&rollout, 0, "change_poll_rejected")
 			return syncPolicyRolloutChangeStatus(ctx, rolloutOptions, endpointIDs, rollout), nil
 		}
 		rollout.ChangePollAllowed = true
 	}
 	if rolloutOptions.AckRequired && !rolloutOptions.Acknowledged {
 		rollout.AckPending = true
-		pauseRolloutItems(&rollout, 0)
+		pauseRolloutItems(&rollout, 0, "ack_pending")
 		return syncPolicyRolloutChangeStatus(ctx, rolloutOptions, endpointIDs, rollout), nil
 	}
 	if rolloutOptions.Paused {
-		pauseRolloutItems(&rollout, 0)
+		pauseRolloutItems(&rollout, 0, "operator_paused")
 		return syncPolicyRolloutChangeStatus(ctx, rolloutOptions, endpointIDs, rollout), nil
 	}
 	snapshots, err := snapshotRolloutPolicyEndpoints(ctx, options.Store, endpointIDs)
@@ -553,21 +554,22 @@ func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, opt
 	applied := make([]string, 0, len(rollout.Items))
 	resumedApplied := stringSet(rolloutOptions.ResumeAppliedEndpointIDs)
 	completedBatches := 0
+	pauseReason := ""
 	for i, item := range rollout.Items {
 		if rollout.Failed != 0 {
-			item.Phase = "skipped"
+			setRolloutItemPhase(&item, "skipped", "rollout_failed")
 			rollout.Skipped++
 			rollout.Items[i] = item
 			continue
 		}
 		if rollout.Paused {
-			item.Phase = "paused"
+			setRolloutItemPhase(&item, "paused", nonEmptyString(pauseReason, "paused"))
 			rollout.Skipped++
 			rollout.Items[i] = item
 			continue
 		}
 		if _, ok := resumedApplied[item.EndpointID]; ok {
-			item.Phase = "resumed_applied"
+			setRolloutItemPhase(&item, "resumed_applied", "resumed_applied")
 			rollout.Applied++
 			rollout.ResumedApplied++
 			if status, ok, err := policyEndpointStatus(ctx, options.Store, item.EndpointID); err != nil {
@@ -581,19 +583,20 @@ func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, opt
 				if shouldPauseRolloutAfterItem(rollout, rolloutOptions, completedBatches, i) {
 					rollout.Paused = true
 					rollout.PausedAfterBatch = item.Batch
+					pauseReason = rolloutPauseReason(rollout, rolloutOptions, completedBatches)
 				}
 			}
 			continue
 		}
 		if err := backend.ApplyEndpointProgram(ctx, prepared[i].program); err != nil {
-			item.Phase = "failed"
+			setRolloutItemPhase(&item, "failed", "apply_failed")
 			item.Error = err.Error()
 			rollout.Failed++
 			rollout.Items[i] = item
 			rollbackRolloutPolicyEndpoints(ctx, options.Store, snapshots, applied, &rollout)
 			continue
 		}
-		item.Phase = "applied"
+		setRolloutItemPhase(&item, "applied", "")
 		rollout.Applied++
 		applied = append(applied, item.EndpointID)
 		if status, ok, err := policyEndpointStatus(ctx, options.Store, item.EndpointID); err != nil {
@@ -615,6 +618,7 @@ func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, opt
 			sloBaseline = nextBaseline
 			if failed {
 				rollout.Failed++
+				setRolloutAppliedItemsReason(&rollout, applied, "slo_failed")
 				rollbackRolloutPolicyEndpoints(ctx, options.Store, snapshots, applied, &rollout)
 			}
 		}
@@ -622,6 +626,7 @@ func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, opt
 			failed := evaluateRolloutProbes(ctx, rolloutOptions, &rollout)
 			if failed {
 				rollout.Failed++
+				setRolloutAppliedItemsReason(&rollout, applied, "probe_failed")
 				rollbackRolloutPolicyEndpoints(ctx, options.Store, snapshots, applied, &rollout)
 			}
 		}
@@ -630,6 +635,7 @@ func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, opt
 			if shouldPauseRolloutAfterItem(rollout, rolloutOptions, completedBatches, i) {
 				rollout.Paused = true
 				rollout.PausedAfterBatch = item.Batch
+				pauseReason = rolloutPauseReason(rollout, rolloutOptions, completedBatches)
 			}
 		}
 	}
@@ -911,15 +917,49 @@ func policyRolloutApprovalPayload(approvalRef string, endpointIDs []string) stri
 	return "netloom-policy-rollout-approval-v1\napproval_ref=" + approvalRef + "\nendpoints=" + strings.Join(endpoints, ",")
 }
 
-func pauseRolloutItems(rollout *PolicyEndpointRollout, afterBatch int) {
+func pauseRolloutItems(rollout *PolicyEndpointRollout, afterBatch int, reason string) {
 	rollout.Paused = true
 	rollout.PausedAfterBatch = afterBatch
 	for i := range rollout.Items {
 		if rollout.Items[i].Phase == "planned" {
-			rollout.Items[i].Phase = "paused"
+			setRolloutItemPhase(&rollout.Items[i], "paused", reason)
 			rollout.Skipped++
 		}
 	}
+}
+
+func setRolloutItemPhase(item *PolicyEndpointRolloutItem, phase, reason string) {
+	item.Phase = phase
+	item.Reason = reason
+}
+
+func setRolloutAppliedItemsReason(rollout *PolicyEndpointRollout, endpointIDs []string, reason string) {
+	ids := stringSet(endpointIDs)
+	for i := range rollout.Items {
+		if _, ok := ids[rollout.Items[i].EndpointID]; !ok {
+			continue
+		}
+		if rollout.Items[i].Phase == "applied" {
+			rollout.Items[i].Reason = reason
+		}
+	}
+}
+
+func rolloutPauseReason(rollout PolicyEndpointRollout, options PolicyEndpointRolloutOptions, completedBatches int) string {
+	if options.PauseAfterBatches > 0 && completedBatches >= options.PauseAfterBatches {
+		return "pause_after_batch"
+	}
+	if rollout.PromotionLimit > 0 && rollout.Applied >= rollout.PromotionLimit {
+		return "promotion_limit"
+	}
+	return "paused"
+}
+
+func nonEmptyString(value, fallback string) string {
+	if value != "" {
+		return value
+	}
+	return fallback
 }
 
 func shouldPauseRolloutAfterItem(rollout PolicyEndpointRollout, options PolicyEndpointRolloutOptions, completedBatches int, index int) bool {
@@ -1257,14 +1297,14 @@ func rollbackRolloutPolicyEndpoints(ctx context.Context, store PolicyStore, snap
 		if err != nil {
 			rollout.RollbackFailed++
 			if itemIndex >= 0 {
-				rollout.Items[itemIndex].Phase = "rollback_failed"
+				setRolloutItemPhase(&rollout.Items[itemIndex], "rollback_failed", "rollback_failed")
 				rollout.Items[itemIndex].Error = err.Error()
 			}
 			continue
 		}
 		rollout.RolledBack++
 		if itemIndex >= 0 {
-			rollout.Items[itemIndex].Phase = "rolled_back"
+			setRolloutItemPhase(&rollout.Items[itemIndex], "rolled_back", nonEmptyString(rollout.Items[itemIndex].Reason, "rollback"))
 		}
 	}
 }
