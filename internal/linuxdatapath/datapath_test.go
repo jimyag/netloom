@@ -171,6 +171,7 @@ func TestPlanSyncsProviderBridgeMappingsToOVSDB(t *testing.T) {
 		{Command: "ovs-vsctl", Args: []string{"set", "bridge", bridge, "external_ids:netloom_owner=netloom", "external_ids:netloom_provider_network=physnet-a"}},
 		planProviderOVSDBPort(bridge, link),
 		{Command: "ovs-vsctl", Args: []string{"set", "port", link, "external_ids:netloom_owner=netloom", "external_ids:netloom_parent_device=eth1", "external_ids:netloom_provider_network=physnet-a", "external_ids:netloom_vlan=100"}},
+		planProviderOVSDBClearManagedQoS(link),
 		{Command: "ovs-vsctl", Args: []string{"set", "interface", link, "external_ids:netloom_owner=netloom", "external_ids:netloom_parent_device=eth1", "external_ids:netloom_provider_network=physnet-a", "external_ids:netloom_vlan=100"}},
 		{Command: "ovs-vsctl", Args: []string{"set", "Open_vSwitch", ".", "external_ids:netloom_owner=netloom", "external_ids:ovn-bridge-mappings=physnet-a:" + bridge}},
 		{Command: "ip", Args: []string{"link", "set", "nl0", "up"}},
@@ -450,6 +451,49 @@ func TestPlanProviderOVSDBMappingsDeduplicatesProviderBridgeMappings(t *testing.
 	}
 }
 
+func TestPlanProviderOVSDBMappingsProgramsQoSAndQueues(t *testing.T) {
+	ops := planProviderOVSDBMappings([]providerNetworkLinkSpec{{
+		ProviderNetwork: "physnet-a",
+		ParentDevice:    "eth1",
+		VLAN:            100,
+		Name:            "nlv100",
+		QoS: model.ProviderNetworkQoS{
+			EgressRateBPS: 1000000000,
+		},
+		TenantQueues: []model.ProviderNetworkTenantQueuePolicy{{
+			Tenant:     "prod",
+			QueueID:    10,
+			MaxRateBPS: 500000000,
+		}},
+	}})
+	var script string
+	for _, op := range ops {
+		if op.Command == "sh" && strings.Contains(strings.Join(op.Args, " "), "find qos external_ids:netloom_owner=netloom external_ids:netloom_provider_qos='qos-nlv100'") {
+			script = strings.Join(op.Args, " ")
+			break
+		}
+	}
+	if script == "" {
+		t.Fatalf("ops = %#v, want provider QoS sync script", ops)
+	}
+	for _, expected := range []string{
+		"find qos external_ids:netloom_owner=netloom external_ids:netloom_provider_qos='qos-nlv100'",
+		"create qos 'external_ids:netloom_owner=netloom'",
+		"set qos \"$qos\" type='linux-htb' queues={}",
+		"'other_config:max-rate=1000000000'",
+		"find queue external_ids:netloom_owner=netloom external_ids:netloom_provider_queue='queue-nlv100-10'",
+		"create queue 'external_ids:netloom_owner=netloom'",
+		"set queue \"$queue_10\"",
+		"'other_config:max-rate=500000000'",
+		"set qos \"$qos\" queues:10=\"$queue_10\"",
+		"set port 'nlv100' qos=\"$qos\"",
+	} {
+		if !strings.Contains(script, expected) {
+			t.Fatalf("provider QoS script missing %q:\n%s", expected, script)
+		}
+	}
+}
+
 func TestDesiredProviderOVSDBRowsBuildsTypedVSwitchRows(t *testing.T) {
 	bridgeA := providerNetworkBridgeName("physnet-a")
 	bridgeB := providerNetworkBridgeName("physnet-b")
@@ -603,6 +647,34 @@ func TestPlanProviderOVSDBCleanupDeduplicatesDesiredBridges(t *testing.T) {
 	script := strings.Join(op.Args, " ")
 	if strings.Count(script, bridge) != 1 {
 		t.Fatalf("cleanup script should keep bridge once, got %q", script)
+	}
+}
+
+func TestPlanProviderOVSDBCleanupRemovesStaleQoSAndQueues(t *testing.T) {
+	op := planProviderOVSDBCleanup([]providerNetworkLinkSpec{{
+		ProviderNetwork: "physnet-a",
+		ParentDevice:    "eth1",
+		VLAN:            100,
+		Name:            "nlv100",
+		TenantQueues: []model.ProviderNetworkTenantQueuePolicy{{
+			Tenant:  "prod",
+			QueueID: 10,
+		}},
+	}})
+	script := strings.Join(op.Args, " ")
+	for _, expected := range []string{
+		"find qos external_ids:netloom_owner=netloom",
+		"external_ids:netloom_provider_qos",
+		keepSet([]string{"qos-nlv100"}),
+		"destroy qos \"$qos\"",
+		"find queue external_ids:netloom_owner=netloom",
+		"external_ids:netloom_provider_queue",
+		keepSet([]string{"queue-nlv100-10"}),
+		"destroy queue \"$queue\"",
+	} {
+		if !strings.Contains(script, expected) {
+			t.Fatalf("provider ovsdb cleanup script missing %q:\n%s", expected, script)
+		}
 	}
 }
 

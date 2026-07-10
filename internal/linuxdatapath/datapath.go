@@ -14,6 +14,7 @@ import (
 
 	"github.com/jimyag/netloom/internal/control"
 	"github.com/jimyag/netloom/internal/model"
+	"github.com/jimyag/netloom/internal/ovn/ovsdb/vswitch"
 )
 
 type Operation struct {
@@ -1080,8 +1081,15 @@ func planProviderOVSDBMappings(specs []providerNetworkLinkSpec) []Operation {
 		return []Operation{ovsVSCTLOperation("set", "Open_vSwitch", ".", "external_ids:netloom_owner=netloom", "external_ids:ovn-bridge-mappings=")}
 	}
 	rows := desiredProviderOVSDBRows(specs)
-	ops := make([]Operation, 0, len(rows.Bridges)+len(rows.Ports)*3+1)
+	ops := make([]Operation, 0, len(rows.Bridges)+len(rows.Ports)*3+len(rows.QoS)+1)
 	bridgeByPort := make(map[string]string, len(rows.Ports))
+	queueByName := make(map[string]vswitchQueue, len(rows.Queues))
+	for _, queue := range rows.Queues {
+		queueByName[queue.ExternalIDs["netloom_provider_queue"]] = vswitchQueue{
+			externalIDs: queue.ExternalIDs,
+			otherConfig: queue.OtherConfig,
+		}
+	}
 	for _, bridge := range rows.Bridges {
 		ops = append(ops,
 			ovsVSCTLOperation("--may-exist", "add-br", bridge.Name),
@@ -1096,12 +1104,23 @@ func planProviderOVSDBMappings(specs []providerNetworkLinkSpec) []Operation {
 			planProviderOVSDBPort(bridgeByPort[port.Name], port.Name),
 			ovsVSCTLOperation(append([]string{"set", "port", port.Name}, externalIDArgs(port.ExternalIDs)...)...),
 		)
+		if port.QOS == nil {
+			ops = append(ops, planProviderOVSDBClearManagedQoS(port.Name))
+		}
+	}
+	for _, qos := range rows.QoS {
+		ops = append(ops, planProviderOVSDBQoS(qos, queueByName))
 	}
 	for _, iface := range rows.Interfaces {
 		ops = append(ops, ovsVSCTLOperation(append([]string{"set", "interface", iface.Name}, externalIDArgs(iface.ExternalIDs)...)...))
 	}
 	ops = append(ops, ovsVSCTLOperation(append([]string{"set", "Open_vSwitch", "."}, externalIDArgs(rows.OpenVSwitch.ExternalIDs)...)...))
 	return ops
+}
+
+type vswitchQueue struct {
+	externalIDs map[string]string
+	otherConfig map[string]string
 }
 
 func planProviderQueueFlows(state control.DesiredState, specs []providerNetworkLinkSpec) []Operation {
@@ -1335,6 +1354,63 @@ func planProviderOVSDBPort(bridge, link string) Operation {
 	return shellOperation("current=$(ovs-vsctl port-to-br " + shellQuote(link) + " 2>/dev/null || true); if [ -n \"$current\" ] && [ \"$current\" != " + shellQuote(bridge) + " ]; then ovs-vsctl --if-exists del-port \"$current\" " + shellQuote(link) + "; fi; ovs-vsctl --may-exist add-port " + shellQuote(bridge) + " " + shellQuote(link))
 }
 
+func planProviderOVSDBQoS(qos vswitch.QoS, queueByName map[string]vswitchQueue) Operation {
+	qosName := qos.ExternalIDs["netloom_provider_qos"]
+	parts := []string{
+		"qos=$(ovs-vsctl --bare --columns=_uuid find qos external_ids:netloom_owner=netloom external_ids:netloom_provider_qos=" + shellArg(qosName) + " | head -n1)",
+		"if [ -z \"$qos\" ]; then qos=$(ovs-vsctl create qos " + strings.Join(providerOVSDBSetArgs(qos.ExternalIDs, nil), " ") + "); fi",
+		"ovs-vsctl set qos \"$qos\" type=" + shellArg(qos.Type) + " queues={}",
+		"ovs-vsctl set qos \"$qos\" " + strings.Join(providerOVSDBSetArgs(qos.ExternalIDs, qos.OtherConfig), " "),
+	}
+	queueIDs := make([]int, 0, len(qos.Queues))
+	for queueID := range qos.Queues {
+		queueIDs = append(queueIDs, queueID)
+	}
+	sort.Ints(queueIDs)
+	for _, queueID := range queueIDs {
+		queueName := qos.Queues[queueID]
+		queue, ok := queueByName[queueName]
+		if !ok {
+			continue
+		}
+		queueVar := "queue_" + strconv.Itoa(queueID)
+		parts = append(parts,
+			queueVar+"=$(ovs-vsctl --bare --columns=_uuid find queue external_ids:netloom_owner=netloom external_ids:netloom_provider_queue="+shellArg(queueName)+" | head -n1)",
+			"if [ -z \"$"+queueVar+"\" ]; then "+queueVar+"=$(ovs-vsctl create queue "+strings.Join(providerOVSDBSetArgs(queue.externalIDs, nil), " ")+"); fi",
+			"ovs-vsctl set queue \"$"+queueVar+"\" "+strings.Join(providerOVSDBSetArgs(queue.externalIDs, queue.otherConfig), " "),
+			"ovs-vsctl set qos \"$qos\" queues:"+strconv.Itoa(queueID)+"=\"$"+queueVar+"\"",
+		)
+	}
+	portName := strings.TrimPrefix(qosName, "qos-")
+	parts = append(parts, "ovs-vsctl set port "+shellArg(portName)+" qos=\"$qos\"")
+	return shellOperation(strings.Join(parts, "; "))
+}
+
+func planProviderOVSDBClearManagedQoS(portName string) Operation {
+	return shellOperation("qos=$(ovs-vsctl get port " + shellArg(portName) + " qos 2>/dev/null || true); qos=${qos%\\\"}; qos=${qos#\\\"}; if [ -n \"$qos\" ] && [ \"$qos\" != '[]' ]; then owner=$(ovs-vsctl get qos \"$qos\" external_ids:netloom_owner 2>/dev/null || true); owner=${owner%\\\"}; owner=${owner#\\\"}; if [ \"$owner\" = netloom ]; then ovs-vsctl clear port " + shellArg(portName) + " qos; fi; fi")
+}
+
+func providerOVSDBSetArgs(externalIDs, otherConfig map[string]string) []string {
+	args := make([]string, 0, len(externalIDs)+len(otherConfig))
+	keys := make([]string, 0, len(externalIDs))
+	for key := range externalIDs {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		args = append(args, shellArg("external_ids:"+key+"="+externalIDs[key]))
+	}
+	keys = keys[:0]
+	for key := range otherConfig {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		args = append(args, shellArg("other_config:"+key+"="+otherConfig[key]))
+	}
+	return args
+}
+
 func ovsVSCTLOperation(args ...string) Operation {
 	return Operation{Command: "ovs-vsctl", Args: args}
 }
@@ -1344,18 +1420,51 @@ func ovsOFCTLOperation(args ...string) Operation {
 }
 
 func planProviderOVSDBCleanup(specs []providerNetworkLinkSpec) Operation {
-	bridges := make([]string, 0, len(specs))
+	rows := desiredProviderOVSDBRows(specs)
+	bridges := make([]string, 0, len(rows.Bridges))
+	qosNames := make([]string, 0, len(rows.QoS))
+	queueNames := make([]string, 0, len(rows.Queues))
 	seen := make(map[string]struct{}, len(specs))
-	for _, spec := range specs {
-		bridge := providerNetworkBridgeName(spec.ProviderNetwork)
-		if _, ok := seen[bridge]; ok {
+	for _, bridge := range rows.Bridges {
+		if _, ok := seen[bridge.Name]; ok {
 			continue
 		}
-		seen[bridge] = struct{}{}
-		bridges = append(bridges, bridge)
+		seen[bridge.Name] = struct{}{}
+		bridges = append(bridges, bridge.Name)
+	}
+	seen = make(map[string]struct{}, len(rows.QoS))
+	for _, qos := range rows.QoS {
+		name := qos.ExternalIDs["netloom_provider_qos"]
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		qosNames = append(qosNames, name)
+	}
+	seen = make(map[string]struct{}, len(rows.Queues))
+	for _, queue := range rows.Queues {
+		name := queue.ExternalIDs["netloom_provider_queue"]
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		queueNames = append(queueNames, name)
 	}
 	sort.Strings(bridges)
-	return shellOperation("for br in $(ovs-vsctl --bare --columns=name find bridge external_ids:netloom_owner=netloom 2>/dev/null || true); do case '" + keepSet(bridges) + "' in *\" $br \"*) ;; *) ovs-vsctl --if-exists del-br \"$br\" ;; esac; done")
+	sort.Strings(qosNames)
+	sort.Strings(queueNames)
+	parts := []string{
+		"for br in $(ovs-vsctl --bare --columns=name find bridge external_ids:netloom_owner=netloom 2>/dev/null || true); do case '" + keepSet(bridges) + "' in *\" $br \"*) ;; *) ovs-vsctl --if-exists del-br \"$br\" ;; esac; done",
+		"for qos in $(ovs-vsctl --bare --columns=_uuid find qos external_ids:netloom_owner=netloom 2>/dev/null || true); do name=$(ovs-vsctl get qos \"$qos\" external_ids:netloom_provider_qos 2>/dev/null || true); name=${name%\\\"}; name=${name#\\\"}; case '" + keepSet(qosNames) + "' in *\" $name \"*) ;; *) ovs-vsctl destroy qos \"$qos\" ;; esac; done",
+		"for queue in $(ovs-vsctl --bare --columns=_uuid find queue external_ids:netloom_owner=netloom 2>/dev/null || true); do name=$(ovs-vsctl get queue \"$queue\" external_ids:netloom_provider_queue 2>/dev/null || true); name=${name%\\\"}; name=${name#\\\"}; case '" + keepSet(queueNames) + "' in *\" $name \"*) ;; *) ovs-vsctl destroy queue \"$queue\" ;; esac; done",
+	}
+	return shellOperation(strings.Join(parts, "; "))
 }
 
 func planProviderNetworkLinkCleanup(specs []providerNetworkLinkSpec) Operation {
@@ -1619,6 +1728,10 @@ func keepSet(names []string) string {
 
 func shellQuote(value string) string {
 	return strings.ReplaceAll(value, "'", "'\"'\"'")
+}
+
+func shellArg(value string) string {
+	return "'" + shellQuote(value) + "'"
 }
 
 func planNetNSWorkload(endpointID string, ip netip.Addr, workloadIF string, hostGateway netip.Addr, prefix string) []Operation {
