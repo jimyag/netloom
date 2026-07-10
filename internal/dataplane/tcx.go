@@ -1032,8 +1032,11 @@ func validateIPv4L4ACLRuleSupport(rule policy.Rule) error {
 	if _, ok := tcxAction(rule.Action); !ok {
 		return nil
 	}
-	if rule.RemoteEndpoint != "" {
-		return fmt.Errorf("remote endpoint identity is not supported by TCX ACL projection")
+	if rule.RemoteEndpoint != "" && rule.RemoteCIDR.IsValid() && !rule.RemoteCIDR.Addr().Is4() {
+		return nil
+	}
+	if rule.RemoteEndpoint != "" && !isExactHostPrefix(rule.RemoteCIDR, true) {
+		return fmt.Errorf("remote endpoint identity TCX ACL projection requires exact IPv4 endpoint CIDR")
 	}
 	return nil
 }
@@ -1049,10 +1052,24 @@ func validateIPv6L4ACLRuleSupport(rule policy.Rule) error {
 	if _, ok := tcxAction(rule.Action); !ok {
 		return nil
 	}
-	if rule.RemoteEndpoint != "" {
-		return fmt.Errorf("remote endpoint identity is not supported by TCX ACL projection")
+	if rule.RemoteEndpoint != "" && rule.RemoteCIDR.IsValid() && rule.RemoteCIDR.Addr().Is4() {
+		return nil
+	}
+	if rule.RemoteEndpoint != "" && !isExactHostPrefix(rule.RemoteCIDR, false) {
+		return fmt.Errorf("remote endpoint identity TCX ACL projection requires exact IPv6 endpoint CIDR")
 	}
 	return nil
+}
+
+func isExactHostPrefix(prefix netip.Prefix, ipv4 bool) bool {
+	if !prefix.IsValid() {
+		return false
+	}
+	prefix = prefix.Masked()
+	if ipv4 {
+		return prefix.Addr().Is4() && prefix.Bits() == 32
+	}
+	return prefix.Addr().Is6() && !prefix.Addr().Is4() && prefix.Bits() == 128
 }
 
 func icmpTCXMatch(rule policy.Rule) (uint16, uint8) {

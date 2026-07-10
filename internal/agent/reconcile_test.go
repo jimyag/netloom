@@ -3619,7 +3619,7 @@ func TestReconcileNodeWithTCXInterfaceAttachesBothDirectionsForSingleEndpoint(t 
 	}
 }
 
-func TestReconcileNodeWithTCXKeepsRemoteEndpointPolicyInPolicyMap(t *testing.T) {
+func TestReconcileNodeWithTCXProjectsRemoteEndpointPolicyToFastPath(t *testing.T) {
 	state := control.DesiredState{
 		Endpoints: []model.Endpoint{
 			{
@@ -3666,11 +3666,21 @@ func TestReconcileNodeWithTCXKeepsRemoteEndpointPolicyInPolicyMap(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Entries != 1 || result.TCXEligible != 0 || result.TCXSkipped != 1 {
-		t.Fatalf("result = %+v, want remote-group drop only in policy map", result)
+	if result.Entries != 1 || result.TCXEligible != 1 || result.TCXSkipped != 0 {
+		t.Fatalf("result = %+v, want remote-group drop in policy map and TCX fast path", result)
 	}
-	if len(targets) != 0 || len(programs) != 1 {
-		t.Fatalf("targets/programs = %d/%d, want policy program without TCX target", len(targets), len(programs))
+	if len(targets) != 1 || len(programs) != 1 {
+		t.Fatalf("targets/programs = %d/%d, want one TCX target and one policy program", len(targets), len(programs))
+	}
+	rules, err := dataplane.IPv4L4ACLRulesFromProgramsForDirection(targets[0].programs, model.DirectionIngress)
+	if err != nil {
+		t.Fatalf("IPv4 TCX rules: %v", err)
+	}
+	if len(rules) != 1 ||
+		rules[0].SourceCIDR != netip.MustParsePrefix("10.10.0.11/32") ||
+		rules[0].DestPort != 8080 ||
+		rules[0].Action != dataplane.TCXDrop {
+		t.Fatalf("IPv4 TCX rules = %+v, want remote endpoint /32 drop", rules)
 	}
 	entries := store.Entries(model.EndpointKey("prod", "pod-a"))
 	if len(entries) != 1 {
@@ -4427,7 +4437,7 @@ func TestReconcileNodeExpandsRemoteGroupMembership(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Entries != 1 || result.TCXEligible != 0 {
+	if result.Entries != 1 || result.TCXEligible != 1 {
 		t.Fatalf("unexpected result: %+v", result)
 	}
 	entries := store.Entries(model.EndpointKey("prod", "pod-a"))

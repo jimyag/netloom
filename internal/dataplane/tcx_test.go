@@ -153,7 +153,7 @@ func TestIPv4L4ACLRulesFromProgramProjectsExactIngressPolicy(t *testing.T) {
 	}
 }
 
-func TestIPv4L4ACLRulesFromProgramRejectsRemoteEndpointIdentityCIDR(t *testing.T) {
+func TestIPv4L4ACLRulesFromProgramAllowsExactRemoteEndpointIdentityCIDR(t *testing.T) {
 	program := policy.Program{
 		EndpointID: testEndpointA,
 		Rules: []policy.Rule{{
@@ -168,18 +168,14 @@ func TestIPv4L4ACLRulesFromProgramRejectsRemoteEndpointIdentityCIDR(t *testing.T
 	}
 
 	if err := ValidateL4ACLProgramSupport(program); err != nil {
-		if !strings.Contains(err.Error(), "remote endpoint identity is not supported by TCX ACL projection") {
-			t.Fatalf("support error = %v, want remote endpoint identity rejection", err)
-		}
-	} else {
-		t.Fatal("expected remote endpoint identity TCX support validation to fail")
+		t.Fatalf("support error = %v, want exact remote endpoint identity projection to validate", err)
 	}
-	_, err := IPv4L4ACLRulesFromProgram(program)
-	if err == nil {
-		t.Fatal("expected remote endpoint identity TCX projection to fail")
+	rules, err := IPv4L4ACLRulesFromProgram(program)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(err.Error(), "remote endpoint identity is not supported by TCX ACL projection") {
-		t.Fatalf("error = %v, want remote endpoint identity rejection", err)
+	if len(rules) != 1 || rules[0].SourceCIDR != netip.MustParsePrefix("172.30.0.11/32") || rules[0].Action != TCXDrop {
+		t.Fatalf("rules = %+v, want exact remote endpoint drop", rules)
 	}
 }
 
@@ -596,7 +592,7 @@ func TestIPv6L4ACLRulesFromProgramProjectsExactIngressPolicy(t *testing.T) {
 	}
 }
 
-func TestIPv6L4ACLRulesFromProgramRejectsRemoteEndpointIdentityCIDR(t *testing.T) {
+func TestIPv6L4ACLRulesFromProgramAllowsExactRemoteEndpointIdentityCIDR(t *testing.T) {
 	program := policy.Program{
 		EndpointID: testEndpointA,
 		Rules: []policy.Rule{{
@@ -611,18 +607,14 @@ func TestIPv6L4ACLRulesFromProgramRejectsRemoteEndpointIdentityCIDR(t *testing.T
 	}
 
 	if err := ValidateL4ACLProgramSupport(program); err != nil {
-		if !strings.Contains(err.Error(), "remote endpoint identity is not supported by TCX ACL projection") {
-			t.Fatalf("support error = %v, want remote endpoint identity rejection", err)
-		}
-	} else {
-		t.Fatal("expected remote endpoint identity TCX support validation to fail")
+		t.Fatalf("support error = %v, want exact remote endpoint identity projection to validate", err)
 	}
-	_, err := IPv6L4ACLRulesFromProgram(program)
-	if err == nil {
-		t.Fatal("expected remote endpoint identity TCX projection to fail")
+	rules, err := IPv6L4ACLRulesFromProgram(program)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(err.Error(), "remote endpoint identity is not supported by TCX ACL projection") {
-		t.Fatalf("error = %v, want remote endpoint identity rejection", err)
+	if len(rules) != 1 || rules[0].SourceCIDR != netip.MustParsePrefix("fd00:10::20/128") || rules[0].Action != TCXDrop {
+		t.Fatalf("rules = %+v, want exact remote endpoint drop", rules)
 	}
 }
 
@@ -1268,6 +1260,50 @@ func TestIPv4L4ACLRulesFromProgramsKeepsHigherPrecedenceDuplicateKey(t *testing.
 	}
 }
 
+func TestIPv4L4ACLRulesFromProgramProjectsExactRemoteEndpoint(t *testing.T) {
+	program := policy.Program{
+		EndpointID: testEndpointA,
+		Rules: []policy.Rule{{
+			ID:             "drop-remote-endpoint",
+			Direction:      model.DirectionIngress,
+			Protocol:       model.ProtocolTCP,
+			RemoteCIDR:     netip.MustParsePrefix("172.30.0.11/32"),
+			RemoteEndpoint: testEndpointB,
+			Ports:          []model.PortRange{{From: 8080, To: 8080}},
+			Action:         model.ActionDrop,
+		}},
+	}
+	rules, err := IPv4L4ACLRulesFromProgram(program)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 1 || rules[0].SourceCIDR != netip.MustParsePrefix("172.30.0.11/32") || rules[0].Action != TCXDrop {
+		t.Fatalf("rules = %+v, want exact remote endpoint drop", rules)
+	}
+}
+
+func TestIPv4L4ACLRulesFromProgramRejectsWideRemoteEndpointCIDR(t *testing.T) {
+	program := policy.Program{
+		EndpointID: testEndpointA,
+		Rules: []policy.Rule{{
+			ID:             "drop-remote-endpoint-wide",
+			Direction:      model.DirectionIngress,
+			Protocol:       model.ProtocolTCP,
+			RemoteCIDR:     netip.MustParsePrefix("172.30.0.0/24"),
+			RemoteEndpoint: testEndpointB,
+			Ports:          []model.PortRange{{From: 8080, To: 8080}},
+			Action:         model.ActionDrop,
+		}},
+	}
+	_, err := IPv4L4ACLRulesFromProgram(program)
+	if err == nil {
+		t.Fatal("expected wide remote endpoint CIDR to fail")
+	}
+	if !strings.Contains(err.Error(), "requires exact IPv4 endpoint CIDR") {
+		t.Fatalf("error %q does not mention exact IPv4 endpoint CIDR", err)
+	}
+}
+
 func TestIPv4L4ACLRulesFromProgramTreatsLowerNumericPriorityAllowAsNonEnforcingWhenItBeatsDrop(t *testing.T) {
 	program := policy.Program{
 		EndpointID: testEndpointA,
@@ -1388,6 +1424,50 @@ func TestIPv6L4ACLRulesFromProgramsKeepsHigherPrecedenceDuplicateKey(t *testing.
 	}
 	if len(rules) != 1 || rules[0].Action != TCXDrop {
 		t.Fatalf("rules = %+v, want higher-precedence drop only", rules)
+	}
+}
+
+func TestIPv6L4ACLRulesFromProgramProjectsExactRemoteEndpoint(t *testing.T) {
+	program := policy.Program{
+		EndpointID: testEndpointA,
+		Rules: []policy.Rule{{
+			ID:             "drop-v6-remote-endpoint",
+			Direction:      model.DirectionIngress,
+			Protocol:       model.ProtocolTCP,
+			RemoteCIDR:     netip.MustParsePrefix("fd00:10::11/128"),
+			RemoteEndpoint: testEndpointB,
+			Ports:          []model.PortRange{{From: 8443, To: 8443}},
+			Action:         model.ActionDrop,
+		}},
+	}
+	rules, err := IPv6L4ACLRulesFromProgram(program)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 1 || rules[0].SourceCIDR != netip.MustParsePrefix("fd00:10::11/128") || rules[0].Action != TCXDrop {
+		t.Fatalf("rules = %+v, want exact remote endpoint drop", rules)
+	}
+}
+
+func TestIPv6L4ACLRulesFromProgramRejectsWideRemoteEndpointCIDR(t *testing.T) {
+	program := policy.Program{
+		EndpointID: testEndpointA,
+		Rules: []policy.Rule{{
+			ID:             "drop-v6-remote-endpoint-wide",
+			Direction:      model.DirectionIngress,
+			Protocol:       model.ProtocolTCP,
+			RemoteCIDR:     netip.MustParsePrefix("fd00:10::/64"),
+			RemoteEndpoint: testEndpointB,
+			Ports:          []model.PortRange{{From: 8443, To: 8443}},
+			Action:         model.ActionDrop,
+		}},
+	}
+	_, err := IPv6L4ACLRulesFromProgram(program)
+	if err == nil {
+		t.Fatal("expected wide remote endpoint CIDR to fail")
+	}
+	if !strings.Contains(err.Error(), "requires exact IPv6 endpoint CIDR") {
+		t.Fatalf("error %q does not mention exact IPv6 endpoint CIDR", err)
 	}
 }
 
