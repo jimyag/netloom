@@ -92,6 +92,17 @@ func TestTCXRuleMetricsFromValueClassifiesCounters(t *testing.T) {
 	if loggedDrop.Allowed != 0 || loggedDrop.Dropped != 4 || loggedDrop.DenyDrops != 4 || loggedDrop.Logged != 4 {
 		t.Fatalf("logged drop metrics = %+v", loggedDrop)
 	}
+
+	reject := tcxRuleMetricsFromValue(TCXL4ACLValue{
+		Action:     TCXDrop,
+		RuleCookie: 9,
+		Packets:    6,
+		Bytes:      384,
+		Reject:     1,
+	})
+	if reject.Allowed != 0 || reject.Dropped != 0 || reject.DenyDrops != 0 || reject.Rejected != 6 || reject.RejectDrops != 6 {
+		t.Fatalf("reject metrics = %+v", reject)
+	}
 }
 
 func TestIPv4L4ACLRulesFromProgramProjectsExactIngressPolicy(t *testing.T) {
@@ -250,6 +261,9 @@ func TestIPv4L4ACLRulesFromProgramProjectsRejectActionToDrop(t *testing.T) {
 	}
 	if rules[0].Source != netip.MustParseAddr("172.30.0.20") || rules[0].Protocol != 6 || rules[0].DestPort != 8080 || rules[0].Action != TCXDrop {
 		t.Fatalf("unexpected IPv4 reject projection: %+v", rules[0])
+	}
+	if !rules[0].Reject {
+		t.Fatalf("IPv4 reject projection did not preserve reject marker: %+v", rules[0])
 	}
 	if rules[0].RuleCookie != stableCookie("reject-web") {
 		t.Fatalf("rule cookie = %d, want stable cookie for source rule", rules[0].RuleCookie)
@@ -634,6 +648,9 @@ func TestIPv6L4ACLRulesFromProgramProjectsRejectActionToDrop(t *testing.T) {
 	}
 	if rules[0].Source != netip.MustParseAddr("fd00:10::20") || rules[0].SourceCIDR != netip.MustParsePrefix("fd00:10::20/128") || rules[0].Protocol != 6 || rules[0].DestPort != 8443 || rules[0].DestPortPrefixBits != 16 || rules[0].Action != TCXDrop {
 		t.Fatalf("unexpected IPv6 reject projection: %+v", rules[0])
+	}
+	if !rules[0].Reject {
+		t.Fatalf("IPv6 reject projection did not preserve reject marker: %+v", rules[0])
 	}
 	if rules[0].RuleCookie != stableCookie("reject-v6-web") {
 		t.Fatalf("rule cookie = %d, want stable cookie for source rule", rules[0].RuleCookie)

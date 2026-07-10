@@ -168,6 +168,7 @@ type IPv4L4ACLRule struct {
 	Precedence         uint32
 	RuleCookie         uint32
 	Log                bool
+	Reject             bool
 }
 
 type TCXL4ACLValue struct {
@@ -176,7 +177,7 @@ type TCXL4ACLValue struct {
 	Packets    uint64
 	Bytes      uint64
 	Log        uint32
-	Pad        uint32
+	Reject     uint32
 }
 
 func readTCXL4ACLValues(aclMap *ebpf.Map) ([]TCXL4ACLValue, error) {
@@ -219,8 +220,13 @@ func tcxRuleMetricsFromValue(value TCXL4ACLValue) RuleMetrics {
 	}
 	switch value.Action {
 	case TCXDrop:
-		metrics.Dropped = value.Packets
-		metrics.DenyDrops = value.Packets
+		if value.Reject != 0 {
+			metrics.Rejected = value.Packets
+			metrics.RejectDrops = value.Packets
+		} else {
+			metrics.Dropped = value.Packets
+			metrics.DenyDrops = value.Packets
+		}
 	default:
 		metrics.Allowed = value.Packets
 	}
@@ -252,6 +258,7 @@ type IPv6L4ACLRule struct {
 	Precedence         uint32
 	RuleCookie         uint32
 	Log                bool
+	Reject             bool
 }
 
 func NewConstantTCXProgram(action int32) (*ebpf.Program, error) {
@@ -454,7 +461,7 @@ func putIPv4L4ACLRule(aclMap *ebpf.Map, rule IPv4L4ACLRule) error {
 		DestPort:  rule.DestPort,
 		PeerIP:    ipv4L4PeerKey(sourceCIDR.Addr()),
 	}
-	value := TCXL4ACLValue{Action: rule.Action, RuleCookie: rule.RuleCookie, Log: tcxLogFlag(rule.Log)}
+	value := TCXL4ACLValue{Action: rule.Action, RuleCookie: rule.RuleCookie, Log: tcxLogFlag(rule.Log), Reject: tcxRejectFlag(rule.Reject)}
 	return aclMap.Put(key, value)
 }
 
@@ -484,7 +491,7 @@ func putIPv6L4ACLRule(aclMap *ebpf.Map, rule IPv6L4ACLRule) error {
 		DestPort:  rule.DestPort,
 		PeerIP:    ipv6L4PeerKey(sourceCIDR.Addr()),
 	}
-	value := TCXL4ACLValue{Action: rule.Action, RuleCookie: rule.RuleCookie, Log: tcxLogFlag(rule.Log)}
+	value := TCXL4ACLValue{Action: rule.Action, RuleCookie: rule.RuleCookie, Log: tcxLogFlag(rule.Log), Reject: tcxRejectFlag(rule.Reject)}
 	return aclMap.Put(key, value)
 }
 
@@ -713,6 +720,7 @@ func appendIPv4L4ACLRulesFromProgram(rules *[]IPv4L4ACLRule, seen map[IPv4L4Key]
 				Precedence:         tcxRulePrecedence(rule),
 				RuleCookie:         stableCookie(tcxRuleCookieKey(rule)),
 				Log:                tcxRuleLog(rule),
+				Reject:             tcxRuleReject(rule),
 			}); err != nil {
 				return fmt.Errorf("rule %s: %w", rule.ID, err)
 			}
@@ -731,6 +739,7 @@ func appendIPv4L4ACLRulesFromProgram(rules *[]IPv4L4ACLRule, seen map[IPv4L4Key]
 				Precedence:         tcxRulePrecedence(rule),
 				RuleCookie:         stableCookie(tcxRuleCookieKey(rule)),
 				Log:                tcxRuleLog(rule),
+				Reject:             tcxRuleReject(rule),
 			}); err != nil {
 				return fmt.Errorf("rule %s: %w", rule.ID, err)
 			}
@@ -753,6 +762,7 @@ func appendIPv4L4ACLRulesFromProgram(rules *[]IPv4L4ACLRule, seen map[IPv4L4Key]
 					Precedence:         tcxRulePrecedence(rule),
 					RuleCookie:         stableCookie(tcxRuleCookieKey(rule)),
 					Log:                tcxRuleLog(rule),
+					Reject:             tcxRuleReject(rule),
 				}); err != nil {
 					return fmt.Errorf("rule %s: %w", rule.ID, err)
 				}
@@ -806,6 +816,7 @@ func appendIPv6L4ACLRulesFromProgram(rules *[]IPv6L4ACLRule, seen map[IPv6L4Key]
 				Precedence:         tcxRulePrecedence(rule),
 				RuleCookie:         stableCookie(tcxRuleCookieKey(rule)),
 				Log:                tcxRuleLog(rule),
+				Reject:             tcxRuleReject(rule),
 			}); err != nil {
 				return fmt.Errorf("rule %s: %w", rule.ID, err)
 			}
@@ -824,6 +835,7 @@ func appendIPv6L4ACLRulesFromProgram(rules *[]IPv6L4ACLRule, seen map[IPv6L4Key]
 				Precedence:         tcxRulePrecedence(rule),
 				RuleCookie:         stableCookie(tcxRuleCookieKey(rule)),
 				Log:                tcxRuleLog(rule),
+				Reject:             tcxRuleReject(rule),
 			}); err != nil {
 				return fmt.Errorf("rule %s: %w", rule.ID, err)
 			}
@@ -846,6 +858,7 @@ func appendIPv6L4ACLRulesFromProgram(rules *[]IPv6L4ACLRule, seen map[IPv6L4Key]
 					Precedence:         tcxRulePrecedence(rule),
 					RuleCookie:         stableCookie(tcxRuleCookieKey(rule)),
 					Log:                tcxRuleLog(rule),
+					Reject:             tcxRuleReject(rule),
 				}); err != nil {
 					return fmt.Errorf("rule %s: %w", rule.ID, err)
 				}
@@ -874,6 +887,7 @@ func appendIPv4ProjectedRule(rules *[]IPv4L4ACLRule, seen map[IPv4L4Key]int32, c
 		}
 		if existingKey == candidateKey && existing.Precedence == candidate.Precedence && existing.Action == candidate.Action {
 			current[i].Log = existing.Log || candidate.Log
+			current[i].Reject = existing.Reject || candidate.Reject
 			*rules = append(out, current[i:]...)
 			return nil
 		}
@@ -904,6 +918,7 @@ func appendIPv6ProjectedRule(rules *[]IPv6L4ACLRule, seen map[IPv6L4Key]int32, c
 		}
 		if existingKey == candidateKey && existing.Precedence == candidate.Precedence && existing.Action == candidate.Action {
 			current[i].Log = existing.Log || candidate.Log
+			current[i].Reject = existing.Reject || candidate.Reject
 			*rules = append(out, current[i:]...)
 			return nil
 		}
@@ -993,6 +1008,17 @@ func tcxLogFlag(log bool) uint32 {
 		return 1
 	}
 	return 0
+}
+
+func tcxRejectFlag(reject bool) uint32 {
+	if reject {
+		return 1
+	}
+	return 0
+}
+
+func tcxRuleReject(rule policy.Rule) bool {
+	return rule.Action == model.ActionReject
 }
 
 func validateIPv4L4ACLRuleSupport(rule policy.Rule) error {
