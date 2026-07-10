@@ -24,6 +24,53 @@ func NewLibOVSDBProviderSyncer(client client.Client) *LibOVSDBProviderSyncer {
 	return &LibOVSDBProviderSyncer{client: client}
 }
 
+func (s *LibOVSDBProviderSyncer) OpenVSwitchExternalID(ctx context.Context, key string) (string, bool, error) {
+	if s == nil || s.client == nil {
+		return "", false, fmt.Errorf("libovsdb provider syncer has no client")
+	}
+	root, ok, err := s.openVSwitch(ctx)
+	if err != nil {
+		return "", false, err
+	}
+	if !ok || root.ExternalIDs == nil {
+		return "", false, nil
+	}
+	value, ok := root.ExternalIDs[key]
+	return value, ok, nil
+}
+
+func (s *LibOVSDBProviderSyncer) SetOpenVSwitchExternalID(ctx context.Context, key, value string) error {
+	if s == nil || s.client == nil {
+		return fmt.Errorf("libovsdb provider syncer has no client")
+	}
+	root, ok, err := s.openVSwitch(ctx)
+	if err != nil {
+		return err
+	}
+	var ops []ovsdb.Operation
+	if !ok {
+		root = &vswitch.OpenvSwitch{UUID: ovsdbProviderNamedUUID("open_vswitch", "root")}
+		createOps, err := s.client.Create(root)
+		if err != nil {
+			return fmt.Errorf("create Open_vSwitch root row: %w", err)
+		}
+		ops = append(ops, createOps...)
+	}
+	nextExternalIDs := mergeProviderStringMap(root.ExternalIDs, map[string]string{
+		key: value,
+	})
+	if reflect.DeepEqual(root.ExternalIDs, nextExternalIDs) {
+		return nil
+	}
+	root.ExternalIDs = nextExternalIDs
+	updateOps, err := s.client.Where(root).Update(root, &root.ExternalIDs)
+	if err != nil {
+		return fmt.Errorf("update Open_vSwitch external_ids:%s: %w", key, err)
+	}
+	ops = append(ops, updateOps...)
+	return s.transact(ctx, "set Open_vSwitch external_id", ops)
+}
+
 func (s *LibOVSDBProviderSyncer) SyncProviderOVSDB(ctx context.Context, rows ProviderOVSDBDesiredRows, cleanup bool) error {
 	if s == nil || s.client == nil {
 		return fmt.Errorf("libovsdb provider syncer has no client")

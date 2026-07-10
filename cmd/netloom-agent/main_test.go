@@ -633,6 +633,73 @@ func TestReconcileStateFileOnceAppliesDesiredPolicyRollout(t *testing.T) {
 	}
 }
 
+func TestReconcileStateFileOnceResumesPersistedPolicyRolloutState(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{
+			{ID: "pod-a", VPC: "prod", Subnet: "apps", IP: netip.MustParseAddr("10.10.0.10"), Node: "node-a", SecurityGroups: []string{"web"}},
+			{ID: "pod-b", VPC: "prod", Subnet: "apps", IP: netip.MustParseAddr("10.10.0.11"), Node: "node-a", SecurityGroups: []string{"web"}},
+		},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "allow-http",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("172.30.0.0/24"),
+				Ports:      []model.PortRange{{From: 80, To: 80}},
+				Action:     model.ActionAllow,
+			}},
+		}},
+		PolicyRollouts: []control.PolicyRollout{{
+			Name:             "web-canary",
+			Node:             "node-a",
+			Endpoints:        []string{"prod/pod-a", "prod/pod-b"},
+			BatchSize:        1,
+			PromotionPercent: 50,
+		}},
+	}
+	statePath := writeAgentState(t, state)
+	stateFile := filepath.Join(t.TempDir(), "rollout-state.json")
+	t.Setenv("NETLOOM_POLICY_ROLLOUT_STATE_FILE", stateFile)
+	store := dataplane.NewInMemoryPolicyStore()
+
+	if err := reconcileStateFileOnce(context.Background(), statePath, "node-a", "memory", store, time.Second, nil); err != nil {
+		t.Fatal(err)
+	}
+	doc, err := loadPolicyRolloutState(stateFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Rollouts) != 1 || doc.Rollouts[0].Name != "web-canary" || !reflect.DeepEqual(doc.Rollouts[0].AppliedEndpoints, []string{model.EndpointKey("prod", "pod-a")}) {
+		t.Fatalf("rollout state = %+v, want paused web-canary with pod-a applied", doc)
+	}
+	eventsAfterFirst := len(store.Events())
+
+	state.PolicyRollouts[0].PromotionPercent = 100
+	statePath = writeAgentState(t, state)
+	if err := reconcileStateFileOnce(context.Background(), statePath, "node-a", "memory", store, time.Second, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(store.Events()) - eventsAfterFirst; got != 1 {
+		t.Fatalf("new policy events after resume = %d, want only pod-b written", got)
+	}
+	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 1 {
+		t.Fatalf("pod-a entries = %+v, want retained policy", entries)
+	}
+	if entries := store.Entries(model.EndpointKey("prod", "pod-b")); len(entries) != 1 {
+		t.Fatalf("pod-b entries = %+v, want resumed rollout applied remaining policy", entries)
+	}
+	doc, err = loadPolicyRolloutState(stateFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Rollouts) != 0 {
+		t.Fatalf("rollout state after completion = %+v, want cleared state", doc)
+	}
+}
+
 func writeRouteExplainState(t *testing.T) string {
 	t.Helper()
 	state := control.DesiredState{

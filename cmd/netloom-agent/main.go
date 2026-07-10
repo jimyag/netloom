@@ -40,6 +40,7 @@ const (
 	defaultRuntimeBPFRoot = "/var/run/netloom-ebpf"
 	defaultRuntimePinRoot = "/var/run/netloom-ebpf/policy"
 	defaultMetadataRoot   = "/var/run/netloom-ebpf-meta/policy"
+	policyRolloutStateKey = "netloom_policy_rollout_state"
 )
 
 func main() {
@@ -158,6 +159,33 @@ type policyRolloutHistoryEntry struct {
 	CompletedAt time.Time                   `json:"completed_at"`
 	DurationMS  int64                       `json:"duration_ms,omitempty"`
 	Rollout     agent.PolicyEndpointRollout `json:"rollout"`
+}
+
+type policyRolloutStateDocument struct {
+	Rollouts []policyRolloutStateEntry `json:"rollouts"`
+}
+
+type policyRolloutStateEntry struct {
+	Name             string    `json:"name"`
+	Node             string    `json:"node,omitempty"`
+	Store            string    `json:"store,omitempty"`
+	UpdatedAt        time.Time `json:"updated_at"`
+	AppliedEndpoints []string  `json:"applied_endpoints,omitempty"`
+	Paused           bool      `json:"paused,omitempty"`
+	Failed           int       `json:"failed,omitempty"`
+}
+
+type policyRolloutStateStore interface {
+	Load(context.Context) (policyRolloutStateDocument, error)
+	Save(context.Context, policyRolloutStateDocument) error
+}
+
+type filePolicyRolloutStateStore struct {
+	path string
+}
+
+type ovsdbPolicyRolloutStateStore struct {
+	syncer *linuxdatapath.LibOVSDBProviderSyncer
 }
 
 type policyEndpointRolloutRequest struct {
@@ -750,7 +778,7 @@ func reconcileStateFile(ctx context.Context, path, node, storeName string, recon
 		observeAgentReconcileFailure(metrics, agent.ReconcileResult{Node: node}, storeName, err, time.Since(start))
 		return err
 	}
-	linuxOptions, closeLinuxOptions, err := linuxDatapathOptionsWithOVSDBSyncer(ctx)
+	linuxOptions, rolloutStateStore, closeLinuxOptions, err := linuxDatapathOptionsWithOVSDBSyncer(ctx)
 	if err != nil {
 		duration := time.Since(start)
 		result := agent.ReconcileResult{Node: node}
@@ -778,10 +806,18 @@ func reconcileStateFile(ctx context.Context, path, node, storeName string, recon
 		return err
 	}
 	var rolloutHistory []agent.NamedPolicyEndpointRollout
+	rolloutResume, err := loadPolicyRolloutResume(ctx, rolloutStateStore, node)
+	if err != nil {
+		duration := time.Since(start)
+		printReconcileFailure(result, storeName, err, duration)
+		observeAgentReconcileFailure(metrics, result, storeName, err, duration)
+		return err
+	}
 	if rollouts, err := agent.ApplyPolicyRollouts(ctx, state, agent.ReconcileOptions{
 		Node:                        node,
 		Store:                       metrics.store,
 		PolicyRolloutApprovalSecret: policyRolloutApprovalSecret(),
+		PolicyRolloutResume:         rolloutResume,
 	}); err != nil {
 		duration := time.Since(start)
 		printReconcileFailure(result, storeName, err, duration)
@@ -790,6 +826,12 @@ func reconcileStateFile(ctx context.Context, path, node, storeName string, recon
 	} else {
 		agent.ApplyPolicyRolloutResults(&result, rollouts)
 		rolloutHistory = rollouts
+		if err := savePolicyRolloutResume(ctx, rolloutStateStore, node, storeName, rollouts); err != nil {
+			duration := time.Since(start)
+			printReconcileFailure(result, storeName, err, duration)
+			observeAgentReconcileFailure(metrics, result, storeName, err, duration)
+			return err
+		}
 	}
 	duration := time.Since(start)
 	recordNamedPolicyRolloutHistory(metrics, "desired-state", rolloutHistory, result.Node, storeName, duration)
@@ -817,7 +859,7 @@ func reconcileStateFileOnce(ctx context.Context, path, node, storeName string, s
 		observeAgentReconcileFailure(metrics, agent.ReconcileResult{Node: node}, storeName, err, time.Since(start))
 		return err
 	}
-	linuxOptions, closeLinuxOptions, err := linuxDatapathOptionsWithOVSDBSyncer(ctx)
+	linuxOptions, rolloutStateStore, closeLinuxOptions, err := linuxDatapathOptionsWithOVSDBSyncer(ctx)
 	if err != nil {
 		duration := time.Since(start)
 		result := agent.ReconcileResult{Node: node}
@@ -846,10 +888,18 @@ func reconcileStateFileOnce(ctx context.Context, path, node, storeName string, s
 		return err
 	}
 	var rolloutHistory []agent.NamedPolicyEndpointRollout
+	rolloutResume, err := loadPolicyRolloutResume(ctx, rolloutStateStore, node)
+	if err != nil {
+		duration := time.Since(start)
+		printReconcileFailure(result, storeName, err, duration)
+		observeAgentReconcileFailure(metrics, result, storeName, err, duration)
+		return err
+	}
 	if rollouts, err := agent.ApplyPolicyRollouts(ctx, state, agent.ReconcileOptions{
 		Node:                        node,
 		Store:                       store,
 		PolicyRolloutApprovalSecret: policyRolloutApprovalSecret(),
+		PolicyRolloutResume:         rolloutResume,
 	}); err != nil {
 		duration := time.Since(start)
 		printReconcileFailure(result, storeName, err, duration)
@@ -858,6 +908,12 @@ func reconcileStateFileOnce(ctx context.Context, path, node, storeName string, s
 	} else {
 		agent.ApplyPolicyRolloutResults(&result, rollouts)
 		rolloutHistory = rollouts
+		if err := savePolicyRolloutResume(ctx, rolloutStateStore, node, storeName, rollouts); err != nil {
+			duration := time.Since(start)
+			printReconcileFailure(result, storeName, err, duration)
+			observeAgentReconcileFailure(metrics, result, storeName, err, duration)
+			return err
+		}
 	}
 	duration := time.Since(start)
 	recordNamedPolicyRolloutHistory(metrics, "desired-state", rolloutHistory, result.Node, storeName, duration)
@@ -1237,6 +1293,176 @@ func recordNamedPolicyRolloutHistory(metrics *agentMetrics, source string, rollo
 			log.Printf("record policy rollout history: %v", err)
 		}
 	}
+}
+
+func loadPolicyRolloutResume(ctx context.Context, store policyRolloutStateStore, node string) (map[string][]string, error) {
+	if store == nil {
+		return nil, nil
+	}
+	doc, err := store.Load(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string][]string)
+	for _, entry := range doc.Rollouts {
+		if entry.Name == "" || (entry.Node != "" && entry.Node != node) {
+			continue
+		}
+		out[entry.Name] = uniqueStrings(append(out[entry.Name], entry.AppliedEndpoints...))
+	}
+	return out, nil
+}
+
+func savePolicyRolloutResume(ctx context.Context, store policyRolloutStateStore, node, storeName string, rollouts []agent.NamedPolicyEndpointRollout) error {
+	if store == nil {
+		return nil
+	}
+	doc, err := store.Load(ctx)
+	if err != nil {
+		return err
+	}
+	next := make([]policyRolloutStateEntry, 0, len(doc.Rollouts)+len(rollouts))
+	for _, entry := range doc.Rollouts {
+		if entry.Node == node {
+			continue
+		}
+		next = append(next, entry)
+	}
+	for _, named := range rollouts {
+		applied := rolloutAppliedEndpoints(named.Rollout)
+		if len(applied) == 0 || (!named.Rollout.Paused && named.Rollout.Failed == 0) || named.Rollout.DryRun {
+			continue
+		}
+		next = append(next, policyRolloutStateEntry{
+			Name:             named.Name,
+			Node:             node,
+			Store:            storeName,
+			UpdatedAt:        time.Now().UTC(),
+			AppliedEndpoints: applied,
+			Paused:           named.Rollout.Paused,
+			Failed:           named.Rollout.Failed,
+		})
+	}
+	doc.Rollouts = next
+	return store.Save(ctx, doc)
+}
+
+func rolloutAppliedEndpoints(rollout agent.PolicyEndpointRollout) []string {
+	endpoints := make([]string, 0, len(rollout.Items))
+	for _, item := range rollout.Items {
+		switch item.Phase {
+		case "applied", "resumed_applied":
+			endpoints = append(endpoints, item.EndpointID)
+		}
+	}
+	return uniqueStrings(endpoints)
+}
+
+func loadPolicyRolloutState(path string) (policyRolloutStateDocument, error) {
+	var doc policyRolloutStateDocument
+	file, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return doc, nil
+	}
+	if err != nil {
+		return doc, fmt.Errorf("open policy rollout state %s: %w", path, err)
+	}
+	defer file.Close()
+	if err := json.NewDecoder(file).Decode(&doc); err != nil {
+		if errors.Is(err, io.EOF) {
+			return policyRolloutStateDocument{}, nil
+		}
+		return doc, fmt.Errorf("decode policy rollout state %s: %w", path, err)
+	}
+	return doc, nil
+}
+
+func writePolicyRolloutState(path string, doc policyRolloutStateDocument) error {
+	if dir := filepath.Dir(path); dir != "." && dir != "" {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("create policy rollout state directory %s: %w", dir, err)
+		}
+	}
+	dir := filepath.Dir(path)
+	if dir == "" {
+		dir = "."
+	}
+	tmp, err := os.CreateTemp(dir, ".netloom-rollout-state-*")
+	if err != nil {
+		return fmt.Errorf("create policy rollout state temp file: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer func() {
+		_ = os.Remove(tmpName)
+	}()
+	encoder := json.NewEncoder(tmp)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(doc); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write policy rollout state %s: %w", path, err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close policy rollout state %s: %w", tmpName, err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return fmt.Errorf("replace policy rollout state %s: %w", path, err)
+	}
+	return nil
+}
+
+func (s filePolicyRolloutStateStore) Load(_ context.Context) (policyRolloutStateDocument, error) {
+	return loadPolicyRolloutState(s.path)
+}
+
+func (s filePolicyRolloutStateStore) Save(_ context.Context, doc policyRolloutStateDocument) error {
+	return writePolicyRolloutState(s.path, doc)
+}
+
+func (s ovsdbPolicyRolloutStateStore) Load(ctx context.Context) (policyRolloutStateDocument, error) {
+	var doc policyRolloutStateDocument
+	if s.syncer == nil {
+		return doc, nil
+	}
+	raw, ok, err := s.syncer.OpenVSwitchExternalID(ctx, policyRolloutStateKey)
+	if err != nil {
+		return doc, err
+	}
+	if !ok || strings.TrimSpace(raw) == "" {
+		return doc, nil
+	}
+	if err := json.Unmarshal([]byte(raw), &doc); err != nil {
+		return doc, fmt.Errorf("decode Open_vSwitch external_ids:%s: %w", policyRolloutStateKey, err)
+	}
+	return doc, nil
+}
+
+func (s ovsdbPolicyRolloutStateStore) Save(ctx context.Context, doc policyRolloutStateDocument) error {
+	if s.syncer == nil {
+		return nil
+	}
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		return fmt.Errorf("encode Open_vSwitch external_ids:%s: %w", policyRolloutStateKey, err)
+	}
+	return s.syncer.SetOpenVSwitchExternalID(ctx, policyRolloutStateKey, string(raw))
+}
+
+func uniqueStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func observeAgentReconcileResult(metrics *agentMetrics, result agent.ReconcileResult, storeName string, duration time.Duration) {
@@ -2602,23 +2828,30 @@ func linuxDatapathOptions() *linuxdatapath.Options {
 	}
 }
 
-func linuxDatapathOptionsWithOVSDBSyncer(ctx context.Context) (*linuxdatapath.Options, func(), error) {
+func linuxDatapathOptionsWithOVSDBSyncer(ctx context.Context) (*linuxdatapath.Options, policyRolloutStateStore, func(), error) {
 	options := linuxDatapathOptions()
-	if options == nil || !options.SyncOVSDB {
-		return options, func() {}, nil
-	}
 	endpoint := strings.TrimSpace(os.Getenv("NETLOOM_OVSDB_ENDPOINT"))
 	if endpoint == "" {
-		return options, func() {}, nil
+		return options, policyRolloutStateFileStoreFromEnv(), func() {}, nil
 	}
 	client, closeFn, err := newOpenVSwitchClient(ctx, endpoint)
 	if err != nil {
-		return nil, func() {}, err
+		return nil, nil, func() {}, err
 	}
 	providerOVSDB := linuxdatapath.NewLibOVSDBProviderSyncer(client)
-	options.ProviderOVSDBSyncer = providerOVSDB
-	options.ProviderOVSDBReader = providerOVSDB
-	return options, closeFn, nil
+	if options != nil && options.SyncOVSDB {
+		options.ProviderOVSDBSyncer = providerOVSDB
+		options.ProviderOVSDBReader = providerOVSDB
+	}
+	return options, ovsdbPolicyRolloutStateStore{syncer: providerOVSDB}, closeFn, nil
+}
+
+func policyRolloutStateFileStoreFromEnv() policyRolloutStateStore {
+	path := strings.TrimSpace(os.Getenv("NETLOOM_POLICY_ROLLOUT_STATE_FILE"))
+	if path == "" {
+		return nil
+	}
+	return filePolicyRolloutStateStore{path: path}
 }
 
 func ovsdbSyncEnabled() bool {

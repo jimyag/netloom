@@ -164,6 +164,7 @@ type ReconcileOptions struct {
 	PolicyPressureQuarantine          bool
 	DeferPolicyApply                  bool
 	PolicyRolloutApprovalSecret       string
+	PolicyRolloutResume               map[string][]string
 	LinuxDatapath                     *linuxdatapath.Options
 }
 
@@ -198,6 +199,7 @@ type PolicyEndpointRolloutOptions struct {
 	ChangePollTimeout         time.Duration
 	ChangeStatusURL           string
 	ChangeStatusTimeout       time.Duration
+	ResumeAppliedEndpointIDs  []string
 	Paused                    bool
 	PauseAfterBatches         int
 	PromotionPercent          uint32
@@ -247,6 +249,7 @@ type PolicyEndpointRollout struct {
 	PausedAfterBatch          int                         `json:"paused_after_batch,omitempty"`
 	PromotionPercent          uint32                      `json:"promotion_percent,omitempty"`
 	PromotionLimit            int                         `json:"promotion_limit,omitempty"`
+	ResumedApplied            int                         `json:"resumed_applied,omitempty"`
 	Planned                   int                         `json:"planned"`
 	Applied                   int                         `json:"applied"`
 	Skipped                   int                         `json:"skipped"`
@@ -533,6 +536,7 @@ func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, opt
 	}
 	backend := dataplane.NewPolicyBackend(options.Store)
 	applied := make([]string, 0, len(rollout.Items))
+	resumedApplied := stringSet(rolloutOptions.ResumeAppliedEndpointIDs)
 	completedBatches := 0
 	for i, item := range rollout.Items {
 		if rollout.Failed != 0 {
@@ -545,6 +549,25 @@ func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, opt
 			item.Phase = "paused"
 			rollout.Skipped++
 			rollout.Items[i] = item
+			continue
+		}
+		if _, ok := resumedApplied[item.EndpointID]; ok {
+			item.Phase = "resumed_applied"
+			rollout.Applied++
+			rollout.ResumedApplied++
+			if status, ok, err := policyEndpointStatus(ctx, options.Store, item.EndpointID); err != nil {
+				return PolicyEndpointRollout{}, fmt.Errorf("read resumed rolled out policy endpoint status: %w", err)
+			} else if ok {
+				item.Status = status
+			}
+			rollout.Items[i] = item
+			if rolloutBatchComplete(rollout.Items, i) {
+				completedBatches++
+				if shouldPauseRolloutAfterItem(rollout, rolloutOptions, completedBatches, i) {
+					rollout.Paused = true
+					rollout.PausedAfterBatch = item.Batch
+				}
+			}
 			continue
 		}
 		if err := backend.ApplyEndpointProgram(ctx, prepared[i].program); err != nil {
@@ -1270,6 +1293,7 @@ func ApplyPolicyRollouts(ctx context.Context, state control.DesiredState, option
 			ChangePollTimeout:         time.Duration(rollout.ChangePollTimeoutMS) * time.Millisecond,
 			ChangeStatusURL:           rollout.ChangeStatusURL,
 			ChangeStatusTimeout:       time.Duration(rollout.ChangeStatusTimeoutMS) * time.Millisecond,
+			ResumeAppliedEndpointIDs:  options.PolicyRolloutResume[rollout.Name],
 			Paused:                    rollout.Paused,
 			PauseAfterBatches:         rollout.PauseAfterBatches,
 			PromotionPercent:          rollout.PromotionPercent,
@@ -1460,6 +1484,18 @@ func uniquePolicyEndpointIDs(ids []string) []string {
 		}
 		seen[id] = struct{}{}
 		out = append(out, id)
+	}
+	return out
+}
+
+func stringSet(values []string) map[string]struct{} {
+	out := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		out[value] = struct{}{}
 	}
 	return out
 }

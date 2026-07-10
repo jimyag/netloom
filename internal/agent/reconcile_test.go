@@ -1375,6 +1375,55 @@ func TestReconcileDefersPolicyApplyForDesiredStateRollout(t *testing.T) {
 	}
 }
 
+func TestApplyPolicyRolloutsResumesAppliedEndpoints(t *testing.T) {
+	state := rolloutPolicyState()
+	state.PolicyRollouts = []control.PolicyRollout{{
+		Name:      "web-canary",
+		Node:      "node-a",
+		Endpoints: []string{"prod/pod-a", "prod/pod-b"},
+		BatchSize: 1,
+	}}
+	store := dataplane.NewInMemoryPolicyStore()
+	podA := model.EndpointKey("prod", "pod-a")
+	if err := store.ReplaceEndpoint(context.Background(), podA, []dataplane.PolicyMapEntry{{
+		Key:   dataplane.PolicyKey{PrefixLen: dataplane.StaticPrefixBits, Direction: dataplane.DirectionIngress},
+		Value: dataplane.PolicyEntry{Precedence: 100, RuleCookie: 1},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	seedEvents := len(store.Events())
+
+	rollouts, err := ApplyPolicyRollouts(context.Background(), state, ReconcileOptions{
+		Node:  "node-a",
+		Store: store,
+		PolicyRolloutResume: map[string][]string{
+			"web-canary": {podA},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rollouts) != 1 {
+		t.Fatalf("rollouts = %+v, want one resumed rollout", rollouts)
+	}
+	rollout := rollouts[0].Rollout
+	if rollout.Applied != 2 || rollout.ResumedApplied != 1 {
+		t.Fatalf("rollout = %+v, want one resumed endpoint and one newly applied endpoint", rollout)
+	}
+	if rollout.Items[0].EndpointID != podA || rollout.Items[0].Phase != "resumed_applied" {
+		t.Fatalf("first rollout item = %+v, want resumed pod-a", rollout.Items[0])
+	}
+	if rollout.Items[1].Phase != "applied" {
+		t.Fatalf("second rollout item = %+v, want newly applied pod-b", rollout.Items[1])
+	}
+	if got := len(store.Events()) - seedEvents; got != 1 {
+		t.Fatalf("new policy events = %d, want only pod-b written", got)
+	}
+	if entries := store.Entries(model.EndpointKey("prod", "pod-b")); len(entries) != 1 {
+		t.Fatalf("pod-b entries = %+v, want rollout applied policy", entries)
+	}
+}
+
 func TestApplyPolicyRolloutsSkipsDisabledAndOtherNode(t *testing.T) {
 	state := rolloutPolicyState()
 	state.PolicyRollouts = []control.PolicyRollout{

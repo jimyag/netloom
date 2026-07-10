@@ -59,6 +59,33 @@ func TestLibOVSDBProviderSyncerCreatesProviderRows(t *testing.T) {
 	}
 }
 
+func TestLibOVSDBProviderSyncerOpenVSwitchExternalID(t *testing.T) {
+	client, cleanup := newTestVSwitchClient(t)
+	defer cleanup()
+	ctx := context.Background()
+	insertVSwitchRows(t, ctx, client, &vswitch.OpenvSwitch{
+		ExternalIDs: map[string]string{
+			"ovn-bridge-mappings": "physnet-a:br-physnet-a",
+		},
+	})
+	syncer := NewLibOVSDBProviderSyncer(client)
+
+	if err := syncer.SetOpenVSwitchExternalID(ctx, "netloom_policy_rollout_state", `{"rollouts":[]}`); err != nil {
+		t.Fatal(err)
+	}
+	value, ok, err := syncer.OpenVSwitchExternalID(ctx, "netloom_policy_rollout_state")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || value != `{"rollouts":[]}` {
+		t.Fatalf("rollout state external ID = %q ok=%v, want JSON state", value, ok)
+	}
+	root := singleVSwitchRoot(t, ctx, client)
+	if root.ExternalIDs["ovn-bridge-mappings"] != "physnet-a:br-physnet-a" {
+		t.Fatalf("root external IDs = %+v, want existing bridge mapping preserved", root.ExternalIDs)
+	}
+}
+
 func TestLibOVSDBProviderSyncerCreatesProviderControllers(t *testing.T) {
 	client, cleanup := newTestVSwitchClient(t)
 	defer cleanup()
