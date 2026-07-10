@@ -303,10 +303,11 @@ func (r *stateFileReconciler) reconcile(ctx context.Context, path string) error 
 	ovnOps := r.plannedOVNOperations() - opsBefore
 	executed := r.executedOperations() - executedBefore
 	ovnAudit, ovnAuditStatus, ovnAuditError := r.auditOVN(ctx, r.memory.TopologyState())
+	ovnStaleAdvisory := ovnStaleAdvisoryFromAudit(ovnAudit, ovnStaleAdvisoryThresholdFromEnv())
 	ovnMaintenance := r.runOVNMaintenance(ctx)
 	duration := time.Since(start)
 	fmt.Printf(
-		"netloom-controller reconciled desired state vpcs=%d subnets=%d endpoints=%d route_tables=%d policy_routes=%d gateways=%d nat_rules=%d load_balancers=%d security_groups=%d policy_entries=%d lb_health_checked=%d lb_health_healthy=%d lb_health_unhealthy=%d ovn_health=%s ovn_health_latency_ms=%d ovn_health_consecutive_failures=%d ovn_health_consecutive_successes=%d ovn_health_recovering=%d ovn_cluster_active_endpoint=%s ovn_cluster_leader_endpoint=%s ovn_cluster_leader_probe_status=%s ovn_cluster_leader_probe_error=%s ovn_cluster_leader_preferred=%d ovn_cluster_endpoints=%d ovn_cluster_failovers=%d ovn_ops=%d ovn_executed=%d ovn_audit=%s ovn_live_managed=%d ovn_live_duplicates=%d ovn_live_incomplete=%d ovn_live_missing=%d ovn_live_unexpected=%d ovn_live_drifted_rows=%d ovn_live_drifted_fields=%d ovn_audit_error=%s ovn_maintenance=%s ovn_maintenance_attempted=%d ovn_maintenance_succeeded=%d ovn_maintenance_failed=%d ovn_maintenance_latency_ms=%d ovn_maintenance_error=%s reconcile_duration_ms=%d\n",
+		"netloom-controller reconciled desired state vpcs=%d subnets=%d endpoints=%d route_tables=%d policy_routes=%d gateways=%d nat_rules=%d load_balancers=%d security_groups=%d policy_entries=%d lb_health_checked=%d lb_health_healthy=%d lb_health_unhealthy=%d ovn_health=%s ovn_health_latency_ms=%d ovn_health_consecutive_failures=%d ovn_health_consecutive_successes=%d ovn_health_recovering=%d ovn_cluster_active_endpoint=%s ovn_cluster_leader_endpoint=%s ovn_cluster_leader_probe_status=%s ovn_cluster_leader_probe_error=%s ovn_cluster_leader_preferred=%d ovn_cluster_endpoints=%d ovn_cluster_failovers=%d ovn_ops=%d ovn_executed=%d ovn_audit=%s ovn_live_managed=%d ovn_live_duplicates=%d ovn_live_incomplete=%d ovn_live_missing=%d ovn_live_unexpected=%d ovn_live_drifted_rows=%d ovn_live_drifted_fields=%d ovn_audit_error=%s ovn_stale_advisory=%s ovn_stale_burden=%d ovn_stale_threshold=%d ovn_maintenance=%s ovn_maintenance_attempted=%d ovn_maintenance_succeeded=%d ovn_maintenance_failed=%d ovn_maintenance_latency_ms=%d ovn_maintenance_error=%s reconcile_duration_ms=%d\n",
 		len(state.VPCs),
 		len(state.Subnets),
 		len(state.Endpoints),
@@ -343,6 +344,9 @@ func (r *stateFileReconciler) reconcile(ctx context.Context, path string) error 
 		ovnAudit.DriftedManagedRows,
 		ovnAudit.DriftedManagedFields,
 		formatResultError(ovnAuditError),
+		ovnStaleAdvisory.Status,
+		ovnStaleAdvisory.Burden,
+		ovnStaleAdvisory.Threshold,
 		fallbackMetricsLabel(ovnMaintenance.Status, "disabled"),
 		ovnMaintenance.Attempted,
 		ovnMaintenance.Succeeded,
@@ -351,7 +355,7 @@ func (r *stateFileReconciler) reconcile(ctx context.Context, path string) error 
 		formatResultError(ovnMaintenance.Error),
 		duration.Milliseconds(),
 	)
-	r.observeReconcileSuccess(state, healthSummary, ovnHealth.Snapshot, ovnOps, executed, ovnAuditStatus, ovnAuditError, ovnAudit, ovnMaintenance, duration)
+	r.observeReconcileSuccess(state, healthSummary, ovnHealth.Snapshot, ovnOps, executed, ovnAuditStatus, ovnAuditError, ovnAudit, ovnStaleAdvisory, ovnMaintenance, duration)
 	return nil
 }
 
@@ -426,7 +430,7 @@ func printControllerReconcileFailure(phase string, state control.DesiredState, h
 	)
 }
 
-func (r *stateFileReconciler) observeReconcileSuccess(state control.DesiredState, healthSummary control.LoadBalancerHealthSummary, ovnHealth ovnHealthSnapshot, ovnOps, executed int, ovnAuditStatus, ovnAuditError string, ovnAudit ovn.AuditStats, ovnMaintenance ovnMaintenanceResult, duration time.Duration) {
+func (r *stateFileReconciler) observeReconcileSuccess(state control.DesiredState, healthSummary control.LoadBalancerHealthSummary, ovnHealth ovnHealthSnapshot, ovnOps, executed int, ovnAuditStatus, ovnAuditError string, ovnAudit ovn.AuditStats, ovnStaleAdvisory ovnStaleAdvisory, ovnMaintenance ovnMaintenanceResult, duration time.Duration) {
 	if r == nil || r.metrics == nil {
 		return
 	}
@@ -446,6 +450,7 @@ func (r *stateFileReconciler) observeReconcileSuccess(state control.DesiredState
 		OVNAuditStatus:                fallbackMetricsLabel(ovnAuditStatus, "disabled"),
 		OVNAuditError:                 ovnAuditError,
 		OVNAudit:                      ovnAudit,
+		OVNStaleAdvisory:              ovnStaleAdvisory,
 		OVNMaintenance:                ovnMaintenance,
 		Duration:                      duration,
 		Success:                       true,
@@ -554,11 +559,18 @@ type controllerMetricsSnapshot struct {
 	OVNAuditStatus                string
 	OVNAuditError                 string
 	OVNAudit                      ovn.AuditStats
+	OVNStaleAdvisory              ovnStaleAdvisory
 	OVNMaintenance                ovnMaintenanceResult
 	Duration                      time.Duration
 	Success                       bool
 	Phase                         string
 	Error                         string
+}
+
+type ovnStaleAdvisory struct {
+	Status    string
+	Burden    int
+	Threshold int
 }
 
 type controllerMetricsTotals struct {
@@ -585,6 +597,38 @@ type controllerMetricsTotals struct {
 	OVNMaintenanceTargets uint64
 	OVNMaintenanceSuccess uint64
 	OVNMaintenanceFailure uint64
+}
+
+func ovnStaleAdvisoryThresholdFromEnv() int {
+	raw := strings.TrimSpace(os.Getenv("NETLOOM_OVN_STALE_ADVISORY_THRESHOLD"))
+	if raw == "" {
+		return 0
+	}
+	threshold, err := strconv.Atoi(raw)
+	if err != nil || threshold < 0 {
+		return 0
+	}
+	return threshold
+}
+
+func ovnStaleAdvisoryFromAudit(stats ovn.AuditStats, threshold int) ovnStaleAdvisory {
+	burden := ovnStaleBurden(stats)
+	if threshold <= 0 {
+		return ovnStaleAdvisory{Status: "disabled", Burden: burden}
+	}
+	status := "ok"
+	if burden >= threshold {
+		status = "warning"
+	}
+	return ovnStaleAdvisory{Status: status, Burden: burden, Threshold: threshold}
+}
+
+func ovnStaleBurden(stats ovn.AuditStats) int {
+	return stats.MissingManagedRows +
+		stats.UnexpectedManagedRows +
+		stats.DriftedManagedRows +
+		stats.DuplicateManagedRows +
+		stats.IncompleteManagedRows
 }
 
 var controllerReconcileDurationBuckets = []time.Duration{
@@ -743,6 +787,10 @@ func writeControllerMetrics(w metricWriter, snapshot controllerMetricsSnapshot, 
 	auditLabels := prometheusLabels(map[string]string{
 		"ovn_audit":  fallbackMetricsLabel(snapshot.OVNAuditStatus, "disabled"),
 		"ovn_health": fallbackMetricsLabel(snapshot.OVNHealthStatus, "disabled"),
+	})
+	staleAdvisoryLabels := prometheusLabels(map[string]string{
+		"ovn_health":         fallbackMetricsLabel(snapshot.OVNHealthStatus, "disabled"),
+		"ovn_stale_advisory": fallbackMetricsLabel(snapshot.OVNStaleAdvisory.Status, "disabled"),
 	})
 	writeMetricHelp(w, "netloom_controller_reconcile_ready", "Whether the controller has completed at least one reconcile attempt.")
 	writeMetricType(w, "netloom_controller_reconcile_ready", "gauge")
@@ -921,6 +969,12 @@ func writeControllerMetrics(w metricWriter, snapshot controllerMetricsSnapshot, 
 	fmt.Fprintf(w, "netloom_controller_ovn_live_drifted_managed_rows%s %d\n", auditLabels, snapshot.OVNAudit.DriftedManagedRows)
 	writeMetricType(w, "netloom_controller_ovn_live_drifted_managed_fields", "gauge")
 	fmt.Fprintf(w, "netloom_controller_ovn_live_drifted_managed_fields%s %d\n", auditLabels, snapshot.OVNAudit.DriftedManagedFields)
+	writeMetricType(w, "netloom_controller_ovn_stale_advisory_active", "gauge")
+	fmt.Fprintf(w, "netloom_controller_ovn_stale_advisory_active%s %d\n", staleAdvisoryLabels, boolMetric(snapshot.OVNStaleAdvisory.Status == "warning"))
+	writeMetricType(w, "netloom_controller_ovn_stale_advisory_burden", "gauge")
+	fmt.Fprintf(w, "netloom_controller_ovn_stale_advisory_burden%s %d\n", staleAdvisoryLabels, snapshot.OVNStaleAdvisory.Burden)
+	writeMetricType(w, "netloom_controller_ovn_stale_advisory_threshold", "gauge")
+	fmt.Fprintf(w, "netloom_controller_ovn_stale_advisory_threshold%s %d\n", staleAdvisoryLabels, snapshot.OVNStaleAdvisory.Threshold)
 	writeControllerCounter(w, "netloom_controller_ovn_audit_checks_total", auditLabels, totals.OVNAuditChecks)
 	writeControllerCounter(w, "netloom_controller_ovn_audit_failures_total", auditLabels, totals.OVNAuditFailures)
 	if snapshot.OVNAuditStatus == "error" {

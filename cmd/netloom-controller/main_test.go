@@ -640,6 +640,11 @@ func TestControllerMetricsExportsLatestSuccess(t *testing.T) {
 			DriftedManagedRows:               5,
 			DriftedManagedFields:             6,
 		},
+		OVNStaleAdvisory: ovnStaleAdvisory{
+			Status:    "warning",
+			Burden:    15,
+			Threshold: 10,
+		},
 		OVNMaintenance: ovnMaintenanceResult{
 			Status:    "ok",
 			Attempted: 2,
@@ -709,12 +714,37 @@ func TestControllerMetricsExportsLatestSuccess(t *testing.T) {
 		`netloom_controller_ovn_live_unexpected_managed_rows{ovn_audit="ok",ovn_health="ok"} 4`,
 		`netloom_controller_ovn_live_drifted_managed_rows{ovn_audit="ok",ovn_health="ok"} 5`,
 		`netloom_controller_ovn_live_drifted_managed_fields{ovn_audit="ok",ovn_health="ok"} 6`,
+		`netloom_controller_ovn_stale_advisory_active{ovn_health="ok",ovn_stale_advisory="warning"} 1`,
+		`netloom_controller_ovn_stale_advisory_burden{ovn_health="ok",ovn_stale_advisory="warning"} 15`,
+		`netloom_controller_ovn_stale_advisory_threshold{ovn_health="ok",ovn_stale_advisory="warning"} 10`,
 		`netloom_controller_ovn_audit_checks_total{ovn_audit="ok",ovn_health="ok"} 1`,
 		`netloom_controller_ovn_audit_failures_total{ovn_audit="ok",ovn_health="ok"} 0`,
 	} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("metrics output missing %q:\n%s", expected, output)
 		}
+	}
+}
+
+func TestOVNStaleAdvisoryFromAudit(t *testing.T) {
+	stats := ovn.AuditStats{
+		MissingManagedRows:    2,
+		UnexpectedManagedRows: 3,
+		DriftedManagedRows:    4,
+		DuplicateManagedRows:  1,
+		IncompleteManagedRows: 1,
+	}
+	if got := ovnStaleBurden(stats); got != 11 {
+		t.Fatalf("stale burden = %d, want 11", got)
+	}
+	if advisory := ovnStaleAdvisoryFromAudit(stats, 0); advisory.Status != "disabled" || advisory.Burden != 11 || advisory.Threshold != 0 {
+		t.Fatalf("disabled advisory = %+v, want disabled burden only", advisory)
+	}
+	if advisory := ovnStaleAdvisoryFromAudit(stats, 12); advisory.Status != "ok" || advisory.Burden != 11 || advisory.Threshold != 12 {
+		t.Fatalf("ok advisory = %+v, want below threshold", advisory)
+	}
+	if advisory := ovnStaleAdvisoryFromAudit(stats, 11); advisory.Status != "warning" || advisory.Burden != 11 || advisory.Threshold != 11 {
+		t.Fatalf("warning advisory = %+v, want threshold reached", advisory)
 	}
 }
 
