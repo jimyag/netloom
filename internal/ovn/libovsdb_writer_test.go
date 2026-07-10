@@ -1218,6 +1218,38 @@ func TestLibOVSDBTopologyWriterFirstCleanupDeletesUnexpectedLiveObjects(t *testi
 			NextHops:    []netip.Addr{netip.MustParseAddr("10.10.0.254")},
 		}},
 	}
+	policyRoute := model.PolicyRoute{
+		Name:     "egress-a",
+		VPC:      "prod",
+		Priority: 100,
+		Match: model.RouteMatch{
+			Source:      netip.MustParsePrefix("10.10.0.0/24"),
+			Destination: netip.MustParsePrefix("10.20.0.0/24"),
+		},
+		Action: model.RouteAction{Type: model.ActionReroute, NextHops: []netip.Addr{netip.MustParseAddr("10.10.0.253")}},
+	}
+	natRule := model.NATRule{
+		Name:       "egress",
+		VPC:        "prod",
+		Type:       model.ActionSNAT,
+		MatchCIDR:  netip.MustParsePrefix("10.10.0.0/24"),
+		ExternalIP: netip.MustParseAddr("198.51.100.10"),
+	}
+	lb := model.LoadBalancer{
+		Name:    "api",
+		VPC:     "prod",
+		VIP:     netip.MustParseAddr("10.96.0.10"),
+		Subnets: []string{"apps"},
+		Ports: []model.LoadBalancerPort{{
+			Port:     443,
+			Protocol: model.ProtocolTCP,
+			Backends: []model.LoadBalancerBackend{{
+				IP:   netip.MustParseAddr("10.10.0.20"),
+				Port: 8443,
+			}},
+		}},
+		HealthCheck: model.LoadBalancerHealthCheck{Enabled: true},
+	}
 	if err := writer.EnsureVPC(ctx, model.VPC{Name: "prod"}); err != nil {
 		t.Fatal(err)
 	}
@@ -1230,6 +1262,15 @@ func TestLibOVSDBTopologyWriterFirstCleanupDeletesUnexpectedLiveObjects(t *testi
 	if err := writer.EnsureRouteTable(ctx, routeTable); err != nil {
 		t.Fatal(err)
 	}
+	if err := writer.EnsurePolicyRoute(ctx, policyRoute); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureNATRule(ctx, natRule); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureLoadBalancer(ctx, lb); err != nil {
+		t.Fatal(err)
+	}
 	requireEventually(t, func() bool {
 		counts, err := managedOVNRowCounts(ctx, client)
 		return err == nil &&
@@ -1238,6 +1279,10 @@ func TestLibOVSDBTopologyWriterFirstCleanupDeletesUnexpectedLiveObjects(t *testi
 			counts["Logical_Switch_Port"] == 2 &&
 			counts["Logical_Router_Port"] == 1 &&
 			counts["Logical_Router_Static_Route"] == 1 &&
+			counts["Logical_Router_Policy"] == 1 &&
+			counts["NAT"] == 1 &&
+			counts["Load_Balancer"] == 1 &&
+			counts["Load_Balancer_Health_Check"] == 1 &&
 			counts["DHCP_Options"] == 1
 	})
 
@@ -1260,6 +1305,18 @@ func TestLibOVSDBTopologyWriterFirstCleanupDeletesUnexpectedLiveObjects(t *testi
 	stats := gcWriter.LastCleanupStats()
 	if !stats.FirstReconcileGC || stats.Operations == 0 {
 		t.Fatalf("cleanup stats = %+v, want first reconcile GC operations", stats)
+	}
+	if stats.StaleVPCs != 1 ||
+		stats.StaleSubnets != 1 ||
+		stats.StaleRoutes != 1 ||
+		stats.StalePolicyRoutes != 1 ||
+		stats.StaleNATRules != 1 ||
+		stats.StaleLoadBalancers != 1 ||
+		stats.StaleLogicalSwitchPorts != 2 ||
+		stats.StaleLogicalRouterPorts != 1 ||
+		stats.StaleDHCPOptions != 1 ||
+		stats.StaleLBHealthChecks != 1 {
+		t.Fatalf("cleanup stats = %+v, want first reconcile live orphan counts by OVN table category", stats)
 	}
 }
 

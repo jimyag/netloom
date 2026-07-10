@@ -49,6 +49,10 @@ type CleanupStats struct {
 	ChangedLoadBalancers     int
 	StaleLoadBalancerSubnets int
 	StaleLoadBalancerVIPs    int
+	StaleLogicalSwitchPorts  int
+	StaleLogicalRouterPorts  int
+	StaleDHCPOptions         int
+	StaleLBHealthChecks      int
 }
 
 func (s CleanupStats) TotalStaleObjects() int {
@@ -61,7 +65,11 @@ func (s CleanupStats) TotalStaleObjects() int {
 		s.StaleNATRules +
 		s.StaleLoadBalancers +
 		s.StaleLoadBalancerSubnets +
-		s.StaleLoadBalancerVIPs
+		s.StaleLoadBalancerVIPs +
+		s.StaleLogicalSwitchPorts +
+		s.StaleLogicalRouterPorts +
+		s.StaleDHCPOptions +
+		s.StaleLBHealthChecks
 }
 
 func (s CleanupStats) TotalChangedObjects() int {

@@ -35,12 +35,13 @@ func (w *LibOVSDBTopologyWriter) CleanupTopology(ctx context.Context, state topo
 	}
 	stats := cleanupStats(w.last, next, !w.seen, len(ops))
 	if !w.seen {
-		liveOps, err := w.cleanupUnexpectedLiveOperations(ctx, state)
+		liveOps, liveStats, err := w.cleanupUnexpectedLiveOperations(ctx, state)
 		if err != nil {
 			w.lastCleanup = stats
 			return err
 		}
 		ops = append(liveOps, ops...)
+		stats.add(liveStats)
 		stats.Operations = len(ops)
 	}
 	if err := w.transact(ctx, "cleanup OVN topology", ops); err != nil {
@@ -174,122 +175,154 @@ func (w *LibOVSDBTopologyWriter) cleanupSnapshotDiffOperations(ctx context.Conte
 	return ops, nil
 }
 
-func (w *LibOVSDBTopologyWriter) cleanupUnexpectedLiveOperations(ctx context.Context, desired topology.State) ([]ovsdb.Operation, error) {
+func (w *LibOVSDBTopologyWriter) cleanupUnexpectedLiveOperations(ctx context.Context, desired topology.State) ([]ovsdb.Operation, CleanupStats, error) {
 	expected := expectedManagedAuditRows(desired)
 	staticRouteExpected := expectedStaticRouteRows(desired)
 	var ops []ovsdb.Operation
+	var stats CleanupStats
 
 	dhcpRows, err := w.unexpectedDHCPOptions(ctx, expected)
 	if err != nil {
-		return nil, err
+		return nil, CleanupStats{}, err
 	}
+	stats.StaleDHCPOptions += len(dhcpRows)
 	for i := range dhcpRows {
 		nextOps, err := w.deleteDHCPOptionsOperations(ctx, &dhcpRows[i])
 		if err != nil {
-			return nil, err
+			return nil, CleanupStats{}, err
 		}
 		ops = append(ops, nextOps...)
 	}
 	lspRows, err := w.unexpectedLogicalSwitchPorts(ctx, expected)
 	if err != nil {
-		return nil, err
+		return nil, CleanupStats{}, err
 	}
+	stats.StaleLogicalSwitchPorts += len(lspRows)
 	for i := range lspRows {
 		nextOps, err := w.deleteLogicalSwitchPortFromParents(&lspRows[i])
 		if err != nil {
-			return nil, err
+			return nil, CleanupStats{}, err
 		}
 		ops = append(ops, nextOps...)
 	}
 	lrpRows, err := w.unexpectedLogicalRouterPorts(ctx, expected)
 	if err != nil {
-		return nil, err
+		return nil, CleanupStats{}, err
 	}
+	stats.StaleLogicalRouterPorts += len(lrpRows)
 	for i := range lrpRows {
 		nextOps, err := w.deleteLogicalRouterPortFromParents(&lrpRows[i])
 		if err != nil {
-			return nil, err
+			return nil, CleanupStats{}, err
 		}
 		ops = append(ops, nextOps...)
 	}
 	staticRoutes, err := w.unexpectedStaticRoutes(ctx, staticRouteExpected)
 	if err != nil {
-		return nil, err
+		return nil, CleanupStats{}, err
 	}
+	stats.StaleRoutes += len(staticRoutes)
 	for i := range staticRoutes {
 		nextOps, err := w.deleteStaticRouteFromParents(&staticRoutes[i])
 		if err != nil {
-			return nil, err
+			return nil, CleanupStats{}, err
 		}
 		ops = append(ops, nextOps...)
 	}
 	policyRows, err := w.unexpectedPolicyRoutes(ctx, expected)
 	if err != nil {
-		return nil, err
+		return nil, CleanupStats{}, err
 	}
+	stats.StalePolicyRoutes += len(policyRows)
 	for i := range policyRows {
 		nextOps, err := w.deletePolicyRouteFromParents(&policyRows[i])
 		if err != nil {
-			return nil, err
+			return nil, CleanupStats{}, err
 		}
 		ops = append(ops, nextOps...)
 	}
 	natRows, err := w.unexpectedNATRules(ctx, expected)
 	if err != nil {
-		return nil, err
+		return nil, CleanupStats{}, err
 	}
+	stats.StaleNATRules += len(natRows)
 	for i := range natRows {
 		nextOps, err := w.deleteNATRuleFromParents(&natRows[i])
 		if err != nil {
-			return nil, err
+			return nil, CleanupStats{}, err
 		}
 		ops = append(ops, nextOps...)
 	}
 	hcRows, err := w.unexpectedLoadBalancerHealthChecks(ctx, expected)
 	if err != nil {
-		return nil, err
+		return nil, CleanupStats{}, err
 	}
+	stats.StaleLBHealthChecks += len(hcRows)
 	for i := range hcRows {
 		nextOps, err := w.deleteLoadBalancerHealthCheckFromParents(&hcRows[i])
 		if err != nil {
-			return nil, err
+			return nil, CleanupStats{}, err
 		}
 		ops = append(ops, nextOps...)
 	}
 	lbRows, err := w.unexpectedLoadBalancers(ctx, expected)
 	if err != nil {
-		return nil, err
+		return nil, CleanupStats{}, err
 	}
+	stats.StaleLoadBalancers += len(lbRows)
 	for i := range lbRows {
 		nextOps, err := w.deleteLoadBalancerFromParents(ctx, &lbRows[i])
 		if err != nil {
-			return nil, err
+			return nil, CleanupStats{}, err
 		}
 		ops = append(ops, nextOps...)
 	}
 	lsRows, err := w.unexpectedLogicalSwitches(ctx, expected)
 	if err != nil {
-		return nil, err
+		return nil, CleanupStats{}, err
 	}
+	stats.StaleSubnets += len(lsRows)
 	for i := range lsRows {
 		deleteOps, err := w.client.Where(&lsRows[i]).Delete()
 		if err != nil {
-			return nil, fmt.Errorf("delete unexpected logical switch %s: %w", lsRows[i].Name, err)
+			return nil, CleanupStats{}, fmt.Errorf("delete unexpected logical switch %s: %w", lsRows[i].Name, err)
 		}
 		ops = append(ops, deleteOps...)
 	}
 	lrRows, err := w.unexpectedLogicalRouters(ctx, expected)
 	if err != nil {
-		return nil, err
+		return nil, CleanupStats{}, err
 	}
+	stats.StaleVPCs += len(lrRows)
 	for i := range lrRows {
 		deleteOps, err := w.client.Where(&lrRows[i]).Delete()
 		if err != nil {
-			return nil, fmt.Errorf("delete unexpected logical router %s: %w", lrRows[i].Name, err)
+			return nil, CleanupStats{}, fmt.Errorf("delete unexpected logical router %s: %w", lrRows[i].Name, err)
 		}
 		ops = append(ops, deleteOps...)
 	}
-	return ops, nil
+	return ops, stats, nil
+}
+
+func (s *CleanupStats) add(other CleanupStats) {
+	s.StaleVPCs += other.StaleVPCs
+	s.StaleSubnets += other.StaleSubnets
+	s.StaleEndpoints += other.StaleEndpoints
+	s.StaleRoutes += other.StaleRoutes
+	s.ChangedRoutes += other.ChangedRoutes
+	s.StalePolicyRoutes += other.StalePolicyRoutes
+	s.ChangedPolicyRoutes += other.ChangedPolicyRoutes
+	s.StaleGateways += other.StaleGateways
+	s.StaleNATRules += other.StaleNATRules
+	s.ChangedNATRules += other.ChangedNATRules
+	s.StaleLoadBalancers += other.StaleLoadBalancers
+	s.ChangedLoadBalancers += other.ChangedLoadBalancers
+	s.StaleLoadBalancerSubnets += other.StaleLoadBalancerSubnets
+	s.StaleLoadBalancerVIPs += other.StaleLoadBalancerVIPs
+	s.StaleLogicalSwitchPorts += other.StaleLogicalSwitchPorts
+	s.StaleLogicalRouterPorts += other.StaleLogicalRouterPorts
+	s.StaleDHCPOptions += other.StaleDHCPOptions
+	s.StaleLBHealthChecks += other.StaleLBHealthChecks
 }
 
 func (w *LibOVSDBTopologyWriter) deleteEndpointOperations(ctx context.Context, endpoint model.Endpoint) ([]ovsdb.Operation, error) {
