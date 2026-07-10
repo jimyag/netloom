@@ -2579,7 +2579,7 @@ func linuxDatapathOptions() *linuxdatapath.Options {
 		LocalDevice:          getenvDefault("NETLOOM_DATAPATH_DEV", "lo"),
 		UnderlayDevice:       getenvDefault("NETLOOM_UNDERLAY_DEV", "eth0"),
 		ProviderLinks:        parseProviderLinks(os.Getenv("NETLOOM_PROVIDER_NETWORK_LINKS")),
-		SyncOVSDB:            os.Getenv("NETLOOM_OVSDB_SYNC") == "1",
+		SyncOVSDB:            ovsdbSyncEnabled(),
 		NetNSPrefix:          getenvDefault("NETLOOM_NETNS_PREFIX", "nl"),
 		WorkloadIF:           getenvDefault("NETLOOM_WORKLOAD_IF", "eth0"),
 		NodeUnderlays:        parseNodeUnderlays(os.Getenv("NETLOOM_NODE_UNDERLAYS")),
@@ -2607,6 +2607,11 @@ func linuxDatapathOptionsWithOVSDBSyncer(ctx context.Context) (*linuxdatapath.Op
 	options.ProviderOVSDBSyncer = providerOVSDB
 	options.ProviderOVSDBReader = providerOVSDB
 	return options, closeFn, nil
+}
+
+func ovsdbSyncEnabled() bool {
+	return strings.TrimSpace(os.Getenv("NETLOOM_OVSDB_ENDPOINT")) != "" ||
+		os.Getenv("NETLOOM_OVSDB_SYNC") == "1"
 }
 
 func newOpenVSwitchClient(ctx context.Context, endpoint string) (libovsdbclient.Client, func(), error) {

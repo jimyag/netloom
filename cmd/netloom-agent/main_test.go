@@ -167,6 +167,19 @@ func TestLinuxDatapathOptionsParsesBackend(t *testing.T) {
 	}
 }
 
+func TestLinuxDatapathOptionsEnablesOVSDBSyncWhenEndpointConfigured(t *testing.T) {
+	t.Setenv("NETLOOM_LINUX_DATAPATH", "1")
+	t.Setenv("NETLOOM_OVSDB_ENDPOINT", "unix:/run/openvswitch/db.sock")
+
+	options := linuxDatapathOptions()
+	if options == nil {
+		t.Fatal("expected linux datapath options")
+	}
+	if !options.SyncOVSDB {
+		t.Fatal("ovsdb sync should be enabled when NETLOOM_OVSDB_ENDPOINT is configured")
+	}
+}
+
 func TestLinuxDatapathOptionsDefaultsToNetlinkBackend(t *testing.T) {
 	t.Setenv("NETLOOM_LINUX_DATAPATH", "1")
 
