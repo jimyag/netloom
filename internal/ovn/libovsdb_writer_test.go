@@ -758,7 +758,8 @@ func TestLibOVSDBTopologyWriterEnsuresGatewayRouterMetadata(t *testing.T) {
 			return false
 		}
 		_, hasChassis := routers[0].Options["chassis"]
-		return !hasChassis && routers[0].ExternalIDs["netloom_gateway_distributed"] == "true"
+		_, hasExternalIF := routers[0].ExternalIDs["netloom_external_if"]
+		return !hasChassis && !hasExternalIF && routers[0].ExternalIDs["netloom_gateway_distributed"] == "true"
 	})
 }
 
@@ -886,6 +887,34 @@ func TestLibOVSDBTopologyWriterEnsuresNATRules(t *testing.T) {
 			return row.ExternalIDs["netloom_vpc"] == "prod" && row.ExternalIDs["netloom_nat"] == "web"
 		}).List(ctx, &nats)
 		return err == nil && len(nats) == 1 && nats[0].LogicalIP == "10.10.0.22" && nats[0].Options["netloom_logical_port_range"] == "444"
+	})
+	if err := writer.EnsureNATRule(ctx, model.NATRule{
+		Name:       "web",
+		VPC:        "prod",
+		Type:       model.ActionDNAT,
+		ExternalIP: netip.MustParseAddr("198.51.100.80"),
+		TargetIP:   netip.MustParseAddr("10.10.0.22"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	requireEventually(t, func() bool {
+		nats = nil
+		err := client.WhereCache(func(row *ovnnb.NAT) bool {
+			return row.ExternalIDs["netloom_vpc"] == "prod" && row.ExternalIDs["netloom_nat"] == "web"
+		}).List(ctx, &nats)
+		if err != nil || len(nats) != 1 || nats[0].ExternalPortRange != "" || len(nats[0].Options) != 0 {
+			return false
+		}
+		if _, ok := nats[0].ExternalIDs["netloom_external_port"]; ok {
+			return false
+		}
+		if _, ok := nats[0].ExternalIDs["netloom_target_port"]; ok {
+			return false
+		}
+		if _, ok := nats[0].ExternalIDs["netloom_protocol"]; ok {
+			return false
+		}
+		return nats[0].ExternalIDs["netloom_owner"] == "netloom"
 	})
 }
 

@@ -111,7 +111,7 @@ func (w *LibOVSDBTopologyWriter) EnsureSubnet(ctx context.Context, subnet model.
 			return fmt.Errorf("create logical switch %s: %w", ls.Name, err)
 		}
 	} else {
-		nextExternalIDs := mergeStringMap(existingSwitch.ExternalIDs, ls.ExternalIDs)
+		nextExternalIDs := mergeManagedExternalIDs(existingSwitch.ExternalIDs, ls.ExternalIDs)
 		nextOtherConfig := replaceLogicalSwitchIPAMConfig(existingSwitch.OtherConfig, ls.OtherConfig)
 		if !reflect.DeepEqual(existingSwitch.ExternalIDs, nextExternalIDs) || !reflect.DeepEqual(existingSwitch.OtherConfig, nextOtherConfig) {
 			existingSwitch.ExternalIDs = nextExternalIDs
@@ -247,7 +247,7 @@ func (w *LibOVSDBTopologyWriter) EnsureRouteTable(ctx context.Context, table mod
 				continue
 			}
 			keep := rows[0]
-			nextExternalIDs := mergeStringMap(keep.ExternalIDs, desired.ExternalIDs)
+			nextExternalIDs := mergeManagedExternalIDs(keep.ExternalIDs, desired.ExternalIDs)
 			if !containsString(router.StaticRoutes, keep.UUID) {
 				attachOps, err := w.attachStaticRoute(router, keep.UUID)
 				if err != nil {
@@ -339,7 +339,7 @@ func (w *LibOVSDBTopologyWriter) EnsurePolicyRoute(ctx context.Context, route mo
 		ops = append(ops, attachOps...)
 	} else {
 		keep := existing[0]
-		nextExternalIDs := mergeStringMap(keep.ExternalIDs, desired.ExternalIDs)
+		nextExternalIDs := mergeManagedExternalIDs(keep.ExternalIDs, desired.ExternalIDs)
 		if !containsString(router.Policies, keep.UUID) {
 			attachOps, err := w.attachPolicyRoute(router, keep.UUID)
 			if err != nil {
@@ -400,7 +400,7 @@ func (w *LibOVSDBTopologyWriter) EnsureGateway(ctx context.Context, gateway mode
 	if !ok {
 		return fmt.Errorf("logical router %s must exist before gateway %s", logicalRouter(gateway.VPC), gateway.Name)
 	}
-	nextExternalIDs := mergeStringMap(router.ExternalIDs, gatewayExternalIDs(gateway))
+	nextExternalIDs := mergeGatewayExternalIDs(router.ExternalIDs, gatewayExternalIDs(gateway))
 	nextOptions := gatewayRouterOptions(router.Options, gateway)
 	if reflect.DeepEqual(router.ExternalIDs, nextExternalIDs) && reflect.DeepEqual(router.Options, nextOptions) {
 		return nil
@@ -456,7 +456,7 @@ func (w *LibOVSDBTopologyWriter) EnsureNATRule(ctx context.Context, rule model.N
 	} else {
 		keepIndex := preferredReferencedRow(router.Nat, existing, func(row ovnnb.NAT) string { return row.UUID })
 		keep := existing[keepIndex]
-		nextExternalIDs := mergeStringMap(keep.ExternalIDs, desired.ExternalIDs)
+		nextExternalIDs := mergeManagedExternalIDs(keep.ExternalIDs, desired.ExternalIDs)
 		if !containsString(router.Nat, keep.UUID) {
 			attachOps, err := w.attachNATRule(router, keep.UUID)
 			if err != nil {
@@ -649,7 +649,7 @@ func (w *LibOVSDBTopologyWriter) ensureLogicalRouterPort(ctx context.Context, ro
 		ops = append(ops, mutateOps...)
 		return desired.UUID, ops, nil
 	}
-	nextExternalIDs := mergeStringMap(existing.ExternalIDs, desired.ExternalIDs)
+	nextExternalIDs := mergeManagedExternalIDs(existing.ExternalIDs, desired.ExternalIDs)
 	nextIPv6RAConfigs := replaceManagedRouterPortRAConfig(existing.Ipv6RaConfigs, desired.Ipv6RaConfigs)
 	if !containsString(router.Ports, existing.UUID) {
 		mutateOps, err := w.client.Where(router).Mutate(router, ovsmodel.Mutation{
@@ -705,7 +705,7 @@ func (w *LibOVSDBTopologyWriter) ensureLogicalSwitchPort(ctx context.Context, sw
 		ops = append(ops, mutateOps...)
 		return desired.UUID, ops, nil
 	}
-	nextExternalIDs := mergeStringMap(existing.ExternalIDs, desired.ExternalIDs)
+	nextExternalIDs := mergeManagedExternalIDs(existing.ExternalIDs, desired.ExternalIDs)
 	nextTag := desired.Tag
 	if !containsString(switchPorts, existing.UUID) {
 		switchRow := &ovnnb.LogicalSwitch{UUID: switchUUID}
@@ -764,7 +764,7 @@ func (w *LibOVSDBTopologyWriter) ensureEndpointSwitchPort(ctx context.Context, s
 		ops = append(ops, mutateOps...)
 		return desired.UUID, ops, nil
 	}
-	nextExternalIDs := mergeStringMap(existing.ExternalIDs, desired.ExternalIDs)
+	nextExternalIDs := mergeManagedExternalIDs(existing.ExternalIDs, desired.ExternalIDs)
 	if !containsString(switchPorts, existing.UUID) {
 		switchRow := &ovnnb.LogicalSwitch{UUID: switchUUID}
 		mutateOps, err := w.client.Where(switchRow).Mutate(switchRow, ovsmodel.Mutation{
@@ -912,7 +912,7 @@ func (w *LibOVSDBTopologyWriter) ensureLoadBalancerRow(ctx context.Context, rout
 		}
 		return desired.UUID, ops, nil
 	}
-	nextExternalIDs := mergeStringMap(existing.ExternalIDs, desired.ExternalIDs)
+	nextExternalIDs := mergeManagedExternalIDs(existing.ExternalIDs, desired.ExternalIDs)
 	nextOptions := replaceManagedLoadBalancerOptions(existing.Options, desired.Options)
 	if !containsString(router.LoadBalancer, existing.UUID) {
 		attachOps, err := w.attachLoadBalancerToRouter(router, existing.UUID)
@@ -1020,7 +1020,7 @@ func (w *LibOVSDBTopologyWriter) syncLoadBalancerHealthChecks(ctx context.Contex
 				continue
 			}
 			keep := rows[0]
-			nextExternalIDs := mergeStringMap(keep.ExternalIDs, desired.ExternalIDs)
+			nextExternalIDs := mergeManagedExternalIDs(keep.ExternalIDs, desired.ExternalIDs)
 			if keep.Vip != desired.Vip || !reflect.DeepEqual(keep.Options, desired.Options) || !reflect.DeepEqual(keep.ExternalIDs, nextExternalIDs) {
 				keep.Vip = desired.Vip
 				keep.Options = desired.Options
@@ -1236,7 +1236,7 @@ func (w *LibOVSDBTopologyWriter) ensureEndpointDHCPOptions(ctx context.Context, 
 		}
 	}
 	keep := rows[keepIndex]
-	nextExternalIDs := mergeStringMap(keep.ExternalIDs, desired.ExternalIDs)
+	nextExternalIDs := mergeManagedExternalIDs(keep.ExternalIDs, desired.ExternalIDs)
 	if keep.Cidr != desired.Cidr || !reflect.DeepEqual(keep.Options, desired.Options) || !reflect.DeepEqual(keep.ExternalIDs, nextExternalIDs) {
 		keep.Cidr = desired.Cidr
 		keep.Options = desired.Options
@@ -1416,6 +1416,43 @@ func (w *LibOVSDBTopologyWriter) logicalSwitchesForLoadBalancer(ctx context.Cont
 		switches = append(switches, *sw)
 	}
 	return switches, nil
+}
+
+func mergeManagedExternalIDs(base map[string]string, overlay map[string]string) map[string]string {
+	out := make(map[string]string, len(base)+len(overlay))
+	for key, value := range base {
+		if strings.HasPrefix(key, "netloom_") {
+			continue
+		}
+		out[key] = value
+	}
+	for key, value := range overlay {
+		out[key] = value
+	}
+	return out
+}
+
+func mergeGatewayExternalIDs(base map[string]string, overlay map[string]string) map[string]string {
+	out := make(map[string]string, len(base)+len(overlay))
+	for key, value := range base {
+		if isGatewayExternalID(key) {
+			continue
+		}
+		out[key] = value
+	}
+	for key, value := range overlay {
+		out[key] = value
+	}
+	return out
+}
+
+func isGatewayExternalID(key string) bool {
+	switch key {
+	case "netloom_gateway", "netloom_gateway_lan_ip", "netloom_gateway_distributed", "netloom_external_if":
+		return true
+	default:
+		return false
+	}
 }
 
 func mergeStringMap(base map[string]string, overlay map[string]string) map[string]string {
