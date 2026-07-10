@@ -750,6 +750,19 @@ func providerOVSDBDesiredQueueState(ctx context.Context, spec providerNetworkLin
 	if qosUUID == "" {
 		return "missing"
 	}
+	desiredQueueIDs := make(map[string]struct{}, len(spec.TenantQueues))
+	for _, policy := range spec.TenantQueues {
+		desiredQueueIDs[strconv.Itoa(policy.QueueID)] = struct{}{}
+	}
+	queuesRaw, err := ovsVSCTLRead(ctx, "get", "qos", qosUUID, "queues")
+	if err != nil {
+		return "mismatch"
+	}
+	for queueID := range ovsDBMapKeys(queuesRaw) {
+		if _, ok := desiredQueueIDs[queueID]; !ok {
+			return "mismatch"
+		}
+	}
 	for _, policy := range spec.TenantQueues {
 		queueUUIDRaw, err := ovsVSCTLRead(ctx, "get", "qos", qosUUID, "queues:"+strconv.Itoa(policy.QueueID))
 		queueUUID := ovsDBValue(queueUUIDRaw)
@@ -805,6 +818,26 @@ func ovsDBValue(raw string) string {
 	value := strings.TrimSpace(raw)
 	value = strings.Trim(value, `"`)
 	return value
+}
+
+func ovsDBMapKeys(raw string) map[string]struct{} {
+	value := strings.TrimSpace(ovsDBValue(raw))
+	value = strings.Trim(value, "{}[] ")
+	out := make(map[string]struct{})
+	if value == "" {
+		return out
+	}
+	for _, item := range strings.Split(value, ",") {
+		key, _, ok := strings.Cut(strings.TrimSpace(item), "=")
+		if !ok {
+			continue
+		}
+		key = strings.Trim(strings.TrimSpace(key), `"`)
+		if key != "" {
+			out[key] = struct{}{}
+		}
+	}
+	return out
 }
 
 func ovsVSCTLRun(ctx context.Context, args ...string) error {

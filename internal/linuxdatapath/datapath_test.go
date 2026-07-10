@@ -344,6 +344,7 @@ case "$*" in
   "port-to-br ` + link + `") printf '` + bridge + `\n' ;;
   "get port ` + link + ` qos") printf '` + qosUUID + `\n' ;;
   "get qos ` + qosUUID + ` type") printf 'linux-htb\n' ;;
+  "get qos ` + qosUUID + ` queues") printf '{10=` + queueUUID + `}\n' ;;
   "get qos ` + qosUUID + ` queues:10") printf '` + queueUUID + `\n' ;;
   *"external_ids:netloom_owner") printf 'netloom\n' ;;
   *"external_ids:netloom_provider_network") printf 'physnet-a\n' ;;
@@ -378,6 +379,60 @@ esac
 	}
 	if statuses[0].PortState != "up" || statuses[0].InterfaceState != "up" || statuses[0].QoSState != "up" || statuses[0].QueueState != "mismatch" {
 		t.Fatalf("status = %+v, want command path queue mismatch only", statuses[0])
+	}
+}
+
+func TestReadProviderOVSDBStatusesReportsCommandPathExtraQueueDrift(t *testing.T) {
+	tmp := t.TempDir()
+	binary := filepath.Join(tmp, "ovs-vsctl")
+	bridge := providerNetworkBridgeName("physnet-a")
+	link := providerNetworkLinkName("physnet-a", "eth1", 100)
+	qosUUID := "qos-uuid"
+	queueUUID := "queue-uuid"
+	extraQueueUUID := "extra-queue-uuid"
+	queueName := providerOVSDBQueueName(providerNetworkLinkSpec{Name: link}, model.ProviderNetworkTenantQueuePolicy{QueueID: 10})
+	script := `#!/bin/sh
+case "$*" in
+  "get Open_vSwitch . external_ids:ovn-bridge-mappings") printf 'physnet-a:` + bridge + `\n' ;;
+  "br-exists ` + bridge + `") exit 0 ;;
+  "port-to-br ` + link + `") printf '` + bridge + `\n' ;;
+  "get port ` + link + ` qos") printf '` + qosUUID + `\n' ;;
+  "get qos ` + qosUUID + ` type") printf 'linux-htb\n' ;;
+  "get qos ` + qosUUID + ` queues") printf '{10=` + queueUUID + `,11=` + extraQueueUUID + `}\n' ;;
+  "get qos ` + qosUUID + ` queues:10") printf '` + queueUUID + `\n' ;;
+  *"external_ids:netloom_owner") printf 'netloom\n' ;;
+  *"external_ids:netloom_provider_network") printf 'physnet-a\n' ;;
+  *"external_ids:netloom_parent_device") printf 'eth1\n' ;;
+  *"external_ids:netloom_vlan") printf '100\n' ;;
+  *"external_ids:netloom_provider_qos") printf 'qos-` + link + `\n' ;;
+  *"external_ids:netloom_provider_queue") printf '` + queueName + `\n' ;;
+  *"external_ids:netloom_tenant") printf 'prod\n' ;;
+  *"external_ids:netloom_queue_id") printf '10\n' ;;
+  "get queue ` + queueUUID + ` other_config:max-rate") printf '500000000\n' ;;
+  *) printf 'unexpected ovs-vsctl args: %s\n' "$*" >&2; exit 1 ;;
+esac
+`
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", tmp+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	statuses := readProviderOVSDBStatuses(context.Background(), []providerNetworkLinkSpec{{
+		ProviderNetwork: "physnet-a",
+		ParentDevice:    "eth1",
+		VLAN:            100,
+		Name:            link,
+		TenantQueues: []model.ProviderNetworkTenantQueuePolicy{{
+			Tenant:     "prod",
+			QueueID:    10,
+			MaxRateBPS: 500000000,
+		}},
+	}})
+	if len(statuses) != 1 {
+		t.Fatalf("statuses = %+v, want one provider status", statuses)
+	}
+	if statuses[0].QoSState != "up" || statuses[0].QueueState != "mismatch" {
+		t.Fatalf("status = %+v, want extra queue mismatch only", statuses[0])
 	}
 }
 
