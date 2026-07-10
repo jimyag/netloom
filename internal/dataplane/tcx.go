@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/netip"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/cilium/ebpf"
@@ -710,7 +711,7 @@ func appendIPv4L4ACLRulesFromProgram(rules *[]IPv4L4ACLRule, seen map[IPv4L4Key]
 				DestPortPrefixBits: icmpPrefixBits,
 				Action:             action,
 				Precedence:         tcxRulePrecedence(rule),
-				RuleCookie:         stableCookie(rule.ID),
+				RuleCookie:         stableCookie(tcxRuleCookieKey(rule)),
 				Log:                tcxRuleLog(rule),
 			}); err != nil {
 				return fmt.Errorf("rule %s: %w", rule.ID, err)
@@ -728,7 +729,7 @@ func appendIPv4L4ACLRulesFromProgram(rules *[]IPv4L4ACLRule, seen map[IPv4L4Key]
 				DestPortPrefixBits: 0,
 				Action:             action,
 				Precedence:         tcxRulePrecedence(rule),
-				RuleCookie:         stableCookie(rule.ID),
+				RuleCookie:         stableCookie(tcxRuleCookieKey(rule)),
 				Log:                tcxRuleLog(rule),
 			}); err != nil {
 				return fmt.Errorf("rule %s: %w", rule.ID, err)
@@ -750,7 +751,7 @@ func appendIPv4L4ACLRulesFromProgram(rules *[]IPv4L4ACLRule, seen map[IPv4L4Key]
 					DestPortPrefixBits: block.prefixBits,
 					Action:             action,
 					Precedence:         tcxRulePrecedence(rule),
-					RuleCookie:         stableCookie(rule.ID),
+					RuleCookie:         stableCookie(tcxRuleCookieKey(rule)),
 					Log:                tcxRuleLog(rule),
 				}); err != nil {
 					return fmt.Errorf("rule %s: %w", rule.ID, err)
@@ -803,7 +804,7 @@ func appendIPv6L4ACLRulesFromProgram(rules *[]IPv6L4ACLRule, seen map[IPv6L4Key]
 				DestPortPrefixBits: icmpPrefixBits,
 				Action:             action,
 				Precedence:         tcxRulePrecedence(rule),
-				RuleCookie:         stableCookie(rule.ID),
+				RuleCookie:         stableCookie(tcxRuleCookieKey(rule)),
 				Log:                tcxRuleLog(rule),
 			}); err != nil {
 				return fmt.Errorf("rule %s: %w", rule.ID, err)
@@ -821,7 +822,7 @@ func appendIPv6L4ACLRulesFromProgram(rules *[]IPv6L4ACLRule, seen map[IPv6L4Key]
 				DestPortPrefixBits: 0,
 				Action:             action,
 				Precedence:         tcxRulePrecedence(rule),
-				RuleCookie:         stableCookie(rule.ID),
+				RuleCookie:         stableCookie(tcxRuleCookieKey(rule)),
 				Log:                tcxRuleLog(rule),
 			}); err != nil {
 				return fmt.Errorf("rule %s: %w", rule.ID, err)
@@ -843,7 +844,7 @@ func appendIPv6L4ACLRulesFromProgram(rules *[]IPv6L4ACLRule, seen map[IPv6L4Key]
 					DestPortPrefixBits: block.prefixBits,
 					Action:             action,
 					Precedence:         tcxRulePrecedence(rule),
-					RuleCookie:         stableCookie(rule.ID),
+					RuleCookie:         stableCookie(tcxRuleCookieKey(rule)),
 					Log:                tcxRuleLog(rule),
 				}); err != nil {
 					return fmt.Errorf("rule %s: %w", rule.ID, err)
@@ -852,6 +853,13 @@ func appendIPv6L4ACLRulesFromProgram(rules *[]IPv6L4ACLRule, seen map[IPv6L4Key]
 		}
 	}
 	return nil
+}
+
+func tcxRuleCookieKey(rule policy.Rule) string {
+	if rule.VPC == "" && rule.SecurityGroup == "" {
+		return rule.ID
+	}
+	return strings.Join([]string{rule.VPC, rule.SecurityGroup, rule.ID}, "/")
 }
 
 func appendIPv4ProjectedRule(rules *[]IPv4L4ACLRule, seen map[IPv4L4Key]int32, candidate IPv4L4ACLRule) error {

@@ -136,6 +136,68 @@ func TestPolicyBackendReplacesEndpointEntries(t *testing.T) {
 	}
 }
 
+func TestEncodeProgramUsesSecurityGroupQualifiedRuleCookies(t *testing.T) {
+	endpoint := model.Endpoint{
+		ID:             "pod-a",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"platform", "tenant"},
+	}
+	program, err := policy.CompileForEndpoint(endpoint, map[string]model.SecurityGroup{
+		"platform": {
+			Name: "platform",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "shared-rule",
+				Priority:   10,
+				Direction:  model.DirectionEgress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("192.0.2.0/24"),
+				Ports:      []model.PortRange{{From: 443, To: 443}},
+				Action:     model.ActionAllow,
+			}},
+		},
+		"tenant": {
+			Name: "tenant",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "shared-rule",
+				Priority:   20,
+				Direction:  model.DirectionEgress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("198.51.100.0/24"),
+				Ports:      []model.PortRange{{From: 8443, To: 8443}},
+				Action:     model.ActionDrop,
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := EncodeProgram(program)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cookies := make(map[uint32]struct{}, len(entries))
+	for _, entry := range entries {
+		cookies[entry.Value.RuleCookie] = struct{}{}
+	}
+	platformCookie := stableCookie("prod/platform/shared-rule")
+	tenantCookie := stableCookie("prod/tenant/shared-rule")
+	if _, ok := cookies[platformCookie]; !ok {
+		t.Fatalf("encoded cookies = %+v, missing platform-qualified cookie %d", cookies, platformCookie)
+	}
+	if _, ok := cookies[tenantCookie]; !ok {
+		t.Fatalf("encoded cookies = %+v, missing tenant-qualified cookie %d", cookies, tenantCookie)
+	}
+	if platformCookie == tenantCookie {
+		t.Fatal("qualified policy rule cookies should be distinct")
+	}
+}
+
 func TestCiliumStyleDefaultAllowModeLeavesExplicitDenyEnforced(t *testing.T) {
 	defaultAllow := false
 	endpoint := model.Endpoint{
@@ -308,7 +370,8 @@ func TestPolicyBackendHonorsLowerSecurityGroupRulePriority(t *testing.T) {
 		Protocol:  6,
 		DestPort:  443,
 	})
-	if decision.Match == nil || decision.Match.Value.RuleCookie != stableCookie("allow-primary") {
+	allowPrimaryCookie := stableCookie("prod/web/allow-primary")
+	if decision.Match == nil || decision.Match.Value.RuleCookie != allowPrimaryCookie {
 		t.Fatalf("decision = %+v, want lower numeric priority allow-primary", decision)
 	}
 
@@ -318,7 +381,7 @@ func TestPolicyBackendHonorsLowerSecurityGroupRulePriority(t *testing.T) {
 		t.Fatal(err)
 	}
 	stored := store.Entries(model.EndpointKey("prod", "pod-a"))
-	if len(stored) != 1 || stored[0].Value.RuleCookie != stableCookie("allow-primary") {
+	if len(stored) != 1 || stored[0].Value.RuleCookie != allowPrimaryCookie {
 		t.Fatalf("stored entries = %+v, want only highest-priority allow-primary", stored)
 	}
 }

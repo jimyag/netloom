@@ -21,6 +21,7 @@ type Program struct {
 
 type Rule struct {
 	ID              string
+	VPC             string
 	Tier            int
 	Priority        int
 	Direction       model.Direction
@@ -47,6 +48,7 @@ type MapEntry struct {
 	Value      MapValue
 	RemoteCIDR netip.Prefix
 	RuleID     string
+	RuleRef    string
 }
 
 type MapKey struct {
@@ -237,6 +239,7 @@ func hasRulesForDirection(rules []model.SecurityGroupRule, direction model.Direc
 func expandRule(endpoint model.Endpoint, securityGroup model.SecurityGroup, rule model.SecurityGroupRule, membersByGroup map[string][]model.Endpoint, endpointsBySelector []model.Endpoint, dnsRecords map[string][]netip.Addr, cidrGroups map[string][]netip.Prefix, services map[string]model.LoadBalancer, subnetsByVPC map[string][]netip.Prefix, gatewayCIDRsByVPC map[string][]gatewayCIDR) ([]Rule, error) {
 	base := Rule{
 		ID:              rule.ID,
+		VPC:             securityGroup.VPC,
 		Tier:            securityGroup.Tier,
 		Priority:        rule.Priority,
 		Direction:       rule.Direction,
@@ -619,6 +622,7 @@ func compactEquivalentCIDRRules(rules []Rule) []Rule {
 func ruleCompactionKey(rule Rule) string {
 	return strings.Join([]string{
 		rule.ID,
+		rule.VPC,
 		fmt.Sprintf("%d", rule.Tier),
 		fmt.Sprintf("%d", rule.Priority),
 		string(rule.Direction),
@@ -1102,9 +1106,17 @@ func compileMapEntries(rule Rule, localVPC string, resolver IdentityResolver) ([
 			},
 			RemoteCIDR: rule.RemoteCIDR,
 			RuleID:     rule.ID,
+			RuleRef:    ruleReference(rule),
 		})
 	}
 	return entries, nil
+}
+
+func ruleReference(rule Rule) string {
+	if rule.VPC == "" && rule.SecurityGroup == "" {
+		return rule.ID
+	}
+	return strings.Join([]string{rule.VPC, rule.SecurityGroup, rule.ID}, "/")
 }
 
 type portPrefix struct {

@@ -456,11 +456,18 @@ func EncodeEntry(entry policy.MapEntry) (PolicyMapEntry, error) {
 			Stateful:        boolByte(entry.Value.Stateful),
 			Log:             boolByte(entry.Value.Log),
 			Precedence:      entry.Value.Precedence,
-			RuleCookie:      stableCookie(entry.RuleID),
+			RuleCookie:      stableCookie(policyRuleCookieKey(entry)),
 			Reject:          boolByte(entry.Value.Reject),
 			RequireIdentity: boolByte(entry.Value.RequireIdentity),
 		},
 	}, nil
+}
+
+func policyRuleCookieKey(entry policy.MapEntry) string {
+	if entry.RuleRef != "" {
+		return entry.RuleRef
+	}
+	return entry.RuleID
 }
 
 func protocolNumberForEntry(entry policy.MapEntry) (uint8, error) {
