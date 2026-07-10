@@ -1,10 +1,12 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -189,6 +191,8 @@ type PolicyEndpointRolloutOptions struct {
 	Approved                  bool
 	ApprovalRef               string
 	ApprovalSignature         string
+	ApprovalCallbackURL       string
+	ApprovalCallbackTimeout   time.Duration
 	Paused                    bool
 	PauseAfterBatches         int
 	PromotionPercent          uint32
@@ -220,6 +224,9 @@ type PolicyEndpointRollout struct {
 	Approved                  bool                        `json:"approved,omitempty"`
 	ApprovalRef               string                      `json:"approval_ref,omitempty"`
 	ApprovalSignatureVerified bool                        `json:"approval_signature_verified,omitempty"`
+	ApprovalCallbackURL       string                      `json:"approval_callback_url,omitempty"`
+	ApprovalCallbackApproved  bool                        `json:"approval_callback_approved,omitempty"`
+	ApprovalCallbackError     string                      `json:"approval_callback_error,omitempty"`
 	ApprovalPending           bool                        `json:"approval_pending,omitempty"`
 	Paused                    bool                        `json:"paused,omitempty"`
 	PauseAfterBatches         int                         `json:"pause_after_batches,omitempty"`
@@ -406,6 +413,7 @@ func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, opt
 		ApprovalRequired:         rolloutOptions.ApprovalRequired,
 		Approved:                 rolloutOptions.Approved,
 		ApprovalRef:              rolloutOptions.ApprovalRef,
+		ApprovalCallbackURL:      rolloutOptions.ApprovalCallbackURL,
 		Paused:                   rolloutOptions.Paused,
 		PauseAfterBatches:        rolloutOptions.PauseAfterBatches,
 		PromotionPercent:         rolloutOptions.PromotionPercent,
@@ -453,6 +461,22 @@ func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, opt
 			return rollout, err
 		}
 		rollout.ApprovalSignatureVerified = verified
+		if strings.TrimSpace(rolloutOptions.ApprovalCallbackURL) != "" {
+			approved, err := requestPolicyRolloutApproval(ctx, rolloutOptions, endpointIDs)
+			if err != nil {
+				rollout.ApprovalCallbackError = err.Error()
+				rollout.ApprovalPending = true
+				pauseRolloutItems(&rollout, 0)
+				return rollout, nil
+			}
+			if !approved {
+				rollout.ApprovalCallbackError = "approval callback rejected rollout"
+				rollout.ApprovalPending = true
+				pauseRolloutItems(&rollout, 0)
+				return rollout, nil
+			}
+			rollout.ApprovalCallbackApproved = true
+		}
 	}
 	if rolloutOptions.Paused {
 		pauseRolloutItems(&rollout, 0)
@@ -555,6 +579,59 @@ func verifyPolicyRolloutApprovalSignature(secret, signature, approvalRef string,
 		return false, fmt.Errorf("policy rollout approval signature is invalid")
 	}
 	return true, nil
+}
+
+type policyRolloutApprovalCallbackRequest struct {
+	ApprovalRef string   `json:"approval_ref,omitempty"`
+	Endpoints   []string `json:"endpoints"`
+}
+
+type policyRolloutApprovalCallbackResponse struct {
+	Approved bool   `json:"approved"`
+	Reason   string `json:"reason,omitempty"`
+}
+
+func requestPolicyRolloutApproval(ctx context.Context, options PolicyEndpointRolloutOptions, endpointIDs []string) (bool, error) {
+	callbackURL := strings.TrimSpace(options.ApprovalCallbackURL)
+	if callbackURL == "" {
+		return false, fmt.Errorf("policy rollout approval callback url is required")
+	}
+	timeout := options.ApprovalCallbackTimeout
+	if timeout <= 0 {
+		timeout = 2 * time.Second
+	}
+	callbackCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	payload := policyRolloutApprovalCallbackRequest{
+		ApprovalRef: options.ApprovalRef,
+		Endpoints:   append([]string(nil), endpointIDs...),
+	}
+	sort.Strings(payload.Endpoints)
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return false, err
+	}
+	request, err := http.NewRequestWithContext(callbackCtx, http.MethodPost, callbackURL, bytes.NewReader(raw))
+	if err != nil {
+		return false, err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return false, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return false, fmt.Errorf("approval callback returned status %d", response.StatusCode)
+	}
+	var out policyRolloutApprovalCallbackResponse
+	if err := json.NewDecoder(response.Body).Decode(&out); err != nil {
+		return false, fmt.Errorf("decode approval callback response: %w", err)
+	}
+	if !out.Approved && strings.TrimSpace(out.Reason) != "" {
+		return false, fmt.Errorf("approval callback rejected rollout: %s", strings.TrimSpace(out.Reason))
+	}
+	return out.Approved, nil
 }
 
 func policyRolloutApprovalPayload(approvalRef string, endpointIDs []string) string {
@@ -960,6 +1037,8 @@ func ApplyPolicyRollouts(ctx context.Context, state control.DesiredState, option
 			Approved:                  rollout.Approved,
 			ApprovalRef:               rollout.ApprovalRef,
 			ApprovalSignature:         rollout.ApprovalSignature,
+			ApprovalCallbackURL:       rollout.ApprovalCallbackURL,
+			ApprovalCallbackTimeout:   time.Duration(rollout.ApprovalCallbackTimeoutMS) * time.Millisecond,
 			Paused:                    rollout.Paused,
 			PauseAfterBatches:         rollout.PauseAfterBatches,
 			PromotionPercent:          rollout.PromotionPercent,

@@ -2005,6 +2005,73 @@ func TestPolicyEndpointAPIRolloutVerifiesApprovalSignature(t *testing.T) {
 	}
 }
 
+func TestPolicyEndpointAPIRolloutChecksApprovalCallback(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:             "pod-a",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"web"},
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "allow-http",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("172.30.0.0/24"),
+				Ports:      []model.PortRange{{From: 80, To: 80}},
+				Action:     model.ActionAllow,
+			}},
+		}},
+	}
+	store := dataplane.NewInMemoryPolicyStore()
+	metrics := newAgentMetrics(store)
+	observeAgentReconcileResultWithState(metrics, agent.ReconcileResult{Node: "node-a"}, "memory", time.Millisecond, state)
+
+	callbackRequests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callbackRequests++
+		if r.Method != http.MethodPost {
+			t.Fatalf("callback method = %s, want POST", r.Method)
+		}
+		var request struct {
+			ApprovalRef string   `json:"approval_ref"`
+			Endpoints   []string `json:"endpoints"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode callback request: %v", err)
+		}
+		if request.ApprovalRef != "chg-3456" || !reflect.DeepEqual(request.Endpoints, []string{model.EndpointKey("prod", "pod-a")}) {
+			t.Fatalf("callback request = %+v, want approval ref and endpoint", request)
+		}
+		_, _ = w.Write([]byte(`{"approved":true}`))
+	}))
+	defer server.Close()
+
+	body := bytes.NewBufferString(`{"endpoints":["prod/pod-a"],"batch_size":1,"approval_required":true,"approved":true,"approval_ref":"chg-3456","approval_callback_url":"` + server.URL + `","approval_callback_timeout_ms":500}`)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/policy/endpoints/rollout", body)
+	metrics.handlePolicyEndpoints(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("callback approval status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var got policyEndpointActionOutput
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode callback approval response: %v\n%s", err, recorder.Body.String())
+	}
+	if callbackRequests != 1 {
+		t.Fatalf("callback requests = %d, want 1", callbackRequests)
+	}
+	if !got.RolledOut || !got.Rollout.ApprovalCallbackApproved || got.Rollout.Applied != 1 {
+		t.Fatalf("callback rollout response = %+v, want approved applied rollout", got)
+	}
+}
+
 func TestPolicyEndpointAPIRolloutUsesPromotionPercent(t *testing.T) {
 	state := control.DesiredState{
 		Endpoints: []model.Endpoint{

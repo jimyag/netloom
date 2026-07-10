@@ -169,6 +169,8 @@ type PolicyRollout struct {
 	Approved                  bool                 `json:"approved,omitempty"`
 	ApprovalRef               string               `json:"approval_ref,omitempty"`
 	ApprovalSignature         string               `json:"approval_signature,omitempty"`
+	ApprovalCallbackURL       string               `json:"approval_callback_url,omitempty"`
+	ApprovalCallbackTimeoutMS uint32               `json:"approval_callback_timeout_ms,omitempty"`
 	Paused                    bool                 `json:"paused,omitempty"`
 	PauseAfterBatches         int                  `json:"pause_after_batches,omitempty"`
 	PromotionPercent          uint32               `json:"promotion_percent,omitempty"`
@@ -209,6 +211,12 @@ func (r PolicyRollout) Validate() error {
 	}
 	if r.PromotionPercent > 100 {
 		return fmt.Errorf("policy rollout %q promotion_percent must be <= 100", r.Name)
+	}
+	if strings.TrimSpace(r.ApprovalCallbackURL) != "" {
+		parsed, err := url.Parse(r.ApprovalCallbackURL)
+		if err != nil || parsed.Scheme == "" || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+			return fmt.Errorf("policy rollout %q approval_callback_url must be http or https", r.Name)
+		}
 	}
 	seenProbes := make(map[string]struct{}, len(r.Probes))
 	for _, probe := range r.Probes {

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -1578,6 +1579,94 @@ func TestApplyPolicyRolloutsVerifiesApprovalSignature(t *testing.T) {
 	}
 	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 1 {
 		t.Fatalf("pod-a entries = %+v, want applied after signed approval", entries)
+	}
+}
+
+func TestApplyPolicyRolloutsChecksApprovalCallback(t *testing.T) {
+	state := rolloutPolicyState()
+	var callbackRequests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callbackRequests++
+		if r.Method != http.MethodPost {
+			t.Fatalf("callback method = %s, want POST", r.Method)
+		}
+		var request struct {
+			ApprovalRef string   `json:"approval_ref"`
+			Endpoints   []string `json:"endpoints"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode callback request: %v", err)
+		}
+		if request.ApprovalRef != "chg-7777" || !slices.Equal(request.Endpoints, []string{model.EndpointKey("prod", "pod-a"), model.EndpointKey("prod", "pod-b")}) {
+			t.Fatalf("callback request = %+v, want approval ref and sorted endpoints", request)
+		}
+		_, _ = w.Write([]byte(`{"approved":true}`))
+	}))
+	defer server.Close()
+
+	state.PolicyRollouts = []control.PolicyRollout{{
+		Name:                      "approval-callback",
+		Node:                      "node-a",
+		Endpoints:                 []string{"prod/pod-a", "prod/pod-b"},
+		BatchSize:                 1,
+		ApprovalRequired:          true,
+		Approved:                  true,
+		ApprovalRef:               "chg-7777",
+		ApprovalCallbackURL:       server.URL,
+		ApprovalCallbackTimeoutMS: 500,
+	}}
+	store := dataplane.NewInMemoryPolicyStore()
+	rollouts, err := ApplyPolicyRollouts(context.Background(), state, ReconcileOptions{
+		Node:  "node-a",
+		Store: store,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if callbackRequests != 1 {
+		t.Fatalf("callback requests = %d, want 1", callbackRequests)
+	}
+	if len(rollouts) != 1 || !rollouts[0].Rollout.ApprovalCallbackApproved || rollouts[0].Rollout.Applied != 2 {
+		t.Fatalf("rollouts = %+v, want callback approved applied rollout", rollouts)
+	}
+	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 1 {
+		t.Fatalf("pod-a entries = %+v, want applied after callback approval", entries)
+	}
+}
+
+func TestApplyPolicyRolloutsPausesWhenApprovalCallbackRejects(t *testing.T) {
+	state := rolloutPolicyState()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"approved":false,"reason":"change window closed"}`))
+	}))
+	defer server.Close()
+
+	state.PolicyRollouts = []control.PolicyRollout{{
+		Name:                "approval-callback",
+		Node:                "node-a",
+		Endpoints:           []string{"prod/pod-a"},
+		BatchSize:           1,
+		ApprovalRequired:    true,
+		Approved:            true,
+		ApprovalRef:         "chg-8888",
+		ApprovalCallbackURL: server.URL,
+	}}
+	store := dataplane.NewInMemoryPolicyStore()
+	rollouts, err := ApplyPolicyRollouts(context.Background(), state, ReconcileOptions{
+		Node:  "node-a",
+		Store: store,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rollouts) != 1 || !rollouts[0].Rollout.ApprovalPending || !rollouts[0].Rollout.Paused || rollouts[0].Rollout.Applied != 0 || rollouts[0].Rollout.Skipped != 1 {
+		t.Fatalf("rollouts = %+v, want rejected callback to pause without mutation", rollouts)
+	}
+	if !strings.Contains(rollouts[0].Rollout.ApprovalCallbackError, "change window closed") {
+		t.Fatalf("callback error = %q, want rejection reason", rollouts[0].Rollout.ApprovalCallbackError)
+	}
+	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 0 {
+		t.Fatalf("pod-a entries = %+v, want no mutation after callback rejection", entries)
 	}
 }
 

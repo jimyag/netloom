@@ -869,6 +869,20 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 			wantErr: "promotion_percent must be <= 100",
 		},
 		{
+			name: "invalid policy rollout approval callback URL",
+			mutate: func(state *DesiredState) {
+				state.PolicyRollouts = []PolicyRollout{{
+					Name:                "web-canary",
+					Endpoints:           []string{"prod/pod-a"},
+					BatchSize:           1,
+					ApprovalRequired:    true,
+					Approved:            true,
+					ApprovalCallbackURL: "file:///tmp/approval",
+				}}
+			},
+			wantErr: "approval_callback_url must be http or https",
+		},
+		{
 			name: "remote group unknown",
 			mutate: func(state *DesiredState) {
 				state.SecurityGroups[0].Rules[0].RemoteCIDR = netip.Prefix{}
