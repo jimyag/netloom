@@ -1730,6 +1730,92 @@ func TestApplyPolicyRolloutsSyncsExternalChangeStatus(t *testing.T) {
 	}
 }
 
+func TestApplyPolicyRolloutsPollsExternalChangeStatusBeforeApply(t *testing.T) {
+	state := rolloutPolicyState()
+	var pollRequests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pollRequests++
+		if r.Method != http.MethodPost {
+			t.Fatalf("poll method = %s, want POST", r.Method)
+		}
+		var request struct {
+			ApprovalRef string   `json:"approval_ref"`
+			Endpoints   []string `json:"endpoints"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode poll request: %v", err)
+		}
+		if request.ApprovalRef != "chg-1000" || !slices.Equal(request.Endpoints, []string{model.EndpointKey("prod", "pod-a")}) {
+			t.Fatalf("poll request = %+v, want approval ref and endpoint", request)
+		}
+		_, _ = w.Write([]byte(`{"allowed":true,"status":"approved","url":"https://changes.example/chg-1000"}`))
+	}))
+	defer server.Close()
+
+	state.PolicyRollouts = []control.PolicyRollout{{
+		Name:                "change-poll",
+		Node:                "node-a",
+		Endpoints:           []string{"prod/pod-a"},
+		BatchSize:           1,
+		ApprovalRequired:    true,
+		Approved:            true,
+		ApprovalRef:         "chg-1000",
+		ChangePollURL:       server.URL,
+		ChangePollTimeoutMS: 500,
+	}}
+	store := dataplane.NewInMemoryPolicyStore()
+	rollouts, err := ApplyPolicyRollouts(context.Background(), state, ReconcileOptions{
+		Node:  "node-a",
+		Store: store,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pollRequests != 1 {
+		t.Fatalf("poll requests = %d, want 1", pollRequests)
+	}
+	if len(rollouts) != 1 || !rollouts[0].Rollout.ChangePollAllowed || rollouts[0].Rollout.ChangePollStatus != "approved" || rollouts[0].Rollout.ExternalChangeURL != "https://changes.example/chg-1000" || rollouts[0].Rollout.Applied != 1 {
+		t.Fatalf("rollouts = %+v, want allowed change poll and applied rollout", rollouts)
+	}
+	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 1 {
+		t.Fatalf("pod-a entries = %+v, want applied after change poll approval", entries)
+	}
+}
+
+func TestApplyPolicyRolloutsPausesWhenExternalChangePollRejects(t *testing.T) {
+	state := rolloutPolicyState()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"allowed":false,"status":"closed","reason":"change was closed"}`))
+	}))
+	defer server.Close()
+
+	state.PolicyRollouts = []control.PolicyRollout{{
+		Name:          "change-poll-rejected",
+		Node:          "node-a",
+		Endpoints:     []string{"prod/pod-a"},
+		BatchSize:     1,
+		ApprovalRef:   "chg-1001",
+		ChangePollURL: server.URL,
+	}}
+	store := dataplane.NewInMemoryPolicyStore()
+	rollouts, err := ApplyPolicyRollouts(context.Background(), state, ReconcileOptions{
+		Node:  "node-a",
+		Store: store,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rollouts) != 1 || !rollouts[0].Rollout.ApprovalPending || !rollouts[0].Rollout.Paused || rollouts[0].Rollout.Applied != 0 || rollouts[0].Rollout.Skipped != 1 {
+		t.Fatalf("rollouts = %+v, want rejected change poll to pause without mutation", rollouts)
+	}
+	if !strings.Contains(rollouts[0].Rollout.ChangePollError, "change was closed") || rollouts[0].Rollout.ChangePollStatus != "closed" {
+		t.Fatalf("change poll result = status %q err %q, want closed rejection", rollouts[0].Rollout.ChangePollStatus, rollouts[0].Rollout.ChangePollError)
+	}
+	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 0 {
+		t.Fatalf("pod-a entries = %+v, want no mutation after change poll rejection", entries)
+	}
+}
+
 func TestApplyPolicyRolloutsRecordsExternalChangeStatusFailure(t *testing.T) {
 	state := rolloutPolicyState()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

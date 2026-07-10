@@ -179,6 +179,8 @@ type policyEndpointRolloutRequest struct {
 	ApprovalSignature         string                       `json:"approval_signature,omitempty"`
 	ApprovalCallbackURL       string                       `json:"approval_callback_url,omitempty"`
 	ApprovalCallbackTimeoutMS uint32                       `json:"approval_callback_timeout_ms,omitempty"`
+	ChangePollURL             string                       `json:"change_poll_url,omitempty"`
+	ChangePollTimeoutMS       uint32                       `json:"change_poll_timeout_ms,omitempty"`
 	ChangeStatusURL           string                       `json:"change_status_url,omitempty"`
 	ChangeStatusTimeoutMS     uint32                       `json:"change_status_timeout_ms,omitempty"`
 	Paused                    bool                         `json:"paused,omitempty"`
@@ -1481,6 +1483,8 @@ func (m *agentMetrics) rolloutPolicyEndpoints(ctx context.Context, request polic
 		ApprovalSignature:         request.ApprovalSignature,
 		ApprovalCallbackURL:       request.ApprovalCallbackURL,
 		ApprovalCallbackTimeout:   time.Duration(request.ApprovalCallbackTimeoutMS) * time.Millisecond,
+		ChangePollURL:             request.ChangePollURL,
+		ChangePollTimeout:         time.Duration(request.ChangePollTimeoutMS) * time.Millisecond,
 		ChangeStatusURL:           request.ChangeStatusURL,
 		ChangeStatusTimeout:       time.Duration(request.ChangeStatusTimeoutMS) * time.Millisecond,
 		Paused:                    request.Paused,

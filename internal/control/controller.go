@@ -171,6 +171,8 @@ type PolicyRollout struct {
 	ApprovalSignature         string               `json:"approval_signature,omitempty"`
 	ApprovalCallbackURL       string               `json:"approval_callback_url,omitempty"`
 	ApprovalCallbackTimeoutMS uint32               `json:"approval_callback_timeout_ms,omitempty"`
+	ChangePollURL             string               `json:"change_poll_url,omitempty"`
+	ChangePollTimeoutMS       uint32               `json:"change_poll_timeout_ms,omitempty"`
 	ChangeStatusURL           string               `json:"change_status_url,omitempty"`
 	ChangeStatusTimeoutMS     uint32               `json:"change_status_timeout_ms,omitempty"`
 	Paused                    bool                 `json:"paused,omitempty"`
@@ -222,6 +224,11 @@ func (r PolicyRollout) Validate() error {
 	if strings.TrimSpace(r.ChangeStatusURL) != "" {
 		if !validHTTPCallbackURL(r.ChangeStatusURL) {
 			return fmt.Errorf("policy rollout %q change_status_url must be http or https", r.Name)
+		}
+	}
+	if strings.TrimSpace(r.ChangePollURL) != "" {
+		if !validHTTPCallbackURL(r.ChangePollURL) {
+			return fmt.Errorf("policy rollout %q change_poll_url must be http or https", r.Name)
 		}
 	}
 	seenProbes := make(map[string]struct{}, len(r.Probes))
