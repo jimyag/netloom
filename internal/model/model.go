@@ -85,11 +85,20 @@ type ProviderNetworkTenantQueuePolicy struct {
 	Ports               []PortRange `json:"ports,omitempty"`
 	EndpointSelector    Labels      `json:"endpoint_selector,omitempty"`
 	EndpointExpressions []LabelExpr `json:"endpoint_expressions,omitempty"`
+	IdentityGroups      []string    `json:"identity_groups,omitempty"`
 	IdentitySelector    Labels      `json:"identity_selector,omitempty"`
 	IdentityExpressions []LabelExpr `json:"identity_expressions,omitempty"`
 	MinRateBPS          uint64      `json:"min_rate_bps,omitempty"`
 	MaxRateBPS          uint64      `json:"max_rate_bps,omitempty"`
 	BurstBPS            uint64      `json:"burst_bps,omitempty"`
+}
+
+type IdentityGroup struct {
+	Name                string      `json:"name"`
+	VPC                 string      `json:"vpc"`
+	EndpointIDs         []string    `json:"endpoint_ids,omitempty"`
+	EndpointSelector    Labels      `json:"endpoint_selector,omitempty"`
+	EndpointExpressions []LabelExpr `json:"endpoint_expressions,omitempty"`
 }
 
 type Subnet struct {
@@ -433,6 +442,19 @@ func (q ProviderNetworkTenantQueuePolicy) Validate() error {
 			return fmt.Errorf("endpoint_expression %d: %w", i, err)
 		}
 	}
+	seenGroups := make(map[string]struct{}, len(q.IdentityGroups))
+	for _, group := range q.IdentityGroups {
+		if strings.TrimSpace(group) == "" {
+			return errors.New("identity group is required")
+		}
+		if strings.ContainsAny(group, " \t\r\n") {
+			return fmt.Errorf("identity group %q must not contain whitespace", group)
+		}
+		if _, ok := seenGroups[group]; ok {
+			return fmt.Errorf("identity group %q is duplicated", group)
+		}
+		seenGroups[group] = struct{}{}
+	}
 	if len(q.IdentitySelector) > 0 {
 		if err := q.IdentitySelector.Validate(); err != nil {
 			return fmt.Errorf("identity_selector: %w", err)
@@ -457,6 +479,11 @@ func providerNetworkTenantQueueSelectorKey(queue ProviderNetworkTenantQueuePolic
 	if expressions := labelExpressionsSelectorKey(queue.EndpointExpressions); expressions != "" {
 		parts = append(parts, "expressions="+expressions)
 	}
+	if len(queue.IdentityGroups) != 0 {
+		groups := append([]string(nil), queue.IdentityGroups...)
+		slices.Sort(groups)
+		parts = append(parts, "identity_groups="+strings.Join(groups, ","))
+	}
 	if selector := labelsSelectorKey(queue.IdentitySelector); selector != "" {
 		parts = append(parts, "identity_selector="+selector)
 	}
@@ -464,6 +491,45 @@ func providerNetworkTenantQueueSelectorKey(queue ProviderNetworkTenantQueuePolic
 		parts = append(parts, "identity_expressions="+expressions)
 	}
 	return strings.Join(parts, "|")
+}
+
+func (g IdentityGroup) Validate() error {
+	if strings.TrimSpace(g.Name) == "" {
+		return errors.New("identity group name is required")
+	}
+	if strings.ContainsAny(g.Name, " \t\r\n") {
+		return fmt.Errorf("identity group name %q must not contain whitespace", g.Name)
+	}
+	if strings.TrimSpace(g.VPC) == "" {
+		return errors.New("identity group vpc is required")
+	}
+	seenEndpoints := make(map[string]struct{}, len(g.EndpointIDs))
+	for _, endpoint := range g.EndpointIDs {
+		if strings.TrimSpace(endpoint) == "" {
+			return errors.New("identity group endpoint id is required")
+		}
+		if strings.ContainsAny(endpoint, " \t\r\n") {
+			return fmt.Errorf("identity group endpoint id %q must not contain whitespace", endpoint)
+		}
+		if _, ok := seenEndpoints[endpoint]; ok {
+			return fmt.Errorf("identity group endpoint id %q is duplicated", endpoint)
+		}
+		seenEndpoints[endpoint] = struct{}{}
+	}
+	if len(g.EndpointSelector) > 0 {
+		if err := g.EndpointSelector.Validate(); err != nil {
+			return fmt.Errorf("endpoint_selector: %w", err)
+		}
+	}
+	for i, expression := range g.EndpointExpressions {
+		if err := expression.Validate(); err != nil {
+			return fmt.Errorf("endpoint_expression %d: %w", i, err)
+		}
+	}
+	if len(g.EndpointIDs) == 0 && len(g.EndpointSelector) == 0 && len(g.EndpointExpressions) == 0 {
+		return errors.New("identity group requires endpoint_ids or endpoint selector")
+	}
+	return nil
 }
 
 func labelsSelectorKey(labels Labels) string {

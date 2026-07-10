@@ -538,6 +538,7 @@ func TestPlanProviderOVSDBMappingsProgramsQoSAndQueues(t *testing.T) {
 		"'other_config:max-rate=1000000000'",
 		"find queue external_ids:netloom_owner=netloom external_ids:netloom_provider_queue='queue-nlv100-10'",
 		"create queue 'external_ids:netloom_owner=netloom'",
+		"clear queue \"$queue_10\" external_ids other_config",
 		"set queue \"$queue_10\"",
 		"'other_config:max-rate=500000000'",
 		"set qos \"$qos\" queues:10=\"$queue_10\"",
@@ -585,7 +586,8 @@ func TestDesiredProviderOVSDBRowsBuildsTypedVSwitchRows(t *testing.T) {
 					Operator: "In",
 					Values:   []string{"api"},
 				}},
-				MaxRateBPS: 500000000,
+				IdentityGroups: []string{"frontend-api"},
+				MaxRateBPS:     500000000,
 			}},
 		},
 		{ProviderNetwork: "physnet-a", ParentDevice: "eth1", VLAN: 300, Name: "nlv300", Isolation: "exclusive"},
@@ -654,6 +656,9 @@ func TestDesiredProviderOVSDBRowsBuildsTypedVSwitchRows(t *testing.T) {
 	}
 	if rows.Queues[0].ExternalIDs["netloom_queue_identity_selector"] != "tier=frontend" || rows.Queues[0].ExternalIDs["netloom_queue_identity_expressions"] != "role:in:api" {
 		t.Fatalf("queue external IDs = %+v, want identity selector metadata", rows.Queues[0].ExternalIDs)
+	}
+	if rows.Queues[0].ExternalIDs["netloom_queue_identity_groups"] != "frontend-api" {
+		t.Fatalf("queue external IDs = %+v, want identity group metadata", rows.Queues[0].ExternalIDs)
 	}
 	if got := rows.Queues[0].OtherConfig["max-rate"]; got != "500000000" {
 		t.Fatalf("queue max-rate = %q, want 500000000", got)
@@ -929,6 +934,87 @@ func TestPlanProgramsProviderTenantQueueIdentitySelectorFlows(t *testing.T) {
 	}
 	if strings.Contains(joined, "nw_src=10.10.0.0/24") || strings.Contains(joined, "nw_src=10.10.0.11/32") {
 		t.Fatalf("provider identity queue should only match selected endpoints:\n%s", joined)
+	}
+}
+
+func TestPlanProgramsProviderTenantQueueIdentityGroupFlows(t *testing.T) {
+	state := control.DesiredState{
+		IdentityGroups: []model.IdentityGroup{{
+			Name:        "frontend-api",
+			VPC:         "prod",
+			EndpointIDs: []string{"pod-c"},
+			EndpointSelector: model.Labels{
+				"tier": "frontend",
+			},
+			EndpointExpressions: []model.LabelExpr{{
+				Key:      "role",
+				Operator: "In",
+				Values:   []string{"api"},
+			}},
+		}},
+		ProviderNetworks: []model.ProviderNetwork{{
+			Name: "physnet-a",
+			Nodes: []model.ProviderNetworkNode{{
+				Node:      "node-a",
+				Interface: "eth1",
+			}},
+			TenantQueues: []model.ProviderNetworkTenantQueuePolicy{{
+				Tenant:         "prod",
+				QueueID:        30,
+				IdentityGroups: []string{"frontend-api"},
+				MaxRateBPS:     500000000,
+			}},
+		}},
+		Subnets: []model.Subnet{{
+			Name:            "baremetal",
+			VPC:             "prod",
+			CIDR:            netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway:         netip.MustParseAddr("10.10.0.1"),
+			ProviderNetwork: "physnet-a",
+			VLAN:            100,
+		}},
+		Endpoints: []model.Endpoint{{
+			ID:     "pod-a",
+			VPC:    "prod",
+			Subnet: "baremetal",
+			IP:     netip.MustParseAddr("10.10.0.10"),
+			Node:   "node-a",
+			Labels: model.Labels{"tier": "frontend", "role": "api"},
+		}, {
+			ID:     "pod-b",
+			VPC:    "prod",
+			Subnet: "baremetal",
+			IP:     netip.MustParseAddr("10.10.0.11"),
+			Node:   "node-a",
+			Labels: model.Labels{"tier": "frontend", "role": "worker"},
+		}, {
+			ID:     "pod-c",
+			VPC:    "prod",
+			Subnet: "baremetal",
+			IP:     netip.MustParseAddr("10.10.0.12"),
+			Node:   "node-a",
+			Labels: model.Labels{"tier": "backend", "role": "worker"},
+		}},
+	}
+	ops, _, err := Plan(context.Background(), state, Options{
+		Node:        "node-a",
+		LocalDevice: "nl0",
+		SyncOVSDB:   true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := stringifyOps(ops)
+	for _, expected := range []string{
+		"table=0,priority=225,ip,nw_src=10.10.0.10/32,actions=set_queue:30,NORMAL",
+		"table=0,priority=225,ip,nw_src=10.10.0.12/32,actions=set_queue:30,NORMAL",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("provider identity group queue flow ops missing %q:\n%s", expected, joined)
+		}
+	}
+	if strings.Contains(joined, "nw_src=10.10.0.0/24") || strings.Contains(joined, "nw_src=10.10.0.11/32") {
+		t.Fatalf("provider identity group queue should only match group members:\n%s", joined)
 	}
 }
 

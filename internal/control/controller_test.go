@@ -716,6 +716,62 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 			wantErr: "subnet \"apps\" references unknown provider network",
 		},
 		{
+			name: "provider queue unknown identity group",
+			mutate: func(state *DesiredState) {
+				state.ProviderNetworks = []model.ProviderNetwork{{
+					Name: "physnet-a",
+					Nodes: []model.ProviderNetworkNode{{
+						Node:      "node-a",
+						Interface: "eth1",
+					}},
+					TenantQueues: []model.ProviderNetworkTenantQueuePolicy{{
+						Tenant:         "prod",
+						QueueID:        10,
+						IdentityGroups: []string{"frontend-api"},
+						MaxRateBPS:     500000000,
+					}},
+				}}
+			},
+			wantErr: `provider network "physnet-a" tenant queue references unknown identity group "frontend-api" in vpc "prod"`,
+		},
+		{
+			name: "duplicate identity group",
+			mutate: func(state *DesiredState) {
+				state.IdentityGroups = []model.IdentityGroup{{
+					Name:        "frontend-api",
+					VPC:         "prod",
+					EndpointIDs: []string{"pod-a"},
+				}, {
+					Name:        "frontend-api",
+					VPC:         "prod",
+					EndpointIDs: []string{"pod-b"},
+				}}
+			},
+			wantErr: `duplicate identity group name "frontend-api" in vpc "prod"`,
+		},
+		{
+			name: "identity group unknown vpc",
+			mutate: func(state *DesiredState) {
+				state.IdentityGroups = []model.IdentityGroup{{
+					Name:        "frontend-api",
+					VPC:         "missing",
+					EndpointIDs: []string{"pod-a"},
+				}}
+			},
+			wantErr: `identity group "frontend-api" references unknown vpc "missing"`,
+		},
+		{
+			name: "identity group unknown endpoint",
+			mutate: func(state *DesiredState) {
+				state.IdentityGroups = []model.IdentityGroup{{
+					Name:        "frontend-api",
+					VPC:         "prod",
+					EndpointIDs: []string{"missing"},
+				}}
+			},
+			wantErr: `identity group "frontend-api" references unknown endpoint "missing" in vpc "prod"`,
+		},
+		{
 			name: "duplicate provider network controller target",
 			mutate: func(state *DesiredState) {
 				state.ProviderNetworks = []model.ProviderNetwork{{

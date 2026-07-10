@@ -138,6 +138,7 @@ type PolicyLifecycleBackend interface {
 type DesiredState struct {
 	VPCs             []model.VPC             `json:"vpcs"`
 	ProviderNetworks []model.ProviderNetwork `json:"provider_networks"`
+	IdentityGroups   []model.IdentityGroup   `json:"identity_groups,omitempty"`
 	Subnets          []model.Subnet          `json:"subnets"`
 	Endpoints        []model.Endpoint        `json:"endpoints"`
 	RouteTables      []model.RouteTable      `json:"route_tables"`
@@ -454,6 +455,10 @@ func cidrGroupKey(vpc, name string) string {
 	return vpc + "\x00" + name
 }
 
+func identityGroupKey(vpc, name string) string {
+	return vpc + "\x00" + name
+}
+
 func loadBalancerKey(vpc, name string) string {
 	return vpc + "\x00" + name
 }
@@ -563,12 +568,36 @@ func validateObjectGraph(state DesiredState) error {
 	}
 
 	providerNetworks := make(map[string]model.ProviderNetwork, len(state.ProviderNetworks))
+	identityGroups := make(map[string]model.IdentityGroup, len(state.IdentityGroups))
+	for _, group := range state.IdentityGroups {
+		if err := group.Validate(); err != nil {
+			return err
+		}
+		key := identityGroupKey(group.VPC, group.Name)
+		if _, ok := identityGroups[key]; ok {
+			return fmt.Errorf("duplicate identity group name %q in vpc %q", group.Name, group.VPC)
+		}
+		if _, ok := vpcs[group.VPC]; !ok {
+			return fmt.Errorf("identity group %q references unknown vpc %q", group.Name, group.VPC)
+		}
+		identityGroups[key] = group
+	}
 	for _, providerNetwork := range state.ProviderNetworks {
 		if err := providerNetwork.Validate(); err != nil {
 			return err
 		}
 		if _, ok := providerNetworks[providerNetwork.Name]; ok {
 			return fmt.Errorf("duplicate provider network name %q", providerNetwork.Name)
+		}
+		for _, queue := range providerNetwork.TenantQueues {
+			if _, ok := vpcs[queue.Tenant]; !ok {
+				return fmt.Errorf("provider network %q tenant queue references unknown tenant vpc %q", providerNetwork.Name, queue.Tenant)
+			}
+			for _, groupName := range queue.IdentityGroups {
+				if _, ok := identityGroups[identityGroupKey(queue.Tenant, groupName)]; !ok {
+					return fmt.Errorf("provider network %q tenant queue references unknown identity group %q in vpc %q", providerNetwork.Name, groupName, queue.Tenant)
+				}
+			}
 		}
 		providerNetworks[providerNetwork.Name] = providerNetwork
 	}
@@ -740,6 +769,9 @@ func validateObjectGraph(state DesiredState) error {
 		endpoints[key] = endpoint
 	}
 	if err := validateProviderNetworkTenantQuotas(providerNetworks, subnets, state.Endpoints); err != nil {
+		return err
+	}
+	if err := validateIdentityGroupEndpointReferences(identityGroups, endpoints); err != nil {
 		return err
 	}
 	if err := validateSecurityGroupNamedPortReferences(state.SecurityGroups, state.Endpoints, securityGroups); err != nil {
@@ -1029,6 +1061,17 @@ func validateEndpointNamedPorts(rule model.SecurityGroupRule, endpoint model.End
 	for _, name := range rule.NamedPorts {
 		if !endpointDefinesNamedPort(endpoint, rule.Protocol, name) {
 			return fmt.Errorf("security group rule %q named port %s/%s is not defined on endpoint %q", rule.ID, rule.Protocol, name, endpoint.ID)
+		}
+	}
+	return nil
+}
+
+func validateIdentityGroupEndpointReferences(groups map[string]model.IdentityGroup, endpoints map[string]model.Endpoint) error {
+	for _, group := range groups {
+		for _, endpointID := range group.EndpointIDs {
+			if _, ok := endpoints[model.EndpointKey(group.VPC, endpointID)]; !ok {
+				return fmt.Errorf("identity group %q references unknown endpoint %q in vpc %q", group.Name, endpointID, group.VPC)
+			}
 		}
 	}
 	return nil

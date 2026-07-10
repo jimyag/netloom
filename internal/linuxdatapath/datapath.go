@@ -1169,6 +1169,7 @@ func desiredProviderQueueFlows(state control.DesiredState, specs []providerNetwo
 	for _, spec := range specs {
 		specByProviderVLAN[providerVLANKey(spec.ProviderNetwork, spec.VLAN)] = spec
 	}
+	identityGroups := identityGroupsByVPCName(state.IdentityGroups)
 	var flows []providerQueueFlow
 	for _, subnet := range state.Subnets {
 		if subnet.ProviderNetwork == "" || subnet.VLAN == 0 || !subnet.CIDR.IsValid() {
@@ -1182,7 +1183,7 @@ func desiredProviderQueueFlows(state control.DesiredState, specs []providerNetwo
 			if queue.Tenant != subnet.VPC {
 				continue
 			}
-			flows = append(flows, providerQueueFlowsForPolicy(subnet, queue, state.Endpoints)...)
+			flows = append(flows, providerQueueFlowsForPolicy(subnet, queue, state.Endpoints, identityGroups)...)
 		}
 	}
 	sort.Slice(flows, func(i, j int) bool {
@@ -1206,8 +1207,8 @@ func desiredProviderQueueFlows(state control.DesiredState, specs []providerNetwo
 	return flows
 }
 
-func providerQueueFlowsForPolicy(subnet model.Subnet, queue model.ProviderNetworkTenantQueuePolicy, endpoints []model.Endpoint) []providerQueueFlow {
-	cidrs := providerQueueFlowCIDRs(subnet, queue, endpoints)
+func providerQueueFlowsForPolicy(subnet model.Subnet, queue model.ProviderNetworkTenantQueuePolicy, endpoints []model.Endpoint, identityGroups map[string]model.IdentityGroup) []providerQueueFlow {
+	cidrs := providerQueueFlowCIDRs(subnet, queue, endpoints, identityGroups)
 	base := providerQueueFlow{
 		Bridge:   providerNetworkBridgeName(subnet.ProviderNetwork),
 		Tenant:   queue.Tenant,
@@ -1239,7 +1240,7 @@ func providerQueueFlowsForPolicy(subnet model.Subnet, queue model.ProviderNetwor
 	return flows
 }
 
-func providerQueueFlowCIDRs(subnet model.Subnet, queue model.ProviderNetworkTenantQueuePolicy, endpoints []model.Endpoint) []netip.Prefix {
+func providerQueueFlowCIDRs(subnet model.Subnet, queue model.ProviderNetworkTenantQueuePolicy, endpoints []model.Endpoint, identityGroups map[string]model.IdentityGroup) []netip.Prefix {
 	if !providerQueuePolicyUsesEndpointIdentity(queue) {
 		return []netip.Prefix{subnet.CIDR}
 	}
@@ -1248,7 +1249,7 @@ func providerQueueFlowCIDRs(subnet model.Subnet, queue model.ProviderNetworkTena
 		if endpoint.VPC != subnet.VPC || endpoint.Subnet != subnet.Name || !endpoint.IP.IsValid() {
 			continue
 		}
-		if !providerQueueEndpointMatches(queue, endpoint) {
+		if !providerQueueEndpointMatches(queue, endpoint, identityGroups) {
 			continue
 		}
 		bits := 128
@@ -1267,13 +1268,17 @@ func providerQueuePolicyUsesEndpointSelector(queue model.ProviderNetworkTenantQu
 
 func providerQueuePolicyUsesEndpointIdentity(queue model.ProviderNetworkTenantQueuePolicy) bool {
 	return providerQueuePolicyUsesEndpointSelector(queue) ||
+		len(queue.IdentityGroups) != 0 ||
 		len(queue.IdentitySelector) != 0 ||
 		len(queue.IdentityExpressions) != 0
 }
 
-func providerQueueEndpointMatches(queue model.ProviderNetworkTenantQueuePolicy, endpoint model.Endpoint) bool {
+func providerQueueEndpointMatches(queue model.ProviderNetworkTenantQueuePolicy, endpoint model.Endpoint, identityGroups map[string]model.IdentityGroup) bool {
 	if providerQueuePolicyUsesEndpointSelector(queue) &&
 		!endpoint.Labels.MatchesSelector(queue.EndpointSelector, queue.EndpointExpressions) {
+		return false
+	}
+	if len(queue.IdentityGroups) != 0 && !providerQueueEndpointMatchesAnyIdentityGroup(queue, endpoint, identityGroups) {
 		return false
 	}
 	if (len(queue.IdentitySelector) != 0 || len(queue.IdentityExpressions) != 0) &&
@@ -1281,6 +1286,43 @@ func providerQueueEndpointMatches(queue model.ProviderNetworkTenantQueuePolicy, 
 		return false
 	}
 	return true
+}
+
+func providerQueueEndpointMatchesAnyIdentityGroup(queue model.ProviderNetworkTenantQueuePolicy, endpoint model.Endpoint, identityGroups map[string]model.IdentityGroup) bool {
+	for _, groupName := range queue.IdentityGroups {
+		group, ok := identityGroups[providerIdentityGroupKey(queue.Tenant, groupName)]
+		if !ok {
+			continue
+		}
+		if providerQueueEndpointMatchesIdentityGroup(group, endpoint) {
+			return true
+		}
+	}
+	return false
+}
+
+func providerQueueEndpointMatchesIdentityGroup(group model.IdentityGroup, endpoint model.Endpoint) bool {
+	if group.VPC != endpoint.VPC {
+		return false
+	}
+	for _, endpointID := range group.EndpointIDs {
+		if endpointID == endpoint.ID {
+			return true
+		}
+	}
+	return endpoint.Labels.MatchesSelector(group.EndpointSelector, group.EndpointExpressions)
+}
+
+func identityGroupsByVPCName(groups []model.IdentityGroup) map[string]model.IdentityGroup {
+	out := make(map[string]model.IdentityGroup, len(groups))
+	for _, group := range groups {
+		out[providerIdentityGroupKey(group.VPC, group.Name)] = group
+	}
+	return out
+}
+
+func providerIdentityGroupKey(vpc, name string) string {
+	return vpc + "\x00" + name
 }
 
 func providerVLANKey(provider string, vlan uint16) string {
@@ -1410,6 +1452,7 @@ func planProviderOVSDBQoS(qos vswitch.QoS, queueByName map[string]vswitchQueue) 
 		parts = append(parts,
 			queueVar+"=$(ovs-vsctl --bare --columns=_uuid find queue external_ids:netloom_owner=netloom external_ids:netloom_provider_queue="+shellArg(queueName)+" | head -n1)",
 			"if [ -z \"$"+queueVar+"\" ]; then "+queueVar+"=$(ovs-vsctl create queue "+strings.Join(providerOVSDBSetArgs(queue.externalIDs, nil), " ")+"); fi",
+			"ovs-vsctl clear queue \"$"+queueVar+"\" external_ids other_config",
 			"ovs-vsctl set queue \"$"+queueVar+"\" "+strings.Join(providerOVSDBSetArgs(queue.externalIDs, queue.otherConfig), " "),
 			"ovs-vsctl set qos \"$qos\" queues:"+strconv.Itoa(queueID)+"=\"$"+queueVar+"\"",
 		)

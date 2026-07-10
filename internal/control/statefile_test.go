@@ -9,7 +9,8 @@ import (
 func TestLoadDesiredStateJSONDecodesSnakeCaseState(t *testing.T) {
 	state, err := LoadDesiredStateJSON(strings.NewReader(`{
 		"vpcs": [{"name": "prod"}],
-		"provider_networks": [{"name": "physnet-a", "isolation": "exclusive", "controller_targets": ["tcp:192.0.2.10:6653"], "qos": {"egress_rate_bps": 1000000000, "egress_burst_bps": 64000}, "tenant_quotas": [{"tenant": "prod", "max_subnets": 2, "max_endpoints": 10}], "tenant_queues": [{"tenant": "prod", "queue_id": 10, "protocol": "tcp", "ports": [{"from": 443, "to": 443}], "endpoint_selector": {"app": "web"}, "endpoint_expressions": [{"key": "env", "operator": "In", "values": ["prod"]}], "identity_selector": {"tier": "frontend"}, "identity_expressions": [{"key": "role", "operator": "In", "values": ["api"]}], "min_rate_bps": 100000000, "max_rate_bps": 500000000, "burst_bps": 64000}], "nodes": [{"node": "node-a", "interface": "bond0.100"}, {"node": "node-b", "interfaces": ["ens5", "eth1"]}]}],
+		"identity_groups": [{"name": "frontend-api", "vpc": "prod", "endpoint_ids": ["pod-a"], "endpoint_selector": {"tier": "frontend"}, "endpoint_expressions": [{"key": "role", "operator": "In", "values": ["api"]}]}],
+		"provider_networks": [{"name": "physnet-a", "isolation": "exclusive", "controller_targets": ["tcp:192.0.2.10:6653"], "qos": {"egress_rate_bps": 1000000000, "egress_burst_bps": 64000}, "tenant_quotas": [{"tenant": "prod", "max_subnets": 2, "max_endpoints": 10}], "tenant_queues": [{"tenant": "prod", "queue_id": 10, "protocol": "tcp", "ports": [{"from": 443, "to": 443}], "endpoint_selector": {"app": "web"}, "endpoint_expressions": [{"key": "env", "operator": "In", "values": ["prod"]}], "identity_groups": ["frontend-api"], "identity_selector": {"tier": "frontend"}, "identity_expressions": [{"key": "role", "operator": "In", "values": ["api"]}], "min_rate_bps": 100000000, "max_rate_bps": 500000000, "burst_bps": 64000}], "nodes": [{"node": "node-a", "interface": "bond0.100"}, {"node": "node-b", "interfaces": ["ens5", "eth1"]}]}],
 		"subnets": [{"name": "apps", "vpc": "prod", "cidr": "10.10.0.0/24", "gateway": "10.10.0.1", "exclude_cidrs": ["10.10.0.128/25"]}],
 		"endpoints": [{"id": "pod-a", "vpc": "prod", "subnet": "apps", "ip": "10.10.0.10", "node": "node-a", "security_groups": ["web"], "named_ports": [{"name": "http", "protocol": "tcp", "port": 8080}], "labels": {"app": "web", "env": "prod"}}],
 		"route_tables": [{"name": "main", "vpc": "prod", "routes": [{"destination": "0.0.0.0/0", "next_hops": ["10.10.0.253", "10.10.0.254"]}]}],
@@ -55,8 +56,14 @@ func TestLoadDesiredStateJSONDecodesSnakeCaseState(t *testing.T) {
 	if got := state.ProviderNetworks[0].TenantQueues[0]; got.EndpointSelector["app"] != "web" || len(got.EndpointExpressions) != 1 || got.EndpointExpressions[0].Key != "env" {
 		t.Fatalf("provider network tenant queue selector = %+v expressions=%+v, want app/web env expression", got.EndpointSelector, got.EndpointExpressions)
 	}
+	if got := state.ProviderNetworks[0].TenantQueues[0]; len(got.IdentityGroups) != 1 || got.IdentityGroups[0] != "frontend-api" {
+		t.Fatalf("provider network tenant queue identity groups = %+v, want frontend-api", got.IdentityGroups)
+	}
 	if got := state.ProviderNetworks[0].TenantQueues[0]; got.IdentitySelector["tier"] != "frontend" || len(got.IdentityExpressions) != 1 || got.IdentityExpressions[0].Key != "role" {
 		t.Fatalf("provider network tenant queue identity selector = %+v expressions=%+v, want frontend/api identity selector", got.IdentitySelector, got.IdentityExpressions)
+	}
+	if got := state.IdentityGroups[0]; got.Name != "frontend-api" || got.VPC != "prod" || len(got.EndpointIDs) != 1 || got.EndpointIDs[0] != "pod-a" {
+		t.Fatalf("identity group = %+v, want frontend-api with pod-a", got)
 	}
 	if got := state.ProviderNetworks[0].Nodes[1].Interfaces[1]; got != "eth1" {
 		t.Fatalf("provider network node candidate interface = %s, want eth1", got)

@@ -273,6 +273,26 @@ func TestProviderNetworkRejectsInvalidTenantQueues(t *testing.T) {
 			wantErr: "identity_selector",
 		},
 		{
+			name: "duplicate identity group",
+			queues: []ProviderNetworkTenantQueuePolicy{{
+				Tenant:         "prod",
+				QueueID:        10,
+				IdentityGroups: []string{"frontend", "frontend"},
+				MaxRateBPS:     500000000,
+			}},
+			wantErr: `identity group "frontend" is duplicated`,
+		},
+		{
+			name: "invalid identity group",
+			queues: []ProviderNetworkTenantQueuePolicy{{
+				Tenant:         "prod",
+				QueueID:        10,
+				IdentityGroups: []string{"bad group"},
+				MaxRateBPS:     500000000,
+			}},
+			wantErr: "must not contain whitespace",
+		},
+		{
 			name: "large port range",
 			queues: []ProviderNetworkTenantQueuePolicy{{
 				Tenant:     "prod",
@@ -331,7 +351,8 @@ func TestProviderNetworkAcceptsMultipleTenantQueueSelectors(t *testing.T) {
 				Operator: "In",
 				Values:   []string{"api"},
 			}},
-			MaxRateBPS: 100000000,
+			IdentityGroups: []string{"frontend-api"},
+			MaxRateBPS:     100000000,
 		}},
 		Nodes: []ProviderNetworkNode{
 			{Node: "node-a", Interface: "bond0.100"},
@@ -339,6 +360,49 @@ func TestProviderNetworkAcceptsMultipleTenantQueueSelectors(t *testing.T) {
 	}.Validate()
 	if err != nil {
 		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+func TestIdentityGroupValidation(t *testing.T) {
+	group := IdentityGroup{
+		Name:        "frontend-api",
+		VPC:         "prod",
+		EndpointIDs: []string{"pod-a"},
+		EndpointSelector: Labels{
+			"tier": "frontend",
+		},
+		EndpointExpressions: []LabelExpr{{
+			Key:      "role",
+			Operator: "In",
+			Values:   []string{"api"},
+		}},
+	}
+	if err := group.Validate(); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name    string
+		group   IdentityGroup
+		wantErr string
+	}{
+		{name: "name required", group: IdentityGroup{VPC: "prod", EndpointIDs: []string{"pod-a"}}, wantErr: "name is required"},
+		{name: "vpc required", group: IdentityGroup{Name: "frontend", EndpointIDs: []string{"pod-a"}}, wantErr: "vpc is required"},
+		{name: "membership required", group: IdentityGroup{Name: "frontend", VPC: "prod"}, wantErr: "requires endpoint_ids or endpoint selector"},
+		{name: "duplicate endpoint", group: IdentityGroup{Name: "frontend", VPC: "prod", EndpointIDs: []string{"pod-a", "pod-a"}}, wantErr: "duplicated"},
+		{name: "invalid selector", group: IdentityGroup{Name: "frontend", VPC: "prod", EndpointSelector: Labels{"": "frontend"}}, wantErr: "endpoint_selector"},
+		{name: "invalid expression", group: IdentityGroup{Name: "frontend", VPC: "prod", EndpointExpressions: []LabelExpr{{Key: "role", Operator: "In"}}}, wantErr: "requires values"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.group.Validate()
+			if err == nil {
+				t.Fatal("expected validation to fail")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error %q does not contain %q", err, tt.wantErr)
+			}
+		})
 	}
 }
 
