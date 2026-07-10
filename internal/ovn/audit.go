@@ -85,7 +85,7 @@ func AuditManagedObjectsFromReaderWithDesired(ctx context.Context, reader Manage
 		for _, row := range result.rows {
 			if expectedFields, ok := expected[row.identity]; ok {
 				seen[row.identity] = struct{}{}
-				driftedFields := countManagedFieldDrift(row.externalIDs, expectedFields)
+				driftedFields := countManagedFieldDrift(table.name, row.externalIDs, expectedFields)
 				if row.fields != nil {
 					driftedFields += countManagedProvidedFieldDrift(row.fields, expectedColumns[row.identity])
 				}
@@ -623,14 +623,45 @@ func addAuditExpectedRow(out map[string]map[string]string, table string, keyValu
 	}
 }
 
-func countManagedFieldDrift(live, expected map[string]string) int {
+func countManagedFieldDrift(table string, live, expected map[string]string) int {
+	if expected == nil {
+		return 0
+	}
 	drift := 0
 	for key, value := range expected {
 		if live[key] != value {
 			drift++
 		}
 	}
+	for key := range live {
+		if !staleManagedExternalIDShouldDrift(table, key) {
+			continue
+		}
+		if _, ok := expected[key]; !ok {
+			drift++
+		}
+	}
 	return drift
+}
+
+func staleManagedExternalIDShouldDrift(table, key string) bool {
+	switch table {
+	case "NAT":
+		switch key {
+		case "netloom_external_port", "netloom_target_port", "netloom_protocol":
+			return true
+		default:
+			return false
+		}
+	case "Logical_Router":
+		switch key {
+		case "netloom_gateway", "netloom_gateway_lan_ip", "netloom_gateway_distributed", "netloom_external_if":
+			return true
+		default:
+			return false
+		}
+	}
+	return false
 }
 
 func countManagedProvidedFieldDrift(live, expected map[string]string) int {
