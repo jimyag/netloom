@@ -87,7 +87,7 @@ func AuditManagedObjectsFromReaderWithDesired(ctx context.Context, reader Manage
 				seen[row.identity] = struct{}{}
 				driftedFields := countManagedFieldDrift(table.name, row.externalIDs, expectedFields)
 				if row.fields != nil {
-					driftedFields += countManagedProvidedFieldDrift(row.fields, expectedColumns[row.identity])
+					driftedFields += countManagedProvidedFieldDrift(table.name, row.fields, expectedColumns[row.identity])
 				}
 				if driftedFields != 0 {
 					stats.DriftedManagedRows++
@@ -664,7 +664,7 @@ func staleManagedExternalIDShouldDrift(table, key string) bool {
 	return false
 }
 
-func countManagedProvidedFieldDrift(live, expected map[string]string) int {
+func countManagedProvidedFieldDrift(table string, live, expected map[string]string) int {
 	drift := 0
 	for key, value := range expected {
 		liveValue, ok := live[key]
@@ -675,7 +675,27 @@ func countManagedProvidedFieldDrift(live, expected map[string]string) int {
 			drift++
 		}
 	}
+	for key, value := range live {
+		if !staleManagedColumnShouldDrift(table, key) || value == "" {
+			continue
+		}
+		if _, ok := expected[key]; !ok {
+			drift++
+		}
+	}
 	return drift
+}
+
+func staleManagedColumnShouldDrift(table, key string) bool {
+	if table != "NAT" {
+		return false
+	}
+	switch key {
+	case "external_port_range", "logical_port", "external_mac", "options":
+		return true
+	default:
+		return false
+	}
 }
 
 func logicalSwitchColumnFields(subnet model.Subnet) map[string]string {

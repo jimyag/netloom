@@ -578,9 +578,11 @@ func TestAuditManagedObjectsFromReaderReportsStaleNATExternalIDs(t *testing.T) {
 				"netloom_protocol":      "tcp",
 				"custom":                "preserved",
 			}, Fields: map[string]string{
-				"type":        "dnat",
-				"external_ip": "198.51.100.10",
-				"logical_ip":  "10.10.0.20",
+				"type":                "dnat",
+				"external_ip":         "198.51.100.10",
+				"logical_ip":          "10.10.0.20",
+				"external_port_range": "8443",
+				"options":             "netloom_logical_port_range=443,netloom_protocol=tcp",
 			}},
 		},
 	}}
@@ -594,8 +596,8 @@ func TestAuditManagedObjectsFromReaderReportsStaleNATExternalIDs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stats.DriftedManagedRows != 1 || stats.DriftedManagedFields != 3 {
-		t.Fatalf("NAT stale external_id drift stats = %+v, want three stale managed fields", stats)
+	if stats.DriftedManagedRows != 1 || stats.DriftedManagedFields != 5 {
+		t.Fatalf("NAT stale external_id drift stats = %+v, want stale managed external_ids and columns", stats)
 	}
 }
 
