@@ -1036,6 +1036,53 @@ func TestAuditManagedObjectsFromReaderReportsDHCPOptionAttachmentDrift(t *testin
 	}
 }
 
+func TestAuditManagedObjectsFromReaderReportsDHCPOptionFamilyMetadataDrift(t *testing.T) {
+	subnet := model.Subnet{
+		Name:    "apps",
+		VPC:     "prod",
+		CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+		Gateway: netip.MustParseAddr("10.10.0.1"),
+		DHCP:    model.DHCPOptions{Enabled: true},
+	}
+	endpoint := model.Endpoint{
+		ID:     "pod-a",
+		VPC:    "prod",
+		Subnet: "apps",
+		Node:   "node-a",
+		IP:     netip.MustParseAddr("10.10.0.20"),
+	}
+	reader := fakeManagedOVNReader{rows: map[string][]ManagedOVNRow{
+		"DHCP_Options": {
+			{Table: "DHCP_Options", UUID: "dhcp-pod-a", ExternalIDs: map[string]string{
+				"netloom_owner":       "netloom",
+				"netloom_vpc":         "prod",
+				"netloom_endpoint":    endpointExternalID("prod", "pod-a"),
+				"netloom_subnet":      "apps",
+				"netloom_dhcp_family": "6",
+			}, Fields: map[string]string{
+				"cidr":    "10.10.0.0/24",
+				"options": "",
+			}},
+		},
+	}}
+	desired := topology.State{
+		Subnets: map[string]model.Subnet{
+			subnetStateKey("prod", "apps"): subnet,
+		},
+		Endpoints: map[string]model.Endpoint{
+			"prod/pod-a": endpoint,
+		},
+	}
+
+	stats, err := AuditManagedObjectsFromReaderWithDesired(context.Background(), reader, desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.DriftedManagedRows != 1 || stats.DriftedManagedFields != 1 {
+		t.Fatalf("DHCP option family metadata drift stats = %+v, want one family external_id drift", stats)
+	}
+}
+
 func TestAuditStatsTotalManagedObjects(t *testing.T) {
 	stats := AuditStats{
 		ManagedLogicalSwitches:           1,

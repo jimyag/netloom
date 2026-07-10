@@ -247,10 +247,15 @@ func expectedManagedAuditRows(desired topology.State) map[string]map[string]stri
 			"netloom_subnet", endpoint.Subnet,
 		)
 		if subnet, ok := desired.Subnets[subnetStateKey(endpoint.VPC, endpoint.Subnet)]; ok && subnet.DHCP.Enabled {
+			family := "4"
+			if endpoint.IP.Is6() && !endpoint.IP.Is4() {
+				family = "6"
+			}
 			addAuditExpectedRow(out, "DHCP_Options",
 				"netloom_vpc", endpoint.VPC,
 				"netloom_endpoint", endpointExternalID(endpoint.VPC, endpoint.ID),
 				"netloom_subnet", endpoint.Subnet,
+				"netloom_dhcp_family", family,
 			)
 		}
 	}
