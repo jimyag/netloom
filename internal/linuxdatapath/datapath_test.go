@@ -1136,6 +1136,31 @@ func TestProviderOVSDBRuntimeIssuesReportsDatabaseDrift(t *testing.T) {
 	}
 }
 
+func TestProviderOVSDBRuntimeIssuesReportsQoSAndQueueDrift(t *testing.T) {
+	issues := providerOVSDBRuntimeIssues(nil, []ProviderOVSDBStatus{{
+		ProviderNetwork: "physnet-a",
+		Bridge:          "nlbr-a",
+		LinkName:        "nlv-a",
+		ParentDevice:    "eth1",
+		VLAN:            100,
+		BridgeState:     "up",
+		MappingState:    "up",
+		PortState:       "up",
+		InterfaceState:  "up",
+		QoSState:        "mismatch",
+		QueueState:      "missing",
+	}}, "node-a")
+	if len(issues) != 2 {
+		t.Fatalf("issues = %+v, want qos and queue drift issues", issues)
+	}
+	if issues[0].Reason != "ovsdb-qos-drift" || issues[0].Detail != "nlv-a:mismatch" {
+		t.Fatalf("qos issue = %+v, want qos drift detail", issues[0])
+	}
+	if issues[1].Reason != "ovsdb-queue-missing" || issues[1].Detail != "nlv-a:missing" {
+		t.Fatalf("queue issue = %+v, want queue missing detail", issues[1])
+	}
+}
+
 func TestApplyCommandReportsProviderOVSDBStatusIssues(t *testing.T) {
 	state := control.DesiredState{
 		ProviderNetworks: []model.ProviderNetwork{{

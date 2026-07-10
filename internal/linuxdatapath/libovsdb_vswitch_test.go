@@ -368,8 +368,8 @@ func TestLibOVSDBProviderSyncerReadsProviderQoSDrift(t *testing.T) {
 	if len(statuses) != 1 {
 		t.Fatalf("statuses = %+v, want one", statuses)
 	}
-	if statuses[0].PortState != "qos-mismatch" {
-		t.Fatalf("status = %+v, want qos-mismatch", statuses[0])
+	if statuses[0].PortState != "up" || statuses[0].QoSState != "mismatch" || statuses[0].QueueState != "up" {
+		t.Fatalf("status = %+v, want port up, qos mismatch, queue up", statuses[0])
 	}
 }
 
@@ -409,8 +409,8 @@ func TestLibOVSDBProviderSyncerReadsProviderQueueDrift(t *testing.T) {
 	if len(statuses) != 1 {
 		t.Fatalf("statuses = %+v, want one", statuses)
 	}
-	if statuses[0].PortState != "qos-mismatch" {
-		t.Fatalf("status = %+v, want qos-mismatch", statuses[0])
+	if statuses[0].PortState != "up" || statuses[0].QoSState != "up" || statuses[0].QueueState != "mismatch" {
+		t.Fatalf("status = %+v, want port up, qos up, queue mismatch", statuses[0])
 	}
 }
 

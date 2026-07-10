@@ -649,6 +649,8 @@ func readProviderOVSDBStatuses(ctx context.Context, specs []providerNetworkLinkS
 			MappingState:    "up",
 			PortState:       "up",
 			InterfaceState:  "up",
+			QoSState:        "up",
+			QueueState:      "up",
 		}
 		if err := ovsVSCTLRun(ctx, "br-exists", bridge); err != nil {
 			status.BridgeState = "missing"

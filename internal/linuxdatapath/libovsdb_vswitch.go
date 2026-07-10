@@ -214,6 +214,8 @@ func (s *LibOVSDBProviderSyncer) ReadProviderOVSDBStatus(ctx context.Context, ro
 			MappingState:    "up",
 			PortState:       "up",
 			InterfaceState:  "up",
+			QoSState:        "up",
+			QueueState:      "up",
 		}
 		bridge, ok, err := s.bridgeByName(ctx, bridgeName)
 		if err != nil {
@@ -238,6 +240,10 @@ func (s *LibOVSDBProviderSyncer) ReadProviderOVSDBStatus(ctx context.Context, ro
 		if !ok {
 			status.PortState = "missing"
 			status.InterfaceState = "missing"
+			if desiredPort.QOS != nil {
+				status.QoSState = "missing"
+				status.QueueState = "missing"
+			}
 			statuses = append(statuses, status)
 			continue
 		}
@@ -245,11 +251,13 @@ func (s *LibOVSDBProviderSyncer) ReadProviderOVSDBStatus(ctx context.Context, ro
 			status.PortState = "bridge-mismatch"
 		} else if !providerExternalIDsMatch(port.ExternalIDs, providerOVSDBLinkExternalIDs(spec)) {
 			status.PortState = "external-ids-mismatch"
-		} else if ok, err := s.providerPortQoSMatches(ctx, port, desiredPort, desiredQoSByName, desiredQueueByName); err != nil {
-			return nil, err
-		} else if !ok {
-			status.PortState = "qos-mismatch"
 		}
+		qosState, queueState, err := s.providerPortQoSState(ctx, port, desiredPort, desiredQoSByName, desiredQueueByName)
+		if err != nil {
+			return nil, err
+		}
+		status.QoSState = qosState
+		status.QueueState = queueState
 		iface, ok, err := s.interfaceByName(ctx, spec.Name)
 		if err != nil {
 			return nil, err
@@ -848,42 +856,82 @@ func providerQoSFromDesiredPort(port vswitch.Port) netloommodel.ProviderNetworkQ
 	return qos
 }
 
-func (s *LibOVSDBProviderSyncer) providerPortQoSMatches(ctx context.Context, port *vswitch.Port, desiredPort vswitch.Port, desiredQoSByName map[string]vswitch.QoS, desiredQueueByName map[string]vswitch.Queue) (bool, error) {
+func (s *LibOVSDBProviderSyncer) providerPortQoSState(ctx context.Context, port *vswitch.Port, desiredPort vswitch.Port, desiredQoSByName map[string]vswitch.QoS, desiredQueueByName map[string]vswitch.Queue) (string, string, error) {
 	if desiredPort.QOS == nil {
-		return port.QOS == nil, nil
+		if port.QOS == nil {
+			return "up", "up", nil
+		}
+		managed, err := s.qosUUIDIsNetloomManaged(ctx, *port.QOS)
+		if err != nil {
+			return "", "", err
+		}
+		if managed {
+			return "unexpected", "up", nil
+		}
+		return "up", "up", nil
 	}
 	if port.QOS == nil {
-		return false, nil
+		return "missing", "missing", nil
 	}
 	desiredQoS, ok := desiredQoSByName[*desiredPort.QOS]
 	if !ok {
-		return false, fmt.Errorf("desired OVS port %s references unknown QoS %s", desiredPort.Name, *desiredPort.QOS)
+		return "", "", fmt.Errorf("desired OVS port %s references unknown QoS %s", desiredPort.Name, *desiredPort.QOS)
 	}
 	qos, ok, err := s.qosByUUID(ctx, *port.QOS)
 	if err != nil || !ok {
-		return false, err
+		if err != nil {
+			return "", "", err
+		}
+		return "missing", "missing", nil
 	}
-	if qos.Type != desiredQoS.Type || !providerExternalIDsMatch(qos.ExternalIDs, desiredQoS.ExternalIDs) || !reflect.DeepEqual(qos.OtherConfig, desiredQoS.OtherConfig) || len(qos.Queues) != len(desiredQoS.Queues) {
-		return false, nil
+	if qos.Type != desiredQoS.Type || !providerExternalIDsMatch(qos.ExternalIDs, desiredQoS.ExternalIDs) || !providerStringMapsEqual(qos.OtherConfig, desiredQoS.OtherConfig) {
+		return "mismatch", providerQueueStateForDesiredQoS(ctx, s, qos, desiredQoS, desiredQueueByName), nil
+	}
+	if len(qos.Queues) != len(desiredQoS.Queues) {
+		return "up", "mismatch", nil
 	}
 	for queueID, desiredQueueName := range desiredQoS.Queues {
 		queueUUID := qos.Queues[queueID]
 		if queueUUID == "" {
-			return false, nil
+			return "up", "missing", nil
 		}
 		desiredQueue, ok := desiredQueueByName[desiredQueueName]
 		if !ok {
-			return false, fmt.Errorf("desired OVS QoS %s references unknown Queue %s", *desiredPort.QOS, desiredQueueName)
+			return "", "", fmt.Errorf("desired OVS QoS %s references unknown Queue %s", *desiredPort.QOS, desiredQueueName)
 		}
 		queue, ok, err := s.queueByUUID(ctx, queueUUID)
 		if err != nil || !ok {
-			return false, err
+			if err != nil {
+				return "", "", err
+			}
+			return "up", "missing", nil
 		}
-		if !providerExternalIDsMatch(queue.ExternalIDs, desiredQueue.ExternalIDs) || !reflect.DeepEqual(queue.OtherConfig, desiredQueue.OtherConfig) || !intPointersEqual(queue.DSCP, desiredQueue.DSCP) {
-			return false, nil
+		if !providerExternalIDsMatch(queue.ExternalIDs, desiredQueue.ExternalIDs) || !providerStringMapsEqual(queue.OtherConfig, desiredQueue.OtherConfig) || !intPointersEqual(queue.DSCP, desiredQueue.DSCP) {
+			return "up", "mismatch", nil
 		}
 	}
-	return true, nil
+	return "up", "up", nil
+}
+
+func providerQueueStateForDesiredQoS(ctx context.Context, s *LibOVSDBProviderSyncer, qos *vswitch.QoS, desiredQoS vswitch.QoS, desiredQueueByName map[string]vswitch.Queue) string {
+	for queueID, desiredQueueName := range desiredQoS.Queues {
+		queueUUID := qos.Queues[queueID]
+		if queueUUID == "" {
+			return "missing"
+		}
+		desiredQueue, ok := desiredQueueByName[desiredQueueName]
+		if !ok {
+			return "mismatch"
+		}
+		queue, ok, err := s.queueByUUID(ctx, queueUUID)
+		if err != nil || !ok {
+			return "missing"
+		}
+		if !providerExternalIDsMatch(queue.ExternalIDs, desiredQueue.ExternalIDs) || !providerStringMapsEqual(queue.OtherConfig, desiredQueue.OtherConfig) || !intPointersEqual(queue.DSCP, desiredQueue.DSCP) {
+			return "mismatch"
+		}
+	}
+	return "up"
 }
 
 func stringPointersEqual(a, b *string) bool {
@@ -903,6 +951,18 @@ func intPointersEqual(a, b *int) bool {
 func providerExternalIDsMatch(got map[string]string, want map[string]string) bool {
 	for key, value := range want {
 		if got[key] != value {
+			return false
+		}
+	}
+	return true
+}
+
+func providerStringMapsEqual(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for key, value := range a {
+		if b[key] != value {
 			return false
 		}
 	}

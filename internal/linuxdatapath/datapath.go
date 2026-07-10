@@ -103,6 +103,8 @@ type ProviderOVSDBStatus struct {
 	MappingState    string
 	PortState       string
 	InterfaceState  string
+	QoSState        string
+	QueueState      string
 	ControllerState string
 }
 
@@ -891,6 +893,8 @@ func providerOVSDBStatusIssues(status ProviderOVSDBStatus, node string) []Provid
 		{kind: "ovsdb-mapping", state: status.MappingState},
 		{kind: "ovsdb-port", state: status.PortState},
 		{kind: "ovsdb-interface", state: status.InterfaceState},
+		{kind: "ovsdb-qos", state: status.QoSState},
+		{kind: "ovsdb-queue", state: status.QueueState},
 		{kind: "ovsdb-controller", state: status.ControllerState},
 	} {
 		if reason := providerRuntimeReason(check.kind, check.state); reason != "" {
@@ -914,6 +918,10 @@ func providerOVSDBIssueDetail(status ProviderOVSDBStatus, kind, state string) st
 	case "ovsdb-port":
 		return status.LinkName + ":" + fallbackProviderState(state)
 	case "ovsdb-interface":
+		return status.LinkName + ":" + fallbackProviderState(state)
+	case "ovsdb-qos":
+		return status.LinkName + ":" + fallbackProviderState(state)
+	case "ovsdb-queue":
 		return status.LinkName + ":" + fallbackProviderState(state)
 	case "ovsdb-mapping":
 		return status.ProviderNetwork + ":" + status.Bridge + ":" + fallbackProviderState(state)
