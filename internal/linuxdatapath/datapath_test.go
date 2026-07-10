@@ -560,7 +560,10 @@ func TestDesiredProviderOVSDBRowsBuildsTypedVSwitchRows(t *testing.T) {
 			VLAN:            100,
 			Name:            "nlv100",
 			Isolation:       "exclusive",
-			QoS:             model.ProviderNetworkQoS{EgressRateBPS: 1000000000, EgressBurstBPS: 64000},
+			ControllerTargets: []string{
+				"tcp:192.0.2.10:6653",
+			},
+			QoS: model.ProviderNetworkQoS{EgressRateBPS: 1000000000, EgressBurstBPS: 64000},
 			TenantQueues: []model.ProviderNetworkTenantQueuePolicy{{
 				Tenant:   "prod",
 				QueueID:  10,
@@ -609,6 +612,14 @@ func TestDesiredProviderOVSDBRowsBuildsTypedVSwitchRows(t *testing.T) {
 	for _, bridge := range rows.Bridges {
 		if bridge.ExternalIDs["netloom_provider_network"] == "physnet-a" && bridge.ExternalIDs["netloom_provider_isolation"] != "exclusive" {
 			t.Fatalf("bridge external IDs = %+v, want exclusive isolation", bridge.ExternalIDs)
+		}
+	}
+	if len(rows.Controllers) != 1 || rows.Controllers[0].Target != "tcp:192.0.2.10:6653" || rows.Controllers[0].ExternalIDs["netloom_provider_network"] != "physnet-a" {
+		t.Fatalf("controllers = %+v, want physnet-a controller target", rows.Controllers)
+	}
+	for _, bridge := range rows.Bridges {
+		if bridge.ExternalIDs["netloom_provider_network"] == "physnet-a" && len(bridge.Controller) != 1 {
+			t.Fatalf("bridge controllers = %+v, want physnet-a controller identity", bridge.Controller)
 		}
 	}
 	if len(rows.Ports) != 3 || rows.Ports[0].Name != "nlv100" || rows.Ports[0].Interfaces[0] != "nlv100" {

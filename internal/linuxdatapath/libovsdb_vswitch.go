@@ -47,13 +47,40 @@ func (s *LibOVSDBProviderSyncer) SyncProviderOVSDB(ctx context.Context, rows Pro
 
 	desiredBridgeRefs := make([]string, 0, len(rows.Bridges))
 	desiredBridgeSet := make(map[string]struct{}, len(rows.Bridges))
+	controllerUUIDByName := make(map[string]string, len(rows.Controllers))
+	desiredControllerSet := make(map[string]struct{}, len(rows.Controllers))
 	portsByBridge := make(map[string][]string, len(rows.Bridges))
 	qosUUIDByName := make(map[string]string, len(rows.QoS))
 	desiredQoSSet := make(map[string]struct{}, len(rows.QoS))
 	queueUUIDByName := make(map[string]string, len(rows.Queues))
 	desiredQueueSet := make(map[string]struct{}, len(rows.Queues))
+	for _, controller := range rows.Controllers {
+		name := controller.ExternalIDs["netloom_provider_controller"]
+		if name == "" {
+			return fmt.Errorf("provider Controller row is missing netloom_provider_controller external ID")
+		}
+		desiredControllerSet[name] = struct{}{}
+		controllerUUID, controllerOps, err := s.ensureController(ctx, controller)
+		if err != nil {
+			return err
+		}
+		ops = append(ops, controllerOps...)
+		controllerUUIDByName[name] = controllerUUID
+	}
 	for _, bridge := range rows.Bridges {
 		desiredBridgeSet[bridge.Name] = struct{}{}
+		if len(bridge.Controller) > 0 {
+			controllerUUIDs := make([]string, 0, len(bridge.Controller))
+			for _, controllerName := range bridge.Controller {
+				controllerUUID := controllerUUIDByName[controllerName]
+				if controllerUUID == "" {
+					return fmt.Errorf("provider bridge %s references unknown Controller %s", bridge.Name, controllerName)
+				}
+				controllerUUIDs = append(controllerUUIDs, controllerUUID)
+			}
+			sort.Strings(controllerUUIDs)
+			bridge.Controller = controllerUUIDs
+		}
 		bridgeUUID, bridgeOps, err := s.ensureBridge(ctx, bridge)
 		if err != nil {
 			return err
@@ -157,6 +184,11 @@ func (s *LibOVSDBProviderSyncer) SyncProviderOVSDB(ctx context.Context, rows Pro
 			return err
 		}
 		ops = append(ops, queueOps...)
+		controllerOps, err := s.cleanupStaleProviderControllers(ctx, desiredControllerSet)
+		if err != nil {
+			return err
+		}
+		ops = append(ops, controllerOps...)
 	}
 	return s.transact(ctx, "sync provider Open_vSwitch OVSDB rows", ops)
 }
@@ -224,7 +256,7 @@ func (s *LibOVSDBProviderSyncer) ReadProviderOVSDBStatus(ctx context.Context, ro
 		if !ok {
 			status.BridgeState = "missing"
 		} else {
-			controllerState, err := s.bridgeControllerState(ctx, bridge)
+			controllerState, err := s.bridgeControllerState(ctx, bridge, bridgeByName[bridgeName])
 			if err != nil {
 				return nil, err
 			}
@@ -329,9 +361,64 @@ func (s *LibOVSDBProviderSyncer) ensureQueue(ctx context.Context, desired vswitc
 	return existing.UUID, ops, nil
 }
 
-func (s *LibOVSDBProviderSyncer) bridgeControllerState(ctx context.Context, bridge *vswitch.Bridge) (string, error) {
+func (s *LibOVSDBProviderSyncer) ensureController(ctx context.Context, desired vswitch.Controller) (string, []ovsdb.Operation, error) {
+	name := desired.ExternalIDs["netloom_provider_controller"]
+	existing, ok, err := s.controllerByProviderName(ctx, name)
+	if err != nil {
+		return "", nil, err
+	}
+	if !ok {
+		desired.UUID = ovsdbProviderNamedUUID("controller", name)
+		ops, err := s.client.Create(&desired)
+		if err != nil {
+			return "", nil, fmt.Errorf("create OVS Controller %s: %w", name, err)
+		}
+		return desired.UUID, ops, nil
+	}
+	nextExternalIDs := mergeProviderManagedExternalIDs(existing.ExternalIDs, desired.ExternalIDs)
+	if existing.Target == desired.Target && reflect.DeepEqual(existing.ExternalIDs, nextExternalIDs) {
+		return existing.UUID, nil, nil
+	}
+	existing.Target = desired.Target
+	existing.ExternalIDs = nextExternalIDs
+	ops, err := s.client.Where(existing).Update(existing, &existing.Target, &existing.ExternalIDs)
+	if err != nil {
+		return "", nil, fmt.Errorf("update OVS Controller %s: %w", name, err)
+	}
+	return existing.UUID, ops, nil
+}
+
+func (s *LibOVSDBProviderSyncer) bridgeControllerState(ctx context.Context, bridge *vswitch.Bridge, desired vswitch.Bridge) (string, error) {
 	if bridge == nil || len(bridge.Controller) == 0 {
+		if len(desired.Controller) > 0 {
+			return "missing", nil
+		}
 		return "", nil
+	}
+	if len(desired.Controller) > 0 {
+		actualTargets := make(map[string]struct{}, len(bridge.Controller))
+		for _, controllerUUID := range bridge.Controller {
+			controller, ok, err := s.controllerByUUID(ctx, controllerUUID)
+			if err != nil {
+				return "", err
+			}
+			if !ok {
+				return "missing", nil
+			}
+			actualTargets[controller.Target] = struct{}{}
+		}
+		for _, controllerName := range desired.Controller {
+			desiredController, ok, err := s.controllerByProviderName(ctx, controllerName)
+			if err != nil {
+				return "", err
+			}
+			if !ok {
+				return "missing", nil
+			}
+			if _, ok := actualTargets[desiredController.Target]; !ok {
+				return "target-mismatch", nil
+			}
+		}
 	}
 	connected := false
 	for _, controllerUUID := range bridge.Controller {
@@ -350,6 +437,19 @@ func (s *LibOVSDBProviderSyncer) bridgeControllerState(ctx context.Context, brid
 		return "up", nil
 	}
 	return "disconnected", nil
+}
+
+func (s *LibOVSDBProviderSyncer) controllerByProviderName(ctx context.Context, name string) (*vswitch.Controller, bool, error) {
+	var rows []vswitch.Controller
+	if err := s.client.WhereCache(func(row *vswitch.Controller) bool {
+		return row.ExternalIDs["netloom_owner"] == "netloom" && row.ExternalIDs["netloom_provider_controller"] == name
+	}).List(ctx, &rows); err != nil {
+		return nil, false, fmt.Errorf("list OVS controller %s: %w", name, err)
+	}
+	if len(rows) == 0 {
+		return nil, false, nil
+	}
+	return &rows[0], true, nil
 }
 
 func (s *LibOVSDBProviderSyncer) controllerByUUID(ctx context.Context, uuid string) (*vswitch.Controller, bool, error) {
@@ -378,13 +478,21 @@ func (s *LibOVSDBProviderSyncer) ensureBridge(ctx context.Context, desired vswit
 		return desired.UUID, ops, nil
 	}
 	nextExternalIDs := mergeProviderManagedExternalIDs(existing.ExternalIDs, desired.ExternalIDs)
-	if reflect.DeepEqual(existing.ExternalIDs, nextExternalIDs) {
+	nextController := desired.Controller
+	if len(nextController) == 0 {
+		nextController, err = s.nonManagedControllerRefs(ctx, existing.Controller)
+		if err != nil {
+			return "", nil, err
+		}
+	}
+	if reflect.DeepEqual(existing.ExternalIDs, nextExternalIDs) && reflect.DeepEqual(sortedUniqueStrings(existing.Controller), sortedUniqueStrings(nextController)) {
 		return existing.UUID, nil, nil
 	}
 	existing.ExternalIDs = nextExternalIDs
-	ops, err := s.client.Where(existing).Update(existing, &existing.ExternalIDs)
+	existing.Controller = sortedUniqueStrings(nextController)
+	ops, err := s.client.Where(existing).Update(existing, &existing.ExternalIDs, &existing.Controller)
 	if err != nil {
-		return "", nil, fmt.Errorf("update OVS bridge %s external IDs: %w", desired.Name, err)
+		return "", nil, fmt.Errorf("update OVS bridge %s: %w", desired.Name, err)
 	}
 	return existing.UUID, ops, nil
 }
@@ -437,6 +545,27 @@ func (s *LibOVSDBProviderSyncer) ensurePort(ctx context.Context, desired vswitch
 	}
 	ops = append(ops, updateOps...)
 	return existing.UUID, ops, nil
+}
+
+func (s *LibOVSDBProviderSyncer) nonManagedControllerRefs(ctx context.Context, controllerUUIDs []string) ([]string, error) {
+	if len(controllerUUIDs) == 0 {
+		return nil, nil
+	}
+	out := make([]string, 0, len(controllerUUIDs))
+	for _, controllerUUID := range controllerUUIDs {
+		controller, ok, err := s.controllerByUUID(ctx, controllerUUID)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			continue
+		}
+		if controller.ExternalIDs["netloom_owner"] == "netloom" && controller.ExternalIDs["netloom_provider_controller"] != "" {
+			continue
+		}
+		out = append(out, controllerUUID)
+	}
+	return sortedUniqueStrings(out), nil
 }
 
 func (s *LibOVSDBProviderSyncer) ensureInterface(ctx context.Context, desired vswitch.Interface) (string, []ovsdb.Operation, error) {
@@ -608,6 +737,55 @@ func (s *LibOVSDBProviderSyncer) cleanupStaleProviderQueues(ctx context.Context,
 			return nil, fmt.Errorf("delete stale OVS provider Queue %s: %w", rows[i].ExternalIDs["netloom_provider_queue"], err)
 		}
 		ops = append(ops, deleteOps...)
+	}
+	return ops, nil
+}
+
+func (s *LibOVSDBProviderSyncer) cleanupStaleProviderControllers(ctx context.Context, desired map[string]struct{}) ([]ovsdb.Operation, error) {
+	var rows []vswitch.Controller
+	if err := s.client.WhereCache(func(row *vswitch.Controller) bool {
+		if row.ExternalIDs["netloom_owner"] != "netloom" || row.ExternalIDs["netloom_provider_controller"] == "" {
+			return false
+		}
+		_, ok := desired[row.ExternalIDs["netloom_provider_controller"]]
+		return !ok
+	}).List(ctx, &rows); err != nil {
+		return nil, fmt.Errorf("list stale OVS provider Controller rows: %w", err)
+	}
+	var ops []ovsdb.Operation
+	for i := range rows {
+		detachOps, err := s.detachControllerFromBridges(ctx, rows[i].UUID)
+		if err != nil {
+			return nil, err
+		}
+		ops = append(ops, detachOps...)
+		deleteOps, err := s.client.Where(&rows[i]).Delete()
+		if err != nil {
+			return nil, fmt.Errorf("delete stale OVS provider Controller %s: %w", rows[i].ExternalIDs["netloom_provider_controller"], err)
+		}
+		ops = append(ops, deleteOps...)
+	}
+	return ops, nil
+}
+
+func (s *LibOVSDBProviderSyncer) detachControllerFromBridges(ctx context.Context, controllerUUID string) ([]ovsdb.Operation, error) {
+	var bridges []vswitch.Bridge
+	if err := s.client.WhereCache(func(row *vswitch.Bridge) bool {
+		return containsProviderString(row.Controller, controllerUUID)
+	}).List(ctx, &bridges); err != nil {
+		return nil, fmt.Errorf("list OVS bridges containing controller %s: %w", controllerUUID, err)
+	}
+	var ops []ovsdb.Operation
+	for i := range bridges {
+		nextOps, err := s.client.Where(&bridges[i]).Mutate(&bridges[i], ovsmodel.Mutation{
+			Field:   &bridges[i].Controller,
+			Mutator: ovsdb.MutateOperationDelete,
+			Value:   []string{controllerUUID},
+		})
+		if err != nil {
+			return nil, fmt.Errorf("detach OVS controller %s from bridge %s: %w", controllerUUID, bridges[i].Name, err)
+		}
+		ops = append(ops, nextOps...)
 	}
 	return ops, nil
 }

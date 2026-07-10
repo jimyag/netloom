@@ -52,12 +52,13 @@ type VPC struct {
 }
 
 type ProviderNetwork struct {
-	Name         string                             `json:"name"`
-	Nodes        []ProviderNetworkNode              `json:"nodes"`
-	Isolation    string                             `json:"isolation,omitempty"`
-	QoS          ProviderNetworkQoS                 `json:"qos,omitempty"`
-	TenantQuotas []ProviderNetworkTenantQuota       `json:"tenant_quotas,omitempty"`
-	TenantQueues []ProviderNetworkTenantQueuePolicy `json:"tenant_queues,omitempty"`
+	Name              string                             `json:"name"`
+	Nodes             []ProviderNetworkNode              `json:"nodes"`
+	Isolation         string                             `json:"isolation,omitempty"`
+	ControllerTargets []string                           `json:"controller_targets,omitempty"`
+	QoS               ProviderNetworkQoS                 `json:"qos,omitempty"`
+	TenantQuotas      []ProviderNetworkTenantQuota       `json:"tenant_quotas,omitempty"`
+	TenantQueues      []ProviderNetworkTenantQueuePolicy `json:"tenant_queues,omitempty"`
 }
 
 type ProviderNetworkNode struct {
@@ -313,6 +314,19 @@ func (p ProviderNetwork) Validate() error {
 	}
 	if p.Isolation != "" && p.Isolation != "shared" && p.Isolation != "exclusive" {
 		return fmt.Errorf("provider network isolation %q is invalid", p.Isolation)
+	}
+	seenControllerTargets := make(map[string]struct{}, len(p.ControllerTargets))
+	for i, target := range p.ControllerTargets {
+		if strings.TrimSpace(target) == "" {
+			return fmt.Errorf("provider network controller target %d is required", i)
+		}
+		if target != strings.TrimSpace(target) {
+			return fmt.Errorf("provider network controller target %q must not contain leading or trailing whitespace", target)
+		}
+		if _, ok := seenControllerTargets[target]; ok {
+			return fmt.Errorf("provider network controller target %q is duplicated", target)
+		}
+		seenControllerTargets[target] = struct{}{}
 	}
 	if err := p.QoS.Validate(); err != nil {
 		return fmt.Errorf("provider network qos: %w", err)

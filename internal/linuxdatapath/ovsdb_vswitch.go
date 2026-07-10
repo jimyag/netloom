@@ -1,6 +1,8 @@
 package linuxdatapath
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"sort"
 	"strconv"
 	"strings"
@@ -12,6 +14,7 @@ import (
 type ProviderOVSDBDesiredRows struct {
 	OpenVSwitch vswitch.OpenvSwitch
 	Bridges     []vswitch.Bridge
+	Controllers []vswitch.Controller
 	Ports       []vswitch.Port
 	Interfaces  []vswitch.Interface
 	QoS         []vswitch.QoS
@@ -20,6 +23,7 @@ type ProviderOVSDBDesiredRows struct {
 
 func desiredProviderOVSDBRows(specs []providerNetworkLinkSpec) ProviderOVSDBDesiredRows {
 	bridgeByName := make(map[string]*vswitch.Bridge)
+	controllerByName := make(map[string]vswitch.Controller)
 	portByName := make(map[string]vswitch.Port)
 	interfaceByName := make(map[string]vswitch.Interface)
 	qosByName := make(map[string]vswitch.QoS)
@@ -45,6 +49,18 @@ func desiredProviderOVSDBRows(specs []providerNetworkLinkSpec) ProviderOVSDBDesi
 			bridgeByName[bridgeName] = bridge
 		}
 		bridge.Ports = appendUniqueString(bridge.Ports, spec.Name)
+		for _, target := range spec.ControllerTargets {
+			controllerName := providerOVSDBControllerName(spec.ProviderNetwork, target)
+			bridge.Controller = appendUniqueString(bridge.Controller, controllerName)
+			controllerByName[controllerName] = vswitch.Controller{
+				Target: target,
+				ExternalIDs: map[string]string{
+					"netloom_owner":               "netloom",
+					"netloom_provider_network":    spec.ProviderNetwork,
+					"netloom_provider_controller": controllerName,
+				},
+			}
+		}
 
 		portByName[spec.Name] = vswitch.Port{
 			Name:        spec.Name,
@@ -89,7 +105,18 @@ func desiredProviderOVSDBRows(specs []providerNetworkLinkSpec) ProviderOVSDBDesi
 	for _, name := range bridgeNames {
 		bridge := *bridgeByName[name]
 		sort.Strings(bridge.Ports)
+		sort.Strings(bridge.Controller)
 		bridges = append(bridges, bridge)
+	}
+
+	controllerNames := make([]string, 0, len(controllerByName))
+	for name := range controllerByName {
+		controllerNames = append(controllerNames, name)
+	}
+	sort.Strings(controllerNames)
+	controllers := make([]vswitch.Controller, 0, len(controllerNames))
+	for _, name := range controllerNames {
+		controllers = append(controllers, controllerByName[name])
 	}
 
 	portNames := make([]string, 0, len(portByName))
@@ -136,12 +163,18 @@ func desiredProviderOVSDBRows(specs []providerNetworkLinkSpec) ProviderOVSDBDesi
 				"ovn-bridge-mappings": strings.Join(mappings, ","),
 			},
 		},
-		Bridges:    bridges,
-		Ports:      ports,
-		Interfaces: interfaces,
-		QoS:        qosRows,
-		Queues:     queueRows,
+		Bridges:     bridges,
+		Controllers: controllers,
+		Ports:       ports,
+		Interfaces:  interfaces,
+		QoS:         qosRows,
+		Queues:      queueRows,
 	}
+}
+
+func providerOVSDBControllerName(providerNetwork, target string) string {
+	sum := sha256.Sum256([]byte(providerNetwork + "\x00" + target))
+	return "controller-" + sanitizeProviderOVSDBName(providerNetwork) + "-" + hex.EncodeToString(sum[:8])
 }
 
 func providerOVSDBQoSName(spec providerNetworkLinkSpec) string {
@@ -257,6 +290,11 @@ func normalizeProviderQueueExpressionOperator(operator string) string {
 	operator = strings.ReplaceAll(operator, "_", "")
 	operator = strings.ReplaceAll(operator, "-", "")
 	return operator
+}
+
+func sanitizeProviderOVSDBName(value string) string {
+	replacer := strings.NewReplacer("/", "_", ":", "_", ".", "_", ",", "_", " ", "_")
+	return replacer.Replace(value)
 }
 
 func appendUniqueString(values []string, value string) []string {

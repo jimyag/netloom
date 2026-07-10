@@ -405,13 +405,14 @@ func Plan(ctx context.Context, state control.DesiredState, options Options) ([]O
 }
 
 type providerNetworkLinkSpec struct {
-	ProviderNetwork string
-	ParentDevice    string
-	VLAN            uint16
-	Name            string
-	Isolation       string
-	QoS             model.ProviderNetworkQoS
-	TenantQueues    []model.ProviderNetworkTenantQueuePolicy
+	ProviderNetwork   string
+	ParentDevice      string
+	VLAN              uint16
+	Name              string
+	Isolation         string
+	ControllerTargets []string
+	QoS               model.ProviderNetworkQoS
+	TenantQueues      []model.ProviderNetworkTenantQueuePolicy
 }
 
 type providerQueueFlow struct {
@@ -446,6 +447,7 @@ func desiredProviderNetworkLinkSpecs(state control.DesiredState, node string, ma
 		return nil, err
 	}
 	providerIsolation := providerNetworkIsolationByName(state.ProviderNetworks)
+	providerControllers := providerNetworkControllerTargetsByName(state.ProviderNetworks)
 	providerQoS := providerNetworkQoSByName(state.ProviderNetworks)
 	providerTenantQueues := providerNetworkTenantQueuesByName(state.ProviderNetworks)
 	seen := make(map[string]providerNetworkLinkSpec)
@@ -472,13 +474,14 @@ func desiredProviderNetworkLinkSpecs(state control.DesiredState, node string, ma
 			continue
 		}
 		spec := providerNetworkLinkSpec{
-			ProviderNetwork: subnet.ProviderNetwork,
-			ParentDevice:    parent,
-			VLAN:            subnet.VLAN,
-			Name:            providerNetworkLinkName(subnet.ProviderNetwork, parent, subnet.VLAN),
-			Isolation:       providerIsolation[subnet.ProviderNetwork],
-			QoS:             providerQoS[subnet.ProviderNetwork],
-			TenantQueues:    providerTenantQueues[subnet.ProviderNetwork],
+			ProviderNetwork:   subnet.ProviderNetwork,
+			ParentDevice:      parent,
+			VLAN:              subnet.VLAN,
+			Name:              providerNetworkLinkName(subnet.ProviderNetwork, parent, subnet.VLAN),
+			Isolation:         providerIsolation[subnet.ProviderNetwork],
+			ControllerTargets: append([]string(nil), providerControllers[subnet.ProviderNetwork]...),
+			QoS:               providerQoS[subnet.ProviderNetwork],
+			TenantQueues:      providerTenantQueues[subnet.ProviderNetwork],
 		}
 		if claimed, ok := claimedParents[parent]; ok && providerIsolationConflicts(claimed, spec) {
 			return nil, &providerPlanningError{
@@ -527,6 +530,14 @@ func providerNetworkQoSByName(providerNetworks []model.ProviderNetwork) map[stri
 	out := make(map[string]model.ProviderNetworkQoS, len(providerNetworks))
 	for _, providerNetwork := range providerNetworks {
 		out[providerNetwork.Name] = providerNetwork.QoS
+	}
+	return out
+}
+
+func providerNetworkControllerTargetsByName(providerNetworks []model.ProviderNetwork) map[string][]string {
+	out := make(map[string][]string, len(providerNetworks))
+	for _, providerNetwork := range providerNetworks {
+		out[providerNetwork.Name] = append([]string(nil), providerNetwork.ControllerTargets...)
 	}
 	return out
 }

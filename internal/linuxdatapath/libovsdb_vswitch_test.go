@@ -59,6 +59,99 @@ func TestLibOVSDBProviderSyncerCreatesProviderRows(t *testing.T) {
 	}
 }
 
+func TestLibOVSDBProviderSyncerCreatesProviderControllers(t *testing.T) {
+	client, cleanup := newTestVSwitchClient(t)
+	defer cleanup()
+	ctx := context.Background()
+	insertVSwitchRows(t, ctx, client, &vswitch.OpenvSwitch{})
+
+	rows := desiredProviderOVSDBRows([]providerNetworkLinkSpec{{
+		ProviderNetwork:   "physnet-a",
+		ParentDevice:      "eth1",
+		VLAN:              100,
+		Name:              "nlv100",
+		ControllerTargets: []string{"tcp:192.0.2.10:6653"},
+	}})
+	if len(rows.Controllers) != 1 || rows.Controllers[0].Target != "tcp:192.0.2.10:6653" {
+		t.Fatalf("desired controllers = %+v, want target tcp:192.0.2.10:6653", rows.Controllers)
+	}
+	if len(rows.Bridges) != 1 || len(rows.Bridges[0].Controller) != 1 {
+		t.Fatalf("desired bridge controllers = %+v, want controller identity", rows.Bridges)
+	}
+	syncer := NewLibOVSDBProviderSyncer(client)
+	if err := syncer.SyncProviderOVSDB(ctx, rows, false); err != nil {
+		t.Fatal(err)
+	}
+
+	bridge := singleBridgeByName(t, ctx, client, providerNetworkBridgeName("physnet-a"))
+	controller := singleControllerByProviderName(t, ctx, client, rows.Controllers[0].ExternalIDs["netloom_provider_controller"])
+	if !containsProviderString(bridge.Controller, controller.UUID) {
+		t.Fatalf("bridge controllers = %+v, want %s", bridge.Controller, controller.UUID)
+	}
+	if controller.Target != "tcp:192.0.2.10:6653" || controller.ExternalIDs["netloom_provider_network"] != "physnet-a" {
+		t.Fatalf("controller = %+v, want target and provider external IDs", controller)
+	}
+
+	statuses, err := syncer.ReadProviderOVSDBStatus(ctx, rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(statuses) != 1 || statuses[0].ControllerState != "disconnected" {
+		t.Fatalf("statuses = %+v, want disconnected controller before OVS connects", statuses)
+	}
+	controller.IsConnected = true
+	connectOps, err := client.Where(controller).Update(controller, &controller.IsConnected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transactVSwitchOps(t, ctx, client, connectOps)
+	statuses, err = syncer.ReadProviderOVSDBStatus(ctx, rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(statuses) != 1 || statuses[0].ControllerState != "up" {
+		t.Fatalf("statuses = %+v, want connected controller", statuses)
+	}
+
+	withoutController := desiredProviderOVSDBRows([]providerNetworkLinkSpec{{
+		ProviderNetwork: "physnet-a",
+		ParentDevice:    "eth1",
+		VLAN:            100,
+		Name:            "nlv100",
+	}})
+	if err := syncer.SyncProviderOVSDB(ctx, withoutController, false); err != nil {
+		t.Fatal(err)
+	}
+	bridge = singleBridgeByName(t, ctx, client, providerNetworkBridgeName("physnet-a"))
+	if containsProviderString(bridge.Controller, controller.UUID) {
+		t.Fatalf("bridge controllers = %+v, want Netloom controller detached after desired target removal", bridge.Controller)
+	}
+	if countControllersByProviderName(t, ctx, client, rows.Controllers[0].ExternalIDs["netloom_provider_controller"]) != 0 {
+		t.Fatal("unreferenced provider controller row was not removed after target removal")
+	}
+
+	stale := &vswitch.Controller{
+		UUID:   "@stale_controller",
+		Target: "tcp:192.0.2.11:6653",
+		ExternalIDs: map[string]string{
+			"netloom_owner":               "netloom",
+			"netloom_provider_network":    "physnet-a",
+			"netloom_provider_controller": "controller-stale",
+		},
+	}
+	createStale, err := client.Create(stale)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transactVSwitchOps(t, ctx, client, createStale)
+	if err := syncer.SyncProviderOVSDB(ctx, withoutController, true); err != nil {
+		t.Fatal(err)
+	}
+	if countControllersByProviderName(t, ctx, client, "controller-stale") != 0 {
+		t.Fatal("stale provider controller was not deleted")
+	}
+}
+
 func TestLibOVSDBProviderSyncerCreatesProviderQoS(t *testing.T) {
 	client, cleanup := newTestVSwitchClient(t)
 	defer cleanup()
@@ -701,6 +794,26 @@ func singleControllerByTarget(t *testing.T, ctx context.Context, client libovsdb
 	}
 }
 
+func singleControllerByProviderName(t *testing.T, ctx context.Context, client libovsdbclient.Client, name string) *vswitch.Controller {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		var rows []vswitch.Controller
+		if err := client.WhereCache(func(row *vswitch.Controller) bool {
+			return row.ExternalIDs["netloom_provider_controller"] == name
+		}).List(ctx, &rows); err != nil {
+			t.Fatal(err)
+		}
+		if len(rows) == 1 {
+			return &rows[0]
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("controller %s rows = %+v, want one", name, rows)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func countBridgesByName(t *testing.T, ctx context.Context, client libovsdbclient.Client, name string) int {
 	t.Helper()
 	var rows []vswitch.Bridge
@@ -744,6 +857,17 @@ func countQueuesByProviderName(t *testing.T, ctx context.Context, client libovsd
 	var rows []vswitch.Queue
 	if err := client.WhereCache(func(row *vswitch.Queue) bool {
 		return row.ExternalIDs["netloom_provider_queue"] == name
+	}).List(ctx, &rows); err != nil {
+		t.Fatal(err)
+	}
+	return len(rows)
+}
+
+func countControllersByProviderName(t *testing.T, ctx context.Context, client libovsdbclient.Client, name string) int {
+	t.Helper()
+	var rows []vswitch.Controller
+	if err := client.WhereCache(func(row *vswitch.Controller) bool {
+		return row.ExternalIDs["netloom_provider_controller"] == name
 	}).List(ctx, &rows); err != nil {
 		t.Fatal(err)
 	}

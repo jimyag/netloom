@@ -716,6 +716,22 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 			wantErr: "subnet \"apps\" references unknown provider network",
 		},
 		{
+			name: "duplicate provider network controller target",
+			mutate: func(state *DesiredState) {
+				state.ProviderNetworks = []model.ProviderNetwork{{
+					Name:              "physnet-a",
+					ControllerTargets: []string{"tcp:192.0.2.10:6653", "tcp:192.0.2.10:6653"},
+					Nodes: []model.ProviderNetworkNode{{
+						Node:      "node-a",
+						Interface: "eth1",
+					}},
+				}}
+				state.Subnets[0].ProviderNetwork = "physnet-a"
+				state.Subnets[0].VLAN = 100
+			},
+			wantErr: "provider network controller target \"tcp:192.0.2.10:6653\" is duplicated",
+		},
+		{
 			name: "provider tenant subnet quota exceeded",
 			mutate: func(state *DesiredState) {
 				state.ProviderNetworks = []model.ProviderNetwork{{
