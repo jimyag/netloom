@@ -337,7 +337,7 @@ exit 0
 			{Target: "target-a", DB: "OVN_Northbound"},
 			{Target: "target-b", DB: "OVN_Southbound"},
 		},
-	}.RunMaintenance(context.Background())
+	}.RunMaintenance(context.Background(), ovnMaintenanceContext{})
 	if result.Status != "ok" || result.Attempted != 2 || result.Succeeded != 2 || result.Failed != 0 {
 		t.Fatalf("maintenance result = %+v, want two successful compactions", result)
 	}
@@ -363,7 +363,7 @@ exit 1
 	result := ovnDBMaintenance{
 		appctl:  appctl,
 		targets: []ovnDBMaintenanceTarget{{Target: "target-a", DB: "OVN_Northbound"}},
-	}.RunMaintenance(context.Background())
+	}.RunMaintenance(context.Background(), ovnMaintenanceContext{})
 	if result.Status != "ok" || result.Succeeded != 1 || result.Failed != 0 {
 		t.Fatalf("maintenance result = %+v, want duplicate snapshot as success", result)
 	}
@@ -382,9 +382,79 @@ exit 2
 	result := ovnDBMaintenance{
 		appctl:  appctl,
 		targets: []ovnDBMaintenanceTarget{{Target: "target-a", DB: "OVN_Northbound"}},
-	}.RunMaintenance(context.Background())
+	}.RunMaintenance(context.Background(), ovnMaintenanceContext{})
 	if result.Status != "error" || result.Succeeded != 0 || result.Failed != 1 || !strings.Contains(result.Error, "locked") {
 		t.Fatalf("maintenance result = %+v, want failed compaction with error output", result)
+	}
+}
+
+func TestOVNStaleMaintenanceCommandSkipsBelowThreshold(t *testing.T) {
+	dir := t.TempDir()
+	outputPath := filepath.Join(dir, "stale")
+	result := ovnStaleMaintenanceCommand{
+		command: "printf should-not-run > " + outputPath,
+	}.RunMaintenance(context.Background(), ovnMaintenanceContext{
+		StaleAdvisory: ovnStaleAdvisory{Status: "ok", Burden: 1, Threshold: 2},
+	})
+	if result.Status != "skipped" || result.Attempted != 0 {
+		t.Fatalf("maintenance result = %+v, want skipped without attempts", result)
+	}
+	if _, err := os.Stat(outputPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stale maintenance command wrote %s below threshold", outputPath)
+	}
+}
+
+func TestOVNStaleMaintenanceCommandRunsOnWarning(t *testing.T) {
+	dir := t.TempDir()
+	outputPath := filepath.Join(dir, "env")
+	command := "printf '%s,%s,%s,%s,%s,%s,%s,%s,%s\\n' \"$NETLOOM_OVN_STALE_STATUS\" \"$NETLOOM_OVN_STALE_BURDEN\" \"$NETLOOM_OVN_STALE_THRESHOLD\" \"$NETLOOM_OVN_STALE_MISSING\" \"$NETLOOM_OVN_STALE_UNEXPECTED\" \"$NETLOOM_OVN_STALE_DRIFTED_ROWS\" \"$NETLOOM_OVN_STALE_DRIFTED_FIELDS\" \"$NETLOOM_OVN_STALE_DUPLICATE\" \"$NETLOOM_OVN_STALE_INCOMPLETE\" > " + outputPath
+	result := ovnStaleMaintenanceCommand{command: command}.RunMaintenance(context.Background(), ovnMaintenanceContext{
+		Audit: ovn.AuditStats{
+			MissingManagedRows:    2,
+			UnexpectedManagedRows: 3,
+			DriftedManagedRows:    4,
+			DriftedManagedFields:  5,
+			DuplicateManagedRows:  6,
+			IncompleteManagedRows: 7,
+		},
+		StaleAdvisory: ovnStaleAdvisory{Status: "warning", Burden: 22, Threshold: 10},
+	})
+	if result.Status != "ok" || result.Attempted != 1 || result.Succeeded != 1 || result.Failed != 0 {
+		t.Fatalf("maintenance result = %+v, want successful stale hook", result)
+	}
+	raw, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.TrimSpace(string(raw)), "warning,22,10,2,3,4,5,6,7"; got != want {
+		t.Fatalf("stale maintenance env = %q, want %q", got, want)
+	}
+}
+
+func TestOVNCompositeMaintenanceAggregatesResults(t *testing.T) {
+	dir := t.TempDir()
+	appctl := filepath.Join(dir, "ovn-appctl")
+	hookPath := filepath.Join(dir, "hook")
+	script := `#!/bin/sh
+exit 0
+`
+	if err := os.WriteFile(appctl, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	result := ovnCompositeMaintenance{
+		ovnDBMaintenance{
+			appctl:  appctl,
+			targets: []ovnDBMaintenanceTarget{{Target: "target-a", DB: "OVN_Northbound"}},
+		},
+		ovnStaleMaintenanceCommand{command: "printf hook > " + hookPath},
+	}.RunMaintenance(context.Background(), ovnMaintenanceContext{
+		StaleAdvisory: ovnStaleAdvisory{Status: "warning", Burden: 1, Threshold: 1},
+	})
+	if result.Status != "ok" || result.Attempted != 2 || result.Succeeded != 2 || result.Failed != 0 {
+		t.Fatalf("maintenance result = %+v, want aggregated success", result)
+	}
+	if raw, err := os.ReadFile(hookPath); err != nil || string(raw) != "hook" {
+		t.Fatalf("hook output = %q err=%v, want hook", raw, err)
 	}
 }
 
@@ -806,6 +876,29 @@ func TestControllerMetricsExportsLatestSuccess(t *testing.T) {
 		`netloom_controller_ovn_stale_advisory_threshold{ovn_health="ok",ovn_stale_advisory="warning"} 10`,
 		`netloom_controller_ovn_audit_checks_total{ovn_audit="ok",ovn_health="ok"} 1`,
 		`netloom_controller_ovn_audit_failures_total{ovn_audit="ok",ovn_health="ok"} 0`,
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("metrics output missing %q:\n%s", expected, output)
+		}
+	}
+}
+
+func TestControllerMetricsDoesNotCountSkippedMaintenanceRun(t *testing.T) {
+	metrics := newControllerMetrics()
+	metrics.observe(controllerMetricsSnapshot{
+		OVNHealthStatus: "ok",
+		OVNMaintenance:  ovnMaintenanceResult{Status: "skipped"},
+		Success:         true,
+	})
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	metrics.handleMetrics(recorder, request)
+
+	output := recorder.Body.String()
+	for _, expected := range []string{
+		`netloom_controller_ovn_maintenance_attempted{ovn_health="ok",ovn_maintenance="skipped"} 0`,
+		`netloom_controller_ovn_maintenance_runs_total{ovn_health="ok",ovn_maintenance="skipped"} 0`,
 	} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("metrics output missing %q:\n%s", expected, output)

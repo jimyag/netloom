@@ -147,7 +147,7 @@ type ovnAuditor interface {
 }
 
 type ovnMaintenanceRunner interface {
-	RunMaintenance(context.Context) ovnMaintenanceResult
+	RunMaintenance(context.Context, ovnMaintenanceContext) ovnMaintenanceResult
 }
 
 type ovsdbControlStatusWriter interface {
@@ -161,6 +161,11 @@ type ovnMaintenanceResult struct {
 	Failed    int           `json:"failed"`
 	Latency   time.Duration `json:"latency"`
 	Error     string        `json:"error,omitempty"`
+}
+
+type ovnMaintenanceContext struct {
+	Audit         ovn.AuditStats
+	StaleAdvisory ovnStaleAdvisory
 }
 
 type ovnHealthSnapshot struct {
@@ -357,7 +362,7 @@ func (r *stateFileReconciler) reconcile(ctx context.Context, path string) error 
 	executed := r.executedOperations() - executedBefore
 	ovnAudit, ovnAuditStatus, ovnAuditError := r.auditOVN(ctx, r.memory.TopologyState())
 	ovnStaleAdvisory := ovnStaleAdvisoryFromAudit(ovnAudit, ovnStaleAdvisoryThresholdFromEnv())
-	ovnMaintenance := r.runOVNMaintenance(ctx)
+	ovnMaintenance := r.runOVNMaintenance(ctx, ovnAudit, ovnStaleAdvisory)
 	duration := time.Since(start)
 	if err := r.syncOVSDBControlStatus(ctx, state, healthSummary, ovnHealth.Snapshot, ovnOps, executed, ovnAuditStatus, ovnAuditError, ovnAudit, ovnStaleAdvisory, ovnMaintenance, duration); err != nil {
 		log.Printf("netloom-controller failed to sync Open_vSwitch control status: %v", err)
@@ -585,11 +590,11 @@ func (r *stateFileReconciler) auditOVN(ctx context.Context, desired topology.Sta
 	return stats, "ok", ""
 }
 
-func (r *stateFileReconciler) runOVNMaintenance(ctx context.Context) ovnMaintenanceResult {
+func (r *stateFileReconciler) runOVNMaintenance(ctx context.Context, audit ovn.AuditStats, advisory ovnStaleAdvisory) ovnMaintenanceResult {
 	if r == nil || r.maintenance == nil {
 		return ovnMaintenanceResult{Status: "disabled"}
 	}
-	return r.maintenance.RunMaintenance(ctx)
+	return r.maintenance.RunMaintenance(ctx, ovnMaintenanceContext{Audit: audit, StaleAdvisory: advisory})
 }
 
 type controllerOVSDBStatus struct {
@@ -822,7 +827,7 @@ func (t *controllerMetricsTotals) observe(snapshot controllerMetricsSnapshot) {
 			t.OVNAuditFailures++
 		}
 	}
-	if snapshot.OVNMaintenance.Status != "" && snapshot.OVNMaintenance.Status != "disabled" {
+	if snapshot.OVNMaintenance.Status != "" && snapshot.OVNMaintenance.Status != "disabled" && snapshot.OVNMaintenance.Status != "skipped" {
 		t.OVNMaintenanceRuns++
 		t.OVNMaintenanceTargets += uint64(nonNegative(snapshot.OVNMaintenance.Attempted))
 		t.OVNMaintenanceSuccess += uint64(nonNegative(snapshot.OVNMaintenance.Succeeded))
@@ -1924,16 +1929,33 @@ type ovnDBMaintenance struct {
 	targets []ovnDBMaintenanceTarget
 }
 
+type ovnCompositeMaintenance []ovnMaintenanceRunner
+
+type ovnStaleMaintenanceCommand struct {
+	command string
+}
+
 func newOVNMaintenanceFromEnv() ovnMaintenanceRunner {
+	var runners []ovnMaintenanceRunner
 	targets := ovnDBMaintenanceTargetsFromEnv()
-	if len(targets) == 0 {
+	if len(targets) > 0 {
+		appctl := strings.TrimSpace(os.Getenv("NETLOOM_OVN_APPCTL_BIN"))
+		if appctl == "" {
+			appctl = "ovn-appctl"
+		}
+		runners = append(runners, ovnDBMaintenance{appctl: appctl, targets: targets})
+	}
+	if command := strings.TrimSpace(os.Getenv("NETLOOM_OVN_STALE_MAINTENANCE_CMD")); command != "" {
+		runners = append(runners, ovnStaleMaintenanceCommand{command: command})
+	}
+	switch len(runners) {
+	case 0:
 		return nil
+	case 1:
+		return runners[0]
+	default:
+		return ovnCompositeMaintenance(runners)
 	}
-	appctl := strings.TrimSpace(os.Getenv("NETLOOM_OVN_APPCTL_BIN"))
-	if appctl == "" {
-		appctl = "ovn-appctl"
-	}
-	return ovnDBMaintenance{appctl: appctl, targets: targets}
 }
 
 func ovnDBMaintenanceTargetsFromEnv() []ovnDBMaintenanceTarget {
@@ -1966,7 +1988,41 @@ func ovnDBMaintenanceTargetsFromEnv() []ovnDBMaintenanceTarget {
 	return targets
 }
 
-func (m ovnDBMaintenance) RunMaintenance(ctx context.Context) ovnMaintenanceResult {
+func (m ovnCompositeMaintenance) RunMaintenance(ctx context.Context, input ovnMaintenanceContext) ovnMaintenanceResult {
+	if len(m) == 0 {
+		return ovnMaintenanceResult{Status: "disabled"}
+	}
+	start := time.Now()
+	result := ovnMaintenanceResult{Status: "skipped"}
+	var errs []string
+	for _, runner := range m {
+		if runner == nil {
+			continue
+		}
+		next := runner.RunMaintenance(ctx, input)
+		result.Attempted += next.Attempted
+		result.Succeeded += next.Succeeded
+		result.Failed += next.Failed
+		if next.Error != "" {
+			errs = append(errs, next.Error)
+		}
+		switch next.Status {
+		case "error":
+			result.Status = "error"
+		case "ok":
+			if result.Status != "error" {
+				result.Status = "ok"
+			}
+		}
+	}
+	result.Latency = time.Since(start)
+	if len(errs) > 0 {
+		result.Error = strings.Join(errs, "; ")
+	}
+	return result
+}
+
+func (m ovnDBMaintenance) RunMaintenance(ctx context.Context, _ ovnMaintenanceContext) ovnMaintenanceResult {
 	if len(m.targets) == 0 {
 		return ovnMaintenanceResult{Status: "disabled"}
 	}
@@ -1996,6 +2052,44 @@ func (m ovnDBMaintenance) RunMaintenance(ctx context.Context) ovnMaintenanceResu
 		result.Error = strings.Join(errs, "; ")
 	}
 	return result
+}
+
+func (m ovnStaleMaintenanceCommand) RunMaintenance(ctx context.Context, input ovnMaintenanceContext) ovnMaintenanceResult {
+	command := strings.TrimSpace(m.command)
+	if command == "" {
+		return ovnMaintenanceResult{Status: "disabled"}
+	}
+	if input.StaleAdvisory.Status != "warning" {
+		return ovnMaintenanceResult{Status: "skipped"}
+	}
+	start := time.Now()
+	cmd := exec.CommandContext(ctx, "sh", "-c", command)
+	cmd.Env = append(os.Environ(), ovnStaleMaintenanceEnv(input)...)
+	output, err := cmd.CombinedOutput()
+	result := ovnMaintenanceResult{Status: "ok", Attempted: 1, Succeeded: 1, Latency: time.Since(start)}
+	if err != nil {
+		result.Status = "error"
+		result.Succeeded = 0
+		result.Failed = 1
+		result.Error = strings.TrimSpace(fmt.Sprintf("%v: %s", err, strings.TrimSpace(string(output))))
+	}
+	return result
+}
+
+func ovnStaleMaintenanceEnv(input ovnMaintenanceContext) []string {
+	stats := input.Audit
+	advisory := input.StaleAdvisory
+	return []string{
+		"NETLOOM_OVN_STALE_STATUS=" + advisory.Status,
+		"NETLOOM_OVN_STALE_BURDEN=" + strconv.Itoa(advisory.Burden),
+		"NETLOOM_OVN_STALE_THRESHOLD=" + strconv.Itoa(advisory.Threshold),
+		"NETLOOM_OVN_STALE_MISSING=" + strconv.Itoa(stats.MissingManagedRows),
+		"NETLOOM_OVN_STALE_UNEXPECTED=" + strconv.Itoa(stats.UnexpectedManagedRows),
+		"NETLOOM_OVN_STALE_DRIFTED_ROWS=" + strconv.Itoa(stats.DriftedManagedRows),
+		"NETLOOM_OVN_STALE_DRIFTED_FIELDS=" + strconv.Itoa(stats.DriftedManagedFields),
+		"NETLOOM_OVN_STALE_DUPLICATE=" + strconv.Itoa(stats.DuplicateManagedRows),
+		"NETLOOM_OVN_STALE_INCOMPLETE=" + strconv.Itoa(stats.IncompleteManagedRows),
+	}
 }
 
 func ovnCompactDuplicateSnapshot(output string) bool {
