@@ -306,7 +306,7 @@ func (r *stateFileReconciler) reconcile(ctx context.Context, path string) error 
 		r.observeReconcileFailure("load_state", state, control.LoadBalancerHealthSummary{}, ovnHealth.Snapshot, 0, 0, err, duration)
 		return err
 	}
-	state, err = withIdentityGroupObservations(state)
+	state, err = withIdentityGroupObservationsContext(ctx, state)
 	if err != nil {
 		duration := time.Since(start)
 		printControllerReconcileFailure("load_state", state, control.LoadBalancerHealthSummary{}, ovnHealth.Snapshot, 0, 0, err, duration)
@@ -1195,30 +1195,34 @@ func withIdentityGroupObservations(state control.DesiredState) (control.DesiredS
 	return withIdentityGroupObservationsAt(state, time.Now().UTC())
 }
 
+func withIdentityGroupObservationsContext(ctx context.Context, state control.DesiredState) (control.DesiredState, error) {
+	return withIdentityGroupObservationsAtContext(ctx, state, time.Now().UTC())
+}
+
 func withIdentityGroupObservationsAt(state control.DesiredState, now time.Time) (control.DesiredState, error) {
-	path := os.Getenv("NETLOOM_IDENTITY_GROUPS_FILE")
-	if path == "" {
-		return state, nil
+	return withIdentityGroupObservationsAtContext(context.Background(), state, now)
+}
+
+func withIdentityGroupObservationsAtContext(ctx context.Context, state control.DesiredState, now time.Time) (control.DesiredState, error) {
+	return control.MergeIdentityGroupObservations(ctx, state, control.IdentityGroupObservationOptions{
+		FilePath:    os.Getenv("NETLOOM_IDENTITY_GROUPS_FILE"),
+		URL:         os.Getenv("NETLOOM_IDENTITY_GROUPS_URL"),
+		BearerToken: os.Getenv("NETLOOM_IDENTITY_GROUPS_BEARER_TOKEN"),
+		Timeout:     identityGroupFeedTimeout(),
+		Now:         now,
+	})
+}
+
+func identityGroupFeedTimeout() time.Duration {
+	raw := strings.TrimSpace(os.Getenv("NETLOOM_IDENTITY_GROUPS_TIMEOUT_MS"))
+	if raw == "" {
+		return 5 * time.Second
 	}
-	file, err := os.Open(path)
-	if err != nil {
-		return control.DesiredState{}, err
+	ms, err := strconv.Atoi(raw)
+	if err != nil || ms < 0 {
+		return 5 * time.Second
 	}
-	defer file.Close()
-	groups, err := control.LoadIdentityGroupObservationsJSON(file)
-	if err != nil {
-		return control.DesiredState{}, err
-	}
-	merged, err := control.MergeIdentityGroups(state.IdentityGroups, groups)
-	if err != nil {
-		return control.DesiredState{}, err
-	}
-	merged, err = control.PruneExpiredIdentityGroups(merged, now)
-	if err != nil {
-		return control.DesiredState{}, err
-	}
-	state.IdentityGroups = merged
-	return state, nil
+	return time.Duration(ms) * time.Millisecond
 }
 
 func (r *stateFileReconciler) executedOperations() int {

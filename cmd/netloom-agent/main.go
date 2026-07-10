@@ -262,7 +262,7 @@ func runPolicyExplain(args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	state, err = withRuntimeObservations(state)
+	state, err = withRuntimeObservationsContext(context.Background(), state)
 	if err != nil {
 		return err
 	}
@@ -305,7 +305,7 @@ func runPolicyStatus(args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	state, err = withRuntimeObservations(state)
+	state, err = withRuntimeObservationsContext(context.Background(), state)
 	if err != nil {
 		return err
 	}
@@ -777,7 +777,7 @@ func reconcileStateFile(ctx context.Context, path, node, storeName string, recon
 		observeAgentReconcileFailure(metrics, agent.ReconcileResult{Node: node}, storeName, err, time.Since(start))
 		return err
 	}
-	state, err = withRuntimeObservations(state)
+	state, err = withRuntimeObservationsContext(ctx, state)
 	if err != nil {
 		observeAgentReconcileFailure(metrics, agent.ReconcileResult{Node: node}, storeName, err, time.Since(start))
 		return err
@@ -858,7 +858,7 @@ func reconcileStateFileOnce(ctx context.Context, path, node, storeName string, s
 		observeAgentReconcileFailure(metrics, agent.ReconcileResult{Node: node}, storeName, err, time.Since(start))
 		return err
 	}
-	state, err = withRuntimeObservations(state)
+	state, err = withRuntimeObservationsContext(ctx, state)
 	if err != nil {
 		observeAgentReconcileFailure(metrics, agent.ReconcileResult{Node: node}, storeName, err, time.Since(start))
 		return err
@@ -934,12 +934,20 @@ func withRuntimeObservations(state control.DesiredState) (control.DesiredState, 
 	return withRuntimeObservationsAt(state, time.Now().UTC())
 }
 
+func withRuntimeObservationsContext(ctx context.Context, state control.DesiredState) (control.DesiredState, error) {
+	return withRuntimeObservationsAtContext(ctx, state, time.Now().UTC())
+}
+
 func withRuntimeObservationsAt(state control.DesiredState, now time.Time) (control.DesiredState, error) {
+	return withRuntimeObservationsAtContext(context.Background(), state, now)
+}
+
+func withRuntimeObservationsAtContext(ctx context.Context, state control.DesiredState, now time.Time) (control.DesiredState, error) {
 	next, err := withDNSObservationsAt(state, now)
 	if err != nil {
 		return control.DesiredState{}, err
 	}
-	return withIdentityGroupObservationsAt(next, now)
+	return withIdentityGroupObservationsAtContext(ctx, next, now)
 }
 
 func withDNSObservationsAt(state control.DesiredState, now time.Time) (control.DesiredState, error) {
@@ -973,29 +981,29 @@ func withIdentityGroupObservations(state control.DesiredState) (control.DesiredS
 }
 
 func withIdentityGroupObservationsAt(state control.DesiredState, now time.Time) (control.DesiredState, error) {
-	path := os.Getenv("NETLOOM_IDENTITY_GROUPS_FILE")
-	if path == "" {
-		return state, nil
+	return withIdentityGroupObservationsAtContext(context.Background(), state, now)
+}
+
+func withIdentityGroupObservationsAtContext(ctx context.Context, state control.DesiredState, now time.Time) (control.DesiredState, error) {
+	return control.MergeIdentityGroupObservations(ctx, state, control.IdentityGroupObservationOptions{
+		FilePath:    os.Getenv("NETLOOM_IDENTITY_GROUPS_FILE"),
+		URL:         os.Getenv("NETLOOM_IDENTITY_GROUPS_URL"),
+		BearerToken: os.Getenv("NETLOOM_IDENTITY_GROUPS_BEARER_TOKEN"),
+		Timeout:     identityGroupFeedTimeout(),
+		Now:         now,
+	})
+}
+
+func identityGroupFeedTimeout() time.Duration {
+	raw := strings.TrimSpace(os.Getenv("NETLOOM_IDENTITY_GROUPS_TIMEOUT_MS"))
+	if raw == "" {
+		return 5 * time.Second
 	}
-	file, err := os.Open(path)
-	if err != nil {
-		return control.DesiredState{}, err
+	ms, err := strconv.Atoi(raw)
+	if err != nil || ms < 0 {
+		return 5 * time.Second
 	}
-	defer file.Close()
-	groups, err := control.LoadIdentityGroupObservationsJSON(file)
-	if err != nil {
-		return control.DesiredState{}, err
-	}
-	merged, err := control.MergeIdentityGroups(state.IdentityGroups, groups)
-	if err != nil {
-		return control.DesiredState{}, err
-	}
-	merged, err = control.PruneExpiredIdentityGroups(merged, now)
-	if err != nil {
-		return control.DesiredState{}, err
-	}
-	state.IdentityGroups = merged
-	return state, nil
+	return time.Duration(ms) * time.Millisecond
 }
 
 func printReconcileResult(result agent.ReconcileResult, storeName string, duration time.Duration) {

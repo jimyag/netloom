@@ -1,15 +1,29 @@
 package control
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"net/url"
+	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/jimyag/netloom/internal/model"
 )
+
+type IdentityGroupObservationOptions struct {
+	FilePath    string
+	URL         string
+	BearerToken string
+	Timeout     time.Duration
+	Now         time.Time
+	HTTPClient  *http.Client
+}
 
 type identityGroupObservationDocument struct {
 	IdentityGroups []model.IdentityGroup `json:"identity_groups"`
@@ -36,6 +50,83 @@ func LoadIdentityGroupObservationsJSON(r io.Reader) ([]model.IdentityGroup, erro
 		return nil, fmt.Errorf("decode identity group observations: %w", err)
 	}
 	return validateIdentityGroups(document.IdentityGroups)
+}
+
+func LoadIdentityGroupObservationsHTTP(ctx context.Context, feedURL, bearerToken string, timeout time.Duration, client *http.Client) ([]model.IdentityGroup, error) {
+	feedURL = strings.TrimSpace(feedURL)
+	if feedURL == "" {
+		return nil, errors.New("identity group observations url is required")
+	}
+	parsed, err := url.Parse(feedURL)
+	if err != nil {
+		return nil, fmt.Errorf("parse identity group observations url: %w", err)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return nil, fmt.Errorf("identity group observations url scheme %q is not supported", parsed.Scheme)
+	}
+	if client == nil {
+		client = http.DefaultClient
+	}
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, feedURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create identity group observations request: %w", err)
+	}
+	if strings.TrimSpace(bearerToken) != "" {
+		request.Header.Set("Authorization", "Bearer "+strings.TrimSpace(bearerToken))
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("fetch identity group observations: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return nil, fmt.Errorf("fetch identity group observations returned status %d", response.StatusCode)
+	}
+	return LoadIdentityGroupObservationsJSON(response.Body)
+}
+
+func MergeIdentityGroupObservations(ctx context.Context, state DesiredState, opts IdentityGroupObservationOptions) (DesiredState, error) {
+	groups := append([]model.IdentityGroup(nil), state.IdentityGroups...)
+	if strings.TrimSpace(opts.FilePath) != "" {
+		observed, err := loadIdentityGroupObservationsFile(opts.FilePath)
+		if err != nil {
+			return DesiredState{}, err
+		}
+		groups, err = MergeIdentityGroups(groups, observed)
+		if err != nil {
+			return DesiredState{}, err
+		}
+	}
+	if strings.TrimSpace(opts.URL) != "" {
+		observed, err := LoadIdentityGroupObservationsHTTP(ctx, opts.URL, opts.BearerToken, opts.Timeout, opts.HTTPClient)
+		if err != nil {
+			return DesiredState{}, err
+		}
+		groups, err = MergeIdentityGroups(groups, observed)
+		if err != nil {
+			return DesiredState{}, err
+		}
+	}
+	pruned, err := PruneExpiredIdentityGroups(groups, opts.Now)
+	if err != nil {
+		return DesiredState{}, err
+	}
+	state.IdentityGroups = pruned
+	return state, nil
+}
+
+func loadIdentityGroupObservationsFile(path string) ([]model.IdentityGroup, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	return LoadIdentityGroupObservationsJSON(file)
 }
 
 func MergeIdentityGroups(base, observed []model.IdentityGroup) ([]model.IdentityGroup, error) {

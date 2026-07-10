@@ -1,6 +1,10 @@
 package control
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -23,6 +27,63 @@ func TestLoadIdentityGroupObservationsJSONAcceptsDocumentAndArray(t *testing.T) 
 	}
 	if len(groups) != 1 || groups[0].Name != "backend" {
 		t.Fatalf("groups = %+v, want backend array input", groups)
+	}
+}
+
+func TestLoadIdentityGroupObservationsHTTPUsesBearerToken(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("method = %s, want GET", r.Method)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer secret-token" {
+			t.Fatalf("authorization = %q, want bearer token", got)
+		}
+		_, _ = w.Write([]byte(`{"identity_groups":[{"name":"frontend","vpc":"prod","source":"cmdb","endpoint_ids":["pod-a"]}]}`))
+	}))
+	defer server.Close()
+
+	groups, err := LoadIdentityGroupObservationsHTTP(context.Background(), server.URL, "secret-token", time.Second, server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(groups) != 1 || groups[0].Name != "frontend" || groups[0].Source != "cmdb" {
+		t.Fatalf("groups = %+v, want remote frontend group", groups)
+	}
+}
+
+func TestLoadIdentityGroupObservationsHTTPRejectsBadStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "nope", http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	_, err := LoadIdentityGroupObservationsHTTP(context.Background(), server.URL, "", time.Second, server.Client())
+	if err == nil || !strings.Contains(err.Error(), "status 401") {
+		t.Fatalf("err = %v, want status 401", err)
+	}
+}
+
+func TestMergeIdentityGroupObservationsMergesFileAndRemoteFeeds(t *testing.T) {
+	filePath := t.TempDir() + "/identity-groups.json"
+	if err := os.WriteFile(filePath, []byte(`{"identity_groups":[{"name":"file-group","vpc":"prod","endpoint_ids":["pod-file"]}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"identity_groups":[{"name":"remote-group","vpc":"prod","endpoint_ids":["pod-remote"]}]}`))
+	}))
+	defer server.Close()
+
+	state, err := MergeIdentityGroupObservations(context.Background(), DesiredState{}, IdentityGroupObservationOptions{
+		FilePath:   filePath,
+		URL:        server.URL,
+		Timeout:    time.Second,
+		HTTPClient: server.Client(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.IdentityGroups) != 2 || state.IdentityGroups[0].Name != "file-group" || state.IdentityGroups[1].Name != "remote-group" {
+		t.Fatalf("identity groups = %+v, want file and remote groups", state.IdentityGroups)
 	}
 }
 

@@ -59,6 +59,27 @@ func TestControllerWithIdentityGroupObservationsMergesRuntimeGroups(t *testing.T
 	}
 }
 
+func TestControllerWithIdentityGroupObservationsMergesRemoteFeed(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer feed-token" {
+			t.Fatalf("authorization = %q, want bearer token", got)
+		}
+		_, _ = w.Write([]byte(`{"identity_groups":[{"name":"remote","vpc":"prod","source":"cmdb","endpoint_ids":["pod-a"]}]}`))
+	}))
+	defer server.Close()
+	t.Setenv("NETLOOM_IDENTITY_GROUPS_URL", server.URL)
+	t.Setenv("NETLOOM_IDENTITY_GROUPS_BEARER_TOKEN", "feed-token")
+	t.Setenv("NETLOOM_IDENTITY_GROUPS_TIMEOUT_MS", "1000")
+
+	state, err := withIdentityGroupObservationsAt(control.DesiredState{}, time.Date(2026, 7, 10, 1, 1, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.IdentityGroups) != 1 || state.IdentityGroups[0].Name != "remote" || state.IdentityGroups[0].Source != "cmdb" {
+		t.Fatalf("identity groups = %+v, want remote cmdb group", state.IdentityGroups)
+	}
+}
+
 func TestNBCTLTimeoutParsesMilliseconds(t *testing.T) {
 	t.Setenv("NETLOOM_OVN_NBCTL_TIMEOUT_MS", "250")
 	timeout, err := nbctlTimeout()
