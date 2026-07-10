@@ -1078,6 +1078,9 @@ type agentMetricsTotals struct {
 	PolicyRuleBytes           uint64
 	PolicyRuleDropped         uint64
 	PolicyRuleRejected        uint64
+	PolicyRuleNoMatchDrops    uint64
+	PolicyRuleDenyDrops       uint64
+	PolicyRuleRejectDrops     uint64
 }
 
 var agentReconcileDurationBuckets = []time.Duration{
@@ -1311,6 +1314,10 @@ func (t *agentMetricsTotals) observe(snapshot agentMetricsSnapshot) {
 	t.PolicyRuleBytes += result.PolicyRuleBytes
 	t.PolicyRuleDropped += result.PolicyRuleDropped
 	t.PolicyRuleRejected += result.PolicyRuleRejected
+	noMatchDrops, denyDrops, rejectDrops := policyRuleDropReasonTotals(result.PolicyRuleStats)
+	t.PolicyRuleNoMatchDrops += noMatchDrops
+	t.PolicyRuleDenyDrops += denyDrops
+	t.PolicyRuleRejectDrops += rejectDrops
 }
 
 func (m *agentMetrics) snapshotValue() (agentMetricsSnapshot, agentMetricsTotals, bool) {
@@ -2251,6 +2258,9 @@ func writeAgentMetrics(w ioStringWriter, snapshot agentMetricsSnapshot, totals a
 	writeAgentCounter(w, "netloom_agent_policy_rule_bytes_observed_total", baseLabels, totals.PolicyRuleBytes)
 	writeAgentCounter(w, "netloom_agent_policy_rule_dropped_observed_total", baseLabels, totals.PolicyRuleDropped)
 	writeAgentCounter(w, "netloom_agent_policy_rule_rejected_observed_total", baseLabels, totals.PolicyRuleRejected)
+	writeAgentCounter(w, "netloom_agent_policy_rule_no_match_drops_observed_total", baseLabels, totals.PolicyRuleNoMatchDrops)
+	writeAgentCounter(w, "netloom_agent_policy_rule_deny_drops_observed_total", baseLabels, totals.PolicyRuleDenyDrops)
+	writeAgentCounter(w, "netloom_agent_policy_rule_reject_drops_observed_total", baseLabels, totals.PolicyRuleRejectDrops)
 
 	writeMetricType(w, "netloom_agent_policy_rule_packets_total", "counter")
 	fmt.Fprintf(w, "netloom_agent_policy_rule_packets_total%s %d\n", baseLabels, result.PolicyRulePackets)
@@ -2264,12 +2274,7 @@ func writeAgentMetrics(w ioStringWriter, snapshot agentMetricsSnapshot, totals a
 	fmt.Fprintf(w, "netloom_agent_policy_rule_rejected_total%s %d\n", baseLabels, result.PolicyRuleRejected)
 	writeMetricType(w, "netloom_agent_policy_rule_logged_total", "counter")
 	fmt.Fprintf(w, "netloom_agent_policy_rule_logged_total%s %d\n", baseLabels, result.PolicyRuleLogged)
-	var noMatchDrops, denyDrops, rejectDrops uint64
-	for _, stat := range result.PolicyRuleStats {
-		noMatchDrops += stat.NoMatchDrops
-		denyDrops += stat.DenyDrops
-		rejectDrops += stat.RejectDrops
-	}
+	noMatchDrops, denyDrops, rejectDrops := policyRuleDropReasonTotals(result.PolicyRuleStats)
 	writeMetricType(w, "netloom_agent_policy_rule_no_match_drops_total", "counter")
 	fmt.Fprintf(w, "netloom_agent_policy_rule_no_match_drops_total%s %d\n", baseLabels, noMatchDrops)
 	writeMetricType(w, "netloom_agent_policy_rule_deny_drops_total", "counter")
@@ -2312,6 +2317,16 @@ func writeAgentMetrics(w ioStringWriter, snapshot agentMetricsSnapshot, totals a
 	}), result.TCXFailed)
 	writeMetricType(w, "netloom_agent_tcx_rollbacks", "gauge")
 	fmt.Fprintf(w, "netloom_agent_tcx_rollbacks%s %d\n", baseLabels, result.TCXRollbacks)
+}
+
+func policyRuleDropReasonTotals(stats []dataplane.RuleMetrics) (uint64, uint64, uint64) {
+	var noMatchDrops, denyDrops, rejectDrops uint64
+	for _, stat := range stats {
+		noMatchDrops += stat.NoMatchDrops
+		denyDrops += stat.DenyDrops
+		rejectDrops += stat.RejectDrops
+	}
+	return noMatchDrops, denyDrops, rejectDrops
 }
 
 func policyRuleCatalogByMetricKey(catalog []agent.PolicyRuleCatalogEntry) map[string]agent.PolicyRuleCatalogEntry {

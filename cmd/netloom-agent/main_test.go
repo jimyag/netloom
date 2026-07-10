@@ -2217,15 +2217,21 @@ func TestAgentMetricsExportsLatestFailure(t *testing.T) {
 func TestAgentMetricsAccumulatesReconcileCountersAndBuckets(t *testing.T) {
 	metrics := newAgentMetrics()
 	observeAgentReconcileResult(metrics, agent.ReconcileResult{
-		Node:              "node-a",
-		PolicyAdded:       2,
-		PolicyUpdated:     1,
-		PolicyDeleted:     1,
-		PolicyEvents:      4,
-		ConntrackExpired:  3,
-		PolicyRulePackets: 5,
-		PolicyRuleBytes:   512,
-		PolicyRuleDropped: 1,
+		Node:               "node-a",
+		PolicyAdded:        2,
+		PolicyUpdated:      1,
+		PolicyDeleted:      1,
+		PolicyEvents:       4,
+		ConntrackExpired:   3,
+		PolicyRulePackets:  5,
+		PolicyRuleBytes:    512,
+		PolicyRuleDropped:  2,
+		PolicyRuleRejected: 1,
+		PolicyRuleStats: []dataplane.RuleMetrics{
+			{EndpointID: "prod\x00pod-a", RuleCookie: 0, Packets: 1, Bytes: 64, Dropped: 1, NoMatchDrops: 1},
+			{EndpointID: "prod\x00pod-a", RuleCookie: 7, Packets: 1, Bytes: 128, Dropped: 1, DenyDrops: 1},
+			{EndpointID: "prod\x00pod-a", RuleCookie: 8, Packets: 1, Bytes: 128, Rejected: 1, RejectDrops: 1},
+		},
 	}, "ebpf", 250*time.Millisecond)
 	observeAgentReconcileFailure(metrics, agent.ReconcileResult{
 		Node:            "node-a",
@@ -2260,7 +2266,11 @@ func TestAgentMetricsAccumulatesReconcileCountersAndBuckets(t *testing.T) {
 		`netloom_agent_conntrack_expired_total{node="node-a",store="ebpf"} 3`,
 		`netloom_agent_policy_rule_packets_observed_total{node="node-a",store="ebpf"} 5`,
 		`netloom_agent_policy_rule_bytes_observed_total{node="node-a",store="ebpf"} 512`,
-		`netloom_agent_policy_rule_dropped_observed_total{node="node-a",store="ebpf"} 1`,
+		`netloom_agent_policy_rule_dropped_observed_total{node="node-a",store="ebpf"} 2`,
+		`netloom_agent_policy_rule_rejected_observed_total{node="node-a",store="ebpf"} 1`,
+		`netloom_agent_policy_rule_no_match_drops_observed_total{node="node-a",store="ebpf"} 1`,
+		`netloom_agent_policy_rule_deny_drops_observed_total{node="node-a",store="ebpf"} 1`,
+		`netloom_agent_policy_rule_reject_drops_observed_total{node="node-a",store="ebpf"} 1`,
 	} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("cumulative metrics output missing %q:\n%s", expected, output)
