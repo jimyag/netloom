@@ -107,10 +107,18 @@ func TestLibOVSDBProviderSyncerCreatesProviderTenantQueues(t *testing.T) {
 		VLAN:            100,
 		Name:            "nlv100",
 		TenantQueues: []model.ProviderNetworkTenantQueuePolicy{{
-			Tenant:     "prod",
-			QueueID:    10,
-			Protocol:   model.ProtocolTCP,
-			Ports:      []model.PortRange{{From: 443, To: 443}},
+			Tenant:   "prod",
+			QueueID:  10,
+			Protocol: model.ProtocolTCP,
+			Ports:    []model.PortRange{{From: 443, To: 443}},
+			IdentitySelector: model.Labels{
+				"tier": "frontend",
+			},
+			IdentityExpressions: []model.LabelExpr{{
+				Key:      "role",
+				Operator: "In",
+				Values:   []string{"api"},
+			}},
 			MinRateBPS: 100000000,
 			MaxRateBPS: 500000000,
 			BurstBPS:   64000,
@@ -138,6 +146,9 @@ func TestLibOVSDBProviderSyncerCreatesProviderTenantQueues(t *testing.T) {
 	if queue.ExternalIDs["netloom_queue_protocol"] != "tcp" || queue.ExternalIDs["netloom_queue_ports"] != "443" {
 		t.Fatalf("queue external IDs = %+v, want tcp/443 selector", queue.ExternalIDs)
 	}
+	if queue.ExternalIDs["netloom_queue_identity_selector"] != "tier=frontend" || queue.ExternalIDs["netloom_queue_identity_expressions"] != "role:in:api" {
+		t.Fatalf("queue external IDs = %+v, want identity selector metadata", queue.ExternalIDs)
+	}
 	if queue.OtherConfig["min-rate"] != "100000000" || queue.OtherConfig["max-rate"] != "500000000" || queue.OtherConfig["burst"] != "64000" {
 		t.Fatalf("queue other_config = %+v, want configured rates", queue.OtherConfig)
 	}
@@ -157,7 +168,7 @@ func TestLibOVSDBProviderSyncerCreatesProviderTenantQueues(t *testing.T) {
 		t.Fatal(err)
 	}
 	queue = singleQueueByProviderName(t, ctx, client, "queue-nlv100-10")
-	for _, stale := range []string{"netloom_queue_protocol", "netloom_queue_ports"} {
+	for _, stale := range []string{"netloom_queue_protocol", "netloom_queue_ports", "netloom_queue_identity_selector", "netloom_queue_identity_expressions"} {
 		if _, ok := queue.ExternalIDs[stale]; ok {
 			t.Fatalf("queue external IDs retained stale %s: %+v", stale, queue.ExternalIDs)
 		}

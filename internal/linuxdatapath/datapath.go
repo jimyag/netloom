@@ -1202,7 +1202,7 @@ func providerQueueFlowsForPolicy(subnet model.Subnet, queue model.ProviderNetwor
 	var flows []providerQueueFlow
 	for _, cidr := range cidrs {
 		base.CIDR = cidr
-		base.EndpointScoped = providerQueuePolicyUsesEndpointSelector(queue)
+		base.EndpointScoped = providerQueuePolicyUsesEndpointIdentity(queue)
 		if len(queue.Ports) == 0 {
 			flow := base
 			flow.Cookie = providerQueueFlowCookieFor(flow)
@@ -1225,7 +1225,7 @@ func providerQueueFlowsForPolicy(subnet model.Subnet, queue model.ProviderNetwor
 }
 
 func providerQueueFlowCIDRs(subnet model.Subnet, queue model.ProviderNetworkTenantQueuePolicy, endpoints []model.Endpoint) []netip.Prefix {
-	if !providerQueuePolicyUsesEndpointSelector(queue) {
+	if !providerQueuePolicyUsesEndpointIdentity(queue) {
 		return []netip.Prefix{subnet.CIDR}
 	}
 	var cidrs []netip.Prefix
@@ -1233,7 +1233,7 @@ func providerQueueFlowCIDRs(subnet model.Subnet, queue model.ProviderNetworkTena
 		if endpoint.VPC != subnet.VPC || endpoint.Subnet != subnet.Name || !endpoint.IP.IsValid() {
 			continue
 		}
-		if !endpoint.Labels.MatchesSelector(queue.EndpointSelector, queue.EndpointExpressions) {
+		if !providerQueueEndpointMatches(queue, endpoint) {
 			continue
 		}
 		bits := 128
@@ -1248,6 +1248,24 @@ func providerQueueFlowCIDRs(subnet model.Subnet, queue model.ProviderNetworkTena
 
 func providerQueuePolicyUsesEndpointSelector(queue model.ProviderNetworkTenantQueuePolicy) bool {
 	return len(queue.EndpointSelector) != 0 || len(queue.EndpointExpressions) != 0
+}
+
+func providerQueuePolicyUsesEndpointIdentity(queue model.ProviderNetworkTenantQueuePolicy) bool {
+	return providerQueuePolicyUsesEndpointSelector(queue) ||
+		len(queue.IdentitySelector) != 0 ||
+		len(queue.IdentityExpressions) != 0
+}
+
+func providerQueueEndpointMatches(queue model.ProviderNetworkTenantQueuePolicy, endpoint model.Endpoint) bool {
+	if providerQueuePolicyUsesEndpointSelector(queue) &&
+		!endpoint.Labels.MatchesSelector(queue.EndpointSelector, queue.EndpointExpressions) {
+		return false
+	}
+	if (len(queue.IdentitySelector) != 0 || len(queue.IdentityExpressions) != 0) &&
+		!endpoint.Labels.MatchesSelector(queue.IdentitySelector, queue.IdentityExpressions) {
+		return false
+	}
+	return true
 }
 
 func providerVLANKey(provider string, vlan uint16) string {

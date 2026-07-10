@@ -84,6 +84,8 @@ type ProviderNetworkTenantQueuePolicy struct {
 	Ports               []PortRange `json:"ports,omitempty"`
 	EndpointSelector    Labels      `json:"endpoint_selector,omitempty"`
 	EndpointExpressions []LabelExpr `json:"endpoint_expressions,omitempty"`
+	IdentitySelector    Labels      `json:"identity_selector,omitempty"`
+	IdentityExpressions []LabelExpr `json:"identity_expressions,omitempty"`
 	MinRateBPS          uint64      `json:"min_rate_bps,omitempty"`
 	MaxRateBPS          uint64      `json:"max_rate_bps,omitempty"`
 	BurstBPS            uint64      `json:"burst_bps,omitempty"`
@@ -417,6 +419,16 @@ func (q ProviderNetworkTenantQueuePolicy) Validate() error {
 			return fmt.Errorf("endpoint_expression %d: %w", i, err)
 		}
 	}
+	if len(q.IdentitySelector) > 0 {
+		if err := q.IdentitySelector.Validate(); err != nil {
+			return fmt.Errorf("identity_selector: %w", err)
+		}
+	}
+	for i, expression := range q.IdentityExpressions {
+		if err := expression.Validate(); err != nil {
+			return fmt.Errorf("identity_expression %d: %w", i, err)
+		}
+	}
 	return nil
 }
 
@@ -430,6 +442,12 @@ func providerNetworkTenantQueueSelectorKey(queue ProviderNetworkTenantQueuePolic
 	}
 	if expressions := labelExpressionsSelectorKey(queue.EndpointExpressions); expressions != "" {
 		parts = append(parts, "expressions="+expressions)
+	}
+	if selector := labelsSelectorKey(queue.IdentitySelector); selector != "" {
+		parts = append(parts, "identity_selector="+selector)
+	}
+	if expressions := labelExpressionsSelectorKey(queue.IdentityExpressions); expressions != "" {
+		parts = append(parts, "identity_expressions="+expressions)
 	}
 	return strings.Join(parts, "|")
 }

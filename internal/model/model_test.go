@@ -263,6 +263,16 @@ func TestProviderNetworkRejectsInvalidTenantQueues(t *testing.T) {
 			wantErr: "endpoint_selector: label key is required",
 		},
 		{
+			name: "invalid identity selector",
+			queues: []ProviderNetworkTenantQueuePolicy{{
+				Tenant:           "prod",
+				QueueID:          10,
+				IdentitySelector: Labels{"bad key": "frontend"},
+				MaxRateBPS:       500000000,
+			}},
+			wantErr: "identity_selector",
+		},
+		{
 			name: "large port range",
 			queues: []ProviderNetworkTenantQueuePolicy{{
 				Tenant:     "prod",
@@ -312,6 +322,14 @@ func TestProviderNetworkAcceptsMultipleTenantQueueSelectors(t *testing.T) {
 				Key:      "env",
 				Operator: "In",
 				Values:   []string{"prod"},
+			}},
+			IdentitySelector: Labels{
+				"tier": "frontend",
+			},
+			IdentityExpressions: []LabelExpr{{
+				Key:      "role",
+				Operator: "In",
+				Values:   []string{"api"},
 			}},
 			MaxRateBPS: 100000000,
 		}},

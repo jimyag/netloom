@@ -187,6 +187,12 @@ func providerOVSDBQueueExternalIDs(spec providerNetworkLinkSpec, policy model.Pr
 	if expressions := providerOVSDBQueueExpressions(policy.EndpointExpressions); expressions != "" {
 		ids["netloom_queue_endpoint_expressions"] = expressions
 	}
+	if selector := providerOVSDBQueueLabels(policy.IdentitySelector); selector != "" {
+		ids["netloom_queue_identity_selector"] = selector
+	}
+	if expressions := providerOVSDBQueueExpressions(policy.IdentityExpressions); expressions != "" {
+		ids["netloom_queue_identity_expressions"] = expressions
+	}
 	return ids
 }
 

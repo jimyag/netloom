@@ -574,6 +574,14 @@ func TestDesiredProviderOVSDBRowsBuildsTypedVSwitchRows(t *testing.T) {
 					Operator: "In",
 					Values:   []string{"prod"},
 				}},
+				IdentitySelector: model.Labels{
+					"tier": "frontend",
+				},
+				IdentityExpressions: []model.LabelExpr{{
+					Key:      "role",
+					Operator: "In",
+					Values:   []string{"api"},
+				}},
 				MaxRateBPS: 500000000,
 			}},
 		},
@@ -632,6 +640,9 @@ func TestDesiredProviderOVSDBRowsBuildsTypedVSwitchRows(t *testing.T) {
 	}
 	if rows.Queues[0].ExternalIDs["netloom_queue_endpoint_selector"] != "app=web" || rows.Queues[0].ExternalIDs["netloom_queue_endpoint_expressions"] != "env:in:prod" {
 		t.Fatalf("queue external IDs = %+v, want endpoint selector metadata", rows.Queues[0].ExternalIDs)
+	}
+	if rows.Queues[0].ExternalIDs["netloom_queue_identity_selector"] != "tier=frontend" || rows.Queues[0].ExternalIDs["netloom_queue_identity_expressions"] != "role:in:api" {
+		t.Fatalf("queue external IDs = %+v, want identity selector metadata", rows.Queues[0].ExternalIDs)
 	}
 	if got := rows.Queues[0].OtherConfig["max-rate"]; got != "500000000" {
 		t.Fatalf("queue max-rate = %q, want 500000000", got)
@@ -846,6 +857,67 @@ func TestPlanProgramsProviderTenantQueueIPv6Flows(t *testing.T) {
 	joined := stringifyOps(ops)
 	if !strings.Contains(joined, "table=0,priority=220,tcp6,ipv6_src=fd00:10::/64,tp_dst=443,actions=set_queue:10,NORMAL") {
 		t.Fatalf("provider tenant queue IPv6 flow ops missing:\n%s", joined)
+	}
+}
+
+func TestPlanProgramsProviderTenantQueueIdentitySelectorFlows(t *testing.T) {
+	state := control.DesiredState{
+		ProviderNetworks: []model.ProviderNetwork{{
+			Name: "physnet-a",
+			Nodes: []model.ProviderNetworkNode{{
+				Node:      "node-a",
+				Interface: "eth1",
+			}},
+			TenantQueues: []model.ProviderNetworkTenantQueuePolicy{{
+				Tenant:           "prod",
+				QueueID:          20,
+				IdentitySelector: model.Labels{"tier": "frontend"},
+				IdentityExpressions: []model.LabelExpr{{
+					Key:      "role",
+					Operator: "In",
+					Values:   []string{"api"},
+				}},
+				MaxRateBPS: 500000000,
+			}},
+		}},
+		Subnets: []model.Subnet{{
+			Name:            "baremetal",
+			VPC:             "prod",
+			CIDR:            netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway:         netip.MustParseAddr("10.10.0.1"),
+			ProviderNetwork: "physnet-a",
+			VLAN:            100,
+		}},
+		Endpoints: []model.Endpoint{{
+			ID:     "pod-a",
+			VPC:    "prod",
+			Subnet: "baremetal",
+			IP:     netip.MustParseAddr("10.10.0.10"),
+			Node:   "node-a",
+			Labels: model.Labels{"tier": "frontend", "role": "api"},
+		}, {
+			ID:     "pod-b",
+			VPC:    "prod",
+			Subnet: "baremetal",
+			IP:     netip.MustParseAddr("10.10.0.11"),
+			Node:   "node-a",
+			Labels: model.Labels{"tier": "frontend", "role": "worker"},
+		}},
+	}
+	ops, _, err := Plan(context.Background(), state, Options{
+		Node:        "node-a",
+		LocalDevice: "nl0",
+		SyncOVSDB:   true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := stringifyOps(ops)
+	if !strings.Contains(joined, "table=0,priority=225,ip,nw_src=10.10.0.10/32,actions=set_queue:20,NORMAL") {
+		t.Fatalf("provider identity queue flow ops missing pod-a /32:\n%s", joined)
+	}
+	if strings.Contains(joined, "nw_src=10.10.0.0/24") || strings.Contains(joined, "nw_src=10.10.0.11/32") {
+		t.Fatalf("provider identity queue should only match selected endpoints:\n%s", joined)
 	}
 }
 
