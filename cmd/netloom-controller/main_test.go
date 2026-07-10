@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -748,6 +749,66 @@ func TestOVNStaleAdvisoryFromAudit(t *testing.T) {
 	}
 }
 
+func TestSyncOVSDBControlStatusPersistsAuditSummary(t *testing.T) {
+	writer := &recordingOVSDBControlStatusWriter{values: make(map[string]string)}
+	reconciler := &stateFileReconciler{
+		memory:    control.NewMemoryBackend(),
+		ovsStatus: writer,
+	}
+	state := control.DesiredState{
+		VPCs:         []model.VPC{{Name: "prod"}},
+		Subnets:      []model.Subnet{{Name: "apps", VPC: "prod"}},
+		Endpoints:    []model.Endpoint{{ID: "pod-a", VPC: "prod", Subnet: "apps"}},
+		PolicyRoutes: []model.PolicyRoute{{Name: "egress", VPC: "prod"}},
+	}
+	err := reconciler.syncOVSDBControlStatus(
+		context.Background(),
+		state,
+		control.LoadBalancerHealthSummary{Checked: 2, Healthy: 1, Unhealthy: 1},
+		ovnHealthSnapshot{Status: "ok", Latency: 25 * time.Millisecond, ConsecutiveSuccesses: 1},
+		7,
+		6,
+		"ok",
+		"",
+		ovn.AuditStats{ManagedLogicalRouters: 1, DriftedManagedRows: 2},
+		ovnStaleAdvisory{Status: "warning", Burden: 2, Threshold: 1},
+		ovnMaintenanceResult{Status: "ok", Attempted: 1, Succeeded: 1, Latency: 15 * time.Millisecond},
+		125*time.Millisecond,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if writer.values["netloom_owner"] != "netloom" {
+		t.Fatalf("netloom_owner external_id = %q, want netloom", writer.values["netloom_owner"])
+	}
+	raw := writer.values[controllerOVSDBStatusKey]
+	if raw == "" {
+		t.Fatalf("%s external_id was not written: %#v", controllerOVSDBStatusKey, writer.values)
+	}
+	var status controllerOVSDBStatus
+	if err := json.Unmarshal([]byte(raw), &status); err != nil {
+		t.Fatalf("decode controller status: %v raw=%s", err, raw)
+	}
+	if status.SchemaVersion != 1 || status.VPCs != 1 || status.Subnets != 1 || status.Endpoints != 1 || status.PolicyRoutes != 1 {
+		t.Fatalf("topology status = %+v, want desired object counts", status)
+	}
+	if status.OVNHealth.Status != "ok" || status.OVNOps != 7 || status.OVNExecuted != 6 {
+		t.Fatalf("ovn execution status = %+v, want health and operation counts", status)
+	}
+	if status.OVNAudit.ManagedLogicalRouters != 1 || status.OVNAudit.DriftedManagedRows != 2 {
+		t.Fatalf("ovn audit status = %+v, want audit counts", status.OVNAudit)
+	}
+	if status.OVNStaleAdvisory.Status != "warning" || status.OVNStaleAdvisory.Burden != 2 || status.OVNStaleAdvisory.Threshold != 1 {
+		t.Fatalf("stale advisory = %+v, want warning payload", status.OVNStaleAdvisory)
+	}
+	if status.OVNMaintenance.Status != "ok" || status.ReconcileDurationMS != 125 {
+		t.Fatalf("maintenance/duration status = %+v duration=%d, want persisted values", status.OVNMaintenance, status.ReconcileDurationMS)
+	}
+	if status.UpdatedAt == "" {
+		t.Fatal("updated_at should be set")
+	}
+}
+
 func TestControllerMetricsReportsOVNAuditErrorWithoutFailingReconcile(t *testing.T) {
 	metrics := newControllerMetrics()
 	metrics.observe(controllerMetricsSnapshot{
@@ -1110,4 +1171,13 @@ type fakeControllerManagedOVNReader struct {
 
 func (r fakeControllerManagedOVNReader) ManagedOVNRows(_ context.Context, table string) ([]ovn.ManagedOVNRow, error) {
 	return append([]ovn.ManagedOVNRow(nil), r.rows[table]...), nil
+}
+
+type recordingOVSDBControlStatusWriter struct {
+	values map[string]string
+}
+
+func (w *recordingOVSDBControlStatusWriter) SetOpenVSwitchExternalID(_ context.Context, key, value string) error {
+	w.values[key] = value
+	return nil
 }

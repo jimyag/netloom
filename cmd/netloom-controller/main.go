@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -18,9 +19,11 @@ import (
 	libovsdbclient "github.com/ovn-kubernetes/libovsdb/client"
 
 	"github.com/jimyag/netloom/internal/control"
+	"github.com/jimyag/netloom/internal/linuxdatapath"
 	"github.com/jimyag/netloom/internal/model"
 	"github.com/jimyag/netloom/internal/ovn"
 	"github.com/jimyag/netloom/internal/ovn/ovsdb/ovnnb"
+	"github.com/jimyag/netloom/internal/ovn/ovsdb/vswitch"
 	"github.com/jimyag/netloom/internal/policy"
 	"github.com/jimyag/netloom/internal/topology"
 )
@@ -57,7 +60,7 @@ func runStateFile(ctx context.Context, path string) error {
 	if err != nil {
 		return err
 	}
-	reconciler, err := newStateFileReconciler()
+	reconciler, err := newStateFileReconciler(ctx)
 	if err != nil {
 		return err
 	}
@@ -81,19 +84,21 @@ func runStateFile(ctx context.Context, path string) error {
 }
 
 type stateFileReconciler struct {
-	memory        *control.MemoryBackend
-	executor      ovn.Executor
-	ovnBackend    *ovn.Backend
-	ovnCleanup    ovnCleanupStatsReporter
-	ovnCloser     func()
-	controller    *control.Controller
-	healthTracker *control.LoadBalancerHealthTracker
-	healthChecker ovnHealthChecker
-	ovnHealth     ovnHealthTracker
-	maintenance   ovnMaintenanceRunner
-	auditReader   ovn.ManagedOVNReader
-	auditCloser   func()
-	metrics       *controllerMetrics
+	memory         *control.MemoryBackend
+	executor       ovn.Executor
+	ovnBackend     *ovn.Backend
+	ovnCleanup     ovnCleanupStatsReporter
+	ovnCloser      func()
+	controller     *control.Controller
+	healthTracker  *control.LoadBalancerHealthTracker
+	healthChecker  ovnHealthChecker
+	ovnHealth      ovnHealthTracker
+	maintenance    ovnMaintenanceRunner
+	auditReader    ovn.ManagedOVNReader
+	auditCloser    func()
+	ovsStatus      ovsdbControlStatusWriter
+	ovsStatusClose func()
+	metrics        *controllerMetrics
 }
 
 type ovnTopologyRuntime struct {
@@ -138,32 +143,36 @@ type ovnMaintenanceRunner interface {
 	RunMaintenance(context.Context) ovnMaintenanceResult
 }
 
+type ovsdbControlStatusWriter interface {
+	SetOpenVSwitchExternalID(context.Context, string, string) error
+}
+
 type ovnMaintenanceResult struct {
-	Status    string
-	Attempted int
-	Succeeded int
-	Failed    int
-	Latency   time.Duration
-	Error     string
+	Status    string        `json:"status"`
+	Attempted int           `json:"attempted"`
+	Succeeded int           `json:"succeeded"`
+	Failed    int           `json:"failed"`
+	Latency   time.Duration `json:"latency"`
+	Error     string        `json:"error,omitempty"`
 }
 
 type ovnHealthSnapshot struct {
-	Status               string
-	Latency              time.Duration
-	ConsecutiveFailures  int
-	ConsecutiveSuccesses int
-	Recovering           bool
-	Cluster              ovnClusterHealthSnapshot
+	Status               string                   `json:"status"`
+	Latency              time.Duration            `json:"latency"`
+	ConsecutiveFailures  int                      `json:"consecutive_failures"`
+	ConsecutiveSuccesses int                      `json:"consecutive_successes"`
+	Recovering           bool                     `json:"recovering"`
+	Cluster              ovnClusterHealthSnapshot `json:"cluster"`
 }
 
 type ovnClusterHealthSnapshot struct {
-	ActiveEndpoint      string
-	LeaderEndpoint      string
-	LeaderProbeStatus   string
-	LeaderProbeError    string
-	ConfiguredEndpoints int
-	Failovers           int
-	LeaderPreferred     bool
+	ActiveEndpoint      string `json:"active_endpoint,omitempty"`
+	LeaderEndpoint      string `json:"leader_endpoint,omitempty"`
+	LeaderProbeStatus   string `json:"leader_probe_status,omitempty"`
+	LeaderProbeError    string `json:"leader_probe_error,omitempty"`
+	ConfiguredEndpoints int    `json:"configured_endpoints"`
+	Failovers           int    `json:"failovers"`
+	LeaderPreferred     bool   `json:"leader_preferred"`
 }
 
 type ovnHealthTracker struct {
@@ -212,7 +221,7 @@ type ovnClusterHealthReporter interface {
 	OVNClusterHealth() ovnClusterHealthSnapshot
 }
 
-func newStateFileReconciler() (*stateFileReconciler, error) {
+func newStateFileReconciler(ctx context.Context) (*stateFileReconciler, error) {
 	memory := control.NewMemoryBackend()
 	ovnRuntime, err := newOVNTopologyRuntimeFromEnv()
 	if err != nil {
@@ -225,24 +234,40 @@ func newStateFileReconciler() (*stateFileReconciler, error) {
 		}
 		return nil, err
 	}
+	ovsStatus, ovsStatusClose, err := newOVSDBControlStatusWriterFromEnv(ctx)
+	if err != nil {
+		if auditCloser != nil {
+			auditCloser()
+		}
+		if ovnRuntime.close != nil {
+			ovnRuntime.close()
+		}
+		return nil, err
+	}
 	return &stateFileReconciler{
-		memory:        memory,
-		executor:      ovnRuntime.executor,
-		ovnBackend:    ovnRuntime.ovnBackend,
-		ovnCleanup:    ovnRuntime.cleanup,
-		ovnCloser:     ovnRuntime.close,
-		controller:    control.NewController(control.MultiTopologyBackend{memory, ovnRuntime.backend}, memory),
-		healthTracker: control.NewLoadBalancerHealthTracker(),
-		healthChecker: ovnRuntime.health,
-		maintenance:   newOVNMaintenanceFromEnv(),
-		auditReader:   auditReader,
-		auditCloser:   auditCloser,
+		memory:         memory,
+		executor:       ovnRuntime.executor,
+		ovnBackend:     ovnRuntime.ovnBackend,
+		ovnCleanup:     ovnRuntime.cleanup,
+		ovnCloser:      ovnRuntime.close,
+		controller:     control.NewController(control.MultiTopologyBackend{memory, ovnRuntime.backend}, memory),
+		healthTracker:  control.NewLoadBalancerHealthTracker(),
+		healthChecker:  ovnRuntime.health,
+		maintenance:    newOVNMaintenanceFromEnv(),
+		auditReader:    auditReader,
+		auditCloser:    auditCloser,
+		ovsStatus:      ovsStatus,
+		ovsStatusClose: ovsStatusClose,
 	}, nil
 }
 
 func (r *stateFileReconciler) Close() {
 	if r == nil {
 		return
+	}
+	if r.ovsStatusClose != nil {
+		r.ovsStatusClose()
+		r.ovsStatusClose = nil
 	}
 	if r.auditCloser != nil {
 		r.auditCloser()
@@ -306,6 +331,9 @@ func (r *stateFileReconciler) reconcile(ctx context.Context, path string) error 
 	ovnStaleAdvisory := ovnStaleAdvisoryFromAudit(ovnAudit, ovnStaleAdvisoryThresholdFromEnv())
 	ovnMaintenance := r.runOVNMaintenance(ctx)
 	duration := time.Since(start)
+	if err := r.syncOVSDBControlStatus(ctx, state, healthSummary, ovnHealth.Snapshot, ovnOps, executed, ovnAuditStatus, ovnAuditError, ovnAudit, ovnStaleAdvisory, ovnMaintenance, duration); err != nil {
+		log.Printf("netloom-controller failed to sync Open_vSwitch control status: %v", err)
+	}
 	fmt.Printf(
 		"netloom-controller reconciled desired state vpcs=%d subnets=%d endpoints=%d route_tables=%d policy_routes=%d gateways=%d nat_rules=%d load_balancers=%d security_groups=%d policy_entries=%d lb_health_checked=%d lb_health_healthy=%d lb_health_unhealthy=%d ovn_health=%s ovn_health_latency_ms=%d ovn_health_consecutive_failures=%d ovn_health_consecutive_successes=%d ovn_health_recovering=%d ovn_cluster_active_endpoint=%s ovn_cluster_leader_endpoint=%s ovn_cluster_leader_probe_status=%s ovn_cluster_leader_probe_error=%s ovn_cluster_leader_preferred=%d ovn_cluster_endpoints=%d ovn_cluster_failovers=%d ovn_ops=%d ovn_executed=%d ovn_audit=%s ovn_live_managed=%d ovn_live_duplicates=%d ovn_live_incomplete=%d ovn_live_missing=%d ovn_live_unexpected=%d ovn_live_drifted_rows=%d ovn_live_drifted_fields=%d ovn_audit_error=%s ovn_stale_advisory=%s ovn_stale_burden=%d ovn_stale_threshold=%d ovn_maintenance=%s ovn_maintenance_attempted=%d ovn_maintenance_succeeded=%d ovn_maintenance_failed=%d ovn_maintenance_latency_ms=%d ovn_maintenance_error=%s reconcile_duration_ms=%d\n",
 		len(state.VPCs),
@@ -536,6 +564,71 @@ func (r *stateFileReconciler) runOVNMaintenance(ctx context.Context) ovnMaintena
 	return r.maintenance.RunMaintenance(ctx)
 }
 
+type controllerOVSDBStatus struct {
+	SchemaVersion       int                               `json:"schema_version"`
+	UpdatedAt           string                            `json:"updated_at"`
+	VPCs                int                               `json:"vpcs"`
+	Subnets             int                               `json:"subnets"`
+	Endpoints           int                               `json:"endpoints"`
+	RouteTables         int                               `json:"route_tables"`
+	PolicyRoutes        int                               `json:"policy_routes"`
+	Gateways            int                               `json:"gateways"`
+	NATRules            int                               `json:"nat_rules"`
+	LoadBalancers       int                               `json:"load_balancers"`
+	SecurityGroups      int                               `json:"security_groups"`
+	PolicyEntries       int                               `json:"policy_entries"`
+	LBHealth            control.LoadBalancerHealthSummary `json:"lb_health"`
+	OVNHealth           ovnHealthSnapshot                 `json:"ovn_health"`
+	OVNOps              int                               `json:"ovn_ops"`
+	OVNExecuted         int                               `json:"ovn_executed"`
+	OVNAuditStatus      string                            `json:"ovn_audit_status"`
+	OVNAuditError       string                            `json:"ovn_audit_error,omitempty"`
+	OVNAudit            ovn.AuditStats                    `json:"ovn_audit"`
+	OVNStaleAdvisory    ovnStaleAdvisory                  `json:"ovn_stale_advisory"`
+	OVNMaintenance      ovnMaintenanceResult              `json:"ovn_maintenance"`
+	ReconcileDurationMS int64                             `json:"reconcile_duration_ms"`
+}
+
+const controllerOVSDBStatusKey = "netloom_controller_status"
+
+func (r *stateFileReconciler) syncOVSDBControlStatus(ctx context.Context, state control.DesiredState, healthSummary control.LoadBalancerHealthSummary, ovnHealth ovnHealthSnapshot, ovnOps, executed int, ovnAuditStatus, ovnAuditError string, ovnAudit ovn.AuditStats, ovnStaleAdvisory ovnStaleAdvisory, ovnMaintenance ovnMaintenanceResult, duration time.Duration) error {
+	if r == nil || r.ovsStatus == nil {
+		return nil
+	}
+	status := controllerOVSDBStatus{
+		SchemaVersion:       1,
+		UpdatedAt:           time.Now().UTC().Format(time.RFC3339Nano),
+		VPCs:                len(state.VPCs),
+		Subnets:             len(state.Subnets),
+		Endpoints:           len(state.Endpoints),
+		RouteTables:         len(state.RouteTables),
+		PolicyRoutes:        len(state.PolicyRoutes),
+		Gateways:            len(state.Gateways),
+		NATRules:            len(state.NATRules),
+		LoadBalancers:       len(state.LoadBalancers),
+		SecurityGroups:      len(state.SecurityGroups),
+		PolicyEntries:       countPolicyEntries(r.memory),
+		LBHealth:            healthSummary,
+		OVNHealth:           ovnHealth,
+		OVNOps:              ovnOps,
+		OVNExecuted:         executed,
+		OVNAuditStatus:      fallbackMetricsLabel(ovnAuditStatus, "disabled"),
+		OVNAuditError:       ovnAuditError,
+		OVNAudit:            ovnAudit,
+		OVNStaleAdvisory:    ovnStaleAdvisory,
+		OVNMaintenance:      ovnMaintenance,
+		ReconcileDurationMS: duration.Milliseconds(),
+	}
+	raw, err := json.Marshal(status)
+	if err != nil {
+		return fmt.Errorf("encode Open_vSwitch controller status: %w", err)
+	}
+	if err := r.ovsStatus.SetOpenVSwitchExternalID(ctx, "netloom_owner", "netloom"); err != nil {
+		return err
+	}
+	return r.ovsStatus.SetOpenVSwitchExternalID(ctx, controllerOVSDBStatusKey, string(raw))
+}
+
 type controllerMetrics struct {
 	mu       sync.RWMutex
 	snapshot controllerMetricsSnapshot
@@ -568,9 +661,9 @@ type controllerMetricsSnapshot struct {
 }
 
 type ovnStaleAdvisory struct {
-	Status    string
-	Burden    int
-	Threshold int
+	Status    string `json:"status"`
+	Burden    int    `json:"burden"`
+	Threshold int    `json:"threshold"`
 }
 
 type controllerMetricsTotals struct {
@@ -1274,6 +1367,42 @@ func newOVNAuditReaderFromEnv() (ovn.ManagedOVNReader, func(), error) {
 		return nil, nil, err
 	}
 	return ovn.NewLibOVSDBManagedReader(client), closeFn, nil
+}
+
+func newOVSDBControlStatusWriterFromEnv(ctx context.Context) (ovsdbControlStatusWriter, func(), error) {
+	endpoint := strings.TrimSpace(os.Getenv("NETLOOM_OVSDB_ENDPOINT"))
+	if endpoint == "" {
+		return nil, func() {}, nil
+	}
+	client, closeFn, err := newOpenVSwitchClient(ctx, endpoint)
+	if err != nil {
+		return nil, nil, err
+	}
+	return linuxdatapath.NewLibOVSDBProviderSyncer(client), closeFn, nil
+}
+
+func newOpenVSwitchClient(ctx context.Context, endpoint string) (libovsdbclient.Client, func(), error) {
+	dbModel, err := vswitch.FullDatabaseModel()
+	if err != nil {
+		return nil, nil, fmt.Errorf("build Open_vSwitch libovsdb model: %w", err)
+	}
+	client, err := libovsdbclient.NewOVSDBClient(dbModel, libovsdbclient.WithEndpoint(endpoint))
+	if err != nil {
+		return nil, nil, fmt.Errorf("create Open_vSwitch libovsdb client: %w", err)
+	}
+	if err := client.Connect(ctx); err != nil {
+		client.Close()
+		return nil, nil, fmt.Errorf("connect Open_vSwitch libovsdb endpoint %s: %w", endpoint, err)
+	}
+	if _, err := client.MonitorAll(ctx); err != nil {
+		client.Disconnect()
+		client.Close()
+		return nil, nil, fmt.Errorf("monitor Open_vSwitch libovsdb endpoint %s: %w", endpoint, err)
+	}
+	return client, func() {
+		client.Disconnect()
+		client.Close()
+	}, nil
 }
 
 func ovnTopologyBackendFromEnv() string {

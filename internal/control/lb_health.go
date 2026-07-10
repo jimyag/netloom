@@ -11,9 +11,9 @@ import (
 )
 
 type LoadBalancerHealthSummary struct {
-	Checked   int
-	Healthy   int
-	Unhealthy int
+	Checked   int `json:"checked"`
+	Healthy   int `json:"healthy"`
+	Unhealthy int `json:"unhealthy"`
 }
 
 type LoadBalancerBackendProbe func(context.Context, model.LoadBalancerBackend, time.Duration) error
