@@ -678,6 +678,169 @@ func TestLibOVSDBTopologyWriterCleanupRepairsIPv6RouterPortRADriftInSteadyState(
 	}
 }
 
+func TestLibOVSDBTopologyWriterCleanupRepairsCoreNameDriftInSteadyState(t *testing.T) {
+	ctx := context.Background()
+	client, closeFn := newTestOVNNBClient(t)
+	defer closeFn()
+
+	if _, err := client.MonitorAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	writer := NewLibOVSDBTopologyWriter(client)
+	subnet := model.Subnet{
+		Name:    "apps",
+		VPC:     "prod",
+		CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+		Gateway: netip.MustParseAddr("10.10.0.1"),
+	}
+	endpoint := model.Endpoint{
+		ID:     "pod-a",
+		VPC:    "prod",
+		Subnet: "apps",
+		Node:   "node-a",
+		IP:     netip.MustParseAddr("10.10.0.20"),
+		MAC:    "02:00:00:00:00:20",
+	}
+	state := topology.State{
+		VPCs:      map[string]model.VPC{"prod": {Name: "prod"}},
+		Subnets:   map[string]model.Subnet{subnetStateKey("prod", "apps"): subnet},
+		Endpoints: map[string]model.Endpoint{"prod/pod-a": endpoint},
+	}
+	if err := writer.CleanupTopology(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureVPC(ctx, state.VPCs["prod"]); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureSubnet(ctx, subnet); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureEndpoint(ctx, endpoint); err != nil {
+		t.Fatal(err)
+	}
+
+	var routers []ovnnb.LogicalRouter
+	var switches []ovnnb.LogicalSwitch
+	var routerPorts []ovnnb.LogicalRouterPort
+	var switchPorts []ovnnb.LogicalSwitchPort
+	requireEventually(t, func() bool {
+		routers = nil
+		switches = nil
+		routerPorts = nil
+		switchPorts = nil
+		if err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.ExternalIDs["netloom_vpc"] == "prod" }).List(ctx, &routers); err != nil {
+			return false
+		}
+		if err := client.WhereCache(func(row *ovnnb.LogicalSwitch) bool {
+			return row.ExternalIDs["netloom_vpc"] == "prod" && row.ExternalIDs["netloom_subnet"] == "apps"
+		}).List(ctx, &switches); err != nil {
+			return false
+		}
+		if err := client.WhereCache(func(row *ovnnb.LogicalRouterPort) bool { return row.ExternalIDs["netloom_subnet"] == "apps" }).List(ctx, &routerPorts); err != nil {
+			return false
+		}
+		if err := client.WhereCache(func(row *ovnnb.LogicalSwitchPort) bool {
+			return row.ExternalIDs["netloom_subnet"] == "apps" &&
+				(row.ExternalIDs["netloom_role"] == "router" || row.ExternalIDs["netloom_endpoint"] == endpointExternalID("prod", "pod-a"))
+		}).List(ctx, &switchPorts); err != nil {
+			return false
+		}
+		return len(routers) == 1 && len(switches) == 1 && len(routerPorts) == 1 && len(switchPorts) == 2
+	})
+	routers[0].Name = "renamed-router"
+	switches[0].Name = "renamed-switch"
+	routerPorts[0].Name = "renamed-router-port"
+	for i := range switchPorts {
+		if switchPorts[i].ExternalIDs["netloom_role"] == "router" {
+			switchPorts[i].Name = "renamed-switch-router-port"
+		} else {
+			switchPorts[i].Name = "renamed-endpoint-port"
+		}
+	}
+	var ops []ovsdb.Operation
+	updateRouter, err := client.Where(&routers[0]).Update(&routers[0], &routers[0].Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ops = append(ops, updateRouter...)
+	updateSwitch, err := client.Where(&switches[0]).Update(&switches[0], &switches[0].Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ops = append(ops, updateSwitch...)
+	updateRouterPort, err := client.Where(&routerPorts[0]).Update(&routerPorts[0], &routerPorts[0].Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ops = append(ops, updateRouterPort...)
+	for i := range switchPorts {
+		updateSwitchPort, err := client.Where(&switchPorts[i]).Update(&switchPorts[i], &switchPorts[i].Name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ops = append(ops, updateSwitchPort...)
+	}
+	results, err := client.Transact(ctx, ops...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, ops); err != nil {
+		t.Fatalf("seed core name drift operation errors=%+v: %v", opErrors, err)
+	}
+	requireEventually(t, func() bool {
+		routers = nil
+		switches = nil
+		routerPorts = nil
+		switchPorts = nil
+		if err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == "renamed-router" }).List(ctx, &routers); err != nil {
+			return false
+		}
+		if err := client.WhereCache(func(row *ovnnb.LogicalSwitch) bool { return row.Name == "renamed-switch" }).List(ctx, &switches); err != nil {
+			return false
+		}
+		if err := client.WhereCache(func(row *ovnnb.LogicalRouterPort) bool { return row.Name == "renamed-router-port" }).List(ctx, &routerPorts); err != nil {
+			return false
+		}
+		if err := client.WhereCache(func(row *ovnnb.LogicalSwitchPort) bool {
+			return row.Name == "renamed-switch-router-port" || row.Name == "renamed-endpoint-port"
+		}).List(ctx, &switchPorts); err != nil {
+			return false
+		}
+		return len(routers) == 1 && len(switches) == 1 && len(routerPorts) == 1 && len(switchPorts) == 2
+	})
+
+	if err := writer.CleanupTopology(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	requireEventually(t, func() bool {
+		routers = nil
+		switches = nil
+		routerPorts = nil
+		switchPorts = nil
+		if err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("prod") }).List(ctx, &routers); err != nil {
+			return false
+		}
+		if err := client.WhereCache(func(row *ovnnb.LogicalSwitch) bool { return row.Name == logicalSwitch("prod", "apps") }).List(ctx, &switches); err != nil {
+			return false
+		}
+		if err := client.WhereCache(func(row *ovnnb.LogicalRouterPort) bool {
+			return row.Name == routerPortName(logicalRouter("prod"), "apps")
+		}).List(ctx, &routerPorts); err != nil {
+			return false
+		}
+		if err := client.WhereCache(func(row *ovnnb.LogicalSwitchPort) bool {
+			return row.Name == switchRouterPortName(logicalSwitch("prod", "apps"), "apps") || row.Name == logicalPort("prod", "pod-a")
+		}).List(ctx, &switchPorts); err != nil {
+			return false
+		}
+		return len(routers) == 1 && len(switches) == 1 && len(routerPorts) == 1 && len(switchPorts) == 2
+	})
+	stats := writer.LastCleanupStats()
+	if stats.FirstReconcileGC || stats.Operations == 0 {
+		t.Fatalf("cleanup stats = %+v, want steady-state core name repair operations", stats)
+	}
+}
+
 func TestLibOVSDBTopologyWriterEnsuresEndpointWithDHCPv4(t *testing.T) {
 	ctx := context.Background()
 	client, closeFn := newTestOVNNBClient(t)
