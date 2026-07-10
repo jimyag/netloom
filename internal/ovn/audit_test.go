@@ -19,9 +19,9 @@ func TestNBCTLExecutorAuditManagedObjectsCountsLiveRows(t *testing.T) {
 	script := `#!/bin/sh
 printf '%s\n' "$*" >> "` + logPath + `"
 case "$*" in
-  *"find Logical_Switch external_ids:netloom_owner=netloom"*) printf 'ls-a,{netloom_owner=netloom,netloom_vpc=prod,netloom_subnet=apps}\n' ;;
-  *"find NAT external_ids:netloom_owner=netloom"*) printf 'nat-a,{netloom_owner=netloom,netloom_vpc=prod,netloom_nat=egress}\nnat-b,{netloom_owner=netloom,netloom_vpc=prod,netloom_nat=egress}\n' ;;
-  *"find DHCP_Options external_ids:netloom_owner=netloom"*) printf 'dhcp-a,{netloom_owner=netloom,netloom_vpc=prod}\n' ;;
+  *"find Logical_Switch external_ids:netloom_owner=netloom"*) printf 'ls-a,"{netloom_owner=netloom,netloom_vpc=prod,netloom_subnet=apps}"\n' ;;
+  *"find NAT external_ids:netloom_owner=netloom"*) printf 'nat-a,"{netloom_owner=netloom,netloom_vpc=prod,netloom_nat=egress}"\nnat-b,"{netloom_owner=netloom,netloom_vpc=prod,netloom_nat=egress}"\n' ;;
+  *"find DHCP_Options external_ids:netloom_owner=netloom"*) printf 'dhcp-a,"{netloom_owner=netloom,netloom_vpc=prod}"\n' ;;
 esac
 `
 	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
@@ -53,6 +53,78 @@ esac
 		if !strings.Contains(logged, expected) {
 			t.Fatalf("audit command log missing %q:\n%s", expected, logged)
 		}
+	}
+}
+
+func TestNBCTLExecutorManagedOVNRowsReadsAuditedColumns(t *testing.T) {
+	tmp := t.TempDir()
+	logPath := filepath.Join(tmp, "args.log")
+	binary := filepath.Join(tmp, "ovn-nbctl")
+	script := `#!/bin/sh
+printf '%s\n' "$*" >> "` + logPath + `"
+case "$*" in
+  *"--columns=_uuid,external_ids,name,other_config find Logical_Switch external_ids:netloom_owner=netloom"*) printf 'ls-a,"{netloom_owner=netloom,netloom_vpc=prod,netloom_subnet=apps}",nl_ls_prod_apps,"{mcast_snoop=false,subnet=10.10.0.0/24}"\n' ;;
+esac
+`
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	executor := NewNBCTLExecutor(binary, "--db=unix:/tmp/ovnnb.sock")
+	rows, err := executor.ManagedOVNRows(context.Background(), "Logical_Switch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(rows))
+	}
+	row := rows[0]
+	if row.UUID != "ls-a" || row.ExternalIDs["netloom_subnet"] != "apps" {
+		t.Fatalf("row identity = %+v, want parsed UUID and external IDs", row)
+	}
+	if row.Fields["name"] != "nl_ls_prod_apps" || row.Fields["other_config"] != "mcast_snoop=false,subnet=10.10.0.0/24" {
+		t.Fatalf("row fields = %+v, want audited switch columns", row.Fields)
+	}
+	logData, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(logData), "--columns=_uuid,external_ids,name,other_config") {
+		t.Fatalf("audit command did not request switch columns:\n%s", string(logData))
+	}
+}
+
+func TestAuditManagedObjectsFromNBCTLReportsColumnDrift(t *testing.T) {
+	tmp := t.TempDir()
+	binary := filepath.Join(tmp, "ovn-nbctl")
+	subnet := model.Subnet{
+		Name:    "apps",
+		VPC:     "prod",
+		CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+		Gateway: netip.MustParseAddr("10.10.0.1"),
+	}
+	otherConfig := mapField(logicalSwitchOtherConfig(subnet))
+	script := `#!/bin/sh
+case "$*" in
+  *"find Logical_Switch external_ids:netloom_owner=netloom"*) printf 'ls-a,"{netloom_owner=netloom,netloom_vpc=prod,netloom_subnet=apps}",renamed-switch,"{` + otherConfig + `}"\n' ;;
+esac
+`
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	desired := topology.State{
+		Subnets: map[string]model.Subnet{
+			subnetStateKey("prod", "apps"): subnet,
+		},
+	}
+
+	executor := NewNBCTLExecutor(binary, "--db=unix:/tmp/ovnnb.sock")
+	stats, err := AuditManagedObjectsFromReaderWithDesired(context.Background(), executor, desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.DriftedManagedRows != 1 || stats.DriftedManagedFields != 1 {
+		t.Fatalf("stats = %+v, want one switch name column drift from nbctl rows", stats)
 	}
 }
 

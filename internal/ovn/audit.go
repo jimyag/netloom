@@ -2,6 +2,7 @@ package ovn
 
 import (
 	"context"
+	"encoding/csv"
 	"fmt"
 	"sort"
 	"strings"
@@ -86,7 +87,7 @@ func AuditManagedObjectsFromReaderWithDesired(ctx context.Context, reader Manage
 				seen[row.identity] = struct{}{}
 				driftedFields := countManagedFieldDrift(row.externalIDs, expectedFields)
 				if row.fields != nil {
-					driftedFields += countManagedFieldDrift(row.fields, expectedColumns[row.identity])
+					driftedFields += countManagedProvidedFieldDrift(row.fields, expectedColumns[row.identity])
 				}
 				if driftedFields != 0 {
 					stats.DriftedManagedRows++
@@ -128,12 +129,13 @@ func managedAuditTables() []managedAuditTable {
 }
 
 func (e *NBCTLExecutor) ManagedOVNRows(ctx context.Context, table string) ([]ManagedOVNRow, error) {
+	columns := managedAuditNBCTLColumns(table)
 	args := append([]string(nil), e.BaseArgs...)
 	args = append(args,
 		"--format=csv",
 		"--data=bare",
 		"--no-headings",
-		"--columns=_uuid,external_ids",
+		"--columns="+strings.Join(columns, ","),
 		"find",
 		table,
 		"external_ids:netloom_owner=netloom",
@@ -142,7 +144,34 @@ func (e *NBCTLExecutor) ManagedOVNRows(ctx context.Context, table string) ([]Man
 	if err != nil {
 		return nil, fmt.Errorf("audit managed %s: %w", table, err)
 	}
-	return parseManagedOVNRows(table, splitAuditRows(string(output))), nil
+	return parseManagedOVNRows(table, columns, splitAuditRows(string(output))), nil
+}
+
+func managedAuditNBCTLColumns(table string) []string {
+	columns := []string{"_uuid", "external_ids"}
+	switch table {
+	case "Logical_Switch":
+		columns = append(columns, "name", "other_config")
+	case "Logical_Router":
+		columns = append(columns, "name", "options")
+	case "Logical_Switch_Port":
+		columns = append(columns, "name", "type", "addresses", "port_security", "options", "tag")
+	case "Logical_Router_Port":
+		columns = append(columns, "name", "mac", "networks", "ipv6_ra_configs")
+	case "Logical_Router_Policy":
+		columns = append(columns, "priority", "match", "action", "nexthop", "nexthops")
+	case "Logical_Router_Static_Route":
+		columns = append(columns, "bfd", "ip_prefix", "nexthop", "options", "output_port", "policy", "route_table", "selection_fields")
+	case "NAT":
+		columns = append(columns, "type", "external_ip", "logical_ip", "external_port_range", "logical_port", "external_mac", "options")
+	case "Load_Balancer":
+		columns = append(columns, "name", "vips", "protocol", "options", "selection_fields")
+	case "Load_Balancer_Health_Check":
+		columns = append(columns, "vip", "options")
+	case "DHCP_Options":
+		columns = append(columns, "cidr", "options")
+	}
+	return columns
 }
 
 type auditRowResult struct {
@@ -544,6 +573,20 @@ func countManagedFieldDrift(live, expected map[string]string) int {
 	return drift
 }
 
+func countManagedProvidedFieldDrift(live, expected map[string]string) int {
+	drift := 0
+	for key, value := range expected {
+		liveValue, ok := live[key]
+		if !ok {
+			continue
+		}
+		if liveValue != value {
+			drift++
+		}
+	}
+	return drift
+}
+
 func logicalSwitchColumnFields(subnet model.Subnet) map[string]string {
 	fields := map[string]string{
 		"name":         logicalSwitch(subnet.VPC, subnet.Name),
@@ -707,21 +750,122 @@ func splitStateKey(key string) (string, string, bool) {
 	return parts[0], parts[1], true
 }
 
-func parseManagedOVNRows(table string, rows []string) []ManagedOVNRow {
+func parseManagedOVNRows(table string, columns, rows []string) []ManagedOVNRow {
 	out := make([]ManagedOVNRow, 0, len(rows))
 	for _, row := range rows {
-		uuid, externalIDs, ok := parseExternalIDsCSVRow(row)
-		if !ok {
+		values, ok := parseAuditCSVRow(row)
+		if !ok || len(values) < 2 {
 			out = append(out, ManagedOVNRow{Table: table})
 			continue
+		}
+		uuid := strings.Trim(strings.TrimSpace(values[0]), `"`)
+		externalIDs := parseOVNMap(values[1])
+		fields := make(map[string]string)
+		for i := 2; i < len(columns) && i < len(values); i++ {
+			fields[columns[i]] = normalizeManagedAuditField(columns[i], values[i])
 		}
 		out = append(out, ManagedOVNRow{
 			Table:       table,
 			UUID:        uuid,
 			ExternalIDs: externalIDs,
+			Fields:      fields,
 		})
 	}
 	return out
+}
+
+func parseAuditCSVRow(row string) ([]string, bool) {
+	reader := csv.NewReader(strings.NewReader(row))
+	reader.FieldsPerRecord = -1
+	values, err := reader.Read()
+	if err != nil {
+		return nil, false
+	}
+	return values, true
+}
+
+func normalizeManagedAuditField(column, value string) string {
+	value = strings.TrimSpace(value)
+	if value == "[]" {
+		return ""
+	}
+	switch column {
+	case "external_ids", "other_config", "options", "ipv6_ra_configs", "vips":
+		return mapField(parseOVNMap(value))
+	case "addresses", "port_security", "networks", "nexthops", "selection_fields":
+		return stringSliceField(parseOVNList(value))
+	case "tag":
+		return strings.Trim(strings.TrimSpace(value), `"`)
+	default:
+		return trimOVNString(value)
+	}
+}
+
+func parseOVNMap(value string) map[string]string {
+	value = strings.TrimSpace(value)
+	value = strings.Trim(value, `"`)
+	value = strings.Trim(value, "{} ")
+	out := make(map[string]string)
+	if value == "" || value == "[]" {
+		return out
+	}
+	for _, field := range splitOVNCollection(value) {
+		key, rawValue, ok := strings.Cut(strings.TrimSpace(field), "=")
+		if !ok {
+			continue
+		}
+		key = strings.Trim(strings.TrimSpace(key), `"{} `)
+		rawValue = trimOVNString(strings.TrimSpace(rawValue))
+		if key != "" {
+			out[key] = rawValue
+		}
+	}
+	return out
+}
+
+func parseOVNList(value string) []string {
+	value = strings.TrimSpace(value)
+	value = strings.Trim(value, `"`)
+	value = strings.Trim(value, "[] ")
+	if value == "" {
+		return nil
+	}
+	parts := splitOVNCollection(value)
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = trimOVNString(strings.TrimSpace(part))
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+func splitOVNCollection(value string) []string {
+	var parts []string
+	var current strings.Builder
+	inQuotes := false
+	escaped := false
+	for _, r := range value {
+		switch {
+		case escaped:
+			current.WriteRune(r)
+			escaped = false
+		case r == '\\':
+			current.WriteRune(r)
+			escaped = true
+		case r == '"':
+			current.WriteRune(r)
+			inQuotes = !inQuotes
+		case r == ',' && !inQuotes:
+			parts = append(parts, current.String())
+			current.Reset()
+		default:
+			current.WriteRune(r)
+		}
+	}
+	parts = append(parts, current.String())
+	return parts
 }
 
 func managedAuditIdentityForRow(table, uuid string, externalIDs, fields map[string]string) (string, bool) {
