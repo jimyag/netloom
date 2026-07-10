@@ -1516,6 +1516,89 @@ func TestLibOVSDBTopologyWriterCleanupRepairsUnexpectedLiveObjectsInSteadyState(
 	}
 }
 
+func TestLibOVSDBTopologyWriterCleanupRepairsLoadBalancerOptionsDriftInSteadyState(t *testing.T) {
+	ctx := context.Background()
+	client, closeFn := newTestOVNNBClient(t)
+	defer closeFn()
+
+	if _, err := client.MonitorAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	writer := NewLibOVSDBTopologyWriter(client)
+	subnet := model.Subnet{
+		Name:    "apps",
+		VPC:     "prod",
+		CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+		Gateway: netip.MustParseAddr("10.10.0.1"),
+	}
+	lb := model.LoadBalancer{
+		Name: "api",
+		VPC:  "prod",
+		VIP:  netip.MustParseAddr("10.96.0.10"),
+		Ports: []model.LoadBalancerPort{{
+			Port:     443,
+			Protocol: model.ProtocolTCP,
+			Backends: []model.LoadBalancerBackend{{
+				IP:   netip.MustParseAddr("10.10.0.20"),
+				Port: 8443,
+			}},
+		}},
+	}
+	state := topology.State{
+		VPCs:          map[string]model.VPC{"prod": {Name: "prod"}},
+		Subnets:       map[string]model.Subnet{subnetStateKey("prod", "apps"): subnet},
+		LoadBalancers: map[string]model.LoadBalancer{"prod/api": lb},
+	}
+	if err := writer.CleanupTopology(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureVPC(ctx, state.VPCs["prod"]); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureSubnet(ctx, subnet); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureLoadBalancer(ctx, lb); err != nil {
+		t.Fatal(err)
+	}
+
+	existing, ok, err := writer.loadBalancerByName(ctx, loadBalancerProtocolName("prod", "api", model.ProtocolTCP))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("load balancer row was not created")
+	}
+	existing.Options = map[string]string{"affinity_timeout": "7200"}
+	updateOps, err := client.Where(existing).Update(existing, &existing.Options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := client.Transact(ctx, updateOps...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, updateOps); err != nil {
+		t.Fatalf("seed load balancer drift operation errors=%+v: %v", opErrors, err)
+	}
+	requireEventually(t, func() bool {
+		drifted, ok, err := writer.loadBalancerByName(ctx, existing.Name)
+		return err == nil && ok && drifted.Options["affinity_timeout"] == "7200"
+	})
+
+	if err := writer.CleanupTopology(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	requireEventually(t, func() bool {
+		repaired, ok, err := writer.loadBalancerByName(ctx, existing.Name)
+		if err != nil || !ok {
+			return false
+		}
+		_, hasAffinity := repaired.Options["affinity_timeout"]
+		return !hasAffinity
+	})
+}
+
 func TestLibOVSDBTopologyWriterHealthCheckUsesLibOVSDBEcho(t *testing.T) {
 	ctx := context.Background()
 	client, closeFn := newTestOVNNBClient(t)

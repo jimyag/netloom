@@ -3,6 +3,7 @@ package ovn
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"sort"
 
 	ovsmodel "github.com/ovn-kubernetes/libovsdb/model"
@@ -42,6 +43,15 @@ func (w *LibOVSDBTopologyWriter) CleanupTopology(ctx context.Context, state topo
 		}
 		ops = append(liveOps, ops...)
 		stats.add(liveStats)
+		stats.Operations = len(ops)
+	}
+	if w.seen && len(ops) == 0 {
+		repairOps, err := w.repairSteadyStateLoadBalancerOptions(ctx, state)
+		if err != nil {
+			w.lastCleanup = stats
+			return err
+		}
+		ops = append(ops, repairOps...)
 		stats.Operations = len(ops)
 	}
 	if err := w.transact(ctx, "cleanup OVN topology", ops); err != nil {
@@ -302,6 +312,34 @@ func (w *LibOVSDBTopologyWriter) cleanupUnexpectedLiveOperations(ctx context.Con
 		ops = append(ops, deleteOps...)
 	}
 	return ops, stats, nil
+}
+
+func (w *LibOVSDBTopologyWriter) repairSteadyStateLoadBalancerOptions(ctx context.Context, desired topology.State) ([]ovsdb.Operation, error) {
+	var ops []ovsdb.Operation
+	for _, lb := range desired.LoadBalancers {
+		frontendsByProtocol := loadBalancerFrontendsByProtocol(lb)
+		for _, protocol := range sortedLoadBalancerProtocols(frontendsByProtocol) {
+			desiredRow := desiredLoadBalancerRow(lb, protocol, frontendsByProtocol[protocol])
+			existing, ok, err := w.loadBalancerByName(ctx, desiredRow.Name)
+			if err != nil {
+				return nil, err
+			}
+			if !ok || !isNetloomManaged(existing.ExternalIDs) {
+				continue
+			}
+			nextOptions := replaceManagedLoadBalancerOptions(existing.Options, desiredRow.Options)
+			if reflect.DeepEqual(existing.Options, nextOptions) {
+				continue
+			}
+			existing.Options = nextOptions
+			updateOps, err := w.client.Where(existing).Update(existing, &existing.Options)
+			if err != nil {
+				return nil, fmt.Errorf("repair load balancer %s options: %w", existing.Name, err)
+			}
+			ops = append(ops, updateOps...)
+		}
+	}
+	return ops, nil
 }
 
 func (s *CleanupStats) add(other CleanupStats) {
