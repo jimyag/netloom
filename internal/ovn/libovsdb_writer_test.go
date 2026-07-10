@@ -500,6 +500,76 @@ func TestLibOVSDBTopologyWriterEnsuresEndpointWithDHCPv4(t *testing.T) {
 	})
 }
 
+func TestLibOVSDBTopologyWriterRepairsEndpointSwitchPortStaleTypeOptionsAndTag(t *testing.T) {
+	ctx := context.Background()
+	client, closeFn := newTestOVNNBClient(t)
+	defer closeFn()
+
+	if _, err := client.MonitorAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	writer := NewLibOVSDBTopologyWriter(client)
+	if err := writer.EnsureVPC(ctx, model.VPC{Name: "prod"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureSubnet(ctx, model.Subnet{
+		Name:    "apps",
+		VPC:     "prod",
+		CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+		Gateway: netip.MustParseAddr("10.10.0.1"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	endpoint := model.Endpoint{
+		ID:     "pod-a",
+		VPC:    "prod",
+		Subnet: "apps",
+		IP:     netip.MustParseAddr("10.10.0.20"),
+		MAC:    "02:00:00:00:00:20",
+		Node:   "node-a",
+	}
+	if err := writer.EnsureEndpoint(ctx, endpoint); err != nil {
+		t.Fatal(err)
+	}
+
+	var ports []ovnnb.LogicalSwitchPort
+	requireEventually(t, func() bool {
+		ports = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalSwitchPort) bool { return row.Name == logicalPort("prod", "pod-a") }).List(ctx, &ports)
+		return err == nil && len(ports) == 1
+	})
+	port := ports[0]
+	tag := 100
+	port.Type = "localnet"
+	port.Options = map[string]string{"network_name": "physnet-a"}
+	port.Tag = &tag
+	updateOps, err := client.Where(&port).Update(&port, &port.Type, &port.Options, &port.Tag)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := client.Transact(ctx, updateOps...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, updateOps); err != nil {
+		t.Fatalf("seed endpoint switch port drift operation errors=%+v: %v", opErrors, err)
+	}
+	requireEventually(t, func() bool {
+		ports = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalSwitchPort) bool { return row.Name == logicalPort("prod", "pod-a") }).List(ctx, &ports)
+		return err == nil && len(ports) == 1 && ports[0].Type == "localnet" && ports[0].Options["network_name"] == "physnet-a" && ports[0].Tag != nil && *ports[0].Tag == 100
+	})
+
+	if err := writer.EnsureEndpoint(ctx, endpoint); err != nil {
+		t.Fatal(err)
+	}
+	requireEventually(t, func() bool {
+		ports = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalSwitchPort) bool { return row.Name == logicalPort("prod", "pod-a") }).List(ctx, &ports)
+		return err == nil && len(ports) == 1 && ports[0].Type == "" && len(ports[0].Options) == 0 && ports[0].Tag == nil
+	})
+}
+
 func TestLibOVSDBTopologyWriterClearsEndpointDHCPWhenSubnetDHCPDisabled(t *testing.T) {
 	ctx := context.Background()
 	client, closeFn := newTestOVNNBClient(t)

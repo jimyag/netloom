@@ -870,13 +870,19 @@ func (w *LibOVSDBTopologyWriter) ensureEndpointSwitchPort(ctx context.Context, s
 	}
 	if reflect.DeepEqual(existing.Addresses, desired.Addresses) &&
 		reflect.DeepEqual(existing.PortSecurity, desired.PortSecurity) &&
-		reflect.DeepEqual(existing.ExternalIDs, nextExternalIDs) {
+		reflect.DeepEqual(existing.ExternalIDs, nextExternalIDs) &&
+		existing.Type == desired.Type &&
+		reflect.DeepEqual(existing.Options, desired.Options) &&
+		equalIntPointers(existing.Tag, desired.Tag) {
 		return existing.UUID, ops, nil
 	}
 	existing.Addresses = desired.Addresses
 	existing.PortSecurity = desired.PortSecurity
 	existing.ExternalIDs = nextExternalIDs
-	updateOps, err := w.client.Where(existing).Update(existing, &existing.Addresses, &existing.PortSecurity, &existing.ExternalIDs)
+	existing.Type = desired.Type
+	existing.Options = desired.Options
+	existing.Tag = desired.Tag
+	updateOps, err := w.client.Where(existing).Update(existing, &existing.Addresses, &existing.PortSecurity, &existing.ExternalIDs, &existing.Type, &existing.Options, &existing.Tag)
 	if err != nil {
 		return "", nil, fmt.Errorf("update endpoint logical switch port %s: %w", desired.Name, err)
 	}
