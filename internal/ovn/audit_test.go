@@ -515,6 +515,50 @@ func TestAuditManagedObjectsFromReaderReportsNATParentAttachmentDrift(t *testing
 	}
 }
 
+func TestAuditManagedObjectsFromReaderReportsNATExternalIDDrift(t *testing.T) {
+	nat := model.NATRule{
+		Name:         "api",
+		VPC:          "prod",
+		Type:         model.ActionDNAT,
+		ExternalIP:   netip.MustParseAddr("198.51.100.10"),
+		TargetIP:     netip.MustParseAddr("10.10.0.20"),
+		ExternalPort: 8443,
+		TargetPort:   443,
+		Protocol:     model.ProtocolTCP,
+	}
+	reader := fakeManagedOVNReader{rows: map[string][]ManagedOVNRow{
+		"NAT": {
+			{Table: "NAT", UUID: "nat-api", ExternalIDs: map[string]string{
+				"netloom_owner":         "netloom",
+				"netloom_vpc":           "prod",
+				"netloom_nat":           "api",
+				"netloom_external_port": "8443",
+				"netloom_target_port":   "8443",
+				"netloom_protocol":      "tcp",
+			}, Fields: map[string]string{
+				"type":                "dnat",
+				"external_ip":         "198.51.100.10",
+				"logical_ip":          "10.10.0.20",
+				"external_port_range": "8443",
+				"options":             "netloom_logical_port_range=443,netloom_protocol=tcp",
+			}},
+		},
+	}}
+	desired := topology.State{
+		NATRules: map[string]model.NATRule{
+			"prod/api": nat,
+		},
+	}
+
+	stats, err := AuditManagedObjectsFromReaderWithDesired(context.Background(), reader, desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.DriftedManagedRows != 1 || stats.DriftedManagedFields != 1 {
+		t.Fatalf("NAT metadata drift stats = %+v, want one target port external_id drift", stats)
+	}
+}
+
 func TestAuditManagedObjectsFromReaderReportsRouterPolicyAndStaticRouteAttachmentDrift(t *testing.T) {
 	policy := model.PolicyRoute{
 		Name:     "via-fw",

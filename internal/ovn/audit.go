@@ -273,7 +273,7 @@ func expectedManagedAuditRows(desired topology.State) map[string]map[string]stri
 		}
 	}
 	for _, rule := range desired.NATRules {
-		addAuditExpectedRow(out, "NAT", "netloom_vpc", rule.VPC, "netloom_nat", rule.Name)
+		addAuditExpectedRow(out, "NAT", natAuditExpectedExternalIDs(rule)...)
 	}
 	for _, lb := range desired.LoadBalancers {
 		frontendsByProtocol := loadBalancerFrontendsByProtocol(lb)
@@ -290,6 +290,23 @@ func expectedManagedAuditRows(desired topology.State) map[string]map[string]stri
 		addAuditExpectedRow(out, "Logical_Router", gatewayAuditIdentityFields(gateway)...)
 	}
 	return out
+}
+
+func natAuditExpectedExternalIDs(rule model.NATRule) []string {
+	fields := []string{
+		"netloom_vpc", rule.VPC,
+		"netloom_nat", rule.Name,
+	}
+	if rule.ExternalPort != 0 {
+		fields = append(fields, "netloom_external_port", fmt.Sprint(rule.ExternalPort))
+	}
+	if rule.TargetPort != 0 {
+		fields = append(fields, "netloom_target_port", fmt.Sprint(rule.TargetPort))
+	}
+	if rule.Protocol != "" && rule.Protocol != model.ProtocolAny {
+		fields = append(fields, "netloom_protocol", string(rule.Protocol))
+	}
+	return fields
 }
 
 func gatewayAuditIdentityFields(gateway model.Gateway) []string {
