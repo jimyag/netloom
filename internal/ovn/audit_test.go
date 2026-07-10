@@ -907,9 +907,10 @@ func TestAuditManagedObjectsFromReaderReportsLoadBalancerHealthCheckAttachmentDr
 		},
 		"Load_Balancer_Health_Check": {
 			{Table: "Load_Balancer_Health_Check", UUID: "hc-api", ExternalIDs: map[string]string{
-				"netloom_owner":         "netloom",
-				"netloom_vpc":           "prod",
-				"netloom_load_balancer": "api",
+				"netloom_owner":             "netloom",
+				"netloom_vpc":               "prod",
+				"netloom_load_balancer":     "api",
+				"netloom_ovn_load_balancer": loadBalancerProtocolName("prod", "api", model.ProtocolTCP),
 			}, Fields: map[string]string{
 				"vip":     "10.96.0.10:443",
 				"options": "failure_count=3,interval=5,success_count=3,timeout=20",
@@ -929,6 +930,46 @@ func TestAuditManagedObjectsFromReaderReportsLoadBalancerHealthCheckAttachmentDr
 	}
 	if stats.DriftedManagedRows != 1 || stats.DriftedManagedFields != 1 {
 		t.Fatalf("load balancer health check attachment drift stats = %+v, want one drifted attachment field", stats)
+	}
+}
+
+func TestAuditManagedObjectsFromReaderReportsLoadBalancerHealthCheckMetadataDrift(t *testing.T) {
+	lb := model.LoadBalancer{
+		Name:        "api",
+		VPC:         "prod",
+		VIP:         netip.MustParseAddr("10.96.0.10"),
+		HealthCheck: model.LoadBalancerHealthCheck{Enabled: true},
+		Ports: []model.LoadBalancerPort{{
+			Port:     443,
+			Protocol: model.ProtocolTCP,
+			Backends: []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.20"), Port: 8443}},
+		}},
+	}
+	reader := fakeManagedOVNReader{rows: map[string][]ManagedOVNRow{
+		"Load_Balancer_Health_Check": {
+			{Table: "Load_Balancer_Health_Check", UUID: "hc-api", ExternalIDs: map[string]string{
+				"netloom_owner":             "netloom",
+				"netloom_vpc":               "prod",
+				"netloom_load_balancer":     "api",
+				"netloom_ovn_load_balancer": loadBalancerProtocolName("prod", "api", model.ProtocolUDP),
+			}, Fields: map[string]string{
+				"vip":     "10.96.0.10:443",
+				"options": "failure_count=3,interval=5,success_count=3,timeout=20",
+			}},
+		},
+	}}
+	desired := topology.State{
+		LoadBalancers: map[string]model.LoadBalancer{
+			"prod/api": lb,
+		},
+	}
+
+	stats, err := AuditManagedObjectsFromReaderWithDesired(context.Background(), reader, desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.DriftedManagedRows != 1 || stats.DriftedManagedFields != 1 {
+		t.Fatalf("load balancer health check metadata drift stats = %+v, want one ovn load balancer external_id drift", stats)
 	}
 }
 

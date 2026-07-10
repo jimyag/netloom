@@ -284,6 +284,18 @@ func expectedManagedAuditRows(desired topology.State) map[string]map[string]stri
 				"netloom_protocol", string(protocol),
 				"netloom_session_affinity", fmt.Sprintf("%t", lb.SessionAffinity),
 			)
+			if lb.HealthCheck.Enabled {
+				for _, frontend := range frontendsByProtocol[protocol] {
+					hc := desiredLoadBalancerHealthCheck(lb, frontend)
+					addAuditExpectedRowWithFields(out, "Load_Balancer_Health_Check", map[string]string{
+						"vip": hc.Vip,
+					},
+						"netloom_vpc", lb.VPC,
+						"netloom_load_balancer", lb.Name,
+						"netloom_ovn_load_balancer", hc.ExternalIDs["netloom_ovn_load_balancer"],
+					)
+				}
+			}
 		}
 	}
 	for _, gateway := range desired.Gateways {
@@ -545,6 +557,28 @@ func addAuditExpectedColumns(out map[string]map[string]string, table string, fie
 	}
 	for key, value := range fields {
 		out[identity][key] = value
+	}
+}
+
+func addAuditExpectedRowWithFields(out map[string]map[string]string, table string, fields map[string]string, keyValues ...string) {
+	if len(keyValues)%2 != 0 {
+		return
+	}
+	externalIDs := make(map[string]string, len(keyValues)/2)
+	for i := 0; i < len(keyValues); i += 2 {
+		externalIDs[keyValues[i]] = keyValues[i+1]
+	}
+	identity, complete := managedAuditIdentityForRow(table, "", externalIDs, fields)
+	if !complete || identity == "" {
+		return
+	}
+	expected := out[identity]
+	if expected == nil {
+		expected = make(map[string]string, len(externalIDs))
+		out[identity] = expected
+	}
+	for key, value := range externalIDs {
+		expected[key] = value
 	}
 }
 
