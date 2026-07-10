@@ -21,14 +21,11 @@ import (
 	"sync"
 	"time"
 
-	libovsdbclient "github.com/ovn-kubernetes/libovsdb/client"
-
 	"github.com/jimyag/netloom/internal/agent"
 	"github.com/jimyag/netloom/internal/control"
 	"github.com/jimyag/netloom/internal/dataplane"
 	"github.com/jimyag/netloom/internal/linuxdatapath"
 	"github.com/jimyag/netloom/internal/model"
-	"github.com/jimyag/netloom/internal/ovn/ovsdb/vswitch"
 	"github.com/jimyag/netloom/internal/policy"
 	"github.com/jimyag/netloom/internal/topology"
 	"golang.org/x/sys/unix"
@@ -180,12 +177,29 @@ type policyRolloutStateStore interface {
 	Save(context.Context, policyRolloutStateDocument) error
 }
 
+type dnsObservationStore interface {
+	LoadDNSObservations(context.Context) ([]model.DNSRecord, error)
+}
+
+type openVSwitchExternalIDStore interface {
+	OpenVSwitchExternalID(context.Context, string) (string, bool, error)
+	SetOpenVSwitchExternalID(context.Context, string, string) error
+}
+
 type filePolicyRolloutStateStore struct {
 	path string
 }
 
 type ovsdbPolicyRolloutStateStore struct {
-	syncer *linuxdatapath.LibOVSDBProviderSyncer
+	syncer openVSwitchExternalIDStore
+}
+
+type fileDNSObservationStore struct {
+	path string
+}
+
+type ovsdbDNSObservationStore struct {
+	syncer openVSwitchExternalIDStore
 }
 
 type policyEndpointRolloutRequest struct {
@@ -778,12 +792,7 @@ func reconcileStateFile(ctx context.Context, path, node, storeName string, recon
 		observeAgentReconcileFailure(metrics, agent.ReconcileResult{Node: node}, storeName, err, time.Since(start))
 		return err
 	}
-	state, err = withRuntimeObservationsContextCache(ctx, state, identityGroupFeedCache)
-	if err != nil {
-		observeAgentReconcileFailure(metrics, agent.ReconcileResult{Node: node}, storeName, err, time.Since(start))
-		return err
-	}
-	linuxOptions, rolloutStateStore, closeLinuxOptions, err := linuxDatapathOptionsWithOVSDBSyncer(ctx)
+	linuxOptions, rolloutStateStore, dnsObservationStore, closeLinuxOptions, err := linuxDatapathOptionsWithOVSDBSyncer(ctx)
 	if err != nil {
 		duration := time.Since(start)
 		result := agent.ReconcileResult{Node: node}
@@ -792,6 +801,11 @@ func reconcileStateFile(ctx context.Context, path, node, storeName string, recon
 		return err
 	}
 	defer closeLinuxOptions()
+	state, err = withRuntimeObservationsAtContextCacheStore(ctx, state, time.Now().UTC(), identityGroupFeedCache, dnsObservationStore)
+	if err != nil {
+		observeAgentReconcileFailure(metrics, agent.ReconcileResult{Node: node}, storeName, err, time.Since(start))
+		return err
+	}
 	result, err := reconciler.Reconcile(ctx, state, agent.ReconcileOptions{
 		Node:                              node,
 		TCXInterface:                      os.Getenv("NETLOOM_TCX_IFACE"),
@@ -859,12 +873,7 @@ func reconcileStateFileOnce(ctx context.Context, path, node, storeName string, s
 		observeAgentReconcileFailure(metrics, agent.ReconcileResult{Node: node}, storeName, err, time.Since(start))
 		return err
 	}
-	state, err = withRuntimeObservationsContextCache(ctx, state, identityGroupFeedCache)
-	if err != nil {
-		observeAgentReconcileFailure(metrics, agent.ReconcileResult{Node: node}, storeName, err, time.Since(start))
-		return err
-	}
-	linuxOptions, rolloutStateStore, closeLinuxOptions, err := linuxDatapathOptionsWithOVSDBSyncer(ctx)
+	linuxOptions, rolloutStateStore, dnsObservationStore, closeLinuxOptions, err := linuxDatapathOptionsWithOVSDBSyncer(ctx)
 	if err != nil {
 		duration := time.Since(start)
 		result := agent.ReconcileResult{Node: node}
@@ -873,6 +882,11 @@ func reconcileStateFileOnce(ctx context.Context, path, node, storeName string, s
 		return err
 	}
 	defer closeLinuxOptions()
+	state, err = withRuntimeObservationsAtContextCacheStore(ctx, state, time.Now().UTC(), identityGroupFeedCache, dnsObservationStore)
+	if err != nil {
+		observeAgentReconcileFailure(metrics, agent.ReconcileResult{Node: node}, storeName, err, time.Since(start))
+		return err
+	}
 	result, err := agent.ReconcileNodeWithOptions(ctx, state, agent.ReconcileOptions{
 		Node:                              node,
 		Store:                             store,
@@ -952,7 +966,11 @@ func withRuntimeObservationsContextCache(ctx context.Context, state control.Desi
 }
 
 func withRuntimeObservationsAtContextCache(ctx context.Context, state control.DesiredState, now time.Time, cache *control.IdentityGroupObservationCache) (control.DesiredState, error) {
-	next, err := withDNSObservationsAt(state, now)
+	return withRuntimeObservationsAtContextCacheStore(ctx, state, now, cache, dnsObservationFileStoreFromEnv())
+}
+
+func withRuntimeObservationsAtContextCacheStore(ctx context.Context, state control.DesiredState, now time.Time, cache *control.IdentityGroupObservationCache, dnsStore dnsObservationStore) (control.DesiredState, error) {
+	next, err := withDNSObservationsAtContextStore(ctx, state, now, dnsStore)
 	if err != nil {
 		return control.DesiredState{}, err
 	}
@@ -960,16 +978,14 @@ func withRuntimeObservationsAtContextCache(ctx context.Context, state control.De
 }
 
 func withDNSObservationsAt(state control.DesiredState, now time.Time) (control.DesiredState, error) {
-	path := os.Getenv("NETLOOM_DNS_OBSERVATIONS_FILE")
-	if path == "" {
+	return withDNSObservationsAtContextStore(context.Background(), state, now, dnsObservationFileStoreFromEnv())
+}
+
+func withDNSObservationsAtContextStore(ctx context.Context, state control.DesiredState, now time.Time, store dnsObservationStore) (control.DesiredState, error) {
+	if store == nil {
 		return state, nil
 	}
-	file, err := os.Open(path)
-	if err != nil {
-		return control.DesiredState{}, err
-	}
-	defer file.Close()
-	records, err := control.LoadDNSObservationsJSON(file)
+	records, err := store.LoadDNSObservations(ctx)
 	if err != nil {
 		return control.DesiredState{}, err
 	}
@@ -1535,6 +1551,36 @@ func (s ovsdbPolicyRolloutStateStore) Save(ctx context.Context, doc policyRollou
 		return fmt.Errorf("encode Open_vSwitch external_ids:%s: %w", policyRolloutStateKey, err)
 	}
 	return s.syncer.SetOpenVSwitchExternalID(ctx, policyRolloutStateKey, string(raw))
+}
+
+func (s fileDNSObservationStore) LoadDNSObservations(_ context.Context) ([]model.DNSRecord, error) {
+	file, err := os.Open(s.path)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	return control.LoadDNSObservationsJSON(file)
+}
+
+func (s ovsdbDNSObservationStore) LoadDNSObservations(ctx context.Context) ([]model.DNSRecord, error) {
+	if s.syncer == nil {
+		return nil, nil
+	}
+	raw, ok, err := s.syncer.OpenVSwitchExternalID(ctx, control.DNSObservationsOpenVSwitchExternalID)
+	if err != nil {
+		return nil, err
+	}
+	if !ok || strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	records, err := control.LoadDNSObservationsJSON(strings.NewReader(raw))
+	if err != nil {
+		return nil, fmt.Errorf("decode Open_vSwitch external_ids:%s: %w", control.DNSObservationsOpenVSwitchExternalID, err)
+	}
+	return records, nil
 }
 
 func uniqueStrings(values []string) []string {
@@ -2921,22 +2967,22 @@ func linuxDatapathOptions() *linuxdatapath.Options {
 	}
 }
 
-func linuxDatapathOptionsWithOVSDBSyncer(ctx context.Context) (*linuxdatapath.Options, policyRolloutStateStore, func(), error) {
+func linuxDatapathOptionsWithOVSDBSyncer(ctx context.Context) (*linuxdatapath.Options, policyRolloutStateStore, dnsObservationStore, func(), error) {
 	options := linuxDatapathOptions()
 	endpoint := strings.TrimSpace(os.Getenv("NETLOOM_OVSDB_ENDPOINT"))
 	if endpoint == "" {
-		return options, policyRolloutStateFileStoreFromEnv(), func() {}, nil
+		return options, policyRolloutStateFileStoreFromEnv(), dnsObservationFileStoreFromEnv(), func() {}, nil
 	}
 	client, closeFn, err := newOpenVSwitchClient(ctx, endpoint)
 	if err != nil {
-		return nil, nil, func() {}, err
+		return nil, nil, nil, func() {}, err
 	}
 	providerOVSDB := linuxdatapath.NewLibOVSDBProviderSyncer(client)
 	if options != nil && options.SyncOVSDB {
 		options.ProviderOVSDBSyncer = providerOVSDB
 		options.ProviderOVSDBReader = providerOVSDB
 	}
-	return options, ovsdbPolicyRolloutStateStore{syncer: providerOVSDB}, closeFn, nil
+	return options, ovsdbPolicyRolloutStateStore{syncer: providerOVSDB}, ovsdbDNSObservationStore{syncer: providerOVSDB}, closeFn, nil
 }
 
 func policyRolloutStateFileStoreFromEnv() policyRolloutStateStore {
@@ -2947,33 +2993,21 @@ func policyRolloutStateFileStoreFromEnv() policyRolloutStateStore {
 	return filePolicyRolloutStateStore{path: path}
 }
 
+func dnsObservationFileStoreFromEnv() dnsObservationStore {
+	path := strings.TrimSpace(os.Getenv("NETLOOM_DNS_OBSERVATIONS_FILE"))
+	if path == "" {
+		return nil
+	}
+	return fileDNSObservationStore{path: path}
+}
+
 func ovsdbSyncEnabled() bool {
 	return strings.TrimSpace(os.Getenv("NETLOOM_OVSDB_ENDPOINT")) != "" ||
 		os.Getenv("NETLOOM_OVSDB_SYNC") == "1"
 }
 
-func newOpenVSwitchClient(ctx context.Context, endpoint string) (libovsdbclient.Client, func(), error) {
-	dbModel, err := vswitch.FullDatabaseModel()
-	if err != nil {
-		return nil, nil, fmt.Errorf("build Open_vSwitch libovsdb model: %w", err)
-	}
-	client, err := libovsdbclient.NewOVSDBClient(dbModel, libovsdbclient.WithEndpoint(endpoint))
-	if err != nil {
-		return nil, nil, fmt.Errorf("create Open_vSwitch libovsdb client: %w", err)
-	}
-	if err := client.Connect(ctx); err != nil {
-		client.Close()
-		return nil, nil, fmt.Errorf("connect Open_vSwitch libovsdb endpoint %s: %w", endpoint, err)
-	}
-	if _, err := client.MonitorAll(ctx); err != nil {
-		client.Disconnect()
-		client.Close()
-		return nil, nil, fmt.Errorf("monitor Open_vSwitch libovsdb endpoint %s: %w", endpoint, err)
-	}
-	return client, func() {
-		client.Disconnect()
-		client.Close()
-	}, nil
+func newOpenVSwitchClient(ctx context.Context, endpoint string) (linuxdatapath.OVSDBClient, func(), error) {
+	return linuxdatapath.NewOpenVSwitchClient(ctx, endpoint)
 }
 
 func getenvDefault(key, fallback string) string {

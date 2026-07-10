@@ -297,6 +297,37 @@ func TestWithDNSObservationsPrunesExpiredRecords(t *testing.T) {
 	}
 }
 
+func TestWithDNSObservationsReadsOpenVSwitchExternalIDStore(t *testing.T) {
+	raw, err := control.MarshalDNSObservationsJSON([]model.DNSRecord{{
+		Name: "api.example.com",
+		IPs:  []netip.Addr{netip.MustParseAddr("203.0.113.10")},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := fakeOpenVSwitchExternalIDStore{
+		values: map[string]string{
+			control.DNSObservationsOpenVSwitchExternalID: string(raw),
+		},
+	}
+
+	state, err := withDNSObservationsAtContextStore(t.Context(), control.DesiredState{
+		DNSRecords: []model.DNSRecord{{
+			Name: "static.example.com",
+			IPs:  []netip.Addr{netip.MustParseAddr("203.0.113.20")},
+		}},
+	}, time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC), ovsdbDNSObservationStore{syncer: &store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.DNSRecords) != 2 {
+		t.Fatalf("dns records = %d, want 2: %+v", len(state.DNSRecords), state.DNSRecords)
+	}
+	if state.DNSRecords[0].Name != "api.example.com" || state.DNSRecords[1].Name != "static.example.com" {
+		t.Fatalf("dns records = %+v", state.DNSRecords)
+	}
+}
+
 func TestWithRuntimeObservationsMergesIdentityGroups(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "identity-groups.json")
 	if err := os.WriteFile(path, []byte(`{"identity_groups": [{"name": "frontend-api", "vpc": "prod", "source": "cmdb", "observed_at": "2026-07-10T01:00:00Z", "ttl_seconds": 120, "endpoint_ids": ["pod-a"]}]}`), 0o644); err != nil {
@@ -2729,4 +2760,24 @@ func TestAgentMetricsAccumulatesReconcileCountersAndBuckets(t *testing.T) {
 			t.Fatalf("cumulative metrics output missing %q:\n%s", expected, output)
 		}
 	}
+}
+
+type fakeOpenVSwitchExternalIDStore struct {
+	values map[string]string
+}
+
+func (s *fakeOpenVSwitchExternalIDStore) OpenVSwitchExternalID(_ context.Context, key string) (string, bool, error) {
+	if s.values == nil {
+		return "", false, nil
+	}
+	value, ok := s.values[key]
+	return value, ok, nil
+}
+
+func (s *fakeOpenVSwitchExternalIDStore) SetOpenVSwitchExternalID(_ context.Context, key, value string) error {
+	if s.values == nil {
+		s.values = map[string]string{}
+	}
+	s.values[key] = value
+	return nil
 }

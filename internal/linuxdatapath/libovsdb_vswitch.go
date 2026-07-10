@@ -20,6 +20,32 @@ type LibOVSDBProviderSyncer struct {
 	client client.Client
 }
 
+type OVSDBClient = client.Client
+
+func NewOpenVSwitchClient(ctx context.Context, endpoint string) (client.Client, func(), error) {
+	dbModel, err := vswitch.FullDatabaseModel()
+	if err != nil {
+		return nil, nil, fmt.Errorf("build Open_vSwitch libovsdb model: %w", err)
+	}
+	ovsClient, err := client.NewOVSDBClient(dbModel, client.WithEndpoint(endpoint))
+	if err != nil {
+		return nil, nil, fmt.Errorf("create Open_vSwitch libovsdb client: %w", err)
+	}
+	if err := ovsClient.Connect(ctx); err != nil {
+		ovsClient.Close()
+		return nil, nil, fmt.Errorf("connect Open_vSwitch libovsdb endpoint %s: %w", endpoint, err)
+	}
+	if _, err := ovsClient.MonitorAll(ctx); err != nil {
+		ovsClient.Disconnect()
+		ovsClient.Close()
+		return nil, nil, fmt.Errorf("monitor Open_vSwitch libovsdb endpoint %s: %w", endpoint, err)
+	}
+	return ovsClient, func() {
+		ovsClient.Disconnect()
+		ovsClient.Close()
+	}, nil
+}
+
 func NewLibOVSDBProviderSyncer(client client.Client) *LibOVSDBProviderSyncer {
 	return &LibOVSDBProviderSyncer{client: client}
 }

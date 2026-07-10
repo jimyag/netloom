@@ -17,12 +17,14 @@ import (
 
 	"github.com/jimyag/netloom/internal/control"
 	"github.com/jimyag/netloom/internal/dnsobserver"
+	"github.com/jimyag/netloom/internal/linuxdatapath"
 	"github.com/jimyag/netloom/internal/model"
 )
 
 type options struct {
 	inputPath       string
 	outputPath      string
+	ovsdbEndpoint   string
 	format          string
 	mergeExisting   bool
 	defaultTTL      uint
@@ -41,12 +43,13 @@ func main() {
 	}
 }
 
-func run(_ context.Context, args []string, stdin io.Reader, stdout io.Writer, now func() time.Time) error {
+func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer, now func() time.Time) error {
 	flags := flag.NewFlagSet("netloom-dns-observer", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	opts := options{}
 	flags.StringVar(&opts.inputPath, "in", "-", "DNS response input path, or '-' for stdin")
 	flags.StringVar(&opts.outputPath, "observations", os.Getenv("NETLOOM_DNS_OBSERVATIONS_FILE"), "DNS observations JSON output path")
+	flags.StringVar(&opts.ovsdbEndpoint, "ovsdb", os.Getenv("NETLOOM_OVSDB_ENDPOINT"), "Open_vSwitch OVSDB endpoint for DNS observations")
 	flags.StringVar(&opts.format, "format", "base64-lines", "input format: base64-lines, hex-lines, or raw")
 	flags.BoolVar(&opts.mergeExisting, "merge", true, "merge records with an existing observations file")
 	flags.UintVar(&opts.defaultTTL, "default-ttl", 0, "TTL seconds to apply to answers that do not carry a positive TTL")
@@ -54,8 +57,13 @@ func run(_ context.Context, args []string, stdin io.Reader, stdout io.Writer, no
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if opts.outputPath == "" {
-		return fmt.Errorf("-observations or NETLOOM_DNS_OBSERVATIONS_FILE is required")
+	store, closeStore, err := dnsObservationStoreFromOptions(ctx, opts)
+	if err != nil {
+		return err
+	}
+	defer closeStore()
+	if store == nil {
+		return fmt.Errorf("-ovsdb/NETLOOM_OVSDB_ENDPOINT or -observations/NETLOOM_DNS_OBSERVATIONS_FILE is required")
 	}
 	if opts.defaultTTL > uint(^uint32(0)) {
 		return fmt.Errorf("-default-ttl exceeds uint32")
@@ -96,7 +104,7 @@ func run(_ context.Context, args []string, stdin io.Reader, stdout io.Writer, no
 
 	merged := records
 	if opts.mergeExisting {
-		existing, err := loadExisting(opts.outputPath)
+		existing, err := store.Load(ctx)
 		if err != nil {
 			return err
 		}
@@ -109,11 +117,46 @@ func run(_ context.Context, args []string, stdin io.Reader, stdout io.Writer, no
 	if err != nil {
 		return err
 	}
-	if err := writeObservations(opts.outputPath, merged); err != nil {
+	if err := store.Save(ctx, merged); err != nil {
 		return err
 	}
 	fmt.Fprintf(stdout, "netloom-dns-observer observed packets=%d records=%d written=%d\n", len(packets), len(records), len(merged))
 	return nil
+}
+
+type dnsObservationStore interface {
+	Load(context.Context) ([]model.DNSRecord, error)
+	Save(context.Context, []model.DNSRecord) error
+}
+
+type openVSwitchExternalIDStore interface {
+	OpenVSwitchExternalID(context.Context, string) (string, bool, error)
+	SetOpenVSwitchExternalID(context.Context, string, string) error
+}
+
+type fileDNSObservationStore struct {
+	path string
+}
+
+type ovsdbDNSObservationStore struct {
+	syncer openVSwitchExternalIDStore
+}
+
+func dnsObservationStoreFromOptions(ctx context.Context, opts options) (dnsObservationStore, func(), error) {
+	endpoint := strings.TrimSpace(opts.ovsdbEndpoint)
+	if endpoint != "" {
+		client, closeClient, err := linuxdatapath.NewOpenVSwitchClient(ctx, endpoint)
+		if err != nil {
+			return nil, func() {}, err
+		}
+		return ovsdbDNSObservationStore{
+			syncer: linuxdatapath.NewLibOVSDBProviderSyncer(client),
+		}, closeClient, nil
+	}
+	if strings.TrimSpace(opts.outputPath) == "" {
+		return nil, func() {}, nil
+	}
+	return fileDNSObservationStore{path: opts.outputPath}, func() {}, nil
 }
 
 func observedAt(value string, now func() time.Time) (time.Time, error) {
@@ -176,8 +219,8 @@ func readEncodedLines(r io.Reader, decode func(string) ([]byte, error)) ([][]byt
 	return packets, nil
 }
 
-func loadExisting(path string) ([]model.DNSRecord, error) {
-	file, err := os.Open(path)
+func (s fileDNSObservationStore) Load(_ context.Context) ([]model.DNSRecord, error) {
+	file, err := os.Open(s.path)
 	if os.IsNotExist(err) {
 		return nil, nil
 	}
@@ -188,11 +231,11 @@ func loadExisting(path string) ([]model.DNSRecord, error) {
 	return control.LoadDNSObservationsJSON(file)
 }
 
-func writeObservations(path string, records []model.DNSRecord) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+func (s fileDNSObservationStore) Save(_ context.Context, records []model.DNSRecord) error {
+	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
+	tmp, err := os.CreateTemp(filepath.Dir(s.path), filepath.Base(s.path)+".*.tmp")
 	if err != nil {
 		return err
 	}
@@ -211,5 +254,30 @@ func writeObservations(path string, records []model.DNSRecord) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmpPath, path)
+	return os.Rename(tmpPath, s.path)
+}
+
+func (s ovsdbDNSObservationStore) Load(ctx context.Context) ([]model.DNSRecord, error) {
+	if s.syncer == nil {
+		return nil, nil
+	}
+	raw, ok, err := s.syncer.OpenVSwitchExternalID(ctx, control.DNSObservationsOpenVSwitchExternalID)
+	if err != nil {
+		return nil, err
+	}
+	if !ok || strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	return control.LoadDNSObservationsJSON(strings.NewReader(raw))
+}
+
+func (s ovsdbDNSObservationStore) Save(ctx context.Context, records []model.DNSRecord) error {
+	if s.syncer == nil {
+		return nil
+	}
+	raw, err := control.MarshalDNSObservationsJSON(records)
+	if err != nil {
+		return err
+	}
+	return s.syncer.SetOpenVSwitchExternalID(ctx, control.DNSObservationsOpenVSwitchExternalID, string(raw))
 }

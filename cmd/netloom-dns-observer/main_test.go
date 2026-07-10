@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"net/netip"
@@ -165,11 +166,56 @@ func TestRunUpsertsRepeatedExistingObservations(t *testing.T) {
 	}
 }
 
+func TestOVSDBDNSObservationStoreSavesAndLoadsExternalID(t *testing.T) {
+	ovsdb := &fakeOpenVSwitchExternalIDStore{}
+	store := ovsdbDNSObservationStore{syncer: ovsdb}
+
+	err := store.Save(t.Context(), []model.DNSRecord{{
+		Name: "api.example.com",
+		IPs:  []netip.Addr{netip.MustParseAddr("203.0.113.10")},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := ovsdb.values[control.DNSObservationsOpenVSwitchExternalID]
+	if raw == "" {
+		t.Fatalf("missing %s external_id", control.DNSObservationsOpenVSwitchExternalID)
+	}
+
+	records, err := store.Load(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].Name != "api.example.com" {
+		t.Fatalf("records = %+v", records)
+	}
+}
+
 func TestRunRejectsEmptyInput(t *testing.T) {
 	err := run(t.Context(), []string{"-observations", filepath.Join(t.TempDir(), "dns.json")}, strings.NewReader("\n# ignored\n"), ioDiscard{}, time.Now)
 	if err == nil {
 		t.Fatal("expected empty input to fail")
 	}
+}
+
+type fakeOpenVSwitchExternalIDStore struct {
+	values map[string]string
+}
+
+func (s *fakeOpenVSwitchExternalIDStore) OpenVSwitchExternalID(_ context.Context, key string) (string, bool, error) {
+	if s.values == nil {
+		return "", false, nil
+	}
+	value, ok := s.values[key]
+	return value, ok, nil
+}
+
+func (s *fakeOpenVSwitchExternalIDStore) SetOpenVSwitchExternalID(_ context.Context, key, value string) error {
+	if s.values == nil {
+		s.values = map[string]string{}
+	}
+	s.values[key] = value
+	return nil
 }
 
 type ioDiscard struct{}

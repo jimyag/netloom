@@ -12,6 +12,8 @@ import (
 	"github.com/jimyag/netloom/internal/model"
 )
 
+const DNSObservationsOpenVSwitchExternalID = "netloom_dns_observations"
+
 type dnsObservationDocument struct {
 	DNSRecords []model.DNSRecord `json:"dns_records"`
 }
@@ -37,6 +39,14 @@ func LoadDNSObservationsJSON(r io.Reader) ([]model.DNSRecord, error) {
 		return nil, fmt.Errorf("decode dns observations: %w", err)
 	}
 	return validateDNSRecords(document.DNSRecords)
+}
+
+func MarshalDNSObservationsJSON(records []model.DNSRecord) ([]byte, error) {
+	records, err := validateDNSRecords(records)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(dnsObservationDocument{DNSRecords: records})
 }
 
 func MergeDNSRecords(base, observed []model.DNSRecord) ([]model.DNSRecord, error) {
