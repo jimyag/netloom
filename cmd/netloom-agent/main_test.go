@@ -901,6 +901,16 @@ func TestFormatRuleStatsIncludesCounters(t *testing.T) {
 	}
 }
 
+func TestFormatRuleCatalogIncludesCookieAndReference(t *testing.T) {
+	formatted := formatRuleCatalog([]agent.PolicyRuleCatalogEntry{{
+		RuleCookie: 7,
+		RuleRef:    "prod/web/deny-client",
+	}})
+	if formatted != "7:prod/web/deny-client" {
+		t.Fatalf("formatted rule catalog = %s, want cookie and rule reference", formatted)
+	}
+}
+
 func TestFormatEndpointRuleStatsIncludesEndpointAndCounters(t *testing.T) {
 	formatted := formatEndpointRuleStats([]dataplane.RuleMetrics{
 		{

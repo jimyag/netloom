@@ -33,6 +33,10 @@ func TestRunSelfTestCompilesAndEvaluatesPolicy(t *testing.T) {
 	if len(result.RuleStats) != 3 {
 		t.Fatalf("rule stats = %+v, want allow, deny, and conntrack buckets", result.RuleStats)
 	}
+	if !selfTestCatalogContains(result.RuleCatalog, "default/web/allow-https") ||
+		!selfTestCatalogContains(result.RuleCatalog, "default/web/deny-range") {
+		t.Fatalf("rule catalog = %+v, want allow and deny rule references", result.RuleCatalog)
+	}
 	var conntrackRule, allowRule, denyRule *dataplane.RuleMetrics
 	for i := range result.RuleStats {
 		switch {
@@ -65,6 +69,15 @@ func TestRunSelfTestCompilesAndEvaluatesPolicy(t *testing.T) {
 	if result.TCX != "not-requested" {
 		t.Fatalf("tcx status = %s, want not-requested", result.TCX)
 	}
+}
+
+func selfTestCatalogContains(catalog []PolicyRuleCatalogEntry, ref string) bool {
+	for _, entry := range catalog {
+		if entry.RuleRef == ref && entry.RuleCookie != 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func TestRunSelfTestAcceptsCustomVpcScope(t *testing.T) {
