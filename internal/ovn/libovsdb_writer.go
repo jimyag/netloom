@@ -421,23 +421,12 @@ func (w *LibOVSDBTopologyWriter) EnsureGateway(ctx context.Context, gateway mode
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	router, ok, err := w.logicalRouterByName(ctx, logicalRouter(gateway.VPC))
+	ops, err := w.gatewayOperations(ctx, gateway, true)
 	if err != nil {
 		return err
 	}
-	if !ok {
-		return fmt.Errorf("logical router %s must exist before gateway %s", logicalRouter(gateway.VPC), gateway.Name)
-	}
-	nextExternalIDs := mergeGatewayExternalIDs(router.ExternalIDs, gatewayExternalIDs(gateway))
-	nextOptions := gatewayRouterOptions(router.Options, gateway)
-	if reflect.DeepEqual(router.ExternalIDs, nextExternalIDs) && reflect.DeepEqual(router.Options, nextOptions) {
+	if len(ops) == 0 {
 		return nil
-	}
-	router.ExternalIDs = nextExternalIDs
-	router.Options = nextOptions
-	ops, err := w.client.Where(router).Update(router, &router.ExternalIDs, &router.Options)
-	if err != nil {
-		return fmt.Errorf("update gateway router %s: %w", router.Name, err)
 	}
 	results, err := w.client.Transact(ctx, ops...)
 	if err != nil {
@@ -447,6 +436,31 @@ func (w *LibOVSDBTopologyWriter) EnsureGateway(ctx context.Context, gateway mode
 		return fmt.Errorf("gateway %s/%s operation errors=%+v: %w", gateway.VPC, gateway.Name, opErrors, err)
 	}
 	return nil
+}
+
+func (w *LibOVSDBTopologyWriter) gatewayOperations(ctx context.Context, gateway model.Gateway, requireRouter bool) ([]ovsdb.Operation, error) {
+	router, ok, err := w.logicalRouterByName(ctx, logicalRouter(gateway.VPC))
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		if !requireRouter {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("logical router %s must exist before gateway %s", logicalRouter(gateway.VPC), gateway.Name)
+	}
+	nextExternalIDs := mergeGatewayExternalIDs(router.ExternalIDs, gatewayExternalIDs(gateway))
+	nextOptions := gatewayRouterOptions(router.Options, gateway)
+	if reflect.DeepEqual(router.ExternalIDs, nextExternalIDs) && reflect.DeepEqual(router.Options, nextOptions) {
+		return nil, nil
+	}
+	router.ExternalIDs = nextExternalIDs
+	router.Options = nextOptions
+	ops, err := w.client.Where(router).Update(router, &router.ExternalIDs, &router.Options)
+	if err != nil {
+		return nil, fmt.Errorf("update gateway router %s: %w", router.Name, err)
+	}
+	return ops, nil
 }
 
 func (w *LibOVSDBTopologyWriter) EnsureNATRule(ctx context.Context, rule model.NATRule) error {

@@ -1923,6 +1923,84 @@ func TestLibOVSDBTopologyWriterCleanupRepairsRouteAndPolicyRowDriftInSteadyState
 	}
 }
 
+func TestLibOVSDBTopologyWriterCleanupRepairsGatewayRouterDriftInSteadyState(t *testing.T) {
+	ctx := context.Background()
+	client, closeFn := newTestOVNNBClient(t)
+	defer closeFn()
+
+	if _, err := client.MonitorAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	writer := NewLibOVSDBTopologyWriter(client)
+	gateway := model.Gateway{
+		Name:       "gw-a",
+		VPC:        "prod",
+		Node:       "node-a",
+		ExternalIF: "eth0",
+		LANIP:      netip.MustParseAddr("10.10.0.1"),
+	}
+	state := topology.State{
+		VPCs:     map[string]model.VPC{"prod": {Name: "prod"}},
+		Gateways: map[string]model.Gateway{"prod/gw-a": gateway},
+	}
+	if err := writer.CleanupTopology(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureVPC(ctx, state.VPCs["prod"]); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureGateway(ctx, gateway); err != nil {
+		t.Fatal(err)
+	}
+
+	var routers []ovnnb.LogicalRouter
+	requireEventually(t, func() bool {
+		routers = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("prod") }).List(ctx, &routers)
+		return err == nil && len(routers) == 1 && routers[0].Options["chassis"] == "node-a"
+	})
+	routers[0].Options["chassis"] = "node-b"
+	routers[0].ExternalIDs["netloom_gateway"] = "gw-old"
+	routers[0].ExternalIDs["netloom_external_if"] = "eth9"
+	updateOps, err := client.Where(&routers[0]).Update(&routers[0], &routers[0].Options, &routers[0].ExternalIDs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := client.Transact(ctx, updateOps...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, updateOps); err != nil {
+		t.Fatalf("seed gateway drift operation errors=%+v: %v", opErrors, err)
+	}
+	requireEventually(t, func() bool {
+		routers = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("prod") }).List(ctx, &routers)
+		return err == nil && len(routers) == 1 &&
+			routers[0].Options["chassis"] == "node-b" &&
+			routers[0].ExternalIDs["netloom_gateway"] == "gw-old" &&
+			routers[0].ExternalIDs["netloom_external_if"] == "eth9"
+	})
+
+	if err := writer.CleanupTopology(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	requireEventually(t, func() bool {
+		routers = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("prod") }).List(ctx, &routers)
+		return err == nil && len(routers) == 1 &&
+			routers[0].Options["chassis"] == "node-a" &&
+			routers[0].ExternalIDs["netloom_gateway"] == "gw-a" &&
+			routers[0].ExternalIDs["netloom_external_if"] == "eth0" &&
+			routers[0].ExternalIDs["netloom_gateway_lan_ip"] == "10.10.0.1" &&
+			routers[0].ExternalIDs["netloom_gateway_distributed"] == "false"
+	})
+	stats := writer.LastCleanupStats()
+	if stats.FirstReconcileGC || stats.Operations == 0 {
+		t.Fatalf("cleanup stats = %+v, want steady-state gateway repair operations", stats)
+	}
+}
+
 func TestLibOVSDBTopologyWriterCleanupRepairsLoadBalancerOptionsDriftInSteadyState(t *testing.T) {
 	ctx := context.Background()
 	client, closeFn := newTestOVNNBClient(t)
