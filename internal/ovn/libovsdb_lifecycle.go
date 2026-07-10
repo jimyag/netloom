@@ -55,6 +55,15 @@ func (w *LibOVSDBTopologyWriter) CleanupTopology(ctx context.Context, state topo
 		stats.Operations = len(ops)
 	}
 	if w.seen && len(ops) == 0 {
+		repairOps, err := w.repairSteadyStateNATRules(ctx, state)
+		if err != nil {
+			w.lastCleanup = stats
+			return err
+		}
+		ops = append(ops, repairOps...)
+		stats.Operations = len(ops)
+	}
+	if w.seen && len(ops) == 0 {
 		repairOps, err := w.repairSteadyStateLoadBalancers(ctx, state)
 		if err != nil {
 			w.lastCleanup = stats
@@ -354,6 +363,63 @@ func (w *LibOVSDBTopologyWriter) repairSteadyStateEndpointDHCPOptions(ctx contex
 			return nil, err
 		}
 		ops = append(ops, nextOps...)
+	}
+	return ops, nil
+}
+
+func (w *LibOVSDBTopologyWriter) repairSteadyStateNATRules(ctx context.Context, desired topology.State) ([]ovsdb.Operation, error) {
+	var ops []ovsdb.Operation
+	for _, rule := range desired.NATRules {
+		router, ok, err := w.logicalRouterByName(ctx, logicalRouter(rule.VPC))
+		if err != nil {
+			return nil, err
+		}
+		if !ok || !isNetloomManaged(router.ExternalIDs) {
+			continue
+		}
+		existing, err := w.natRulesByName(ctx, rule.VPC, rule.Name)
+		if err != nil {
+			return nil, err
+		}
+		if len(existing) == 0 {
+			continue
+		}
+		desiredRow := desiredNATRuleRow(rule)
+		keepIndex := preferredReferencedRow(router.Nat, existing, func(row ovnnb.NAT) string { return row.UUID })
+		keep := existing[keepIndex]
+		nextExternalIDs := mergeManagedExternalIDs(keep.ExternalIDs, desiredRow.ExternalIDs)
+		if !containsString(router.Nat, keep.UUID) {
+			attachOps, err := w.attachNATRule(router, keep.UUID)
+			if err != nil {
+				return nil, err
+			}
+			ops = append(ops, attachOps...)
+		}
+		if natRowChanged(keep, desiredRow, nextExternalIDs) {
+			keep.Type = desiredRow.Type
+			keep.ExternalIP = desiredRow.ExternalIP
+			keep.LogicalIP = desiredRow.LogicalIP
+			keep.ExternalPortRange = desiredRow.ExternalPortRange
+			keep.Options = desiredRow.Options
+			keep.LogicalPort = desiredRow.LogicalPort
+			keep.ExternalMAC = desiredRow.ExternalMAC
+			keep.ExternalIDs = nextExternalIDs
+			updateOps, err := w.client.Where(&keep).Update(&keep, &keep.Type, &keep.ExternalIP, &keep.LogicalIP, &keep.ExternalPortRange, &keep.Options, &keep.LogicalPort, &keep.ExternalMAC, &keep.ExternalIDs)
+			if err != nil {
+				return nil, fmt.Errorf("repair NAT rule %s/%s: %w", rule.VPC, rule.Name, err)
+			}
+			ops = append(ops, updateOps...)
+		}
+		for i := range existing {
+			if i == keepIndex {
+				continue
+			}
+			deleteOps, err := w.deleteNATRule(router.UUID, &existing[i])
+			if err != nil {
+				return nil, err
+			}
+			ops = append(ops, deleteOps...)
+		}
 	}
 	return ops, nil
 }

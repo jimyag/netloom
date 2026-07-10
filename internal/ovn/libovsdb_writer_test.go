@@ -1695,6 +1695,109 @@ func TestLibOVSDBTopologyWriterCleanupRepairsEndpointDHCPAttachmentAndFamilyDrif
 	}
 }
 
+func TestLibOVSDBTopologyWriterCleanupRepairsNATRowDriftInSteadyState(t *testing.T) {
+	ctx := context.Background()
+	client, closeFn := newTestOVNNBClient(t)
+	defer closeFn()
+
+	if _, err := client.MonitorAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	writer := NewLibOVSDBTopologyWriter(client)
+	nat := model.NATRule{
+		Name:       "egress",
+		VPC:        "prod",
+		Type:       model.ActionSNAT,
+		MatchCIDR:  netip.MustParsePrefix("10.10.0.0/24"),
+		ExternalIP: netip.MustParseAddr("198.51.100.10"),
+	}
+	state := topology.State{
+		VPCs:     map[string]model.VPC{"prod": {Name: "prod"}},
+		NATRules: map[string]model.NATRule{"prod/egress": nat},
+	}
+	if err := writer.CleanupTopology(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureVPC(ctx, state.VPCs["prod"]); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureNATRule(ctx, nat); err != nil {
+		t.Fatal(err)
+	}
+
+	var routers []ovnnb.LogicalRouter
+	requireEventually(t, func() bool {
+		routers = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("prod") }).List(ctx, &routers)
+		return err == nil && len(routers) == 1 && len(routers[0].Nat) == 1
+	})
+	var nats []ovnnb.NAT
+	requireEventually(t, func() bool {
+		nats = nil
+		err := client.WhereCache(func(row *ovnnb.NAT) bool {
+			return row.ExternalIDs["netloom_vpc"] == "prod" && row.ExternalIDs["netloom_nat"] == "egress"
+		}).List(ctx, &nats)
+		return err == nil && len(nats) == 1
+	})
+	natUUID := nats[0].UUID
+	nats[0].LogicalIP = "10.99.0.0/24"
+	nats[0].ExternalIDs["netloom_protocol"] = "tcp"
+	updateNAT, err := client.Where(&nats[0]).Update(&nats[0], &nats[0].LogicalIP, &nats[0].ExternalIDs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := client.Transact(ctx, updateNAT...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, updateNAT); err != nil {
+		t.Fatalf("seed NAT drift operation errors=%+v: %v", opErrors, err)
+	}
+	if !eventually(func() bool {
+		routers = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("prod") }).List(ctx, &routers)
+		if err != nil || len(routers) != 1 || len(routers[0].Nat) != 1 || !containsString(routers[0].Nat, natUUID) {
+			return false
+		}
+		nats = nil
+		err = client.WhereCache(func(row *ovnnb.NAT) bool {
+			return row.ExternalIDs["netloom_vpc"] == "prod" && row.ExternalIDs["netloom_nat"] == "egress"
+		}).List(ctx, &nats)
+		if err != nil || len(nats) != 1 {
+			return false
+		}
+		return nats[0].UUID == natUUID && nats[0].LogicalIP == "10.99.0.0/24" && nats[0].ExternalIDs["netloom_protocol"] == "tcp"
+	}) {
+		t.Fatalf("seeded NAT drift routers=%+v nats=%+v", routers, nats)
+	}
+
+	if err := writer.CleanupTopology(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	if !eventually(func() bool {
+		routers = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("prod") }).List(ctx, &routers)
+		if err != nil || len(routers) != 1 || len(routers[0].Nat) != 1 || !containsString(routers[0].Nat, natUUID) {
+			return false
+		}
+		nats = nil
+		err = client.WhereCache(func(row *ovnnb.NAT) bool {
+			return row.ExternalIDs["netloom_vpc"] == "prod" && row.ExternalIDs["netloom_nat"] == "egress"
+		}).List(ctx, &nats)
+		if err != nil || len(nats) != 1 {
+			return false
+		}
+		_, staleProtocol := nats[0].ExternalIDs["netloom_protocol"]
+		return nats[0].UUID == natUUID && nats[0].LogicalIP == "10.10.0.0/24" && !staleProtocol
+	}) {
+		t.Fatalf("repaired NAT drift routers=%+v nats=%+v", routers, nats)
+	}
+	stats := writer.LastCleanupStats()
+	if stats.FirstReconcileGC || stats.Operations == 0 {
+		t.Fatalf("cleanup stats = %+v, want steady-state NAT repair operations", stats)
+	}
+}
+
 func TestLibOVSDBTopologyWriterCleanupRepairsLoadBalancerOptionsDriftInSteadyState(t *testing.T) {
 	ctx := context.Background()
 	client, closeFn := newTestOVNNBClient(t)
