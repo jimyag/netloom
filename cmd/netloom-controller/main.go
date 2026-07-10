@@ -115,6 +115,8 @@ type libovsdbClusterConnector struct {
 	dial         libovsdbDialFunc
 	leaderProbe  ovnLeaderProbe
 	leader       string
+	leaderStatus string
+	leaderError  string
 	current      string
 	currentIndex int
 	failovers    int
@@ -157,6 +159,8 @@ type ovnHealthSnapshot struct {
 type ovnClusterHealthSnapshot struct {
 	ActiveEndpoint      string
 	LeaderEndpoint      string
+	LeaderProbeStatus   string
+	LeaderProbeError    string
 	ConfiguredEndpoints int
 	Failovers           int
 	LeaderPreferred     bool
@@ -302,7 +306,7 @@ func (r *stateFileReconciler) reconcile(ctx context.Context, path string) error 
 	ovnMaintenance := r.runOVNMaintenance(ctx)
 	duration := time.Since(start)
 	fmt.Printf(
-		"netloom-controller reconciled desired state vpcs=%d subnets=%d endpoints=%d route_tables=%d policy_routes=%d gateways=%d nat_rules=%d load_balancers=%d security_groups=%d policy_entries=%d lb_health_checked=%d lb_health_healthy=%d lb_health_unhealthy=%d ovn_health=%s ovn_health_latency_ms=%d ovn_health_consecutive_failures=%d ovn_health_consecutive_successes=%d ovn_health_recovering=%d ovn_cluster_active_endpoint=%s ovn_cluster_leader_endpoint=%s ovn_cluster_leader_preferred=%d ovn_cluster_endpoints=%d ovn_cluster_failovers=%d ovn_ops=%d ovn_executed=%d ovn_audit=%s ovn_live_managed=%d ovn_live_duplicates=%d ovn_live_incomplete=%d ovn_live_missing=%d ovn_live_unexpected=%d ovn_live_drifted_rows=%d ovn_live_drifted_fields=%d ovn_audit_error=%s ovn_maintenance=%s ovn_maintenance_attempted=%d ovn_maintenance_succeeded=%d ovn_maintenance_failed=%d ovn_maintenance_latency_ms=%d ovn_maintenance_error=%s reconcile_duration_ms=%d\n",
+		"netloom-controller reconciled desired state vpcs=%d subnets=%d endpoints=%d route_tables=%d policy_routes=%d gateways=%d nat_rules=%d load_balancers=%d security_groups=%d policy_entries=%d lb_health_checked=%d lb_health_healthy=%d lb_health_unhealthy=%d ovn_health=%s ovn_health_latency_ms=%d ovn_health_consecutive_failures=%d ovn_health_consecutive_successes=%d ovn_health_recovering=%d ovn_cluster_active_endpoint=%s ovn_cluster_leader_endpoint=%s ovn_cluster_leader_probe_status=%s ovn_cluster_leader_probe_error=%s ovn_cluster_leader_preferred=%d ovn_cluster_endpoints=%d ovn_cluster_failovers=%d ovn_ops=%d ovn_executed=%d ovn_audit=%s ovn_live_managed=%d ovn_live_duplicates=%d ovn_live_incomplete=%d ovn_live_missing=%d ovn_live_unexpected=%d ovn_live_drifted_rows=%d ovn_live_drifted_fields=%d ovn_audit_error=%s ovn_maintenance=%s ovn_maintenance_attempted=%d ovn_maintenance_succeeded=%d ovn_maintenance_failed=%d ovn_maintenance_latency_ms=%d ovn_maintenance_error=%s reconcile_duration_ms=%d\n",
 		len(state.VPCs),
 		len(state.Subnets),
 		len(state.Endpoints),
@@ -323,6 +327,8 @@ func (r *stateFileReconciler) reconcile(ctx context.Context, path string) error 
 		boolMetric(ovnHealth.Snapshot.Recovering),
 		formatResultValue(ovnHealth.Snapshot.Cluster.ActiveEndpoint),
 		formatResultValue(ovnHealth.Snapshot.Cluster.LeaderEndpoint),
+		formatResultValue(ovnHealth.Snapshot.Cluster.LeaderProbeStatus),
+		formatResultError(ovnHealth.Snapshot.Cluster.LeaderProbeError),
 		boolMetric(ovnHealth.Snapshot.Cluster.LeaderPreferred),
 		ovnHealth.Snapshot.Cluster.ConfiguredEndpoints,
 		ovnHealth.Snapshot.Cluster.Failovers,
@@ -386,7 +392,7 @@ func printControllerReconcileFailure(phase string, state control.DesiredState, h
 		phase = "unknown"
 	}
 	fmt.Printf(
-		"netloom-controller reconcile failed reconcile_phase=%s vpcs=%d subnets=%d endpoints=%d route_tables=%d policy_routes=%d gateways=%d nat_rules=%d load_balancers=%d security_groups=%d policy_entries=%d lb_health_checked=%d lb_health_healthy=%d lb_health_unhealthy=%d ovn_health=%s ovn_health_latency_ms=%d ovn_health_consecutive_failures=%d ovn_health_consecutive_successes=%d ovn_health_recovering=%d ovn_cluster_active_endpoint=%s ovn_cluster_leader_endpoint=%s ovn_cluster_leader_preferred=%d ovn_cluster_endpoints=%d ovn_cluster_failovers=%d ovn_ops=%d ovn_executed=%d err=%q reconcile_duration_ms=%d\n",
+		"netloom-controller reconcile failed reconcile_phase=%s vpcs=%d subnets=%d endpoints=%d route_tables=%d policy_routes=%d gateways=%d nat_rules=%d load_balancers=%d security_groups=%d policy_entries=%d lb_health_checked=%d lb_health_healthy=%d lb_health_unhealthy=%d ovn_health=%s ovn_health_latency_ms=%d ovn_health_consecutive_failures=%d ovn_health_consecutive_successes=%d ovn_health_recovering=%d ovn_cluster_active_endpoint=%s ovn_cluster_leader_endpoint=%s ovn_cluster_leader_probe_status=%s ovn_cluster_leader_probe_error=%s ovn_cluster_leader_preferred=%d ovn_cluster_endpoints=%d ovn_cluster_failovers=%d ovn_ops=%d ovn_executed=%d err=%q reconcile_duration_ms=%d\n",
 		phase,
 		len(state.VPCs),
 		len(state.Subnets),
@@ -408,6 +414,8 @@ func printControllerReconcileFailure(phase string, state control.DesiredState, h
 		boolMetric(ovnHealth.Recovering),
 		formatResultValue(ovnHealth.Cluster.ActiveEndpoint),
 		formatResultValue(ovnHealth.Cluster.LeaderEndpoint),
+		formatResultValue(ovnHealth.Cluster.LeaderProbeStatus),
+		formatResultError(ovnHealth.Cluster.LeaderProbeError),
 		boolMetric(ovnHealth.Cluster.LeaderPreferred),
 		ovnHealth.Cluster.ConfiguredEndpoints,
 		ovnHealth.Cluster.Failovers,
@@ -794,6 +802,11 @@ func writeControllerMetrics(w metricWriter, snapshot controllerMetricsSnapshot, 
 		"endpoint":   fallbackMetricsLabel(snapshot.OVNCluster.LeaderEndpoint, "none"),
 		"ovn_health": fallbackMetricsLabel(snapshot.OVNHealthStatus, "disabled"),
 	}), boolMetric(snapshot.OVNCluster.LeaderEndpoint != ""))
+	writeMetricType(w, "netloom_controller_ovn_cluster_leader_probe_status", "gauge")
+	fmt.Fprintf(w, "netloom_controller_ovn_cluster_leader_probe_status%s 1\n", prometheusLabels(map[string]string{
+		"ovn_health": fallbackMetricsLabel(snapshot.OVNHealthStatus, "disabled"),
+		"status":     fallbackMetricsLabel(snapshot.OVNCluster.LeaderProbeStatus, "disabled"),
+	}))
 	writeMetricType(w, "netloom_controller_ovn_cluster_leader_preferred", "gauge")
 	fmt.Fprintf(w, "netloom_controller_ovn_cluster_leader_preferred%s %d\n", baseLabels, boolMetric(snapshot.OVNCluster.LeaderPreferred))
 	writeMetricType(w, "netloom_controller_ovn_cluster_endpoints", "gauge")
@@ -1328,14 +1341,24 @@ func (c *libovsdbClusterConnector) probeLeader(ctx context.Context) string {
 	}
 	leader, err := c.leaderProbe(ctx, append([]string(nil), c.endpoints...))
 	if err != nil {
+		c.mu.Lock()
+		c.leaderStatus = "error"
+		c.leaderError = err.Error()
+		c.mu.Unlock()
 		return ""
 	}
 	leader = strings.TrimSpace(leader)
 	if leader == "" {
+		c.mu.Lock()
+		c.leaderStatus = "unknown"
+		c.leaderError = ""
+		c.mu.Unlock()
 		return ""
 	}
 	c.mu.Lock()
 	c.leader = leader
+	c.leaderStatus = "ok"
+	c.leaderError = ""
 	c.mu.Unlock()
 	return leader
 }
@@ -1346,9 +1369,17 @@ func (c *libovsdbClusterConnector) Snapshot() ovnClusterHealthSnapshot {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	leaderStatus := c.leaderStatus
+	if c.leaderProbe == nil {
+		leaderStatus = "disabled"
+	} else if leaderStatus == "" {
+		leaderStatus = "unknown"
+	}
 	return ovnClusterHealthSnapshot{
 		ActiveEndpoint:      c.current,
 		LeaderEndpoint:      c.leader,
+		LeaderProbeStatus:   leaderStatus,
+		LeaderProbeError:    c.leaderError,
 		ConfiguredEndpoints: len(c.endpoints),
 		Failovers:           c.failovers,
 		LeaderPreferred:     c.leader != "" && c.current == c.leader,

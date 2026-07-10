@@ -354,6 +354,32 @@ func TestLibOVSDBClusterConnectorPrefersProbedLeaderEndpoint(t *testing.T) {
 	if snapshot.ActiveEndpoint != "tcp:b:6641" || snapshot.LeaderEndpoint != "tcp:b:6641" || !snapshot.LeaderPreferred {
 		t.Fatalf("cluster snapshot = %+v, want active leader preferred", snapshot)
 	}
+	if snapshot.LeaderProbeStatus != "ok" || snapshot.LeaderProbeError != "" {
+		t.Fatalf("leader probe snapshot = %+v, want ok without error", snapshot)
+	}
+}
+
+func TestLibOVSDBClusterConnectorReportsLeaderProbeFailure(t *testing.T) {
+	attempts := make([]string, 0)
+	cluster := newLibOVSDBClusterConnector("test", []string{"tcp:a:6641", "tcp:b:6641"}, func(_ context.Context, _ string, endpoint string) (libovsdbclient.Client, func(), error) {
+		attempts = append(attempts, endpoint)
+		return nil, func() {}, nil
+	}, func(context.Context, []string) (string, error) {
+		return "", errors.New("cluster status unavailable")
+	})
+	if _, _, err := cluster.Connect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(attempts, ",") != "tcp:a:6641" {
+		t.Fatalf("attempts = %+v, want fallback to first configured endpoint", attempts)
+	}
+	snapshot := cluster.Snapshot()
+	if snapshot.ActiveEndpoint != "tcp:a:6641" || snapshot.LeaderEndpoint != "" || snapshot.LeaderPreferred {
+		t.Fatalf("cluster snapshot = %+v, want active fallback without leader", snapshot)
+	}
+	if snapshot.LeaderProbeStatus != "error" || !strings.Contains(snapshot.LeaderProbeError, "cluster status unavailable") {
+		t.Fatalf("leader probe snapshot = %+v, want recorded probe error", snapshot)
+	}
 }
 
 func TestLibOVSDBClusterConnectorFailsOverEndpoints(t *testing.T) {
@@ -577,6 +603,7 @@ func TestControllerMetricsExportsLatestSuccess(t *testing.T) {
 		OVNCluster: ovnClusterHealthSnapshot{
 			ActiveEndpoint:      "tcp:10.0.0.2:6641",
 			LeaderEndpoint:      "tcp:10.0.0.2:6641",
+			LeaderProbeStatus:   "ok",
 			ConfiguredEndpoints: 3,
 			Failovers:           1,
 			LeaderPreferred:     true,
@@ -643,6 +670,7 @@ func TestControllerMetricsExportsLatestSuccess(t *testing.T) {
 		`netloom_controller_ovn_health_recovering{ovn_health="ok"} 0`,
 		`netloom_controller_ovn_cluster_active_endpoint{endpoint="tcp:10.0.0.2:6641",ovn_health="ok"} 1`,
 		`netloom_controller_ovn_cluster_leader_endpoint{endpoint="tcp:10.0.0.2:6641",ovn_health="ok"} 1`,
+		`netloom_controller_ovn_cluster_leader_probe_status{ovn_health="ok",status="ok"} 1`,
 		`netloom_controller_ovn_cluster_leader_preferred{ovn_health="ok"} 1`,
 		`netloom_controller_ovn_cluster_endpoints{ovn_health="ok"} 3`,
 		`netloom_controller_ovn_cluster_failovers{ovn_health="ok"} 1`,
