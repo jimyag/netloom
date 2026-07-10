@@ -55,6 +55,15 @@ func (w *LibOVSDBTopologyWriter) CleanupTopology(ctx context.Context, state topo
 		stats.Operations = len(ops)
 	}
 	if w.seen && len(ops) == 0 {
+		repairOps, err := w.repairSteadyStateRoutes(ctx, state)
+		if err != nil {
+			w.lastCleanup = stats
+			return err
+		}
+		ops = append(ops, repairOps...)
+		stats.Operations = len(ops)
+	}
+	if w.seen && len(ops) == 0 {
 		repairOps, err := w.repairSteadyStateNATRules(ctx, state)
 		if err != nil {
 			w.lastCleanup = stats
@@ -359,6 +368,25 @@ func (w *LibOVSDBTopologyWriter) repairSteadyStateEndpointDHCPOptions(ctx contex
 			}
 		}
 		nextOps, err := w.endpointDHCPOptionsOperations(ctx, endpoint, switchRow.ExternalIDs, port)
+		if err != nil {
+			return nil, err
+		}
+		ops = append(ops, nextOps...)
+	}
+	return ops, nil
+}
+
+func (w *LibOVSDBTopologyWriter) repairSteadyStateRoutes(ctx context.Context, desired topology.State) ([]ovsdb.Operation, error) {
+	var ops []ovsdb.Operation
+	for _, table := range desired.RouteTables {
+		nextOps, err := w.routeTableOperations(ctx, table, false)
+		if err != nil {
+			return nil, err
+		}
+		ops = append(ops, nextOps...)
+	}
+	for _, route := range desired.PolicyRoutes {
+		nextOps, err := w.policyRouteOperations(ctx, route, false)
 		if err != nil {
 			return nil, err
 		}

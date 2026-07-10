@@ -209,16 +209,37 @@ func (w *LibOVSDBTopologyWriter) EnsureRouteTable(ctx context.Context, table mod
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	router, ok, err := w.logicalRouterByName(ctx, logicalRouter(table.VPC))
+	ops, err := w.routeTableOperations(ctx, table, true)
 	if err != nil {
 		return err
 	}
+	if len(ops) == 0 {
+		return nil
+	}
+	results, err := w.client.Transact(ctx, ops...)
+	if err != nil {
+		return fmt.Errorf("transact route table %s/%s: %w", table.VPC, table.Name, err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, ops); err != nil {
+		return fmt.Errorf("route table %s/%s operation errors=%+v: %w", table.VPC, table.Name, opErrors, err)
+	}
+	return nil
+}
+
+func (w *LibOVSDBTopologyWriter) routeTableOperations(ctx context.Context, table model.RouteTable, createMissing bool) ([]ovsdb.Operation, error) {
+	router, ok, err := w.logicalRouterByName(ctx, logicalRouter(table.VPC))
+	if err != nil {
+		return nil, err
+	}
 	if !ok {
-		return fmt.Errorf("logical router %s must exist before route table %s", logicalRouter(table.VPC), table.Name)
+		if !createMissing {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("logical router %s must exist before route table %s", logicalRouter(table.VPC), table.Name)
 	}
 	existing, err := w.staticRoutesByRouteTable(ctx, table)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	existingByKey := make(map[string][]ovnnb.LogicalRouterStaticRoute, len(existing))
 	for _, route := range existing {
@@ -233,15 +254,18 @@ func (w *LibOVSDBTopologyWriter) EnsureRouteTable(ctx context.Context, table mod
 			desiredKeys[key] = struct{}{}
 			rows := existingByKey[key]
 			if len(rows) == 0 {
+				if !createMissing {
+					continue
+				}
 				desired.UUID = ovsdbNamedUUID("nl_route_" + table.VPC + "_" + table.Name + "_" + key)
 				createOps, err := w.client.Create(&desired)
 				if err != nil {
-					return fmt.Errorf("create static route %s: %w", key, err)
+					return nil, fmt.Errorf("create static route %s: %w", key, err)
 				}
 				ops = append(ops, createOps...)
 				attachOps, err := w.attachStaticRoute(router, desired.UUID)
 				if err != nil {
-					return err
+					return nil, err
 				}
 				ops = append(ops, attachOps...)
 				continue
@@ -251,7 +275,7 @@ func (w *LibOVSDBTopologyWriter) EnsureRouteTable(ctx context.Context, table mod
 			if !containsString(router.StaticRoutes, keep.UUID) {
 				attachOps, err := w.attachStaticRoute(router, keep.UUID)
 				if err != nil {
-					return err
+					return nil, err
 				}
 				ops = append(ops, attachOps...)
 			}
@@ -267,14 +291,14 @@ func (w *LibOVSDBTopologyWriter) EnsureRouteTable(ctx context.Context, table mod
 				keep.ExternalIDs = nextExternalIDs
 				updateOps, err := w.client.Where(&keep).Update(&keep, &keep.BFD, &keep.IPPrefix, &keep.Nexthop, &keep.Options, &keep.OutputPort, &keep.Policy, &keep.RouteTable, &keep.SelectionFields, &keep.ExternalIDs)
 				if err != nil {
-					return fmt.Errorf("update static route %s: %w", key, err)
+					return nil, fmt.Errorf("update static route %s: %w", key, err)
 				}
 				ops = append(ops, updateOps...)
 			}
 			for i := 1; i < len(rows); i++ {
 				deleteOps, err := w.deleteStaticRoute(router.UUID, &rows[i])
 				if err != nil {
-					return err
+					return nil, err
 				}
 				ops = append(ops, deleteOps...)
 			}
@@ -287,22 +311,12 @@ func (w *LibOVSDBTopologyWriter) EnsureRouteTable(ctx context.Context, table mod
 		for i := range rows {
 			deleteOps, err := w.deleteStaticRoute(router.UUID, &rows[i])
 			if err != nil {
-				return err
+				return nil, err
 			}
 			ops = append(ops, deleteOps...)
 		}
 	}
-	if len(ops) == 0 {
-		return nil
-	}
-	results, err := w.client.Transact(ctx, ops...)
-	if err != nil {
-		return fmt.Errorf("transact route table %s/%s: %w", table.VPC, table.Name, err)
-	}
-	if opErrors, err := ovsdb.CheckOperationResults(results, ops); err != nil {
-		return fmt.Errorf("route table %s/%s operation errors=%+v: %w", table.VPC, table.Name, opErrors, err)
-	}
-	return nil
+	return ops, nil
 }
 
 func (w *LibOVSDBTopologyWriter) EnsurePolicyRoute(ctx context.Context, route model.PolicyRoute) error {
@@ -312,29 +326,53 @@ func (w *LibOVSDBTopologyWriter) EnsurePolicyRoute(ctx context.Context, route mo
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	router, ok, err := w.logicalRouterByName(ctx, logicalRouter(route.VPC))
+	ops, err := w.policyRouteOperations(ctx, route, true)
 	if err != nil {
 		return err
 	}
+	if len(ops) == 0 {
+		return nil
+	}
+	results, err := w.client.Transact(ctx, ops...)
+	if err != nil {
+		return fmt.Errorf("transact policy route %s/%s: %w", route.VPC, route.Name, err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, ops); err != nil {
+		return fmt.Errorf("policy route %s/%s operation errors=%+v: %w", route.VPC, route.Name, opErrors, err)
+	}
+	return nil
+}
+
+func (w *LibOVSDBTopologyWriter) policyRouteOperations(ctx context.Context, route model.PolicyRoute, createMissing bool) ([]ovsdb.Operation, error) {
+	router, ok, err := w.logicalRouterByName(ctx, logicalRouter(route.VPC))
+	if err != nil {
+		return nil, err
+	}
 	if !ok {
-		return fmt.Errorf("logical router %s must exist before policy route %s", logicalRouter(route.VPC), route.Name)
+		if !createMissing {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("logical router %s must exist before policy route %s", logicalRouter(route.VPC), route.Name)
 	}
 	existing, err := w.policyRoutesByName(ctx, route.VPC, route.Name)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	desired := desiredPolicyRouteRow(route)
 	var ops []ovsdb.Operation
 	if len(existing) == 0 {
+		if !createMissing {
+			return nil, nil
+		}
 		desired.UUID = ovsdbNamedUUID("nl_policy_route_" + route.VPC + "_" + route.Name)
 		createOps, err := w.client.Create(&desired)
 		if err != nil {
-			return fmt.Errorf("create policy route %s/%s: %w", route.VPC, route.Name, err)
+			return nil, fmt.Errorf("create policy route %s/%s: %w", route.VPC, route.Name, err)
 		}
 		ops = append(ops, createOps...)
 		attachOps, err := w.attachPolicyRoute(router, desired.UUID)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		ops = append(ops, attachOps...)
 	} else {
@@ -343,7 +381,7 @@ func (w *LibOVSDBTopologyWriter) EnsurePolicyRoute(ctx context.Context, route mo
 		if !containsString(router.Policies, keep.UUID) {
 			attachOps, err := w.attachPolicyRoute(router, keep.UUID)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			ops = append(ops, attachOps...)
 		}
@@ -361,29 +399,19 @@ func (w *LibOVSDBTopologyWriter) EnsurePolicyRoute(ctx context.Context, route mo
 			keep.ExternalIDs = nextExternalIDs
 			updateOps, err := w.client.Where(&keep).Update(&keep, &keep.Priority, &keep.Match, &keep.Action, &keep.Nexthop, &keep.Nexthops, &keep.ExternalIDs)
 			if err != nil {
-				return fmt.Errorf("update policy route %s/%s: %w", route.VPC, route.Name, err)
+				return nil, fmt.Errorf("update policy route %s/%s: %w", route.VPC, route.Name, err)
 			}
 			ops = append(ops, updateOps...)
 		}
 		for i := 1; i < len(existing); i++ {
 			deleteOps, err := w.deletePolicyRoute(router.UUID, &existing[i])
 			if err != nil {
-				return err
+				return nil, err
 			}
 			ops = append(ops, deleteOps...)
 		}
 	}
-	if len(ops) == 0 {
-		return nil
-	}
-	results, err := w.client.Transact(ctx, ops...)
-	if err != nil {
-		return fmt.Errorf("transact policy route %s/%s: %w", route.VPC, route.Name, err)
-	}
-	if opErrors, err := ovsdb.CheckOperationResults(results, ops); err != nil {
-		return fmt.Errorf("policy route %s/%s operation errors=%+v: %w", route.VPC, route.Name, opErrors, err)
-	}
-	return nil
+	return ops, nil
 }
 
 func (w *LibOVSDBTopologyWriter) EnsureGateway(ctx context.Context, gateway model.Gateway) error {
