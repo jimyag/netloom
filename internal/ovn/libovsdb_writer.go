@@ -606,9 +606,27 @@ func (w *LibOVSDBTopologyWriter) SyncDNSRecords(ctx context.Context, subnets []m
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	switches, err := w.netloomLogicalSwitches(ctx)
+	ops, err := w.dnsRecordsOperations(ctx, subnets, records, true)
 	if err != nil {
 		return err
+	}
+	if len(ops) == 0 {
+		return nil
+	}
+	results, err := w.client.Transact(ctx, ops...)
+	if err != nil {
+		return fmt.Errorf("transact DNS records: %w", err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, ops); err != nil {
+		return fmt.Errorf("DNS records operation errors=%+v: %w", opErrors, err)
+	}
+	return nil
+}
+
+func (w *LibOVSDBTopologyWriter) dnsRecordsOperations(ctx context.Context, subnets []model.Subnet, records []model.DNSRecord, createMissing bool) ([]ovsdb.Operation, error) {
+	switches, err := w.netloomLogicalSwitches(ctx)
+	if err != nil {
+		return nil, err
 	}
 	desiredSwitchNames := make(map[string]struct{}, len(subnets))
 	for _, subnet := range subnets {
@@ -616,12 +634,16 @@ func (w *LibOVSDBTopologyWriter) SyncDNSRecords(ctx context.Context, subnets []m
 	}
 	for switchName := range desiredSwitchNames {
 		if _, ok := switches[switchName]; !ok {
-			return fmt.Errorf("logical switch %s must exist before DNS sync", switchName)
+			if !createMissing {
+				delete(desiredSwitchNames, switchName)
+				continue
+			}
+			return nil, fmt.Errorf("logical switch %s must exist before DNS sync", switchName)
 		}
 	}
 	existingDNS, err := w.netloomDNSRows(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	desiredRecords := desiredOVNDNSRecords(records)
 	var ops []ovsdb.Operation
@@ -629,7 +651,7 @@ func (w *LibOVSDBTopologyWriter) SyncDNSRecords(ctx context.Context, subnets []m
 		for i := range existingDNS {
 			deleteOps, err := w.deleteDNSRowFromSwitches(switches, &existingDNS[i])
 			if err != nil {
-				return err
+				return nil, err
 			}
 			ops = append(ops, deleteOps...)
 		}
@@ -641,9 +663,12 @@ func (w *LibOVSDBTopologyWriter) SyncDNSRecords(ctx context.Context, subnets []m
 			Records:     desiredRecords,
 		}
 		if len(existingDNS) == 0 {
+			if !createMissing {
+				return nil, nil
+			}
 			createOps, err := w.client.Create(&desired)
 			if err != nil {
-				return fmt.Errorf("create DNS records row: %w", err)
+				return nil, fmt.Errorf("create DNS records row: %w", err)
 			}
 			ops = append(ops, createOps...)
 			keepUUID = desired.UUID
@@ -659,35 +684,25 @@ func (w *LibOVSDBTopologyWriter) SyncDNSRecords(ctx context.Context, subnets []m
 				keep.Options = nil
 				updateOps, err := w.client.Where(&keep).Update(&keep, &keep.ExternalIDs, &keep.Records, &keep.Options)
 				if err != nil {
-					return fmt.Errorf("update DNS records row %s: %w", keep.UUID, err)
+					return nil, fmt.Errorf("update DNS records row %s: %w", keep.UUID, err)
 				}
 				ops = append(ops, updateOps...)
 			}
 			for i := 1; i < len(existingDNS); i++ {
 				deleteOps, err := w.deleteDNSRowFromSwitches(switches, &existingDNS[i])
 				if err != nil {
-					return err
+					return nil, err
 				}
 				ops = append(ops, deleteOps...)
 			}
 		}
 		switchOps, err := w.syncDNSRowSwitchReferences(switches, desiredSwitchNames, keepUUID)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		ops = append(ops, switchOps...)
 	}
-	if len(ops) == 0 {
-		return nil
-	}
-	results, err := w.client.Transact(ctx, ops...)
-	if err != nil {
-		return fmt.Errorf("transact DNS records: %w", err)
-	}
-	if opErrors, err := ovsdb.CheckOperationResults(results, ops); err != nil {
-		return fmt.Errorf("DNS records operation errors=%+v: %w", opErrors, err)
-	}
-	return nil
+	return ops, nil
 }
 
 func (w *LibOVSDBTopologyWriter) subnetPortOperations(ctx context.Context, router *ovnnb.LogicalRouter, logicalSwitch *ovnnb.LogicalSwitch, existingSwitch *ovnnb.LogicalSwitch, subnet model.Subnet) ([]ovsdb.Operation, error) {

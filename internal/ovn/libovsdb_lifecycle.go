@@ -73,6 +73,15 @@ func (w *LibOVSDBTopologyWriter) CleanupTopology(ctx context.Context, state topo
 		stats.Operations = len(ops)
 	}
 	if w.seen && len(ops) == 0 {
+		repairOps, err := w.repairSteadyStateDNSRecords(ctx, state)
+		if err != nil {
+			w.lastCleanup = stats
+			return err
+		}
+		ops = append(ops, repairOps...)
+		stats.Operations = len(ops)
+	}
+	if w.seen && len(ops) == 0 {
 		repairOps, err := w.repairSteadyStateNATRules(ctx, state)
 		if err != nil {
 			w.lastCleanup = stats
@@ -414,6 +423,20 @@ func (w *LibOVSDBTopologyWriter) repairSteadyStateGateways(ctx context.Context, 
 		ops = append(ops, nextOps...)
 	}
 	return ops, nil
+}
+
+func (w *LibOVSDBTopologyWriter) repairSteadyStateDNSRecords(ctx context.Context, desired topology.State) ([]ovsdb.Operation, error) {
+	subnets := make([]model.Subnet, 0, len(desired.Subnets))
+	for _, subnet := range desired.Subnets {
+		subnets = append(subnets, subnet)
+	}
+	sort.Slice(subnets, func(i, j int) bool {
+		if subnets[i].VPC == subnets[j].VPC {
+			return subnets[i].Name < subnets[j].Name
+		}
+		return subnets[i].VPC < subnets[j].VPC
+	})
+	return w.dnsRecordsOperations(ctx, subnets, desired.DNSRecords, false)
 }
 
 func (w *LibOVSDBTopologyWriter) repairSteadyStateNATRules(ctx context.Context, desired topology.State) ([]ovsdb.Operation, error) {

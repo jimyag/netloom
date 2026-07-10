@@ -324,6 +324,116 @@ func TestLibOVSDBTopologyWriterSyncsDNSRecords(t *testing.T) {
 	}
 }
 
+func TestLibOVSDBTopologyWriterCleanupRepairsDNSRowAndSwitchDriftInSteadyState(t *testing.T) {
+	ctx := context.Background()
+	client, closeFn := newTestOVNNBClient(t)
+	defer closeFn()
+
+	if _, err := client.MonitorAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	writer := NewLibOVSDBTopologyWriter(client)
+	subnets := []model.Subnet{{
+		Name:    "apps",
+		VPC:     "prod",
+		CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+		Gateway: netip.MustParseAddr("10.10.0.1"),
+	}, {
+		Name:    "db",
+		VPC:     "prod",
+		CIDR:    netip.MustParsePrefix("10.20.0.0/24"),
+		Gateway: netip.MustParseAddr("10.20.0.1"),
+	}}
+	records := []model.DNSRecord{{
+		Name: "api.example.com.",
+		IPs: []netip.Addr{
+			netip.MustParseAddr("203.0.113.10"),
+			netip.MustParseAddr("2001:db8::10"),
+		},
+	}, {
+		Name: "api.example.com",
+		IPs:  []netip.Addr{netip.MustParseAddr("203.0.113.20")},
+	}}
+	state := topology.State{
+		VPCs: map[string]model.VPC{"prod": {Name: "prod"}},
+		Subnets: map[string]model.Subnet{
+			subnetStateKey("prod", "apps"): subnets[0],
+			subnetStateKey("prod", "db"):   subnets[1],
+		},
+		DNSRecords: records,
+	}
+	if err := writer.CleanupTopology(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureVPC(ctx, state.VPCs["prod"]); err != nil {
+		t.Fatal(err)
+	}
+	for _, subnet := range subnets {
+		if err := writer.EnsureSubnet(ctx, subnet); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.SyncDNSRecords(ctx, subnets, records); err != nil {
+		t.Fatal(err)
+	}
+
+	var dnsRows []ovnnb.DNS
+	requireEventually(t, func() bool {
+		dnsRows = nil
+		err := client.WhereCache(func(row *ovnnb.DNS) bool { return isNetloomManaged(row.ExternalIDs) }).List(ctx, &dnsRows)
+		return err == nil && len(dnsRows) == 1
+	})
+	dnsRows[0].Records = map[string]string{"api.example.com": "198.51.100.10"}
+	dnsRows[0].Options = map[string]string{"legacy": "true"}
+	updateDNS, err := client.Where(&dnsRows[0]).Update(&dnsRows[0], &dnsRows[0].Records, &dnsRows[0].Options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	detachDB, err := writer.detachDNSRowFromSwitch(singleLogicalSwitchByName(t, ctx, client, logicalSwitch("prod", "db")).UUID, dnsRows[0].UUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ops := append(updateDNS, detachDB...)
+	results, err := client.Transact(ctx, ops...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, ops); err != nil {
+		t.Fatalf("seed DNS drift operation errors=%+v: %v", opErrors, err)
+	}
+	requireEventually(t, func() bool {
+		dnsRows = nil
+		err := client.WhereCache(func(row *ovnnb.DNS) bool { return isNetloomManaged(row.ExternalIDs) }).List(ctx, &dnsRows)
+		if err != nil || len(dnsRows) != 1 || dnsRows[0].Records["api.example.com"] != "198.51.100.10" || dnsRows[0].Options["legacy"] != "true" {
+			return false
+		}
+		dbSwitch := singleLogicalSwitchByName(t, ctx, client, logicalSwitch("prod", "db"))
+		return !containsString(dbSwitch.DNSRecords, dnsRows[0].UUID)
+	})
+
+	if err := writer.CleanupTopology(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	requireEventually(t, func() bool {
+		dnsRows = nil
+		err := client.WhereCache(func(row *ovnnb.DNS) bool { return isNetloomManaged(row.ExternalIDs) }).List(ctx, &dnsRows)
+		if err != nil || len(dnsRows) != 1 || dnsRows[0].Records["api.example.com"] != "2001:db8::10 203.0.113.10 203.0.113.20" || len(dnsRows[0].Options) != 0 {
+			return false
+		}
+		for _, subnet := range subnets {
+			sw := singleLogicalSwitchByName(t, ctx, client, logicalSwitch(subnet.VPC, subnet.Name))
+			if !containsString(sw.DNSRecords, dnsRows[0].UUID) {
+				return false
+			}
+		}
+		return true
+	})
+	stats := writer.LastCleanupStats()
+	if stats.FirstReconcileGC || stats.Operations == 0 {
+		t.Fatalf("cleanup stats = %+v, want steady-state DNS repair operations", stats)
+	}
+}
+
 func TestLibOVSDBTopologyWriterRepairsSubnetPortReferences(t *testing.T) {
 	ctx := context.Background()
 	client, closeFn := newTestOVNNBClient(t)
