@@ -286,7 +286,7 @@ func (s *LibOVSDBProviderSyncer) ensureQoS(ctx context.Context, desired vswitch.
 		}
 		return desired.UUID, ops, nil
 	}
-	nextExternalIDs := mergeProviderStringMap(existing.ExternalIDs, desired.ExternalIDs)
+	nextExternalIDs := mergeProviderManagedExternalIDs(existing.ExternalIDs, desired.ExternalIDs)
 	if existing.Type == desired.Type && reflect.DeepEqual(existing.ExternalIDs, nextExternalIDs) && reflect.DeepEqual(existing.OtherConfig, desired.OtherConfig) && reflect.DeepEqual(existing.Queues, desired.Queues) {
 		return existing.UUID, nil, nil
 	}
@@ -315,7 +315,7 @@ func (s *LibOVSDBProviderSyncer) ensureQueue(ctx context.Context, desired vswitc
 		}
 		return desired.UUID, ops, nil
 	}
-	nextExternalIDs := mergeProviderStringMap(existing.ExternalIDs, desired.ExternalIDs)
+	nextExternalIDs := mergeProviderManagedExternalIDs(existing.ExternalIDs, desired.ExternalIDs)
 	if reflect.DeepEqual(existing.ExternalIDs, nextExternalIDs) && reflect.DeepEqual(existing.OtherConfig, desired.OtherConfig) && intPointersEqual(existing.DSCP, desired.DSCP) {
 		return existing.UUID, nil, nil
 	}
@@ -377,7 +377,7 @@ func (s *LibOVSDBProviderSyncer) ensureBridge(ctx context.Context, desired vswit
 		}
 		return desired.UUID, ops, nil
 	}
-	nextExternalIDs := mergeProviderStringMap(existing.ExternalIDs, desired.ExternalIDs)
+	nextExternalIDs := mergeProviderManagedExternalIDs(existing.ExternalIDs, desired.ExternalIDs)
 	if reflect.DeepEqual(existing.ExternalIDs, nextExternalIDs) {
 		return existing.UUID, nil, nil
 	}
@@ -413,7 +413,7 @@ func (s *LibOVSDBProviderSyncer) ensurePort(ctx context.Context, desired vswitch
 		ops = append(ops, createOps...)
 		return desired.UUID, ops, nil
 	}
-	nextExternalIDs := mergeProviderStringMap(existing.ExternalIDs, desired.ExternalIDs)
+	nextExternalIDs := mergeProviderManagedExternalIDs(existing.ExternalIDs, desired.ExternalIDs)
 	nextInterfaces := sortedUniqueStrings(append(existing.Interfaces, interfaceUUID))
 	nextQOS := desired.QOS
 	if desired.QOS == nil && existing.QOS != nil {
@@ -452,7 +452,7 @@ func (s *LibOVSDBProviderSyncer) ensureInterface(ctx context.Context, desired vs
 		}
 		return desired.UUID, ops, nil
 	}
-	nextExternalIDs := mergeProviderStringMap(existing.ExternalIDs, desired.ExternalIDs)
+	nextExternalIDs := mergeProviderManagedExternalIDs(existing.ExternalIDs, desired.ExternalIDs)
 	if reflect.DeepEqual(existing.ExternalIDs, nextExternalIDs) {
 		return existing.UUID, nil, nil
 	}
@@ -790,6 +790,20 @@ func mergeProviderStringMap(base map[string]string, overlay map[string]string) m
 	return out
 }
 
+func mergeProviderManagedExternalIDs(base map[string]string, overlay map[string]string) map[string]string {
+	out := make(map[string]string, len(base)+len(overlay))
+	for key, value := range base {
+		if strings.HasPrefix(key, "netloom_") {
+			continue
+		}
+		out[key] = value
+	}
+	for key, value := range overlay {
+		out[key] = value
+	}
+	return out
+}
+
 func sortedUniqueStrings(values []string) []string {
 	set := make(map[string]struct{}, len(values))
 	for _, value := range values {
@@ -951,6 +965,14 @@ func intPointersEqual(a, b *int) bool {
 func providerExternalIDsMatch(got map[string]string, want map[string]string) bool {
 	for key, value := range want {
 		if got[key] != value {
+			return false
+		}
+	}
+	for key := range got {
+		if !strings.HasPrefix(key, "netloom_") {
+			continue
+		}
+		if _, ok := want[key]; !ok {
 			return false
 		}
 	}

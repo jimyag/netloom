@@ -141,6 +141,30 @@ func TestLibOVSDBProviderSyncerCreatesProviderTenantQueues(t *testing.T) {
 	if queue.OtherConfig["min-rate"] != "100000000" || queue.OtherConfig["max-rate"] != "500000000" || queue.OtherConfig["burst"] != "64000" {
 		t.Fatalf("queue other_config = %+v, want configured rates", queue.OtherConfig)
 	}
+
+	updatedRows := desiredProviderOVSDBRows([]providerNetworkLinkSpec{{
+		ProviderNetwork: "physnet-a",
+		ParentDevice:    "eth1",
+		VLAN:            100,
+		Name:            "nlv100",
+		TenantQueues: []model.ProviderNetworkTenantQueuePolicy{{
+			Tenant:     "prod",
+			QueueID:    10,
+			MinRateBPS: 100000000,
+		}},
+	}})
+	if err := NewLibOVSDBProviderSyncer(client).SyncProviderOVSDB(ctx, updatedRows, false); err != nil {
+		t.Fatal(err)
+	}
+	queue = singleQueueByProviderName(t, ctx, client, "queue-nlv100-10")
+	for _, stale := range []string{"netloom_queue_protocol", "netloom_queue_ports"} {
+		if _, ok := queue.ExternalIDs[stale]; ok {
+			t.Fatalf("queue external IDs retained stale %s: %+v", stale, queue.ExternalIDs)
+		}
+	}
+	if queue.ExternalIDs["netloom_tenant"] != "prod" || queue.OtherConfig["min-rate"] != "100000000" || len(queue.OtherConfig) != 1 {
+		t.Fatalf("queue after update = external_ids:%+v other_config:%+v, want selector metadata removed and min-rate preserved", queue.ExternalIDs, queue.OtherConfig)
+	}
 }
 
 func TestLibOVSDBProviderSyncerRepairsPortBridgeDrift(t *testing.T) {
