@@ -322,18 +322,18 @@ func TestMergeIdentityGroupObservationsBacksOffAfterRemoteFailure(t *testing.T) 
 	}
 }
 
-func TestMergeIdentityGroupObservationsMergesFileAndRemoteFeeds(t *testing.T) {
-	filePath := t.TempDir() + "/identity-groups.json"
-	if err := os.WriteFile(filePath, []byte(`{"identity_groups":[{"name":"file-group","vpc":"prod","endpoint_ids":["pod-file"]}]}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
+func TestMergeIdentityGroupObservationsMergesLocalAndRemoteFeeds(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"identity_groups":[{"name":"remote-group","vpc":"prod","endpoint_ids":["pod-remote"]}]}`))
 	}))
 	defer server.Close()
 
 	state, err := MergeIdentityGroupObservations(context.Background(), DesiredState{}, IdentityGroupObservationOptions{
-		FilePath:   filePath,
+		LocalGroups: []model.IdentityGroup{{
+			Name:        "local-group",
+			VPC:         "prod",
+			EndpointIDs: []string{"pod-local"},
+		}},
 		URL:        server.URL,
 		Timeout:    time.Second,
 		HTTPClient: server.Client(),
@@ -341,8 +341,8 @@ func TestMergeIdentityGroupObservationsMergesFileAndRemoteFeeds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(state.IdentityGroups) != 2 || state.IdentityGroups[0].Name != "file-group" || state.IdentityGroups[1].Name != "remote-group" {
-		t.Fatalf("identity groups = %+v, want file and remote groups", state.IdentityGroups)
+	if len(state.IdentityGroups) != 2 || state.IdentityGroups[0].Name != "local-group" || state.IdentityGroups[1].Name != "remote-group" {
+		t.Fatalf("identity groups = %+v, want local and remote groups", state.IdentityGroups)
 	}
 }
 

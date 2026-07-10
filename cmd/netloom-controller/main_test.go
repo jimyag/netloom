@@ -44,13 +44,13 @@ func TestReconcileIntervalRejectsInvalidValue(t *testing.T) {
 }
 
 func TestControllerWithIdentityGroupObservationsMergesRuntimeGroups(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "identity-groups.json")
-	if err := os.WriteFile(path, []byte(`{"identity_groups":[{"name":"frontend","vpc":"prod","source":"cmdb","observed_at":"2026-07-10T01:00:00Z","ttl_seconds":120,"endpoint_ids":["pod-a"]}]}`), 0o644); err != nil {
-		t.Fatal(err)
+	store := fakeOpenVSwitchExternalIDReader{
+		values: map[string]string{
+			control.IdentityGroupObservationsOpenVSwitchExternalID: `{"identity_groups":[{"name":"frontend","vpc":"prod","source":"cmdb","observed_at":"2026-07-10T01:00:00Z","ttl_seconds":120,"endpoint_ids":["pod-a"]}]}`,
+		},
 	}
-	t.Setenv("NETLOOM_IDENTITY_GROUPS_FILE", path)
 
-	state, err := withIdentityGroupObservationsAt(control.DesiredState{}, time.Date(2026, 7, 10, 1, 1, 0, 0, time.UTC))
+	state, err := mergeIdentityGroupObservationsAtContextStore(t.Context(), control.DesiredState{}, time.Date(2026, 7, 10, 1, 1, 0, 0, time.UTC), nil, store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1357,6 +1357,15 @@ func (r fakeControllerManagedOVNReader) ManagedOVNRows(_ context.Context, table 
 
 type recordingOVSDBControlStatusWriter struct {
 	values map[string]string
+}
+
+type fakeOpenVSwitchExternalIDReader struct {
+	values map[string]string
+}
+
+func (r fakeOpenVSwitchExternalIDReader) OpenVSwitchExternalID(_ context.Context, key string) (string, bool, error) {
+	value, ok := r.values[key]
+	return value, ok, nil
 }
 
 func (w *recordingOVSDBControlStatusWriter) SetOpenVSwitchExternalID(_ context.Context, key, value string) error {

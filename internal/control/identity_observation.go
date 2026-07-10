@@ -18,8 +18,10 @@ import (
 	"github.com/jimyag/netloom/internal/model"
 )
 
+const IdentityGroupObservationsOpenVSwitchExternalID = "netloom_identity_group_observations"
+
 type IdentityGroupObservationOptions struct {
-	FilePath    string
+	LocalGroups []model.IdentityGroup
 	URL         string
 	BearerToken string
 	Timeout     time.Duration
@@ -213,12 +215,9 @@ func loadIdentityGroupObservationsHTTP(ctx context.Context, opts identityGroupHT
 
 func MergeIdentityGroupObservations(ctx context.Context, state DesiredState, opts IdentityGroupObservationOptions) (DesiredState, error) {
 	groups := append([]model.IdentityGroup(nil), state.IdentityGroups...)
-	if strings.TrimSpace(opts.FilePath) != "" {
-		observed, err := loadIdentityGroupObservationsFile(opts.FilePath)
-		if err != nil {
-			return DesiredState{}, err
-		}
-		groups, err = MergeIdentityGroups(groups, observed)
+	if len(opts.LocalGroups) != 0 {
+		var err error
+		groups, err = MergeIdentityGroups(groups, opts.LocalGroups)
 		if err != nil {
 			return DesiredState{}, err
 		}
@@ -379,15 +378,6 @@ func identityGroupFeedBackoff(base, max time.Duration, failures int) time.Durati
 		return max
 	}
 	return backoff
-}
-
-func loadIdentityGroupObservationsFile(path string) ([]model.IdentityGroup, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-	return LoadIdentityGroupObservationsJSON(file)
 }
 
 func MergeIdentityGroups(base, observed []model.IdentityGroup) ([]model.IdentityGroup, error) {

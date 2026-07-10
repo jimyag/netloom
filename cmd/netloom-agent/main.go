@@ -797,7 +797,7 @@ func reconcileStateFile(ctx context.Context, path, node, storeName string, recon
 		observeAgentReconcileFailure(metrics, agent.ReconcileResult{Node: node}, storeName, err, time.Since(start))
 		return err
 	}
-	linuxOptions, rolloutStateStore, dnsObservationStore, closeLinuxOptions, err := linuxDatapathOptionsWithOVSDBSyncer(ctx)
+	linuxOptions, rolloutStateStore, dnsObservationStore, identityGroupStore, closeLinuxOptions, err := linuxDatapathOptionsWithOVSDBSyncer(ctx)
 	if err != nil {
 		duration := time.Since(start)
 		result := agent.ReconcileResult{Node: node}
@@ -806,7 +806,7 @@ func reconcileStateFile(ctx context.Context, path, node, storeName string, recon
 		return err
 	}
 	defer closeLinuxOptions()
-	state, err = withRuntimeObservationsAtContextCacheStore(ctx, state, time.Now().UTC(), identityGroupFeedCache, dnsObservationStore)
+	state, err = withRuntimeObservationsAtContextCacheStore(ctx, state, time.Now().UTC(), identityGroupFeedCache, dnsObservationStore, identityGroupStore)
 	if err != nil {
 		observeAgentReconcileFailure(metrics, agent.ReconcileResult{Node: node}, storeName, err, time.Since(start))
 		return err
@@ -865,7 +865,7 @@ func reconcileStateFile(ctx context.Context, path, node, storeName string, recon
 }
 
 func reconcileStateFileOnce(ctx context.Context, path, node, storeName string, store agent.PolicyStore, hold time.Duration, metrics *agentMetrics, identityGroupFeedCache *control.IdentityGroupObservationCache) error {
-	linuxOptions, rolloutStateStore, dnsObservationStore, closeLinuxOptions, err := linuxDatapathOptionsWithOVSDBSyncer(ctx)
+	linuxOptions, rolloutStateStore, dnsObservationStore, identityGroupStore, closeLinuxOptions, err := linuxDatapathOptionsWithOVSDBSyncer(ctx)
 	if err != nil {
 		start := time.Now()
 		result := agent.ReconcileResult{Node: node}
@@ -874,10 +874,10 @@ func reconcileStateFileOnce(ctx context.Context, path, node, storeName string, s
 		return err
 	}
 	defer closeLinuxOptions()
-	return reconcileStateFileOnceWithRuntimeStores(ctx, path, node, storeName, store, hold, metrics, identityGroupFeedCache, linuxOptions, rolloutStateStore, dnsObservationStore)
+	return reconcileStateFileOnceWithRuntimeStores(ctx, path, node, storeName, store, hold, metrics, identityGroupFeedCache, linuxOptions, rolloutStateStore, dnsObservationStore, identityGroupStore)
 }
 
-func reconcileStateFileOnceWithRuntimeStores(ctx context.Context, path, node, storeName string, store agent.PolicyStore, hold time.Duration, metrics *agentMetrics, identityGroupFeedCache *control.IdentityGroupObservationCache, linuxOptions *linuxdatapath.Options, rolloutStateStore policyRolloutStateStore, dnsObservationStore dnsObservationStore) error {
+func reconcileStateFileOnceWithRuntimeStores(ctx context.Context, path, node, storeName string, store agent.PolicyStore, hold time.Duration, metrics *agentMetrics, identityGroupFeedCache *control.IdentityGroupObservationCache, linuxOptions *linuxdatapath.Options, rolloutStateStore policyRolloutStateStore, dnsObservationStore dnsObservationStore, identityGroupStore openVSwitchExternalIDStore) error {
 	start := time.Now()
 	file, err := os.Open(path)
 	if err != nil {
@@ -896,7 +896,7 @@ func reconcileStateFileOnceWithRuntimeStores(ctx context.Context, path, node, st
 		observeAgentReconcileFailure(metrics, agent.ReconcileResult{Node: node}, storeName, err, time.Since(start))
 		return err
 	}
-	state, err = withRuntimeObservationsAtContextCacheStore(ctx, state, time.Now().UTC(), identityGroupFeedCache, dnsObservationStore)
+	state, err = withRuntimeObservationsAtContextCacheStore(ctx, state, time.Now().UTC(), identityGroupFeedCache, dnsObservationStore, identityGroupStore)
 	if err != nil {
 		observeAgentReconcileFailure(metrics, agent.ReconcileResult{Node: node}, storeName, err, time.Since(start))
 		return err
@@ -980,15 +980,20 @@ func withRuntimeObservationsContextCache(ctx context.Context, state control.Desi
 }
 
 func withRuntimeObservationsAtContextCache(ctx context.Context, state control.DesiredState, now time.Time, cache *control.IdentityGroupObservationCache) (control.DesiredState, error) {
-	return withRuntimeObservationsAtContextCacheStore(ctx, state, now, cache, nil)
+	identityStore, closeIdentityStore, err := identityGroupObservationStoreFromEnv(ctx)
+	if err != nil {
+		return control.DesiredState{}, err
+	}
+	defer closeIdentityStore()
+	return withRuntimeObservationsAtContextCacheStore(ctx, state, now, cache, nil, identityStore)
 }
 
-func withRuntimeObservationsAtContextCacheStore(ctx context.Context, state control.DesiredState, now time.Time, cache *control.IdentityGroupObservationCache, dnsStore dnsObservationStore) (control.DesiredState, error) {
+func withRuntimeObservationsAtContextCacheStore(ctx context.Context, state control.DesiredState, now time.Time, cache *control.IdentityGroupObservationCache, dnsStore dnsObservationStore, identityStore openVSwitchExternalIDStore) (control.DesiredState, error) {
 	next, err := withDNSObservationsAtContextStore(ctx, state, now, dnsStore)
 	if err != nil {
 		return control.DesiredState{}, err
 	}
-	return withIdentityGroupObservationsAtContextCache(ctx, next, now, cache)
+	return withIdentityGroupObservationsAtContextCacheStore(ctx, next, now, cache, identityStore)
 }
 
 func withDNSObservationsAt(state control.DesiredState, now time.Time) (control.DesiredState, error) {
@@ -1028,8 +1033,21 @@ func withIdentityGroupObservationsAtContext(ctx context.Context, state control.D
 }
 
 func withIdentityGroupObservationsAtContextCache(ctx context.Context, state control.DesiredState, now time.Time, cache *control.IdentityGroupObservationCache) (control.DesiredState, error) {
+	store, closeStore, err := identityGroupObservationStoreFromEnv(ctx)
+	if err != nil {
+		return control.DesiredState{}, err
+	}
+	defer closeStore()
+	return withIdentityGroupObservationsAtContextCacheStore(ctx, state, now, cache, store)
+}
+
+func withIdentityGroupObservationsAtContextCacheStore(ctx context.Context, state control.DesiredState, now time.Time, cache *control.IdentityGroupObservationCache, store openVSwitchExternalIDStore) (control.DesiredState, error) {
+	localGroups, err := loadIdentityGroupObservationsFromOpenVSwitchExternalID(ctx, store)
+	if err != nil {
+		return control.DesiredState{}, err
+	}
 	return control.MergeIdentityGroupObservations(ctx, state, control.IdentityGroupObservationOptions{
-		FilePath:    os.Getenv("NETLOOM_IDENTITY_GROUPS_FILE"),
+		LocalGroups: localGroups,
 		URL:         os.Getenv("NETLOOM_IDENTITY_GROUPS_URL"),
 		BearerToken: os.Getenv("NETLOOM_IDENTITY_GROUPS_BEARER_TOKEN"),
 		Timeout:     identityGroupFeedTimeout(),
@@ -1041,6 +1059,24 @@ func withIdentityGroupObservationsAtContextCache(ctx context.Context, state cont
 		TLSCertFile: os.Getenv("NETLOOM_IDENTITY_GROUPS_TLS_CERT_FILE"),
 		TLSKeyFile:  os.Getenv("NETLOOM_IDENTITY_GROUPS_TLS_KEY_FILE"),
 	})
+}
+
+func loadIdentityGroupObservationsFromOpenVSwitchExternalID(ctx context.Context, store openVSwitchExternalIDStore) ([]model.IdentityGroup, error) {
+	if store == nil {
+		return nil, nil
+	}
+	raw, ok, err := store.OpenVSwitchExternalID(ctx, control.IdentityGroupObservationsOpenVSwitchExternalID)
+	if err != nil {
+		return nil, err
+	}
+	if !ok || strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	groups, err := control.LoadIdentityGroupObservationsJSON(strings.NewReader(raw))
+	if err != nil {
+		return nil, fmt.Errorf("decode Open_vSwitch external_ids:%s: %w", control.IdentityGroupObservationsOpenVSwitchExternalID, err)
+	}
+	return groups, nil
 }
 
 func identityGroupFeedTimeout() time.Duration {
@@ -2894,22 +2930,22 @@ func linuxDatapathOptions() *linuxdatapath.Options {
 	}
 }
 
-func linuxDatapathOptionsWithOVSDBSyncer(ctx context.Context) (*linuxdatapath.Options, policyRolloutStateStore, dnsObservationStore, func(), error) {
+func linuxDatapathOptionsWithOVSDBSyncer(ctx context.Context) (*linuxdatapath.Options, policyRolloutStateStore, dnsObservationStore, openVSwitchExternalIDStore, func(), error) {
 	options := linuxDatapathOptions()
 	endpoint := strings.TrimSpace(os.Getenv("NETLOOM_OVSDB_ENDPOINT"))
 	if endpoint == "" {
-		return options, nil, nil, func() {}, nil
+		return options, nil, nil, nil, func() {}, nil
 	}
 	client, closeFn, err := newOpenVSwitchClient(ctx, endpoint)
 	if err != nil {
-		return nil, nil, nil, func() {}, err
+		return nil, nil, nil, nil, func() {}, err
 	}
 	providerOVSDB := linuxdatapath.NewLibOVSDBProviderSyncer(client)
 	if options != nil && options.SyncOVSDB {
 		options.ProviderOVSDBSyncer = providerOVSDB
 		options.ProviderOVSDBReader = providerOVSDB
 	}
-	return options, ovsdbPolicyRolloutStateStore{syncer: providerOVSDB}, ovsdbDNSObservationStore{syncer: providerOVSDB}, closeFn, nil
+	return options, ovsdbPolicyRolloutStateStore{syncer: providerOVSDB}, ovsdbDNSObservationStore{syncer: providerOVSDB}, providerOVSDB, closeFn, nil
 }
 
 func policyRolloutHistoryStoreFromEnv(ctx context.Context) (policyRolloutHistoryStore, func(), error) {
@@ -2922,6 +2958,18 @@ func policyRolloutHistoryStoreFromEnv(ctx context.Context) (policyRolloutHistory
 		return nil, func() {}, err
 	}
 	return ovsdbPolicyRolloutHistoryStore{syncer: linuxdatapath.NewLibOVSDBProviderSyncer(client)}, closeFn, nil
+}
+
+func identityGroupObservationStoreFromEnv(ctx context.Context) (openVSwitchExternalIDStore, func(), error) {
+	endpoint := strings.TrimSpace(os.Getenv("NETLOOM_OVSDB_ENDPOINT"))
+	if endpoint == "" {
+		return nil, func() {}, nil
+	}
+	client, closeFn, err := newOpenVSwitchClient(ctx, endpoint)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	return linuxdatapath.NewLibOVSDBProviderSyncer(client), closeFn, nil
 }
 
 func ovsdbSyncEnabled() bool {

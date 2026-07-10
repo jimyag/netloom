@@ -340,14 +340,14 @@ func TestWithDNSObservationsReadsOpenVSwitchExternalIDStore(t *testing.T) {
 }
 
 func TestWithRuntimeObservationsMergesIdentityGroups(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "identity-groups.json")
-	if err := os.WriteFile(path, []byte(`{"identity_groups": [{"name": "frontend-api", "vpc": "prod", "source": "cmdb", "observed_at": "2026-07-10T01:00:00Z", "ttl_seconds": 120, "endpoint_ids": ["pod-a"]}]}`), 0o644); err != nil {
-		t.Fatal(err)
+	ovsdb := fakeOpenVSwitchExternalIDStore{
+		values: map[string]string{
+			control.IdentityGroupObservationsOpenVSwitchExternalID: `{"identity_groups": [{"name": "frontend-api", "vpc": "prod", "source": "cmdb", "observed_at": "2026-07-10T01:00:00Z", "ttl_seconds": 120, "endpoint_ids": ["pod-a"]}]}`,
+		},
 	}
-	t.Setenv("NETLOOM_IDENTITY_GROUPS_FILE", path)
 	now := time.Date(2026, 7, 10, 1, 1, 0, 0, time.UTC)
 
-	state, err := withRuntimeObservationsAt(control.DesiredState{
+	state, err := withRuntimeObservationsAtContextCacheStore(t.Context(), control.DesiredState{
 		VPCs: []model.VPC{{Name: "prod"}},
 		ProviderNetworks: []model.ProviderNetwork{{
 			Name: "physnet-a",
@@ -377,7 +377,7 @@ func TestWithRuntimeObservationsMergesIdentityGroups(t *testing.T) {
 			IP:     netip.MustParseAddr("10.10.0.10"),
 			Node:   "node-a",
 		}},
-	}, now)
+	}, now, nil, nil, &ovsdb)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -411,18 +411,18 @@ func (agentNoopExecutor) Execute(context.Context, linuxdatapath.Operation) error
 }
 
 func TestWithIdentityGroupObservationsPrunesExpiredGroups(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "identity-groups.json")
-	if err := os.WriteFile(path, []byte(`{"identity_groups": [
+	ovsdb := fakeOpenVSwitchExternalIDStore{
+		values: map[string]string{
+			control.IdentityGroupObservationsOpenVSwitchExternalID: `{"identity_groups": [
 		{"name": "expired", "vpc": "prod", "observed_at": "2026-07-10T01:00:00Z", "ttl_seconds": 60, "endpoint_ids": ["pod-a"]},
 		{"name": "active", "vpc": "prod", "observed_at": "2026-07-10T01:00:01Z", "ttl_seconds": 60, "endpoint_ids": ["pod-b"]},
 		{"name": "static", "vpc": "prod", "endpoint_ids": ["pod-c"]}
-	]}`), 0o644); err != nil {
-		t.Fatal(err)
+	]}`,
+		},
 	}
-	t.Setenv("NETLOOM_IDENTITY_GROUPS_FILE", path)
 	now := time.Date(2026, 7, 10, 1, 1, 0, 0, time.UTC)
 
-	state, err := withIdentityGroupObservationsAt(control.DesiredState{}, now)
+	state, err := withIdentityGroupObservationsAtContextCacheStore(t.Context(), control.DesiredState{}, now, nil, &ovsdb)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -744,7 +744,7 @@ func TestReconcileStateFileOnceAppliesDesiredPolicyRollout(t *testing.T) {
 		os.Stdout = oldStdout
 	}()
 
-	err = reconcileStateFileOnceWithRuntimeStores(context.Background(), statePath, "node-a", "memory", store, time.Second, metrics, nil, nil, ovsdbPolicyRolloutStateStore{syncer: rolloutOVSDB}, nil)
+	err = reconcileStateFileOnceWithRuntimeStores(context.Background(), statePath, "node-a", "memory", store, time.Second, metrics, nil, nil, ovsdbPolicyRolloutStateStore{syncer: rolloutOVSDB}, nil, nil)
 	if closeErr := writer.Close(); closeErr != nil {
 		t.Fatal(closeErr)
 	}
@@ -820,7 +820,7 @@ func TestReconcileStateFileOnceResumesPersistedPolicyRolloutState(t *testing.T) 
 	linuxOptions := (*linuxdatapath.Options)(nil)
 	rolloutStore := ovsdbPolicyRolloutStateStore{syncer: rolloutOVSDB}
 	dnsStore := dnsObservationStore(nil)
-	if err := reconcileStateFileOnceWithRuntimeStores(context.Background(), statePath, "node-a", "memory", store, time.Second, nil, nil, linuxOptions, rolloutStore, dnsStore); err != nil {
+	if err := reconcileStateFileOnceWithRuntimeStores(context.Background(), statePath, "node-a", "memory", store, time.Second, nil, nil, linuxOptions, rolloutStore, dnsStore, nil); err != nil {
 		t.Fatal(err)
 	}
 	doc, err := rolloutStore.Load(t.Context())
@@ -834,7 +834,7 @@ func TestReconcileStateFileOnceResumesPersistedPolicyRolloutState(t *testing.T) 
 
 	state.PolicyRollouts[0].PromotionPercent = 100
 	statePath = writeAgentState(t, state)
-	if err := reconcileStateFileOnceWithRuntimeStores(context.Background(), statePath, "node-a", "memory", store, time.Second, nil, nil, linuxOptions, rolloutStore, dnsStore); err != nil {
+	if err := reconcileStateFileOnceWithRuntimeStores(context.Background(), statePath, "node-a", "memory", store, time.Second, nil, nil, linuxOptions, rolloutStore, dnsStore, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := len(store.Events()) - eventsAfterFirst; got != 1 {

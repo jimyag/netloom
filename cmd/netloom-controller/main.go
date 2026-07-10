@@ -154,6 +154,10 @@ type ovsdbControlStatusWriter interface {
 	SetOpenVSwitchExternalID(context.Context, string, string) error
 }
 
+type openVSwitchExternalIDReader interface {
+	OpenVSwitchExternalID(context.Context, string) (string, bool, error)
+}
+
 type ovnMaintenanceResult struct {
 	Status    string        `json:"status"`
 	Attempted int           `json:"attempted"`
@@ -1260,8 +1264,21 @@ func (r *stateFileReconciler) withIdentityGroupObservationsContext(ctx context.C
 }
 
 func mergeIdentityGroupObservationsAtContext(ctx context.Context, state control.DesiredState, now time.Time, cache *control.IdentityGroupObservationCache) (control.DesiredState, error) {
+	store, closeStore, err := identityGroupObservationStoreFromEnv(ctx)
+	if err != nil {
+		return control.DesiredState{}, err
+	}
+	defer closeStore()
+	return mergeIdentityGroupObservationsAtContextStore(ctx, state, now, cache, store)
+}
+
+func mergeIdentityGroupObservationsAtContextStore(ctx context.Context, state control.DesiredState, now time.Time, cache *control.IdentityGroupObservationCache, store openVSwitchExternalIDReader) (control.DesiredState, error) {
+	localGroups, err := loadIdentityGroupObservationsFromOpenVSwitchExternalID(ctx, store)
+	if err != nil {
+		return control.DesiredState{}, err
+	}
 	return control.MergeIdentityGroupObservations(ctx, state, control.IdentityGroupObservationOptions{
-		FilePath:    os.Getenv("NETLOOM_IDENTITY_GROUPS_FILE"),
+		LocalGroups: localGroups,
 		URL:         os.Getenv("NETLOOM_IDENTITY_GROUPS_URL"),
 		BearerToken: os.Getenv("NETLOOM_IDENTITY_GROUPS_BEARER_TOKEN"),
 		Timeout:     identityGroupFeedTimeout(),
@@ -1273,6 +1290,24 @@ func mergeIdentityGroupObservationsAtContext(ctx context.Context, state control.
 		TLSCertFile: os.Getenv("NETLOOM_IDENTITY_GROUPS_TLS_CERT_FILE"),
 		TLSKeyFile:  os.Getenv("NETLOOM_IDENTITY_GROUPS_TLS_KEY_FILE"),
 	})
+}
+
+func loadIdentityGroupObservationsFromOpenVSwitchExternalID(ctx context.Context, store openVSwitchExternalIDReader) ([]model.IdentityGroup, error) {
+	if store == nil {
+		return nil, nil
+	}
+	raw, ok, err := store.OpenVSwitchExternalID(ctx, control.IdentityGroupObservationsOpenVSwitchExternalID)
+	if err != nil {
+		return nil, err
+	}
+	if !ok || strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	groups, err := control.LoadIdentityGroupObservationsJSON(strings.NewReader(raw))
+	if err != nil {
+		return nil, fmt.Errorf("decode Open_vSwitch external_ids:%s: %w", control.IdentityGroupObservationsOpenVSwitchExternalID, err)
+	}
+	return groups, nil
 }
 
 func identityGroupFeedTimeout() time.Duration {
@@ -1500,6 +1535,18 @@ func newOVSDBControlStatusWriterFromEnv(ctx context.Context) (ovsdbControlStatus
 	client, closeFn, err := newOpenVSwitchClient(ctx, endpoint)
 	if err != nil {
 		return nil, nil, err
+	}
+	return linuxdatapath.NewLibOVSDBProviderSyncer(client), closeFn, nil
+}
+
+func identityGroupObservationStoreFromEnv(ctx context.Context) (openVSwitchExternalIDReader, func(), error) {
+	endpoint := strings.TrimSpace(os.Getenv("NETLOOM_OVSDB_ENDPOINT"))
+	if endpoint == "" {
+		return nil, func() {}, nil
+	}
+	client, closeFn, err := newOpenVSwitchClient(ctx, endpoint)
+	if err != nil {
+		return nil, func() {}, err
 	}
 	return linuxdatapath.NewLibOVSDBProviderSyncer(client), closeFn, nil
 }
