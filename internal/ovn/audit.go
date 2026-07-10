@@ -795,6 +795,13 @@ func staleManagedColumnShouldDrift(table, key string) bool {
 		default:
 			return false
 		}
+	case "Load_Balancer":
+		switch key {
+		case "options", "health_check_vips":
+			return true
+		default:
+			return false
+		}
 	}
 	return false
 }

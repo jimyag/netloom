@@ -465,6 +465,78 @@ func TestAuditManagedObjectsReportsLoadBalancerHealthCheckAttachmentDriftFromLib
 	}
 }
 
+func TestAuditManagedObjectsReportsStaleLoadBalancerOptionsFromLibOVSDBReader(t *testing.T) {
+	ctx := context.Background()
+	client, closeFn := newTestOVNNBClient(t)
+	defer closeFn()
+
+	if _, err := client.MonitorAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	writer := NewLibOVSDBTopologyWriter(client)
+	lb := netloommodel.LoadBalancer{
+		Name: "api",
+		VPC:  "prod",
+		VIP:  netip.MustParseAddr("10.96.0.10"),
+		Ports: []netloommodel.LoadBalancerPort{{
+			Port:     443,
+			Protocol: netloommodel.ProtocolTCP,
+			Backends: []netloommodel.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.20"), Port: 8443}},
+		}},
+	}
+	if err := writer.EnsureVPC(ctx, netloommodel.VPC{Name: "prod"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureLoadBalancer(ctx, lb); err != nil {
+		t.Fatal(err)
+	}
+	desired := topology.State{
+		VPCs: map[string]netloommodel.VPC{
+			"prod": {Name: "prod"},
+		},
+		LoadBalancers: map[string]netloommodel.LoadBalancer{
+			"prod/api": lb,
+		},
+	}
+	reader := NewLibOVSDBManagedReader(client)
+	requireEventually(t, func() bool {
+		stats, err := AuditManagedObjectsFromReaderWithDesired(ctx, reader, desired)
+		return err == nil && stats.DriftedManagedRows == 0 && stats.DriftedManagedFields == 0
+	})
+
+	var lbs []ovnnb.LoadBalancer
+	if err := client.WhereCache(func(row *ovnnb.LoadBalancer) bool {
+		return row.ExternalIDs["netloom_vpc"] == "prod" && row.ExternalIDs["netloom_load_balancer"] == "api"
+	}).List(ctx, &lbs); err != nil {
+		t.Fatal(err)
+	}
+	if len(lbs) != 1 {
+		t.Fatalf("load balancers = %d, want one", len(lbs))
+	}
+	lbs[0].Options = map[string]string{"affinity_timeout": "7200"}
+	ops, err := client.Where(&lbs[0]).Update(&lbs[0], &lbs[0].Options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := client.Transact(ctx, ops...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, ops); err != nil {
+		t.Fatalf("operation errors=%+v err=%v", opErrors, err)
+	}
+
+	var stats AuditStats
+	requireEventually(t, func() bool {
+		var err error
+		stats, err = AuditManagedObjectsFromReaderWithDesired(ctx, reader, desired)
+		return err == nil && stats.DriftedManagedRows == 1 && stats.DriftedManagedFields == 1
+	})
+	if stats.DriftedManagedRows != 1 || stats.DriftedManagedFields != 1 {
+		t.Fatalf("audit stats = %+v, want stale load balancer options drift", stats)
+	}
+}
+
 func TestAuditManagedObjectsReportsLoadBalancerParentAttachmentDriftFromLibOVSDBReader(t *testing.T) {
 	ctx := context.Background()
 	client, closeFn := newTestOVNNBClient(t)

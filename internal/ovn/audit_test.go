@@ -845,6 +845,53 @@ func TestAuditManagedObjectsFromReaderReportsStaleLogicalSwitchPortColumns(t *te
 	}
 }
 
+func TestAuditManagedObjectsFromReaderReportsStaleLoadBalancerColumns(t *testing.T) {
+	lb := model.LoadBalancer{
+		Name: "api",
+		VPC:  "prod",
+		VIP:  netip.MustParseAddr("10.96.0.10"),
+		Ports: []model.LoadBalancerPort{{
+			Port:     443,
+			Protocol: model.ProtocolTCP,
+			Backends: []model.LoadBalancerBackend{{
+				IP:   netip.MustParseAddr("10.10.0.20"),
+				Port: 8443,
+			}},
+		}},
+	}
+	reader := fakeManagedOVNReader{rows: map[string][]ManagedOVNRow{
+		"Load_Balancer": {
+			{Table: "Load_Balancer", UUID: "lb-api", ExternalIDs: map[string]string{
+				"netloom_owner":            "netloom",
+				"netloom_vpc":              "prod",
+				"netloom_load_balancer":    "api",
+				"netloom_protocol":         "tcp",
+				"netloom_session_affinity": "false",
+			}, Fields: map[string]string{
+				"name":              loadBalancerProtocolName("prod", "api", model.ProtocolTCP),
+				"vips":              "10.96.0.10:443=10.10.0.20:8443",
+				"protocol":          "tcp",
+				"selection_fields":  "",
+				"options":           "affinity_timeout=7200",
+				"health_check_vips": "10.96.0.10:443",
+			}},
+		},
+	}}
+	desired := topology.State{
+		LoadBalancers: map[string]model.LoadBalancer{
+			"prod/api": lb,
+		},
+	}
+
+	stats, err := AuditManagedObjectsFromReaderWithDesired(context.Background(), reader, desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.DriftedManagedRows != 1 || stats.DriftedManagedFields != 2 {
+		t.Fatalf("stale load balancer column drift stats = %+v, want options and health check attachment drift", stats)
+	}
+}
+
 func TestAuditManagedObjectsFromReaderReportsStaticRouteColumnDrift(t *testing.T) {
 	reader := fakeManagedOVNReader{rows: map[string][]ManagedOVNRow{
 		"Logical_Router_Static_Route": {
