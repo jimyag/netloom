@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -187,6 +188,60 @@ func TestLibOVSDBProviderSyncerCreatesProviderControllers(t *testing.T) {
 	}
 	if countControllersByProviderName(t, ctx, client, "controller-stale") != 0 {
 		t.Fatal("stale provider controller was not deleted")
+	}
+}
+
+func TestLibOVSDBProviderSyncerReportsProviderControllerQuorum(t *testing.T) {
+	client, cleanup := newTestVSwitchClient(t)
+	defer cleanup()
+	ctx := context.Background()
+	insertVSwitchRows(t, ctx, client, &vswitch.OpenvSwitch{})
+
+	rows := desiredProviderOVSDBRows([]providerNetworkLinkSpec{{
+		ProviderNetwork:   "physnet-a",
+		ParentDevice:      "eth1",
+		VLAN:              100,
+		Name:              "nlv100",
+		ControllerTargets: []string{"tcp:192.0.2.10:6653", "tcp:192.0.2.11:6653"},
+	}})
+	syncer := NewLibOVSDBProviderSyncer(client)
+	if err := syncer.SyncProviderOVSDB(ctx, rows, false); err != nil {
+		t.Fatal(err)
+	}
+
+	first := singleControllerByTarget(t, ctx, client, "tcp:192.0.2.10:6653")
+	first.IsConnected = true
+	first.Status = map[string]string{"role": "master"}
+	firstOps, err := client.Where(first).Update(first, &first.IsConnected, &first.Status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transactVSwitchOps(t, ctx, client, firstOps)
+	statuses, err := syncer.ReadProviderOVSDBStatus(ctx, rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(statuses) != 1 || statuses[0].ControllerState != "degraded" ||
+		!strings.Contains(statuses[0].ControllerDetail, "connected=1/2") ||
+		!strings.Contains(statuses[0].ControllerDetail, "target=tcp:192.0.2.11:6653,connected=false") {
+		t.Fatalf("statuses = %+v, want degraded quorum detail", statuses)
+	}
+
+	second := singleControllerByTarget(t, ctx, client, "tcp:192.0.2.11:6653")
+	second.IsConnected = true
+	second.Status = map[string]string{"role": "backup"}
+	secondOps, err := client.Where(second).Update(second, &second.IsConnected, &second.Status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transactVSwitchOps(t, ctx, client, secondOps)
+	statuses, err = syncer.ReadProviderOVSDBStatus(ctx, rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(statuses) != 1 || statuses[0].ControllerState != "up" ||
+		!strings.Contains(statuses[0].ControllerDetail, "connected=2/2") {
+		t.Fatalf("statuses = %+v, want full controller quorum up", statuses)
 	}
 }
 

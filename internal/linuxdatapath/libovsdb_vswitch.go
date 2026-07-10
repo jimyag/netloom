@@ -483,16 +483,25 @@ func (s *LibOVSDBProviderSyncer) bridgeControllerState(ctx context.Context, brid
 		}
 		controllers = append(controllers, *controller)
 	}
-	connected := false
+	connected := 0
 	for _, controller := range controllers {
 		if controller.IsConnected {
-			connected = true
-			break
+			connected++
 		}
 	}
 	detail := controllerStatusDetail(controllers)
-	if connected {
+	if len(controllers) > 1 {
+		if detail == "" {
+			detail = fmt.Sprintf("connected=%d/%d", connected, len(controllers))
+		} else {
+			detail = fmt.Sprintf("connected=%d/%d;%s", connected, len(controllers), detail)
+		}
+	}
+	if connected == len(controllers) {
 		return "up", detail, nil
+	}
+	if connected > 0 {
+		return "degraded", detail, nil
 	}
 	return "disconnected", detail, nil
 }

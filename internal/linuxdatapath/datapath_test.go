@@ -1402,6 +1402,28 @@ func TestProviderOVSDBRuntimeIssuesReportsDatabaseDrift(t *testing.T) {
 	}
 }
 
+func TestProviderOVSDBRuntimeIssuesReportsControllerQuorumDegraded(t *testing.T) {
+	issues := providerOVSDBRuntimeIssues(nil, []ProviderOVSDBStatus{{
+		ProviderNetwork:  "physnet-a",
+		Bridge:           "nlbr-a",
+		LinkName:         "nlv-a",
+		ParentDevice:     "eth1",
+		VLAN:             100,
+		BridgeState:      "up",
+		MappingState:     "up",
+		PortState:        "up",
+		InterfaceState:   "up",
+		ControllerState:  "degraded",
+		ControllerDetail: "connected=1/2;target=tcp:192.0.2.10:6653,connected=true;target=tcp:192.0.2.11:6653,connected=false",
+	}}, "node-a")
+	if len(issues) != 1 || issues[0].Reason != "ovsdb-controller-drift" {
+		t.Fatalf("issues = %+v, want controller drift issue", issues)
+	}
+	if issues[0].Detail != "nlbr-a:degraded:connected=1/2;target=tcp:192.0.2.10:6653,connected=true;target=tcp:192.0.2.11:6653,connected=false" {
+		t.Fatalf("controller issue detail = %q, want degraded quorum detail", issues[0].Detail)
+	}
+}
+
 func TestProviderOVSDBRuntimeIssuesReportsQoSAndQueueDrift(t *testing.T) {
 	issues := providerOVSDBRuntimeIssues(nil, []ProviderOVSDBStatus{{
 		ProviderNetwork: "physnet-a",
