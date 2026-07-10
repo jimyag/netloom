@@ -99,6 +99,15 @@ func (w *LibOVSDBTopologyWriter) CleanupTopology(ctx context.Context, state topo
 		ops = append(ops, repairOps...)
 		stats.Operations = len(ops)
 	}
+	if w.seen && len(ops) == 0 {
+		repairOps, err := w.repairSteadyStateSubnetPorts(ctx, state)
+		if err != nil {
+			w.lastCleanup = stats
+			return err
+		}
+		ops = append(ops, repairOps...)
+		stats.Operations = len(ops)
+	}
 	if err := w.transact(ctx, "cleanup OVN topology", ops); err != nil {
 		w.lastCleanup = stats
 		return err
@@ -357,6 +366,48 @@ func (w *LibOVSDBTopologyWriter) cleanupUnexpectedLiveOperations(ctx context.Con
 		ops = append(ops, deleteOps...)
 	}
 	return ops, stats, nil
+}
+
+func (w *LibOVSDBTopologyWriter) repairSteadyStateSubnetPorts(ctx context.Context, desired topology.State) ([]ovsdb.Operation, error) {
+	subnets := make([]model.Subnet, 0, len(desired.Subnets))
+	for _, subnet := range desired.Subnets {
+		subnets = append(subnets, subnet)
+	}
+	sort.Slice(subnets, func(i, j int) bool {
+		if subnets[i].VPC == subnets[j].VPC {
+			return subnets[i].Name < subnets[j].Name
+		}
+		return subnets[i].VPC < subnets[j].VPC
+	})
+	var ops []ovsdb.Operation
+	for _, subnet := range subnets {
+		router, ok, err := w.logicalRouterByName(ctx, logicalRouter(subnet.VPC))
+		if err != nil {
+			return nil, err
+		}
+		if !ok || !isNetloomManaged(router.ExternalIDs) {
+			continue
+		}
+		switchName := logicalSwitch(subnet.VPC, subnet.Name)
+		existingSwitch, ok, err := w.logicalSwitchByName(ctx, switchName)
+		if err != nil {
+			return nil, err
+		}
+		if !ok || !isNetloomManaged(existingSwitch.ExternalIDs) {
+			continue
+		}
+		desiredSwitch := &ovnnb.LogicalSwitch{
+			Name:        switchName,
+			ExternalIDs: logicalSwitchExternalIDs(subnet),
+			OtherConfig: logicalSwitchOtherConfig(subnet),
+		}
+		nextOps, err := w.subnetPortOperations(ctx, router, desiredSwitch, existingSwitch, subnet)
+		if err != nil {
+			return nil, err
+		}
+		ops = append(ops, nextOps...)
+	}
+	return ops, nil
 }
 
 func (w *LibOVSDBTopologyWriter) repairSteadyStateEndpointDHCPOptions(ctx context.Context, desired topology.State) ([]ovsdb.Operation, error) {
