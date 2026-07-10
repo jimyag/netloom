@@ -2,9 +2,19 @@ package control
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -61,6 +71,71 @@ func TestLoadIdentityGroupObservationsHTTPRejectsBadStatus(t *testing.T) {
 	_, err := LoadIdentityGroupObservationsHTTP(context.Background(), server.URL, "", time.Second, server.Client())
 	if err == nil || !strings.Contains(err.Error(), "status 401") {
 		t.Fatalf("err = %v, want status 401", err)
+	}
+}
+
+func TestMergeIdentityGroupObservationsFetchesRemoteFeedWithMTLS(t *testing.T) {
+	caPEM, serverCertPEM, serverKeyPEM, clientCertPEM, clientKeyPEM := identityGroupTestCertificates(t)
+	dir := t.TempDir()
+	caPath := filepath.Join(dir, "ca.pem")
+	serverCertPath := filepath.Join(dir, "server.pem")
+	serverKeyPath := filepath.Join(dir, "server-key.pem")
+	clientCertPath := filepath.Join(dir, "client.pem")
+	clientKeyPath := filepath.Join(dir, "client-key.pem")
+	writeTestFile(t, caPath, caPEM)
+	writeTestFile(t, serverCertPath, serverCertPEM)
+	writeTestFile(t, serverKeyPath, serverKeyPEM)
+	writeTestFile(t, clientCertPath, clientCertPEM)
+	writeTestFile(t, clientKeyPath, clientKeyPEM)
+
+	clientCAPool := x509.NewCertPool()
+	if !clientCAPool.AppendCertsFromPEM(caPEM) {
+		t.Fatal("append client ca")
+	}
+	serverCert, err := tls.LoadX509KeyPair(serverCertPath, serverKeyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.TLS == nil || len(r.TLS.PeerCertificates) != 1 || r.TLS.PeerCertificates[0].Subject.CommonName != "netloom-client" {
+			t.Fatalf("client certificate = %+v, want netloom-client", r.TLS)
+		}
+		_, _ = w.Write([]byte(`{"identity_groups":[{"name":"frontend","vpc":"prod","source":"cmdb","endpoint_ids":["pod-a"]}]}`))
+	}))
+	server.TLS = &tls.Config{
+		Certificates: []tls.Certificate{serverCert},
+		ClientAuth:   tls.RequireAndVerifyClientCert,
+		ClientCAs:    clientCAPool,
+		MinVersion:   tls.VersionTLS12,
+	}
+	server.StartTLS()
+	defer server.Close()
+
+	state, err := MergeIdentityGroupObservations(context.Background(), DesiredState{}, IdentityGroupObservationOptions{
+		URL:         server.URL,
+		Timeout:     time.Second,
+		TLSCAFile:   caPath,
+		TLSCertFile: clientCertPath,
+		TLSKeyFile:  clientKeyPath,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.IdentityGroups) != 1 || state.IdentityGroups[0].Name != "frontend" || state.IdentityGroups[0].Source != "cmdb" {
+		t.Fatalf("identity groups = %+v, want mtls remote frontend group", state.IdentityGroups)
+	}
+}
+
+func TestMergeIdentityGroupObservationsRejectsIncompleteMTLSConfig(t *testing.T) {
+	dir := t.TempDir()
+	certPath := filepath.Join(dir, "client.pem")
+	writeTestFile(t, certPath, []byte("not used"))
+	_, err := MergeIdentityGroupObservations(context.Background(), DesiredState{}, IdentityGroupObservationOptions{
+		URL:         "https://example.invalid/groups.json",
+		TLSCertFile: certPath,
+	})
+	if err == nil || !strings.Contains(err.Error(), "cert and key must be configured together") {
+		t.Fatalf("err = %v, want incomplete TLS config error", err)
 	}
 }
 
@@ -277,5 +352,75 @@ func TestPruneExpiredIdentityGroups(t *testing.T) {
 	}
 	if len(groups) != 2 || groups[0].Name != "active" || groups[1].Name != "static" {
 		t.Fatalf("groups = %+v, want active and static", groups)
+	}
+}
+
+func identityGroupTestCertificates(t *testing.T) ([]byte, []byte, []byte, []byte, []byte) {
+	t.Helper()
+	caKey, caPEM, caCert := identityGroupTestCA(t)
+	serverCertPEM, serverKeyPEM := identityGroupTestSignedCertificate(t, caCert, caKey, x509.ExtKeyUsageServerAuth, "netloom-server", []string{"127.0.0.1"})
+	clientCertPEM, clientKeyPEM := identityGroupTestSignedCertificate(t, caCert, caKey, x509.ExtKeyUsageClientAuth, "netloom-client", nil)
+	return caPEM, serverCertPEM, serverKeyPEM, clientCertPEM, clientKeyPEM
+}
+
+func identityGroupTestCA(t *testing.T) (*ecdsa.PrivateKey, []byte, *x509.Certificate) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "netloom-test-ca"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return key, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), template
+}
+
+func identityGroupTestSignedCertificate(t *testing.T, caCert *x509.Certificate, caKey *ecdsa.PrivateKey, usage x509.ExtKeyUsage, commonName string, ips []string) ([]byte, []byte) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serialLimit := new(big.Int).Lsh(big.NewInt(1), 128)
+	serial, err := rand.Int(rand.Reader, serialLimit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{
+		SerialNumber: serial,
+		Subject:      pkix.Name{CommonName: commonName},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{usage},
+	}
+	for _, ip := range ips {
+		template.IPAddresses = append(template.IPAddresses, net.ParseIP(ip))
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, caCert, &key.PublicKey, caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyBytes, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyBytes})
+}
+
+func writeTestFile(t *testing.T, path string, data []byte) {
+	t.Helper()
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
 	}
 }

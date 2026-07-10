@@ -1227,6 +1227,9 @@ func mergeIdentityGroupObservationsAtContext(ctx context.Context, state control.
 		BackoffBase: identityGroupFeedBackoffInitial(),
 		BackoffMax:  identityGroupFeedBackoffMax(),
 		Cache:       cache,
+		TLSCAFile:   os.Getenv("NETLOOM_IDENTITY_GROUPS_TLS_CA_FILE"),
+		TLSCertFile: os.Getenv("NETLOOM_IDENTITY_GROUPS_TLS_CERT_FILE"),
+		TLSKeyFile:  os.Getenv("NETLOOM_IDENTITY_GROUPS_TLS_KEY_FILE"),
 	})
 }
 

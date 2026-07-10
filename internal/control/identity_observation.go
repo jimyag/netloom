@@ -2,6 +2,8 @@ package control
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,6 +28,9 @@ type IdentityGroupObservationOptions struct {
 	BackoffMax  time.Duration
 	Cache       *IdentityGroupObservationCache
 	HTTPClient  *http.Client
+	TLSCAFile   string
+	TLSCertFile string
+	TLSKeyFile  string
 }
 
 type IdentityGroupObservationCache struct {
@@ -82,6 +87,9 @@ type identityGroupHTTPOptions struct {
 	Client          *http.Client
 	IfNoneMatch     string
 	IfModifiedSince string
+	TLSCAFile       string
+	TLSCertFile     string
+	TLSKeyFile      string
 }
 
 type identityGroupHTTPResult struct {
@@ -105,7 +113,10 @@ func loadIdentityGroupObservationsHTTP(ctx context.Context, opts identityGroupHT
 	}
 	client := opts.Client
 	if client == nil {
-		client = http.DefaultClient
+		client, err = identityGroupHTTPClient(opts)
+		if err != nil {
+			return nil, identityGroupHTTPResult{}, err
+		}
 	}
 	if opts.Timeout > 0 {
 		var cancel context.CancelFunc
@@ -204,6 +215,9 @@ func loadIdentityGroupObservationsURL(ctx context.Context, opts IdentityGroupObs
 		Client:          opts.HTTPClient,
 		IfNoneMatch:     etag,
 		IfModifiedSince: lastModified,
+		TLSCAFile:       opts.TLSCAFile,
+		TLSCertFile:     opts.TLSCertFile,
+		TLSKeyFile:      opts.TLSKeyFile,
 	})
 	if err != nil {
 		if cache != nil && len(cache.Groups) > 0 {
@@ -223,6 +237,40 @@ func loadIdentityGroupObservationsURL(ctx context.Context, opts IdentityGroupObs
 		recordIdentityGroupFeedSuccess(cache, url, result, groups)
 	}
 	return groups, nil
+}
+
+func identityGroupHTTPClient(opts identityGroupHTTPOptions) (*http.Client, error) {
+	caFile := strings.TrimSpace(opts.TLSCAFile)
+	certFile := strings.TrimSpace(opts.TLSCertFile)
+	keyFile := strings.TrimSpace(opts.TLSKeyFile)
+	if caFile == "" && certFile == "" && keyFile == "" {
+		return http.DefaultClient, nil
+	}
+	if (certFile == "") != (keyFile == "") {
+		return nil, errors.New("identity group observations TLS client cert and key must be configured together")
+	}
+	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
+	if caFile != "" {
+		pemBytes, err := os.ReadFile(caFile)
+		if err != nil {
+			return nil, fmt.Errorf("load identity group observations TLS CA file: %w", err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(pemBytes) {
+			return nil, errors.New("load identity group observations TLS CA file: no PEM certificates found")
+		}
+		tlsConfig.RootCAs = pool
+	}
+	if certFile != "" {
+		cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+		if err != nil {
+			return nil, fmt.Errorf("load identity group observations TLS client certificate: %w", err)
+		}
+		tlsConfig.Certificates = []tls.Certificate{cert}
+	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSClientConfig = tlsConfig
+	return &http.Client{Transport: transport}, nil
 }
 
 func recordIdentityGroupFeedSuccess(cache *IdentityGroupObservationCache, url string, result identityGroupHTTPResult, groups []model.IdentityGroup) {
