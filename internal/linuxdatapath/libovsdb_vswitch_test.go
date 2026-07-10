@@ -96,21 +96,32 @@ func TestLibOVSDBProviderSyncerCreatesProviderControllers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(statuses) != 1 || statuses[0].ControllerState != "disconnected" {
-		t.Fatalf("statuses = %+v, want disconnected controller before OVS connects", statuses)
+	if len(statuses) != 1 || statuses[0].ControllerState != "disconnected" ||
+		statuses[0].ControllerDetail != "target=tcp:192.0.2.10:6653,connected=false" {
+		t.Fatalf("statuses = %+v, want disconnected controller before OVS connects with target detail", statuses)
 	}
 	controller.IsConnected = true
+	controller.Status = map[string]string{
+		"state": "ACTIVE",
+		"role":  "master",
+	}
 	connectOps, err := client.Where(controller).Update(controller, &controller.IsConnected)
 	if err != nil {
 		t.Fatal(err)
 	}
+	statusOps, err := client.Where(controller).Update(controller, &controller.Status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	connectOps = append(connectOps, statusOps...)
 	transactVSwitchOps(t, ctx, client, connectOps)
 	statuses, err = syncer.ReadProviderOVSDBStatus(ctx, rows)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(statuses) != 1 || statuses[0].ControllerState != "up" {
-		t.Fatalf("statuses = %+v, want connected controller", statuses)
+	if len(statuses) != 1 || statuses[0].ControllerState != "up" ||
+		statuses[0].ControllerDetail != "target=tcp:192.0.2.10:6653,connected=true,state=ACTIVE,role=master" {
+		t.Fatalf("statuses = %+v, want connected controller with OVSDB status detail", statuses)
 	}
 
 	withoutController := desiredProviderOVSDBRows([]providerNetworkLinkSpec{{
@@ -442,8 +453,9 @@ func TestLibOVSDBProviderSyncerReadsProviderControllerDrift(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(statuses) != 1 || statuses[0].ControllerState != "disconnected" {
-		t.Fatalf("statuses = %+v, want disconnected controller", statuses)
+	if len(statuses) != 1 || statuses[0].ControllerState != "disconnected" ||
+		statuses[0].ControllerDetail != "target=tcp:192.0.2.10:6653,connected=false" {
+		t.Fatalf("statuses = %+v, want disconnected controller with target detail", statuses)
 	}
 
 	controller = singleControllerByTarget(t, ctx, client, "tcp:192.0.2.10:6653")

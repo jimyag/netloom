@@ -95,18 +95,19 @@ type ProviderIssue struct {
 }
 
 type ProviderOVSDBStatus struct {
-	ProviderNetwork string
-	Bridge          string
-	LinkName        string
-	ParentDevice    string
-	VLAN            uint16
-	BridgeState     string
-	MappingState    string
-	PortState       string
-	InterfaceState  string
-	QoSState        string
-	QueueState      string
-	ControllerState string
+	ProviderNetwork  string
+	Bridge           string
+	LinkName         string
+	ParentDevice     string
+	VLAN             uint16
+	BridgeState      string
+	MappingState     string
+	PortState        string
+	InterfaceState   string
+	QoSState         string
+	QueueState       string
+	ControllerState  string
+	ControllerDetail string
 }
 
 type ProviderNetworkStatus struct {
@@ -938,6 +939,9 @@ func providerOVSDBIssueDetail(status ProviderOVSDBStatus, kind, state string) st
 	case "ovsdb-mapping":
 		return status.ProviderNetwork + ":" + status.Bridge + ":" + fallbackProviderState(state)
 	case "ovsdb-controller":
+		if status.ControllerDetail != "" {
+			return status.Bridge + ":" + fallbackProviderState(state) + ":" + status.ControllerDetail
+		}
 		return status.Bridge + ":" + fallbackProviderState(state)
 	default:
 		return fallbackProviderState(state)

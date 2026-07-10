@@ -256,11 +256,12 @@ func (s *LibOVSDBProviderSyncer) ReadProviderOVSDBStatus(ctx context.Context, ro
 		if !ok {
 			status.BridgeState = "missing"
 		} else {
-			controllerState, err := s.bridgeControllerState(ctx, bridge, bridgeByName[bridgeName])
+			controllerState, controllerDetail, err := s.bridgeControllerState(ctx, bridge, bridgeByName[bridgeName])
 			if err != nil {
 				return nil, err
 			}
 			status.ControllerState = controllerState
+			status.ControllerDetail = controllerDetail
 		}
 		if !ovsBridgeMappingsContain(mappings, spec.ProviderNetwork, bridgeName) {
 			status.MappingState = "missing"
@@ -388,55 +389,97 @@ func (s *LibOVSDBProviderSyncer) ensureController(ctx context.Context, desired v
 	return existing.UUID, ops, nil
 }
 
-func (s *LibOVSDBProviderSyncer) bridgeControllerState(ctx context.Context, bridge *vswitch.Bridge, desired vswitch.Bridge) (string, error) {
+func (s *LibOVSDBProviderSyncer) bridgeControllerState(ctx context.Context, bridge *vswitch.Bridge, desired vswitch.Bridge) (string, string, error) {
 	if bridge == nil || len(bridge.Controller) == 0 {
 		if len(desired.Controller) > 0 {
-			return "missing", nil
+			return "missing", "bridge has no controller refs", nil
 		}
-		return "", nil
+		return "", "", nil
 	}
+	controllers := make([]vswitch.Controller, 0, len(bridge.Controller))
 	if len(desired.Controller) > 0 {
 		actualTargets := make(map[string]struct{}, len(bridge.Controller))
 		for _, controllerUUID := range bridge.Controller {
 			controller, ok, err := s.controllerByUUID(ctx, controllerUUID)
 			if err != nil {
-				return "", err
+				return "", "", err
 			}
 			if !ok {
-				return "missing", nil
+				return "missing", "bridge references missing controller " + controllerUUID, nil
 			}
+			controllers = append(controllers, *controller)
 			actualTargets[controller.Target] = struct{}{}
 		}
 		for _, controllerName := range desired.Controller {
 			desiredController, ok, err := s.controllerByProviderName(ctx, controllerName)
 			if err != nil {
-				return "", err
+				return "", "", err
 			}
 			if !ok {
-				return "missing", nil
+				return "missing", "desired controller row missing " + controllerName, nil
 			}
 			if _, ok := actualTargets[desiredController.Target]; !ok {
-				return "target-mismatch", nil
+				return "target-mismatch", "missing target " + desiredController.Target, nil
 			}
 		}
 	}
-	connected := false
 	for _, controllerUUID := range bridge.Controller {
+		if controllerAlreadyLoaded(controllers, controllerUUID) {
+			continue
+		}
 		controller, ok, err := s.controllerByUUID(ctx, controllerUUID)
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
 		if !ok {
-			return "missing", nil
+			return "missing", "bridge references missing controller " + controllerUUID, nil
 		}
+		controllers = append(controllers, *controller)
+	}
+	connected := false
+	for _, controller := range controllers {
 		if controller.IsConnected {
 			connected = true
+			break
 		}
 	}
+	detail := controllerStatusDetail(controllers)
 	if connected {
-		return "up", nil
+		return "up", detail, nil
 	}
-	return "disconnected", nil
+	return "disconnected", detail, nil
+}
+
+func controllerAlreadyLoaded(controllers []vswitch.Controller, uuid string) bool {
+	for _, controller := range controllers {
+		if controller.UUID == uuid {
+			return true
+		}
+	}
+	return false
+}
+
+func controllerStatusDetail(controllers []vswitch.Controller) string {
+	if len(controllers) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(controllers))
+	for _, controller := range controllers {
+		fields := []string{"target=" + controller.Target}
+		if controller.IsConnected {
+			fields = append(fields, "connected=true")
+		} else {
+			fields = append(fields, "connected=false")
+		}
+		for _, key := range []string{"state", "role", "last_error"} {
+			if value := strings.TrimSpace(controller.Status[key]); value != "" {
+				fields = append(fields, key+"="+value)
+			}
+		}
+		parts = append(parts, strings.Join(fields, ","))
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ";")
 }
 
 func (s *LibOVSDBProviderSyncer) controllerByProviderName(ctx context.Context, name string) (*vswitch.Controller, bool, error) {

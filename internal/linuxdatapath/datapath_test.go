@@ -1373,16 +1373,17 @@ func TestProviderRuntimeIssuesReportsParentAndLinkDrift(t *testing.T) {
 
 func TestProviderOVSDBRuntimeIssuesReportsDatabaseDrift(t *testing.T) {
 	issues := providerOVSDBRuntimeIssues(nil, []ProviderOVSDBStatus{{
-		ProviderNetwork: "physnet-a",
-		Bridge:          "nlbr-a",
-		LinkName:        "nlv-a",
-		ParentDevice:    "eth1",
-		VLAN:            100,
-		BridgeState:     "up",
-		MappingState:    "missing",
-		PortState:       "bridge-mismatch",
-		InterfaceState:  "external-ids-mismatch",
-		ControllerState: "disconnected",
+		ProviderNetwork:  "physnet-a",
+		Bridge:           "nlbr-a",
+		LinkName:         "nlv-a",
+		ParentDevice:     "eth1",
+		VLAN:             100,
+		BridgeState:      "up",
+		MappingState:     "missing",
+		PortState:        "bridge-mismatch",
+		InterfaceState:   "external-ids-mismatch",
+		ControllerState:  "disconnected",
+		ControllerDetail: "target=tcp:192.0.2.10:6653,connected=false,state=BACKOFF,last_error=Connection refused",
 	}}, "node-a")
 	if len(issues) != 4 {
 		t.Fatalf("issues = %+v, want four ovsdb drift issues", issues)
@@ -1395,6 +1396,9 @@ func TestProviderOVSDBRuntimeIssuesReportsDatabaseDrift(t *testing.T) {
 		if issues[i].Node != "node-a" || issues[i].ProviderNetwork != "physnet-a" || issues[i].ParentDevice != "eth1" || issues[i].VLAN != 100 {
 			t.Fatalf("issue[%d] identity = %+v, want node-a physnet-a eth1 vlan 100", i, issues[i])
 		}
+	}
+	if issues[3].Detail != "nlbr-a:disconnected:target=tcp:192.0.2.10:6653,connected=false,state=BACKOFF,last_error=Connection refused" {
+		t.Fatalf("controller issue detail = %q, want OVSDB controller status detail", issues[3].Detail)
 	}
 }
 
