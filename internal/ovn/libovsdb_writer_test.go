@@ -604,6 +604,80 @@ func TestLibOVSDBTopologyWriterCleanupRepairsSubnetPortAttachmentDriftInSteadySt
 	}
 }
 
+func TestLibOVSDBTopologyWriterCleanupRepairsIPv6RouterPortRADriftInSteadyState(t *testing.T) {
+	ctx := context.Background()
+	client, closeFn := newTestOVNNBClient(t)
+	defer closeFn()
+
+	if _, err := client.MonitorAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	writer := NewLibOVSDBTopologyWriter(client)
+	subnet := model.Subnet{
+		Name:    "apps-v6",
+		VPC:     "prod",
+		CIDR:    netip.MustParsePrefix("fd00:10::/64"),
+		Gateway: netip.MustParseAddr("fd00:10::1"),
+		DHCP:    model.DHCPOptions{Enabled: true},
+	}
+	state := topology.State{
+		VPCs:    map[string]model.VPC{"prod": {Name: "prod"}},
+		Subnets: map[string]model.Subnet{subnetStateKey("prod", "apps-v6"): subnet},
+	}
+	if err := writer.CleanupTopology(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureVPC(ctx, state.VPCs["prod"]); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureSubnet(ctx, subnet); err != nil {
+		t.Fatal(err)
+	}
+
+	var ports []ovnnb.LogicalRouterPort
+	requireEventually(t, func() bool {
+		ports = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalRouterPort) bool {
+			return row.Name == routerPortName(logicalRouter("prod"), "apps-v6")
+		}).List(ctx, &ports)
+		return err == nil && len(ports) == 1 && ports[0].Ipv6RaConfigs["address_mode"] == "dhcpv6_stateful"
+	})
+	ports[0].Ipv6RaConfigs = nil
+	updateOps, err := client.Where(&ports[0]).Update(&ports[0], &ports[0].Ipv6RaConfigs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := client.Transact(ctx, updateOps...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, updateOps); err != nil {
+		t.Fatalf("seed IPv6 RA drift operation errors=%+v: %v", opErrors, err)
+	}
+	requireEventually(t, func() bool {
+		ports = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalRouterPort) bool {
+			return row.Name == routerPortName(logicalRouter("prod"), "apps-v6")
+		}).List(ctx, &ports)
+		return err == nil && len(ports) == 1 && len(ports[0].Ipv6RaConfigs) == 0
+	})
+
+	if err := writer.CleanupTopology(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	requireEventually(t, func() bool {
+		ports = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalRouterPort) bool {
+			return row.Name == routerPortName(logicalRouter("prod"), "apps-v6")
+		}).List(ctx, &ports)
+		return err == nil && len(ports) == 1 && ports[0].Ipv6RaConfigs["address_mode"] == "dhcpv6_stateful"
+	})
+	stats := writer.LastCleanupStats()
+	if stats.FirstReconcileGC || stats.Operations == 0 {
+		t.Fatalf("cleanup stats = %+v, want steady-state IPv6 RA repair operations", stats)
+	}
+}
+
 func TestLibOVSDBTopologyWriterEnsuresEndpointWithDHCPv4(t *testing.T) {
 	ctx := context.Background()
 	client, closeFn := newTestOVNNBClient(t)
