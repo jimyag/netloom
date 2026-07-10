@@ -1670,6 +1670,96 @@ func TestApplyPolicyRolloutsPausesWhenApprovalCallbackRejects(t *testing.T) {
 	}
 }
 
+func TestApplyPolicyRolloutsSyncsExternalChangeStatus(t *testing.T) {
+	state := rolloutPolicyState()
+	var statusRequests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		statusRequests++
+		if r.Method != http.MethodPost {
+			t.Fatalf("status method = %s, want POST", r.Method)
+		}
+		var request struct {
+			ApprovalRef string   `json:"approval_ref"`
+			Status      string   `json:"status"`
+			Endpoints   []string `json:"endpoints"`
+			Planned     int      `json:"planned"`
+			Applied     int      `json:"applied"`
+			Skipped     int      `json:"skipped"`
+			Failed      int      `json:"failed"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode status request: %v", err)
+		}
+		if request.ApprovalRef != "chg-9999" || request.Status != "applied" || request.Planned != 2 || request.Applied != 2 || request.Skipped != 0 || request.Failed != 0 {
+			t.Fatalf("status request = %+v, want applied summary", request)
+		}
+		if !slices.Equal(request.Endpoints, []string{model.EndpointKey("prod", "pod-a"), model.EndpointKey("prod", "pod-b")}) {
+			t.Fatalf("status endpoints = %+v, want sorted endpoints", request.Endpoints)
+		}
+		_, _ = w.Write([]byte(`{"synced":true,"status":"implemented","url":"https://changes.example/chg-9999"}`))
+	}))
+	defer server.Close()
+
+	state.PolicyRollouts = []control.PolicyRollout{{
+		Name:                  "change-status",
+		Node:                  "node-a",
+		Endpoints:             []string{"prod/pod-a", "prod/pod-b"},
+		BatchSize:             1,
+		ApprovalRequired:      true,
+		Approved:              true,
+		ApprovalRef:           "chg-9999",
+		ChangeStatusURL:       server.URL,
+		ChangeStatusTimeoutMS: 500,
+	}}
+	store := dataplane.NewInMemoryPolicyStore()
+	rollouts, err := ApplyPolicyRollouts(context.Background(), state, ReconcileOptions{
+		Node:  "node-a",
+		Store: store,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if statusRequests != 1 {
+		t.Fatalf("status requests = %d, want 1", statusRequests)
+	}
+	if len(rollouts) != 1 || !rollouts[0].Rollout.ChangeStatusSynced || rollouts[0].Rollout.ExternalChangeStatus != "implemented" || rollouts[0].Rollout.ExternalChangeURL != "https://changes.example/chg-9999" {
+		t.Fatalf("rollouts = %+v, want synced external change status", rollouts)
+	}
+	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 1 {
+		t.Fatalf("pod-a entries = %+v, want applied despite external sync being observational", entries)
+	}
+}
+
+func TestApplyPolicyRolloutsRecordsExternalChangeStatusFailure(t *testing.T) {
+	state := rolloutPolicyState()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer server.Close()
+
+	state.PolicyRollouts = []control.PolicyRollout{{
+		Name:            "change-status-failed",
+		Node:            "node-a",
+		Endpoints:       []string{"prod/pod-a"},
+		BatchSize:       1,
+		ChangeStatusURL: server.URL,
+	}}
+	store := dataplane.NewInMemoryPolicyStore()
+	rollouts, err := ApplyPolicyRollouts(context.Background(), state, ReconcileOptions{
+		Node:  "node-a",
+		Store: store,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rollouts) != 1 || rollouts[0].Rollout.ChangeStatusSynced || !strings.Contains(rollouts[0].Rollout.ChangeStatusError, "status 502") || rollouts[0].Rollout.Applied != 1 {
+		t.Fatalf("rollouts = %+v, want recorded sync failure without rollout rollback", rollouts)
+	}
+	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 1 {
+		t.Fatalf("pod-a entries = %+v, want policy mutation to remain applied", entries)
+	}
+}
+
 func TestRolloutPolicyEndpointsPausesAfterBatch(t *testing.T) {
 	state := rolloutPolicyState()
 	store := dataplane.NewInMemoryPolicyStore()

@@ -2072,6 +2072,75 @@ func TestPolicyEndpointAPIRolloutChecksApprovalCallback(t *testing.T) {
 	}
 }
 
+func TestPolicyEndpointAPIRolloutSyncsExternalChangeStatus(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:             "pod-a",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"web"},
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "allow-http",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("172.30.0.0/24"),
+				Ports:      []model.PortRange{{From: 80, To: 80}},
+				Action:     model.ActionAllow,
+			}},
+		}},
+	}
+	store := dataplane.NewInMemoryPolicyStore()
+	metrics := newAgentMetrics(store)
+	observeAgentReconcileResultWithState(metrics, agent.ReconcileResult{Node: "node-a"}, "memory", time.Millisecond, state)
+
+	statusRequests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		statusRequests++
+		if r.Method != http.MethodPost {
+			t.Fatalf("status method = %s, want POST", r.Method)
+		}
+		var request struct {
+			ApprovalRef string   `json:"approval_ref"`
+			Status      string   `json:"status"`
+			Endpoints   []string `json:"endpoints"`
+			Applied     int      `json:"applied"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode change status request: %v", err)
+		}
+		if request.ApprovalRef != "chg-4567" || request.Status != "applied" || request.Applied != 1 || !reflect.DeepEqual(request.Endpoints, []string{model.EndpointKey("prod", "pod-a")}) {
+			t.Fatalf("status request = %+v, want applied change status", request)
+		}
+		_, _ = w.Write([]byte(`{"synced":true,"status":"implemented","url":"https://changes.example/chg-4567"}`))
+	}))
+	defer server.Close()
+
+	body := bytes.NewBufferString(`{"endpoints":["prod/pod-a"],"batch_size":1,"approval_required":true,"approved":true,"approval_ref":"chg-4567","change_status_url":"` + server.URL + `","change_status_timeout_ms":500}`)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/policy/endpoints/rollout", body)
+	metrics.handlePolicyEndpoints(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("change status rollout status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var got policyEndpointActionOutput
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode change status rollout response: %v\n%s", err, recorder.Body.String())
+	}
+	if statusRequests != 1 {
+		t.Fatalf("status requests = %d, want 1", statusRequests)
+	}
+	if !got.RolledOut || !got.Rollout.ChangeStatusSynced || got.Rollout.ExternalChangeStatus != "implemented" || got.Rollout.ExternalChangeURL != "https://changes.example/chg-4567" {
+		t.Fatalf("change status rollout response = %+v, want synced external change status", got)
+	}
+}
+
 func TestPolicyEndpointAPIRolloutUsesPromotionPercent(t *testing.T) {
 	state := control.DesiredState{
 		Endpoints: []model.Endpoint{

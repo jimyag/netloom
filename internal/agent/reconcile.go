@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/netip"
@@ -193,6 +194,8 @@ type PolicyEndpointRolloutOptions struct {
 	ApprovalSignature         string
 	ApprovalCallbackURL       string
 	ApprovalCallbackTimeout   time.Duration
+	ChangeStatusURL           string
+	ChangeStatusTimeout       time.Duration
 	Paused                    bool
 	PauseAfterBatches         int
 	PromotionPercent          uint32
@@ -227,6 +230,11 @@ type PolicyEndpointRollout struct {
 	ApprovalCallbackURL       string                      `json:"approval_callback_url,omitempty"`
 	ApprovalCallbackApproved  bool                        `json:"approval_callback_approved,omitempty"`
 	ApprovalCallbackError     string                      `json:"approval_callback_error,omitempty"`
+	ChangeStatusURL           string                      `json:"change_status_url,omitempty"`
+	ChangeStatusSynced        bool                        `json:"change_status_synced,omitempty"`
+	ChangeStatusError         string                      `json:"change_status_error,omitempty"`
+	ExternalChangeStatus      string                      `json:"external_change_status,omitempty"`
+	ExternalChangeURL         string                      `json:"external_change_url,omitempty"`
 	ApprovalPending           bool                        `json:"approval_pending,omitempty"`
 	Paused                    bool                        `json:"paused,omitempty"`
 	PauseAfterBatches         int                         `json:"pause_after_batches,omitempty"`
@@ -414,6 +422,7 @@ func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, opt
 		Approved:                 rolloutOptions.Approved,
 		ApprovalRef:              rolloutOptions.ApprovalRef,
 		ApprovalCallbackURL:      rolloutOptions.ApprovalCallbackURL,
+		ChangeStatusURL:          rolloutOptions.ChangeStatusURL,
 		Paused:                   rolloutOptions.Paused,
 		PauseAfterBatches:        rolloutOptions.PauseAfterBatches,
 		PromotionPercent:         rolloutOptions.PromotionPercent,
@@ -453,7 +462,7 @@ func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, opt
 	if rolloutOptions.ApprovalRequired && !rolloutOptions.Approved {
 		rollout.ApprovalPending = true
 		pauseRolloutItems(&rollout, 0)
-		return rollout, nil
+		return syncPolicyRolloutChangeStatus(ctx, rolloutOptions, endpointIDs, rollout), nil
 	}
 	if rolloutOptions.ApprovalRequired && rolloutOptions.Approved {
 		verified, err := verifyPolicyRolloutApprovalSignature(options.PolicyRolloutApprovalSecret, rolloutOptions.ApprovalSignature, rolloutOptions.ApprovalRef, endpointIDs)
@@ -467,20 +476,20 @@ func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, opt
 				rollout.ApprovalCallbackError = err.Error()
 				rollout.ApprovalPending = true
 				pauseRolloutItems(&rollout, 0)
-				return rollout, nil
+				return syncPolicyRolloutChangeStatus(ctx, rolloutOptions, endpointIDs, rollout), nil
 			}
 			if !approved {
 				rollout.ApprovalCallbackError = "approval callback rejected rollout"
 				rollout.ApprovalPending = true
 				pauseRolloutItems(&rollout, 0)
-				return rollout, nil
+				return syncPolicyRolloutChangeStatus(ctx, rolloutOptions, endpointIDs, rollout), nil
 			}
 			rollout.ApprovalCallbackApproved = true
 		}
 	}
 	if rolloutOptions.Paused {
 		pauseRolloutItems(&rollout, 0)
-		return rollout, nil
+		return syncPolicyRolloutChangeStatus(ctx, rolloutOptions, endpointIDs, rollout), nil
 	}
 	snapshots, err := snapshotRolloutPolicyEndpoints(ctx, options.Store, endpointIDs)
 	if err != nil {
@@ -557,7 +566,7 @@ func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, opt
 			}
 		}
 	}
-	return rollout, nil
+	return syncPolicyRolloutChangeStatus(ctx, rolloutOptions, endpointIDs, rollout), nil
 }
 
 func PolicyRolloutApprovalSignature(secret, approvalRef string, endpointIDs []string) string {
@@ -589,6 +598,29 @@ type policyRolloutApprovalCallbackRequest struct {
 type policyRolloutApprovalCallbackResponse struct {
 	Approved bool   `json:"approved"`
 	Reason   string `json:"reason,omitempty"`
+}
+
+type policyRolloutChangeStatusRequest struct {
+	ApprovalRef     string   `json:"approval_ref,omitempty"`
+	Status          string   `json:"status"`
+	Endpoints       []string `json:"endpoints"`
+	Planned         int      `json:"planned"`
+	Applied         int      `json:"applied"`
+	Skipped         int      `json:"skipped"`
+	Failed          int      `json:"failed"`
+	RolledBack      int      `json:"rolled_back,omitempty"`
+	RollbackFailed  int      `json:"rollback_failed,omitempty"`
+	Paused          bool     `json:"paused,omitempty"`
+	ApprovalPending bool     `json:"approval_pending,omitempty"`
+	SLOFailed       bool     `json:"slo_failed,omitempty"`
+	ProbeFailed     bool     `json:"probe_failed,omitempty"`
+}
+
+type policyRolloutChangeStatusResponse struct {
+	Synced *bool  `json:"synced,omitempty"`
+	Status string `json:"status,omitempty"`
+	URL    string `json:"url,omitempty"`
+	Reason string `json:"reason,omitempty"`
 }
 
 func requestPolicyRolloutApproval(ctx context.Context, options PolicyEndpointRolloutOptions, endpointIDs []string) (bool, error) {
@@ -632,6 +664,103 @@ func requestPolicyRolloutApproval(ctx context.Context, options PolicyEndpointRol
 		return false, fmt.Errorf("approval callback rejected rollout: %s", strings.TrimSpace(out.Reason))
 	}
 	return out.Approved, nil
+}
+
+func syncPolicyRolloutChangeStatus(ctx context.Context, options PolicyEndpointRolloutOptions, endpointIDs []string, rollout PolicyEndpointRollout) PolicyEndpointRollout {
+	changeStatusURL := strings.TrimSpace(options.ChangeStatusURL)
+	if rollout.DryRun || changeStatusURL == "" {
+		return rollout
+	}
+	rollout.ChangeStatusURL = changeStatusURL
+	status, externalStatus, externalURL, err := postPolicyRolloutChangeStatus(ctx, options, endpointIDs, rollout)
+	if err != nil {
+		rollout.ChangeStatusError = err.Error()
+		return rollout
+	}
+	rollout.ChangeStatusSynced = true
+	if externalStatus != "" {
+		rollout.ExternalChangeStatus = externalStatus
+	} else {
+		rollout.ExternalChangeStatus = status
+	}
+	rollout.ExternalChangeURL = externalURL
+	return rollout
+}
+
+func postPolicyRolloutChangeStatus(ctx context.Context, options PolicyEndpointRolloutOptions, endpointIDs []string, rollout PolicyEndpointRollout) (string, string, string, error) {
+	timeout := options.ChangeStatusTimeout
+	if timeout <= 0 {
+		timeout = 2 * time.Second
+	}
+	callbackCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	status := policyRolloutChangeStatus(rollout)
+	payload := policyRolloutChangeStatusRequest{
+		ApprovalRef:     rollout.ApprovalRef,
+		Status:          status,
+		Endpoints:       append([]string(nil), endpointIDs...),
+		Planned:         rollout.Planned,
+		Applied:         rollout.Applied,
+		Skipped:         rollout.Skipped,
+		Failed:          rollout.Failed,
+		RolledBack:      rollout.RolledBack,
+		RollbackFailed:  rollout.RollbackFailed,
+		Paused:          rollout.Paused,
+		ApprovalPending: rollout.ApprovalPending,
+		SLOFailed:       rollout.SLOFailed,
+		ProbeFailed:     rollout.ProbeFailed,
+	}
+	sort.Strings(payload.Endpoints)
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return "", "", "", err
+	}
+	request, err := http.NewRequestWithContext(callbackCtx, http.MethodPost, strings.TrimSpace(options.ChangeStatusURL), bytes.NewReader(raw))
+	if err != nil {
+		return "", "", "", err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return "", "", "", err
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return "", "", "", fmt.Errorf("change status callback returned status %d", response.StatusCode)
+	}
+	if response.ContentLength == 0 {
+		return status, "", "", nil
+	}
+	var out policyRolloutChangeStatusResponse
+	if err := json.NewDecoder(response.Body).Decode(&out); err != nil {
+		if err == io.EOF {
+			return status, "", "", nil
+		}
+		return "", "", "", fmt.Errorf("decode change status callback response: %w", err)
+	}
+	if out.Synced != nil && !*out.Synced {
+		reason := strings.TrimSpace(out.Reason)
+		if reason == "" {
+			reason = "external change system rejected status update"
+		}
+		return "", "", "", fmt.Errorf("change status callback rejected update: %s", reason)
+	}
+	return status, strings.TrimSpace(out.Status), strings.TrimSpace(out.URL), nil
+}
+
+func policyRolloutChangeStatus(rollout PolicyEndpointRollout) string {
+	switch {
+	case rollout.ApprovalPending:
+		return "approval_pending"
+	case rollout.Failed > 0:
+		return "failed"
+	case rollout.Paused:
+		return "paused"
+	case rollout.Applied > 0:
+		return "applied"
+	default:
+		return "planned"
+	}
 }
 
 func policyRolloutApprovalPayload(approvalRef string, endpointIDs []string) string {
@@ -1039,6 +1168,8 @@ func ApplyPolicyRollouts(ctx context.Context, state control.DesiredState, option
 			ApprovalSignature:         rollout.ApprovalSignature,
 			ApprovalCallbackURL:       rollout.ApprovalCallbackURL,
 			ApprovalCallbackTimeout:   time.Duration(rollout.ApprovalCallbackTimeoutMS) * time.Millisecond,
+			ChangeStatusURL:           rollout.ChangeStatusURL,
+			ChangeStatusTimeout:       time.Duration(rollout.ChangeStatusTimeoutMS) * time.Millisecond,
 			Paused:                    rollout.Paused,
 			PauseAfterBatches:         rollout.PauseAfterBatches,
 			PromotionPercent:          rollout.PromotionPercent,
