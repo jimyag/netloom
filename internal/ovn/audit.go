@@ -255,7 +255,11 @@ func expectedManagedAuditRows(desired topology.State) map[string]map[string]stri
 		}
 	}
 	for _, route := range desired.PolicyRoutes {
-		addAuditExpectedRow(out, "Logical_Router_Policy", "netloom_vpc", route.VPC, "netloom_policy_route", route.Name)
+		addAuditExpectedRow(out, "Logical_Router_Policy",
+			"netloom_vpc", route.VPC,
+			"netloom_policy_route", route.Name,
+			"netloom_action", string(route.Action.Type),
+		)
 	}
 	for _, table := range desired.RouteTables {
 		for _, route := range table.Routes {
