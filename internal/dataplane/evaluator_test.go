@@ -160,6 +160,46 @@ func TestEvaluateRequiresRemoteCIDRMatchEvenWhenIdentityMatches(t *testing.T) {
 	}
 }
 
+func TestEvaluateRequiresRemoteIdentityMatchEvenWhenCIDRMatches(t *testing.T) {
+	entries := []PolicyMapEntry{{
+		Key: PolicyKey{
+			PrefixLen:      StaticPrefixBits + 24,
+			RemoteIdentity: policy.EndpointIdentity(model.EndpointKey("prod", "pod-b")),
+			Direction:      DirectionIngress,
+			Protocol:       6,
+			DestPortBE:     hostToNetwork16(443),
+		},
+		RemoteCIDR: netip.MustParsePrefix("10.20.0.10/32"),
+		Value: PolicyEntry{
+			L4PrefixLen:     24,
+			Precedence:      100,
+			RequireIdentity: 1,
+		},
+	}}
+
+	spoofed := Evaluate(entries, Packet{
+		RemoteIdentity: policy.EndpointIdentity(model.EndpointKey("prod", "pod-c")),
+		RemoteIP:       netip.MustParseAddr("10.20.0.10"),
+		Direction:      DirectionIngress,
+		Protocol:       6,
+		DestPort:       443,
+	})
+	if spoofed.Verdict != VerdictDrop {
+		t.Fatalf("verdict = %s, want drop when CIDR matches but identity does not", spoofed.Verdict)
+	}
+
+	allowed := Evaluate(entries, Packet{
+		RemoteIdentity: policy.EndpointIdentity(model.EndpointKey("prod", "pod-b")),
+		RemoteIP:       netip.MustParseAddr("10.20.0.10"),
+		Direction:      DirectionIngress,
+		Protocol:       6,
+		DestPort:       443,
+	})
+	if allowed.Verdict != VerdictAllow {
+		t.Fatalf("verdict = %s, want allow when both identity and CIDR match", allowed.Verdict)
+	}
+}
+
 func TestEvaluatePreservesRejectVerdict(t *testing.T) {
 	entries := []PolicyMapEntry{{
 		Key: PolicyKey{
