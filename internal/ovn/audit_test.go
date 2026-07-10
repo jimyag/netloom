@@ -94,6 +94,63 @@ esac
 	}
 }
 
+func TestNBCTLExecutorManagedOVNRowsResolvesLogicalRouterReferences(t *testing.T) {
+	tmp := t.TempDir()
+	logPath := filepath.Join(tmp, "args.log")
+	binary := filepath.Join(tmp, "ovn-nbctl")
+	script := `#!/bin/sh
+printf '%s\n' "$*" >> "` + logPath + `"
+case "$*" in
+  *"--columns=_uuid,external_ids,name,options,ports,load_balancers,nat,policies,static_routes find Logical_Router external_ids:netloom_owner=netloom"*) printf 'lr-prod,"{netloom_owner=netloom,netloom_vpc=prod}",nl_lr_prod,"{}",[lrp-apps],[lb-api],[nat-egress],[policy-via-fw],[route-main]\n' ;;
+  *"--columns=_uuid,external_ids,name find Logical_Router_Port external_ids:netloom_owner=netloom"*) printf 'lrp-apps,"{netloom_owner=netloom,netloom_subnet=apps}",nl_lrp_prod_apps\n' ;;
+  *"--columns=_uuid,external_ids,name find Load_Balancer external_ids:netloom_owner=netloom"*) printf 'lb-api,"{netloom_owner=netloom,netloom_vpc=prod,netloom_load_balancer=api,netloom_protocol=tcp}",nl_lb_prod_api_tcp\n' ;;
+  *"--columns=_uuid,external_ids find NAT external_ids:netloom_owner=netloom"*) printf 'nat-egress,"{netloom_owner=netloom,netloom_vpc=prod,netloom_nat=egress}"\n' ;;
+  *"--columns=_uuid,external_ids find Logical_Router_Policy external_ids:netloom_owner=netloom"*) printf 'policy-via-fw,"{netloom_owner=netloom,netloom_vpc=prod,netloom_policy_route=via-fw}"\n' ;;
+  *"--columns=_uuid,external_ids find Logical_Router_Static_Route external_ids:netloom_owner=netloom"*) printf 'route-main,"{netloom_owner=netloom,netloom_vpc=prod,netloom_route_table=main,netloom_route_key=10.20.0.0/24|10.10.0.253}"\n' ;;
+esac
+`
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	executor := NewNBCTLExecutor(binary, "--db=unix:/tmp/ovnnb.sock")
+	rows, err := executor.ManagedOVNRows(context.Background(), "Logical_Router")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(rows))
+	}
+	fields := rows[0].Fields
+	expected := map[string]string{
+		"ports":          "nl_lrp_prod_apps",
+		"load_balancers": "nl_lb_prod_api_tcp",
+		"nat_rules":      "egress",
+		"policies":       "via-fw",
+		"static_routes":  "10.20.0.0/24|10.10.0.253",
+	}
+	for key, value := range expected {
+		if fields[key] != value {
+			t.Fatalf("router field %s = %q, want %q; fields=%+v", key, fields[key], value, fields)
+		}
+	}
+	logData, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logged := string(logData)
+	for _, expected := range []string{
+		"--columns=_uuid,external_ids,name,options,ports,load_balancers,nat,policies,static_routes",
+		"find Logical_Router_Port external_ids:netloom_owner=netloom",
+		"find NAT external_ids:netloom_owner=netloom",
+		"find Logical_Router_Static_Route external_ids:netloom_owner=netloom",
+	} {
+		if !strings.Contains(logged, expected) {
+			t.Fatalf("audit command log missing %q:\n%s", expected, logged)
+		}
+	}
+}
+
 func TestAuditManagedObjectsFromNBCTLReportsColumnDrift(t *testing.T) {
 	tmp := t.TempDir()
 	binary := filepath.Join(tmp, "ovn-nbctl")

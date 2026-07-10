@@ -144,7 +144,13 @@ func (e *NBCTLExecutor) ManagedOVNRows(ctx context.Context, table string) ([]Man
 	if err != nil {
 		return nil, fmt.Errorf("audit managed %s: %w", table, err)
 	}
-	return parseManagedOVNRows(table, columns, splitAuditRows(string(output))), nil
+	rows := parseManagedOVNRows(table, columns, splitAuditRows(string(output)))
+	if table == "Logical_Router" {
+		if err := e.enrichNBCTLLogicalRouterReferenceFields(ctx, rows); err != nil {
+			return nil, err
+		}
+	}
+	return rows, nil
 }
 
 func managedAuditNBCTLColumns(table string) []string {
@@ -153,7 +159,7 @@ func managedAuditNBCTLColumns(table string) []string {
 	case "Logical_Switch":
 		columns = append(columns, "name", "other_config")
 	case "Logical_Router":
-		columns = append(columns, "name", "options")
+		columns = append(columns, "name", "options", "ports", "load_balancers", "nat", "policies", "static_routes")
 	case "Logical_Switch_Port":
 		columns = append(columns, "name", "type", "addresses", "port_security", "options", "tag")
 	case "Logical_Router_Port":
@@ -172,6 +178,93 @@ func managedAuditNBCTLColumns(table string) []string {
 		columns = append(columns, "cidr", "options")
 	}
 	return columns
+}
+
+func (e *NBCTLExecutor) enrichNBCTLLogicalRouterReferenceFields(ctx context.Context, rows []ManagedOVNRow) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	specs := []struct {
+		field string
+		table string
+		key   string
+	}{
+		{field: "ports", table: "Logical_Router_Port", key: "name"},
+		{field: "load_balancers", table: "Load_Balancer", key: "name"},
+		{field: "nat_rules", table: "NAT", key: "netloom_nat"},
+		{field: "policies", table: "Logical_Router_Policy", key: "netloom_policy_route"},
+		{field: "static_routes", table: "Logical_Router_Static_Route", key: "netloom_route_key"},
+	}
+	for _, spec := range specs {
+		refs, err := e.managedNBCTLReferenceNames(ctx, spec.table, spec.key)
+		if err != nil {
+			return err
+		}
+		for i := range rows {
+			rows[i].Fields[spec.field] = resolveManagedAuditReferenceField(rows[i].Fields[spec.field], refs)
+		}
+	}
+	return nil
+}
+
+func (e *NBCTLExecutor) managedNBCTLReferenceNames(ctx context.Context, table, key string) (map[string]string, error) {
+	columns := []string{"_uuid", "external_ids"}
+	if key == "name" {
+		columns = append(columns, "name")
+	}
+	args := append([]string(nil), e.BaseArgs...)
+	args = append(args,
+		"--format=csv",
+		"--data=bare",
+		"--no-headings",
+		"--columns="+strings.Join(columns, ","),
+		"find",
+		table,
+		"external_ids:netloom_owner=netloom",
+	)
+	output, err := e.outputCommand(ctx, args)
+	if err != nil {
+		return nil, fmt.Errorf("audit managed %s references: %w", table, err)
+	}
+	out := make(map[string]string)
+	for _, row := range splitAuditRows(string(output)) {
+		values, ok := parseAuditCSVRow(row)
+		if !ok || len(values) < 2 {
+			continue
+		}
+		uuid := trimOVNString(values[0])
+		if uuid == "" {
+			continue
+		}
+		var value string
+		if key == "name" {
+			if len(values) < 3 {
+				continue
+			}
+			value = trimOVNString(values[2])
+		} else {
+			value = parseOVNMap(values[1])[key]
+		}
+		if value != "" {
+			out[uuid] = value
+		}
+	}
+	return out, nil
+}
+
+func resolveManagedAuditReferenceField(value string, refs map[string]string) string {
+	if value == "" {
+		return ""
+	}
+	uuids := strings.Split(value, ",")
+	resolved := make([]string, 0, len(uuids))
+	for _, uuid := range uuids {
+		uuid = strings.TrimSpace(uuid)
+		if refs[uuid] != "" {
+			resolved = append(resolved, refs[uuid])
+		}
+	}
+	return stringSetField(resolved)
 }
 
 type auditRowResult struct {
@@ -873,7 +966,7 @@ func parseManagedOVNRows(table string, columns, rows []string) []ManagedOVNRow {
 		externalIDs := parseOVNMap(values[1])
 		fields := make(map[string]string)
 		for i := 2; i < len(columns) && i < len(values); i++ {
-			fields[columns[i]] = normalizeManagedAuditField(columns[i], values[i])
+			fields[managedAuditFieldName(columns[i])] = normalizeManagedAuditField(columns[i], values[i])
 		}
 		out = append(out, ManagedOVNRow{
 			Table:       table,
@@ -883,6 +976,13 @@ func parseManagedOVNRows(table string, columns, rows []string) []ManagedOVNRow {
 		})
 	}
 	return out
+}
+
+func managedAuditFieldName(column string) string {
+	if column == "nat" {
+		return "nat_rules"
+	}
+	return column
 }
 
 func parseAuditCSVRow(row string) ([]string, bool) {
@@ -903,7 +1003,7 @@ func normalizeManagedAuditField(column, value string) string {
 	switch column {
 	case "external_ids", "other_config", "options", "ipv6_ra_configs", "vips":
 		return mapField(parseOVNMap(value))
-	case "addresses", "port_security", "networks", "nexthops", "selection_fields":
+	case "addresses", "port_security", "networks", "nexthops", "selection_fields", "ports", "load_balancers", "nat", "policies", "static_routes":
 		return stringSliceField(parseOVNList(value))
 	case "tag":
 		return strings.Trim(strings.TrimSpace(value), `"`)
