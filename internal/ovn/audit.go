@@ -780,15 +780,23 @@ func countManagedProvidedFieldDrift(table string, live, expected map[string]stri
 }
 
 func staleManagedColumnShouldDrift(table, key string) bool {
-	if table != "NAT" {
-		return false
+	switch table {
+	case "Logical_Switch_Port":
+		switch key {
+		case "type", "options", "tag", "dhcpv4_options", "dhcpv6_options":
+			return true
+		default:
+			return false
+		}
+	case "NAT":
+		switch key {
+		case "external_port_range", "logical_port", "external_mac", "options":
+			return true
+		default:
+			return false
+		}
 	}
-	switch key {
-	case "external_port_range", "logical_port", "external_mac", "options":
-		return true
-	default:
-		return false
-	}
+	return false
 }
 
 func logicalSwitchColumnFields(subnet model.Subnet) map[string]string {
