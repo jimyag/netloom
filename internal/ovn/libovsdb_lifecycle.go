@@ -251,6 +251,7 @@ func (w *LibOVSDBTopologyWriter) cleanupSnapshotDiffOperations(ctx context.Conte
 func (w *LibOVSDBTopologyWriter) cleanupUnexpectedLiveOperations(ctx context.Context, desired topology.State) ([]ovsdb.Operation, CleanupStats, error) {
 	expected := expectedManagedAuditRows(desired)
 	staticRouteExpected := expectedStaticRouteRows(desired)
+	bfdExpected := expectedStaticRouteBFDRows(desired)
 	var ops []ovsdb.Operation
 	var stats CleanupStats
 
@@ -297,6 +298,18 @@ func (w *LibOVSDBTopologyWriter) cleanupUnexpectedLiveOperations(ctx context.Con
 	stats.StaleRoutes += len(staticRoutes)
 	for i := range staticRoutes {
 		nextOps, err := w.deleteStaticRouteFromParents(&staticRoutes[i])
+		if err != nil {
+			return nil, CleanupStats{}, err
+		}
+		ops = append(ops, nextOps...)
+	}
+	bfdRows, err := w.unexpectedBFDs(ctx, bfdExpected)
+	if err != nil {
+		return nil, CleanupStats{}, err
+	}
+	stats.StaleBFDs += len(bfdRows)
+	for i := range bfdRows {
+		nextOps, err := w.deleteStaticRouteBFDByUUID(bfdRows[i].UUID)
 		if err != nil {
 			return nil, CleanupStats{}, err
 		}
@@ -938,6 +951,7 @@ func (s *CleanupStats) add(other CleanupStats) {
 	s.StaleSubnets += other.StaleSubnets
 	s.StaleEndpoints += other.StaleEndpoints
 	s.StaleRoutes += other.StaleRoutes
+	s.StaleBFDs += other.StaleBFDs
 	s.ChangedRoutes += other.ChangedRoutes
 	s.StalePolicyRoutes += other.StalePolicyRoutes
 	s.ChangedPolicyRoutes += other.ChangedPolicyRoutes
@@ -1191,7 +1205,15 @@ func (w *LibOVSDBTopologyWriter) deleteStaticRouteFromParents(route *ovnnb.Logic
 	if err != nil {
 		return nil, fmt.Errorf("delete static route %s: %w", route.UUID, err)
 	}
-	return append(ops, deleteOps...), nil
+	ops = append(ops, deleteOps...)
+	if route.BFD != nil {
+		bfdOps, err := w.deleteStaticRouteBFDByUUID(*route.BFD)
+		if err != nil {
+			return nil, err
+		}
+		ops = append(ops, bfdOps...)
+	}
+	return ops, nil
 }
 
 func (w *LibOVSDBTopologyWriter) deletePolicyRouteFromParents(route *ovnnb.LogicalRouterPolicy) ([]ovsdb.Operation, error) {
@@ -1478,6 +1500,17 @@ func (w *LibOVSDBTopologyWriter) unexpectedStaticRoutes(ctx context.Context, exp
 	return rows, nil
 }
 
+func (w *LibOVSDBTopologyWriter) unexpectedBFDs(ctx context.Context, expected map[string]struct{}) ([]ovnnb.BFD, error) {
+	var rows []ovnnb.BFD
+	if err := w.client.WhereCache(func(row *ovnnb.BFD) bool {
+		return isNetloomManaged(row.ExternalIDs) && !hasExpectedStaticRoute(row.ExternalIDs, expected)
+	}).List(ctx, &rows); err != nil {
+		return nil, err
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].UUID < rows[j].UUID })
+	return rows, nil
+}
+
 func (w *LibOVSDBTopologyWriter) staticRoutesByVPCAndDestination(ctx context.Context, vpc, destination string) ([]ovnnb.LogicalRouterStaticRoute, error) {
 	var rows []ovnnb.LogicalRouterStaticRoute
 	if err := w.client.WhereCache(func(row *ovnnb.LogicalRouterStaticRoute) bool {
@@ -1510,6 +1543,23 @@ func expectedStaticRouteRows(desired topology.State) map[string]struct{} {
 	out := make(map[string]struct{})
 	for _, table := range desired.RouteTables {
 		for _, route := range table.Routes {
+			for _, row := range desiredStaticRouteRows(table, route) {
+				if key := staticRouteExpectedKey(row.ExternalIDs); key != "" {
+					out[key] = struct{}{}
+				}
+			}
+		}
+	}
+	return out
+}
+
+func expectedStaticRouteBFDRows(desired topology.State) map[string]struct{} {
+	out := make(map[string]struct{})
+	for _, table := range desired.RouteTables {
+		for _, route := range table.Routes {
+			if !route.BFD.Enabled {
+				continue
+			}
 			for _, row := range desiredStaticRouteRows(table, route) {
 				if key := staticRouteExpectedKey(row.ExternalIDs); key != "" {
 					out[key] = struct{}{}

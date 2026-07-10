@@ -1236,6 +1236,43 @@ func TestPolicyRouteRejectsMixedIPFamilies(t *testing.T) {
 	}
 }
 
+func TestRouteSupportsBFD(t *testing.T) {
+	route := Route{
+		Destination: netip.MustParsePrefix("0.0.0.0/0"),
+		NextHops:    []netip.Addr{netip.MustParseAddr("10.10.0.254")},
+		BFD: RouteBFD{
+			Enabled:     true,
+			LogicalPort: "nl_lr_prod_apps",
+			MinTx:       300,
+			MinRx:       300,
+			DetectMult:  3,
+		},
+	}
+	if err := route.Validate(); err != nil {
+		t.Fatalf("route with BFD failed validation: %v", err)
+	}
+
+	route.BFD.LogicalPort = ""
+	err := route.Validate()
+	if err == nil {
+		t.Fatal("expected route BFD without logical port to fail")
+	}
+	if !strings.Contains(err.Error(), "route bfd logical port is required") {
+		t.Fatalf("error %q does not mention BFD logical port", err)
+	}
+
+	route.BFD.LogicalPort = "nl_lr_prod_apps"
+	route.Blackhole = true
+	route.NextHops = nil
+	err = route.Validate()
+	if err == nil {
+		t.Fatal("expected blackhole route with BFD to fail")
+	}
+	if !strings.Contains(err.Error(), "blackhole route must not enable bfd") {
+		t.Fatalf("error %q does not mention blackhole BFD", err)
+	}
+}
+
 func TestSecurityGroupRuleDoesNotAcceptRouteActions(t *testing.T) {
 	rule := SecurityGroupRule{
 		ID:        "route-action",

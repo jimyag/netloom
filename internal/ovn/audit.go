@@ -19,6 +19,7 @@ type AuditStats struct {
 	ManagedLogicalRouterPorts        int
 	ManagedLogicalRouterPolicies     int
 	ManagedLogicalRouterStaticRoutes int
+	ManagedBFDs                      int
 	ManagedNATRules                  int
 	ManagedLoadBalancers             int
 	ManagedLoadBalancerHealthChecks  int
@@ -50,6 +51,7 @@ func (s AuditStats) TotalManagedObjects() int {
 		s.ManagedLogicalRouterPorts +
 		s.ManagedLogicalRouterPolicies +
 		s.ManagedLogicalRouterStaticRoutes +
+		s.ManagedBFDs +
 		s.ManagedNATRules +
 		s.ManagedLoadBalancers +
 		s.ManagedLoadBalancerHealthChecks +
@@ -123,6 +125,7 @@ func managedAuditTables() []managedAuditTable {
 		{"Logical_Router_Port", func(s *AuditStats, n int) { s.ManagedLogicalRouterPorts = n }},
 		{"Logical_Router_Policy", func(s *AuditStats, n int) { s.ManagedLogicalRouterPolicies = n }},
 		{"Logical_Router_Static_Route", func(s *AuditStats, n int) { s.ManagedLogicalRouterStaticRoutes = n }},
+		{"BFD", func(s *AuditStats, n int) { s.ManagedBFDs = n }},
 		{"NAT", func(s *AuditStats, n int) { s.ManagedNATRules = n }},
 		{"Load_Balancer", func(s *AuditStats, n int) { s.ManagedLoadBalancers = n }},
 		{"Load_Balancer_Health_Check", func(s *AuditStats, n int) { s.ManagedLoadBalancerHealthChecks = n }},
@@ -171,6 +174,8 @@ func managedAuditNBCTLColumns(table string) []string {
 		columns = append(columns, "priority", "match", "action", "nexthop", "nexthops")
 	case "Logical_Router_Static_Route":
 		columns = append(columns, "bfd", "ip_prefix", "nexthop", "options", "output_port", "policy", "route_table", "selection_fields")
+	case "BFD":
+		columns = append(columns, "logical_port", "dst_ip", "min_tx", "min_rx", "detect_mult", "options")
 	case "NAT":
 		columns = append(columns, "type", "external_ip", "logical_ip", "external_port_range", "logical_port", "external_mac", "options")
 	case "Load_Balancer":
@@ -372,6 +377,14 @@ func expectedManagedAuditRows(desired topology.State) map[string]map[string]stri
 					"netloom_route_table", table.Name,
 					"netloom_route_key", row.ExternalIDs["netloom_route_key"],
 				)
+				if route.BFD.Enabled {
+					addAuditExpectedRow(out, "BFD",
+						"netloom_vpc", table.VPC,
+						"netloom_route_table", table.Name,
+						"netloom_route_key", row.ExternalIDs["netloom_route_key"],
+						"netloom_route_bfd", staticRouteBFDRef(table.VPC, table.Name, row.ExternalIDs["netloom_route_key"]),
+					)
+				}
 			}
 		}
 	}
@@ -571,6 +584,23 @@ func expectedManagedAuditColumns(desired topology.State) map[string]map[string]s
 					"netloom_route_table", table.Name,
 					"netloom_route_key", row.ExternalIDs["netloom_route_key"],
 				)
+				if route.BFD.Enabled {
+					bfdRow := desiredStaticRouteBFDRow(table, route.BFD, row)
+					fields := map[string]string{
+						"logical_port": bfdRow.LogicalPort,
+						"dst_ip":       bfdRow.DstIP,
+						"min_tx":       intPointerField(bfdRow.MinTx),
+						"min_rx":       intPointerField(bfdRow.MinRx),
+						"detect_mult":  intPointerField(bfdRow.DetectMult),
+						"options":      mapField(bfdRow.Options),
+					}
+					addAuditExpectedColumns(out, "BFD", fields,
+						"netloom_vpc", table.VPC,
+						"netloom_route_table", table.Name,
+						"netloom_route_key", row.ExternalIDs["netloom_route_key"],
+						"netloom_route_bfd", staticRouteBFDRef(table.VPC, table.Name, row.ExternalIDs["netloom_route_key"]),
+					)
+				}
 			}
 		}
 	}
@@ -1139,6 +1169,8 @@ func managedAuditIdentity(table, uuid string, externalIDs map[string]string) (st
 	case "Logical_Router_Policy":
 		return auditIdentity(table, externalIDs, "netloom_vpc", "netloom_policy_route")
 	case "Logical_Router_Static_Route":
+		return auditIdentity(table, externalIDs, "netloom_vpc", "netloom_route_table", "netloom_route_key")
+	case "BFD":
 		return auditIdentity(table, externalIDs, "netloom_vpc", "netloom_route_table", "netloom_route_key")
 	case "NAT":
 		return auditIdentity(table, externalIDs, "netloom_vpc", "netloom_nat")

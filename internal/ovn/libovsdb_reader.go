@@ -136,9 +136,13 @@ func (r *LibOVSDBManagedReader) ManagedOVNRows(ctx context.Context, table string
 		if err := r.client.WhereCache(func(row *ovnnb.LogicalRouterStaticRoute) bool { return isNetloomManaged(row.ExternalIDs) }).List(ctx, &rows); err != nil {
 			return nil, err
 		}
+		bfdRefs, err := r.bfdRefs(ctx)
+		if err != nil {
+			return nil, err
+		}
 		return managedOVNRowsFromModels(table, rows, func(row ovnnb.LogicalRouterStaticRoute) (string, map[string]string, map[string]string) {
 			return row.UUID, row.ExternalIDs, map[string]string{
-				"bfd":              pointerStringValue(row.BFD),
+				"bfd":              bfdRefField(row.BFD, bfdRefs),
 				"ip_prefix":        row.IPPrefix,
 				"nexthop":          row.Nexthop,
 				"options":          mapField(row.Options),
@@ -146,6 +150,21 @@ func (r *LibOVSDBManagedReader) ManagedOVNRows(ctx context.Context, table string
 				"policy":           pointerStaticRoutePolicyValue(row.Policy),
 				"route_table":      row.RouteTable,
 				"selection_fields": staticRouteSelectionFieldsField(row.SelectionFields),
+			}
+		}), nil
+	case "BFD":
+		var rows []ovnnb.BFD
+		if err := r.client.WhereCache(func(row *ovnnb.BFD) bool { return isNetloomManaged(row.ExternalIDs) }).List(ctx, &rows); err != nil {
+			return nil, err
+		}
+		return managedOVNRowsFromModels(table, rows, func(row ovnnb.BFD) (string, map[string]string, map[string]string) {
+			return row.UUID, row.ExternalIDs, map[string]string{
+				"logical_port": row.LogicalPort,
+				"dst_ip":       row.DstIP,
+				"min_tx":       intPointerField(row.MinTx),
+				"min_rx":       intPointerField(row.MinRx),
+				"detect_mult":  intPointerField(row.DetectMult),
+				"options":      mapField(row.Options),
 			}
 		}), nil
 	case "NAT":
@@ -277,6 +296,29 @@ func dhcpOptionsRef(family, cidr string) string {
 		return ""
 	}
 	return family + ":" + cidr
+}
+
+func (r *LibOVSDBManagedReader) bfdRefs(ctx context.Context) (map[string]string, error) {
+	var rows []ovnnb.BFD
+	if err := r.client.WhereCache(func(row *ovnnb.BFD) bool { return isNetloomManaged(row.ExternalIDs) }).List(ctx, &rows); err != nil {
+		return nil, err
+	}
+	out := make(map[string]string, len(rows))
+	for _, row := range rows {
+		out[row.UUID] = staticRouteBFDRef(
+			row.ExternalIDs["netloom_vpc"],
+			row.ExternalIDs["netloom_route_table"],
+			row.ExternalIDs["netloom_route_key"],
+		)
+	}
+	return out, nil
+}
+
+func bfdRefField(uuid *string, refs map[string]string) string {
+	if uuid == nil {
+		return ""
+	}
+	return refs[*uuid]
 }
 
 func (r *LibOVSDBManagedReader) loadBalancerNames(ctx context.Context) (map[string]string, error) {

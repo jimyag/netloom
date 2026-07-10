@@ -1263,6 +1263,144 @@ func TestLibOVSDBTopologyWriterEnsuresRouteTableStaticRoutes(t *testing.T) {
 	})
 }
 
+func TestLibOVSDBTopologyWriterEnsuresStaticRouteBFD(t *testing.T) {
+	ctx := context.Background()
+	client, closeFn := newTestOVNNBClient(t)
+	defer closeFn()
+
+	if _, err := client.MonitorAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	writer := NewLibOVSDBTopologyWriter(client)
+	if err := writer.EnsureVPC(ctx, model.VPC{Name: "prod"}); err != nil {
+		t.Fatal(err)
+	}
+	table := model.RouteTable{
+		Name: "main",
+		VPC:  "prod",
+		Routes: []model.Route{{
+			Destination: netip.MustParsePrefix("10.20.0.0/24"),
+			NextHops: []netip.Addr{
+				netip.MustParseAddr("10.10.0.253"),
+				netip.MustParseAddr("10.10.0.254"),
+			},
+			BFD: model.RouteBFD{
+				Enabled:     true,
+				LogicalPort: routerPortName(logicalRouter("prod"), "apps"),
+				MinTx:       300,
+				MinRx:       300,
+				DetectMult:  3,
+			},
+		}},
+	}
+	if err := writer.EnsureRouteTable(ctx, table); err != nil {
+		t.Fatal(err)
+	}
+
+	var routes []ovnnb.LogicalRouterStaticRoute
+	var bfds []ovnnb.BFD
+	requireEventually(t, func() bool {
+		routes = nil
+		bfds = nil
+		routesErr := client.WhereCache(func(row *ovnnb.LogicalRouterStaticRoute) bool {
+			return row.ExternalIDs["netloom_route_table"] == "main"
+		}).List(ctx, &routes)
+		bfdErr := client.WhereCache(func(row *ovnnb.BFD) bool {
+			return row.ExternalIDs["netloom_route_table"] == "main"
+		}).List(ctx, &bfds)
+		return routesErr == nil && bfdErr == nil && len(routes) == 2 && len(bfds) == 2
+	})
+	bfdByRouteKey := make(map[string]ovnnb.BFD, len(bfds))
+	for _, bfd := range bfds {
+		bfdByRouteKey[bfd.ExternalIDs["netloom_route_key"]] = bfd
+		if bfd.LogicalPort != routerPortName(logicalRouter("prod"), "apps") ||
+			intPointerField(bfd.MinTx) != "300" ||
+			intPointerField(bfd.MinRx) != "300" ||
+			intPointerField(bfd.DetectMult) != "3" {
+			t.Fatalf("BFD row = %+v, want initial route BFD config", bfd)
+		}
+	}
+	for _, route := range routes {
+		routeKey := route.ExternalIDs["netloom_route_key"]
+		bfd, ok := bfdByRouteKey[routeKey]
+		if !ok {
+			t.Fatalf("route %s has no BFD row in %+v", routeKey, bfdByRouteKey)
+		}
+		if route.BFD == nil || *route.BFD != bfd.UUID {
+			t.Fatalf("route %s BFD = %v, want %s", routeKey, route.BFD, bfd.UUID)
+		}
+	}
+	auditState := topology.State{
+		VPCs:        map[string]model.VPC{"prod": {Name: "prod"}},
+		RouteTables: map[string]model.RouteTable{"prod/main": table},
+	}
+	stats, err := AuditManagedObjectsFromReaderWithDesired(ctx, NewLibOVSDBManagedReader(client), auditState)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.ManagedBFDs != 2 || stats.DriftedManagedRows != 0 || stats.MissingManagedRows != 0 || stats.UnexpectedManagedRows != 0 {
+		t.Fatalf("audit stats after BFD create = %+v, want two clean managed BFD rows", stats)
+	}
+
+	driftedMinRx := 100
+	bfds[0].MinRx = &driftedMinRx
+	driftOps, err := client.Where(&bfds[0]).Update(&bfds[0], &bfds[0].MinRx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := client.Transact(ctx, driftOps...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, driftOps); err != nil {
+		t.Fatalf("operation errors=%+v err=%v", opErrors, err)
+	}
+	requireEventually(t, func() bool {
+		stats, err = AuditManagedObjectsFromReaderWithDesired(ctx, NewLibOVSDBManagedReader(client), auditState)
+		return err == nil && stats.ManagedBFDs == 2 && stats.DriftedManagedRows == 1 && stats.DriftedManagedFields == 1
+	})
+
+	table.Routes[0].NextHops = []netip.Addr{netip.MustParseAddr("10.10.0.253")}
+	table.Routes[0].BFD.MinTx = 500
+	if err := writer.EnsureRouteTable(ctx, table); err != nil {
+		t.Fatal(err)
+	}
+	requireEventually(t, func() bool {
+		routes = nil
+		bfds = nil
+		routesErr := client.WhereCache(func(row *ovnnb.LogicalRouterStaticRoute) bool {
+			return row.ExternalIDs["netloom_route_table"] == "main"
+		}).List(ctx, &routes)
+		bfdErr := client.WhereCache(func(row *ovnnb.BFD) bool {
+			return row.ExternalIDs["netloom_route_table"] == "main"
+		}).List(ctx, &bfds)
+		if routesErr != nil || bfdErr != nil || len(routes) != 1 || len(bfds) != 1 {
+			return false
+		}
+		return routes[0].BFD != nil &&
+			*routes[0].BFD == bfds[0].UUID &&
+			routes[0].Nexthop == "10.10.0.253" &&
+			bfds[0].DstIP == "10.10.0.253" &&
+			intPointerField(bfds[0].MinTx) == "500"
+	})
+
+	table.Routes[0].BFD = model.RouteBFD{}
+	if err := writer.EnsureRouteTable(ctx, table); err != nil {
+		t.Fatal(err)
+	}
+	requireEventually(t, func() bool {
+		routes = nil
+		bfds = nil
+		routesErr := client.WhereCache(func(row *ovnnb.LogicalRouterStaticRoute) bool {
+			return row.ExternalIDs["netloom_route_table"] == "main"
+		}).List(ctx, &routes)
+		bfdErr := client.WhereCache(func(row *ovnnb.BFD) bool {
+			return row.ExternalIDs["netloom_route_table"] == "main"
+		}).List(ctx, &bfds)
+		return routesErr == nil && bfdErr == nil && len(routes) == 1 && routes[0].BFD == nil && len(bfds) == 0
+	})
+}
+
 func TestLibOVSDBTopologyWriterEnsuresPolicyRouteByName(t *testing.T) {
 	ctx := context.Background()
 	client, closeFn := newTestOVNNBClient(t)

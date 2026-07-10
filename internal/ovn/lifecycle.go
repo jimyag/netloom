@@ -39,6 +39,7 @@ type CleanupStats struct {
 	StaleSubnets             int
 	StaleEndpoints           int
 	StaleRoutes              int
+	StaleBFDs                int
 	ChangedRoutes            int
 	StalePolicyRoutes        int
 	ChangedPolicyRoutes      int
@@ -60,6 +61,7 @@ func (s CleanupStats) TotalStaleObjects() int {
 		s.StaleSubnets +
 		s.StaleEndpoints +
 		s.StaleRoutes +
+		s.StaleBFDs +
 		s.StalePolicyRoutes +
 		s.StaleGateways +
 		s.StaleNATRules +
@@ -647,7 +649,11 @@ func routeSignature(record routeRecord) string {
 		values = append(values, nextHop.String())
 	}
 	sort.Strings(values)
-	return routeKey(record.VPC, route) + "|" + strings.Join(values, ",")
+	bfd := ""
+	if route.BFD.Enabled {
+		bfd = fmt.Sprintf("|bfd=%s,%d,%d,%d", route.BFD.LogicalPort, route.BFD.MinTx, route.BFD.MinRx, route.BFD.DetectMult)
+	}
+	return routeKey(record.VPC, route) + "|" + strings.Join(values, ",") + bfd
 }
 
 func routeUpdateCleanupOperations(oldRecord, nextRecord routeRecord) []Operation {

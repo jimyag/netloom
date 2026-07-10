@@ -257,6 +257,12 @@ func (w *LibOVSDBTopologyWriter) routeTableOperations(ctx context.Context, table
 				if !createMissing {
 					continue
 				}
+				bfdOps, bfdUUID, err := w.staticRouteBFDOperations(ctx, table, route.BFD, desired)
+				if err != nil {
+					return nil, err
+				}
+				ops = append(ops, bfdOps...)
+				desired.BFD = bfdUUID
 				desired.UUID = ovsdbNamedUUID("nl_route_" + table.VPC + "_" + table.Name + "_" + key)
 				createOps, err := w.client.Create(&desired)
 				if err != nil {
@@ -279,7 +285,14 @@ func (w *LibOVSDBTopologyWriter) routeTableOperations(ctx context.Context, table
 				}
 				ops = append(ops, attachOps...)
 			}
+			bfdOps, bfdUUID, err := w.staticRouteBFDOperations(ctx, table, route.BFD, desired)
+			if err != nil {
+				return nil, err
+			}
+			ops = append(ops, bfdOps...)
+			desired.BFD = bfdUUID
 			if staticRouteRowChanged(keep, desired, nextExternalIDs) {
+				oldBFD := keep.BFD
 				keep.BFD = desired.BFD
 				keep.IPPrefix = desired.IPPrefix
 				keep.Nexthop = desired.Nexthop
@@ -294,6 +307,13 @@ func (w *LibOVSDBTopologyWriter) routeTableOperations(ctx context.Context, table
 					return nil, fmt.Errorf("update static route %s: %w", key, err)
 				}
 				ops = append(ops, updateOps...)
+				if desired.BFD == nil && oldBFD != nil {
+					deleteBFDOps, err := w.deleteStaticRouteBFDByUUID(*oldBFD)
+					if err != nil {
+						return nil, err
+					}
+					ops = append(ops, deleteBFDOps...)
+				}
 			}
 			for i := 1; i < len(rows); i++ {
 				deleteOps, err := w.deleteStaticRoute(router.UUID, &rows[i])
@@ -986,7 +1006,73 @@ func (w *LibOVSDBTopologyWriter) deleteStaticRoute(routerUUID string, route *ovn
 	if err != nil {
 		return nil, fmt.Errorf("delete static route %s: %w", route.UUID, err)
 	}
-	return append(mutateOps, deleteOps...), nil
+	ops := append(mutateOps, deleteOps...)
+	if route.BFD != nil {
+		bfdOps, err := w.deleteStaticRouteBFDByUUID(*route.BFD)
+		if err != nil {
+			return nil, err
+		}
+		ops = append(ops, bfdOps...)
+	}
+	return ops, nil
+}
+
+func (w *LibOVSDBTopologyWriter) staticRouteBFDOperations(ctx context.Context, table model.RouteTable, bfd model.RouteBFD, route ovnnb.LogicalRouterStaticRoute) ([]ovsdb.Operation, *string, error) {
+	routeKey := staticRouteRowKey(route)
+	if !bfd.Enabled {
+		return nil, nil, nil
+	}
+	desired := desiredStaticRouteBFDRow(table, bfd, route)
+	rows, err := w.staticRouteBFDByRouteKey(ctx, table.VPC, table.Name, routeKey)
+	if err != nil {
+		return nil, nil, err
+	}
+	var ops []ovsdb.Operation
+	if len(rows) == 0 {
+		desired.UUID = ovsdbNamedUUID("nl_bfd_" + table.VPC + "_" + table.Name + "_" + routeKey)
+		createOps, err := w.client.Create(&desired)
+		if err != nil {
+			return nil, nil, fmt.Errorf("create static route BFD %s/%s/%s: %w", table.VPC, table.Name, routeKey, err)
+		}
+		ops = append(ops, createOps...)
+		return ops, &desired.UUID, nil
+	}
+	keep := rows[0]
+	nextExternalIDs := mergeManagedExternalIDs(keep.ExternalIDs, desired.ExternalIDs)
+	if bfdRowChanged(keep, desired, nextExternalIDs) {
+		keep.LogicalPort = desired.LogicalPort
+		keep.DstIP = desired.DstIP
+		keep.MinTx = desired.MinTx
+		keep.MinRx = desired.MinRx
+		keep.DetectMult = desired.DetectMult
+		keep.Options = desired.Options
+		keep.ExternalIDs = nextExternalIDs
+		updateOps, err := w.client.Where(&keep).Update(&keep, &keep.LogicalPort, &keep.DstIP, &keep.MinTx, &keep.MinRx, &keep.DetectMult, &keep.Options, &keep.ExternalIDs)
+		if err != nil {
+			return nil, nil, fmt.Errorf("update static route BFD %s/%s/%s: %w", table.VPC, table.Name, routeKey, err)
+		}
+		ops = append(ops, updateOps...)
+	}
+	for i := 1; i < len(rows); i++ {
+		deleteOps, err := w.deleteStaticRouteBFDByUUID(rows[i].UUID)
+		if err != nil {
+			return nil, nil, err
+		}
+		ops = append(ops, deleteOps...)
+	}
+	return ops, &keep.UUID, nil
+}
+
+func (w *LibOVSDBTopologyWriter) deleteStaticRouteBFDByUUID(uuid string) ([]ovsdb.Operation, error) {
+	if uuid == "" {
+		return nil, nil
+	}
+	bfd := &ovnnb.BFD{UUID: uuid}
+	deleteOps, err := w.client.Where(bfd).Delete()
+	if err != nil {
+		return nil, fmt.Errorf("delete static route BFD %s: %w", uuid, err)
+	}
+	return deleteOps, nil
 }
 
 func (w *LibOVSDBTopologyWriter) attachPolicyRoute(router *ovnnb.LogicalRouter, policyUUID string) ([]ovsdb.Operation, error) {
@@ -1622,6 +1708,20 @@ func (w *LibOVSDBTopologyWriter) staticRoutesByRouteTable(ctx context.Context, t
 	return rows, nil
 }
 
+func (w *LibOVSDBTopologyWriter) staticRouteBFDByRouteKey(ctx context.Context, vpc, table, routeKey string) ([]ovnnb.BFD, error) {
+	var rows []ovnnb.BFD
+	if err := w.client.WhereCache(func(row *ovnnb.BFD) bool {
+		return row.ExternalIDs["netloom_owner"] == "netloom" &&
+			row.ExternalIDs["netloom_vpc"] == vpc &&
+			row.ExternalIDs["netloom_route_table"] == table &&
+			row.ExternalIDs["netloom_route_key"] == routeKey
+	}).List(ctx, &rows); err != nil {
+		return nil, fmt.Errorf("list BFD rows for static route %s/%s/%s from libovsdb cache: %w", vpc, table, routeKey, err)
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].UUID < rows[j].UUID })
+	return rows, nil
+}
+
 func (w *LibOVSDBTopologyWriter) policyRoutesByName(ctx context.Context, vpc, name string) ([]ovnnb.LogicalRouterPolicy, error) {
 	var rows []ovnnb.LogicalRouterPolicy
 	if err := w.client.WhereCache(func(row *ovnnb.LogicalRouterPolicy) bool {
@@ -1803,6 +1903,7 @@ func desiredStaticRouteRows(table model.RouteTable, route model.Route) []ovnnb.L
 	rows := make([]ovnnb.LogicalRouterStaticRoute, 0, len(nextHops))
 	for _, nextHop := range nextHops {
 		nextHopString := nextHop.String()
+		routeKey := staticRouteKey(route.Destination.String(), nextHopString)
 		rows = append(rows, ovnnb.LogicalRouterStaticRoute{
 			IPPrefix:   route.Destination.String(),
 			Nexthop:    nextHopString,
@@ -1811,12 +1912,36 @@ func desiredStaticRouteRows(table model.RouteTable, route model.Route) []ovnnb.L
 				"netloom_owner":       "netloom",
 				"netloom_vpc":         table.VPC,
 				"netloom_route_table": table.Name,
-				"netloom_route_key":   staticRouteKey(route.Destination.String(), nextHopString),
+				"netloom_route_key":   routeKey,
 			},
 		})
+		if route.BFD.Enabled {
+			rows[len(rows)-1].BFD = optionalString(staticRouteBFDRef(table.VPC, table.Name, routeKey))
+		}
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].Nexthop < rows[j].Nexthop })
 	return rows
+}
+
+func desiredStaticRouteBFDRow(table model.RouteTable, bfd model.RouteBFD, route ovnnb.LogicalRouterStaticRoute) ovnnb.BFD {
+	minTx := int(bfd.MinTx)
+	minRx := int(bfd.MinRx)
+	detectMult := int(bfd.DetectMult)
+	routeKey := staticRouteRowKey(route)
+	return ovnnb.BFD{
+		LogicalPort: bfd.LogicalPort,
+		DstIP:       route.Nexthop,
+		MinTx:       &minTx,
+		MinRx:       &minRx,
+		DetectMult:  &detectMult,
+		ExternalIDs: map[string]string{
+			"netloom_owner":       "netloom",
+			"netloom_vpc":         table.VPC,
+			"netloom_route_table": table.Name,
+			"netloom_route_key":   routeKey,
+			"netloom_route_bfd":   staticRouteBFDRef(table.VPC, table.Name, routeKey),
+		},
+	}
 }
 
 func staticRouteRowKey(route ovnnb.LogicalRouterStaticRoute) string {
@@ -1830,6 +1955,13 @@ func staticRouteKey(prefix, nextHop string) string {
 	return prefix + "|" + nextHop
 }
 
+func staticRouteBFDRef(vpc, table, routeKey string) string {
+	if vpc == "" || table == "" || routeKey == "" {
+		return ""
+	}
+	return vpc + "|" + table + "|" + routeKey
+}
+
 func staticRouteRowChanged(current, desired ovnnb.LogicalRouterStaticRoute, nextExternalIDs map[string]string) bool {
 	return !stringPointerValueEqual(current.BFD, pointerStringValue(desired.BFD)) ||
 		current.IPPrefix != desired.IPPrefix ||
@@ -1839,6 +1971,16 @@ func staticRouteRowChanged(current, desired ovnnb.LogicalRouterStaticRoute, next
 		!staticRoutePolicyPointerValueEqual(current.Policy, desired.Policy) ||
 		current.RouteTable != desired.RouteTable ||
 		!reflect.DeepEqual(current.SelectionFields, desired.SelectionFields) ||
+		!reflect.DeepEqual(current.ExternalIDs, nextExternalIDs)
+}
+
+func bfdRowChanged(current, desired ovnnb.BFD, nextExternalIDs map[string]string) bool {
+	return current.LogicalPort != desired.LogicalPort ||
+		current.DstIP != desired.DstIP ||
+		!equalIntPointers(current.MinTx, desired.MinTx) ||
+		!equalIntPointers(current.MinRx, desired.MinRx) ||
+		!equalIntPointers(current.DetectMult, desired.DetectMult) ||
+		!reflect.DeepEqual(current.Options, desired.Options) ||
 		!reflect.DeepEqual(current.ExternalIDs, nextExternalIDs)
 }
 

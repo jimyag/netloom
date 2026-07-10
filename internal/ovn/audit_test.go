@@ -1283,14 +1283,15 @@ func TestAuditStatsTotalManagedObjects(t *testing.T) {
 		ManagedLogicalRouterPorts:        1,
 		ManagedLogicalRouterPolicies:     3,
 		ManagedLogicalRouterStaticRoutes: 5,
+		ManagedBFDs:                      2,
 		ManagedNATRules:                  2,
 		ManagedLoadBalancers:             1,
 		ManagedLoadBalancerHealthChecks:  2,
 		ManagedDHCPOptions:               4,
 	}
 
-	if got := stats.TotalManagedObjects(); got != 22 {
-		t.Fatalf("total managed objects = %d, want 22", got)
+	if got := stats.TotalManagedObjects(); got != 24 {
+		t.Fatalf("total managed objects = %d, want 24", got)
 	}
 }
 

@@ -150,6 +150,15 @@ type Route struct {
 	Destination netip.Prefix `json:"destination"`
 	NextHops    []netip.Addr `json:"next_hops"`
 	Blackhole   bool         `json:"blackhole"`
+	BFD         RouteBFD     `json:"bfd,omitempty"`
+}
+
+type RouteBFD struct {
+	Enabled     bool   `json:"enabled"`
+	LogicalPort string `json:"logical_port,omitempty"`
+	MinTx       uint32 `json:"min_tx,omitempty"`
+	MinRx       uint32 `json:"min_rx,omitempty"`
+	DetectMult  uint32 `json:"detect_mult,omitempty"`
 }
 
 type PolicyRoute struct {
@@ -914,6 +923,9 @@ func (r Route) Validate() error {
 		if len(r.NextHops) > 0 {
 			return errors.New("blackhole route must not set next hop")
 		}
+		if r.BFD.Enabled {
+			return errors.New("blackhole route must not enable bfd")
+		}
 		return nil
 	}
 	nextHops := r.RouteNextHops()
@@ -935,6 +947,28 @@ func (r Route) Validate() error {
 			return fmt.Errorf("route next hop %s is duplicated", nextHop)
 		}
 		seen[nextHop] = struct{}{}
+	}
+	if err := r.BFD.Validate(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (b RouteBFD) Validate() error {
+	if !b.Enabled {
+		return nil
+	}
+	if strings.TrimSpace(b.LogicalPort) == "" {
+		return errors.New("route bfd logical port is required")
+	}
+	if b.MinTx == 0 {
+		return errors.New("route bfd min_tx is required")
+	}
+	if b.MinRx == 0 {
+		return errors.New("route bfd min_rx is required")
+	}
+	if b.DetectMult == 0 {
+		return errors.New("route bfd detect_mult is required")
 	}
 	return nil
 }
