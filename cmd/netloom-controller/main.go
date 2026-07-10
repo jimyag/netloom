@@ -84,21 +84,22 @@ func runStateFile(ctx context.Context, path string) error {
 }
 
 type stateFileReconciler struct {
-	memory         *control.MemoryBackend
-	executor       ovn.Executor
-	ovnBackend     *ovn.Backend
-	ovnCleanup     ovnCleanupStatsReporter
-	ovnCloser      func()
-	controller     *control.Controller
-	healthTracker  *control.LoadBalancerHealthTracker
-	healthChecker  ovnHealthChecker
-	ovnHealth      ovnHealthTracker
-	maintenance    ovnMaintenanceRunner
-	auditReader    ovn.ManagedOVNReader
-	auditCloser    func()
-	ovsStatus      ovsdbControlStatusWriter
-	ovsStatusClose func()
-	metrics        *controllerMetrics
+	memory                 *control.MemoryBackend
+	executor               ovn.Executor
+	ovnBackend             *ovn.Backend
+	ovnCleanup             ovnCleanupStatsReporter
+	ovnCloser              func()
+	controller             *control.Controller
+	healthTracker          *control.LoadBalancerHealthTracker
+	healthChecker          ovnHealthChecker
+	ovnHealth              ovnHealthTracker
+	maintenance            ovnMaintenanceRunner
+	auditReader            ovn.ManagedOVNReader
+	auditCloser            func()
+	ovsStatus              ovsdbControlStatusWriter
+	ovsStatusClose         func()
+	metrics                *controllerMetrics
+	identityGroupFeedCache *control.IdentityGroupObservationCache
 }
 
 type ovnTopologyRuntime struct {
@@ -245,19 +246,20 @@ func newStateFileReconciler(ctx context.Context) (*stateFileReconciler, error) {
 		return nil, err
 	}
 	return &stateFileReconciler{
-		memory:         memory,
-		executor:       ovnRuntime.executor,
-		ovnBackend:     ovnRuntime.ovnBackend,
-		ovnCleanup:     ovnRuntime.cleanup,
-		ovnCloser:      ovnRuntime.close,
-		controller:     control.NewController(control.MultiTopologyBackend{memory, ovnRuntime.backend}, memory),
-		healthTracker:  control.NewLoadBalancerHealthTracker(),
-		healthChecker:  ovnRuntime.health,
-		maintenance:    newOVNMaintenanceFromEnv(),
-		auditReader:    auditReader,
-		auditCloser:    auditCloser,
-		ovsStatus:      ovsStatus,
-		ovsStatusClose: ovsStatusClose,
+		memory:                 memory,
+		executor:               ovnRuntime.executor,
+		ovnBackend:             ovnRuntime.ovnBackend,
+		ovnCleanup:             ovnRuntime.cleanup,
+		ovnCloser:              ovnRuntime.close,
+		controller:             control.NewController(control.MultiTopologyBackend{memory, ovnRuntime.backend}, memory),
+		healthTracker:          control.NewLoadBalancerHealthTracker(),
+		healthChecker:          ovnRuntime.health,
+		maintenance:            newOVNMaintenanceFromEnv(),
+		auditReader:            auditReader,
+		auditCloser:            auditCloser,
+		ovsStatus:              ovsStatus,
+		ovsStatusClose:         ovsStatusClose,
+		identityGroupFeedCache: &control.IdentityGroupObservationCache{},
 	}, nil
 }
 
@@ -306,7 +308,7 @@ func (r *stateFileReconciler) reconcile(ctx context.Context, path string) error 
 		r.observeReconcileFailure("load_state", state, control.LoadBalancerHealthSummary{}, ovnHealth.Snapshot, 0, 0, err, duration)
 		return err
 	}
-	state, err = withIdentityGroupObservationsContext(ctx, state)
+	state, err = r.withIdentityGroupObservationsContext(ctx, state)
 	if err != nil {
 		duration := time.Since(start)
 		printControllerReconcileFailure("load_state", state, control.LoadBalancerHealthSummary{}, ovnHealth.Snapshot, 0, 0, err, duration)
@@ -1204,12 +1206,27 @@ func withIdentityGroupObservationsAt(state control.DesiredState, now time.Time) 
 }
 
 func withIdentityGroupObservationsAtContext(ctx context.Context, state control.DesiredState, now time.Time) (control.DesiredState, error) {
+	return mergeIdentityGroupObservationsAtContext(ctx, state, now, nil)
+}
+
+func (r *stateFileReconciler) withIdentityGroupObservationsContext(ctx context.Context, state control.DesiredState) (control.DesiredState, error) {
+	var cache *control.IdentityGroupObservationCache
+	if r != nil {
+		cache = r.identityGroupFeedCache
+	}
+	return mergeIdentityGroupObservationsAtContext(ctx, state, time.Now().UTC(), cache)
+}
+
+func mergeIdentityGroupObservationsAtContext(ctx context.Context, state control.DesiredState, now time.Time, cache *control.IdentityGroupObservationCache) (control.DesiredState, error) {
 	return control.MergeIdentityGroupObservations(ctx, state, control.IdentityGroupObservationOptions{
 		FilePath:    os.Getenv("NETLOOM_IDENTITY_GROUPS_FILE"),
 		URL:         os.Getenv("NETLOOM_IDENTITY_GROUPS_URL"),
 		BearerToken: os.Getenv("NETLOOM_IDENTITY_GROUPS_BEARER_TOKEN"),
 		Timeout:     identityGroupFeedTimeout(),
 		Now:         now,
+		BackoffBase: identityGroupFeedBackoffInitial(),
+		BackoffMax:  identityGroupFeedBackoffMax(),
+		Cache:       cache,
 	})
 }
 
@@ -1221,6 +1238,26 @@ func identityGroupFeedTimeout() time.Duration {
 	ms, err := strconv.Atoi(raw)
 	if err != nil || ms < 0 {
 		return 5 * time.Second
+	}
+	return time.Duration(ms) * time.Millisecond
+}
+
+func identityGroupFeedBackoffInitial() time.Duration {
+	return identityGroupFeedBackoffDuration("NETLOOM_IDENTITY_GROUPS_BACKOFF_INITIAL_MS", time.Second)
+}
+
+func identityGroupFeedBackoffMax() time.Duration {
+	return identityGroupFeedBackoffDuration("NETLOOM_IDENTITY_GROUPS_BACKOFF_MAX_MS", time.Minute)
+}
+
+func identityGroupFeedBackoffDuration(env string, fallback time.Duration) time.Duration {
+	raw := strings.TrimSpace(os.Getenv(env))
+	if raw == "" {
+		return fallback
+	}
+	ms, err := strconv.Atoi(raw)
+	if err != nil || ms < 0 {
+		return fallback
 	}
 	return time.Duration(ms) * time.Millisecond
 }

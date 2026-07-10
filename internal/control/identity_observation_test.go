@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -60,6 +61,117 @@ func TestLoadIdentityGroupObservationsHTTPRejectsBadStatus(t *testing.T) {
 	_, err := LoadIdentityGroupObservationsHTTP(context.Background(), server.URL, "", time.Second, server.Client())
 	if err == nil || !strings.Contains(err.Error(), "status 401") {
 		t.Fatalf("err = %v, want status 401", err)
+	}
+}
+
+func TestMergeIdentityGroupObservationsUsesConditionalHTTPPolling(t *testing.T) {
+	var requests int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&requests, 1) == 1 {
+			w.Header().Set("ETag", `"v1"`)
+			w.Header().Set("Last-Modified", "Fri, 10 Jul 2026 01:00:00 GMT")
+			_, _ = w.Write([]byte(`{"identity_groups":[{"name":"frontend","vpc":"prod","endpoint_ids":["pod-a"]}]}`))
+			return
+		}
+		if got := r.Header.Get("If-None-Match"); got != `"v1"` {
+			t.Fatalf("If-None-Match = %q, want v1 etag", got)
+		}
+		if got := r.Header.Get("If-Modified-Since"); got != "Fri, 10 Jul 2026 01:00:00 GMT" {
+			t.Fatalf("If-Modified-Since = %q, want cached last-modified", got)
+		}
+		w.WriteHeader(http.StatusNotModified)
+	}))
+	defer server.Close()
+
+	cache := &IdentityGroupObservationCache{}
+	state, err := MergeIdentityGroupObservations(context.Background(), DesiredState{}, IdentityGroupObservationOptions{
+		URL:        server.URL,
+		Now:        time.Date(2026, 7, 10, 1, 1, 0, 0, time.UTC),
+		HTTPClient: server.Client(),
+		Cache:      cache,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cache.ETag != `"v1"` || cache.LastModified == "" {
+		t.Fatalf("cache = %+v, want etag and last-modified", cache)
+	}
+	state, err = MergeIdentityGroupObservations(context.Background(), state, IdentityGroupObservationOptions{
+		URL:        server.URL,
+		Now:        time.Date(2026, 7, 10, 1, 1, 30, 0, time.UTC),
+		HTTPClient: server.Client(),
+		Cache:      cache,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.IdentityGroups) != 1 || state.IdentityGroups[0].Name != "frontend" {
+		t.Fatalf("identity groups = %+v, want cached frontend after 304", state.IdentityGroups)
+	}
+	if got := atomic.LoadInt32(&requests); got != 2 {
+		t.Fatalf("requests = %d, want initial request and conditional request", got)
+	}
+}
+
+func TestMergeIdentityGroupObservationsBacksOffAfterRemoteFailure(t *testing.T) {
+	var fail bool
+	var requests int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&requests, 1)
+		if fail {
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = w.Write([]byte(`{"identity_groups":[{"name":"frontend","vpc":"prod","endpoint_ids":["pod-a"]}]}`))
+	}))
+	defer server.Close()
+
+	cache := &IdentityGroupObservationCache{}
+	_, err := MergeIdentityGroupObservations(context.Background(), DesiredState{}, IdentityGroupObservationOptions{
+		URL:         server.URL,
+		Now:         time.Date(2026, 7, 10, 1, 0, 0, 0, time.UTC),
+		HTTPClient:  server.Client(),
+		Cache:       cache,
+		BackoffBase: 30 * time.Second,
+		BackoffMax:  time.Minute,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fail = true
+	state, err := MergeIdentityGroupObservations(context.Background(), DesiredState{}, IdentityGroupObservationOptions{
+		URL:         server.URL,
+		Now:         time.Date(2026, 7, 10, 1, 0, 5, 0, time.UTC),
+		HTTPClient:  server.Client(),
+		Cache:       cache,
+		BackoffBase: 30 * time.Second,
+		BackoffMax:  time.Minute,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.IdentityGroups) != 1 || state.IdentityGroups[0].Name != "frontend" {
+		t.Fatalf("identity groups = %+v, want cached frontend after failure", state.IdentityGroups)
+	}
+	if cache.ConsecutiveFailures != 1 || !cache.NextAttempt.Equal(time.Date(2026, 7, 10, 1, 0, 35, 0, time.UTC)) {
+		t.Fatalf("cache = %+v, want one failure and 30s backoff", cache)
+	}
+	state, err = MergeIdentityGroupObservations(context.Background(), DesiredState{}, IdentityGroupObservationOptions{
+		URL:         server.URL,
+		Now:         time.Date(2026, 7, 10, 1, 0, 20, 0, time.UTC),
+		HTTPClient:  server.Client(),
+		Cache:       cache,
+		BackoffBase: 30 * time.Second,
+		BackoffMax:  time.Minute,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := atomic.LoadInt32(&requests); got != 2 {
+		t.Fatalf("requests = %d, want no extra request during backoff", got)
+	}
+	if len(state.IdentityGroups) != 1 || state.IdentityGroups[0].Name != "frontend" {
+		t.Fatalf("identity groups = %+v, want cached frontend during backoff", state.IdentityGroups)
 	}
 }
 

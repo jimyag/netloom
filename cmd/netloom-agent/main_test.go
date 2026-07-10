@@ -701,7 +701,7 @@ func TestReconcileStateFileOnceAppliesDesiredPolicyRollout(t *testing.T) {
 		os.Stdout = oldStdout
 	}()
 
-	err = reconcileStateFileOnce(context.Background(), statePath, "node-a", "memory", store, time.Second, metrics)
+	err = reconcileStateFileOnce(context.Background(), statePath, "node-a", "memory", store, time.Second, metrics, nil)
 	if closeErr := writer.Close(); closeErr != nil {
 		t.Fatal(closeErr)
 	}
@@ -778,7 +778,7 @@ func TestReconcileStateFileOnceResumesPersistedPolicyRolloutState(t *testing.T) 
 	t.Setenv("NETLOOM_POLICY_ROLLOUT_STATE_FILE", stateFile)
 	store := dataplane.NewInMemoryPolicyStore()
 
-	if err := reconcileStateFileOnce(context.Background(), statePath, "node-a", "memory", store, time.Second, nil); err != nil {
+	if err := reconcileStateFileOnce(context.Background(), statePath, "node-a", "memory", store, time.Second, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	doc, err := loadPolicyRolloutState(stateFile)
@@ -792,7 +792,7 @@ func TestReconcileStateFileOnceResumesPersistedPolicyRolloutState(t *testing.T) 
 
 	state.PolicyRollouts[0].PromotionPercent = 100
 	statePath = writeAgentState(t, state)
-	if err := reconcileStateFileOnce(context.Background(), statePath, "node-a", "memory", store, time.Second, nil); err != nil {
+	if err := reconcileStateFileOnce(context.Background(), statePath, "node-a", "memory", store, time.Second, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := len(store.Events()) - eventsAfterFirst; got != 1 {

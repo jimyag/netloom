@@ -731,7 +731,7 @@ func runStateFile(ctx context.Context, path string) error {
 		return err
 	}
 	if interval == 0 {
-		return reconcileStateFileOnce(ctx, path, node, storeName, store, hold, nil)
+		return reconcileStateFileOnce(ctx, path, node, storeName, store, hold, nil, nil)
 	}
 	reconciler := agent.NewReconciler(store)
 	defer func() {
@@ -746,8 +746,9 @@ func runStateFile(ctx context.Context, path string) error {
 	} else {
 		defer closeMetrics()
 	}
+	identityGroupFeedCache := &control.IdentityGroupObservationCache{}
 	reconcile := func() error {
-		return reconcileStateFile(ctx, path, node, storeName, reconciler, metrics)
+		return reconcileStateFile(ctx, path, node, storeName, reconciler, metrics, identityGroupFeedCache)
 	}
 	for {
 		if err := reconcile(); err != nil {
@@ -763,7 +764,7 @@ func runStateFile(ctx context.Context, path string) error {
 	}
 }
 
-func reconcileStateFile(ctx context.Context, path, node, storeName string, reconciler *agent.Reconciler, metrics *agentMetrics) error {
+func reconcileStateFile(ctx context.Context, path, node, storeName string, reconciler *agent.Reconciler, metrics *agentMetrics, identityGroupFeedCache *control.IdentityGroupObservationCache) error {
 	start := time.Now()
 	file, err := os.Open(path)
 	if err != nil {
@@ -777,7 +778,7 @@ func reconcileStateFile(ctx context.Context, path, node, storeName string, recon
 		observeAgentReconcileFailure(metrics, agent.ReconcileResult{Node: node}, storeName, err, time.Since(start))
 		return err
 	}
-	state, err = withRuntimeObservationsContext(ctx, state)
+	state, err = withRuntimeObservationsContextCache(ctx, state, identityGroupFeedCache)
 	if err != nil {
 		observeAgentReconcileFailure(metrics, agent.ReconcileResult{Node: node}, storeName, err, time.Since(start))
 		return err
@@ -844,7 +845,7 @@ func reconcileStateFile(ctx context.Context, path, node, storeName string, recon
 	return nil
 }
 
-func reconcileStateFileOnce(ctx context.Context, path, node, storeName string, store agent.PolicyStore, hold time.Duration, metrics *agentMetrics) error {
+func reconcileStateFileOnce(ctx context.Context, path, node, storeName string, store agent.PolicyStore, hold time.Duration, metrics *agentMetrics, identityGroupFeedCache *control.IdentityGroupObservationCache) error {
 	start := time.Now()
 	file, err := os.Open(path)
 	if err != nil {
@@ -858,7 +859,7 @@ func reconcileStateFileOnce(ctx context.Context, path, node, storeName string, s
 		observeAgentReconcileFailure(metrics, agent.ReconcileResult{Node: node}, storeName, err, time.Since(start))
 		return err
 	}
-	state, err = withRuntimeObservationsContext(ctx, state)
+	state, err = withRuntimeObservationsContextCache(ctx, state, identityGroupFeedCache)
 	if err != nil {
 		observeAgentReconcileFailure(metrics, agent.ReconcileResult{Node: node}, storeName, err, time.Since(start))
 		return err
@@ -935,19 +936,27 @@ func withRuntimeObservations(state control.DesiredState) (control.DesiredState, 
 }
 
 func withRuntimeObservationsContext(ctx context.Context, state control.DesiredState) (control.DesiredState, error) {
-	return withRuntimeObservationsAtContext(ctx, state, time.Now().UTC())
+	return withRuntimeObservationsAtContextCache(ctx, state, time.Now().UTC(), nil)
 }
 
 func withRuntimeObservationsAt(state control.DesiredState, now time.Time) (control.DesiredState, error) {
-	return withRuntimeObservationsAtContext(context.Background(), state, now)
+	return withRuntimeObservationsAtContextCache(context.Background(), state, now, nil)
 }
 
 func withRuntimeObservationsAtContext(ctx context.Context, state control.DesiredState, now time.Time) (control.DesiredState, error) {
+	return withRuntimeObservationsAtContextCache(ctx, state, now, nil)
+}
+
+func withRuntimeObservationsContextCache(ctx context.Context, state control.DesiredState, cache *control.IdentityGroupObservationCache) (control.DesiredState, error) {
+	return withRuntimeObservationsAtContextCache(ctx, state, time.Now().UTC(), cache)
+}
+
+func withRuntimeObservationsAtContextCache(ctx context.Context, state control.DesiredState, now time.Time, cache *control.IdentityGroupObservationCache) (control.DesiredState, error) {
 	next, err := withDNSObservationsAt(state, now)
 	if err != nil {
 		return control.DesiredState{}, err
 	}
-	return withIdentityGroupObservationsAtContext(ctx, next, now)
+	return withIdentityGroupObservationsAtContextCache(ctx, next, now, cache)
 }
 
 func withDNSObservationsAt(state control.DesiredState, now time.Time) (control.DesiredState, error) {
@@ -985,12 +994,19 @@ func withIdentityGroupObservationsAt(state control.DesiredState, now time.Time) 
 }
 
 func withIdentityGroupObservationsAtContext(ctx context.Context, state control.DesiredState, now time.Time) (control.DesiredState, error) {
+	return withIdentityGroupObservationsAtContextCache(ctx, state, now, nil)
+}
+
+func withIdentityGroupObservationsAtContextCache(ctx context.Context, state control.DesiredState, now time.Time, cache *control.IdentityGroupObservationCache) (control.DesiredState, error) {
 	return control.MergeIdentityGroupObservations(ctx, state, control.IdentityGroupObservationOptions{
 		FilePath:    os.Getenv("NETLOOM_IDENTITY_GROUPS_FILE"),
 		URL:         os.Getenv("NETLOOM_IDENTITY_GROUPS_URL"),
 		BearerToken: os.Getenv("NETLOOM_IDENTITY_GROUPS_BEARER_TOKEN"),
 		Timeout:     identityGroupFeedTimeout(),
 		Now:         now,
+		BackoffBase: identityGroupFeedBackoffInitial(),
+		BackoffMax:  identityGroupFeedBackoffMax(),
+		Cache:       cache,
 	})
 }
 
@@ -1002,6 +1018,26 @@ func identityGroupFeedTimeout() time.Duration {
 	ms, err := strconv.Atoi(raw)
 	if err != nil || ms < 0 {
 		return 5 * time.Second
+	}
+	return time.Duration(ms) * time.Millisecond
+}
+
+func identityGroupFeedBackoffInitial() time.Duration {
+	return identityGroupFeedBackoffDuration("NETLOOM_IDENTITY_GROUPS_BACKOFF_INITIAL_MS", time.Second)
+}
+
+func identityGroupFeedBackoffMax() time.Duration {
+	return identityGroupFeedBackoffDuration("NETLOOM_IDENTITY_GROUPS_BACKOFF_MAX_MS", time.Minute)
+}
+
+func identityGroupFeedBackoffDuration(env string, fallback time.Duration) time.Duration {
+	raw := strings.TrimSpace(os.Getenv(env))
+	if raw == "" {
+		return fallback
+	}
+	ms, err := strconv.Atoi(raw)
+	if err != nil || ms < 0 {
+		return fallback
 	}
 	return time.Duration(ms) * time.Millisecond
 }
