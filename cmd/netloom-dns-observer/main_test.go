@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/rand"
+	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -233,6 +234,84 @@ func TestRunWritesDNSObservationsToOpenVSwitchOVSDB(t *testing.T) {
 	}
 }
 
+func TestUDPProxyForwardsResponsesAndWritesDNSObservations(t *testing.T) {
+	output := filepath.Join(t.TempDir(), "dns-observations.json")
+	upstream, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upstream.Close()
+	go func() {
+		buf := make([]byte, 1500)
+		n, addr, err := upstream.ReadFrom(buf)
+		if err != nil {
+			return
+		}
+		if n == 0 || addr == nil {
+			return
+		}
+		response := dnsResponse(
+			dnsQuestion("api.example.com", 1),
+			dnsAnswerPtr(12, 1, 60, []byte{203, 0, 113, 10}),
+		)
+		_, _ = upstream.WriteTo(response, addr)
+	}()
+
+	store := fileDNSObservationStore{path: output}
+	listener, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	proxy := dnsUDPProxy{
+		store:         store,
+		upstream:      upstream.LocalAddr().String(),
+		timeout:       time.Second,
+		mergeExisting: true,
+		now:           func() time.Time { return time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC) },
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- proxy.Serve(ctx, listener)
+	}()
+	client, err := net.Dial("udp", listener.LocalAddr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if _, err := client.Write(dnsQuery("api.example.com", 1)); err != nil {
+		t.Fatal(err)
+	}
+	_ = client.SetReadDeadline(time.Now().Add(time.Second))
+	buf := make([]byte, 1500)
+	n, err := client.Read(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n == 0 {
+		t.Fatal("empty DNS response from proxy")
+	}
+	requireEventually(t, func() bool {
+		file, err := os.Open(output)
+		if err != nil {
+			return false
+		}
+		defer file.Close()
+		records, err := control.LoadDNSObservationsJSON(file)
+		if err != nil {
+			return false
+		}
+		return len(records) == 1 && records[0].Name == "api.example.com" && records[0].IPs[0] == netip.MustParseAddr("203.0.113.10")
+	})
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("proxy did not stop after cancel")
+	}
+}
+
 func TestRunRejectsEmptyInput(t *testing.T) {
 	err := run(t.Context(), []string{"-observations", filepath.Join(t.TempDir(), "dns.json")}, strings.NewReader("\n# ignored\n"), ioDiscard{}, time.Now)
 	if err == nil {
@@ -367,6 +446,19 @@ func dnsResponse(question []byte, answers ...[]byte) []byte {
 	for _, answer := range answers {
 		packet = append(packet, answer...)
 	}
+	return packet
+}
+
+func dnsQuery(name string, rrType uint16) []byte {
+	packet := []byte{
+		0x12, 0x34,
+		0x01, 0x00,
+		0x00, 0x01,
+		0x00, 0x00,
+		0x00, 0x00,
+		0x00, 0x00,
+	}
+	packet = append(packet, dnsQuestion(name, rrType)...)
 	return packet
 }
 

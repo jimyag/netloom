@@ -10,9 +10,11 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jimyag/netloom/internal/control"
@@ -29,6 +31,9 @@ type options struct {
 	mergeExisting   bool
 	defaultTTL      uint
 	observedAtValue string
+	listenUDP       string
+	upstreamUDP     string
+	udpTimeout      time.Duration
 }
 
 type result struct {
@@ -54,6 +59,9 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer, 
 	flags.BoolVar(&opts.mergeExisting, "merge", true, "merge records with an existing observations file")
 	flags.UintVar(&opts.defaultTTL, "default-ttl", 0, "TTL seconds to apply to answers that do not carry a positive TTL")
 	flags.StringVar(&opts.observedAtValue, "observed-at", "", "observation time in RFC3339; defaults to current time")
+	flags.StringVar(&opts.listenUDP, "listen-udp", os.Getenv("NETLOOM_DNS_OBSERVER_LISTEN_UDP"), "UDP address to listen on as a DNS proxy/capture path")
+	flags.StringVar(&opts.upstreamUDP, "upstream-udp", os.Getenv("NETLOOM_DNS_OBSERVER_UPSTREAM_UDP"), "upstream UDP DNS server used with -listen-udp")
+	flags.DurationVar(&opts.udpTimeout, "udp-timeout", 2*time.Second, "UDP upstream timeout used with -listen-udp")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -67,6 +75,9 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer, 
 	}
 	if opts.defaultTTL > uint(^uint32(0)) {
 		return fmt.Errorf("-default-ttl exceeds uint32")
+	}
+	if strings.TrimSpace(opts.listenUDP) != "" {
+		return runUDPProxy(ctx, opts, store, stdout, now)
 	}
 
 	observedAt, err := observedAt(opts.observedAtValue, now)
@@ -101,27 +112,135 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer, 
 			records = append(records, record)
 		}
 	}
-
-	merged := records
-	if opts.mergeExisting {
-		existing, err := store.Load(ctx)
-		if err != nil {
-			return err
-		}
-		merged, err = control.MergeDNSRecords(existing, records)
-		if err != nil {
-			return err
-		}
-	}
-	merged, err = control.PruneExpiredDNSRecords(merged, observedAt)
+	merged, err := mergeAndSaveDNSObservations(ctx, store, records, observedAt, opts.mergeExisting)
 	if err != nil {
-		return err
-	}
-	if err := store.Save(ctx, merged); err != nil {
 		return err
 	}
 	fmt.Fprintf(stdout, "netloom-dns-observer observed packets=%d records=%d written=%d\n", len(packets), len(records), len(merged))
 	return nil
+}
+
+func runUDPProxy(ctx context.Context, opts options, store dnsObservationStore, stdout io.Writer, now func() time.Time) error {
+	upstream := strings.TrimSpace(opts.upstreamUDP)
+	if upstream == "" {
+		return fmt.Errorf("-upstream-udp/NETLOOM_DNS_OBSERVER_UPSTREAM_UDP is required with -listen-udp")
+	}
+	if opts.udpTimeout <= 0 {
+		return fmt.Errorf("-udp-timeout must be positive")
+	}
+	listener, err := net.ListenPacket("udp", strings.TrimSpace(opts.listenUDP))
+	if err != nil {
+		return err
+	}
+	defer listener.Close()
+	fmt.Fprintf(stdout, "netloom-dns-observer listening udp=%s upstream=%s\n", listener.LocalAddr(), upstream)
+	proxy := dnsUDPProxy{
+		store:         store,
+		upstream:      upstream,
+		timeout:       opts.udpTimeout,
+		mergeExisting: opts.mergeExisting,
+		defaultTTL:    uint32(opts.defaultTTL),
+		now:           now,
+	}
+	return proxy.Serve(ctx, listener)
+}
+
+type dnsUDPProxy struct {
+	store         dnsObservationStore
+	upstream      string
+	timeout       time.Duration
+	mergeExisting bool
+	defaultTTL    uint32
+	now           func() time.Time
+	mu            sync.Mutex
+}
+
+func (p *dnsUDPProxy) Serve(ctx context.Context, listener net.PacketConn) error {
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = listener.Close()
+		case <-done:
+		}
+	}()
+	defer close(done)
+	buf := make([]byte, 65535)
+	for {
+		n, clientAddr, err := listener.ReadFrom(buf)
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return err
+		}
+		query := append([]byte(nil), buf[:n]...)
+		go p.handleQuery(ctx, listener, clientAddr, query)
+	}
+}
+
+func (p *dnsUDPProxy) handleQuery(ctx context.Context, listener net.PacketConn, clientAddr net.Addr, query []byte) {
+	response, err := p.exchange(ctx, query)
+	if err != nil {
+		return
+	}
+	_, _ = listener.WriteTo(response, clientAddr)
+	observedAt := p.now().UTC()
+	records, err := dnsobserver.RecordsFromResponse(response, observedAt)
+	if err != nil || len(records) == 0 {
+		return
+	}
+	for i := range records {
+		if records[i].TTLSeconds == 0 && p.defaultTTL > 0 {
+			records[i].TTLSeconds = p.defaultTTL
+			records[i].ObservedAt = observedAt
+		}
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	_, _ = mergeAndSaveDNSObservations(ctx, p.store, records, observedAt, p.mergeExisting)
+}
+
+func (p *dnsUDPProxy) exchange(ctx context.Context, query []byte) ([]byte, error) {
+	dialer := net.Dialer{}
+	conn, err := dialer.DialContext(ctx, "udp", p.upstream)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	deadline := time.Now().Add(p.timeout)
+	_ = conn.SetDeadline(deadline)
+	if _, err := conn.Write(query); err != nil {
+		return nil, err
+	}
+	response := make([]byte, 65535)
+	n, err := conn.Read(response)
+	if err != nil {
+		return nil, err
+	}
+	return append([]byte(nil), response[:n]...), nil
+}
+
+func mergeAndSaveDNSObservations(ctx context.Context, store dnsObservationStore, records []model.DNSRecord, now time.Time, mergeExisting bool) ([]model.DNSRecord, error) {
+	merged := records
+	if mergeExisting {
+		existing, err := store.Load(ctx)
+		if err != nil {
+			return nil, err
+		}
+		merged, err = control.MergeDNSRecords(existing, records)
+		if err != nil {
+			return nil, err
+		}
+	}
+	merged, err := control.PruneExpiredDNSRecords(merged, now)
+	if err != nil {
+		return nil, err
+	}
+	if err := store.Save(ctx, merged); err != nil {
+		return nil, err
+	}
+	return merged, nil
 }
 
 type dnsObservationStore interface {
