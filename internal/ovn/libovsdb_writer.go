@@ -1283,7 +1283,12 @@ func (w *LibOVSDBTopologyWriter) deleteStaleLoadBalancers(ctx context.Context, r
 
 func (w *LibOVSDBTopologyWriter) endpointDHCPOptionsOperations(ctx context.Context, endpoint model.Endpoint, switchExternalIDs map[string]string, port *ovnnb.LogicalSwitchPort) ([]ovsdb.Operation, error) {
 	var ops []ovsdb.Operation
-	for _, family := range []int{4, 6} {
+	invalidFamilyOps, err := w.deleteUnknownEndpointDHCPFamilyOptions(ctx, endpoint)
+	if err != nil {
+		return nil, err
+	}
+	ops = append(ops, invalidFamilyOps...)
+	for _, family := range endpointDHCPFamilySyncOrder(endpoint, switchExternalIDs) {
 		desired, enabled, err := w.desiredEndpointDHCPOptions(ctx, endpoint, switchExternalIDs, family)
 		if err != nil {
 			return nil, err
@@ -1318,6 +1323,39 @@ func (w *LibOVSDBTopologyWriter) endpointDHCPOptionsOperations(ctx context.Conte
 		}
 	}
 	return ops, nil
+}
+
+func (w *LibOVSDBTopologyWriter) deleteUnknownEndpointDHCPFamilyOptions(ctx context.Context, endpoint model.Endpoint) ([]ovsdb.Operation, error) {
+	rows, err := w.endpointDHCPOptionsByEndpoint(ctx, endpoint)
+	if err != nil {
+		return nil, err
+	}
+	var ops []ovsdb.Operation
+	for i := range rows {
+		family := rows[i].ExternalIDs["netloom_dhcp_family"]
+		if family == "4" || family == "6" {
+			continue
+		}
+		deleteOps, err := w.client.Where(&rows[i]).Delete()
+		if err != nil {
+			return nil, fmt.Errorf("delete stale DHCP options family row %s: %w", rows[i].UUID, err)
+		}
+		ops = append(ops, deleteOps...)
+	}
+	return ops, nil
+}
+
+func endpointDHCPFamilySyncOrder(endpoint model.Endpoint, switchExternalIDs map[string]string) []int {
+	if switchExternalIDs["netloom_dhcp_enabled"] != "true" {
+		return []int{4, 6}
+	}
+	if endpoint.IP.Is4() {
+		return []int{6, 4}
+	}
+	if endpoint.IP.Is6() {
+		return []int{4, 6}
+	}
+	return []int{4, 6}
 }
 
 func (w *LibOVSDBTopologyWriter) desiredEndpointDHCPOptions(ctx context.Context, endpoint model.Endpoint, switchExternalIDs map[string]string, family int) (*ovnnb.DHCPOptions, bool, error) {
@@ -1495,6 +1533,20 @@ func (w *LibOVSDBTopologyWriter) endpointDHCPOptionsByFamily(ctx context.Context
 			row.ExternalIDs["netloom_dhcp_family"] == fmt.Sprint(family)
 	}).List(ctx, &rows); err != nil {
 		return nil, fmt.Errorf("list DHCP options for endpoint %s family %d from libovsdb cache: %w", endpoint.ID, family, err)
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].UUID < rows[j].UUID })
+	return rows, nil
+}
+
+func (w *LibOVSDBTopologyWriter) endpointDHCPOptionsByEndpoint(ctx context.Context, endpoint model.Endpoint) ([]ovnnb.DHCPOptions, error) {
+	endpointID := endpointExternalID(endpoint.VPC, endpoint.ID)
+	var rows []ovnnb.DHCPOptions
+	if err := w.client.WhereCache(func(row *ovnnb.DHCPOptions) bool {
+		return row.ExternalIDs["netloom_owner"] == "netloom" &&
+			row.ExternalIDs["netloom_vpc"] == endpoint.VPC &&
+			row.ExternalIDs["netloom_endpoint"] == endpointID
+	}).List(ctx, &rows); err != nil {
+		return nil, fmt.Errorf("list DHCP options for endpoint %s from libovsdb cache: %w", endpoint.ID, err)
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].UUID < rows[j].UUID })
 	return rows, nil

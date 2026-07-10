@@ -1586,6 +1586,115 @@ func TestLibOVSDBTopologyWriterCleanupRepairsUnexpectedLiveObjectsInSteadyState(
 	}
 }
 
+func TestLibOVSDBTopologyWriterCleanupRepairsEndpointDHCPAttachmentAndFamilyDriftInSteadyState(t *testing.T) {
+	ctx := context.Background()
+	client, closeFn := newTestOVNNBClient(t)
+	defer closeFn()
+
+	if _, err := client.MonitorAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	writer := NewLibOVSDBTopologyWriter(client)
+	subnet := model.Subnet{
+		Name:    "apps",
+		VPC:     "prod",
+		CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+		Gateway: netip.MustParseAddr("10.10.0.1"),
+		DHCP:    model.DHCPOptions{Enabled: true},
+	}
+	endpoint := model.Endpoint{
+		ID:     "pod-a",
+		VPC:    "prod",
+		Subnet: "apps",
+		Node:   "node-a",
+		IP:     netip.MustParseAddr("10.10.0.20"),
+	}
+	state := topology.State{
+		VPCs:      map[string]model.VPC{"prod": {Name: "prod"}},
+		Subnets:   map[string]model.Subnet{subnetStateKey("prod", "apps"): subnet},
+		Endpoints: map[string]model.Endpoint{model.EndpointKey("prod", "pod-a"): endpoint},
+	}
+	if err := writer.CleanupTopology(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureVPC(ctx, state.VPCs["prod"]); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureSubnet(ctx, subnet); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureEndpoint(ctx, endpoint); err != nil {
+		t.Fatal(err)
+	}
+
+	var dhcpRows []ovnnb.DHCPOptions
+	requireEventually(t, func() bool {
+		dhcpRows = nil
+		err := client.WhereCache(func(row *ovnnb.DHCPOptions) bool {
+			return row.ExternalIDs["netloom_endpoint"] == endpointExternalID("prod", "pod-a")
+		}).List(ctx, &dhcpRows)
+		return err == nil && len(dhcpRows) == 1 && dhcpRows[0].ExternalIDs["netloom_dhcp_family"] == "4"
+	})
+	driftedDHCP := dhcpRows[0]
+	driftedDHCP.ExternalIDs["netloom_dhcp_family"] = "6"
+	updateDHCP, err := client.Where(&driftedDHCP).Update(&driftedDHCP, &driftedDHCP.ExternalIDs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ports []ovnnb.LogicalSwitchPort
+	if err := client.WhereCache(func(row *ovnnb.LogicalSwitchPort) bool { return row.Name == logicalPort("prod", "pod-a") }).List(ctx, &ports); err != nil {
+		t.Fatal(err)
+	}
+	if len(ports) != 1 {
+		t.Fatalf("endpoint ports = %d, want one", len(ports))
+	}
+	ports[0].Dhcpv4Options = nil
+	updatePort, err := client.Where(&ports[0]).Update(&ports[0], &ports[0].Dhcpv4Options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ops := append(updateDHCP, updatePort...)
+	results, err := client.Transact(ctx, ops...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, ops); err != nil {
+		t.Fatalf("seed DHCP drift operation errors=%+v: %v", opErrors, err)
+	}
+	requireEventually(t, func() bool {
+		dhcpRows = nil
+		err := client.WhereCache(func(row *ovnnb.DHCPOptions) bool {
+			return row.ExternalIDs["netloom_endpoint"] == endpointExternalID("prod", "pod-a")
+		}).List(ctx, &dhcpRows)
+		if err != nil || len(dhcpRows) != 1 || dhcpRows[0].ExternalIDs["netloom_dhcp_family"] != "6" {
+			return false
+		}
+		ports = nil
+		err = client.WhereCache(func(row *ovnnb.LogicalSwitchPort) bool { return row.Name == logicalPort("prod", "pod-a") }).List(ctx, &ports)
+		return err == nil && len(ports) == 1 && ports[0].Dhcpv4Options == nil
+	})
+
+	if err := writer.CleanupTopology(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	requireEventually(t, func() bool {
+		dhcpRows = nil
+		err := client.WhereCache(func(row *ovnnb.DHCPOptions) bool {
+			return row.ExternalIDs["netloom_endpoint"] == endpointExternalID("prod", "pod-a")
+		}).List(ctx, &dhcpRows)
+		if err != nil || len(dhcpRows) != 1 || dhcpRows[0].ExternalIDs["netloom_dhcp_family"] != "4" {
+			return false
+		}
+		ports = nil
+		err = client.WhereCache(func(row *ovnnb.LogicalSwitchPort) bool { return row.Name == logicalPort("prod", "pod-a") }).List(ctx, &ports)
+		return err == nil && len(ports) == 1 && ports[0].Dhcpv4Options != nil && *ports[0].Dhcpv4Options == dhcpRows[0].UUID
+	})
+	stats := writer.LastCleanupStats()
+	if stats.FirstReconcileGC || stats.Operations == 0 {
+		t.Fatalf("cleanup stats = %+v, want steady-state DHCP repair operations", stats)
+	}
+}
+
 func TestLibOVSDBTopologyWriterCleanupRepairsLoadBalancerOptionsDriftInSteadyState(t *testing.T) {
 	ctx := context.Background()
 	client, closeFn := newTestOVNNBClient(t)

@@ -46,6 +46,15 @@ func (w *LibOVSDBTopologyWriter) CleanupTopology(ctx context.Context, state topo
 		stats.Operations = len(ops)
 	}
 	if w.seen && len(ops) == 0 {
+		repairOps, err := w.repairSteadyStateEndpointDHCPOptions(ctx, state)
+		if err != nil {
+			w.lastCleanup = stats
+			return err
+		}
+		ops = append(ops, repairOps...)
+		stats.Operations = len(ops)
+	}
+	if w.seen && len(ops) == 0 {
 		repairOps, err := w.repairSteadyStateLoadBalancers(ctx, state)
 		if err != nil {
 			w.lastCleanup = stats
@@ -312,6 +321,41 @@ func (w *LibOVSDBTopologyWriter) cleanupUnexpectedLiveOperations(ctx context.Con
 		ops = append(ops, deleteOps...)
 	}
 	return ops, stats, nil
+}
+
+func (w *LibOVSDBTopologyWriter) repairSteadyStateEndpointDHCPOptions(ctx context.Context, desired topology.State) ([]ovsdb.Operation, error) {
+	var ops []ovsdb.Operation
+	for _, endpoint := range desired.Endpoints {
+		switchRow, ok, err := w.logicalSwitchByName(ctx, logicalSwitch(endpoint.VPC, endpoint.Subnet))
+		if err != nil {
+			return nil, err
+		}
+		if !ok || !isNetloomManaged(switchRow.ExternalIDs) {
+			continue
+		}
+		port, ok, err := w.logicalSwitchPortByName(ctx, logicalPort(endpoint.VPC, endpoint.ID))
+		if err != nil {
+			return nil, err
+		}
+		if !ok || !isNetloomManaged(port.ExternalIDs) {
+			continue
+		}
+		if switchRow.ExternalIDs["netloom_dhcp_enabled"] == "true" && endpoint.IP.IsValid() {
+			routerPort, ok, err := w.logicalRouterPortByName(ctx, routerPortName(logicalRouter(endpoint.VPC), endpoint.Subnet))
+			if err != nil {
+				return nil, err
+			}
+			if !ok || !isNetloomManaged(routerPort.ExternalIDs) {
+				continue
+			}
+		}
+		nextOps, err := w.endpointDHCPOptionsOperations(ctx, endpoint, switchRow.ExternalIDs, port)
+		if err != nil {
+			return nil, err
+		}
+		ops = append(ops, nextOps...)
+	}
+	return ops, nil
 }
 
 func (w *LibOVSDBTopologyWriter) repairSteadyStateLoadBalancers(ctx context.Context, desired topology.State) ([]ovsdb.Operation, error) {
