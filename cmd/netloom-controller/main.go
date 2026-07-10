@@ -112,7 +112,12 @@ type ovnTopologyRuntime struct {
 }
 
 type libovsdbDialFunc func(context.Context, string, string) (libovsdbclient.Client, func(), error)
-type ovnLeaderProbe func(context.Context, []string) (string, error)
+type ovnLeaderProbe func(context.Context, []string) (ovnClusterProbeResult, error)
+
+type ovnClusterProbeResult struct {
+	Leader    string
+	Endpoints []ovnClusterEndpointSnapshot
+}
 
 type libovsdbClusterConnector struct {
 	mu           sync.Mutex
@@ -123,6 +128,7 @@ type libovsdbClusterConnector struct {
 	leader       string
 	leaderStatus string
 	leaderError  string
+	statuses     []ovnClusterEndpointSnapshot
 	current      string
 	currentIndex int
 	failovers    int
@@ -167,13 +173,26 @@ type ovnHealthSnapshot struct {
 }
 
 type ovnClusterHealthSnapshot struct {
-	ActiveEndpoint      string `json:"active_endpoint,omitempty"`
-	LeaderEndpoint      string `json:"leader_endpoint,omitempty"`
-	LeaderProbeStatus   string `json:"leader_probe_status,omitempty"`
-	LeaderProbeError    string `json:"leader_probe_error,omitempty"`
-	ConfiguredEndpoints int    `json:"configured_endpoints"`
-	Failovers           int    `json:"failovers"`
-	LeaderPreferred     bool   `json:"leader_preferred"`
+	ActiveEndpoint      string                       `json:"active_endpoint,omitempty"`
+	LeaderEndpoint      string                       `json:"leader_endpoint,omitempty"`
+	LeaderProbeStatus   string                       `json:"leader_probe_status,omitempty"`
+	LeaderProbeError    string                       `json:"leader_probe_error,omitempty"`
+	ConfiguredEndpoints int                          `json:"configured_endpoints"`
+	Failovers           int                          `json:"failovers"`
+	LeaderPreferred     bool                         `json:"leader_preferred"`
+	Endpoints           []ovnClusterEndpointSnapshot `json:"endpoints,omitempty"`
+}
+
+type ovnClusterEndpointSnapshot struct {
+	Endpoint  string `json:"endpoint"`
+	Target    string `json:"target,omitempty"`
+	Role      string `json:"role,omitempty"`
+	Status    string `json:"status,omitempty"`
+	ServerID  string `json:"server_id,omitempty"`
+	LeaderID  string `json:"leader_id,omitempty"`
+	Reachable bool   `json:"reachable"`
+	Leader    bool   `json:"leader,omitempty"`
+	Error     string `json:"error,omitempty"`
 }
 
 type ovnHealthTracker struct {
@@ -963,6 +982,20 @@ func writeControllerMetrics(w metricWriter, snapshot controllerMetricsSnapshot, 
 	fmt.Fprintf(w, "netloom_controller_ovn_cluster_endpoints%s %d\n", baseLabels, snapshot.OVNCluster.ConfiguredEndpoints)
 	writeMetricType(w, "netloom_controller_ovn_cluster_failovers", "gauge")
 	fmt.Fprintf(w, "netloom_controller_ovn_cluster_failovers%s %d\n", baseLabels, snapshot.OVNCluster.Failovers)
+	writeMetricType(w, "netloom_controller_ovn_cluster_endpoint_status", "gauge")
+	for _, endpoint := range snapshot.OVNCluster.Endpoints {
+		fmt.Fprintf(w, "netloom_controller_ovn_cluster_endpoint_status%s %d\n", prometheusLabels(map[string]string{
+			"endpoint":   endpoint.Endpoint,
+			"target":     fallbackMetricsLabel(endpoint.Target, "none"),
+			"role":       fallbackMetricsLabel(endpoint.Role, "unknown"),
+			"status":     fallbackMetricsLabel(endpoint.Status, "unknown"),
+			"server_id":  fallbackMetricsLabel(endpoint.ServerID, "unknown"),
+			"leader_id":  fallbackMetricsLabel(endpoint.LeaderID, "unknown"),
+			"leader":     strconv.Itoa(boolMetric(endpoint.Leader)),
+			"active":     strconv.Itoa(boolMetric(endpoint.Endpoint != "" && endpoint.Endpoint == snapshot.OVNCluster.ActiveEndpoint)),
+			"ovn_health": fallbackMetricsLabel(snapshot.OVNHealthStatus, "disabled"),
+		}), boolMetric(endpoint.Reachable))
+	}
 	writeMetricType(w, "netloom_controller_ovn_operations_planned", "gauge")
 	fmt.Fprintf(w, "netloom_controller_ovn_operations_planned%s %d\n", baseLabels, snapshot.OVNOps)
 	writeMetricType(w, "netloom_controller_ovn_operations_executed", "gauge")
@@ -1611,19 +1644,21 @@ func (c *libovsdbClusterConnector) probeLeader(ctx context.Context) string {
 	if c == nil || c.leaderProbe == nil {
 		return ""
 	}
-	leader, err := c.leaderProbe(ctx, append([]string(nil), c.endpoints...))
+	result, err := c.leaderProbe(ctx, append([]string(nil), c.endpoints...))
 	if err != nil {
 		c.mu.Lock()
 		c.leaderStatus = "error"
 		c.leaderError = err.Error()
+		c.statuses = append([]ovnClusterEndpointSnapshot(nil), result.Endpoints...)
 		c.mu.Unlock()
 		return ""
 	}
-	leader = strings.TrimSpace(leader)
+	leader := strings.TrimSpace(result.Leader)
 	if leader == "" {
 		c.mu.Lock()
 		c.leaderStatus = "unknown"
 		c.leaderError = ""
+		c.statuses = append([]ovnClusterEndpointSnapshot(nil), result.Endpoints...)
 		c.mu.Unlock()
 		return ""
 	}
@@ -1631,6 +1666,7 @@ func (c *libovsdbClusterConnector) probeLeader(ctx context.Context) string {
 	c.leader = leader
 	c.leaderStatus = "ok"
 	c.leaderError = ""
+	c.statuses = append([]ovnClusterEndpointSnapshot(nil), result.Endpoints...)
 	c.mu.Unlock()
 	return leader
 }
@@ -1655,6 +1691,7 @@ func (c *libovsdbClusterConnector) Snapshot() ovnClusterHealthSnapshot {
 		ConfiguredEndpoints: len(c.endpoints),
 		Failovers:           c.failovers,
 		LeaderPreferred:     c.leader != "" && c.current == c.leader,
+		Endpoints:           append([]ovnClusterEndpointSnapshot(nil), c.statuses...),
 	}
 }
 
@@ -1724,40 +1761,52 @@ func ovnLeaderProbeFromEnv() ovnLeaderProbe {
 }
 
 func ovnLeaderCommandProbe(command string) ovnLeaderProbe {
-	return func(ctx context.Context, endpoints []string) (string, error) {
+	return func(ctx context.Context, endpoints []string) (ovnClusterProbeResult, error) {
 		output, err := exec.CommandContext(ctx, "sh", "-c", command).CombinedOutput()
 		if err != nil {
-			return "", fmt.Errorf("probe OVN leader endpoint: %w: %s", err, strings.TrimSpace(string(output)))
+			return ovnClusterProbeResult{}, fmt.Errorf("probe OVN leader endpoint: %w: %s", err, strings.TrimSpace(string(output)))
 		}
 		leader := parseOVNLeaderEndpoint(string(output), endpoints)
 		if leader == "" {
-			return "", fmt.Errorf("probe OVN leader endpoint: no configured endpoint found in output")
+			return ovnClusterProbeResult{}, fmt.Errorf("probe OVN leader endpoint: no configured endpoint found in output")
 		}
-		return leader, nil
+		return ovnClusterProbeResult{Leader: leader}, nil
 	}
 }
 
 func ovnClusterStatusLeaderProbe(appctl, db string, targets map[string]string) ovnLeaderProbe {
-	return func(ctx context.Context, endpoints []string) (string, error) {
+	return func(ctx context.Context, endpoints []string) (ovnClusterProbeResult, error) {
 		var errs []string
+		result := ovnClusterProbeResult{}
 		for _, endpoint := range endpoints {
 			target := strings.TrimSpace(targets[endpoint])
 			if target == "" {
 				continue
 			}
 			output, err := exec.CommandContext(ctx, appctl, "-t", target, "cluster/status", db).CombinedOutput()
+			status := parseOVNClusterStatus(endpoint, target, string(output))
 			if err != nil {
-				errs = append(errs, fmt.Sprintf("%s: %v: %s", endpoint, err, strings.TrimSpace(string(output))))
+				status.Reachable = false
+				status.Status = fallbackMetricsLabel(status.Status, "error")
+				status.Error = strings.TrimSpace(fmt.Sprintf("%v: %s", err, strings.TrimSpace(string(output))))
+				result.Endpoints = append(result.Endpoints, status)
+				errs = append(errs, fmt.Sprintf("%s: %s", endpoint, status.Error))
 				continue
 			}
-			if ovnClusterStatusIsLeader(string(output)) {
-				return endpoint, nil
+			status.Reachable = true
+			status.Leader = ovnClusterStatusIsLeader(string(output))
+			result.Endpoints = append(result.Endpoints, status)
+			if status.Leader && result.Leader == "" {
+				result.Leader = endpoint
 			}
 		}
-		if len(errs) > 0 {
-			return "", fmt.Errorf("probe OVN cluster/status leader endpoint: %s", strings.Join(errs, "; "))
+		if result.Leader != "" {
+			return result, nil
 		}
-		return "", fmt.Errorf("probe OVN cluster/status leader endpoint: no configured endpoint target reported leader")
+		if len(errs) > 0 {
+			return result, fmt.Errorf("probe OVN cluster/status leader endpoint: %s", strings.Join(errs, "; "))
+		}
+		return result, fmt.Errorf("probe OVN cluster/status leader endpoint: no configured endpoint target reported leader")
 	}
 }
 
@@ -1820,6 +1869,39 @@ func ovnClusterStatusIsLeader(output string) bool {
 		}
 	}
 	return false
+}
+
+func parseOVNClusterStatus(endpoint, target, output string) ovnClusterEndpointSnapshot {
+	status := ovnClusterEndpointSnapshot{
+		Endpoint: endpoint,
+		Target:   target,
+		Status:   "unknown",
+	}
+	for _, line := range strings.Split(output, "\n") {
+		key, value, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		switch {
+		case strings.EqualFold(key, "Role"):
+			status.Role = strings.ToLower(value)
+		case strings.EqualFold(key, "Status"):
+			status.Status = strings.ToLower(value)
+		case strings.EqualFold(key, "Server ID"):
+			status.ServerID = value
+		case strings.EqualFold(key, "Leader"):
+			status.LeaderID = value
+		}
+	}
+	if status.Status == "" {
+		status.Status = "unknown"
+	}
+	if strings.EqualFold(status.Role, "leader") || strings.EqualFold(status.LeaderID, "self") {
+		status.Leader = true
+	}
+	return status
 }
 
 func ovnLeaderProbeModeFromEnv() string {

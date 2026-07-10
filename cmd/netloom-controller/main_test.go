@@ -252,12 +252,15 @@ esac
 		"tcp:a:6641": "target-a",
 		"tcp:b:6641": "target-b",
 	})
-	leader, err := probe(context.Background(), []string{"tcp:a:6641", "tcp:b:6641"})
+	result, err := probe(context.Background(), []string{"tcp:a:6641", "tcp:b:6641"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if leader != "tcp:b:6641" {
-		t.Fatalf("leader = %q, want tcp:b:6641", leader)
+	if result.Leader != "tcp:b:6641" {
+		t.Fatalf("leader = %q, want tcp:b:6641", result.Leader)
+	}
+	if len(result.Endpoints) != 2 || result.Endpoints[1].Role != "leader" || !result.Endpoints[1].Leader {
+		t.Fatalf("cluster endpoints = %+v, want target-b leader status", result.Endpoints)
 	}
 }
 
@@ -279,15 +282,26 @@ esac
 	if probe == nil {
 		t.Fatal("expected cluster/status leader probe")
 	}
-	leader, err := probe(context.Background(), []string{"tcp:a:6641", "tcp:b:6641"})
+	result, err := probe(context.Background(), []string{"tcp:a:6641", "tcp:b:6641"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if leader != "tcp:a:6641" {
-		t.Fatalf("leader = %q, want tcp:a:6641", leader)
+	if result.Leader != "tcp:a:6641" {
+		t.Fatalf("leader = %q, want tcp:a:6641", result.Leader)
 	}
 	if mode := ovnLeaderProbeModeFromEnv(); mode != "cluster-status" {
 		t.Fatalf("leader probe mode = %q, want cluster-status", mode)
+	}
+}
+
+func TestParseOVNClusterStatusExtractsEndpointDetails(t *testing.T) {
+	status := parseOVNClusterStatus("tcp:a:6641", "target-a", "Cluster ID: cluster-a\nServer ID: server-a\nStatus: cluster member\nRole: follower\nLeader: server-b\n")
+	if status.Endpoint != "tcp:a:6641" || status.Target != "target-a" || status.ServerID != "server-a" || status.Status != "cluster member" || status.Role != "follower" || status.LeaderID != "server-b" || status.Leader {
+		t.Fatalf("status = %+v, want follower details", status)
+	}
+	leader := parseOVNClusterStatus("tcp:b:6641", "target-b", "Server ID: server-b\nRole: leader\nLeader: self\n")
+	if !leader.Leader || leader.Role != "leader" || leader.LeaderID != "self" {
+		t.Fatalf("leader status = %+v, want leader details", leader)
 	}
 }
 
@@ -379,8 +393,20 @@ func TestLibOVSDBClusterConnectorPrefersProbedLeaderEndpoint(t *testing.T) {
 	cluster := newLibOVSDBClusterConnector("test", []string{"tcp:a:6641", "tcp:b:6641"}, func(_ context.Context, _ string, endpoint string) (libovsdbclient.Client, func(), error) {
 		attempts = append(attempts, endpoint)
 		return nil, func() {}, nil
-	}, func(context.Context, []string) (string, error) {
-		return "tcp:b:6641", nil
+	}, func(context.Context, []string) (ovnClusterProbeResult, error) {
+		return ovnClusterProbeResult{
+			Leader: "tcp:b:6641",
+			Endpoints: []ovnClusterEndpointSnapshot{{
+				Endpoint:  "tcp:b:6641",
+				Target:    "target-b",
+				Role:      "leader",
+				Status:    "cluster member",
+				ServerID:  "server-b",
+				LeaderID:  "self",
+				Reachable: true,
+				Leader:    true,
+			}},
+		}, nil
 	})
 	if _, _, err := cluster.Connect(context.Background()); err != nil {
 		t.Fatal(err)
@@ -395,6 +421,9 @@ func TestLibOVSDBClusterConnectorPrefersProbedLeaderEndpoint(t *testing.T) {
 	if snapshot.LeaderProbeStatus != "ok" || snapshot.LeaderProbeError != "" {
 		t.Fatalf("leader probe snapshot = %+v, want ok without error", snapshot)
 	}
+	if len(snapshot.Endpoints) != 1 || snapshot.Endpoints[0].ServerID != "server-b" {
+		t.Fatalf("cluster endpoint statuses = %+v, want probed leader details", snapshot.Endpoints)
+	}
 }
 
 func TestLibOVSDBClusterConnectorReportsLeaderProbeFailure(t *testing.T) {
@@ -402,8 +431,14 @@ func TestLibOVSDBClusterConnectorReportsLeaderProbeFailure(t *testing.T) {
 	cluster := newLibOVSDBClusterConnector("test", []string{"tcp:a:6641", "tcp:b:6641"}, func(_ context.Context, _ string, endpoint string) (libovsdbclient.Client, func(), error) {
 		attempts = append(attempts, endpoint)
 		return nil, func() {}, nil
-	}, func(context.Context, []string) (string, error) {
-		return "", errors.New("cluster status unavailable")
+	}, func(context.Context, []string) (ovnClusterProbeResult, error) {
+		return ovnClusterProbeResult{Endpoints: []ovnClusterEndpointSnapshot{{
+			Endpoint:  "tcp:a:6641",
+			Target:    "target-a",
+			Status:    "error",
+			Reachable: false,
+			Error:     "cluster status unavailable",
+		}}}, errors.New("cluster status unavailable")
 	})
 	if _, _, err := cluster.Connect(context.Background()); err != nil {
 		t.Fatal(err)
@@ -417,6 +452,9 @@ func TestLibOVSDBClusterConnectorReportsLeaderProbeFailure(t *testing.T) {
 	}
 	if snapshot.LeaderProbeStatus != "error" || !strings.Contains(snapshot.LeaderProbeError, "cluster status unavailable") {
 		t.Fatalf("leader probe snapshot = %+v, want recorded probe error", snapshot)
+	}
+	if len(snapshot.Endpoints) != 1 || snapshot.Endpoints[0].Reachable {
+		t.Fatalf("cluster endpoint statuses = %+v, want unreachable target details", snapshot.Endpoints)
 	}
 }
 
@@ -645,6 +683,16 @@ func TestControllerMetricsExportsLatestSuccess(t *testing.T) {
 			ConfiguredEndpoints: 3,
 			Failovers:           1,
 			LeaderPreferred:     true,
+			Endpoints: []ovnClusterEndpointSnapshot{{
+				Endpoint:  "tcp:10.0.0.2:6641",
+				Target:    "ovnnb-b.ctl",
+				Role:      "leader",
+				Status:    "cluster member",
+				ServerID:  "server-b",
+				LeaderID:  "self",
+				Reachable: true,
+				Leader:    true,
+			}},
 		},
 		OVNOps:      7,
 		OVNExecuted: 6,
@@ -721,6 +769,7 @@ func TestControllerMetricsExportsLatestSuccess(t *testing.T) {
 		`netloom_controller_ovn_cluster_leader_preferred{ovn_health="ok"} 1`,
 		`netloom_controller_ovn_cluster_endpoints{ovn_health="ok"} 3`,
 		`netloom_controller_ovn_cluster_failovers{ovn_health="ok"} 1`,
+		`netloom_controller_ovn_cluster_endpoint_status{active="1",endpoint="tcp:10.0.0.2:6641",leader="1",leader_id="self",ovn_health="ok",role="leader",server_id="server-b",status="cluster member",target="ovnnb-b.ctl"} 1`,
 		`netloom_controller_ovn_operations_planned{ovn_health="ok"} 7`,
 		`netloom_controller_ovn_operations_executed{ovn_health="ok"} 6`,
 		`netloom_controller_ovn_maintenance_attempted{ovn_health="ok",ovn_maintenance="ok"} 2`,
