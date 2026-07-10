@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -66,6 +67,7 @@ type ReconcileResult struct {
 	PolicyRuleRejected               uint64
 	PolicyRuleLogged                 uint64
 	PolicyRuleStats                  []dataplane.RuleMetrics
+	PolicyRuleCatalog                []PolicyRuleCatalogEntry
 	TCXFailed                        int
 	TCXRollbacks                     int
 	TCXFailedTarget                  string
@@ -89,6 +91,15 @@ type ReconcileResult struct {
 	ProviderInventoryDegraded        int
 	ProviderInventoryStatus          []linuxdatapath.ProviderInterface
 	Cleanup                          bool
+}
+
+type PolicyRuleCatalogEntry struct {
+	EndpointID    string `json:"endpoint_id"`
+	RuleCookie    uint32 `json:"rule_cookie"`
+	RuleRef       string `json:"rule_ref"`
+	VPC           string `json:"vpc,omitempty"`
+	SecurityGroup string `json:"security_group,omitempty"`
+	RuleID        string `json:"rule_id,omitempty"`
 }
 
 type PolicyStore interface {
@@ -1473,6 +1484,7 @@ func prepareReconcile(ctx context.Context, state control.DesiredState, options R
 	if err := populatePolicyRuleMetricsResult(ctx, options, &result); err != nil {
 		return ReconcileResult{}, nil, nil, err
 	}
+	result.PolicyRuleCatalog = catalogPolicyRules(localPrograms)
 	if err := sweepPolicyEndpointsResult(ctx, options.Store, localPrograms, options.PolicyGCMaxIdle, &result); err != nil {
 		return ReconcileResult{}, nil, nil, err
 	}
@@ -1496,6 +1508,46 @@ func prepareReconcile(ctx context.Context, state control.DesiredState, options R
 		}
 	}
 	return result, targets, localPrograms, nil
+}
+
+func catalogPolicyRules(programs []policy.Program) []PolicyRuleCatalogEntry {
+	byKey := make(map[string]PolicyRuleCatalogEntry)
+	for _, program := range programs {
+		for _, rule := range program.Rules {
+			ref := policyRuleRef(rule)
+			if ref == "" {
+				continue
+			}
+			entry := PolicyRuleCatalogEntry{
+				EndpointID:    program.EndpointID,
+				RuleCookie:    dataplane.PolicyRuleCookie(ref),
+				RuleRef:       ref,
+				VPC:           rule.VPC,
+				SecurityGroup: rule.SecurityGroup,
+				RuleID:        rule.ID,
+			}
+			key := fmt.Sprintf("%s\x00%d", entry.EndpointID, entry.RuleCookie)
+			byKey[key] = entry
+		}
+	}
+	out := make([]PolicyRuleCatalogEntry, 0, len(byKey))
+	for _, entry := range byKey {
+		out = append(out, entry)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].EndpointID != out[j].EndpointID {
+			return out[i].EndpointID < out[j].EndpointID
+		}
+		return out[i].RuleCookie < out[j].RuleCookie
+	})
+	return out
+}
+
+func policyRuleRef(rule policy.Rule) string {
+	if rule.VPC == "" && rule.SecurityGroup == "" {
+		return rule.ID
+	}
+	return strings.Join([]string{rule.VPC, rule.SecurityGroup, rule.ID}, "/")
 }
 
 func mitigatePolicyMapPressureResult(ctx context.Context, store PolicyStore, programs []policy.Program, threshold uint32, quarantine bool, result *ReconcileResult) error {

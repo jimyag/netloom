@@ -2134,6 +2134,48 @@ func TestReconcileNodeReportsPolicyRuleMetricsTelemetry(t *testing.T) {
 	}
 }
 
+func TestReconcileNodeReportsPolicyRuleCatalog(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:             "pod-a",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"web"},
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "allow-web",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("172.30.0.11/32"),
+				Ports:      []model.PortRange{{From: 8080, To: 8080}},
+				Action:     model.ActionAllow,
+			}},
+		}},
+	}
+	result, err := ReconcileNode(context.Background(), state, "node-a", dataplane.NewInMemoryPolicyStore())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.PolicyRuleCatalog) != 1 {
+		t.Fatalf("policy rule catalog = %+v, want one compiled rule", result.PolicyRuleCatalog)
+	}
+	entry := result.PolicyRuleCatalog[0]
+	if entry.EndpointID != model.EndpointKey("prod", "pod-a") ||
+		entry.RuleRef != "prod/web/allow-web" ||
+		entry.VPC != "prod" ||
+		entry.SecurityGroup != "web" ||
+		entry.RuleID != "allow-web" ||
+		entry.RuleCookie != dataplane.PolicyRuleCookie("prod/web/allow-web") {
+		t.Fatalf("policy rule catalog entry = %+v, want endpoint-qualified rule reference", entry)
+	}
+}
+
 func TestReconcilerReportsTCXRuleMetricsTelemetry(t *testing.T) {
 	state := control.DesiredState{
 		Endpoints: []model.Endpoint{{

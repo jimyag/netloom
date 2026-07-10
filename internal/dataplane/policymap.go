@@ -470,6 +470,10 @@ func policyRuleCookieKey(entry policy.MapEntry) string {
 	return entry.RuleID
 }
 
+func PolicyRuleCookie(value string) uint32 {
+	return stableCookie(value)
+}
+
 func protocolNumberForEntry(entry policy.MapEntry) (uint8, error) {
 	if entry.Key.Protocol == model.ProtocolICMP && entry.RemoteCIDR.IsValid() && entry.RemoteCIDR.Addr().Is6() && !entry.RemoteCIDR.Addr().Is4() {
 		return 58, nil

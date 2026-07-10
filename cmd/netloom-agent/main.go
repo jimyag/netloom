@@ -2253,12 +2253,18 @@ func writeAgentMetrics(w ioStringWriter, snapshot agentMetricsSnapshot, totals a
 	fmt.Fprintf(w, "netloom_agent_policy_rule_rejected_total%s %d\n", baseLabels, result.PolicyRuleRejected)
 	writeMetricType(w, "netloom_agent_policy_rule_logged_total", "counter")
 	fmt.Fprintf(w, "netloom_agent_policy_rule_logged_total%s %d\n", baseLabels, result.PolicyRuleLogged)
+	ruleCatalog := policyRuleCatalogByMetricKey(result.PolicyRuleCatalog)
 	for _, stat := range result.PolicyRuleStats {
+		catalog := ruleCatalog[policyRuleMetricKey(stat.EndpointID, stat.RuleCookie)]
 		labels := prometheusLabels(map[string]string{
-			"node":        result.Node,
-			"store":       snapshot.Store,
-			"endpoint":    stat.EndpointID,
-			"rule_cookie": strconv.FormatUint(uint64(stat.RuleCookie), 10),
+			"node":           result.Node,
+			"store":          snapshot.Store,
+			"endpoint":       stat.EndpointID,
+			"rule_cookie":    strconv.FormatUint(uint64(stat.RuleCookie), 10),
+			"rule_ref":       catalog.RuleRef,
+			"vpc":            catalog.VPC,
+			"security_group": catalog.SecurityGroup,
+			"rule_id":        catalog.RuleID,
 		})
 		fmt.Fprintf(w, "netloom_agent_policy_rule_packets_by_rule_total%s %d\n", labels, stat.Packets)
 		fmt.Fprintf(w, "netloom_agent_policy_rule_bytes_by_rule_total%s %d\n", labels, stat.Bytes)
@@ -2278,6 +2284,18 @@ func writeAgentMetrics(w ioStringWriter, snapshot agentMetricsSnapshot, totals a
 	}), result.TCXFailed)
 	writeMetricType(w, "netloom_agent_tcx_rollbacks", "gauge")
 	fmt.Fprintf(w, "netloom_agent_tcx_rollbacks%s %d\n", baseLabels, result.TCXRollbacks)
+}
+
+func policyRuleCatalogByMetricKey(catalog []agent.PolicyRuleCatalogEntry) map[string]agent.PolicyRuleCatalogEntry {
+	out := make(map[string]agent.PolicyRuleCatalogEntry, len(catalog))
+	for _, entry := range catalog {
+		out[policyRuleMetricKey(entry.EndpointID, entry.RuleCookie)] = entry
+	}
+	return out
+}
+
+func policyRuleMetricKey(endpointID string, cookie uint32) string {
+	return fmt.Sprintf("%s\x00%d", endpointID, cookie)
 }
 
 func writeAgentCounter(w ioStringWriter, name, labels string, value uint64) {
