@@ -2212,6 +2212,12 @@ func TestReconcilerReportsTCXRuleMetricsTelemetry(t *testing.T) {
 					Bytes:      128,
 					Dropped:    2,
 					DenyDrops:  2,
+				}, {
+					RuleCookie:  43,
+					Packets:     1,
+					Bytes:       64,
+					Rejected:    1,
+					RejectDrops: 1,
 				}}, nil
 			},
 		}, nil
@@ -2225,14 +2231,17 @@ func TestReconcilerReportsTCXRuleMetricsTelemetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	endpointID := model.EndpointKey("prod", "pod-a")
-	if result.PolicyRulePackets != 2 || result.PolicyRuleBytes != 128 || result.PolicyRuleDropped != 2 || result.PolicyRuleAllowed != 0 {
+	if result.PolicyRulePackets != 3 || result.PolicyRuleBytes != 192 || result.PolicyRuleDropped != 2 || result.PolicyRuleRejected != 1 || result.PolicyRuleAllowed != 0 {
 		t.Fatalf("policy rule metric summary = %+v", result)
 	}
-	if len(result.PolicyRuleStats) != 1 {
-		t.Fatalf("policy rule stats = %+v, want one tcx rule bucket", result.PolicyRuleStats)
+	if len(result.PolicyRuleStats) != 2 {
+		t.Fatalf("policy rule stats = %+v, want two tcx rule buckets", result.PolicyRuleStats)
 	}
 	if result.PolicyRuleStats[0].EndpointID != endpointID || result.PolicyRuleStats[0].RuleCookie != 42 || result.PolicyRuleStats[0].DenyDrops != 2 {
 		t.Fatalf("tcx rule stats = %+v, want endpoint-labelled drop counters", result.PolicyRuleStats[0])
+	}
+	if result.PolicyRuleStats[1].EndpointID != endpointID || result.PolicyRuleStats[1].RuleCookie != 43 || result.PolicyRuleStats[1].Rejected != 1 || result.PolicyRuleStats[1].RejectDrops != 1 {
+		t.Fatalf("tcx reject rule stats = %+v, want endpoint-labelled reject counters", result.PolicyRuleStats[1])
 	}
 }
 

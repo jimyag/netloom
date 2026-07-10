@@ -2264,6 +2264,18 @@ func writeAgentMetrics(w ioStringWriter, snapshot agentMetricsSnapshot, totals a
 	fmt.Fprintf(w, "netloom_agent_policy_rule_rejected_total%s %d\n", baseLabels, result.PolicyRuleRejected)
 	writeMetricType(w, "netloom_agent_policy_rule_logged_total", "counter")
 	fmt.Fprintf(w, "netloom_agent_policy_rule_logged_total%s %d\n", baseLabels, result.PolicyRuleLogged)
+	var noMatchDrops, denyDrops, rejectDrops uint64
+	for _, stat := range result.PolicyRuleStats {
+		noMatchDrops += stat.NoMatchDrops
+		denyDrops += stat.DenyDrops
+		rejectDrops += stat.RejectDrops
+	}
+	writeMetricType(w, "netloom_agent_policy_rule_no_match_drops_total", "counter")
+	fmt.Fprintf(w, "netloom_agent_policy_rule_no_match_drops_total%s %d\n", baseLabels, noMatchDrops)
+	writeMetricType(w, "netloom_agent_policy_rule_deny_drops_total", "counter")
+	fmt.Fprintf(w, "netloom_agent_policy_rule_deny_drops_total%s %d\n", baseLabels, denyDrops)
+	writeMetricType(w, "netloom_agent_policy_rule_reject_drops_total", "counter")
+	fmt.Fprintf(w, "netloom_agent_policy_rule_reject_drops_total%s %d\n", baseLabels, rejectDrops)
 	ruleCatalog := policyRuleCatalogByMetricKey(result.PolicyRuleCatalog)
 	for _, stat := range result.PolicyRuleStats {
 		catalog := ruleCatalog[policyRuleMetricKey(stat.EndpointID, stat.RuleCookie)]
@@ -2282,6 +2294,9 @@ func writeAgentMetrics(w ioStringWriter, snapshot agentMetricsSnapshot, totals a
 		fmt.Fprintf(w, "netloom_agent_policy_rule_allowed_by_rule_total%s %d\n", labels, stat.Allowed)
 		fmt.Fprintf(w, "netloom_agent_policy_rule_dropped_by_rule_total%s %d\n", labels, stat.Dropped)
 		fmt.Fprintf(w, "netloom_agent_policy_rule_rejected_by_rule_total%s %d\n", labels, stat.Rejected)
+		fmt.Fprintf(w, "netloom_agent_policy_rule_no_match_drops_by_rule_total%s %d\n", labels, stat.NoMatchDrops)
+		fmt.Fprintf(w, "netloom_agent_policy_rule_deny_drops_by_rule_total%s %d\n", labels, stat.DenyDrops)
+		fmt.Fprintf(w, "netloom_agent_policy_rule_reject_drops_by_rule_total%s %d\n", labels, stat.RejectDrops)
 		fmt.Fprintf(w, "netloom_agent_policy_rule_logged_by_rule_total%s %d\n", labels, stat.Logged)
 	}
 
