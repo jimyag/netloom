@@ -711,6 +711,7 @@ func TestPrintReconcileResultIncludesPolicyMapUsageSummary(t *testing.T) {
 			{EndpointID: "prod\x00pod-a", RuleCookie: 7, Packets: 1, Bytes: 256, Dropped: 1, DenyDrops: 1},
 			{EndpointID: "prod\x00pod-a", RuleCookie: 42, Packets: 2, Bytes: 128, Allowed: 2, Logged: 1},
 		},
+		TCXSkipped:       2,
 		TCXFailedTarget:  "iface=eth0 direction=ingress attach=2",
 		ProviderNetworks: 1,
 		ProviderLinks:    2,
@@ -792,6 +793,7 @@ func TestPrintReconcileResultIncludesPolicyMapUsageSummary(t *testing.T) {
 		"policy_rule_rejected=0",
 		"policy_rule_logged=1",
 		`policy_rule_stats="prod\x00pod-a"/7:p=1,b=256,a=0,d=1,r=0,nm=0,ct=0,est=0,log=0;"prod\x00pod-a"/42:p=2,b=128,a=2,d=0,r=0,nm=0,ct=0,est=0,log=1`,
+		"tcx_skipped=2",
 		`tcx_failed_target="iface=eth0 direction=ingress attach=2"`,
 		"provider_networks=1",
 		"provider_links=2",
@@ -2109,6 +2111,7 @@ func TestAgentMetricsExportsLatestPolicyAndTCXCounters(t *testing.T) {
 			RuleID:        "deny-client",
 		}},
 		TCXEligible:      1,
+		TCXSkipped:       2,
 		TCXFailed:        0,
 		TCXRollbacks:     0,
 		TCXFailedTarget:  "",
@@ -2177,6 +2180,7 @@ func TestAgentMetricsExportsLatestPolicyAndTCXCounters(t *testing.T) {
 		`netloom_agent_policy_rule_packets_by_rule_total{endpoint="prod\x00pod-a",node="node-a",rule_cookie="7",rule_id="deny-client",rule_ref="prod/web/deny-client",security_group="web",store="ebpf",vpc="prod"} 1`,
 		`netloom_agent_policy_rule_packets_by_rule_total{endpoint="tcx:iface=eth0 direction=ingress attach=2",node="node-a",rule_cookie="42",rule_id="",rule_ref="",security_group="",store="ebpf",vpc=""} 2`,
 		`netloom_agent_tcx_eligible{node="node-a",store="ebpf"} 1`,
+		`netloom_agent_tcx_skipped{node="node-a",store="ebpf"} 2`,
 		`netloom_agent_tcx_failed{node="node-a",store="ebpf",target=""} 0`,
 	} {
 		if !strings.Contains(output, expected) {

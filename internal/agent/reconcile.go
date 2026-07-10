@@ -74,6 +74,7 @@ type ReconcileResult struct {
 	TCXLastError                     string
 	ConntrackExpired                 int
 	TCXEligible                      int
+	TCXSkipped                       int
 	TCX                              string
 	Datapath                         string
 	LocalIPs                         int
@@ -1443,6 +1444,8 @@ func prepareReconcile(ctx context.Context, state control.DesiredState, options R
 		if tcxEligibleProgram(program) {
 			result.TCXEligible++
 			tcxPrograms = append(tcxPrograms, program)
+		} else if len(program.MapEntries) > 0 {
+			result.TCXSkipped++
 		}
 	}
 	if options.LinuxDatapath != nil {

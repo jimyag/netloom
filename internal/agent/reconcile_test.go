@@ -3188,7 +3188,7 @@ func TestReconcileNodeWithTCXKeepsRemoteEndpointPolicyInPolicyMap(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Entries != 1 || result.TCXEligible != 0 {
+	if result.Entries != 1 || result.TCXEligible != 0 || result.TCXSkipped != 1 {
 		t.Fatalf("result = %+v, want remote-group drop only in policy map", result)
 	}
 	if len(targets) != 0 || len(programs) != 1 {
