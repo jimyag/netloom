@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"math/rand"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -12,8 +14,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-logr/logr"
+	libovsdbclient "github.com/ovn-kubernetes/libovsdb/client"
+	"github.com/ovn-kubernetes/libovsdb/database/inmemory"
+	ovsmodel "github.com/ovn-kubernetes/libovsdb/model"
+	"github.com/ovn-kubernetes/libovsdb/ovsdb"
+	"github.com/ovn-kubernetes/libovsdb/server"
+
 	"github.com/jimyag/netloom/internal/control"
 	"github.com/jimyag/netloom/internal/model"
+	"github.com/jimyag/netloom/internal/ovn/ovsdb/vswitch"
 )
 
 func TestRunParsesBase64DNSResponsesAndMergesObservations(t *testing.T) {
@@ -191,6 +201,38 @@ func TestOVSDBDNSObservationStoreSavesAndLoadsExternalID(t *testing.T) {
 	}
 }
 
+func TestRunWritesDNSObservationsToOpenVSwitchOVSDB(t *testing.T) {
+	endpoint, client, cleanup := newTestVSwitchOVSDB(t)
+	defer cleanup()
+	insertVSwitchRows(t, t.Context(), client, &vswitch.OpenvSwitch{})
+	packet := dnsResponse(
+		dnsQuestion("api.example.com", 1),
+		dnsAnswerPtr(12, 1, 60, []byte{203, 0, 113, 10}),
+	)
+	input := strings.NewReader(base64.StdEncoding.EncodeToString(packet) + "\n")
+	var stdout bytes.Buffer
+	now := func() time.Time { return time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC) }
+
+	if err := run(t.Context(), []string{"-ovsdb", endpoint}, input, &stdout, now); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout.String(), "packets=1 records=1 written=1") {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+	root := singleVSwitchRoot(t, t.Context(), client)
+	raw := root.ExternalIDs[control.DNSObservationsOpenVSwitchExternalID]
+	if raw == "" {
+		t.Fatalf("root external IDs = %+v, want DNS observations", root.ExternalIDs)
+	}
+	records, err := control.LoadDNSObservationsJSON(strings.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].Name != "api.example.com" || records[0].IPs[0].String() != "203.0.113.10" {
+		t.Fatalf("records = %+v", records)
+	}
+}
+
 func TestRunRejectsEmptyInput(t *testing.T) {
 	err := run(t.Context(), []string{"-observations", filepath.Join(t.TempDir(), "dns.json")}, strings.NewReader("\n# ignored\n"), ioDiscard{}, time.Now)
 	if err == nil {
@@ -221,6 +263,96 @@ func (s *fakeOpenVSwitchExternalIDStore) SetOpenVSwitchExternalID(_ context.Cont
 type ioDiscard struct{}
 
 func (ioDiscard) Write(p []byte) (int, error) { return len(p), nil }
+
+func newTestVSwitchOVSDB(t *testing.T) (string, libovsdbclient.Client, func()) {
+	t.Helper()
+	clientModel, err := vswitch.FullDatabaseModel()
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema := vswitch.Schema()
+	databaseModel, errs := ovsmodel.NewDatabaseModel(schema, clientModel)
+	if len(errs) > 0 {
+		t.Fatalf("database model errors: %+v", errs)
+	}
+	logger := logr.Discard()
+	db := inmemory.NewDatabase(map[string]ovsmodel.ClientDBModel{vswitch.DatabaseName: clientModel}, &logger)
+	ovsServer, err := server.NewOvsdbServer(db, &logger, databaseModel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	socket := fmt.Sprintf("/tmp/netloom-dns-vswitch-%d.sock", rand.Int())
+	_ = os.Remove(socket)
+	go func() {
+		if err := ovsServer.Serve("unix", socket); err != nil {
+			t.Logf("libovsdb test server stopped: %v", err)
+		}
+	}()
+	requireEventually(t, ovsServer.Ready)
+
+	client, err := libovsdbclient.NewOVSDBClient(clientModel, libovsdbclient.WithEndpoint("unix:"+socket))
+	if err != nil {
+		ovsServer.Close()
+		t.Fatal(err)
+	}
+	if err := client.Connect(t.Context()); err != nil {
+		ovsServer.Close()
+		t.Fatal(err)
+	}
+	if _, err := client.MonitorAll(t.Context()); err != nil {
+		ovsServer.Close()
+		t.Fatal(err)
+	}
+	return "unix:" + socket, client, func() {
+		client.Disconnect()
+		client.Close()
+		ovsServer.Close()
+		_ = os.Remove(socket)
+	}
+}
+
+func requireEventually(t *testing.T, condition func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if condition() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("condition was not satisfied")
+}
+
+func insertVSwitchRows(t *testing.T, ctx context.Context, client libovsdbclient.Client, rows ...ovsmodel.Model) {
+	t.Helper()
+	var ops []ovsdb.Operation
+	for _, row := range rows {
+		next, err := client.Create(row)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ops = append(ops, next...)
+	}
+	results, err := client.Transact(ctx, ops...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ovsdb.CheckOperationResults(results, ops); err != nil {
+		t.Fatalf("ovsdb transact results = %+v: %v", results, err)
+	}
+}
+
+func singleVSwitchRoot(t *testing.T, ctx context.Context, client libovsdbclient.Client) vswitch.OpenvSwitch {
+	t.Helper()
+	var rows []vswitch.OpenvSwitch
+	if err := client.List(ctx, &rows); err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("Open_vSwitch rows = %d, want 1: %+v", len(rows), rows)
+	}
+	return rows[0]
+}
 
 func dnsResponse(question []byte, answers ...[]byte) []byte {
 	packet := []byte{
