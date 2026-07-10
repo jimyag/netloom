@@ -86,10 +86,12 @@ type/code: protocol-only ICMP has no L4 prefix, type-only matches the first
 rules to host-veth egress and egress rules to host-veth ingress, matching the
 direction split used by endpoint policy datapaths.
 Remote-group and remote-endpoint-selector rules keep their Cilium-style remote
-identity in the userspace policy map, but the TCX fast path projects the exact
-endpoint `/32` or `/128` CIDR already emitted by the compiler. This keeps TCX
-usable for local enforcement while preserving identity-aware validation in the
-canonical policy map and evaluator.
+identity in the userspace policy map. The TCX L4 projection does not accept
+those rules, because the current TCX key can match CIDR, protocol, and port but
+cannot validate the remote identity. Keeping identity rules out of TCX avoids
+silently weakening a `remote_group` or endpoint-selector rule into a pure CIDR
+match. Those rules remain enforced and testable through the canonical eBPF
+policy map and evaluator until the fast path grows identity matching.
 In dual-stack endpoint policies, IPv4 and IPv6 CIDR entries can both be
 projected into LPM-backed TCX rule sets. The agent uses a unified L4 TCX attach
 path: IPv4-only policies attach the IPv4 program, IPv6-only policies attach the
@@ -218,10 +220,11 @@ Remote security-group references follow the same shape as Cilium identity-based
 policy. During reconcile, the compiler receives the current endpoint set,
 expands `remote_group` members in the same VPC into stable endpoint identities,
 and also records each member's exact `/32` or `/128` CIDR. The endpoint identity
-drives policy-map evaluation, while the exact CIDR lets the TCX L4 projection
-enforce remote-group rules for workload traffic. When membership changes,
-periodic agent reconcile recompiles the endpoint program and replaces the TCX
-attachment signature.
+drives policy-map evaluation, and the CIDR is treated as an additional match
+constraint instead of a replacement for identity. TCX skips these rules until it
+can enforce both identity and CIDR together. When membership changes, periodic
+agent reconcile recompiles the endpoint program so the policy map receives the
+updated endpoint identities and CIDRs.
 Security groups also carry a Kube-OVN-style `tier` field constrained to 0 or 1.
 The eBPF policy map encodes tier into rule precedence: tier 0 entries win over
 tier 1 entries, and within the same tier drop/reject entries continue to win
