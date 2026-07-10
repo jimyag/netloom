@@ -23,6 +23,7 @@ type AuditStats struct {
 	ManagedLoadBalancers             int
 	ManagedLoadBalancerHealthChecks  int
 	ManagedDHCPOptions               int
+	ManagedDNSRecords                int
 	DuplicateManagedRows             int
 	IncompleteManagedRows            int
 	MissingManagedRows               int
@@ -52,7 +53,8 @@ func (s AuditStats) TotalManagedObjects() int {
 		s.ManagedNATRules +
 		s.ManagedLoadBalancers +
 		s.ManagedLoadBalancerHealthChecks +
-		s.ManagedDHCPOptions
+		s.ManagedDHCPOptions +
+		s.ManagedDNSRecords
 }
 
 func (e *NBCTLExecutor) AuditManagedObjects(ctx context.Context) (AuditStats, error) {
@@ -125,6 +127,7 @@ func managedAuditTables() []managedAuditTable {
 		{"Load_Balancer", func(s *AuditStats, n int) { s.ManagedLoadBalancers = n }},
 		{"Load_Balancer_Health_Check", func(s *AuditStats, n int) { s.ManagedLoadBalancerHealthChecks = n }},
 		{"DHCP_Options", func(s *AuditStats, n int) { s.ManagedDHCPOptions = n }},
+		{"DNS", func(s *AuditStats, n int) { s.ManagedDNSRecords = n }},
 	}
 }
 
@@ -176,6 +179,8 @@ func managedAuditNBCTLColumns(table string) []string {
 		columns = append(columns, "vip", "options")
 	case "DHCP_Options":
 		columns = append(columns, "cidr", "options")
+	case "DNS":
+		columns = append(columns, "records", "options")
 	}
 	return columns
 }
@@ -398,6 +403,9 @@ func expectedManagedAuditRows(desired topology.State) map[string]map[string]stri
 	}
 	for _, gateway := range desired.Gateways {
 		addAuditExpectedRow(out, "Logical_Router", gatewayAuditIdentityFields(gateway)...)
+	}
+	if len(desiredOVNDNSRecords(desired.DNSRecords)) > 0 {
+		addAuditExpectedRow(out, "DNS", "netloom_dns", "desired")
 	}
 	return out
 }
@@ -628,6 +636,11 @@ func expectedManagedAuditColumns(desired topology.State) map[string]map[string]s
 			}
 		}
 	}
+	if records := desiredOVNDNSRecords(desired.DNSRecords); len(records) > 0 {
+		addAuditExpectedColumns(out, "DNS", map[string]string{
+			"records": mapField(records),
+		}, "netloom_dns", "desired")
+	}
 	return out
 }
 
@@ -802,6 +815,8 @@ func staleManagedColumnShouldDrift(table, key string) bool {
 		default:
 			return false
 		}
+	case "DNS":
+		return key == "records" || key == "options"
 	}
 	return false
 }
@@ -1136,6 +1151,8 @@ func managedAuditIdentity(table, uuid string, externalIDs map[string]string) (st
 		return table + "\x00" + uuid, uuid != ""
 	case "DHCP_Options":
 		return auditIdentity(table, externalIDs, "netloom_vpc", "netloom_endpoint")
+	case "DNS":
+		return auditIdentity(table, externalIDs, "netloom_dns")
 	default:
 		return "", true
 	}

@@ -34,6 +34,10 @@ type TopologyLifecycleBackend interface {
 	CleanupTopology(context.Context, topology.State) error
 }
 
+type TopologyDNSBackend interface {
+	SyncDNSRecords(context.Context, []model.Subnet, []model.DNSRecord) error
+}
+
 type MultiTopologyBackend []TopologyBackend
 
 func (m MultiTopologyBackend) BeginTopologyReconcile(ctx context.Context, state topology.State) error {
@@ -51,6 +55,17 @@ func (m MultiTopologyBackend) CleanupTopology(ctx context.Context, state topolog
 	for _, backend := range m {
 		if lifecycle, ok := backend.(TopologyLifecycleBackend); ok {
 			if err := lifecycle.CleanupTopology(ctx, state); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (m MultiTopologyBackend) SyncDNSRecords(ctx context.Context, subnets []model.Subnet, records []model.DNSRecord) error {
+	for _, backend := range m {
+		if dnsBackend, ok := backend.(TopologyDNSBackend); ok {
+			if err := dnsBackend.SyncDNSRecords(ctx, subnets, records); err != nil {
 				return err
 			}
 		}
@@ -364,6 +379,11 @@ func (c *Controller) Reconcile(ctx context.Context, state DesiredState) error {
 		}
 		if err := c.topology.EnsureSubnet(ctx, subnet); err != nil {
 			return fmt.Errorf("ensure subnet %s: %w", subnet.Name, err)
+		}
+	}
+	if dnsBackend, ok := c.topology.(TopologyDNSBackend); ok {
+		if err := dnsBackend.SyncDNSRecords(ctx, state.Subnets, state.DNSRecords); err != nil {
+			return fmt.Errorf("sync dns records: %w", err)
 		}
 	}
 	for _, rt := range state.RouteTables {
@@ -1502,5 +1522,6 @@ func desiredTopologyState(state DesiredState) topology.State {
 		Gateways:      gateways,
 		NATRules:      natRules,
 		LoadBalancers: loadBalancers,
+		DNSRecords:    append([]model.DNSRecord(nil), state.DNSRecords...),
 	}
 }

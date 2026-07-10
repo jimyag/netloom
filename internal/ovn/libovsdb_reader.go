@@ -203,6 +203,14 @@ func (r *LibOVSDBManagedReader) ManagedOVNRows(ctx context.Context, table string
 		return managedOVNRowsFromModels(table, rows, func(row ovnnb.DHCPOptions) (string, map[string]string, map[string]string) {
 			return row.UUID, row.ExternalIDs, map[string]string{"cidr": row.Cidr, "options": mapField(row.Options)}
 		}), nil
+	case "DNS":
+		var rows []ovnnb.DNS
+		if err := r.client.WhereCache(func(row *ovnnb.DNS) bool { return isNetloomManaged(row.ExternalIDs) }).List(ctx, &rows); err != nil {
+			return nil, err
+		}
+		return managedOVNRowsFromModels(table, rows, func(row ovnnb.DNS) (string, map[string]string, map[string]string) {
+			return row.UUID, row.ExternalIDs, map[string]string{"records": mapField(row.Records), "options": mapField(row.Options)}
+		}), nil
 	default:
 		return nil, fmt.Errorf("unsupported managed OVN table %s", table)
 	}

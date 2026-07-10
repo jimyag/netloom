@@ -26,6 +26,12 @@ type reconcileOrderBackend struct {
 	calls []string
 }
 
+type dnsSyncBackend struct {
+	*MemoryBackend
+	dnsSubnets []model.Subnet
+	dnsRecords []model.DNSRecord
+}
+
 func newCountingIdentityResolver() *countingIdentityResolver {
 	return &countingIdentityResolver{
 		inner:  policy.NewIdentityCache(),
@@ -41,6 +47,12 @@ func (b *reconcileOrderBackend) EnsureEndpoint(ctx context.Context, endpoint mod
 func (b *reconcileOrderBackend) EnsureNATRule(ctx context.Context, rule model.NATRule) error {
 	b.calls = append(b.calls, "nat:"+natRuleKey(rule.VPC, rule.Name))
 	return b.MemoryBackend.EnsureNATRule(ctx, rule)
+}
+
+func (b *dnsSyncBackend) SyncDNSRecords(_ context.Context, subnets []model.Subnet, records []model.DNSRecord) error {
+	b.dnsSubnets = append([]model.Subnet(nil), subnets...)
+	b.dnsRecords = append([]model.DNSRecord(nil), records...)
+	return nil
 }
 
 func (c *countingIdentityResolver) Identity(value string) uint32 {
@@ -289,6 +301,34 @@ func TestControllerEnsuresEndpointsBeforeDistributedFloatingIPs(t *testing.T) {
 		if backend.calls[i] != call {
 			t.Fatalf("reconcile call[%d] = %q, want %q (all calls: %v)", i, backend.calls[i], call, backend.calls)
 		}
+	}
+}
+
+func TestControllerSyncsTopologyDNSRecords(t *testing.T) {
+	backend := &dnsSyncBackend{MemoryBackend: NewMemoryBackend()}
+	controller := NewController(backend, backend)
+
+	state := DesiredState{
+		VPCs: []model.VPC{{Name: "prod"}},
+		Subnets: []model.Subnet{{
+			Name:    "apps",
+			VPC:     "prod",
+			CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway: netip.MustParseAddr("10.10.0.1"),
+		}},
+		DNSRecords: []model.DNSRecord{{
+			Name: "api.example.com",
+			IPs:  []netip.Addr{netip.MustParseAddr("203.0.113.10")},
+		}},
+	}
+	if err := controller.Reconcile(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+	if len(backend.dnsSubnets) != 1 || backend.dnsSubnets[0].Name != "apps" {
+		t.Fatalf("dns subnets = %+v, want apps subnet", backend.dnsSubnets)
+	}
+	if len(backend.dnsRecords) != 1 || backend.dnsRecords[0].Name != "api.example.com" {
+		t.Fatalf("dns records = %+v, want desired DNS record", backend.dnsRecords)
 	}
 }
 

@@ -557,6 +557,97 @@ func (w *LibOVSDBTopologyWriter) EnsureLoadBalancer(ctx context.Context, lb mode
 	return nil
 }
 
+func (w *LibOVSDBTopologyWriter) SyncDNSRecords(ctx context.Context, subnets []model.Subnet, records []model.DNSRecord) error {
+	if w == nil || w.client == nil {
+		return fmt.Errorf("libovsdb topology writer has no client")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	switches, err := w.netloomLogicalSwitches(ctx)
+	if err != nil {
+		return err
+	}
+	desiredSwitchNames := make(map[string]struct{}, len(subnets))
+	for _, subnet := range subnets {
+		desiredSwitchNames[logicalSwitch(subnet.VPC, subnet.Name)] = struct{}{}
+	}
+	for switchName := range desiredSwitchNames {
+		if _, ok := switches[switchName]; !ok {
+			return fmt.Errorf("logical switch %s must exist before DNS sync", switchName)
+		}
+	}
+	existingDNS, err := w.netloomDNSRows(ctx)
+	if err != nil {
+		return err
+	}
+	desiredRecords := desiredOVNDNSRecords(records)
+	var ops []ovsdb.Operation
+	if len(desiredRecords) == 0 {
+		for i := range existingDNS {
+			deleteOps, err := w.deleteDNSRowFromSwitches(switches, &existingDNS[i])
+			if err != nil {
+				return err
+			}
+			ops = append(ops, deleteOps...)
+		}
+	} else {
+		keepUUID := ""
+		desired := ovnnb.DNS{
+			UUID:        ovsdbNamedUUID("nl_dns_records"),
+			ExternalIDs: map[string]string{"netloom_owner": "netloom", "netloom_dns": "desired"},
+			Records:     desiredRecords,
+		}
+		if len(existingDNS) == 0 {
+			createOps, err := w.client.Create(&desired)
+			if err != nil {
+				return fmt.Errorf("create DNS records row: %w", err)
+			}
+			ops = append(ops, createOps...)
+			keepUUID = desired.UUID
+		} else {
+			keep := existingDNS[0]
+			keepUUID = keep.UUID
+			nextExternalIDs := mergeManagedExternalIDs(keep.ExternalIDs, desired.ExternalIDs)
+			if !reflect.DeepEqual(keep.ExternalIDs, nextExternalIDs) ||
+				!reflect.DeepEqual(keep.Records, desired.Records) ||
+				len(keep.Options) != 0 {
+				keep.ExternalIDs = nextExternalIDs
+				keep.Records = desired.Records
+				keep.Options = nil
+				updateOps, err := w.client.Where(&keep).Update(&keep, &keep.ExternalIDs, &keep.Records, &keep.Options)
+				if err != nil {
+					return fmt.Errorf("update DNS records row %s: %w", keep.UUID, err)
+				}
+				ops = append(ops, updateOps...)
+			}
+			for i := 1; i < len(existingDNS); i++ {
+				deleteOps, err := w.deleteDNSRowFromSwitches(switches, &existingDNS[i])
+				if err != nil {
+					return err
+				}
+				ops = append(ops, deleteOps...)
+			}
+		}
+		switchOps, err := w.syncDNSRowSwitchReferences(switches, desiredSwitchNames, keepUUID)
+		if err != nil {
+			return err
+		}
+		ops = append(ops, switchOps...)
+	}
+	if len(ops) == 0 {
+		return nil
+	}
+	results, err := w.client.Transact(ctx, ops...)
+	if err != nil {
+		return fmt.Errorf("transact DNS records: %w", err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, ops); err != nil {
+		return fmt.Errorf("DNS records operation errors=%+v: %w", opErrors, err)
+	}
+	return nil
+}
+
 func (w *LibOVSDBTopologyWriter) subnetPortOperations(ctx context.Context, router *ovnnb.LogicalRouter, logicalSwitch *ovnnb.LogicalSwitch, existingSwitch *ovnnb.LogicalSwitch, subnet model.Subnet) ([]ovsdb.Operation, error) {
 	switchUUID := logicalSwitch.UUID
 	switchPorts := logicalSwitch.Ports
@@ -984,6 +1075,76 @@ func (w *LibOVSDBTopologyWriter) detachLoadBalancerFromSwitch(switchUUID, lbUUID
 	})
 }
 
+func (w *LibOVSDBTopologyWriter) syncDNSRowSwitchReferences(switches map[string]ovnnb.LogicalSwitch, desiredSwitchNames map[string]struct{}, dnsUUID string) ([]ovsdb.Operation, error) {
+	var ops []ovsdb.Operation
+	names := make([]string, 0, len(switches))
+	for name := range switches {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		sw := switches[name]
+		_, desired := desiredSwitchNames[name]
+		hasRef := containsString(sw.DNSRecords, dnsUUID)
+		if desired && !hasRef {
+			switchRow := &ovnnb.LogicalSwitch{UUID: sw.UUID}
+			mutateOps, err := w.client.Where(switchRow).Mutate(switchRow, ovsmodel.Mutation{
+				Field:   &switchRow.DNSRecords,
+				Mutator: ovsdb.MutateOperationInsert,
+				Value:   []string{dnsUUID},
+			})
+			if err != nil {
+				return nil, fmt.Errorf("attach DNS records row %s to switch %s: %w", dnsUUID, sw.Name, err)
+			}
+			ops = append(ops, mutateOps...)
+			continue
+		}
+		if !desired && hasRef {
+			mutateOps, err := w.detachDNSRowFromSwitch(sw.UUID, dnsUUID)
+			if err != nil {
+				return nil, err
+			}
+			ops = append(ops, mutateOps...)
+		}
+	}
+	return ops, nil
+}
+
+func (w *LibOVSDBTopologyWriter) deleteDNSRowFromSwitches(switches map[string]ovnnb.LogicalSwitch, dns *ovnnb.DNS) ([]ovsdb.Operation, error) {
+	var ops []ovsdb.Operation
+	names := make([]string, 0, len(switches))
+	for name := range switches {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		sw := switches[name]
+		if !containsString(sw.DNSRecords, dns.UUID) {
+			continue
+		}
+		detachOps, err := w.detachDNSRowFromSwitch(sw.UUID, dns.UUID)
+		if err != nil {
+			return nil, err
+		}
+		ops = append(ops, detachOps...)
+	}
+	deleteOps, err := w.client.Where(dns).Delete()
+	if err != nil {
+		return nil, fmt.Errorf("delete DNS records row %s: %w", dns.UUID, err)
+	}
+	ops = append(ops, deleteOps...)
+	return ops, nil
+}
+
+func (w *LibOVSDBTopologyWriter) detachDNSRowFromSwitch(switchUUID, dnsUUID string) ([]ovsdb.Operation, error) {
+	sw := &ovnnb.LogicalSwitch{UUID: switchUUID}
+	return w.client.Where(sw).Mutate(sw, ovsmodel.Mutation{
+		Field:   &sw.DNSRecords,
+		Mutator: ovsdb.MutateOperationDelete,
+		Value:   []string{dnsUUID},
+	})
+}
+
 func (w *LibOVSDBTopologyWriter) syncLoadBalancerHealthChecks(ctx context.Context, lbUUID string, lb model.LoadBalancer, frontends []model.LoadBalancerFrontend) ([]ovsdb.Operation, error) {
 	existing, err := w.healthChecksByLoadBalancer(ctx, lb.VPC, lb.Name)
 	if err != nil {
@@ -1282,6 +1443,20 @@ func (w *LibOVSDBTopologyWriter) logicalSwitchByName(ctx context.Context, name s
 	return &switches[0], true, nil
 }
 
+func (w *LibOVSDBTopologyWriter) netloomLogicalSwitches(ctx context.Context) (map[string]ovnnb.LogicalSwitch, error) {
+	var rows []ovnnb.LogicalSwitch
+	if err := w.client.WhereCache(func(row *ovnnb.LogicalSwitch) bool {
+		return row.ExternalIDs["netloom_owner"] == "netloom"
+	}).List(ctx, &rows); err != nil {
+		return nil, fmt.Errorf("list netloom logical switches from libovsdb cache: %w", err)
+	}
+	out := make(map[string]ovnnb.LogicalSwitch, len(rows))
+	for _, row := range rows {
+		out[row.Name] = row
+	}
+	return out, nil
+}
+
 func (w *LibOVSDBTopologyWriter) logicalRouterPortByName(ctx context.Context, name string) (*ovnnb.LogicalRouterPort, bool, error) {
 	var ports []ovnnb.LogicalRouterPort
 	if err := w.client.WhereCache(func(row *ovnnb.LogicalRouterPort) bool { return row.Name == name }).List(ctx, &ports); err != nil {
@@ -1367,6 +1542,18 @@ func (w *LibOVSDBTopologyWriter) loadBalancerByName(ctx context.Context, name st
 		return nil, false, nil
 	}
 	return &rows[0], true, nil
+}
+
+func (w *LibOVSDBTopologyWriter) netloomDNSRows(ctx context.Context) ([]ovnnb.DNS, error) {
+	var rows []ovnnb.DNS
+	if err := w.client.WhereCache(func(row *ovnnb.DNS) bool {
+		return row.ExternalIDs["netloom_owner"] == "netloom" &&
+			row.ExternalIDs["netloom_dns"] == "desired"
+	}).List(ctx, &rows); err != nil {
+		return nil, fmt.Errorf("list DNS records rows from libovsdb cache: %w", err)
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].UUID < rows[j].UUID })
+	return rows, nil
 }
 
 func (w *LibOVSDBTopologyWriter) loadBalancersByIdentity(ctx context.Context, vpc, name string) ([]ovnnb.LoadBalancer, error) {
@@ -1648,6 +1835,36 @@ func desiredNATRuleRow(rule model.NATRule) ovnnb.NAT {
 		row.ExternalMAC = &rule.ExternalMAC
 	}
 	return row
+}
+
+func desiredOVNDNSRecords(records []model.DNSRecord) map[string]string {
+	ipsByName := make(map[string]map[string]struct{}, len(records))
+	for _, record := range records {
+		name := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(record.Name)), ".")
+		if name == "" {
+			continue
+		}
+		if ipsByName[name] == nil {
+			ipsByName[name] = map[string]struct{}{}
+		}
+		for _, ip := range record.IPs {
+			if ip.IsValid() {
+				ipsByName[name][ip.String()] = struct{}{}
+			}
+		}
+	}
+	out := make(map[string]string, len(ipsByName))
+	for name, ipSet := range ipsByName {
+		ips := make([]string, 0, len(ipSet))
+		for ip := range ipSet {
+			ips = append(ips, ip)
+		}
+		sort.Strings(ips)
+		if len(ips) > 0 {
+			out[name] = strings.Join(ips, " ")
+		}
+	}
+	return out
 }
 
 func natLogicalIP(rule model.NATRule) string {

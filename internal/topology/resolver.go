@@ -18,6 +18,7 @@ type State struct {
 	Gateways      map[string]model.Gateway
 	NATRules      map[string]model.NATRule
 	LoadBalancers map[string]model.LoadBalancer
+	DNSRecords    []model.DNSRecord
 }
 
 type Packet struct {
