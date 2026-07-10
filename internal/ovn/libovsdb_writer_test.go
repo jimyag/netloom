@@ -2218,6 +2218,155 @@ func TestLibOVSDBTopologyWriterCleanupRepairsGatewayRouterDriftInSteadyState(t *
 	}
 }
 
+func TestLibOVSDBTopologyWriterCleanupRepairsLoadBalancerParentAttachmentDriftInSteadyState(t *testing.T) {
+	ctx := context.Background()
+	client, closeFn := newTestOVNNBClient(t)
+	defer closeFn()
+
+	if _, err := client.MonitorAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	writer := NewLibOVSDBTopologyWriter(client)
+	apps := model.Subnet{
+		Name:    "apps",
+		VPC:     "prod",
+		CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+		Gateway: netip.MustParseAddr("10.10.0.1"),
+	}
+	db := model.Subnet{
+		Name:    "db",
+		VPC:     "dev",
+		CIDR:    netip.MustParsePrefix("10.20.0.0/24"),
+		Gateway: netip.MustParseAddr("10.20.0.1"),
+	}
+	lb := model.LoadBalancer{
+		Name:    "api",
+		VPC:     "prod",
+		VIP:     netip.MustParseAddr("10.96.0.10"),
+		Subnets: []string{"apps"},
+		Ports: []model.LoadBalancerPort{{
+			Port:     443,
+			Protocol: model.ProtocolTCP,
+			Backends: []model.LoadBalancerBackend{{
+				IP:   netip.MustParseAddr("10.10.0.20"),
+				Port: 8443,
+			}},
+		}},
+	}
+	state := topology.State{
+		VPCs: map[string]model.VPC{
+			"prod": {Name: "prod"},
+			"dev":  {Name: "dev"},
+		},
+		Subnets: map[string]model.Subnet{
+			subnetStateKey("prod", "apps"): apps,
+			subnetStateKey("dev", "db"):    db,
+		},
+		LoadBalancers: map[string]model.LoadBalancer{"prod/api": lb},
+	}
+	if err := writer.CleanupTopology(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	for _, vpc := range []model.VPC{state.VPCs["prod"], state.VPCs["dev"]} {
+		if err := writer.EnsureVPC(ctx, vpc); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, subnet := range []model.Subnet{apps, db} {
+		if err := writer.EnsureSubnet(ctx, subnet); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.EnsureLoadBalancer(ctx, lb); err != nil {
+		t.Fatal(err)
+	}
+
+	lbRow, ok, err := writer.loadBalancerByName(ctx, loadBalancerProtocolName("prod", "api", model.ProtocolTCP))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("load balancer row was not created")
+	}
+	var prodRouters []ovnnb.LogicalRouter
+	var devRouters []ovnnb.LogicalRouter
+	requireEventually(t, func() bool {
+		prodRouters = nil
+		devRouters = nil
+		errProd := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("prod") }).List(ctx, &prodRouters)
+		errDev := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("dev") }).List(ctx, &devRouters)
+		appsSwitch := singleLogicalSwitchByName(t, ctx, client, logicalSwitch("prod", "apps"))
+		return errProd == nil && errDev == nil &&
+			len(prodRouters) == 1 && len(devRouters) == 1 &&
+			containsString(prodRouters[0].LoadBalancer, lbRow.UUID) &&
+			containsString(appsSwitch.LoadBalancer, lbRow.UUID)
+	})
+	appsSwitch := singleLogicalSwitchByName(t, ctx, client, logicalSwitch("prod", "apps"))
+	dbSwitch := singleLogicalSwitchByName(t, ctx, client, logicalSwitch("dev", "db"))
+	var ops []ovsdb.Operation
+	detachRouter, err := writer.detachLoadBalancerFromRouter(prodRouters[0].UUID, lbRow.UUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ops = append(ops, detachRouter...)
+	detachSwitch, err := writer.detachLoadBalancerFromSwitch(appsSwitch.UUID, lbRow.UUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ops = append(ops, detachSwitch...)
+	attachRouter, err := writer.attachLoadBalancerToRouter(&devRouters[0], lbRow.UUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ops = append(ops, attachRouter...)
+	attachSwitch, err := writer.attachLoadBalancerToSwitch(&dbSwitch, lbRow.UUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ops = append(ops, attachSwitch...)
+	results, err := client.Transact(ctx, ops...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, ops); err != nil {
+		t.Fatalf("seed load balancer parent drift operation errors=%+v: %v", opErrors, err)
+	}
+	requireEventually(t, func() bool {
+		prodRouters = nil
+		devRouters = nil
+		if err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("prod") }).List(ctx, &prodRouters); err != nil || len(prodRouters) != 1 || containsString(prodRouters[0].LoadBalancer, lbRow.UUID) {
+			return false
+		}
+		if err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("dev") }).List(ctx, &devRouters); err != nil || len(devRouters) != 1 || !containsString(devRouters[0].LoadBalancer, lbRow.UUID) {
+			return false
+		}
+		appsSwitch = singleLogicalSwitchByName(t, ctx, client, logicalSwitch("prod", "apps"))
+		dbSwitch = singleLogicalSwitchByName(t, ctx, client, logicalSwitch("dev", "db"))
+		return !containsString(appsSwitch.LoadBalancer, lbRow.UUID) && containsString(dbSwitch.LoadBalancer, lbRow.UUID)
+	})
+
+	if err := writer.CleanupTopology(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	requireEventually(t, func() bool {
+		prodRouters = nil
+		devRouters = nil
+		if err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("prod") }).List(ctx, &prodRouters); err != nil || len(prodRouters) != 1 || !containsString(prodRouters[0].LoadBalancer, lbRow.UUID) {
+			return false
+		}
+		if err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("dev") }).List(ctx, &devRouters); err != nil || len(devRouters) != 1 || containsString(devRouters[0].LoadBalancer, lbRow.UUID) {
+			return false
+		}
+		appsSwitch = singleLogicalSwitchByName(t, ctx, client, logicalSwitch("prod", "apps"))
+		dbSwitch = singleLogicalSwitchByName(t, ctx, client, logicalSwitch("dev", "db"))
+		return containsString(appsSwitch.LoadBalancer, lbRow.UUID) && !containsString(dbSwitch.LoadBalancer, lbRow.UUID)
+	})
+	stats := writer.LastCleanupStats()
+	if stats.FirstReconcileGC || stats.Operations == 0 {
+		t.Fatalf("cleanup stats = %+v, want steady-state load balancer parent repair operations", stats)
+	}
+}
+
 func TestLibOVSDBTopologyWriterCleanupRepairsLoadBalancerOptionsDriftInSteadyState(t *testing.T) {
 	ctx := context.Background()
 	client, closeFn := newTestOVNNBClient(t)

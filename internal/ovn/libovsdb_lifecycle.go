@@ -550,6 +550,17 @@ func (w *LibOVSDBTopologyWriter) repairSteadyStateNATRules(ctx context.Context, 
 func (w *LibOVSDBTopologyWriter) repairSteadyStateLoadBalancers(ctx context.Context, desired topology.State) ([]ovsdb.Operation, error) {
 	var ops []ovsdb.Operation
 	for _, lb := range desired.LoadBalancers {
+		router, ok, err := w.logicalRouterByName(ctx, logicalRouter(lb.VPC))
+		if err != nil {
+			return nil, err
+		}
+		if !ok || !isNetloomManaged(router.ExternalIDs) {
+			continue
+		}
+		switches, err := w.logicalSwitchesForLoadBalancer(ctx, lb)
+		if err != nil {
+			return nil, err
+		}
 		frontendsByProtocol := loadBalancerFrontendsByProtocol(lb)
 		for _, protocol := range sortedLoadBalancerProtocols(frontendsByProtocol) {
 			desiredRow := desiredLoadBalancerRow(lb, protocol, frontendsByProtocol[protocol])
@@ -560,6 +571,11 @@ func (w *LibOVSDBTopologyWriter) repairSteadyStateLoadBalancers(ctx context.Cont
 			if !ok || !isNetloomManaged(existing.ExternalIDs) {
 				continue
 			}
+			parentOps, err := w.repairSteadyStateLoadBalancerParentRefs(ctx, existing.UUID, router, switches)
+			if err != nil {
+				return nil, err
+			}
+			ops = append(ops, parentOps...)
 			nextOptions := replaceManagedLoadBalancerOptions(existing.Options, desiredRow.Options)
 			if !reflect.DeepEqual(existing.Options, nextOptions) {
 				existing.Options = nextOptions
@@ -575,6 +591,64 @@ func (w *LibOVSDBTopologyWriter) repairSteadyStateLoadBalancers(ctx context.Cont
 			}
 			ops = append(ops, hcOps...)
 		}
+	}
+	return ops, nil
+}
+
+func (w *LibOVSDBTopologyWriter) repairSteadyStateLoadBalancerParentRefs(ctx context.Context, lbUUID string, router *ovnnb.LogicalRouter, desiredSwitches []ovnnb.LogicalSwitch) ([]ovsdb.Operation, error) {
+	var ops []ovsdb.Operation
+	if !containsString(router.LoadBalancer, lbUUID) {
+		attachOps, err := w.attachLoadBalancerToRouter(router, lbUUID)
+		if err != nil {
+			return nil, err
+		}
+		ops = append(ops, attachOps...)
+	}
+	var attachedRouters []ovnnb.LogicalRouter
+	if err := w.client.WhereCache(func(row *ovnnb.LogicalRouter) bool {
+		return isNetloomManaged(row.ExternalIDs) && containsString(row.LoadBalancer, lbUUID)
+	}).List(ctx, &attachedRouters); err != nil {
+		return nil, fmt.Errorf("list logical routers for load balancer attachment %s: %w", lbUUID, err)
+	}
+	sort.Slice(attachedRouters, func(i, j int) bool { return attachedRouters[i].UUID < attachedRouters[j].UUID })
+	for i := range attachedRouters {
+		if attachedRouters[i].UUID == router.UUID {
+			continue
+		}
+		detachOps, err := w.detachLoadBalancerFromRouter(attachedRouters[i].UUID, lbUUID)
+		if err != nil {
+			return nil, err
+		}
+		ops = append(ops, detachOps...)
+	}
+	desiredSwitchUUIDs := make(map[string]struct{}, len(desiredSwitches))
+	for i := range desiredSwitches {
+		desiredSwitchUUIDs[desiredSwitches[i].UUID] = struct{}{}
+		if containsString(desiredSwitches[i].LoadBalancer, lbUUID) {
+			continue
+		}
+		attachOps, err := w.attachLoadBalancerToSwitch(&desiredSwitches[i], lbUUID)
+		if err != nil {
+			return nil, err
+		}
+		ops = append(ops, attachOps...)
+	}
+	var attachedSwitches []ovnnb.LogicalSwitch
+	if err := w.client.WhereCache(func(row *ovnnb.LogicalSwitch) bool {
+		return isNetloomManaged(row.ExternalIDs) && containsString(row.LoadBalancer, lbUUID)
+	}).List(ctx, &attachedSwitches); err != nil {
+		return nil, fmt.Errorf("list logical switches for load balancer attachment %s: %w", lbUUID, err)
+	}
+	sort.Slice(attachedSwitches, func(i, j int) bool { return attachedSwitches[i].UUID < attachedSwitches[j].UUID })
+	for i := range attachedSwitches {
+		if _, ok := desiredSwitchUUIDs[attachedSwitches[i].UUID]; ok {
+			continue
+		}
+		detachOps, err := w.detachLoadBalancerFromSwitch(attachedSwitches[i].UUID, lbUUID)
+		if err != nil {
+			return nil, err
+		}
+		ops = append(ops, detachOps...)
 	}
 	return ops, nil
 }
