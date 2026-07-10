@@ -142,7 +142,7 @@ func TestIPv4L4ACLRulesFromProgramProjectsExactIngressPolicy(t *testing.T) {
 	}
 }
 
-func TestIPv4L4ACLRulesFromProgramProjectsRemoteEndpointIdentityCIDR(t *testing.T) {
+func TestIPv4L4ACLRulesFromProgramRejectsRemoteEndpointIdentityCIDR(t *testing.T) {
 	program := policy.Program{
 		EndpointID: testEndpointA,
 		Rules: []policy.Rule{{
@@ -156,18 +156,19 @@ func TestIPv4L4ACLRulesFromProgramProjectsRemoteEndpointIdentityCIDR(t *testing.
 		}},
 	}
 
-	rules, err := IPv4L4ACLRulesFromProgram(program)
-	if err != nil {
-		t.Fatal(err)
-	}
 	if err := ValidateL4ACLProgramSupport(program); err != nil {
-		t.Fatalf("support error = %v, want remote endpoint exact CIDR projection", err)
+		if !strings.Contains(err.Error(), "remote endpoint identity is not supported by TCX ACL projection") {
+			t.Fatalf("support error = %v, want remote endpoint identity rejection", err)
+		}
+	} else {
+		t.Fatal("expected remote endpoint identity TCX support validation to fail")
 	}
-	if len(rules) != 1 {
-		t.Fatalf("rules = %d, want one projected remote endpoint CIDR rule", len(rules))
+	_, err := IPv4L4ACLRulesFromProgram(program)
+	if err == nil {
+		t.Fatal("expected remote endpoint identity TCX projection to fail")
 	}
-	if rules[0].SourceCIDR != netip.MustParsePrefix("172.30.0.11/32") || rules[0].Protocol != 6 || rules[0].DestPort != 8080 || rules[0].Action != TCXDrop {
-		t.Fatalf("remote endpoint TCX rule = %+v, want exact CIDR tcp/8080 drop", rules[0])
+	if !strings.Contains(err.Error(), "remote endpoint identity is not supported by TCX ACL projection") {
+		t.Fatalf("error = %v, want remote endpoint identity rejection", err)
 	}
 }
 
@@ -578,6 +579,36 @@ func TestIPv6L4ACLRulesFromProgramProjectsExactIngressPolicy(t *testing.T) {
 	}
 	if rules[0].Source != netip.MustParseAddr("fd00:10::20") || rules[0].SourceCIDR != netip.MustParsePrefix("fd00:10::20/128") || rules[0].Protocol != 6 || rules[0].DestPort != 8443 || rules[0].DestPortPrefixBits != 16 || rules[0].Action != TCXDrop {
 		t.Fatalf("unexpected IPv6 rule: %+v", rules[0])
+	}
+}
+
+func TestIPv6L4ACLRulesFromProgramRejectsRemoteEndpointIdentityCIDR(t *testing.T) {
+	program := policy.Program{
+		EndpointID: testEndpointA,
+		Rules: []policy.Rule{{
+			ID:             "drop-v6-client",
+			Direction:      model.DirectionIngress,
+			Protocol:       model.ProtocolTCP,
+			RemoteCIDR:     netip.MustParsePrefix("fd00:10::20/128"),
+			RemoteEndpoint: testEndpointB,
+			Ports:          []model.PortRange{{From: 8443, To: 8443}},
+			Action:         model.ActionDrop,
+		}},
+	}
+
+	if err := ValidateL4ACLProgramSupport(program); err != nil {
+		if !strings.Contains(err.Error(), "remote endpoint identity is not supported by TCX ACL projection") {
+			t.Fatalf("support error = %v, want remote endpoint identity rejection", err)
+		}
+	} else {
+		t.Fatal("expected remote endpoint identity TCX support validation to fail")
+	}
+	_, err := IPv6L4ACLRulesFromProgram(program)
+	if err == nil {
+		t.Fatal("expected remote endpoint identity TCX projection to fail")
+	}
+	if !strings.Contains(err.Error(), "remote endpoint identity is not supported by TCX ACL projection") {
+		t.Fatalf("error = %v, want remote endpoint identity rejection", err)
 	}
 }
 

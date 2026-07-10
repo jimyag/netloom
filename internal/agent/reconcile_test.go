@@ -3141,7 +3141,7 @@ func TestReconcileNodeWithTCXInterfaceAttachesBothDirectionsForSingleEndpoint(t 
 	}
 }
 
-func TestReconcileNodeWithTCXProjectsRemoteEndpointPolicyByCIDR(t *testing.T) {
+func TestReconcileNodeWithTCXKeepsRemoteEndpointPolicyInPolicyMap(t *testing.T) {
 	state := control.DesiredState{
 		Endpoints: []model.Endpoint{
 			{
@@ -3188,18 +3188,21 @@ func TestReconcileNodeWithTCXProjectsRemoteEndpointPolicyByCIDR(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Entries != 1 || result.TCXEligible != 1 {
-		t.Fatalf("result = %+v, want remote-group drop to be TCX eligible", result)
+	if result.Entries != 1 || result.TCXEligible != 0 {
+		t.Fatalf("result = %+v, want remote-group drop only in policy map", result)
 	}
-	if len(targets) != 1 || len(programs) != 1 {
-		t.Fatalf("targets/programs = %d/%d, want one TCX target and program", len(targets), len(programs))
+	if len(targets) != 0 || len(programs) != 1 {
+		t.Fatalf("targets/programs = %d/%d, want policy program without TCX target", len(targets), len(programs))
 	}
-	rules, err := dataplane.IPv4L4ACLRulesFromProgram(programs[0])
-	if err != nil {
-		t.Fatal(err)
+	entries := store.Entries(model.EndpointKey("prod", "pod-a"))
+	if len(entries) != 1 {
+		t.Fatalf("policy map entries = %d, want 1", len(entries))
 	}
-	if len(rules) != 1 || rules[0].SourceCIDR != netip.MustParsePrefix("10.10.0.11/32") || rules[0].DestPort != 8080 || rules[0].Action != dataplane.TCXDrop {
-		t.Fatalf("remote endpoint TCX rules = %+v, want exact remote endpoint /32 tcp/8080 drop", rules)
+	if entries[0].Key.RemoteIdentity != policy.EndpointIdentity(model.EndpointKey("prod", "pod-b")) || entries[0].Value.RequireIdentity != 1 {
+		t.Fatalf("policy map entry = %+v, want required pod-b identity", entries[0])
+	}
+	if entries[0].RemoteCIDR != netip.MustParsePrefix("10.10.0.11/32") {
+		t.Fatalf("remote cidr = %s, want pod-b /32", entries[0].RemoteCIDR)
 	}
 }
 
@@ -3946,7 +3949,7 @@ func TestReconcileNodeExpandsRemoteGroupMembership(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Entries != 1 || result.TCXEligible != 1 {
+	if result.Entries != 1 || result.TCXEligible != 0 {
 		t.Fatalf("unexpected result: %+v", result)
 	}
 	entries := store.Entries(model.EndpointKey("prod", "pod-a"))
