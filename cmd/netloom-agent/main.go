@@ -207,6 +207,9 @@ type policyEndpointRolloutRequest struct {
 	ApprovalSignature         string                       `json:"approval_signature,omitempty"`
 	ApprovalCallbackURL       string                       `json:"approval_callback_url,omitempty"`
 	ApprovalCallbackTimeoutMS uint32                       `json:"approval_callback_timeout_ms,omitempty"`
+	AckRequired               bool                         `json:"ack_required,omitempty"`
+	Acknowledged              bool                         `json:"acknowledged,omitempty"`
+	AckRef                    string                       `json:"ack_ref,omitempty"`
 	ChangePollURL             string                       `json:"change_poll_url,omitempty"`
 	ChangePollTimeoutMS       uint32                       `json:"change_poll_timeout_ms,omitempty"`
 	ChangeStatusURL           string                       `json:"change_status_url,omitempty"`
@@ -1709,6 +1712,9 @@ func (m *agentMetrics) rolloutPolicyEndpoints(ctx context.Context, request polic
 		ApprovalSignature:         request.ApprovalSignature,
 		ApprovalCallbackURL:       request.ApprovalCallbackURL,
 		ApprovalCallbackTimeout:   time.Duration(request.ApprovalCallbackTimeoutMS) * time.Millisecond,
+		AckRequired:               request.AckRequired,
+		Acknowledged:              request.Acknowledged,
+		AckRef:                    request.AckRef,
 		ChangePollURL:             request.ChangePollURL,
 		ChangePollTimeout:         time.Duration(request.ChangePollTimeoutMS) * time.Millisecond,
 		ChangeStatusURL:           request.ChangeStatusURL,
@@ -2053,7 +2059,7 @@ func (m *agentMetrics) handlePolicyEndpointRollout(w http.ResponseWriter, r *htt
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(policyEndpointActionOutput{
 		Action:    "rollout",
-		RolledOut: !rollout.DryRun && rollout.Failed == 0 && !rollout.ApprovalPending,
+		RolledOut: !rollout.DryRun && rollout.Failed == 0 && !rollout.ApprovalPending && !rollout.AckPending,
 		Rollout:   rollout,
 	})
 }

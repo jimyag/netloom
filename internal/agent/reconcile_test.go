@@ -1579,6 +1579,53 @@ func TestApplyPolicyRolloutsRequiresApproval(t *testing.T) {
 	}
 }
 
+func TestApplyPolicyRolloutsRequiresAcknowledgement(t *testing.T) {
+	state := rolloutPolicyState()
+	state.PolicyRollouts = []control.PolicyRollout{{
+		Name:        "ack-gated",
+		Node:        "node-a",
+		Endpoints:   []string{"prod/pod-a", "prod/pod-b"},
+		BatchSize:   1,
+		AckRequired: true,
+		AckRef:      "ack-1234",
+	}}
+	store := dataplane.NewInMemoryPolicyStore()
+
+	rollouts, err := ApplyPolicyRollouts(context.Background(), state, ReconcileOptions{
+		Node:  "node-a",
+		Store: store,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result ReconcileResult
+	ApplyPolicyRolloutResults(&result, rollouts)
+	if result.PolicyRollouts != 1 || result.PolicyRolloutPaused != 1 || result.PolicyRolloutApplied != 0 || result.PolicyRolloutSkipped != 2 {
+		t.Fatalf("rollout result = %+v rollouts=%+v, want ack-gated pause", result, rollouts)
+	}
+	if len(rollouts) != 1 || !rollouts[0].Rollout.AckRequired || !rollouts[0].Rollout.AckPending || !rollouts[0].Rollout.Paused || rollouts[0].Rollout.AckRef != "ack-1234" {
+		t.Fatalf("rollouts = %+v, want ack pending pause", rollouts)
+	}
+	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 0 {
+		t.Fatalf("pod-a entries = %+v, want no mutation before ack", entries)
+	}
+
+	state.PolicyRollouts[0].Acknowledged = true
+	rollouts, err = ApplyPolicyRollouts(context.Background(), state, ReconcileOptions{
+		Node:  "node-a",
+		Store: store,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rollouts) != 1 || !rollouts[0].Rollout.Acknowledged || rollouts[0].Rollout.AckPending || rollouts[0].Rollout.Applied != 2 || rollouts[0].Rollout.AckRef != "ack-1234" {
+		t.Fatalf("acknowledged rollouts = %+v, want applied rollout", rollouts)
+	}
+	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 1 {
+		t.Fatalf("pod-a entries = %+v, want mutation after ack", entries)
+	}
+}
+
 func TestApplyPolicyRolloutsVerifiesApprovalSignature(t *testing.T) {
 	state := rolloutPolicyState()
 	state.PolicyRollouts = []control.PolicyRollout{{
@@ -1776,6 +1823,62 @@ func TestApplyPolicyRolloutsSyncsExternalChangeStatus(t *testing.T) {
 	}
 	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 1 {
 		t.Fatalf("pod-a entries = %+v, want applied despite external sync being observational", entries)
+	}
+}
+
+func TestApplyPolicyRolloutsSyncsAckPendingChangeStatus(t *testing.T) {
+	state := rolloutPolicyState()
+	var statusRequests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		statusRequests++
+		if r.Method != http.MethodPost {
+			t.Fatalf("status method = %s, want POST", r.Method)
+		}
+		var request struct {
+			ApprovalRef string `json:"approval_ref"`
+			AckRef      string `json:"ack_ref"`
+			Status      string `json:"status"`
+			AckPending  bool   `json:"ack_pending"`
+			Paused      bool   `json:"paused"`
+			Applied     int    `json:"applied"`
+			Skipped     int    `json:"skipped"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode status request: %v", err)
+		}
+		if request.ApprovalRef != "chg-ack" || request.AckRef != "ack-1234" || request.Status != "ack_pending" || !request.AckPending || !request.Paused || request.Applied != 0 || request.Skipped != 1 {
+			t.Fatalf("status request = %+v, want ack pending summary", request)
+		}
+		_, _ = w.Write([]byte(`{"synced":true}`))
+	}))
+	defer server.Close()
+
+	state.PolicyRollouts = []control.PolicyRollout{{
+		Name:            "ack-status",
+		Node:            "node-a",
+		Endpoints:       []string{"prod/pod-a"},
+		BatchSize:       1,
+		ApprovalRef:     "chg-ack",
+		AckRequired:     true,
+		AckRef:          "ack-1234",
+		ChangeStatusURL: server.URL,
+	}}
+	store := dataplane.NewInMemoryPolicyStore()
+	rollouts, err := ApplyPolicyRollouts(context.Background(), state, ReconcileOptions{
+		Node:  "node-a",
+		Store: store,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if statusRequests != 1 {
+		t.Fatalf("status requests = %d, want 1", statusRequests)
+	}
+	if len(rollouts) != 1 || !rollouts[0].Rollout.ChangeStatusSynced || !rollouts[0].Rollout.AckPending {
+		t.Fatalf("rollouts = %+v, want synced ack pending rollout", rollouts)
+	}
+	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 0 {
+		t.Fatalf("pod-a entries = %+v, want no mutation before ack", entries)
 	}
 }
 
