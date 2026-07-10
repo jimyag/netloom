@@ -297,6 +297,98 @@ func TestWithDNSObservationsPrunesExpiredRecords(t *testing.T) {
 	}
 }
 
+func TestWithRuntimeObservationsMergesIdentityGroups(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "identity-groups.json")
+	if err := os.WriteFile(path, []byte(`{"identity_groups": [{"name": "frontend-api", "vpc": "prod", "source": "cmdb", "observed_at": "2026-07-10T01:00:00Z", "ttl_seconds": 120, "endpoint_ids": ["pod-a"]}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NETLOOM_IDENTITY_GROUPS_FILE", path)
+	now := time.Date(2026, 7, 10, 1, 1, 0, 0, time.UTC)
+
+	state, err := withRuntimeObservationsAt(control.DesiredState{
+		VPCs: []model.VPC{{Name: "prod"}},
+		ProviderNetworks: []model.ProviderNetwork{{
+			Name: "physnet-a",
+			Nodes: []model.ProviderNetworkNode{{
+				Node:      "node-a",
+				Interface: "eth1",
+			}},
+			TenantQueues: []model.ProviderNetworkTenantQueuePolicy{{
+				Tenant:         "prod",
+				QueueID:        10,
+				IdentityGroups: []string{"frontend-api"},
+				MaxRateBPS:     500000000,
+			}},
+		}},
+		Subnets: []model.Subnet{{
+			Name:            "apps",
+			VPC:             "prod",
+			CIDR:            netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway:         netip.MustParseAddr("10.10.0.1"),
+			ProviderNetwork: "physnet-a",
+			VLAN:            100,
+		}},
+		Endpoints: []model.Endpoint{{
+			ID:     "pod-a",
+			VPC:    "prod",
+			Subnet: "apps",
+			IP:     netip.MustParseAddr("10.10.0.10"),
+			Node:   "node-a",
+		}},
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.IdentityGroups) != 1 || state.IdentityGroups[0].Name != "frontend-api" || state.IdentityGroups[0].Source != "cmdb" {
+		t.Fatalf("identity groups = %+v, want observed frontend-api", state.IdentityGroups)
+	}
+
+	result, err := agent.ReconcileNodeWithOptions(context.Background(), state, agent.ReconcileOptions{
+		Node:  "node-a",
+		Store: dataplane.NewInMemoryPolicyStore(),
+		LinuxDatapath: &linuxdatapath.Options{
+			Node:              "node-a",
+			Backend:           "command",
+			SyncOVSDB:         true,
+			ProviderInventory: []linuxdatapath.ProviderInterface{{Name: "eth1", Ready: true, State: "up"}},
+			Executor:          agentNoopExecutor{},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ProviderNetworks != 1 || result.ProviderLinks != 1 {
+		t.Fatalf("provider result = %+v, want provider network/link from observed identity group state", result)
+	}
+}
+
+type agentNoopExecutor struct{}
+
+func (agentNoopExecutor) Execute(context.Context, linuxdatapath.Operation) error {
+	return nil
+}
+
+func TestWithIdentityGroupObservationsPrunesExpiredGroups(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "identity-groups.json")
+	if err := os.WriteFile(path, []byte(`{"identity_groups": [
+		{"name": "expired", "vpc": "prod", "observed_at": "2026-07-10T01:00:00Z", "ttl_seconds": 60, "endpoint_ids": ["pod-a"]},
+		{"name": "active", "vpc": "prod", "observed_at": "2026-07-10T01:00:01Z", "ttl_seconds": 60, "endpoint_ids": ["pod-b"]},
+		{"name": "static", "vpc": "prod", "endpoint_ids": ["pod-c"]}
+	]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NETLOOM_IDENTITY_GROUPS_FILE", path)
+	now := time.Date(2026, 7, 10, 1, 1, 0, 0, time.UTC)
+
+	state, err := withIdentityGroupObservationsAt(control.DesiredState{}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.IdentityGroups) != 2 || state.IdentityGroups[0].Name != "active" || state.IdentityGroups[1].Name != "static" {
+		t.Fatalf("identity groups = %+v, want active and static", state.IdentityGroups)
+	}
+}
+
 func TestRunPolicyStatusReportsEndpointLifecycleJSON(t *testing.T) {
 	statePath := writeAgentState(t, control.DesiredState{
 		VPCs: []model.VPC{{Name: "prod"}},

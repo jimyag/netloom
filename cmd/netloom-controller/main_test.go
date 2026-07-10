@@ -43,6 +43,22 @@ func TestReconcileIntervalRejectsInvalidValue(t *testing.T) {
 	}
 }
 
+func TestControllerWithIdentityGroupObservationsMergesRuntimeGroups(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "identity-groups.json")
+	if err := os.WriteFile(path, []byte(`{"identity_groups":[{"name":"frontend","vpc":"prod","source":"cmdb","observed_at":"2026-07-10T01:00:00Z","ttl_seconds":120,"endpoint_ids":["pod-a"]}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NETLOOM_IDENTITY_GROUPS_FILE", path)
+
+	state, err := withIdentityGroupObservationsAt(control.DesiredState{}, time.Date(2026, 7, 10, 1, 1, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.IdentityGroups) != 1 || state.IdentityGroups[0].Name != "frontend" || state.IdentityGroups[0].Source != "cmdb" {
+		t.Fatalf("identity groups = %+v, want observed frontend group", state.IdentityGroups)
+	}
+}
+
 func TestNBCTLTimeoutParsesMilliseconds(t *testing.T) {
 	t.Setenv("NETLOOM_OVN_NBCTL_TIMEOUT_MS", "250")
 	timeout, err := nbctlTimeout()

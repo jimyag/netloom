@@ -262,7 +262,7 @@ func runPolicyExplain(args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	state, err = withDNSObservations(state)
+	state, err = withRuntimeObservations(state)
 	if err != nil {
 		return err
 	}
@@ -305,7 +305,7 @@ func runPolicyStatus(args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	state, err = withDNSObservations(state)
+	state, err = withRuntimeObservations(state)
 	if err != nil {
 		return err
 	}
@@ -517,6 +517,7 @@ func cloneDesiredState(state control.DesiredState) control.DesiredState {
 		SecurityGroups:   append([]model.SecurityGroup(nil), state.SecurityGroups...),
 		CIDRGroups:       append([]model.CIDRGroup(nil), state.CIDRGroups...),
 		ProviderNetworks: append([]model.ProviderNetwork(nil), state.ProviderNetworks...),
+		IdentityGroups:   append([]model.IdentityGroup(nil), state.IdentityGroups...),
 		DNSRecords:       append([]model.DNSRecord(nil), state.DNSRecords...),
 		PolicyRollouts:   append([]control.PolicyRollout(nil), state.PolicyRollouts...),
 	}
@@ -776,7 +777,7 @@ func reconcileStateFile(ctx context.Context, path, node, storeName string, recon
 		observeAgentReconcileFailure(metrics, agent.ReconcileResult{Node: node}, storeName, err, time.Since(start))
 		return err
 	}
-	state, err = withDNSObservations(state)
+	state, err = withRuntimeObservations(state)
 	if err != nil {
 		observeAgentReconcileFailure(metrics, agent.ReconcileResult{Node: node}, storeName, err, time.Since(start))
 		return err
@@ -857,7 +858,7 @@ func reconcileStateFileOnce(ctx context.Context, path, node, storeName string, s
 		observeAgentReconcileFailure(metrics, agent.ReconcileResult{Node: node}, storeName, err, time.Since(start))
 		return err
 	}
-	state, err = withDNSObservations(state)
+	state, err = withRuntimeObservations(state)
 	if err != nil {
 		observeAgentReconcileFailure(metrics, agent.ReconcileResult{Node: node}, storeName, err, time.Since(start))
 		return err
@@ -929,6 +930,18 @@ func withDNSObservations(state control.DesiredState) (control.DesiredState, erro
 	return withDNSObservationsAt(state, time.Now().UTC())
 }
 
+func withRuntimeObservations(state control.DesiredState) (control.DesiredState, error) {
+	return withRuntimeObservationsAt(state, time.Now().UTC())
+}
+
+func withRuntimeObservationsAt(state control.DesiredState, now time.Time) (control.DesiredState, error) {
+	next, err := withDNSObservationsAt(state, now)
+	if err != nil {
+		return control.DesiredState{}, err
+	}
+	return withIdentityGroupObservationsAt(next, now)
+}
+
 func withDNSObservationsAt(state control.DesiredState, now time.Time) (control.DesiredState, error) {
 	path := os.Getenv("NETLOOM_DNS_OBSERVATIONS_FILE")
 	if path == "" {
@@ -952,6 +965,36 @@ func withDNSObservationsAt(state control.DesiredState, now time.Time) (control.D
 		return control.DesiredState{}, err
 	}
 	state.DNSRecords = merged
+	return state, nil
+}
+
+func withIdentityGroupObservations(state control.DesiredState) (control.DesiredState, error) {
+	return withIdentityGroupObservationsAt(state, time.Now().UTC())
+}
+
+func withIdentityGroupObservationsAt(state control.DesiredState, now time.Time) (control.DesiredState, error) {
+	path := os.Getenv("NETLOOM_IDENTITY_GROUPS_FILE")
+	if path == "" {
+		return state, nil
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return control.DesiredState{}, err
+	}
+	defer file.Close()
+	groups, err := control.LoadIdentityGroupObservationsJSON(file)
+	if err != nil {
+		return control.DesiredState{}, err
+	}
+	merged, err := control.MergeIdentityGroups(state.IdentityGroups, groups)
+	if err != nil {
+		return control.DesiredState{}, err
+	}
+	merged, err = control.PruneExpiredIdentityGroups(merged, now)
+	if err != nil {
+		return control.DesiredState{}, err
+	}
+	state.IdentityGroups = merged
 	return state, nil
 }
 
