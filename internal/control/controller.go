@@ -168,6 +168,7 @@ type PolicyRollout struct {
 	ApprovalRequired          bool                 `json:"approval_required,omitempty"`
 	Approved                  bool                 `json:"approved,omitempty"`
 	ApprovalRef               string               `json:"approval_ref,omitempty"`
+	ApprovalSignature         string               `json:"approval_signature,omitempty"`
 	Paused                    bool                 `json:"paused,omitempty"`
 	PauseAfterBatches         int                  `json:"pause_after_batches,omitempty"`
 	PromotionPercent          uint32               `json:"promotion_percent,omitempty"`

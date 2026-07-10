@@ -176,6 +176,7 @@ type policyEndpointRolloutRequest struct {
 	ApprovalRequired          bool                         `json:"approval_required,omitempty"`
 	Approved                  bool                         `json:"approved,omitempty"`
 	ApprovalRef               string                       `json:"approval_ref,omitempty"`
+	ApprovalSignature         string                       `json:"approval_signature,omitempty"`
 	Paused                    bool                         `json:"paused,omitempty"`
 	PauseAfterBatches         int                          `json:"pause_after_batches,omitempty"`
 	PromotionPercent          uint32                       `json:"promotion_percent,omitempty"`
@@ -761,6 +762,7 @@ func reconcileStateFile(ctx context.Context, path, node, storeName string, recon
 		PolicyPressureMitigationThreshold: policyPressureMitigationThreshold(),
 		PolicyPressureQuarantine:          policyPressureQuarantine(),
 		DeferPolicyApply:                  agent.HasActivePolicyRollouts(state, node),
+		PolicyRolloutApprovalSecret:       policyRolloutApprovalSecret(),
 		LinuxDatapath:                     linuxOptions,
 	})
 	if err != nil {
@@ -771,8 +773,9 @@ func reconcileStateFile(ctx context.Context, path, node, storeName string, recon
 	}
 	var rolloutHistory []agent.NamedPolicyEndpointRollout
 	if rollouts, err := agent.ApplyPolicyRollouts(ctx, state, agent.ReconcileOptions{
-		Node:  node,
-		Store: metrics.store,
+		Node:                        node,
+		Store:                       metrics.store,
+		PolicyRolloutApprovalSecret: policyRolloutApprovalSecret(),
 	}); err != nil {
 		duration := time.Since(start)
 		printReconcileFailure(result, storeName, err, duration)
@@ -827,6 +830,7 @@ func reconcileStateFileOnce(ctx context.Context, path, node, storeName string, s
 		PolicyPressureMitigationThreshold: policyPressureMitigationThreshold(),
 		PolicyPressureQuarantine:          policyPressureQuarantine(),
 		DeferPolicyApply:                  agent.HasActivePolicyRollouts(state, node),
+		PolicyRolloutApprovalSecret:       policyRolloutApprovalSecret(),
 		LinuxDatapath:                     linuxOptions,
 	})
 	if err != nil {
@@ -837,8 +841,9 @@ func reconcileStateFileOnce(ctx context.Context, path, node, storeName string, s
 	}
 	var rolloutHistory []agent.NamedPolicyEndpointRollout
 	if rollouts, err := agent.ApplyPolicyRollouts(ctx, state, agent.ReconcileOptions{
-		Node:  node,
-		Store: store,
+		Node:                        node,
+		Store:                       store,
+		PolicyRolloutApprovalSecret: policyRolloutApprovalSecret(),
 	}); err != nil {
 		duration := time.Since(start)
 		printReconcileFailure(result, storeName, err, duration)
@@ -1449,9 +1454,10 @@ func (m *agentMetrics) rolloutPolicyEndpoints(ctx context.Context, request polic
 		endpoints = append(endpoints, endpointID)
 	}
 	rollout, err := agent.RolloutPolicyEndpoints(ctx, snapshot.State, agent.ReconcileOptions{
-		Node:            snapshot.Result.Node,
-		Store:           m.store,
-		PolicyTelemetry: m.storeTelemetry(),
+		Node:                        snapshot.Result.Node,
+		Store:                       m.store,
+		PolicyTelemetry:             m.storeTelemetry(),
+		PolicyRolloutApprovalSecret: policyRolloutApprovalSecret(),
 	}, agent.PolicyEndpointRolloutOptions{
 		EndpointIDs:               endpoints,
 		BatchSize:                 request.BatchSize,
@@ -1468,6 +1474,7 @@ func (m *agentMetrics) rolloutPolicyEndpoints(ctx context.Context, request polic
 		ApprovalRequired:          request.ApprovalRequired,
 		Approved:                  request.Approved,
 		ApprovalRef:               request.ApprovalRef,
+		ApprovalSignature:         request.ApprovalSignature,
 		Paused:                    request.Paused,
 		PauseAfterBatches:         request.PauseAfterBatches,
 		PromotionPercent:          request.PromotionPercent,
@@ -2556,6 +2563,10 @@ func policyPressureQuarantine() bool {
 	default:
 		return false
 	}
+}
+
+func policyRolloutApprovalSecret() string {
+	return strings.TrimSpace(os.Getenv("NETLOOM_POLICY_ROLLOUT_APPROVAL_SECRET"))
 }
 
 func linuxDatapathOptions() *linuxdatapath.Options {

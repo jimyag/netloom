@@ -1529,6 +1529,58 @@ func TestApplyPolicyRolloutsRequiresApproval(t *testing.T) {
 	}
 }
 
+func TestApplyPolicyRolloutsVerifiesApprovalSignature(t *testing.T) {
+	state := rolloutPolicyState()
+	state.PolicyRollouts = []control.PolicyRollout{{
+		Name:             "approval-signed",
+		Node:             "node-a",
+		Endpoints:        []string{"prod/pod-a", "prod/pod-b"},
+		BatchSize:        1,
+		ApprovalRequired: true,
+		Approved:         true,
+		ApprovalRef:      "chg-5678",
+	}}
+	store := dataplane.NewInMemoryPolicyStore()
+	_, err := ApplyPolicyRollouts(context.Background(), state, ReconcileOptions{
+		Node:                        "node-a",
+		Store:                       store,
+		PolicyRolloutApprovalSecret: "secret",
+	})
+	if err == nil || !strings.Contains(err.Error(), "approval signature is required") {
+		t.Fatalf("err = %v, want missing approval signature failure", err)
+	}
+	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 0 {
+		t.Fatalf("pod-a entries = %+v, want no mutation with missing signature", entries)
+	}
+
+	state.PolicyRollouts[0].ApprovalSignature = "sha256=invalid"
+	_, err = ApplyPolicyRollouts(context.Background(), state, ReconcileOptions{
+		Node:                        "node-a",
+		Store:                       store,
+		PolicyRolloutApprovalSecret: "secret",
+	})
+	if err == nil || !strings.Contains(err.Error(), "approval signature is invalid") {
+		t.Fatalf("err = %v, want invalid approval signature failure", err)
+	}
+
+	endpointIDs := []string{model.EndpointKey("prod", "pod-a"), model.EndpointKey("prod", "pod-b")}
+	state.PolicyRollouts[0].ApprovalSignature = PolicyRolloutApprovalSignature("secret", "chg-5678", endpointIDs)
+	rollouts, err := ApplyPolicyRollouts(context.Background(), state, ReconcileOptions{
+		Node:                        "node-a",
+		Store:                       store,
+		PolicyRolloutApprovalSecret: "secret",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rollouts) != 1 || !rollouts[0].Rollout.ApprovalSignatureVerified || rollouts[0].Rollout.Applied != 2 {
+		t.Fatalf("rollouts = %+v, want verified signed approval rollout", rollouts)
+	}
+	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 1 {
+		t.Fatalf("pod-a entries = %+v, want applied after signed approval", entries)
+	}
+}
+
 func TestRolloutPolicyEndpointsPausesAfterBatch(t *testing.T) {
 	state := rolloutPolicyState()
 	store := dataplane.NewInMemoryPolicyStore()

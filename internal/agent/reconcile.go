@@ -2,6 +2,9 @@ package agent
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"net/http"
@@ -157,6 +160,7 @@ type ReconcileOptions struct {
 	PolicyPressureMitigationThreshold uint32
 	PolicyPressureQuarantine          bool
 	DeferPolicyApply                  bool
+	PolicyRolloutApprovalSecret       string
 	LinuxDatapath                     *linuxdatapath.Options
 }
 
@@ -184,49 +188,51 @@ type PolicyEndpointRolloutOptions struct {
 	ApprovalRequired          bool
 	Approved                  bool
 	ApprovalRef               string
+	ApprovalSignature         string
 	Paused                    bool
 	PauseAfterBatches         int
 	PromotionPercent          uint32
 }
 
 type PolicyEndpointRollout struct {
-	DryRun                   bool                        `json:"dry_run"`
-	BatchSize                int                         `json:"batch_size"`
-	RequestedBatchSize       int                         `json:"requested_batch_size,omitempty"`
-	PressureAware            bool                        `json:"pressure_aware,omitempty"`
-	PressureAdjusted         bool                        `json:"pressure_adjusted,omitempty"`
-	PressureThresholdPercent uint32                      `json:"pressure_threshold_percent,omitempty"`
-	PressureMaxPercent       uint32                      `json:"pressure_max_percent,omitempty"`
-	PressureEndpoint         string                      `json:"pressure_endpoint,omitempty"`
-	SLOGated                 bool                        `json:"slo_gated,omitempty"`
-	SLODropThresholdPercent  uint32                      `json:"slo_drop_threshold_percent,omitempty"`
-	SLOMinPackets            uint64                      `json:"slo_min_packets,omitempty"`
-	SLOWindowCount           int                         `json:"slo_window_count,omitempty"`
-	SLOWindowIntervalMS      uint32                      `json:"slo_window_interval_ms,omitempty"`
-	SLOPackets               uint64                      `json:"slo_packets,omitempty"`
-	SLODropPercent           uint32                      `json:"slo_drop_percent,omitempty"`
-	SLOFailed                bool                        `json:"slo_failed,omitempty"`
-	SLOError                 string                      `json:"slo_error,omitempty"`
-	SLOWindows               []PolicyEndpointSLOWindow   `json:"slo_windows,omitempty"`
-	ProbeFailed              bool                        `json:"probe_failed,omitempty"`
-	ProbeError               string                      `json:"probe_error,omitempty"`
-	Probes                   []PolicyEndpointProbeResult `json:"probes,omitempty"`
-	ApprovalRequired         bool                        `json:"approval_required,omitempty"`
-	Approved                 bool                        `json:"approved,omitempty"`
-	ApprovalRef              string                      `json:"approval_ref,omitempty"`
-	ApprovalPending          bool                        `json:"approval_pending,omitempty"`
-	Paused                   bool                        `json:"paused,omitempty"`
-	PauseAfterBatches        int                         `json:"pause_after_batches,omitempty"`
-	PausedAfterBatch         int                         `json:"paused_after_batch,omitempty"`
-	PromotionPercent         uint32                      `json:"promotion_percent,omitempty"`
-	PromotionLimit           int                         `json:"promotion_limit,omitempty"`
-	Planned                  int                         `json:"planned"`
-	Applied                  int                         `json:"applied"`
-	Skipped                  int                         `json:"skipped"`
-	Failed                   int                         `json:"failed"`
-	RolledBack               int                         `json:"rolled_back,omitempty"`
-	RollbackFailed           int                         `json:"rollback_failed,omitempty"`
-	Items                    []PolicyEndpointRolloutItem `json:"items"`
+	DryRun                    bool                        `json:"dry_run"`
+	BatchSize                 int                         `json:"batch_size"`
+	RequestedBatchSize        int                         `json:"requested_batch_size,omitempty"`
+	PressureAware             bool                        `json:"pressure_aware,omitempty"`
+	PressureAdjusted          bool                        `json:"pressure_adjusted,omitempty"`
+	PressureThresholdPercent  uint32                      `json:"pressure_threshold_percent,omitempty"`
+	PressureMaxPercent        uint32                      `json:"pressure_max_percent,omitempty"`
+	PressureEndpoint          string                      `json:"pressure_endpoint,omitempty"`
+	SLOGated                  bool                        `json:"slo_gated,omitempty"`
+	SLODropThresholdPercent   uint32                      `json:"slo_drop_threshold_percent,omitempty"`
+	SLOMinPackets             uint64                      `json:"slo_min_packets,omitempty"`
+	SLOWindowCount            int                         `json:"slo_window_count,omitempty"`
+	SLOWindowIntervalMS       uint32                      `json:"slo_window_interval_ms,omitempty"`
+	SLOPackets                uint64                      `json:"slo_packets,omitempty"`
+	SLODropPercent            uint32                      `json:"slo_drop_percent,omitempty"`
+	SLOFailed                 bool                        `json:"slo_failed,omitempty"`
+	SLOError                  string                      `json:"slo_error,omitempty"`
+	SLOWindows                []PolicyEndpointSLOWindow   `json:"slo_windows,omitempty"`
+	ProbeFailed               bool                        `json:"probe_failed,omitempty"`
+	ProbeError                string                      `json:"probe_error,omitempty"`
+	Probes                    []PolicyEndpointProbeResult `json:"probes,omitempty"`
+	ApprovalRequired          bool                        `json:"approval_required,omitempty"`
+	Approved                  bool                        `json:"approved,omitempty"`
+	ApprovalRef               string                      `json:"approval_ref,omitempty"`
+	ApprovalSignatureVerified bool                        `json:"approval_signature_verified,omitempty"`
+	ApprovalPending           bool                        `json:"approval_pending,omitempty"`
+	Paused                    bool                        `json:"paused,omitempty"`
+	PauseAfterBatches         int                         `json:"pause_after_batches,omitempty"`
+	PausedAfterBatch          int                         `json:"paused_after_batch,omitempty"`
+	PromotionPercent          uint32                      `json:"promotion_percent,omitempty"`
+	PromotionLimit            int                         `json:"promotion_limit,omitempty"`
+	Planned                   int                         `json:"planned"`
+	Applied                   int                         `json:"applied"`
+	Skipped                   int                         `json:"skipped"`
+	Failed                    int                         `json:"failed"`
+	RolledBack                int                         `json:"rolled_back,omitempty"`
+	RollbackFailed            int                         `json:"rollback_failed,omitempty"`
+	Items                     []PolicyEndpointRolloutItem `json:"items"`
 }
 
 type PolicyEndpointSLOWindow struct {
@@ -441,6 +447,13 @@ func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, opt
 		pauseRolloutItems(&rollout, 0)
 		return rollout, nil
 	}
+	if rolloutOptions.ApprovalRequired && rolloutOptions.Approved {
+		verified, err := verifyPolicyRolloutApprovalSignature(options.PolicyRolloutApprovalSecret, rolloutOptions.ApprovalSignature, rolloutOptions.ApprovalRef, endpointIDs)
+		if err != nil {
+			return rollout, err
+		}
+		rollout.ApprovalSignatureVerified = verified
+	}
 	if rolloutOptions.Paused {
 		pauseRolloutItems(&rollout, 0)
 		return rollout, nil
@@ -521,6 +534,33 @@ func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, opt
 		}
 	}
 	return rollout, nil
+}
+
+func PolicyRolloutApprovalSignature(secret, approvalRef string, endpointIDs []string) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(policyRolloutApprovalPayload(approvalRef, endpointIDs)))
+	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
+}
+
+func verifyPolicyRolloutApprovalSignature(secret, signature, approvalRef string, endpointIDs []string) (bool, error) {
+	if strings.TrimSpace(secret) == "" {
+		return false, nil
+	}
+	signature = strings.TrimSpace(signature)
+	if signature == "" {
+		return false, fmt.Errorf("policy rollout approval signature is required when approval secret is configured")
+	}
+	expected := PolicyRolloutApprovalSignature(secret, approvalRef, endpointIDs)
+	if !hmac.Equal([]byte(strings.TrimPrefix(signature, "sha256=")), []byte(strings.TrimPrefix(expected, "sha256="))) {
+		return false, fmt.Errorf("policy rollout approval signature is invalid")
+	}
+	return true, nil
+}
+
+func policyRolloutApprovalPayload(approvalRef string, endpointIDs []string) string {
+	endpoints := append([]string(nil), endpointIDs...)
+	sort.Strings(endpoints)
+	return "netloom-policy-rollout-approval-v1\napproval_ref=" + approvalRef + "\nendpoints=" + strings.Join(endpoints, ",")
 }
 
 func pauseRolloutItems(rollout *PolicyEndpointRollout, afterBatch int) {
@@ -919,6 +959,7 @@ func ApplyPolicyRollouts(ctx context.Context, state control.DesiredState, option
 			ApprovalRequired:          rollout.ApprovalRequired,
 			Approved:                  rollout.Approved,
 			ApprovalRef:               rollout.ApprovalRef,
+			ApprovalSignature:         rollout.ApprovalSignature,
 			Paused:                    rollout.Paused,
 			PauseAfterBatches:         rollout.PauseAfterBatches,
 			PromotionPercent:          rollout.PromotionPercent,
