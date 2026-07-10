@@ -46,7 +46,7 @@ func (w *LibOVSDBTopologyWriter) CleanupTopology(ctx context.Context, state topo
 		stats.Operations = len(ops)
 	}
 	if w.seen && len(ops) == 0 {
-		repairOps, err := w.repairSteadyStateLoadBalancerOptions(ctx, state)
+		repairOps, err := w.repairSteadyStateLoadBalancers(ctx, state)
 		if err != nil {
 			w.lastCleanup = stats
 			return err
@@ -314,7 +314,7 @@ func (w *LibOVSDBTopologyWriter) cleanupUnexpectedLiveOperations(ctx context.Con
 	return ops, stats, nil
 }
 
-func (w *LibOVSDBTopologyWriter) repairSteadyStateLoadBalancerOptions(ctx context.Context, desired topology.State) ([]ovsdb.Operation, error) {
+func (w *LibOVSDBTopologyWriter) repairSteadyStateLoadBalancers(ctx context.Context, desired topology.State) ([]ovsdb.Operation, error) {
 	var ops []ovsdb.Operation
 	for _, lb := range desired.LoadBalancers {
 		frontendsByProtocol := loadBalancerFrontendsByProtocol(lb)
@@ -328,16 +328,129 @@ func (w *LibOVSDBTopologyWriter) repairSteadyStateLoadBalancerOptions(ctx contex
 				continue
 			}
 			nextOptions := replaceManagedLoadBalancerOptions(existing.Options, desiredRow.Options)
-			if reflect.DeepEqual(existing.Options, nextOptions) {
+			if !reflect.DeepEqual(existing.Options, nextOptions) {
+				existing.Options = nextOptions
+				updateOps, err := w.client.Where(existing).Update(existing, &existing.Options)
+				if err != nil {
+					return nil, fmt.Errorf("repair load balancer %s options: %w", existing.Name, err)
+				}
+				ops = append(ops, updateOps...)
+			}
+			hcOps, err := w.repairSteadyStateLoadBalancerHealthCheckRefs(ctx, existing, lb, protocol, frontendsByProtocol[protocol])
+			if err != nil {
+				return nil, err
+			}
+			ops = append(ops, hcOps...)
+		}
+	}
+	return ops, nil
+}
+
+func (w *LibOVSDBTopologyWriter) repairSteadyStateLoadBalancerHealthCheckRefs(ctx context.Context, lbRow *ovnnb.LoadBalancer, lb model.LoadBalancer, protocol model.Protocol, frontends []model.LoadBalancerFrontend) ([]ovsdb.Operation, error) {
+	hcRows, err := w.healthChecksByLoadBalancerName(ctx, lbRow.Name, lb.VPC, lb.Name)
+	if err != nil {
+		return nil, err
+	}
+	existingByVIP := make(map[string][]ovnnb.LoadBalancerHealthCheck, len(hcRows))
+	for _, hc := range hcRows {
+		existingByVIP[hc.Vip] = append(existingByVIP[hc.Vip], hc)
+	}
+	var ops []ovsdb.Operation
+	lbRef := &ovnnb.LoadBalancer{UUID: lbRow.UUID}
+	if lb.HealthCheck.Enabled {
+		for _, frontend := range frontends {
+			desired := desiredLoadBalancerHealthCheck(lb, frontend)
+			rows := existingByVIP[desired.Vip]
+			if len(rows) == 0 {
+				desired.UUID = ovsdbNamedUUID("nl_lbhc_" + lb.VPC + "_" + lb.Name + "_" + desired.Vip)
+				createOps, err := w.client.Create(&desired)
+				if err != nil {
+					return nil, fmt.Errorf("repair create load balancer health check %s: %w", desired.Vip, err)
+				}
+				ops = append(ops, createOps...)
+				insertOps, err := w.client.Where(lbRef).Mutate(lbRef, ovsmodel.Mutation{
+					Field:   &lbRef.HealthCheck,
+					Mutator: ovsdb.MutateOperationInsert,
+					Value:   []string{desired.UUID},
+				})
+				if err != nil {
+					return nil, fmt.Errorf("repair attach load balancer health check %s: %w", desired.UUID, err)
+				}
+				ops = append(ops, insertOps...)
 				continue
 			}
-			existing.Options = nextOptions
-			updateOps, err := w.client.Where(existing).Update(existing, &existing.Options)
-			if err != nil {
-				return nil, fmt.Errorf("repair load balancer %s options: %w", existing.Name, err)
+			keep := rows[0]
+			nextExternalIDs := mergeManagedExternalIDs(keep.ExternalIDs, desired.ExternalIDs)
+			if keep.Vip != desired.Vip || !reflect.DeepEqual(keep.Options, desired.Options) || !reflect.DeepEqual(keep.ExternalIDs, nextExternalIDs) {
+				keep.Vip = desired.Vip
+				keep.Options = desired.Options
+				keep.ExternalIDs = nextExternalIDs
+				updateOps, err := w.client.Where(&keep).Update(&keep, &keep.Vip, &keep.Options, &keep.ExternalIDs)
+				if err != nil {
+					return nil, fmt.Errorf("repair update load balancer health check %s: %w", keep.UUID, err)
+				}
+				ops = append(ops, updateOps...)
 			}
-			ops = append(ops, updateOps...)
+			if !containsString(lbRow.HealthCheck, keep.UUID) {
+				insertOps, err := w.client.Where(lbRef).Mutate(lbRef, ovsmodel.Mutation{
+					Field:   &lbRef.HealthCheck,
+					Mutator: ovsdb.MutateOperationInsert,
+					Value:   []string{keep.UUID},
+				})
+				if err != nil {
+					return nil, fmt.Errorf("repair load balancer %s health check attachment %s: %w", lbRow.Name, keep.UUID, err)
+				}
+				ops = append(ops, insertOps...)
+			}
+			for i := 1; i < len(rows); i++ {
+				deleteOps, err := w.deleteLoadBalancerHealthCheck(lbRow.UUID, &rows[i])
+				if err != nil {
+					return nil, err
+				}
+				ops = append(ops, deleteOps...)
+			}
 		}
+	}
+	desiredVIPs := make(map[string]struct{}, len(frontends))
+	if lb.HealthCheck.Enabled {
+		for _, frontend := range frontends {
+			desiredVIPs[loadBalancerFrontendVIP(frontend)] = struct{}{}
+		}
+	}
+	removedUUIDs := make(map[string]struct{})
+	desiredUUIDs := make(map[string]struct{})
+	for vip, rows := range existingByVIP {
+		if _, ok := desiredVIPs[vip]; ok {
+			if len(rows) > 0 {
+				desiredUUIDs[rows[0].UUID] = struct{}{}
+			}
+			continue
+		}
+		for i := range rows {
+			deleteOps, err := w.deleteLoadBalancerHealthCheck(lbRow.UUID, &rows[i])
+			if err != nil {
+				return nil, err
+			}
+			removedUUIDs[rows[i].UUID] = struct{}{}
+			ops = append(ops, deleteOps...)
+		}
+	}
+	for _, uuid := range lbRow.HealthCheck {
+		if _, ok := desiredUUIDs[uuid]; ok {
+			continue
+		}
+		if _, ok := removedUUIDs[uuid]; ok {
+			continue
+		}
+		deleteOps, err := w.client.Where(lbRef).Mutate(lbRef, ovsmodel.Mutation{
+			Field:   &lbRef.HealthCheck,
+			Mutator: ovsdb.MutateOperationDelete,
+			Value:   []string{uuid},
+		})
+		if err != nil {
+			return nil, fmt.Errorf("repair load balancer %s stale health check attachment %s: %w", lbRow.Name, uuid, err)
+		}
+		ops = append(ops, deleteOps...)
 	}
 	return ops, nil
 }

@@ -1599,6 +1599,103 @@ func TestLibOVSDBTopologyWriterCleanupRepairsLoadBalancerOptionsDriftInSteadySta
 	})
 }
 
+func TestLibOVSDBTopologyWriterCleanupRepairsLoadBalancerHealthCheckAttachmentInSteadyState(t *testing.T) {
+	ctx := context.Background()
+	client, closeFn := newTestOVNNBClient(t)
+	defer closeFn()
+
+	if _, err := client.MonitorAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	writer := NewLibOVSDBTopologyWriter(client)
+	subnet := model.Subnet{
+		Name:    "apps",
+		VPC:     "prod",
+		CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+		Gateway: netip.MustParseAddr("10.10.0.1"),
+	}
+	lb := model.LoadBalancer{
+		Name: "api",
+		VPC:  "prod",
+		VIP:  netip.MustParseAddr("10.96.0.10"),
+		Ports: []model.LoadBalancerPort{{
+			Port:     443,
+			Protocol: model.ProtocolTCP,
+			Backends: []model.LoadBalancerBackend{{
+				IP:   netip.MustParseAddr("10.10.0.20"),
+				Port: 8443,
+			}},
+		}},
+		HealthCheck: model.LoadBalancerHealthCheck{Enabled: true},
+	}
+	state := topology.State{
+		VPCs:          map[string]model.VPC{"prod": {Name: "prod"}},
+		Subnets:       map[string]model.Subnet{subnetStateKey("prod", "apps"): subnet},
+		LoadBalancers: map[string]model.LoadBalancer{"prod/api": lb},
+	}
+	if err := writer.CleanupTopology(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureVPC(ctx, state.VPCs["prod"]); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureSubnet(ctx, subnet); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureLoadBalancer(ctx, lb); err != nil {
+		t.Fatal(err)
+	}
+
+	existing, ok, err := writer.loadBalancerByName(ctx, loadBalancerProtocolName("prod", "api", model.ProtocolTCP))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || len(existing.HealthCheck) != 1 {
+		t.Fatalf("load balancer row = %+v, want one attached health check", existing)
+	}
+	existing.HealthCheck = nil
+	updateOps, err := client.Where(existing).Update(existing, &existing.HealthCheck)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := client.Transact(ctx, updateOps...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, updateOps); err != nil {
+		t.Fatalf("seed load balancer health check drift operation errors=%+v: %v", opErrors, err)
+	}
+	requireEventually(t, func() bool {
+		drifted, ok, err := writer.loadBalancerByName(ctx, existing.Name)
+		return err == nil && ok && len(drifted.HealthCheck) == 0
+	})
+
+	if err := writer.CleanupTopology(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	if !eventually(func() bool {
+		repaired, ok, err := writer.loadBalancerByName(ctx, existing.Name)
+		if err != nil || !ok || len(repaired.HealthCheck) != 1 {
+			return false
+		}
+		var checks []ovnnb.LoadBalancerHealthCheck
+		err = client.WhereCache(func(row *ovnnb.LoadBalancerHealthCheck) bool {
+			return row.UUID == repaired.HealthCheck[0] && row.Vip == "10.96.0.10:443"
+		}).List(ctx, &checks)
+		return err == nil && len(checks) == 1
+	}) {
+		repaired, _, err := writer.loadBalancerByName(ctx, existing.Name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var checks []ovnnb.LoadBalancerHealthCheck
+		if err := client.WhereCache(func(row *ovnnb.LoadBalancerHealthCheck) bool { return isNetloomManaged(row.ExternalIDs) }).List(ctx, &checks); err != nil {
+			t.Fatal(err)
+		}
+		t.Fatalf("load balancer after repair = %+v checks=%+v stats=%+v, want one VIP health check reattached", repaired, checks, writer.LastCleanupStats())
+	}
+}
+
 func TestLibOVSDBTopologyWriterHealthCheckUsesLibOVSDBEcho(t *testing.T) {
 	ctx := context.Background()
 	client, closeFn := newTestOVNNBClient(t)
