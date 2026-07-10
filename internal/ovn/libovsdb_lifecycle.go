@@ -34,7 +34,7 @@ func (w *LibOVSDBTopologyWriter) CleanupTopology(ctx context.Context, state topo
 		return err
 	}
 	stats := cleanupStats(w.last, next, !w.seen, len(ops))
-	if !w.seen {
+	if !w.seen || len(ops) == 0 {
 		liveOps, liveStats, err := w.cleanupUnexpectedLiveOperations(ctx, state)
 		if err != nil {
 			w.lastCleanup = stats

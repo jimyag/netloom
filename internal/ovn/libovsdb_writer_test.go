@@ -1425,6 +1425,97 @@ func TestLibOVSDBTopologyWriterFirstCleanupDeletesUnexpectedLiveObjects(t *testi
 	}
 }
 
+func TestLibOVSDBTopologyWriterCleanupRepairsUnexpectedLiveObjectsInSteadyState(t *testing.T) {
+	ctx := context.Background()
+	client, closeFn := newTestOVNNBClient(t)
+	defer closeFn()
+
+	if _, err := client.MonitorAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	writer := NewLibOVSDBTopologyWriter(client)
+	subnet := model.Subnet{
+		Name:    "apps",
+		VPC:     "prod",
+		CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+		Gateway: netip.MustParseAddr("10.10.0.1"),
+		DHCP:    model.DHCPOptions{Enabled: true},
+	}
+	endpoint := model.Endpoint{
+		ID:     "pod-a",
+		VPC:    "prod",
+		Subnet: "apps",
+		Node:   "node-a",
+		IP:     netip.MustParseAddr("10.10.0.20"),
+	}
+	state := topology.State{
+		VPCs:      map[string]model.VPC{"prod": {Name: "prod"}},
+		Subnets:   map[string]model.Subnet{subnetStateKey("prod", "apps"): subnet},
+		Endpoints: map[string]model.Endpoint{model.EndpointKey("prod", "pod-a"): endpoint},
+	}
+	if err := writer.CleanupTopology(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureVPC(ctx, state.VPCs["prod"]); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureSubnet(ctx, subnet); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureEndpoint(ctx, endpoint); err != nil {
+		t.Fatal(err)
+	}
+	requireEventually(t, func() bool {
+		counts, err := managedOVNRowCounts(ctx, client)
+		return err == nil && counts["DHCP_Options"] == 1
+	})
+
+	stale := &ovnnb.DHCPOptions{
+		Cidr: "10.10.0.99/32",
+		ExternalIDs: map[string]string{
+			"netloom_owner":       "netloom",
+			"netloom_vpc":         "prod",
+			"netloom_endpoint":    endpointExternalID("prod", "pod-stale"),
+			"netloom_subnet":      "apps",
+			"netloom_dhcp_family": "4",
+		},
+		Options: map[string]string{"lease_time": "30"},
+	}
+	ops, err := client.Create(stale)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := client.Transact(ctx, ops...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, ops); err != nil {
+		t.Fatalf("create stale DHCP operation errors=%+v: %v", opErrors, err)
+	}
+	requireEventually(t, func() bool {
+		counts, err := managedOVNRowCounts(ctx, client)
+		return err == nil && counts["DHCP_Options"] == 2
+	})
+
+	if err := writer.CleanupTopology(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	if !eventually(func() bool {
+		counts, err := managedOVNRowCounts(ctx, client)
+		return err == nil && counts["DHCP_Options"] == 1
+	}) {
+		var rows []ovnnb.DHCPOptions
+		if err := client.WhereCache(func(row *ovnnb.DHCPOptions) bool { return isNetloomManaged(row.ExternalIDs) }).List(ctx, &rows); err != nil {
+			t.Fatal(err)
+		}
+		t.Fatalf("managed DHCP rows after repair = %+v, want 1", rows)
+	}
+	stats := writer.LastCleanupStats()
+	if stats.FirstReconcileGC || stats.StaleDHCPOptions != 1 || stats.Operations == 0 {
+		t.Fatalf("cleanup stats = %+v, want non-first-reconcile stale DHCP repair", stats)
+	}
+}
+
 func TestLibOVSDBTopologyWriterHealthCheckUsesLibOVSDBEcho(t *testing.T) {
 	ctx := context.Background()
 	client, closeFn := newTestOVNNBClient(t)
