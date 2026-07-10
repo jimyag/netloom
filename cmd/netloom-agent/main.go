@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,7 +13,6 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -32,12 +30,13 @@ import (
 )
 
 const (
-	defaultBPFFSRoot      = "/sys/fs/bpf"
-	defaultBPFFSPinRoot   = "/sys/fs/bpf/netloom/policy"
-	defaultRuntimeBPFRoot = "/var/run/netloom-ebpf"
-	defaultRuntimePinRoot = "/var/run/netloom-ebpf/policy"
-	defaultMetadataRoot   = "/var/run/netloom-ebpf-meta/policy"
-	policyRolloutStateKey = "netloom_policy_rollout_state"
+	defaultBPFFSRoot        = "/sys/fs/bpf"
+	defaultBPFFSPinRoot     = "/sys/fs/bpf/netloom/policy"
+	defaultRuntimeBPFRoot   = "/var/run/netloom-ebpf"
+	defaultRuntimePinRoot   = "/var/run/netloom-ebpf/policy"
+	defaultMetadataRoot     = "/var/run/netloom-ebpf-meta/policy"
+	policyRolloutStateKey   = "netloom_policy_rollout_state"
+	policyRolloutHistoryKey = "netloom_policy_rollout_history"
 )
 
 func main() {
@@ -177,6 +176,11 @@ type policyRolloutStateStore interface {
 	Save(context.Context, policyRolloutStateDocument) error
 }
 
+type policyRolloutHistoryStore interface {
+	Load(context.Context) ([]policyRolloutHistoryEntry, error)
+	Append(context.Context, policyRolloutHistoryEntry) error
+}
+
 type dnsObservationStore interface {
 	LoadDNSObservations(context.Context) ([]model.DNSRecord, error)
 }
@@ -186,16 +190,12 @@ type openVSwitchExternalIDStore interface {
 	SetOpenVSwitchExternalID(context.Context, string, string) error
 }
 
-type filePolicyRolloutStateStore struct {
-	path string
-}
-
 type ovsdbPolicyRolloutStateStore struct {
 	syncer openVSwitchExternalIDStore
 }
 
-type fileDNSObservationStore struct {
-	path string
+type ovsdbPolicyRolloutHistoryStore struct {
+	syncer openVSwitchExternalIDStore
 }
 
 type ovsdbDNSObservationStore struct {
@@ -752,7 +752,12 @@ func runStateFile(ctx context.Context, path string) error {
 		_ = reconciler.Close()
 	}()
 	metrics := newAgentMetrics(store)
-	if err := configurePolicyRolloutHistory(metrics, os.Getenv("NETLOOM_POLICY_ROLLOUT_HISTORY_FILE")); err != nil {
+	historyStore, closeHistoryStore, err := policyRolloutHistoryStoreFromEnv(ctx)
+	if err != nil {
+		return err
+	}
+	defer closeHistoryStore()
+	if err := configurePolicyRolloutHistory(ctx, metrics, historyStore); err != nil {
 		return err
 	}
 	if closeMetrics, err := startAgentMetricsServer(ctx, os.Getenv("NETLOOM_AGENT_METRICS_ADDR"), metrics); err != nil {
@@ -860,6 +865,19 @@ func reconcileStateFile(ctx context.Context, path, node, storeName string, recon
 }
 
 func reconcileStateFileOnce(ctx context.Context, path, node, storeName string, store agent.PolicyStore, hold time.Duration, metrics *agentMetrics, identityGroupFeedCache *control.IdentityGroupObservationCache) error {
+	linuxOptions, rolloutStateStore, dnsObservationStore, closeLinuxOptions, err := linuxDatapathOptionsWithOVSDBSyncer(ctx)
+	if err != nil {
+		start := time.Now()
+		result := agent.ReconcileResult{Node: node}
+		printReconcileFailure(result, storeName, err, time.Since(start))
+		observeAgentReconcileFailure(metrics, result, storeName, err, time.Since(start))
+		return err
+	}
+	defer closeLinuxOptions()
+	return reconcileStateFileOnceWithRuntimeStores(ctx, path, node, storeName, store, hold, metrics, identityGroupFeedCache, linuxOptions, rolloutStateStore, dnsObservationStore)
+}
+
+func reconcileStateFileOnceWithRuntimeStores(ctx context.Context, path, node, storeName string, store agent.PolicyStore, hold time.Duration, metrics *agentMetrics, identityGroupFeedCache *control.IdentityGroupObservationCache, linuxOptions *linuxdatapath.Options, rolloutStateStore policyRolloutStateStore, dnsObservationStore dnsObservationStore) error {
 	start := time.Now()
 	file, err := os.Open(path)
 	if err != nil {
@@ -873,15 +891,11 @@ func reconcileStateFileOnce(ctx context.Context, path, node, storeName string, s
 		observeAgentReconcileFailure(metrics, agent.ReconcileResult{Node: node}, storeName, err, time.Since(start))
 		return err
 	}
-	linuxOptions, rolloutStateStore, dnsObservationStore, closeLinuxOptions, err := linuxDatapathOptionsWithOVSDBSyncer(ctx)
-	if err != nil {
-		duration := time.Since(start)
-		result := agent.ReconcileResult{Node: node}
-		printReconcileFailure(result, storeName, err, duration)
-		observeAgentReconcileFailure(metrics, result, storeName, err, duration)
+	if agent.HasActivePolicyRollouts(state, node) && rolloutStateStore == nil {
+		err := errors.New("policy_rollouts require NETLOOM_OVSDB_ENDPOINT for Open_vSwitch rollout state")
+		observeAgentReconcileFailure(metrics, agent.ReconcileResult{Node: node}, storeName, err, time.Since(start))
 		return err
 	}
-	defer closeLinuxOptions()
 	state, err = withRuntimeObservationsAtContextCacheStore(ctx, state, time.Now().UTC(), identityGroupFeedCache, dnsObservationStore)
 	if err != nil {
 		observeAgentReconcileFailure(metrics, agent.ReconcileResult{Node: node}, storeName, err, time.Since(start))
@@ -966,7 +980,7 @@ func withRuntimeObservationsContextCache(ctx context.Context, state control.Desi
 }
 
 func withRuntimeObservationsAtContextCache(ctx context.Context, state control.DesiredState, now time.Time, cache *control.IdentityGroupObservationCache) (control.DesiredState, error) {
-	return withRuntimeObservationsAtContextCacheStore(ctx, state, now, cache, dnsObservationFileStoreFromEnv())
+	return withRuntimeObservationsAtContextCacheStore(ctx, state, now, cache, nil)
 }
 
 func withRuntimeObservationsAtContextCacheStore(ctx context.Context, state control.DesiredState, now time.Time, cache *control.IdentityGroupObservationCache, dnsStore dnsObservationStore) (control.DesiredState, error) {
@@ -978,7 +992,7 @@ func withRuntimeObservationsAtContextCacheStore(ctx context.Context, state contr
 }
 
 func withDNSObservationsAt(state control.DesiredState, now time.Time) (control.DesiredState, error) {
-	return withDNSObservationsAtContextStore(context.Background(), state, now, dnsObservationFileStoreFromEnv())
+	return withDNSObservationsAtContextStore(context.Background(), state, now, nil)
 }
 
 func withDNSObservationsAtContextStore(ctx context.Context, state control.DesiredState, now time.Time, store dnsObservationStore) (control.DesiredState, error) {
@@ -1203,13 +1217,13 @@ func formatEndpointRuleStats(stats []dataplane.RuleMetrics) string {
 }
 
 type agentMetrics struct {
-	mu                 sync.RWMutex
-	snapshot           agentMetricsSnapshot
-	totals             agentMetricsTotals
-	ready              bool
-	store              agent.PolicyStore
-	rolloutHistoryPath string
-	rolloutHistory     []policyRolloutHistoryEntry
+	mu                  sync.RWMutex
+	snapshot            agentMetricsSnapshot
+	totals              agentMetricsTotals
+	ready               bool
+	store               agent.PolicyStore
+	rolloutHistoryStore policyRolloutHistoryStore
+	rolloutHistory      []policyRolloutHistoryEntry
 }
 
 type agentMetricsSnapshot struct {
@@ -1283,52 +1297,22 @@ func newAgentMetrics(store ...agent.PolicyStore) *agentMetrics {
 	}
 }
 
-func configurePolicyRolloutHistory(metrics *agentMetrics, path string) error {
+func configurePolicyRolloutHistory(ctx context.Context, metrics *agentMetrics, store policyRolloutHistoryStore) error {
 	if metrics == nil {
 		return nil
 	}
-	path = strings.TrimSpace(path)
-	if path == "" {
+	if store == nil {
 		return nil
 	}
-	history, err := loadPolicyRolloutHistory(path)
+	history, err := store.Load(ctx)
 	if err != nil {
 		return err
 	}
 	metrics.mu.Lock()
 	defer metrics.mu.Unlock()
-	metrics.rolloutHistoryPath = path
+	metrics.rolloutHistoryStore = store
 	metrics.rolloutHistory = history
 	return nil
-}
-
-func loadPolicyRolloutHistory(path string) ([]policyRolloutHistoryEntry, error) {
-	file, err := os.Open(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("open policy rollout history %s: %w", path, err)
-	}
-	defer file.Close()
-	var history []policyRolloutHistoryEntry
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
-		var entry policyRolloutHistoryEntry
-		if err := json.Unmarshal([]byte(line), &entry); err != nil {
-			return nil, fmt.Errorf("decode policy rollout history %s: %w", path, err)
-		}
-		history = append(history, entry)
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("read policy rollout history %s: %w", path, err)
-	}
-	return trimPolicyRolloutHistory(history), nil
 }
 
 func trimPolicyRolloutHistory(history []policyRolloutHistoryEntry) []policyRolloutHistoryEntry {
@@ -1351,33 +1335,12 @@ func (m *agentMetrics) recordPolicyRolloutHistory(entry policyRolloutHistoryEntr
 	}
 	m.mu.Lock()
 	m.rolloutHistory = trimPolicyRolloutHistory(append(m.rolloutHistory, entry))
-	path := m.rolloutHistoryPath
+	store := m.rolloutHistoryStore
 	m.mu.Unlock()
-	if path == "" {
+	if store == nil {
 		return nil
 	}
-	if err := appendPolicyRolloutHistory(path, entry); err != nil {
-		return err
-	}
-	return nil
-}
-
-func appendPolicyRolloutHistory(path string, entry policyRolloutHistoryEntry) error {
-	if dir := filepath.Dir(path); dir != "." && dir != "" {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return fmt.Errorf("create policy rollout history directory %s: %w", dir, err)
-		}
-	}
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-	if err != nil {
-		return fmt.Errorf("open policy rollout history %s: %w", path, err)
-	}
-	defer file.Close()
-	encoder := json.NewEncoder(file)
-	if err := encoder.Encode(entry); err != nil {
-		return fmt.Errorf("write policy rollout history %s: %w", path, err)
-	}
-	return nil
+	return store.Append(context.Background(), entry)
 }
 
 func (m *agentMetrics) policyRolloutHistory() []policyRolloutHistoryEntry {
@@ -1467,66 +1430,6 @@ func rolloutAppliedEndpoints(rollout agent.PolicyEndpointRollout) []string {
 	return uniqueStrings(endpoints)
 }
 
-func loadPolicyRolloutState(path string) (policyRolloutStateDocument, error) {
-	var doc policyRolloutStateDocument
-	file, err := os.Open(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return doc, nil
-	}
-	if err != nil {
-		return doc, fmt.Errorf("open policy rollout state %s: %w", path, err)
-	}
-	defer file.Close()
-	if err := json.NewDecoder(file).Decode(&doc); err != nil {
-		if errors.Is(err, io.EOF) {
-			return policyRolloutStateDocument{}, nil
-		}
-		return doc, fmt.Errorf("decode policy rollout state %s: %w", path, err)
-	}
-	return doc, nil
-}
-
-func writePolicyRolloutState(path string, doc policyRolloutStateDocument) error {
-	if dir := filepath.Dir(path); dir != "." && dir != "" {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return fmt.Errorf("create policy rollout state directory %s: %w", dir, err)
-		}
-	}
-	dir := filepath.Dir(path)
-	if dir == "" {
-		dir = "."
-	}
-	tmp, err := os.CreateTemp(dir, ".netloom-rollout-state-*")
-	if err != nil {
-		return fmt.Errorf("create policy rollout state temp file: %w", err)
-	}
-	tmpName := tmp.Name()
-	defer func() {
-		_ = os.Remove(tmpName)
-	}()
-	encoder := json.NewEncoder(tmp)
-	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(doc); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("write policy rollout state %s: %w", path, err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close policy rollout state %s: %w", tmpName, err)
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		return fmt.Errorf("replace policy rollout state %s: %w", path, err)
-	}
-	return nil
-}
-
-func (s filePolicyRolloutStateStore) Load(_ context.Context) (policyRolloutStateDocument, error) {
-	return loadPolicyRolloutState(s.path)
-}
-
-func (s filePolicyRolloutStateStore) Save(_ context.Context, doc policyRolloutStateDocument) error {
-	return writePolicyRolloutState(s.path, doc)
-}
-
 func (s ovsdbPolicyRolloutStateStore) Load(ctx context.Context) (policyRolloutStateDocument, error) {
 	var doc policyRolloutStateDocument
 	if s.syncer == nil {
@@ -1556,16 +1459,37 @@ func (s ovsdbPolicyRolloutStateStore) Save(ctx context.Context, doc policyRollou
 	return s.syncer.SetOpenVSwitchExternalID(ctx, policyRolloutStateKey, string(raw))
 }
 
-func (s fileDNSObservationStore) LoadDNSObservations(_ context.Context) ([]model.DNSRecord, error) {
-	file, err := os.Open(s.path)
-	if os.IsNotExist(err) {
+func (s ovsdbPolicyRolloutHistoryStore) Load(ctx context.Context) ([]policyRolloutHistoryEntry, error) {
+	if s.syncer == nil {
 		return nil, nil
 	}
+	raw, ok, err := s.syncer.OpenVSwitchExternalID(ctx, policyRolloutHistoryKey)
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
-	return control.LoadDNSObservationsJSON(file)
+	if !ok || strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	var history []policyRolloutHistoryEntry
+	if err := json.Unmarshal([]byte(raw), &history); err != nil {
+		return nil, fmt.Errorf("decode Open_vSwitch external_ids:%s: %w", policyRolloutHistoryKey, err)
+	}
+	return trimPolicyRolloutHistory(history), nil
+}
+
+func (s ovsdbPolicyRolloutHistoryStore) Append(ctx context.Context, entry policyRolloutHistoryEntry) error {
+	if s.syncer == nil {
+		return nil
+	}
+	history, err := s.Load(ctx)
+	if err != nil {
+		return err
+	}
+	raw, err := json.Marshal(trimPolicyRolloutHistory(append(history, entry)))
+	if err != nil {
+		return fmt.Errorf("encode Open_vSwitch external_ids:%s: %w", policyRolloutHistoryKey, err)
+	}
+	return s.syncer.SetOpenVSwitchExternalID(ctx, policyRolloutHistoryKey, string(raw))
 }
 
 func (s ovsdbDNSObservationStore) LoadDNSObservations(ctx context.Context) ([]model.DNSRecord, error) {
@@ -2974,7 +2898,7 @@ func linuxDatapathOptionsWithOVSDBSyncer(ctx context.Context) (*linuxdatapath.Op
 	options := linuxDatapathOptions()
 	endpoint := strings.TrimSpace(os.Getenv("NETLOOM_OVSDB_ENDPOINT"))
 	if endpoint == "" {
-		return options, policyRolloutStateFileStoreFromEnv(), dnsObservationFileStoreFromEnv(), func() {}, nil
+		return options, nil, nil, func() {}, nil
 	}
 	client, closeFn, err := newOpenVSwitchClient(ctx, endpoint)
 	if err != nil {
@@ -2988,20 +2912,16 @@ func linuxDatapathOptionsWithOVSDBSyncer(ctx context.Context) (*linuxdatapath.Op
 	return options, ovsdbPolicyRolloutStateStore{syncer: providerOVSDB}, ovsdbDNSObservationStore{syncer: providerOVSDB}, closeFn, nil
 }
 
-func policyRolloutStateFileStoreFromEnv() policyRolloutStateStore {
-	path := strings.TrimSpace(os.Getenv("NETLOOM_POLICY_ROLLOUT_STATE_FILE"))
-	if path == "" {
-		return nil
+func policyRolloutHistoryStoreFromEnv(ctx context.Context) (policyRolloutHistoryStore, func(), error) {
+	endpoint := strings.TrimSpace(os.Getenv("NETLOOM_OVSDB_ENDPOINT"))
+	if endpoint == "" {
+		return nil, func() {}, nil
 	}
-	return filePolicyRolloutStateStore{path: path}
-}
-
-func dnsObservationFileStoreFromEnv() dnsObservationStore {
-	path := strings.TrimSpace(os.Getenv("NETLOOM_DNS_OBSERVATIONS_FILE"))
-	if path == "" {
-		return nil
+	client, closeFn, err := newOpenVSwitchClient(ctx, endpoint)
+	if err != nil {
+		return nil, func() {}, err
 	}
-	return fileDNSObservationStore{path: path}
+	return ovsdbPolicyRolloutHistoryStore{syncer: linuxdatapath.NewLibOVSDBProviderSyncer(client)}, closeFn, nil
 }
 
 func ovsdbSyncEnabled() bool {

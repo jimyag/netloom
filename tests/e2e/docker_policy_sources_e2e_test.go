@@ -49,14 +49,13 @@ func TestDockerSharedInterfaceExpandsSelectorServiceFQDNAndCIDRGroupPolicies(t *
 	}
 
 	statePath := "/tmp/netloom-policy-sources-state.json"
-	observationsPath := "/tmp/netloom-policy-sources-dns.json"
 	agentLogPath := "/tmp/netloom-policy-sources-agent.log"
 	agentScript := "cat >" + statePath + " <<'EOF'\n" + desiredSharedInterfacePolicySourcesStateJSON() + "\nEOF\n" +
-		"cat >" + observationsPath + " <<'EOF'\n" + policySourcesDNSObservationJSON() + "\nEOF\n" +
+		"ovs-vsctl set Open_vSwitch . external_ids:netloom_dns_observations='" + policySourcesDNSObservationJSON() + "'\n" +
 		"pkill -f '/netloom/bin/netloom-agent' 2>/dev/null || true\n" +
 		": >" + agentLogPath + "\n" +
 		"NETLOOM_STATE_FILE=" + statePath +
-		" NETLOOM_DNS_OBSERVATIONS_FILE=" + observationsPath +
+		" NETLOOM_OVSDB_ENDPOINT=unix:/var/run/openvswitch/db.sock" +
 		" NETLOOM_NODE_NAME=node-a" +
 		" NETLOOM_POLICY_STORE=ebpf" +
 		" NETLOOM_TCX_IFACE=eth0" +

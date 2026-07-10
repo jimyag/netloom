@@ -315,20 +315,14 @@ eBPF ACL path the same CIDR fallback enforcement shape as `remote_cidr` while
 preserving the higher-level FQDN intent in the model.
 The desired-state DNS cache supports TTL expiry with `ttl_seconds` and
 `observed_at`; expired records are skipped during policy compilation so stale
-answers stop granting egress. For agent-driven nodes, `NETLOOM_DNS_OBSERVATIONS_FILE`
-adds a runtime DNS observation cache to each state-file reconcile. The file can
-contain the same `dns_records` shape as desired state, allowing an external DNS
-observer or proxy to refresh FQDN-derived CIDR entries without rewriting the main
-topology document. This is the state update half of Cilium's DNS proxy model;
+answers stop granting egress. For agent-driven nodes, `NETLOOM_OVSDB_ENDPOINT` enables a runtime DNS observation cache in local OVSDB `Open_vSwitch.external_ids:netloom_dns_observations` on each state-file reconcile. The external_id value can contain the same `dns_records` shape as desired state, allowing an external DNS observer or proxy to refresh FQDN-derived CIDR entries without rewriting the main topology document. This is the state update half of Cilium's DNS proxy model;
 the `internal/dnsobserver` package parses DNS wire responses, including
 compressed names and `A`/`AAAA`/`CNAME` records from answer, authority, and
 additional sections, into that same observation record shape. CNAME aliases use
 the shortest TTL across the CNAME chain and terminal address record, matching
 the cache lifetime that should govern FQDN-derived policy entries. The
 `netloom-dns-observer` command wraps that parser as a
-sidecar-friendly bridge: it accepts newline-delimited base64 or hex DNS
-responses, or one raw DNS response, and atomically merges the derived records
-into `NETLOOM_DNS_OBSERVATIONS_FILE`. Packet interception can therefore be
+sidecar-friendly bridge: it accepts newline-delimited base64 or hex DNS responses, or one raw DNS response, and merges the derived records into local OVSDB `Open_vSwitch.external_ids:netloom_dns_observations`. Packet interception can therefore be
 layered on top of this command or parser without changing policy compilation.
 
 Stateful rules now have a userspace conntrack model that mirrors the Cilium

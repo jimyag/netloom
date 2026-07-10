@@ -4,13 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"math/rand"
 	"net"
 	"net/netip"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -28,12 +26,11 @@ import (
 )
 
 func TestRunParsesBase64DNSResponsesAndMergesObservations(t *testing.T) {
-	dir := t.TempDir()
-	output := filepath.Join(dir, "dns-observations.json")
-	existing := `{"dns_records":[{"name":"static.example.com","ips":["203.0.113.30"]}]}`
-	if err := os.WriteFile(output, []byte(existing), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	endpoint, client, cleanup := newTestVSwitchOVSDB(t)
+	defer cleanup()
+	insertVSwitchRows(t, t.Context(), client, &vswitch.OpenvSwitch{ExternalIDs: map[string]string{
+		control.DNSObservationsOpenVSwitchExternalID: `{"dns_records":[{"name":"static.example.com","ips":["203.0.113.30"]}]}`,
+	}})
 	packet := dnsResponse(
 		dnsQuestion("api.example.com", 1),
 		dnsAnswerPtr(12, 1, 60, []byte{203, 0, 113, 10}),
@@ -43,18 +40,13 @@ func TestRunParsesBase64DNSResponsesAndMergesObservations(t *testing.T) {
 	var stdout bytes.Buffer
 	now := func() time.Time { return time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC) }
 
-	if err := run(t.Context(), []string{"-observations", output}, input, &stdout, now); err != nil {
+	if err := run(t.Context(), []string{"-ovsdb", endpoint}, input, &stdout, now); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(stdout.String(), "packets=1 records=1 written=2") {
 		t.Fatalf("stdout = %q", stdout.String())
 	}
-	file, err := os.Open(output)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer file.Close()
-	records, err := control.LoadDNSObservationsJSON(file)
+	records, err := loadDNSObservationsFromVSwitch(t, client)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +62,9 @@ func TestRunParsesBase64DNSResponsesAndMergesObservations(t *testing.T) {
 }
 
 func TestRunAppliesDefaultTTLToZeroTTLAnswers(t *testing.T) {
-	output := filepath.Join(t.TempDir(), "dns-observations.json")
+	endpoint, client, cleanup := newTestVSwitchOVSDB(t)
+	defer cleanup()
+	insertVSwitchRows(t, t.Context(), client, &vswitch.OpenvSwitch{})
 	packet := dnsResponse(
 		dnsQuestion("api.example.com", 1),
 		dnsAnswerPtr(12, 1, 0, []byte{203, 0, 113, 10}),
@@ -78,38 +72,32 @@ func TestRunAppliesDefaultTTLToZeroTTLAnswers(t *testing.T) {
 	input := strings.NewReader(base64.StdEncoding.EncodeToString(packet) + "\n")
 	now := func() time.Time { return time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC) }
 
-	if err := run(t.Context(), []string{"-observations", output, "-default-ttl", "30"}, input, ioDiscard{}, now); err != nil {
+	if err := run(t.Context(), []string{"-ovsdb", endpoint, "-default-ttl", "30"}, input, ioDiscard{}, now); err != nil {
 		t.Fatal(err)
 	}
-	data, err := os.ReadFile(output)
+	records, err := loadDNSObservationsFromVSwitch(t, client)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var document struct {
-		DNSRecords []model.DNSRecord `json:"dns_records"`
+	if len(records) != 1 {
+		t.Fatalf("records = %d", len(records))
 	}
-	if err := json.Unmarshal(data, &document); err != nil {
-		t.Fatal(err)
-	}
-	if len(document.DNSRecords) != 1 {
-		t.Fatalf("records = %d", len(document.DNSRecords))
-	}
-	if document.DNSRecords[0].TTLSeconds != 30 || !document.DNSRecords[0].ObservedAt.Equal(now()) {
-		t.Fatalf("record = %+v", document.DNSRecords[0])
+	if records[0].TTLSeconds != 30 || !records[0].ObservedAt.Equal(now()) {
+		t.Fatalf("record = %+v", records[0])
 	}
 }
 
 func TestRunPrunesExpiredExistingObservations(t *testing.T) {
-	dir := t.TempDir()
-	output := filepath.Join(dir, "dns-observations.json")
+	endpoint, client, cleanup := newTestVSwitchOVSDB(t)
+	defer cleanup()
 	existing := `{"dns_records":[
 		{"name":"expired.example.com","ips":["203.0.113.30"],"ttl_seconds":30,"observed_at":"2026-05-30T11:59:30Z"},
 		{"name":"active.example.com","ips":["203.0.113.40"],"ttl_seconds":31,"observed_at":"2026-05-30T11:59:30Z"},
 		{"name":"static.example.com","ips":["203.0.113.50"]}
 	]}`
-	if err := os.WriteFile(output, []byte(existing), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	insertVSwitchRows(t, t.Context(), client, &vswitch.OpenvSwitch{ExternalIDs: map[string]string{
+		control.DNSObservationsOpenVSwitchExternalID: existing,
+	}})
 	packet := dnsResponse(
 		dnsQuestion("api.example.com", 1),
 		dnsAnswerPtr(12, 1, 60, []byte{203, 0, 113, 10}),
@@ -117,15 +105,10 @@ func TestRunPrunesExpiredExistingObservations(t *testing.T) {
 	input := strings.NewReader(base64.StdEncoding.EncodeToString(packet) + "\n")
 	now := func() time.Time { return time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC) }
 
-	if err := run(t.Context(), []string{"-observations", output}, input, ioDiscard{}, now); err != nil {
+	if err := run(t.Context(), []string{"-ovsdb", endpoint}, input, ioDiscard{}, now); err != nil {
 		t.Fatal(err)
 	}
-	file, err := os.Open(output)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer file.Close()
-	records, err := control.LoadDNSObservationsJSON(file)
+	records, err := loadDNSObservationsFromVSwitch(t, client)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,12 +123,12 @@ func TestRunPrunesExpiredExistingObservations(t *testing.T) {
 }
 
 func TestRunUpsertsRepeatedExistingObservations(t *testing.T) {
-	dir := t.TempDir()
-	output := filepath.Join(dir, "dns-observations.json")
+	endpoint, client, cleanup := newTestVSwitchOVSDB(t)
+	defer cleanup()
 	existing := `{"dns_records":[{"name":"api.example.com","ips":["203.0.113.10"],"ttl_seconds":30,"observed_at":"2026-05-30T11:59:00Z"}]}`
-	if err := os.WriteFile(output, []byte(existing), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	insertVSwitchRows(t, t.Context(), client, &vswitch.OpenvSwitch{ExternalIDs: map[string]string{
+		control.DNSObservationsOpenVSwitchExternalID: existing,
+	}})
 	packet := dnsResponse(
 		dnsQuestion("api.example.com", 1),
 		dnsAnswerPtr(12, 1, 60, []byte{203, 0, 113, 10}),
@@ -154,18 +137,13 @@ func TestRunUpsertsRepeatedExistingObservations(t *testing.T) {
 	var stdout bytes.Buffer
 	now := func() time.Time { return time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC) }
 
-	if err := run(t.Context(), []string{"-observations", output}, input, &stdout, now); err != nil {
+	if err := run(t.Context(), []string{"-ovsdb", endpoint}, input, &stdout, now); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(stdout.String(), "packets=1 records=1 written=1") {
 		t.Fatalf("stdout = %q", stdout.String())
 	}
-	file, err := os.Open(output)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer file.Close()
-	records, err := control.LoadDNSObservationsJSON(file)
+	records, err := loadDNSObservationsFromVSwitch(t, client)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -235,7 +213,6 @@ func TestRunWritesDNSObservationsToOpenVSwitchOVSDB(t *testing.T) {
 }
 
 func TestUDPProxyForwardsResponsesAndWritesDNSObservations(t *testing.T) {
-	output := filepath.Join(t.TempDir(), "dns-observations.json")
 	upstream, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -257,7 +234,8 @@ func TestUDPProxyForwardsResponsesAndWritesDNSObservations(t *testing.T) {
 		_, _ = upstream.WriteTo(response, addr)
 	}()
 
-	store := fileDNSObservationStore{path: output}
+	ovsdb := &fakeOpenVSwitchExternalIDStore{}
+	store := ovsdbDNSObservationStore{syncer: ovsdb}
 	listener, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -293,12 +271,7 @@ func TestUDPProxyForwardsResponsesAndWritesDNSObservations(t *testing.T) {
 		t.Fatal("empty DNS response from proxy")
 	}
 	requireEventually(t, func() bool {
-		file, err := os.Open(output)
-		if err != nil {
-			return false
-		}
-		defer file.Close()
-		records, err := control.LoadDNSObservationsJSON(file)
+		records, err := store.Load(t.Context())
 		if err != nil {
 			return false
 		}
@@ -313,7 +286,9 @@ func TestUDPProxyForwardsResponsesAndWritesDNSObservations(t *testing.T) {
 }
 
 func TestRunRejectsEmptyInput(t *testing.T) {
-	err := run(t.Context(), []string{"-observations", filepath.Join(t.TempDir(), "dns.json")}, strings.NewReader("\n# ignored\n"), ioDiscard{}, time.Now)
+	endpoint, _, cleanup := newTestVSwitchOVSDB(t)
+	defer cleanup()
+	err := run(t.Context(), []string{"-ovsdb", endpoint}, strings.NewReader("\n# ignored\n"), ioDiscard{}, time.Now)
 	if err == nil {
 		t.Fatal("expected empty input to fail")
 	}
@@ -431,6 +406,16 @@ func singleVSwitchRoot(t *testing.T, ctx context.Context, client libovsdbclient.
 		t.Fatalf("Open_vSwitch rows = %d, want 1: %+v", len(rows), rows)
 	}
 	return rows[0]
+}
+
+func loadDNSObservationsFromVSwitch(t *testing.T, client libovsdbclient.Client) ([]model.DNSRecord, error) {
+	t.Helper()
+	root := singleVSwitchRoot(t, t.Context(), client)
+	raw := root.ExternalIDs[control.DNSObservationsOpenVSwitchExternalID]
+	if raw == "" {
+		t.Fatalf("root external IDs = %+v, want DNS observations", root.ExternalIDs)
+	}
+	return control.LoadDNSObservationsJSON(strings.NewReader(raw))
 }
 
 func dnsResponse(question []byte, answers ...[]byte) []byte {

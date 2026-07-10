@@ -196,7 +196,7 @@ func TestDockerMultiNodeLab(t *testing.T) {
 			t.Fatalf("state-file agent output missing %q:\n%s", expected, agentStateOutput)
 		}
 	}
-	dnsObservationScript := "cat >/tmp/netloom-dns-state.json <<'EOF'\n" + desiredDNSObservationStateJSON() + "\nEOF\ncat >/tmp/netloom-dns-observations.json <<'EOF'\n" + dnsObservationJSON() + "\nEOF\nNETLOOM_STATE_FILE=/tmp/netloom-dns-state.json NETLOOM_DNS_OBSERVATIONS_FILE=/tmp/netloom-dns-observations.json NETLOOM_NODE_NAME=node-a /netloom/bin/netloom-agent"
+	dnsObservationScript := "cat >/tmp/netloom-dns-state.json <<'EOF'\n" + desiredDNSObservationStateJSON() + "\nEOF\novs-vsctl set Open_vSwitch . external_ids:netloom_dns_observations='" + dnsObservationJSON() + "'\nNETLOOM_STATE_FILE=/tmp/netloom-dns-state.json NETLOOM_OVSDB_ENDPOINT=unix:/var/run/openvswitch/db.sock NETLOOM_NODE_NAME=node-a /netloom/bin/netloom-agent"
 	dnsObservationOutput := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-a", "sh", "-c", dnsObservationScript)
 	for _, expected := range []string{"reconciled node policy", "node=node-a", "endpoints=1", "programs=1", "entries=1", "policy_added=1", "policy_events=1", "policy_revision_max=1", "tcx_eligible=0"} {
 		if !strings.Contains(dnsObservationOutput, expected) {

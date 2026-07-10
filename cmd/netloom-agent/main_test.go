@@ -216,13 +216,20 @@ func TestParseNodeUnderlaysKeepsMultipleAddressesPerNode(t *testing.T) {
 }
 
 func TestWithDNSObservationsMergesObservedRecords(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "dns-observations.json")
-	if err := os.WriteFile(path, []byte(`{"dns_records": [{"name": "api.example.com", "ips": ["203.0.113.10"]}]}`), 0o644); err != nil {
+	raw, err := control.MarshalDNSObservationsJSON([]model.DNSRecord{{
+		Name: "api.example.com",
+		IPs:  []netip.Addr{netip.MustParseAddr("203.0.113.10")},
+	}})
+	if err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("NETLOOM_DNS_OBSERVATIONS_FILE", path)
+	ovsdb := fakeOpenVSwitchExternalIDStore{
+		values: map[string]string{
+			control.DNSObservationsOpenVSwitchExternalID: string(raw),
+		},
+	}
 
-	state, err := withDNSObservations(control.DesiredState{
+	state, err := withDNSObservationsAtContextStore(t.Context(), control.DesiredState{
 		Endpoints: []model.Endpoint{{
 			ID:             "pod-a",
 			VPC:            "prod",
@@ -248,7 +255,7 @@ func TestWithDNSObservationsMergesObservedRecords(t *testing.T) {
 			Name: "static.example.com",
 			IPs:  []netip.Addr{netip.MustParseAddr("203.0.113.20")},
 		}},
-	})
+	}, time.Now().UTC(), ovsdbDNSObservationStore{syncer: &ovsdb})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,18 +281,22 @@ func TestWithDNSObservationsMergesObservedRecords(t *testing.T) {
 }
 
 func TestWithDNSObservationsPrunesExpiredRecords(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "dns-observations.json")
-	if err := os.WriteFile(path, []byte(`{"dns_records": [
-		{"name": "expired.example.com", "ips": ["203.0.113.10"], "ttl_seconds": 30, "observed_at": "2026-05-30T11:59:30Z"},
-		{"name": "active.example.com", "ips": ["203.0.113.20"], "ttl_seconds": 31, "observed_at": "2026-05-30T11:59:30Z"},
-		{"name": "static.example.com", "ips": ["203.0.113.30"]}
-	]}`), 0o644); err != nil {
+	raw, err := control.MarshalDNSObservationsJSON([]model.DNSRecord{
+		{Name: "expired.example.com", IPs: []netip.Addr{netip.MustParseAddr("203.0.113.10")}, TTLSeconds: 30, ObservedAt: time.Date(2026, 5, 30, 11, 59, 30, 0, time.UTC)},
+		{Name: "active.example.com", IPs: []netip.Addr{netip.MustParseAddr("203.0.113.20")}, TTLSeconds: 31, ObservedAt: time.Date(2026, 5, 30, 11, 59, 30, 0, time.UTC)},
+		{Name: "static.example.com", IPs: []netip.Addr{netip.MustParseAddr("203.0.113.30")}},
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("NETLOOM_DNS_OBSERVATIONS_FILE", path)
+	ovsdb := fakeOpenVSwitchExternalIDStore{
+		values: map[string]string{
+			control.DNSObservationsOpenVSwitchExternalID: string(raw),
+		},
+	}
 	now := time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)
 
-	state, err := withDNSObservationsAt(control.DesiredState{}, now)
+	state, err := withDNSObservationsAtContextStore(t.Context(), control.DesiredState{}, now, ovsdbDNSObservationStore{syncer: &ovsdb})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -717,10 +728,11 @@ func TestReconcileStateFileOnceAppliesDesiredPolicyRollout(t *testing.T) {
 	})
 	store := dataplane.NewInMemoryPolicyStore()
 	metrics := newAgentMetrics(store)
-	historyPath := filepath.Join(t.TempDir(), "rollouts.jsonl")
-	if err := configurePolicyRolloutHistory(metrics, historyPath); err != nil {
+	historyOVSDB := &fakeOpenVSwitchExternalIDStore{}
+	if err := configurePolicyRolloutHistory(t.Context(), metrics, ovsdbPolicyRolloutHistoryStore{syncer: historyOVSDB}); err != nil {
 		t.Fatal(err)
 	}
+	rolloutOVSDB := &fakeOpenVSwitchExternalIDStore{}
 
 	oldStdout := os.Stdout
 	reader, writer, err := os.Pipe()
@@ -732,7 +744,7 @@ func TestReconcileStateFileOnceAppliesDesiredPolicyRollout(t *testing.T) {
 		os.Stdout = oldStdout
 	}()
 
-	err = reconcileStateFileOnce(context.Background(), statePath, "node-a", "memory", store, time.Second, metrics, nil)
+	err = reconcileStateFileOnceWithRuntimeStores(context.Background(), statePath, "node-a", "memory", store, time.Second, metrics, nil, nil, ovsdbPolicyRolloutStateStore{syncer: rolloutOVSDB}, nil)
 	if closeErr := writer.Close(); closeErr != nil {
 		t.Fatal(closeErr)
 	}
@@ -768,12 +780,9 @@ func TestReconcileStateFileOnceAppliesDesiredPolicyRollout(t *testing.T) {
 	if len(history) != 1 || history[0].Source != "desired-state" || history[0].Name != "web-canary" || history[0].Rollout.Applied != 1 {
 		t.Fatalf("rollout history = %+v, want desired-state web-canary entry", history)
 	}
-	raw, err := os.ReadFile(historyPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(raw), `"source":"desired-state"`) || !strings.Contains(string(raw), `"name":"web-canary"`) {
-		t.Fatalf("history file = %s, want desired-state rollout entry", raw)
+	raw := historyOVSDB.values[policyRolloutHistoryKey]
+	if !strings.Contains(raw, `"source":"desired-state"`) || !strings.Contains(raw, `"name":"web-canary"`) {
+		t.Fatalf("history external_id = %s, want desired-state rollout entry", raw)
 	}
 }
 
@@ -805,14 +814,16 @@ func TestReconcileStateFileOnceResumesPersistedPolicyRolloutState(t *testing.T) 
 		}},
 	}
 	statePath := writeAgentState(t, state)
-	stateFile := filepath.Join(t.TempDir(), "rollout-state.json")
-	t.Setenv("NETLOOM_POLICY_ROLLOUT_STATE_FILE", stateFile)
+	rolloutOVSDB := &fakeOpenVSwitchExternalIDStore{}
 	store := dataplane.NewInMemoryPolicyStore()
 
-	if err := reconcileStateFileOnce(context.Background(), statePath, "node-a", "memory", store, time.Second, nil, nil); err != nil {
+	linuxOptions := (*linuxdatapath.Options)(nil)
+	rolloutStore := ovsdbPolicyRolloutStateStore{syncer: rolloutOVSDB}
+	dnsStore := dnsObservationStore(nil)
+	if err := reconcileStateFileOnceWithRuntimeStores(context.Background(), statePath, "node-a", "memory", store, time.Second, nil, nil, linuxOptions, rolloutStore, dnsStore); err != nil {
 		t.Fatal(err)
 	}
-	doc, err := loadPolicyRolloutState(stateFile)
+	doc, err := rolloutStore.Load(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -823,7 +834,7 @@ func TestReconcileStateFileOnceResumesPersistedPolicyRolloutState(t *testing.T) 
 
 	state.PolicyRollouts[0].PromotionPercent = 100
 	statePath = writeAgentState(t, state)
-	if err := reconcileStateFileOnce(context.Background(), statePath, "node-a", "memory", store, time.Second, nil, nil); err != nil {
+	if err := reconcileStateFileOnceWithRuntimeStores(context.Background(), statePath, "node-a", "memory", store, time.Second, nil, nil, linuxOptions, rolloutStore, dnsStore); err != nil {
 		t.Fatal(err)
 	}
 	if got := len(store.Events()) - eventsAfterFirst; got != 1 {
@@ -835,7 +846,7 @@ func TestReconcileStateFileOnceResumesPersistedPolicyRolloutState(t *testing.T) 
 	if entries := store.Entries(model.EndpointKey("prod", "pod-b")); len(entries) != 1 {
 		t.Fatalf("pod-b entries = %+v, want resumed rollout applied remaining policy", entries)
 	}
-	doc, err = loadPolicyRolloutState(stateFile)
+	doc, err = rolloutStore.Load(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1897,9 +1908,10 @@ func TestPolicyEndpointAPIRolloutPersistsHistory(t *testing.T) {
 		}},
 	}
 	store := dataplane.NewInMemoryPolicyStore()
-	historyPath := filepath.Join(t.TempDir(), "rollouts.jsonl")
+	historyOVSDB := &fakeOpenVSwitchExternalIDStore{}
+	historyStore := ovsdbPolicyRolloutHistoryStore{syncer: historyOVSDB}
 	metrics := newAgentMetrics(store)
-	if err := configurePolicyRolloutHistory(metrics, historyPath); err != nil {
+	if err := configurePolicyRolloutHistory(t.Context(), metrics, historyStore); err != nil {
 		t.Fatal(err)
 	}
 	observeAgentReconcileResultWithState(metrics, agent.ReconcileResult{
@@ -1914,24 +1926,22 @@ func TestPolicyEndpointAPIRolloutPersistsHistory(t *testing.T) {
 		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
 	}
 
-	raw, err := os.ReadFile(historyPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
-	if len(lines) != 1 {
-		t.Fatalf("history lines = %d, want 1: %s", len(lines), raw)
-	}
+	raw := historyOVSDB.values[policyRolloutHistoryKey]
 	var persisted policyRolloutHistoryEntry
-	if err := json.Unmarshal([]byte(lines[0]), &persisted); err != nil {
+	var persistedHistory []policyRolloutHistoryEntry
+	if err := json.Unmarshal([]byte(raw), &persistedHistory); err != nil {
 		t.Fatalf("decode persisted history: %v", err)
 	}
+	if len(persistedHistory) != 1 {
+		t.Fatalf("persisted history entries = %d, want 1: %s", len(persistedHistory), raw)
+	}
+	persisted = persistedHistory[0]
 	if persisted.Source != "manual" || persisted.Node != "node-a" || persisted.Store != "memory" || persisted.Rollout.Applied != 1 || persisted.Rollout.Planned != 1 {
 		t.Fatalf("persisted history = %+v, want manual applied rollout", persisted)
 	}
 
 	reloaded := newAgentMetrics(store)
-	if err := configurePolicyRolloutHistory(reloaded, historyPath); err != nil {
+	if err := configurePolicyRolloutHistory(t.Context(), reloaded, historyStore); err != nil {
 		t.Fatal(err)
 	}
 	recorder = httptest.NewRecorder()
