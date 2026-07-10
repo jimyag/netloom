@@ -669,6 +669,7 @@ func readProviderOVSDBStatuses(ctx context.Context, specs []providerNetworkLinkS
 		if status.InterfaceState == "up" {
 			status.InterfaceState = providerOVSDBInterfaceState(ctx, spec)
 		}
+		status.QoSState, status.QueueState = providerOVSDBQoSState(ctx, spec)
 		statuses = append(statuses, status)
 	}
 	return statuses
@@ -695,6 +696,77 @@ func providerOVSDBInterfaceState(ctx context.Context, spec providerNetworkLinkSp
 		}
 		if ovsDBValue(got) != want {
 			return "external-ids-mismatch"
+		}
+	}
+	return "up"
+}
+
+func providerOVSDBQoSState(ctx context.Context, spec providerNetworkLinkSpec) (string, string) {
+	desiredQoS := providerOVSDBQoSExternalIDs(spec)
+	hasDesiredQoS := spec.QoS.EgressRateBPS != 0 || spec.QoS.EgressBurstBPS != 0 || len(spec.TenantQueues) > 0
+	qosUUIDRaw, err := ovsVSCTLRead(ctx, "get", "port", spec.Name, "qos")
+	qosUUID := ovsDBValue(qosUUIDRaw)
+	if !hasDesiredQoS {
+		if err != nil || qosUUID == "" || qosUUID == "[]" {
+			return "up", "up"
+		}
+		owner, ownerErr := ovsVSCTLRead(ctx, "get", "qos", qosUUID, "external_ids:netloom_owner")
+		if ownerErr == nil && ovsDBValue(owner) == "netloom" {
+			return "unexpected", "up"
+		}
+		return "up", "up"
+	}
+	if err != nil || qosUUID == "" || qosUUID == "[]" {
+		return "missing", providerOVSDBDesiredQueueState(ctx, spec, "")
+	}
+	if got, err := ovsVSCTLRead(ctx, "get", "qos", qosUUID, "type"); err != nil || ovsDBValue(got) != "linux-htb" {
+		return "mismatch", providerOVSDBDesiredQueueState(ctx, spec, qosUUID)
+	}
+	for key, want := range desiredQoS {
+		got, err := ovsVSCTLRead(ctx, "get", "qos", qosUUID, "external_ids:"+key)
+		if err != nil {
+			return "mismatch", providerOVSDBDesiredQueueState(ctx, spec, qosUUID)
+		}
+		if ovsDBValue(got) != want {
+			return "mismatch", providerOVSDBDesiredQueueState(ctx, spec, qosUUID)
+		}
+	}
+	for key, want := range providerOVSDBQoSOtherConfig(spec) {
+		got, err := ovsVSCTLRead(ctx, "get", "qos", qosUUID, "other_config:"+key)
+		if err != nil {
+			return "mismatch", providerOVSDBDesiredQueueState(ctx, spec, qosUUID)
+		}
+		if ovsDBValue(got) != want {
+			return "mismatch", providerOVSDBDesiredQueueState(ctx, spec, qosUUID)
+		}
+	}
+	return "up", providerOVSDBDesiredQueueState(ctx, spec, qosUUID)
+}
+
+func providerOVSDBDesiredQueueState(ctx context.Context, spec providerNetworkLinkSpec, qosUUID string) string {
+	if len(spec.TenantQueues) == 0 {
+		return "up"
+	}
+	if qosUUID == "" {
+		return "missing"
+	}
+	for _, policy := range spec.TenantQueues {
+		queueUUIDRaw, err := ovsVSCTLRead(ctx, "get", "qos", qosUUID, "queues:"+strconv.Itoa(policy.QueueID))
+		queueUUID := ovsDBValue(queueUUIDRaw)
+		if err != nil || queueUUID == "" || queueUUID == "[]" {
+			return "missing"
+		}
+		for key, want := range providerOVSDBQueueExternalIDs(spec, policy) {
+			got, err := ovsVSCTLRead(ctx, "get", "queue", queueUUID, "external_ids:"+key)
+			if err != nil || ovsDBValue(got) != want {
+				return "mismatch"
+			}
+		}
+		for key, want := range providerOVSDBQueueOtherConfig(policy) {
+			got, err := ovsVSCTLRead(ctx, "get", "queue", queueUUID, "other_config:"+key)
+			if err != nil || ovsDBValue(got) != want {
+				return "mismatch"
+			}
 		}
 	}
 	return "up"
