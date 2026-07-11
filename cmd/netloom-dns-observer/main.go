@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"flag"
 	"fmt"
@@ -31,6 +32,9 @@ type options struct {
 	listenUDP       string
 	upstreamUDP     string
 	udpTimeout      time.Duration
+	listenTCP       string
+	upstreamTCP     string
+	tcpTimeout      time.Duration
 }
 
 type result struct {
@@ -58,6 +62,9 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer, 
 	flags.StringVar(&opts.listenUDP, "listen-udp", os.Getenv("NETLOOM_DNS_OBSERVER_LISTEN_UDP"), "UDP address to listen on as a DNS proxy/capture path")
 	flags.StringVar(&opts.upstreamUDP, "upstream-udp", os.Getenv("NETLOOM_DNS_OBSERVER_UPSTREAM_UDP"), "upstream UDP DNS server used with -listen-udp")
 	flags.DurationVar(&opts.udpTimeout, "udp-timeout", 2*time.Second, "UDP upstream timeout used with -listen-udp")
+	flags.StringVar(&opts.listenTCP, "listen-tcp", os.Getenv("NETLOOM_DNS_OBSERVER_LISTEN_TCP"), "TCP address to listen on as a DNS proxy/capture path")
+	flags.StringVar(&opts.upstreamTCP, "upstream-tcp", os.Getenv("NETLOOM_DNS_OBSERVER_UPSTREAM_TCP"), "upstream TCP DNS server used with -listen-tcp")
+	flags.DurationVar(&opts.tcpTimeout, "tcp-timeout", 2*time.Second, "TCP upstream timeout used with -listen-tcp")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -72,8 +79,14 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer, 
 	if opts.defaultTTL > uint(^uint32(0)) {
 		return fmt.Errorf("-default-ttl exceeds uint32")
 	}
+	if strings.TrimSpace(opts.listenUDP) != "" && strings.TrimSpace(opts.listenTCP) != "" {
+		return fmt.Errorf("-listen-udp and -listen-tcp cannot be used together")
+	}
 	if strings.TrimSpace(opts.listenUDP) != "" {
 		return runUDPProxy(ctx, opts, store, stdout, now)
+	}
+	if strings.TrimSpace(opts.listenTCP) != "" {
+		return runTCPProxy(ctx, opts, store, stdout, now)
 	}
 
 	observedAt, err := observedAt(opts.observedAtValue, now)
@@ -141,6 +154,31 @@ func runUDPProxy(ctx context.Context, opts options, store dnsObservationStore, s
 	return proxy.Serve(ctx, listener)
 }
 
+func runTCPProxy(ctx context.Context, opts options, store dnsObservationStore, stdout io.Writer, now func() time.Time) error {
+	upstream := strings.TrimSpace(opts.upstreamTCP)
+	if upstream == "" {
+		return fmt.Errorf("-upstream-tcp/NETLOOM_DNS_OBSERVER_UPSTREAM_TCP is required with -listen-tcp")
+	}
+	if opts.tcpTimeout <= 0 {
+		return fmt.Errorf("-tcp-timeout must be positive")
+	}
+	listener, err := net.Listen("tcp", strings.TrimSpace(opts.listenTCP))
+	if err != nil {
+		return err
+	}
+	defer listener.Close()
+	fmt.Fprintf(stdout, "netloom-dns-observer listening tcp=%s upstream=%s\n", listener.Addr(), upstream)
+	proxy := dnsTCPProxy{
+		store:         store,
+		upstream:      upstream,
+		timeout:       opts.tcpTimeout,
+		mergeExisting: opts.mergeExisting,
+		defaultTTL:    uint32(opts.defaultTTL),
+		now:           now,
+	}
+	return proxy.Serve(ctx, listener)
+}
+
 type dnsUDPProxy struct {
 	store         dnsObservationStore
 	upstream      string
@@ -149,6 +187,114 @@ type dnsUDPProxy struct {
 	defaultTTL    uint32
 	now           func() time.Time
 	mu            sync.Mutex
+}
+
+type dnsTCPProxy struct {
+	store         dnsObservationStore
+	upstream      string
+	timeout       time.Duration
+	mergeExisting bool
+	defaultTTL    uint32
+	now           func() time.Time
+	mu            sync.Mutex
+}
+
+func (p *dnsTCPProxy) Serve(ctx context.Context, listener net.Listener) error {
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = listener.Close()
+		case <-done:
+		}
+	}()
+	defer close(done)
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return err
+		}
+		go p.handleConn(ctx, conn)
+	}
+}
+
+func (p *dnsTCPProxy) handleConn(ctx context.Context, conn net.Conn) {
+	defer conn.Close()
+	query, err := readTCPDNSMessage(conn)
+	if err != nil {
+		return
+	}
+	response, err := p.exchange(ctx, query)
+	if err != nil {
+		return
+	}
+	if err := writeTCPDNSMessage(conn, response); err != nil {
+		return
+	}
+	observedAt := p.now().UTC()
+	records, err := dnsobserver.RecordsFromResponse(response, observedAt)
+	if err != nil || len(records) == 0 {
+		return
+	}
+	for i := range records {
+		if records[i].TTLSeconds == 0 && p.defaultTTL > 0 {
+			records[i].TTLSeconds = p.defaultTTL
+			records[i].ObservedAt = observedAt
+		}
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	_, _ = mergeAndSaveDNSObservations(ctx, p.store, records, observedAt, p.mergeExisting)
+}
+
+func (p *dnsTCPProxy) exchange(ctx context.Context, query []byte) ([]byte, error) {
+	dialer := net.Dialer{}
+	conn, err := dialer.DialContext(ctx, "tcp", p.upstream)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	deadline := time.Now().Add(p.timeout)
+	_ = conn.SetDeadline(deadline)
+	if err := writeTCPDNSMessage(conn, query); err != nil {
+		return nil, err
+	}
+	return readTCPDNSMessage(conn)
+}
+
+func readTCPDNSMessage(reader io.Reader) ([]byte, error) {
+	var length [2]byte
+	if _, err := io.ReadFull(reader, length[:]); err != nil {
+		return nil, err
+	}
+	n := binary.BigEndian.Uint16(length[:])
+	if n == 0 {
+		return nil, fmt.Errorf("empty TCP DNS message")
+	}
+	packet := make([]byte, int(n))
+	if _, err := io.ReadFull(reader, packet); err != nil {
+		return nil, err
+	}
+	return packet, nil
+}
+
+func writeTCPDNSMessage(writer io.Writer, packet []byte) error {
+	if len(packet) == 0 {
+		return fmt.Errorf("empty TCP DNS message")
+	}
+	if len(packet) > 65535 {
+		return fmt.Errorf("TCP DNS message exceeds 65535 bytes")
+	}
+	var length [2]byte
+	binary.BigEndian.PutUint16(length[:], uint16(len(packet)))
+	if _, err := writer.Write(length[:]); err != nil {
+		return err
+	}
+	_, err := writer.Write(packet)
+	return err
 }
 
 func (p *dnsUDPProxy) Serve(ctx context.Context, listener net.PacketConn) error {

@@ -285,6 +285,79 @@ func TestUDPProxyForwardsResponsesAndWritesDNSObservations(t *testing.T) {
 	}
 }
 
+func TestTCPProxyForwardsResponsesAndWritesDNSObservations(t *testing.T) {
+	upstream, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upstream.Close()
+	go func() {
+		conn, err := upstream.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		query, err := readTCPDNSMessage(conn)
+		if err != nil || len(query) == 0 {
+			return
+		}
+		response := dnsResponse(
+			dnsQuestion("api.example.com", 1),
+			dnsAnswerPtr(12, 1, 60, []byte{203, 0, 113, 11}),
+		)
+		_ = writeTCPDNSMessage(conn, response)
+	}()
+
+	ovsdb := &fakeOpenVSwitchExternalIDStore{}
+	store := ovsdbDNSObservationStore{syncer: ovsdb}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	proxy := dnsTCPProxy{
+		store:         store,
+		upstream:      upstream.Addr().String(),
+		timeout:       time.Second,
+		mergeExisting: true,
+		now:           func() time.Time { return time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC) },
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- proxy.Serve(ctx, listener)
+	}()
+	client, err := net.Dial("tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if err := writeTCPDNSMessage(client, dnsQuery("api.example.com", 1)); err != nil {
+		t.Fatal(err)
+	}
+	_ = client.SetReadDeadline(time.Now().Add(time.Second))
+	response, err := readTCPDNSMessage(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response) == 0 {
+		t.Fatal("empty DNS response from TCP proxy")
+	}
+	requireEventually(t, func() bool {
+		records, err := store.Load(t.Context())
+		if err != nil {
+			return false
+		}
+		return len(records) == 1 && records[0].Name == "api.example.com" && records[0].IPs[0] == netip.MustParseAddr("203.0.113.11")
+	})
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("TCP proxy did not stop after cancel")
+	}
+}
+
 func TestRunRejectsEmptyInput(t *testing.T) {
 	endpoint, _, cleanup := newTestVSwitchOVSDB(t)
 	defer cleanup()

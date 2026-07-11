@@ -322,8 +322,12 @@ additional sections, into that same observation record shape. CNAME aliases use
 the shortest TTL across the CNAME chain and terminal address record, matching
 the cache lifetime that should govern FQDN-derived policy entries. The
 `netloom-dns-observer` command wraps that parser as a
-sidecar-friendly bridge: it accepts newline-delimited base64 or hex DNS responses, or one raw DNS response, and merges the derived records into local OVSDB `Open_vSwitch.external_ids:netloom_dns_observations`. Packet interception can therefore be
-layered on top of this command or parser without changing policy compilation.
+sidecar-friendly bridge: it accepts newline-delimited base64 or hex DNS
+responses, one raw DNS response, UDP proxy traffic, or DNS-over-TCP proxy
+traffic, and merges the derived records into local OVSDB
+`Open_vSwitch.external_ids:netloom_dns_observations`. Packet interception can
+therefore be layered on top of this command or parser without changing policy
+compilation.
 
 Stateful rules now have a userspace conntrack model that mirrors the Cilium
 policy decision shape. `EvaluateStateful` first checks established reverse-flow
