@@ -798,12 +798,21 @@ func (w *LibOVSDBTopologyWriter) repairSteadyStateLoadBalancers(ctx context.Cont
 				return nil, err
 			}
 			ops = append(ops, parentOps...)
+			nextExternalIDs := mergeManagedExternalIDs(existing.ExternalIDs, desiredRow.ExternalIDs)
 			nextOptions := replaceManagedLoadBalancerOptions(existing.Options, desiredRow.Options)
-			if !reflect.DeepEqual(existing.Options, nextOptions) {
+			if !reflect.DeepEqual(existing.Vips, desiredRow.Vips) ||
+				!reflect.DeepEqual(existing.Protocol, desiredRow.Protocol) ||
+				!reflect.DeepEqual(existing.SelectionFields, desiredRow.SelectionFields) ||
+				!reflect.DeepEqual(existing.ExternalIDs, nextExternalIDs) ||
+				!reflect.DeepEqual(existing.Options, nextOptions) {
+				existing.Vips = desiredRow.Vips
+				existing.Protocol = desiredRow.Protocol
+				existing.SelectionFields = desiredRow.SelectionFields
+				existing.ExternalIDs = nextExternalIDs
 				existing.Options = nextOptions
-				updateOps, err := w.client.Where(existing).Update(existing, &existing.Options)
+				updateOps, err := w.client.Where(existing).Update(existing, &existing.Vips, &existing.Protocol, &existing.SelectionFields, &existing.ExternalIDs, &existing.Options)
 				if err != nil {
-					return nil, fmt.Errorf("repair load balancer %s options: %w", existing.Name, err)
+					return nil, fmt.Errorf("repair load balancer %s columns: %w", existing.Name, err)
 				}
 				ops = append(ops, updateOps...)
 			}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
+	"reflect"
 	"testing"
 	"time"
 
@@ -3066,7 +3067,7 @@ func TestLibOVSDBTopologyWriterCleanupRepairsLoadBalancerParentAttachmentDriftIn
 	}
 }
 
-func TestLibOVSDBTopologyWriterCleanupRepairsLoadBalancerOptionsDriftInSteadyState(t *testing.T) {
+func TestLibOVSDBTopologyWriterCleanupRepairsLoadBalancerColumnDriftInSteadyState(t *testing.T) {
 	ctx := context.Background()
 	client, closeFn := newTestOVNNBClient(t)
 	defer closeFn()
@@ -3082,9 +3083,11 @@ func TestLibOVSDBTopologyWriterCleanupRepairsLoadBalancerOptionsDriftInSteadySta
 		Gateway: netip.MustParseAddr("10.10.0.1"),
 	}
 	lb := model.LoadBalancer{
-		Name: "api",
-		VPC:  "prod",
-		VIP:  netip.MustParseAddr("10.96.0.10"),
+		Name:            "api",
+		VPC:             "prod",
+		VIP:             netip.MustParseAddr("10.96.0.10"),
+		SelectionFields: []string{"ip_src", "tp_src"},
+		SessionAffinity: true,
 		Ports: []model.LoadBalancerPort{{
 			Port:     443,
 			Protocol: model.ProtocolTCP,
@@ -3119,8 +3122,16 @@ func TestLibOVSDBTopologyWriterCleanupRepairsLoadBalancerOptionsDriftInSteadySta
 	if !ok {
 		t.Fatal("load balancer row was not created")
 	}
-	existing.Options = map[string]string{"affinity_timeout": "7200"}
-	updateOps, err := client.Where(existing).Update(existing, &existing.Options)
+	wrongProtocol := ovnnb.LoadBalancerProtocolUDP
+	existing.Vips = map[string]string{"10.96.0.99:444": "10.10.0.99:8444"}
+	existing.Protocol = &wrongProtocol
+	existing.SelectionFields = nil
+	existing.ExternalIDs["netloom_session_affinity"] = "false"
+	existing.Options = map[string]string{
+		"affinity_timeout": "7200",
+		"external_owner":   "keep",
+	}
+	updateOps, err := client.Where(existing).Update(existing, &existing.Vips, &existing.Protocol, &existing.SelectionFields, &existing.ExternalIDs, &existing.Options)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3133,7 +3144,14 @@ func TestLibOVSDBTopologyWriterCleanupRepairsLoadBalancerOptionsDriftInSteadySta
 	}
 	requireEventually(t, func() bool {
 		drifted, ok, err := writer.loadBalancerByName(ctx, existing.Name)
-		return err == nil && ok && drifted.Options["affinity_timeout"] == "7200"
+		return err == nil &&
+			ok &&
+			drifted.Vips["10.96.0.99:444"] == "10.10.0.99:8444" &&
+			drifted.Protocol != nil &&
+			*drifted.Protocol == ovnnb.LoadBalancerProtocolUDP &&
+			len(drifted.SelectionFields) == 0 &&
+			drifted.ExternalIDs["netloom_session_affinity"] == "false" &&
+			drifted.Options["affinity_timeout"] == "7200"
 	})
 
 	if err := writer.CleanupTopology(ctx, state); err != nil {
@@ -3144,8 +3162,15 @@ func TestLibOVSDBTopologyWriterCleanupRepairsLoadBalancerOptionsDriftInSteadySta
 		if err != nil || !ok {
 			return false
 		}
-		_, hasAffinity := repaired.Options["affinity_timeout"]
-		return !hasAffinity
+		want := desiredLoadBalancerRow(lb, model.ProtocolTCP, loadBalancerFrontendsByProtocol(lb)[model.ProtocolTCP])
+		return reflect.DeepEqual(repaired.Vips, want.Vips) &&
+			repaired.Protocol != nil &&
+			want.Protocol != nil &&
+			*repaired.Protocol == *want.Protocol &&
+			reflect.DeepEqual(repaired.SelectionFields, want.SelectionFields) &&
+			repaired.ExternalIDs["netloom_session_affinity"] == "true" &&
+			repaired.Options["affinity_timeout"] == "10800" &&
+			repaired.Options["external_owner"] == "keep"
 	})
 }
 
