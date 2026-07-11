@@ -198,6 +198,10 @@ type PolicyRollout struct {
 	Acknowledged              bool                 `json:"acknowledged,omitempty"`
 	AckRef                    string               `json:"ack_ref,omitempty"`
 	AckExpiresAt              string               `json:"ack_expires_at,omitempty"`
+	FinalizeRequired          bool                 `json:"finalize_required,omitempty"`
+	Finalized                 bool                 `json:"finalized,omitempty"`
+	FinalizeRef               string               `json:"finalize_ref,omitempty"`
+	FinalizeExpiresAt         string               `json:"finalize_expires_at,omitempty"`
 	ChangePollURL             string               `json:"change_poll_url,omitempty"`
 	ChangePollTimeoutMS       uint32               `json:"change_poll_timeout_ms,omitempty"`
 	ChangeStatusURL           string               `json:"change_status_url,omitempty"`
@@ -251,6 +255,11 @@ func (r PolicyRollout) Validate() error {
 	if strings.TrimSpace(r.AckExpiresAt) != "" {
 		if _, err := time.Parse(time.RFC3339, strings.TrimSpace(r.AckExpiresAt)); err != nil {
 			return fmt.Errorf("policy rollout %q ack_expires_at must be RFC3339", r.Name)
+		}
+	}
+	if strings.TrimSpace(r.FinalizeExpiresAt) != "" {
+		if _, err := time.Parse(time.RFC3339, strings.TrimSpace(r.FinalizeExpiresAt)); err != nil {
+			return fmt.Errorf("policy rollout %q finalize_expires_at must be RFC3339", r.Name)
 		}
 	}
 	if strings.TrimSpace(r.ApprovalCallbackURL) != "" {

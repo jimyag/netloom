@@ -1075,6 +1075,19 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 			wantErr: "ack_expires_at must be RFC3339",
 		},
 		{
+			name: "invalid policy rollout finalize expiry",
+			mutate: func(state *DesiredState) {
+				state.PolicyRollouts = []PolicyRollout{{
+					Name:              "web-canary",
+					Endpoints:         []string{"prod/pod-a"},
+					BatchSize:         1,
+					FinalizeRequired:  true,
+					FinalizeExpiresAt: "tomorrow",
+				}}
+			},
+			wantErr: "finalize_expires_at must be RFC3339",
+		},
+		{
 			name: "invalid policy rollout change status URL",
 			mutate: func(state *DesiredState) {
 				state.PolicyRollouts = []PolicyRollout{{

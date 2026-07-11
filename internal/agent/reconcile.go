@@ -205,6 +205,10 @@ type PolicyEndpointRolloutOptions struct {
 	Acknowledged              bool
 	AckRef                    string
 	AckExpiresAt              time.Time
+	FinalizeRequired          bool
+	Finalized                 bool
+	FinalizeRef               string
+	FinalizeExpiresAt         time.Time
 	ChangePollURL             string
 	ChangePollTimeout         time.Duration
 	ChangeStatusURL           string
@@ -254,6 +258,12 @@ type PolicyEndpointRollout struct {
 	AckExpiresAt              string                      `json:"ack_expires_at,omitempty"`
 	AckExpired                bool                        `json:"ack_expired,omitempty"`
 	AckPending                bool                        `json:"ack_pending,omitempty"`
+	FinalizeRequired          bool                        `json:"finalize_required,omitempty"`
+	Finalized                 bool                        `json:"finalized,omitempty"`
+	FinalizeRef               string                      `json:"finalize_ref,omitempty"`
+	FinalizeExpiresAt         string                      `json:"finalize_expires_at,omitempty"`
+	FinalizeExpired           bool                        `json:"finalize_expired,omitempty"`
+	FinalizePending           bool                        `json:"finalize_pending,omitempty"`
 	ChangePollURL             string                      `json:"change_poll_url,omitempty"`
 	ChangePollAllowed         bool                        `json:"change_poll_allowed,omitempty"`
 	ChangePollStatus          string                      `json:"change_poll_status,omitempty"`
@@ -459,6 +469,10 @@ func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, opt
 		Acknowledged:             rolloutOptions.Acknowledged,
 		AckRef:                   rolloutOptions.AckRef,
 		AckExpiresAt:             rolloutExpiryString(rolloutOptions.AckExpiresAt),
+		FinalizeRequired:         rolloutOptions.FinalizeRequired,
+		Finalized:                rolloutOptions.Finalized,
+		FinalizeRef:              rolloutOptions.FinalizeRef,
+		FinalizeExpiresAt:        rolloutExpiryString(rolloutOptions.FinalizeExpiresAt),
 		ChangePollURL:            rolloutOptions.ChangePollURL,
 		ChangeStatusURL:          rolloutOptions.ChangeStatusURL,
 		Paused:                   rolloutOptions.Paused,
@@ -567,6 +581,11 @@ func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, opt
 		pauseRolloutItems(&rollout, 0, "ack_pending")
 		return syncPolicyRolloutChangeStatus(ctx, rolloutOptions, endpointIDs, rollout), nil
 	}
+	if rolloutOptions.FinalizeRequired && rolloutExpired(rolloutOptions.FinalizeExpiresAt, now) {
+		rollout.FinalizeExpired = true
+		pauseRolloutItems(&rollout, 0, "finalize_expired")
+		return syncPolicyRolloutChangeStatus(ctx, rolloutOptions, endpointIDs, rollout), nil
+	}
 	if rolloutOptions.Paused {
 		pauseRolloutItems(&rollout, 0, "operator_paused")
 		return syncPolicyRolloutChangeStatus(ctx, rolloutOptions, endpointIDs, rollout), nil
@@ -616,6 +635,9 @@ func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, opt
 					rollout.Paused = true
 					rollout.PausedAfterBatch = item.Batch
 					pauseReason = rolloutPauseReason(rollout, rolloutOptions, completedBatches)
+					if pauseReason == "finalize_pending" {
+						rollout.FinalizePending = true
+					}
 				}
 			}
 			continue
@@ -668,6 +690,9 @@ func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, opt
 				rollout.Paused = true
 				rollout.PausedAfterBatch = item.Batch
 				pauseReason = rolloutPauseReason(rollout, rolloutOptions, completedBatches)
+				if pauseReason == "finalize_pending" {
+					rollout.FinalizePending = true
+				}
 			}
 		}
 	}
@@ -951,6 +976,10 @@ func policyRolloutChangeStatus(rollout PolicyEndpointRollout) string {
 		return "cancelled"
 	case rollout.AckPending:
 		return "ack_pending"
+	case rollout.FinalizeExpired:
+		return "finalize_expired"
+	case rollout.FinalizePending:
+		return "finalize_pending"
 	case rollout.ApprovalPending:
 		return "approval_pending"
 	case rollout.Failed > 0:
@@ -973,6 +1002,9 @@ func policyRolloutApprovalPayload(approvalRef string, endpointIDs []string) stri
 func pauseRolloutItems(rollout *PolicyEndpointRollout, afterBatch int, reason string) {
 	rollout.Paused = true
 	rollout.PausedAfterBatch = afterBatch
+	if reason == "finalize_pending" {
+		rollout.FinalizePending = true
+	}
 	for i := range rollout.Items {
 		if rollout.Items[i].Phase == "planned" {
 			setRolloutItemPhase(&rollout.Items[i], "paused", reason)
@@ -1009,6 +1041,9 @@ func setRolloutAppliedItemsReason(rollout *PolicyEndpointRollout, endpointIDs []
 }
 
 func rolloutPauseReason(rollout PolicyEndpointRollout, options PolicyEndpointRolloutOptions, completedBatches int) string {
+	if options.FinalizeRequired && !options.Finalized && completedBatches > 0 {
+		return "finalize_pending"
+	}
 	if options.PauseAfterBatches > 0 && completedBatches >= options.PauseAfterBatches {
 		return "pause_after_batch"
 	}
@@ -1028,6 +1063,9 @@ func nonEmptyString(value, fallback string) string {
 func shouldPauseRolloutAfterItem(rollout PolicyEndpointRollout, options PolicyEndpointRolloutOptions, completedBatches int, index int) bool {
 	if index >= len(rollout.Items)-1 {
 		return false
+	}
+	if options.FinalizeRequired && !options.Finalized && completedBatches > 0 {
+		return true
 	}
 	if options.PauseAfterBatches > 0 && completedBatches >= options.PauseAfterBatches {
 		return true
@@ -1403,6 +1441,10 @@ func ApplyPolicyRollouts(ctx context.Context, state control.DesiredState, option
 		if err != nil {
 			return nil, fmt.Errorf("policy rollout %q ack_expires_at: %w", rollout.Name, err)
 		}
+		finalizeExpiresAt, err := parsePolicyRolloutTime(rollout.FinalizeExpiresAt)
+		if err != nil {
+			return nil, fmt.Errorf("policy rollout %q finalize_expires_at: %w", rollout.Name, err)
+		}
 		revision, err := PolicyRolloutRevision(state, rollout, endpointIDs)
 		if err != nil {
 			return nil, fmt.Errorf("policy rollout %q revision: %w", rollout.Name, err)
@@ -1433,6 +1475,10 @@ func ApplyPolicyRollouts(ctx context.Context, state control.DesiredState, option
 			Acknowledged:              rollout.Acknowledged,
 			AckRef:                    rollout.AckRef,
 			AckExpiresAt:              ackExpiresAt,
+			FinalizeRequired:          rollout.FinalizeRequired,
+			Finalized:                 rollout.Finalized,
+			FinalizeRef:               rollout.FinalizeRef,
+			FinalizeExpiresAt:         finalizeExpiresAt,
 			ChangePollURL:             rollout.ChangePollURL,
 			ChangePollTimeout:         time.Duration(rollout.ChangePollTimeoutMS) * time.Millisecond,
 			ChangeStatusURL:           rollout.ChangeStatusURL,

@@ -269,6 +269,10 @@ type policyEndpointRolloutRequest struct {
 	Acknowledged              bool                         `json:"acknowledged,omitempty"`
 	AckRef                    string                       `json:"ack_ref,omitempty"`
 	AckExpiresAt              string                       `json:"ack_expires_at,omitempty"`
+	FinalizeRequired          bool                         `json:"finalize_required,omitempty"`
+	Finalized                 bool                         `json:"finalized,omitempty"`
+	FinalizeRef               string                       `json:"finalize_ref,omitempty"`
+	FinalizeExpiresAt         string                       `json:"finalize_expires_at,omitempty"`
 	ChangePollURL             string                       `json:"change_poll_url,omitempty"`
 	ChangePollTimeoutMS       uint32                       `json:"change_poll_timeout_ms,omitempty"`
 	ChangeStatusURL           string                       `json:"change_status_url,omitempty"`
@@ -2249,6 +2253,10 @@ func (m *agentMetrics) rolloutPolicyEndpoints(ctx context.Context, request polic
 	if err != nil {
 		return agent.PolicyEndpointRollout{}, fmt.Errorf("ack_expires_at: %w", err)
 	}
+	finalizeExpiresAt, err := parsePolicyRolloutRequestTime(request.FinalizeExpiresAt)
+	if err != nil {
+		return agent.PolicyEndpointRollout{}, fmt.Errorf("finalize_expires_at: %w", err)
+	}
 	revision := strings.TrimSpace(request.Revision)
 	if revision == "" {
 		revision, err = agent.PolicyRolloutRevision(snapshot.State, control.PolicyRollout{
@@ -2290,6 +2298,10 @@ func (m *agentMetrics) rolloutPolicyEndpoints(ctx context.Context, request polic
 		Acknowledged:              request.Acknowledged,
 		AckRef:                    request.AckRef,
 		AckExpiresAt:              ackExpiresAt,
+		FinalizeRequired:          request.FinalizeRequired,
+		Finalized:                 request.Finalized,
+		FinalizeRef:               request.FinalizeRef,
+		FinalizeExpiresAt:         finalizeExpiresAt,
 		ChangePollURL:             request.ChangePollURL,
 		ChangePollTimeout:         time.Duration(request.ChangePollTimeoutMS) * time.Millisecond,
 		ChangeStatusURL:           request.ChangeStatusURL,

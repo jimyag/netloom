@@ -1717,6 +1717,44 @@ func TestApplyPolicyRolloutsHonorsPausedRollout(t *testing.T) {
 	}
 }
 
+func TestApplyPolicyRolloutsWaitsForFinalize(t *testing.T) {
+	state := rolloutPolicyState()
+	state.PolicyRollouts = []control.PolicyRollout{{
+		Name:             "finalize-gated",
+		Node:             "node-a",
+		Endpoints:        []string{"prod/pod-a", "prod/pod-b"},
+		BatchSize:        1,
+		FinalizeRequired: true,
+		FinalizeRef:      "final-1234",
+	}}
+	store := dataplane.NewInMemoryPolicyStore()
+
+	rollouts, err := ApplyPolicyRollouts(context.Background(), state, ReconcileOptions{
+		Node:  "node-a",
+		Store: store,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result ReconcileResult
+	ApplyPolicyRolloutResults(&result, rollouts)
+	if result.PolicyRollouts != 1 || result.PolicyRolloutPaused != 1 || result.PolicyRolloutApplied != 1 || result.PolicyRolloutSkipped != 1 {
+		t.Fatalf("rollout result = %+v rollouts=%+v, want finalize pending after one canary", result, rollouts)
+	}
+	if len(rollouts) != 1 || !rollouts[0].Rollout.FinalizeRequired || !rollouts[0].Rollout.FinalizePending || rollouts[0].Rollout.FinalizeRef != "final-1234" {
+		t.Fatalf("rollouts = %+v, want finalize pending metadata", rollouts)
+	}
+	if reasons := []string{rollouts[0].Rollout.Items[0].Reason, rollouts[0].Rollout.Items[1].Reason}; !slices.Equal(reasons, []string{"", "finalize_pending"}) {
+		t.Fatalf("finalize rollout item reasons = %+v, want canary applied then finalize_pending", reasons)
+	}
+	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 1 {
+		t.Fatalf("pod-a entries = %+v, want canary policy applied", entries)
+	}
+	if entries := store.Entries(model.EndpointKey("prod", "pod-b")); len(entries) != 0 {
+		t.Fatalf("pod-b entries = %+v, want finalize-paused endpoint untouched", entries)
+	}
+}
+
 func TestApplyPolicyRolloutsRequiresApproval(t *testing.T) {
 	state := rolloutPolicyState()
 	state.PolicyRollouts = []control.PolicyRollout{{
@@ -2356,6 +2394,108 @@ func TestRolloutPolicyEndpointsPausesAfterBatch(t *testing.T) {
 	}
 	if entries := store.Entries(model.EndpointKey("prod", "pod-b")); len(entries) != 0 {
 		t.Fatalf("pod-b entries = %+v, want paused endpoint untouched", entries)
+	}
+}
+
+func TestRolloutPolicyEndpointsWaitsForFinalizeAfterBatch(t *testing.T) {
+	state := rolloutPolicyState()
+	store := dataplane.NewInMemoryPolicyStore()
+
+	rollout, err := RolloutPolicyEndpoints(context.Background(), state, ReconcileOptions{
+		Node:  "node-a",
+		Store: store,
+	}, PolicyEndpointRolloutOptions{
+		EndpointIDs: []string{
+			model.EndpointKey("prod", "pod-a"),
+			model.EndpointKey("prod", "pod-b"),
+			model.EndpointKey("prod", "pod-c"),
+		},
+		BatchSize:        1,
+		FinalizeRequired: true,
+		FinalizeRef:      "final-1234",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rollout.Paused || !rollout.FinalizeRequired || !rollout.FinalizePending || rollout.Finalized || rollout.FinalizeRef != "final-1234" ||
+		rollout.PausedAfterBatch != 1 || rollout.Applied != 1 || rollout.Skipped != 2 || rollout.Failed != 0 {
+		t.Fatalf("rollout = %+v, want finalize pending after first batch", rollout)
+	}
+	phases := []string{rollout.Items[0].Phase, rollout.Items[1].Phase, rollout.Items[2].Phase}
+	if !slices.Equal(phases, []string{"applied", "paused", "paused"}) {
+		t.Fatalf("rollout phases = %+v, want applied paused paused", phases)
+	}
+	reasons := []string{rollout.Items[0].Reason, rollout.Items[1].Reason, rollout.Items[2].Reason}
+	if !slices.Equal(reasons, []string{"", "finalize_pending", "finalize_pending"}) {
+		t.Fatalf("rollout reasons = %+v, want finalize_pending for paused endpoints", reasons)
+	}
+	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 1 {
+		t.Fatalf("pod-a entries = %+v, want first batch applied", entries)
+	}
+	if entries := store.Entries(model.EndpointKey("prod", "pod-b")); len(entries) != 0 {
+		t.Fatalf("pod-b entries = %+v, want finalize-paused endpoint untouched", entries)
+	}
+}
+
+func TestRolloutPolicyEndpointsRejectsExpiredFinalize(t *testing.T) {
+	state := rolloutPolicyState()
+	store := dataplane.NewInMemoryPolicyStore()
+
+	rollout, err := RolloutPolicyEndpoints(context.Background(), state, ReconcileOptions{
+		Node:  "node-a",
+		Store: store,
+	}, PolicyEndpointRolloutOptions{
+		EndpointIDs: []string{
+			model.EndpointKey("prod", "pod-a"),
+			model.EndpointKey("prod", "pod-b"),
+		},
+		BatchSize:         1,
+		FinalizeRequired:  true,
+		FinalizeExpiresAt: time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rollout.Paused || !rollout.FinalizeExpired || rollout.Applied != 0 || rollout.Skipped != 2 || rollout.Failed != 0 {
+		t.Fatalf("rollout = %+v, want expired finalize pause without applying", rollout)
+	}
+	reasons := []string{rollout.Items[0].Reason, rollout.Items[1].Reason}
+	if !slices.Equal(reasons, []string{"finalize_expired", "finalize_expired"}) {
+		t.Fatalf("rollout reasons = %+v, want finalize_expired", reasons)
+	}
+	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 0 {
+		t.Fatalf("pod-a entries = %+v, want no policy mutation after expired finalize", entries)
+	}
+}
+
+func TestRolloutPolicyEndpointsContinuesAfterFinalize(t *testing.T) {
+	state := rolloutPolicyState()
+	store := dataplane.NewInMemoryPolicyStore()
+
+	rollout, err := RolloutPolicyEndpoints(context.Background(), state, ReconcileOptions{
+		Node:  "node-a",
+		Store: store,
+	}, PolicyEndpointRolloutOptions{
+		EndpointIDs: []string{
+			model.EndpointKey("prod", "pod-a"),
+			model.EndpointKey("prod", "pod-b"),
+		},
+		BatchSize:        1,
+		FinalizeRequired: true,
+		Finalized:        true,
+		FinalizeRef:      "final-1234",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rollout.Paused || rollout.FinalizePending || !rollout.Finalized || rollout.Applied != 2 || rollout.Skipped != 0 || rollout.Failed != 0 {
+		t.Fatalf("rollout = %+v, want finalized rollout to continue both endpoints", rollout)
+	}
+	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 1 {
+		t.Fatalf("pod-a entries = %+v, want policy applied", entries)
+	}
+	if entries := store.Entries(model.EndpointKey("prod", "pod-b")); len(entries) != 1 {
+		t.Fatalf("pod-b entries = %+v, want policy applied", entries)
 	}
 }
 
