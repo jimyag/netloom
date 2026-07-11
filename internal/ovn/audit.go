@@ -165,11 +165,11 @@ func managedAuditNBCTLColumns(table string) []string {
 	case "Logical_Switch":
 		columns = append(columns, "name", "other_config")
 	case "Logical_Router":
-		columns = append(columns, "name", "options", "ports", "load_balancers", "nat", "policies", "static_routes")
+		columns = append(columns, "name", "options", "ports", "load_balancers", "nat", "policies", "static_routes", "enabled")
 	case "Logical_Switch_Port":
 		columns = append(columns, "name", "type", "addresses", "port_security", "options", "tag", "enabled")
 	case "Logical_Router_Port":
-		columns = append(columns, "name", "mac", "networks", "ipv6_ra_configs")
+		columns = append(columns, "name", "mac", "networks", "ipv6_ra_configs", "enabled")
 	case "Logical_Router_Policy":
 		columns = append(columns, "priority", "match", "action", "nexthop", "nexthops")
 	case "Logical_Router_Static_Route":
@@ -815,7 +815,7 @@ func countManagedProvidedFieldDrift(table string, live, expected map[string]stri
 		if !staleManagedColumnShouldDrift(table, key) || value == "" {
 			continue
 		}
-		if table == "Logical_Switch_Port" && key == "enabled" && strings.EqualFold(value, "true") {
+		if isDefaultEnabledColumnValue(table, key, value) {
 			continue
 		}
 		if _, ok := expected[key]; !ok {
@@ -827,6 +827,8 @@ func countManagedProvidedFieldDrift(table string, live, expected map[string]stri
 
 func staleManagedColumnShouldDrift(table, key string) bool {
 	switch table {
+	case "Logical_Router", "Logical_Router_Port":
+		return key == "enabled"
 	case "Logical_Switch_Port":
 		switch key {
 		case "type", "options", "tag", "enabled", "port_security", "dhcpv4_options", "dhcpv6_options":
@@ -852,6 +854,18 @@ func staleManagedColumnShouldDrift(table, key string) bool {
 		return key == "records" || key == "options"
 	}
 	return false
+}
+
+func isDefaultEnabledColumnValue(table, key, value string) bool {
+	if key != "enabled" {
+		return false
+	}
+	switch table {
+	case "Logical_Router", "Logical_Router_Port", "Logical_Switch_Port":
+		return strings.EqualFold(value, "true")
+	default:
+		return false
+	}
 }
 
 func logicalSwitchColumnFields(subnet model.Subnet) map[string]string {

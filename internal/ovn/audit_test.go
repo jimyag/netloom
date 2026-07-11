@@ -101,7 +101,7 @@ func TestNBCTLExecutorManagedOVNRowsResolvesLogicalRouterReferences(t *testing.T
 	script := `#!/bin/sh
 printf '%s\n' "$*" >> "` + logPath + `"
 case "$*" in
-  *"--columns=_uuid,external_ids,name,options,ports,load_balancers,nat,policies,static_routes find Logical_Router external_ids:netloom_owner=netloom"*) printf 'lr-prod,"{netloom_owner=netloom,netloom_vpc=prod}",nl_lr_prod,"{}",[lrp-apps],[lb-api],[nat-egress],[policy-via-fw],[route-main]\n' ;;
+  *"--columns=_uuid,external_ids,name,options,ports,load_balancers,nat,policies,static_routes,enabled find Logical_Router external_ids:netloom_owner=netloom"*) printf 'lr-prod,"{netloom_owner=netloom,netloom_vpc=prod}",nl_lr_prod,"{}",[lrp-apps],[lb-api],[nat-egress],[policy-via-fw],[route-main],[]\n' ;;
   *"--columns=_uuid,external_ids,name find Logical_Router_Port external_ids:netloom_owner=netloom"*) printf 'lrp-apps,"{netloom_owner=netloom,netloom_subnet=apps}",nl_lrp_prod_apps\n' ;;
   *"--columns=_uuid,external_ids,name find Load_Balancer external_ids:netloom_owner=netloom"*) printf 'lb-api,"{netloom_owner=netloom,netloom_vpc=prod,netloom_load_balancer=api,netloom_protocol=tcp}",nl_lb_prod_api_tcp\n' ;;
   *"--columns=_uuid,external_ids find NAT external_ids:netloom_owner=netloom"*) printf 'nat-egress,"{netloom_owner=netloom,netloom_vpc=prod,netloom_nat=egress}"\n' ;;
@@ -932,6 +932,61 @@ func TestAuditManagedObjectsFromReaderReportsDisabledEndpointLogicalSwitchPort(t
 	}
 	if stats.DriftedManagedRows != 1 || stats.DriftedManagedFields != 1 {
 		t.Fatalf("enabled=false drift stats = %+v, want one field drift", stats)
+	}
+}
+
+func TestAuditManagedObjectsFromReaderReportsDisabledLogicalRouterAndRouterPort(t *testing.T) {
+	subnet := model.Subnet{
+		Name:    "apps",
+		VPC:     "prod",
+		CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+		Gateway: netip.MustParseAddr("10.10.0.1"),
+	}
+	desired := topology.State{
+		VPCs: map[string]model.VPC{
+			"prod": {Name: "prod"},
+		},
+		Subnets: map[string]model.Subnet{
+			subnetStateKey("prod", "apps"): subnet,
+		},
+	}
+	routerRow := ManagedOVNRow{Table: "Logical_Router", UUID: "lr-prod", ExternalIDs: map[string]string{
+		"netloom_owner": "netloom",
+		"netloom_vpc":   "prod",
+	}, Fields: map[string]string{
+		"name": logicalRouter("prod"),
+	}}
+	routerPortRow := ManagedOVNRow{Table: "Logical_Router_Port", UUID: "lrp-apps", ExternalIDs: map[string]string{
+		"netloom_owner":  "netloom",
+		"netloom_subnet": "apps",
+	}, Fields: map[string]string{
+		"name":            routerPortName(logicalRouter("prod"), "apps"),
+		"mac":             deterministicMAC(subnet),
+		"networks":        "10.10.0.1/24",
+		"ipv6_ra_configs": "",
+	}}
+	reader := fakeManagedOVNReader{rows: map[string][]ManagedOVNRow{
+		"Logical_Router":      {routerRow},
+		"Logical_Router_Port": {routerPortRow},
+	}}
+	reader.rows["Logical_Router"][0].Fields["enabled"] = "true"
+	reader.rows["Logical_Router_Port"][0].Fields["enabled"] = "true"
+	stats, err := AuditManagedObjectsFromReaderWithDesired(context.Background(), reader, desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.DriftedManagedRows != 0 || stats.DriftedManagedFields != 0 {
+		t.Fatalf("enabled=true drift stats = %+v, want no drift", stats)
+	}
+
+	reader.rows["Logical_Router"][0].Fields["enabled"] = "false"
+	reader.rows["Logical_Router_Port"][0].Fields["enabled"] = "false"
+	stats, err = AuditManagedObjectsFromReaderWithDesired(context.Background(), reader, desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.DriftedManagedRows != 2 || stats.DriftedManagedFields != 2 {
+		t.Fatalf("enabled=false drift stats = %+v, want router and router port drift", stats)
 	}
 }
 

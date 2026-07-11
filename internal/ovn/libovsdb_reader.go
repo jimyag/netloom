@@ -81,6 +81,7 @@ func (r *LibOVSDBManagedReader) ManagedOVNRows(ctx context.Context, table string
 				"nat_rules":      natNamesField(row.Nat, natNames),
 				"policies":       policyNamesField(row.Policies, policyNames),
 				"static_routes":  staticRouteKeysField(row.StaticRoutes, staticRouteKeys),
+				"enabled":        boolPointerField(row.Enabled),
 			}
 		}), nil
 	case "Logical_Switch_Port":
@@ -116,6 +117,7 @@ func (r *LibOVSDBManagedReader) ManagedOVNRows(ctx context.Context, table string
 				"mac":             row.MAC,
 				"networks":        stringSliceField(row.Networks),
 				"ipv6_ra_configs": mapField(row.Ipv6RaConfigs),
+				"enabled":         boolPointerField(row.Enabled),
 			}
 		}), nil
 	case "Logical_Router_Policy":

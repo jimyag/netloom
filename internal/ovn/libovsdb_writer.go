@@ -60,11 +60,12 @@ func (w *LibOVSDBTopologyWriter) EnsureVPC(ctx context.Context, vpc model.VPC) e
 		}
 	} else {
 		nextExternalIDs := mergeStringMap(existing.ExternalIDs, router.ExternalIDs)
-		if reflect.DeepEqual(existing.ExternalIDs, nextExternalIDs) {
+		if reflect.DeepEqual(existing.ExternalIDs, nextExternalIDs) && equalBoolPointers(existing.Enabled, router.Enabled) {
 			return nil
 		}
 		existing.ExternalIDs = nextExternalIDs
-		ops, err = w.client.Where(existing).Update(existing, &existing.ExternalIDs)
+		existing.Enabled = router.Enabled
+		ops, err = w.client.Where(existing).Update(existing, &existing.ExternalIDs, &existing.Enabled)
 		if err != nil {
 			return fmt.Errorf("update logical router %s external IDs: %w", router.Name, err)
 		}
@@ -838,14 +839,16 @@ func (w *LibOVSDBTopologyWriter) ensureLogicalRouterPort(ctx context.Context, ro
 	if existing.MAC == desired.MAC &&
 		reflect.DeepEqual(existing.Networks, desired.Networks) &&
 		reflect.DeepEqual(existing.ExternalIDs, nextExternalIDs) &&
-		reflect.DeepEqual(existing.Ipv6RaConfigs, nextIPv6RAConfigs) {
+		reflect.DeepEqual(existing.Ipv6RaConfigs, nextIPv6RAConfigs) &&
+		equalBoolPointers(existing.Enabled, desired.Enabled) {
 		return existing.UUID, ops, nil
 	}
 	existing.MAC = desired.MAC
 	existing.Networks = desired.Networks
 	existing.ExternalIDs = nextExternalIDs
 	existing.Ipv6RaConfigs = nextIPv6RAConfigs
-	updateOps, err := w.client.Where(existing).Update(existing, &existing.MAC, &existing.Networks, &existing.ExternalIDs, &existing.Ipv6RaConfigs)
+	existing.Enabled = desired.Enabled
+	updateOps, err := w.client.Where(existing).Update(existing, &existing.MAC, &existing.Networks, &existing.ExternalIDs, &existing.Ipv6RaConfigs, &existing.Enabled)
 	if err != nil {
 		return "", nil, fmt.Errorf("update logical router port %s: %w", desired.Name, err)
 	}

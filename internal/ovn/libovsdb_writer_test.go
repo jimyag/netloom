@@ -678,6 +678,98 @@ func TestLibOVSDBTopologyWriterCleanupRepairsIPv6RouterPortRADriftInSteadyState(
 	}
 }
 
+func TestLibOVSDBTopologyWriterRepairsDisabledLogicalRouterAndRouterPort(t *testing.T) {
+	ctx := context.Background()
+	client, closeFn := newTestOVNNBClient(t)
+	defer closeFn()
+
+	if _, err := client.MonitorAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	writer := NewLibOVSDBTopologyWriter(client)
+	subnet := model.Subnet{
+		Name:    "apps",
+		VPC:     "prod",
+		CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+		Gateway: netip.MustParseAddr("10.10.0.1"),
+	}
+	if err := writer.EnsureVPC(ctx, model.VPC{Name: "prod"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureSubnet(ctx, subnet); err != nil {
+		t.Fatal(err)
+	}
+
+	disabled := false
+	var routers []ovnnb.LogicalRouter
+	requireEventually(t, func() bool {
+		routers = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("prod") }).List(ctx, &routers)
+		return err == nil && len(routers) == 1
+	})
+	routers[0].Enabled = &disabled
+	routerOps, err := client.Where(&routers[0]).Update(&routers[0], &routers[0].Enabled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ports []ovnnb.LogicalRouterPort
+	requireEventually(t, func() bool {
+		ports = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalRouterPort) bool {
+			return row.Name == routerPortName(logicalRouter("prod"), "apps")
+		}).List(ctx, &ports)
+		return err == nil && len(ports) == 1
+	})
+	ports[0].Enabled = &disabled
+	portOps, err := client.Where(&ports[0]).Update(&ports[0], &ports[0].Enabled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ops := append(routerOps, portOps...)
+	results, err := client.Transact(ctx, ops...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, ops); err != nil {
+		t.Fatalf("seed disabled router drift operation errors=%+v: %v", opErrors, err)
+	}
+	requireEventually(t, func() bool {
+		routers = nil
+		ports = nil
+		if err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("prod") }).List(ctx, &routers); err != nil {
+			return false
+		}
+		if err := client.WhereCache(func(row *ovnnb.LogicalRouterPort) bool {
+			return row.Name == routerPortName(logicalRouter("prod"), "apps")
+		}).List(ctx, &ports); err != nil {
+			return false
+		}
+		return len(routers) == 1 && routers[0].Enabled != nil && !*routers[0].Enabled &&
+			len(ports) == 1 && ports[0].Enabled != nil && !*ports[0].Enabled
+	})
+
+	if err := writer.EnsureVPC(ctx, model.VPC{Name: "prod"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureSubnet(ctx, subnet); err != nil {
+		t.Fatal(err)
+	}
+	requireEventually(t, func() bool {
+		routers = nil
+		ports = nil
+		if err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("prod") }).List(ctx, &routers); err != nil {
+			return false
+		}
+		if err := client.WhereCache(func(row *ovnnb.LogicalRouterPort) bool {
+			return row.Name == routerPortName(logicalRouter("prod"), "apps")
+		}).List(ctx, &ports); err != nil {
+			return false
+		}
+		return len(routers) == 1 && routers[0].Enabled == nil &&
+			len(ports) == 1 && ports[0].Enabled == nil
+	})
+}
+
 func TestLibOVSDBTopologyWriterCleanupRepairsCoreNameDriftInSteadyState(t *testing.T) {
 	ctx := context.Background()
 	client, closeFn := newTestOVNNBClient(t)
