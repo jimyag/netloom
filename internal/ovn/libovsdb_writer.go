@@ -121,10 +121,19 @@ func (w *LibOVSDBTopologyWriter) EnsureSubnet(ctx context.Context, subnet model.
 	} else {
 		nextExternalIDs := mergeManagedExternalIDs(existingSwitch.ExternalIDs, ls.ExternalIDs)
 		nextOtherConfig := replaceLogicalSwitchIPAMConfig(existingSwitch.OtherConfig, ls.OtherConfig)
-		if !reflect.DeepEqual(existingSwitch.ExternalIDs, nextExternalIDs) || !reflect.DeepEqual(existingSwitch.OtherConfig, nextOtherConfig) {
+		if !reflect.DeepEqual(existingSwitch.ExternalIDs, nextExternalIDs) ||
+			!reflect.DeepEqual(existingSwitch.OtherConfig, nextOtherConfig) ||
+			len(existingSwitch.ACLs) != 0 ||
+			len(existingSwitch.ForwardingGroups) != 0 ||
+			len(existingSwitch.LoadBalancerGroup) != 0 ||
+			len(existingSwitch.QOSRules) != 0 {
 			existingSwitch.ExternalIDs = nextExternalIDs
 			existingSwitch.OtherConfig = nextOtherConfig
-			updateOps, err := w.client.Where(existingSwitch).Update(existingSwitch, &existingSwitch.ExternalIDs, &existingSwitch.OtherConfig)
+			existingSwitch.ACLs = nil
+			existingSwitch.ForwardingGroups = nil
+			existingSwitch.LoadBalancerGroup = nil
+			existingSwitch.QOSRules = nil
+			updateOps, err := w.client.Where(existingSwitch).Update(existingSwitch, &existingSwitch.ExternalIDs, &existingSwitch.OtherConfig, &existingSwitch.ACLs, &existingSwitch.ForwardingGroups, &existingSwitch.LoadBalancerGroup, &existingSwitch.QOSRules)
 			if err != nil {
 				return fmt.Errorf("update logical switch %s: %w", ls.Name, err)
 			}

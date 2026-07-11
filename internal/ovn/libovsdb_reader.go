@@ -41,10 +41,14 @@ func (r *LibOVSDBManagedReader) ManagedOVNRows(ctx context.Context, table string
 		}
 		return managedOVNRowsFromModels(table, rows, func(row ovnnb.LogicalSwitch) (string, map[string]string, map[string]string) {
 			return row.UUID, row.ExternalIDs, map[string]string{
-				"name":           row.Name,
-				"other_config":   mapField(row.OtherConfig),
-				"ports":          portNamesField(row.Ports, switchPortNames),
-				"load_balancers": loadBalancerNamesField(row.LoadBalancer, loadBalancerNames),
+				"name":                row.Name,
+				"other_config":        mapField(row.OtherConfig),
+				"ports":               portNamesField(row.Ports, switchPortNames),
+				"load_balancers":      loadBalancerNamesField(row.LoadBalancer, loadBalancerNames),
+				"acls":                stringSliceField(row.ACLs),
+				"forwarding_groups":   stringSliceField(row.ForwardingGroups),
+				"load_balancer_group": stringSliceField(row.LoadBalancerGroup),
+				"qos_rules":           stringSliceField(row.QOSRules),
 			}
 		}), nil
 	case "Logical_Router":

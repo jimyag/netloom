@@ -163,7 +163,7 @@ func managedAuditNBCTLColumns(table string) []string {
 	columns := []string{"_uuid", "external_ids"}
 	switch table {
 	case "Logical_Switch":
-		columns = append(columns, "name", "other_config")
+		columns = append(columns, "name", "other_config", "acls", "forwarding_groups", "load_balancer_group", "qos_rules")
 	case "Logical_Router":
 		columns = append(columns, "name", "options", "ports", "load_balancers", "nat", "policies", "static_routes", "enabled")
 	case "Logical_Switch_Port":
@@ -827,6 +827,13 @@ func countManagedProvidedFieldDrift(table string, live, expected map[string]stri
 
 func staleManagedColumnShouldDrift(table, key string) bool {
 	switch table {
+	case "Logical_Switch":
+		switch key {
+		case "acls", "forwarding_groups", "load_balancer_group", "qos_rules":
+			return true
+		default:
+			return false
+		}
 	case "Logical_Router", "Logical_Router_Port":
 		return key == "enabled" || (table == "Logical_Router" && key == "options")
 	case "Logical_Switch_Port":
@@ -1080,7 +1087,7 @@ func normalizeManagedAuditField(column, value string) string {
 	switch column {
 	case "external_ids", "other_config", "options", "ipv6_ra_configs", "vips":
 		return mapField(parseOVNMap(value))
-	case "addresses", "port_security", "networks", "nexthops", "selection_fields", "ports", "load_balancers", "nat", "policies", "static_routes":
+	case "addresses", "port_security", "networks", "nexthops", "selection_fields", "ports", "load_balancers", "load_balancer_group", "nat", "policies", "static_routes", "acls", "forwarding_groups", "qos_rules":
 		return stringSliceField(parseOVNList(value))
 	case "tag":
 		return strings.Trim(strings.TrimSpace(value), `"`)

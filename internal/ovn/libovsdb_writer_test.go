@@ -120,6 +120,58 @@ func TestLibOVSDBTopologyWriterEnsuresSubnetLogicalSwitch(t *testing.T) {
 	if sw.OtherConfig["subnet"] != "10.10.0.0/24" || sw.OtherConfig["exclude_ips"] != "10.10.0.1 10.10.0.10" {
 		t.Fatalf("logical switch other_config = %+v, want IPv4 IPAM config", sw.OtherConfig)
 	}
+	staleGroup := &ovnnb.LoadBalancerGroup{
+		UUID: ovsdbNamedUUID("stale-lbg"),
+		Name: "stale-lbg",
+	}
+	createGroupOps, err := client.Create(staleGroup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := client.Transact(ctx, createGroupOps...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, createGroupOps); err != nil {
+		t.Fatalf("create stale load balancer group operation errors=%+v: %v", opErrors, err)
+	}
+	var groups []ovnnb.LoadBalancerGroup
+	requireEventually(t, func() bool {
+		groups = nil
+		err := client.WhereCache(func(row *ovnnb.LoadBalancerGroup) bool { return row.Name == "stale-lbg" }).List(ctx, &groups)
+		return err == nil && len(groups) == 1
+	})
+	sw.LoadBalancerGroup = []string{groups[0].UUID}
+	updateSwitchOps, err := client.Where(&sw).Update(&sw, &sw.LoadBalancerGroup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err = client.Transact(ctx, updateSwitchOps...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, updateSwitchOps); err != nil {
+		t.Fatalf("seed stale switch group operation errors=%+v: %v", opErrors, err)
+	}
+	requireEventually(t, func() bool {
+		switches = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalSwitch) bool { return row.Name == logicalSwitch("prod", "apps") }).List(ctx, &switches)
+		return err == nil && len(switches) == 1 && len(switches[0].LoadBalancerGroup) == 1
+	})
+	if err := writer.EnsureSubnet(ctx, model.Subnet{
+		Name:         "apps",
+		VPC:          "prod",
+		CIDR:         netip.MustParsePrefix("10.10.0.0/24"),
+		Gateway:      netip.MustParseAddr("10.10.0.1"),
+		ExcludeCIDRs: []netip.Prefix{netip.MustParsePrefix("10.10.0.10/32")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	requireEventually(t, func() bool {
+		switches = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalSwitch) bool { return row.Name == logicalSwitch("prod", "apps") }).List(ctx, &switches)
+		return err == nil && len(switches) == 1 && len(switches[0].LoadBalancerGroup) == 0
+	})
 	var routerPorts []ovnnb.LogicalRouterPort
 	requireEventually(t, func() bool {
 		routerPorts = nil

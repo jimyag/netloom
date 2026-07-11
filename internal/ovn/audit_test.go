@@ -63,7 +63,7 @@ func TestNBCTLExecutorManagedOVNRowsReadsAuditedColumns(t *testing.T) {
 	script := `#!/bin/sh
 printf '%s\n' "$*" >> "` + logPath + `"
 case "$*" in
-  *"--columns=_uuid,external_ids,name,other_config find Logical_Switch external_ids:netloom_owner=netloom"*) printf 'ls-a,"{netloom_owner=netloom,netloom_vpc=prod,netloom_subnet=apps}",nl_ls_prod_apps,"{mcast_snoop=false,subnet=10.10.0.0/24}"\n' ;;
+  *"--columns=_uuid,external_ids,name,other_config,acls,forwarding_groups,load_balancer_group,qos_rules find Logical_Switch external_ids:netloom_owner=netloom"*) printf 'ls-a,"{netloom_owner=netloom,netloom_vpc=prod,netloom_subnet=apps}",nl_ls_prod_apps,"{mcast_snoop=false,subnet=10.10.0.0/24}",[],[],[],[]\n' ;;
 esac
 `
 	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
@@ -89,7 +89,7 @@ esac
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(logData), "--columns=_uuid,external_ids,name,other_config") {
+	if !strings.Contains(string(logData), "--columns=_uuid,external_ids,name,other_config,acls,forwarding_groups,load_balancer_group,qos_rules") {
 		t.Fatalf("audit command did not request switch columns:\n%s", string(logData))
 	}
 }
@@ -821,6 +821,44 @@ func TestAuditManagedObjectsFromReaderReportsStaleLogicalRouterOptions(t *testin
 	}
 	if stats.DriftedManagedRows != 1 || stats.DriftedManagedFields != 1 {
 		t.Fatalf("stale router options drift stats = %+v, want one field drift", stats)
+	}
+}
+
+func TestAuditManagedObjectsFromReaderReportsStaleLogicalSwitchReferences(t *testing.T) {
+	subnet := model.Subnet{
+		Name:    "apps",
+		VPC:     "prod",
+		CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+		Gateway: netip.MustParseAddr("10.10.0.1"),
+	}
+	reader := fakeManagedOVNReader{rows: map[string][]ManagedOVNRow{
+		"Logical_Switch": {
+			{Table: "Logical_Switch", UUID: "ls-apps", ExternalIDs: map[string]string{
+				"netloom_owner":  "netloom",
+				"netloom_vpc":    "prod",
+				"netloom_subnet": "apps",
+			}, Fields: map[string]string{
+				"name":                logicalSwitch("prod", "apps"),
+				"other_config":        mapField(logicalSwitchOtherConfig(subnet)),
+				"acls":                "acl-old",
+				"forwarding_groups":   "fg-old",
+				"load_balancer_group": "lbg-old",
+				"qos_rules":           "qos-old",
+			}},
+		},
+	}}
+	desired := topology.State{
+		Subnets: map[string]model.Subnet{
+			subnetStateKey("prod", "apps"): subnet,
+		},
+	}
+
+	stats, err := AuditManagedObjectsFromReaderWithDesired(context.Background(), reader, desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.DriftedManagedRows != 1 || stats.DriftedManagedFields != 4 {
+		t.Fatalf("stale logical switch reference drift stats = %+v, want four field drift", stats)
 	}
 }
 

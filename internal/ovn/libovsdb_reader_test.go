@@ -166,8 +166,30 @@ func TestAuditManagedObjectsReportsColumnDriftFromLibOVSDBReader(t *testing.T) {
 	if len(switches) != 1 {
 		t.Fatalf("logical switches = %d, want one", len(switches))
 	}
+	staleGroup := &ovnnb.LoadBalancerGroup{
+		UUID: ovsdbNamedUUID("stale-lbg"),
+		Name: "stale-lbg",
+	}
+	createGroupOps, err := client.Create(staleGroup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := client.Transact(ctx, createGroupOps...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, createGroupOps); err != nil {
+		t.Fatalf("create stale load balancer group operation errors=%+v: %v", opErrors, err)
+	}
+	var groups []ovnnb.LoadBalancerGroup
+	requireEventually(t, func() bool {
+		groups = nil
+		err := client.WhereCache(func(row *ovnnb.LoadBalancerGroup) bool { return row.Name == "stale-lbg" }).List(ctx, &groups)
+		return err == nil && len(groups) == 1
+	})
 	switches[0].OtherConfig["subnet"] = "10.99.0.0/24"
-	updateSwitch, err := client.Where(&switches[0]).Update(&switches[0], &switches[0].OtherConfig)
+	switches[0].LoadBalancerGroup = []string{groups[0].UUID}
+	updateSwitch, err := client.Where(&switches[0]).Update(&switches[0], &switches[0].OtherConfig, &switches[0].LoadBalancerGroup)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +241,7 @@ func TestAuditManagedObjectsReportsColumnDriftFromLibOVSDBReader(t *testing.T) {
 	ops := append(updateSwitch, updateRouter...)
 	ops = append(ops, updateNAT...)
 	ops = append(ops, updateRoute...)
-	results, err := client.Transact(ctx, ops...)
+	results, err = client.Transact(ctx, ops...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,10 +253,10 @@ func TestAuditManagedObjectsReportsColumnDriftFromLibOVSDBReader(t *testing.T) {
 	requireEventually(t, func() bool {
 		var err error
 		stats, err = AuditManagedObjectsFromReaderWithDesired(ctx, reader, desired)
-		return err == nil && stats.DriftedManagedRows == 4 && stats.DriftedManagedFields == 5
+		return err == nil && stats.DriftedManagedRows == 4 && stats.DriftedManagedFields == 6
 	})
-	if stats.DriftedManagedRows != 4 || stats.DriftedManagedFields != 5 {
-		t.Fatalf("audit stats = %+v, want four column drifted managed rows and five fields", stats)
+	if stats.DriftedManagedRows != 4 || stats.DriftedManagedFields != 6 {
+		t.Fatalf("audit stats = %+v, want four column drifted managed rows and six fields", stats)
 	}
 }
 
