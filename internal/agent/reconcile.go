@@ -48,6 +48,7 @@ type ReconcileResult struct {
 	PolicyRolloutSLOFailed           int
 	PolicyRolloutProbeFailed         int
 	PolicyRolloutPaused              int
+	PolicyRolloutCancelled           int
 	PolicyRolloutStatus              []NamedPolicyEndpointRollout
 	PolicyMapDriftEndpoints          int
 	PolicyMapDriftMissing            int
@@ -1526,6 +1527,9 @@ func ApplyPolicyRolloutResults(result *ReconcileResult, rollouts []NamedPolicyEn
 		}
 		if rollout.Rollout.Paused {
 			result.PolicyRolloutPaused++
+		}
+		if rollout.Rollout.Cancelled {
+			result.PolicyRolloutCancelled++
 		}
 	}
 }

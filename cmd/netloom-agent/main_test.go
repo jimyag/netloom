@@ -962,6 +962,7 @@ func TestReconcileStateFileOnceAppliesDesiredPolicyRollout(t *testing.T) {
 		"policy_rollout_planned=1",
 		"policy_rollout_applied=1",
 		"policy_rollout_failed=0",
+		"policy_rollout_cancelled=0",
 	} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("output missing %q:\n%s", expected, output)
@@ -1179,6 +1180,7 @@ func TestPrintReconcileResultIncludesPolicyMapUsageSummary(t *testing.T) {
 		PolicyRolloutSLOFailed:           1,
 		PolicyRolloutProbeFailed:         1,
 		PolicyRolloutPaused:              1,
+		PolicyRolloutCancelled:           1,
 		PolicyMapDriftEndpoints:          1,
 		PolicyMapDriftMissing:            2,
 		PolicyMapDriftExtra:              3,
@@ -1263,6 +1265,7 @@ func TestPrintReconcileResultIncludesPolicyMapUsageSummary(t *testing.T) {
 		"policy_rollout_slo_failed=1",
 		"policy_rollout_probe_failed=1",
 		"policy_rollout_paused=1",
+		"policy_rollout_cancelled=1",
 		"policy_map_drift_endpoints=1",
 		"policy_map_drift_missing=2",
 		"policy_map_drift_extra=3",
@@ -2874,6 +2877,7 @@ func TestAgentMetricsExportsLatestPolicyAndTCXCounters(t *testing.T) {
 		PolicyRolloutSLOFailed:           1,
 		PolicyRolloutProbeFailed:         1,
 		PolicyRolloutPaused:              1,
+		PolicyRolloutCancelled:           1,
 		PolicyMapDriftEndpoints:          1,
 		PolicyMapDriftMissing:            2,
 		PolicyMapDriftExtra:              3,
@@ -2942,6 +2946,7 @@ func TestAgentMetricsExportsLatestPolicyAndTCXCounters(t *testing.T) {
 		`netloom_agent_policy_rollout_slo_failed{node="node-a",store="ebpf"} 1`,
 		`netloom_agent_policy_rollout_probe_failed{node="node-a",store="ebpf"} 1`,
 		`netloom_agent_policy_rollout_paused{node="node-a",store="ebpf"} 1`,
+		`netloom_agent_policy_rollout_cancelled{node="node-a",store="ebpf"} 1`,
 		`netloom_agent_provider_tenant_subnets{node="node-a",provider_network="physnet-a",store="ebpf",tenant="prod"} 1`,
 		`netloom_agent_provider_tenant_endpoints{node="node-a",provider_network="physnet-a",store="ebpf",tenant="prod"} 2`,
 		`netloom_agent_provider_tenant_max_subnets{node="node-a",provider_network="physnet-a",store="ebpf",tenant="prod"} 2`,
@@ -2956,6 +2961,7 @@ func TestAgentMetricsExportsLatestPolicyAndTCXCounters(t *testing.T) {
 		`netloom_agent_policy_rollout_slo_failed_total{node="node-a",store="ebpf"} 1`,
 		`netloom_agent_policy_rollout_probe_failed_total{node="node-a",store="ebpf"} 1`,
 		`netloom_agent_policy_rollout_paused_total{node="node-a",store="ebpf"} 1`,
+		`netloom_agent_policy_rollout_cancelled_total{node="node-a",store="ebpf"} 1`,
 		`netloom_agent_policy_map_drift_endpoints{node="node-a",store="ebpf"} 1`,
 		`netloom_agent_policy_map_drift_missing_entries{node="node-a",store="ebpf"} 2`,
 		`netloom_agent_policy_map_drift_extra_entries{node="node-a",store="ebpf"} 3`,
