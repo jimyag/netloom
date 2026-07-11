@@ -194,11 +194,13 @@ type PolicyEndpointRolloutOptions struct {
 	Approved                  bool
 	ApprovalRef               string
 	ApprovalSignature         string
+	ApprovalExpiresAt         time.Time
 	ApprovalCallbackURL       string
 	ApprovalCallbackTimeout   time.Duration
 	AckRequired               bool
 	Acknowledged              bool
 	AckRef                    string
+	AckExpiresAt              time.Time
 	ChangePollURL             string
 	ChangePollTimeout         time.Duration
 	ChangeStatusURL           string
@@ -235,12 +237,16 @@ type PolicyEndpointRollout struct {
 	Approved                  bool                        `json:"approved,omitempty"`
 	ApprovalRef               string                      `json:"approval_ref,omitempty"`
 	ApprovalSignatureVerified bool                        `json:"approval_signature_verified,omitempty"`
+	ApprovalExpiresAt         string                      `json:"approval_expires_at,omitempty"`
+	ApprovalExpired           bool                        `json:"approval_expired,omitempty"`
 	ApprovalCallbackURL       string                      `json:"approval_callback_url,omitempty"`
 	ApprovalCallbackApproved  bool                        `json:"approval_callback_approved,omitempty"`
 	ApprovalCallbackError     string                      `json:"approval_callback_error,omitempty"`
 	AckRequired               bool                        `json:"ack_required,omitempty"`
 	Acknowledged              bool                        `json:"acknowledged,omitempty"`
 	AckRef                    string                      `json:"ack_ref,omitempty"`
+	AckExpiresAt              string                      `json:"ack_expires_at,omitempty"`
+	AckExpired                bool                        `json:"ack_expired,omitempty"`
 	AckPending                bool                        `json:"ack_pending,omitempty"`
 	ChangePollURL             string                      `json:"change_poll_url,omitempty"`
 	ChangePollAllowed         bool                        `json:"change_poll_allowed,omitempty"`
@@ -439,10 +445,12 @@ func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, opt
 		ApprovalRequired:         rolloutOptions.ApprovalRequired,
 		Approved:                 rolloutOptions.Approved,
 		ApprovalRef:              rolloutOptions.ApprovalRef,
+		ApprovalExpiresAt:        rolloutExpiryString(rolloutOptions.ApprovalExpiresAt),
 		ApprovalCallbackURL:      rolloutOptions.ApprovalCallbackURL,
 		AckRequired:              rolloutOptions.AckRequired,
 		Acknowledged:             rolloutOptions.Acknowledged,
 		AckRef:                   rolloutOptions.AckRef,
+		AckExpiresAt:             rolloutExpiryString(rolloutOptions.AckExpiresAt),
 		ChangePollURL:            rolloutOptions.ChangePollURL,
 		ChangeStatusURL:          rolloutOptions.ChangeStatusURL,
 		Paused:                   rolloutOptions.Paused,
@@ -480,6 +488,12 @@ func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, opt
 	}
 	if rolloutOptions.DryRun {
 		return rollout, nil
+	}
+	now := time.Now().UTC()
+	if rolloutOptions.ApprovalRequired && rolloutExpired(rolloutOptions.ApprovalExpiresAt, now) {
+		rollout.ApprovalExpired = true
+		pauseRolloutItems(&rollout, 0, "approval_expired")
+		return syncPolicyRolloutChangeStatus(ctx, rolloutOptions, endpointIDs, rollout), nil
 	}
 	if rolloutOptions.ApprovalRequired && !rolloutOptions.Approved {
 		rollout.ApprovalPending = true
@@ -530,6 +544,11 @@ func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, opt
 			return syncPolicyRolloutChangeStatus(ctx, rolloutOptions, endpointIDs, rollout), nil
 		}
 		rollout.ChangePollAllowed = true
+	}
+	if rolloutOptions.AckRequired && rolloutExpired(rolloutOptions.AckExpiresAt, now) {
+		rollout.AckExpired = true
+		pauseRolloutItems(&rollout, 0, "ack_expired")
+		return syncPolicyRolloutChangeStatus(ctx, rolloutOptions, endpointIDs, rollout), nil
 	}
 	if rolloutOptions.AckRequired && !rolloutOptions.Acknowledged {
 		rollout.AckPending = true
@@ -647,6 +666,17 @@ func PolicyRolloutApprovalSignature(secret, approvalRef string, endpointIDs []st
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write([]byte(policyRolloutApprovalPayload(approvalRef, endpointIDs)))
 	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
+}
+
+func rolloutExpiryString(expiresAt time.Time) string {
+	if expiresAt.IsZero() {
+		return ""
+	}
+	return expiresAt.UTC().Format(time.RFC3339)
+}
+
+func rolloutExpired(expiresAt, now time.Time) bool {
+	return !expiresAt.IsZero() && !now.Before(expiresAt.UTC())
 }
 
 func verifyPolicyRolloutApprovalSignature(secret, signature, approvalRef string, endpointIDs []string) (bool, error) {
@@ -1333,6 +1363,14 @@ func ApplyPolicyRollouts(ctx context.Context, state control.DesiredState, option
 		if err != nil {
 			return nil, fmt.Errorf("policy rollout %q: %w", rollout.Name, err)
 		}
+		approvalExpiresAt, err := parsePolicyRolloutTime(rollout.ApprovalExpiresAt)
+		if err != nil {
+			return nil, fmt.Errorf("policy rollout %q approval_expires_at: %w", rollout.Name, err)
+		}
+		ackExpiresAt, err := parsePolicyRolloutTime(rollout.AckExpiresAt)
+		if err != nil {
+			return nil, fmt.Errorf("policy rollout %q ack_expires_at: %w", rollout.Name, err)
+		}
 		result, err := RolloutPolicyEndpoints(ctx, state, options, PolicyEndpointRolloutOptions{
 			EndpointIDs:               endpointIDs,
 			BatchSize:                 rollout.BatchSize,
@@ -1349,11 +1387,13 @@ func ApplyPolicyRollouts(ctx context.Context, state control.DesiredState, option
 			Approved:                  rollout.Approved,
 			ApprovalRef:               rollout.ApprovalRef,
 			ApprovalSignature:         rollout.ApprovalSignature,
+			ApprovalExpiresAt:         approvalExpiresAt,
 			ApprovalCallbackURL:       rollout.ApprovalCallbackURL,
 			ApprovalCallbackTimeout:   time.Duration(rollout.ApprovalCallbackTimeoutMS) * time.Millisecond,
 			AckRequired:               rollout.AckRequired,
 			Acknowledged:              rollout.Acknowledged,
 			AckRef:                    rollout.AckRef,
+			AckExpiresAt:              ackExpiresAt,
 			ChangePollURL:             rollout.ChangePollURL,
 			ChangePollTimeout:         time.Duration(rollout.ChangePollTimeoutMS) * time.Millisecond,
 			ChangeStatusURL:           rollout.ChangeStatusURL,
@@ -1372,6 +1412,18 @@ func ApplyPolicyRollouts(ctx context.Context, state control.DesiredState, option
 		}
 	}
 	return out, nil
+}
+
+func parsePolicyRolloutTime(value string) (time.Time, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, nil
+	}
+	parsed, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("must be RFC3339")
+	}
+	return parsed, nil
 }
 
 func activePolicyRolloutsForNode(rollouts []control.PolicyRollout, node string) []control.PolicyRollout {

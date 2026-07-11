@@ -1049,6 +1049,32 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 			wantErr: "approval_callback_url must be http or https",
 		},
 		{
+			name: "invalid policy rollout approval expiry",
+			mutate: func(state *DesiredState) {
+				state.PolicyRollouts = []PolicyRollout{{
+					Name:              "web-canary",
+					Endpoints:         []string{"prod/pod-a"},
+					BatchSize:         1,
+					ApprovalRequired:  true,
+					ApprovalExpiresAt: "tomorrow",
+				}}
+			},
+			wantErr: "approval_expires_at must be RFC3339",
+		},
+		{
+			name: "invalid policy rollout ack expiry",
+			mutate: func(state *DesiredState) {
+				state.PolicyRollouts = []PolicyRollout{{
+					Name:         "web-canary",
+					Endpoints:    []string{"prod/pod-a"},
+					BatchSize:    1,
+					AckRequired:  true,
+					AckExpiresAt: "tomorrow",
+				}}
+			},
+			wantErr: "ack_expires_at must be RFC3339",
+		},
+		{
 			name: "invalid policy rollout change status URL",
 			mutate: func(state *DesiredState) {
 				state.PolicyRollouts = []PolicyRollout{{

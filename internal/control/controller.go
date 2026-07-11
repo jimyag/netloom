@@ -188,11 +188,13 @@ type PolicyRollout struct {
 	Approved                  bool                 `json:"approved,omitempty"`
 	ApprovalRef               string               `json:"approval_ref,omitempty"`
 	ApprovalSignature         string               `json:"approval_signature,omitempty"`
+	ApprovalExpiresAt         string               `json:"approval_expires_at,omitempty"`
 	ApprovalCallbackURL       string               `json:"approval_callback_url,omitempty"`
 	ApprovalCallbackTimeoutMS uint32               `json:"approval_callback_timeout_ms,omitempty"`
 	AckRequired               bool                 `json:"ack_required,omitempty"`
 	Acknowledged              bool                 `json:"acknowledged,omitempty"`
 	AckRef                    string               `json:"ack_ref,omitempty"`
+	AckExpiresAt              string               `json:"ack_expires_at,omitempty"`
 	ChangePollURL             string               `json:"change_poll_url,omitempty"`
 	ChangePollTimeoutMS       uint32               `json:"change_poll_timeout_ms,omitempty"`
 	ChangeStatusURL           string               `json:"change_status_url,omitempty"`
@@ -237,6 +239,16 @@ func (r PolicyRollout) Validate() error {
 	}
 	if r.PromotionPercent > 100 {
 		return fmt.Errorf("policy rollout %q promotion_percent must be <= 100", r.Name)
+	}
+	if strings.TrimSpace(r.ApprovalExpiresAt) != "" {
+		if _, err := time.Parse(time.RFC3339, strings.TrimSpace(r.ApprovalExpiresAt)); err != nil {
+			return fmt.Errorf("policy rollout %q approval_expires_at must be RFC3339", r.Name)
+		}
+	}
+	if strings.TrimSpace(r.AckExpiresAt) != "" {
+		if _, err := time.Parse(time.RFC3339, strings.TrimSpace(r.AckExpiresAt)); err != nil {
+			return fmt.Errorf("policy rollout %q ack_expires_at must be RFC3339", r.Name)
+		}
 	}
 	if strings.TrimSpace(r.ApprovalCallbackURL) != "" {
 		if !validHTTPCallbackURL(r.ApprovalCallbackURL) {

@@ -230,11 +230,13 @@ type policyEndpointRolloutRequest struct {
 	Approved                  bool                         `json:"approved,omitempty"`
 	ApprovalRef               string                       `json:"approval_ref,omitempty"`
 	ApprovalSignature         string                       `json:"approval_signature,omitempty"`
+	ApprovalExpiresAt         string                       `json:"approval_expires_at,omitempty"`
 	ApprovalCallbackURL       string                       `json:"approval_callback_url,omitempty"`
 	ApprovalCallbackTimeoutMS uint32                       `json:"approval_callback_timeout_ms,omitempty"`
 	AckRequired               bool                         `json:"ack_required,omitempty"`
 	Acknowledged              bool                         `json:"acknowledged,omitempty"`
 	AckRef                    string                       `json:"ack_ref,omitempty"`
+	AckExpiresAt              string                       `json:"ack_expires_at,omitempty"`
 	ChangePollURL             string                       `json:"change_poll_url,omitempty"`
 	ChangePollTimeoutMS       uint32                       `json:"change_poll_timeout_ms,omitempty"`
 	ChangeStatusURL           string                       `json:"change_status_url,omitempty"`
@@ -2009,6 +2011,14 @@ func (m *agentMetrics) rolloutPolicyEndpoints(ctx context.Context, request polic
 		}
 		endpoints = append(endpoints, endpointID)
 	}
+	approvalExpiresAt, err := parsePolicyRolloutRequestTime(request.ApprovalExpiresAt)
+	if err != nil {
+		return agent.PolicyEndpointRollout{}, fmt.Errorf("approval_expires_at: %w", err)
+	}
+	ackExpiresAt, err := parsePolicyRolloutRequestTime(request.AckExpiresAt)
+	if err != nil {
+		return agent.PolicyEndpointRollout{}, fmt.Errorf("ack_expires_at: %w", err)
+	}
 	rollout, err := agent.RolloutPolicyEndpoints(ctx, snapshot.State, agent.ReconcileOptions{
 		Node:                        snapshot.Result.Node,
 		Store:                       m.store,
@@ -2031,11 +2041,13 @@ func (m *agentMetrics) rolloutPolicyEndpoints(ctx context.Context, request polic
 		Approved:                  request.Approved,
 		ApprovalRef:               request.ApprovalRef,
 		ApprovalSignature:         request.ApprovalSignature,
+		ApprovalExpiresAt:         approvalExpiresAt,
 		ApprovalCallbackURL:       request.ApprovalCallbackURL,
 		ApprovalCallbackTimeout:   time.Duration(request.ApprovalCallbackTimeoutMS) * time.Millisecond,
 		AckRequired:               request.AckRequired,
 		Acknowledged:              request.Acknowledged,
 		AckRef:                    request.AckRef,
+		AckExpiresAt:              ackExpiresAt,
 		ChangePollURL:             request.ChangePollURL,
 		ChangePollTimeout:         time.Duration(request.ChangePollTimeoutMS) * time.Millisecond,
 		ChangeStatusURL:           request.ChangeStatusURL,
@@ -2072,6 +2084,18 @@ func (m *agentMetrics) storeTelemetry() agent.PolicyRuleMetricsStore {
 	}
 	telemetry, _ := m.store.(agent.PolicyRuleMetricsStore)
 	return telemetry
+}
+
+func parsePolicyRolloutRequestTime(value string) (time.Time, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, nil
+	}
+	parsed, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("must be RFC3339")
+	}
+	return parsed, nil
 }
 
 func (m *agentMetrics) resolvePolicyEndpointID(endpoint string) (string, error) {

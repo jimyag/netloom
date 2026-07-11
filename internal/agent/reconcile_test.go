@@ -1588,6 +1588,43 @@ func TestApplyPolicyRolloutsRequiresApproval(t *testing.T) {
 	}
 }
 
+func TestApplyPolicyRolloutsRejectsExpiredApproval(t *testing.T) {
+	state := rolloutPolicyState()
+	state.PolicyRollouts = []control.PolicyRollout{{
+		Name:              "approval-gated",
+		Node:              "node-a",
+		Endpoints:         []string{"prod/pod-a", "prod/pod-b"},
+		BatchSize:         1,
+		ApprovalRequired:  true,
+		Approved:          true,
+		ApprovalRef:       "chg-1234",
+		ApprovalExpiresAt: time.Now().Add(-time.Hour).UTC().Format(time.RFC3339),
+	}}
+	store := dataplane.NewInMemoryPolicyStore()
+
+	rollouts, err := ApplyPolicyRollouts(context.Background(), state, ReconcileOptions{
+		Node:  "node-a",
+		Store: store,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result ReconcileResult
+	ApplyPolicyRolloutResults(&result, rollouts)
+	if result.PolicyRollouts != 1 || result.PolicyRolloutPaused != 1 || result.PolicyRolloutApplied != 0 || result.PolicyRolloutSkipped != 2 {
+		t.Fatalf("rollout result = %+v rollouts=%+v, want expired approval pause", result, rollouts)
+	}
+	if len(rollouts) != 1 || !rollouts[0].Rollout.ApprovalExpired || !rollouts[0].Rollout.Paused || rollouts[0].Rollout.ApprovalExpiresAt == "" {
+		t.Fatalf("rollouts = %+v, want expired approval pause with deadline", rollouts)
+	}
+	if reasons := []string{rollouts[0].Rollout.Items[0].Reason, rollouts[0].Rollout.Items[1].Reason}; !slices.Equal(reasons, []string{"approval_expired", "approval_expired"}) {
+		t.Fatalf("approval rollout item reasons = %+v, want approval_expired", reasons)
+	}
+	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 0 {
+		t.Fatalf("pod-a entries = %+v, want no mutation after expired approval", entries)
+	}
+}
+
 func TestApplyPolicyRolloutsRequiresAcknowledgement(t *testing.T) {
 	state := rolloutPolicyState()
 	state.PolicyRollouts = []control.PolicyRollout{{
@@ -1635,6 +1672,43 @@ func TestApplyPolicyRolloutsRequiresAcknowledgement(t *testing.T) {
 	}
 	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 1 {
 		t.Fatalf("pod-a entries = %+v, want mutation after ack", entries)
+	}
+}
+
+func TestApplyPolicyRolloutsRejectsExpiredAcknowledgement(t *testing.T) {
+	state := rolloutPolicyState()
+	state.PolicyRollouts = []control.PolicyRollout{{
+		Name:         "ack-gated",
+		Node:         "node-a",
+		Endpoints:    []string{"prod/pod-a", "prod/pod-b"},
+		BatchSize:    1,
+		AckRequired:  true,
+		Acknowledged: true,
+		AckRef:       "ack-1234",
+		AckExpiresAt: time.Now().Add(-time.Hour).UTC().Format(time.RFC3339),
+	}}
+	store := dataplane.NewInMemoryPolicyStore()
+
+	rollouts, err := ApplyPolicyRollouts(context.Background(), state, ReconcileOptions{
+		Node:  "node-a",
+		Store: store,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result ReconcileResult
+	ApplyPolicyRolloutResults(&result, rollouts)
+	if result.PolicyRollouts != 1 || result.PolicyRolloutPaused != 1 || result.PolicyRolloutApplied != 0 || result.PolicyRolloutSkipped != 2 {
+		t.Fatalf("rollout result = %+v rollouts=%+v, want expired ack pause", result, rollouts)
+	}
+	if len(rollouts) != 1 || !rollouts[0].Rollout.AckExpired || !rollouts[0].Rollout.Paused || rollouts[0].Rollout.AckExpiresAt == "" {
+		t.Fatalf("rollouts = %+v, want expired ack pause with deadline", rollouts)
+	}
+	if reasons := []string{rollouts[0].Rollout.Items[0].Reason, rollouts[0].Rollout.Items[1].Reason}; !slices.Equal(reasons, []string{"ack_expired", "ack_expired"}) {
+		t.Fatalf("ack rollout item reasons = %+v, want ack_expired", reasons)
+	}
+	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 0 {
+		t.Fatalf("pod-a entries = %+v, want no mutation after expired ack", entries)
 	}
 }
 
