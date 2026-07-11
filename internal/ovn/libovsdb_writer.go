@@ -156,21 +156,7 @@ func (w *LibOVSDBTopologyWriter) EnsureEndpoint(ctx context.Context, endpoint mo
 	if !ok {
 		return fmt.Errorf("logical switch %s must exist before endpoint %s", switchName, endpoint.ID)
 	}
-	address := endpointAddress(endpoint)
-	port := &ovnnb.LogicalSwitchPort{
-		Name:      logicalPort(endpoint.VPC, endpoint.ID),
-		Addresses: []string{address},
-		ExternalIDs: map[string]string{
-			"netloom_owner":    "netloom",
-			"netloom_endpoint": endpointExternalID(endpoint.VPC, endpoint.ID),
-			"netloom_node":     endpoint.Node,
-			"netloom_vpc":      endpoint.VPC,
-			"netloom_subnet":   endpoint.Subnet,
-		},
-	}
-	if endpoint.NormalizedMAC() != "" {
-		port.PortSecurity = []string{address}
-	}
+	port := desiredEndpointSwitchPort(endpoint)
 	var ops []ovsdb.Operation
 	portUUID, portOps, err := w.ensureEndpointSwitchPort(ctx, logicalSwitch.UUID, logicalSwitch.Ports, port)
 	if err != nil {
@@ -200,6 +186,25 @@ func (w *LibOVSDBTopologyWriter) EnsureEndpoint(ctx context.Context, endpoint mo
 		return fmt.Errorf("endpoint %s/%s operation errors=%+v: %w", endpoint.VPC, endpoint.ID, opErrors, err)
 	}
 	return nil
+}
+
+func desiredEndpointSwitchPort(endpoint model.Endpoint) *ovnnb.LogicalSwitchPort {
+	address := endpointAddress(endpoint)
+	port := &ovnnb.LogicalSwitchPort{
+		Name:      logicalPort(endpoint.VPC, endpoint.ID),
+		Addresses: []string{address},
+		ExternalIDs: map[string]string{
+			"netloom_owner":    "netloom",
+			"netloom_endpoint": endpointExternalID(endpoint.VPC, endpoint.ID),
+			"netloom_node":     endpoint.Node,
+			"netloom_vpc":      endpoint.VPC,
+			"netloom_subnet":   endpoint.Subnet,
+		},
+	}
+	if endpoint.NormalizedMAC() != "" {
+		port.PortSecurity = []string{address}
+	}
+	return port
 }
 
 func (w *LibOVSDBTopologyWriter) EnsureRouteTable(ctx context.Context, table model.RouteTable) error {

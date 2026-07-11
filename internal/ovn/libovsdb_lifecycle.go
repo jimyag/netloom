@@ -55,6 +55,15 @@ func (w *LibOVSDBTopologyWriter) CleanupTopology(ctx context.Context, state topo
 		stats.Operations = len(ops)
 	}
 	if w.seen && len(ops) == 0 {
+		repairOps, err := w.repairSteadyStateEndpointSwitchPorts(ctx, state)
+		if err != nil {
+			w.lastCleanup = stats
+			return err
+		}
+		ops = append(ops, repairOps...)
+		stats.Operations = len(ops)
+	}
+	if w.seen && len(ops) == 0 {
 		repairOps, err := w.repairSteadyStateEndpointDHCPOptions(ctx, state)
 		if err != nil {
 			w.lastCleanup = stats
@@ -586,6 +595,35 @@ func (w *LibOVSDBTopologyWriter) repairSteadyStateSubnetPorts(ctx context.Contex
 			OtherConfig: logicalSwitchOtherConfig(subnet),
 		}
 		nextOps, err := w.subnetPortOperations(ctx, router, desiredSwitch, existingSwitch, subnet)
+		if err != nil {
+			return nil, err
+		}
+		ops = append(ops, nextOps...)
+	}
+	return ops, nil
+}
+
+func (w *LibOVSDBTopologyWriter) repairSteadyStateEndpointSwitchPorts(ctx context.Context, desired topology.State) ([]ovsdb.Operation, error) {
+	endpoints := make([]model.Endpoint, 0, len(desired.Endpoints))
+	for _, endpoint := range desired.Endpoints {
+		endpoints = append(endpoints, endpoint)
+	}
+	sort.Slice(endpoints, func(i, j int) bool {
+		if endpoints[i].VPC == endpoints[j].VPC {
+			return endpoints[i].ID < endpoints[j].ID
+		}
+		return endpoints[i].VPC < endpoints[j].VPC
+	})
+	var ops []ovsdb.Operation
+	for _, endpoint := range endpoints {
+		switchRow, ok, err := w.logicalSwitchByName(ctx, logicalSwitch(endpoint.VPC, endpoint.Subnet))
+		if err != nil {
+			return nil, err
+		}
+		if !ok || !isNetloomManaged(switchRow.ExternalIDs) {
+			continue
+		}
+		_, nextOps, err := w.ensureEndpointSwitchPort(ctx, switchRow.UUID, switchRow.Ports, desiredEndpointSwitchPort(endpoint))
 		if err != nil {
 			return nil, err
 		}
