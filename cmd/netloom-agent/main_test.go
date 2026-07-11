@@ -280,6 +280,43 @@ func TestWithDNSObservationsMergesObservedRecords(t *testing.T) {
 	}
 }
 
+func TestRunIdentityGroupsImportWithStoreWritesOpenVSwitchExternalID(t *testing.T) {
+	store := &fakeOpenVSwitchExternalIDStore{}
+	var stdout bytes.Buffer
+	err := runIdentityGroupsImportWithStore(t.Context(), identityGroupsImportOptions{inputFile: "-"}, strings.NewReader(`[
+		{"name":"frontend","vpc":"prod","source":"cmdb","endpoint_ids":["pod-a"]}
+	]`), &stdout, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := stdout.String(); !strings.Contains(got, "identity_groups=1") || !strings.Contains(got, control.IdentityGroupObservationsOpenVSwitchExternalID) {
+		t.Fatalf("stdout = %q, want import summary", got)
+	}
+	raw, ok := store.values[control.IdentityGroupObservationsOpenVSwitchExternalID]
+	if !ok {
+		t.Fatalf("missing %s external_id", control.IdentityGroupObservationsOpenVSwitchExternalID)
+	}
+	groups, err := control.LoadIdentityGroupObservationsJSON(strings.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(groups) != 1 || groups[0].Name != "frontend" || groups[0].VPC != "prod" {
+		t.Fatalf("groups = %+v, want imported frontend group", groups)
+	}
+}
+
+func TestRunIdentityGroupsImportWithStoreRejectsPatchOnlyFeed(t *testing.T) {
+	store := &fakeOpenVSwitchExternalIDStore{}
+	var stdout bytes.Buffer
+	err := runIdentityGroupsImportWithStore(t.Context(), identityGroupsImportOptions{inputFile: "-"}, strings.NewReader(`{"identity_group_patches":[{"op":"delete","vpc":"prod","name":"old"}]}`), &stdout, store)
+	if err == nil || !strings.Contains(err.Error(), "requires cached groups") {
+		t.Fatalf("err = %v, want cached groups error", err)
+	}
+	if len(store.values) != 0 {
+		t.Fatalf("store values = %+v, want no write on invalid import", store.values)
+	}
+}
+
 func TestWithDNSObservationsPrunesExpiredRecords(t *testing.T) {
 	raw, err := control.MarshalDNSObservationsJSON([]model.DNSRecord{
 		{Name: "expired.example.com", IPs: []netip.Addr{netip.MustParseAddr("203.0.113.10")}, TTLSeconds: 30, ObservedAt: time.Date(2026, 5, 30, 11, 59, 30, 0, time.UTC)},

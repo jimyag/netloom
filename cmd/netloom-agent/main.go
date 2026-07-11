@@ -57,6 +57,11 @@ func main() {
 				log.Fatal(err)
 			}
 			return
+		case "identity-groups-import":
+			if err := runIdentityGroupsImport(context.Background(), os.Args[2:], os.Stdin, os.Stdout); err != nil {
+				log.Fatal(err)
+			}
+			return
 		}
 	}
 
@@ -105,6 +110,11 @@ type routeExplainOptions struct {
 	protocol   string
 	sourcePort uint
 	destPort   uint
+}
+
+type identityGroupsImportOptions struct {
+	inputFile string
+	ovsdb     string
 }
 
 type policyStatusOutput struct {
@@ -372,6 +382,67 @@ func runRouteExplain(args []string, stdout io.Writer) error {
 	encoder := json.NewEncoder(stdout)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(decision)
+}
+
+func runIdentityGroupsImport(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) error {
+	var opts identityGroupsImportOptions
+	flags := flag.NewFlagSet("netloom-agent identity-groups-import", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	flags.StringVar(&opts.inputFile, "in", "-", "identity group observations JSON path or - for stdin")
+	flags.StringVar(&opts.ovsdb, "ovsdb", os.Getenv("NETLOOM_OVSDB_ENDPOINT"), "Open_vSwitch OVSDB endpoint")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(opts.ovsdb) == "" {
+		return errors.New("missing -ovsdb or NETLOOM_OVSDB_ENDPOINT")
+	}
+	client, closeStore, err := newOpenVSwitchClient(ctx, opts.ovsdb)
+	if err != nil {
+		return err
+	}
+	defer closeStore()
+	return runIdentityGroupsImportWithStore(ctx, opts, stdin, stdout, linuxdatapath.NewLibOVSDBProviderSyncer(client))
+}
+
+func runIdentityGroupsImportWithStore(ctx context.Context, opts identityGroupsImportOptions, stdin io.Reader, stdout io.Writer, store openVSwitchExternalIDStore) error {
+	if store == nil {
+		return errors.New("missing Open_vSwitch external_id store")
+	}
+	input, closeInput, err := identityGroupsImportInput(opts.inputFile, stdin)
+	if err != nil {
+		return err
+	}
+	if closeInput != nil {
+		defer closeInput()
+	}
+	groups, err := control.LoadIdentityGroupObservationsJSON(input)
+	if err != nil {
+		return err
+	}
+	raw, err := control.MarshalIdentityGroupObservationsJSON(groups)
+	if err != nil {
+		return err
+	}
+	if err := store.SetOpenVSwitchExternalID(ctx, control.IdentityGroupObservationsOpenVSwitchExternalID, string(raw)); err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(stdout, "identity_groups=%d external_id=%s\n", len(groups), control.IdentityGroupObservationsOpenVSwitchExternalID)
+	return err
+}
+
+func identityGroupsImportInput(path string, stdin io.Reader) (io.Reader, func(), error) {
+	path = strings.TrimSpace(path)
+	if path == "" || path == "-" {
+		if stdin == nil {
+			return nil, nil, errors.New("missing stdin")
+		}
+		return stdin, nil, nil
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	return file, func() { _ = file.Close() }, nil
 }
 
 func filterPolicyEndpointStatuses(statuses []dataplane.PolicyEndpointStatus, endpoint string, endpoints []model.Endpoint) []dataplane.PolicyEndpointStatus {

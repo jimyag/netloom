@@ -74,6 +74,14 @@ func LoadIdentityGroupObservationsJSON(r io.Reader) ([]model.IdentityGroup, erro
 	return feed.Groups, nil
 }
 
+func MarshalIdentityGroupObservationsJSON(groups []model.IdentityGroup) ([]byte, error) {
+	groups, err := validateIdentityGroups(groups)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(identityGroupObservationDocument{IdentityGroups: &groups})
+}
+
 func LoadIdentityGroupObservationFeedJSON(r io.Reader) (IdentityGroupObservationFeed, error) {
 	var raw json.RawMessage
 	decoder := json.NewDecoder(r)

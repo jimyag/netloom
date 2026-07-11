@@ -41,6 +41,28 @@ func TestLoadIdentityGroupObservationsJSONAcceptsDocumentAndArray(t *testing.T) 
 	}
 }
 
+func TestMarshalIdentityGroupObservationsJSONWritesSnapshotDocument(t *testing.T) {
+	raw, err := MarshalIdentityGroupObservationsJSON([]model.IdentityGroup{{
+		Name:        "frontend",
+		VPC:         "prod",
+		Source:      "cmdb",
+		EndpointIDs: []string{"pod-a"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(raw); !strings.Contains(got, `"identity_groups"`) || strings.Contains(got, `"identity_group_patches"`) {
+		t.Fatalf("raw = %s, want snapshot identity_groups document", got)
+	}
+	groups, err := LoadIdentityGroupObservationsJSON(strings.NewReader(string(raw)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(groups) != 1 || groups[0].Name != "frontend" || groups[0].Source != "cmdb" {
+		t.Fatalf("groups = %+v, want frontend cmdb", groups)
+	}
+}
+
 func TestLoadIdentityGroupObservationFeedJSONAcceptsIncrementalPatches(t *testing.T) {
 	feed, err := LoadIdentityGroupObservationFeedJSON(strings.NewReader(`{"identity_group_patches":[{"op":"upsert","group":{"name":"frontend","vpc":"prod","source":"cmdb","endpoint_ids":["pod-a"]}},{"op":"delete","vpc":"prod","name":"old"}]}`))
 	if err != nil {
