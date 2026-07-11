@@ -17,11 +17,19 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-logr/logr"
+	libovsdbclient "github.com/ovn-kubernetes/libovsdb/client"
+	"github.com/ovn-kubernetes/libovsdb/database/inmemory"
+	ovsmodel "github.com/ovn-kubernetes/libovsdb/model"
+	"github.com/ovn-kubernetes/libovsdb/ovsdb"
+	"github.com/ovn-kubernetes/libovsdb/server"
+
 	"github.com/jimyag/netloom/internal/agent"
 	"github.com/jimyag/netloom/internal/control"
 	"github.com/jimyag/netloom/internal/dataplane"
 	"github.com/jimyag/netloom/internal/linuxdatapath"
 	"github.com/jimyag/netloom/internal/model"
+	"github.com/jimyag/netloom/internal/ovn/ovsdb/vswitch"
 	"github.com/jimyag/netloom/internal/policy"
 	"github.com/jimyag/netloom/internal/topology"
 )
@@ -301,6 +309,39 @@ func TestRunIdentityGroupsImportWithStoreWritesOpenVSwitchExternalID(t *testing.
 		t.Fatal(err)
 	}
 	if len(groups) != 1 || groups[0].Name != "frontend" || groups[0].VPC != "prod" {
+		t.Fatalf("groups = %+v, want imported frontend group", groups)
+	}
+}
+
+func TestRunIdentityGroupsImportWritesRealOpenVSwitchOVSDB(t *testing.T) {
+	endpoint, client, cleanup := newTestAgentVSwitchOVSDB(t)
+	defer cleanup()
+	insertAgentVSwitchRows(t, t.Context(), client, &vswitch.OpenvSwitch{ExternalIDs: map[string]string{
+		"ovn-bridge-mappings": "physnet-a:br-provider",
+	}})
+	var stdout bytes.Buffer
+	err := runIdentityGroupsImport(t.Context(), []string{"-ovsdb", endpoint}, strings.NewReader(`{"identity_groups":[
+		{"name":"frontend","vpc":"prod","source":"cmdb","endpoint_ids":["pod-a"]}
+	]}`), &stdout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := stdout.String(); !strings.Contains(got, "identity_groups=1") || !strings.Contains(got, control.IdentityGroupObservationsOpenVSwitchExternalID) {
+		t.Fatalf("stdout = %q, want import summary", got)
+	}
+	root := singleAgentVSwitchRoot(t, t.Context(), client)
+	if got := root.ExternalIDs["ovn-bridge-mappings"]; got != "physnet-a:br-provider" {
+		t.Fatalf("ovn-bridge-mappings = %q, want preserved existing external_id", got)
+	}
+	raw := root.ExternalIDs[control.IdentityGroupObservationsOpenVSwitchExternalID]
+	if raw == "" {
+		t.Fatalf("root external IDs = %+v, want identity group observations", root.ExternalIDs)
+	}
+	groups, err := control.LoadIdentityGroupObservationsJSON(strings.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(groups) != 1 || groups[0].Name != "frontend" || groups[0].VPC != "prod" || groups[0].EndpointIDs[0] != "pod-a" {
 		t.Fatalf("groups = %+v, want imported frontend group", groups)
 	}
 }
@@ -2827,4 +2868,92 @@ func (s *fakeOpenVSwitchExternalIDStore) SetOpenVSwitchExternalID(_ context.Cont
 	}
 	s.values[key] = value
 	return nil
+}
+
+func newTestAgentVSwitchOVSDB(t *testing.T) (string, libovsdbclient.Client, func()) {
+	t.Helper()
+	clientModel, err := vswitch.FullDatabaseModel()
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema := vswitch.Schema()
+	databaseModel, errs := ovsmodel.NewDatabaseModel(schema, clientModel)
+	if len(errs) > 0 {
+		t.Fatalf("database model errors: %+v", errs)
+	}
+	logger := logr.Discard()
+	db := inmemory.NewDatabase(map[string]ovsmodel.ClientDBModel{vswitch.DatabaseName: clientModel}, &logger)
+	ovsServer, err := server.NewOvsdbServer(db, &logger, databaseModel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	socket := filepath.Join(t.TempDir(), "ovsdb.sock")
+	go func() {
+		if err := ovsServer.Serve("unix", socket); err != nil {
+			t.Logf("libovsdb test server stopped: %v", err)
+		}
+	}()
+	requireAgentEventually(t, ovsServer.Ready)
+
+	client, err := libovsdbclient.NewOVSDBClient(clientModel, libovsdbclient.WithEndpoint("unix:"+socket))
+	if err != nil {
+		ovsServer.Close()
+		t.Fatal(err)
+	}
+	if err := client.Connect(t.Context()); err != nil {
+		ovsServer.Close()
+		t.Fatal(err)
+	}
+	if _, err := client.MonitorAll(t.Context()); err != nil {
+		ovsServer.Close()
+		t.Fatal(err)
+	}
+	return "unix:" + socket, client, func() {
+		client.Disconnect()
+		client.Close()
+		ovsServer.Close()
+	}
+}
+
+func requireAgentEventually(t *testing.T, condition func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if condition() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("condition was not satisfied")
+}
+
+func insertAgentVSwitchRows(t *testing.T, ctx context.Context, client libovsdbclient.Client, rows ...ovsmodel.Model) {
+	t.Helper()
+	var ops []ovsdb.Operation
+	for _, row := range rows {
+		next, err := client.Create(row)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ops = append(ops, next...)
+	}
+	results, err := client.Transact(ctx, ops...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ovsdb.CheckOperationResults(results, ops); err != nil {
+		t.Fatalf("ovsdb transact results = %+v: %v", results, err)
+	}
+}
+
+func singleAgentVSwitchRoot(t *testing.T, ctx context.Context, client libovsdbclient.Client) vswitch.OpenvSwitch {
+	t.Helper()
+	var rows []vswitch.OpenvSwitch
+	if err := client.List(ctx, &rows); err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("Open_vSwitch rows = %d, want 1: %+v", len(rows), rows)
+	}
+	return rows[0]
 }
