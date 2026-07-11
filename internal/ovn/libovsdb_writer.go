@@ -322,7 +322,8 @@ func (w *LibOVSDBTopologyWriter) routeTableOperations(ctx context.Context, table
 				ops = append(ops, attachOps...)
 				continue
 			}
-			keep := rows[0]
+			keepIndex := preferredReferencedRow(router.StaticRoutes, rows, func(row ovnnb.LogicalRouterStaticRoute) string { return row.UUID })
+			keep := rows[keepIndex]
 			nextExternalIDs := mergeManagedExternalIDs(keep.ExternalIDs, desired.ExternalIDs)
 			if !containsString(router.StaticRoutes, keep.UUID) {
 				attachOps, err := w.attachStaticRoute(router, keep.UUID)
@@ -361,8 +362,11 @@ func (w *LibOVSDBTopologyWriter) routeTableOperations(ctx context.Context, table
 					ops = append(ops, deleteBFDOps...)
 				}
 			}
-			for i := 1; i < len(rows); i++ {
-				deleteOps, err := w.deleteStaticRoute(router.UUID, &rows[i])
+			for i := range rows {
+				if i == keepIndex {
+					continue
+				}
+				deleteOps, err := w.deleteStaticRouteFromParents(&rows[i])
 				if err != nil {
 					return nil, err
 				}
@@ -375,7 +379,7 @@ func (w *LibOVSDBTopologyWriter) routeTableOperations(ctx context.Context, table
 			continue
 		}
 		for i := range rows {
-			deleteOps, err := w.deleteStaticRoute(router.UUID, &rows[i])
+			deleteOps, err := w.deleteStaticRouteFromParents(&rows[i])
 			if err != nil {
 				return nil, err
 			}

@@ -1784,6 +1784,125 @@ func TestLibOVSDBTopologyWriterEnsuresRouteTableStaticRoutes(t *testing.T) {
 	})
 }
 
+func TestLibOVSDBTopologyWriterKeepsReferencedDuplicateStaticRoute(t *testing.T) {
+	ctx := context.Background()
+	client, closeFn := newTestOVNNBClient(t)
+	defer closeFn()
+
+	if _, err := client.MonitorAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	writer := NewLibOVSDBTopologyWriter(client)
+	if err := writer.EnsureVPC(ctx, model.VPC{Name: "prod"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureVPC(ctx, model.VPC{Name: "dev"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureSubnet(ctx, model.Subnet{
+		Name:    "db",
+		VPC:     "dev",
+		CIDR:    netip.MustParsePrefix("10.20.0.0/24"),
+		Gateway: netip.MustParseAddr("10.20.0.1"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	table := model.RouteTable{
+		Name: "main",
+		VPC:  "prod",
+		Routes: []model.Route{{
+			Destination: netip.MustParsePrefix("10.40.0.0/24"),
+			NextHops:    []netip.Addr{netip.MustParseAddr("10.10.0.253")},
+		}},
+	}
+	if err := writer.EnsureRouteTable(ctx, table); err != nil {
+		t.Fatal(err)
+	}
+
+	var prodRouters []ovnnb.LogicalRouter
+	var routes []ovnnb.LogicalRouterStaticRoute
+	requireEventually(t, func() bool {
+		prodRouters = nil
+		if err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("prod") }).List(ctx, &prodRouters); err != nil || len(prodRouters) != 1 || len(prodRouters[0].StaticRoutes) != 1 {
+			return false
+		}
+		routes = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalRouterStaticRoute) bool {
+			return row.ExternalIDs["netloom_vpc"] == "prod" &&
+				row.ExternalIDs["netloom_route_table"] == "main" &&
+				row.ExternalIDs["netloom_route_key"] == "10.40.0.0/24|10.10.0.253"
+		}).List(ctx, &routes)
+		return err == nil && len(routes) == 1
+	})
+	referencedUUID := prodRouters[0].StaticRoutes[0]
+	if routes[0].UUID != referencedUUID {
+		t.Fatalf("router static routes = %+v route row = %s, want referenced row", prodRouters[0].StaticRoutes, routes[0].UUID)
+	}
+
+	duplicate := desiredStaticRouteRows(table, table.Routes[0])[0]
+	duplicate.UUID = ovsdbNamedUUID("duplicate_static_route")
+	duplicate.RouteTable = "legacy"
+	duplicate.Options = map[string]string{"ecmp_symmetric_reply": "true"}
+	var devRouters []ovnnb.LogicalRouter
+	requireEventually(t, func() bool {
+		devRouters = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("dev") }).List(ctx, &devRouters)
+		return err == nil && len(devRouters) == 1
+	})
+	createOps, err := client.Create(&duplicate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attachDuplicate, err := writer.attachStaticRoute(&devRouters[0], duplicate.UUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	duplicateOps := append(createOps, attachDuplicate...)
+	results, err := client.Transact(ctx, duplicateOps...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, duplicateOps); err != nil {
+		t.Fatalf("attach duplicate static route operation errors=%+v: %v", opErrors, err)
+	}
+	requireEventually(t, func() bool {
+		routes = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalRouterStaticRoute) bool {
+			return row.ExternalIDs["netloom_vpc"] == "prod" &&
+				row.ExternalIDs["netloom_route_table"] == "main" &&
+				row.ExternalIDs["netloom_route_key"] == "10.40.0.0/24|10.10.0.253"
+		}).List(ctx, &routes)
+		return err == nil && len(routes) == 2
+	})
+
+	if err := writer.EnsureRouteTable(ctx, table); err != nil {
+		t.Fatal(err)
+	}
+	requireEventually(t, func() bool {
+		prodRouters = nil
+		if err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("prod") }).List(ctx, &prodRouters); err != nil || len(prodRouters) != 1 || len(prodRouters[0].StaticRoutes) != 1 {
+			return false
+		}
+		routes = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalRouterStaticRoute) bool {
+			return row.ExternalIDs["netloom_vpc"] == "prod" &&
+				row.ExternalIDs["netloom_route_table"] == "main" &&
+				row.ExternalIDs["netloom_route_key"] == "10.40.0.0/24|10.10.0.253"
+		}).List(ctx, &routes)
+		if err != nil ||
+			len(routes) != 1 ||
+			routes[0].UUID != referencedUUID ||
+			prodRouters[0].StaticRoutes[0] != referencedUUID ||
+			routes[0].RouteTable != "main" ||
+			len(routes[0].Options) != 0 {
+			return false
+		}
+		devRouters = nil
+		err = client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("dev") }).List(ctx, &devRouters)
+		return err == nil && len(devRouters) == 1 && len(devRouters[0].StaticRoutes) == 0
+	})
+}
+
 func TestLibOVSDBTopologyWriterEnsuresStaticRouteBFD(t *testing.T) {
 	ctx := context.Background()
 	client, closeFn := newTestOVNNBClient(t)
