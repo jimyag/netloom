@@ -1427,6 +1427,43 @@ func TestReconcileDefersPolicyApplyForDesiredStateRollout(t *testing.T) {
 	}
 }
 
+func TestApplyPolicyRolloutsDryRunPlansWithoutApplying(t *testing.T) {
+	state := rolloutPolicyState()
+	state.PolicyRollouts = []control.PolicyRollout{{
+		Name:      "web-canary-plan",
+		Node:      "node-a",
+		Endpoints: []string{"prod/pod-a", "prod/pod-b"},
+		BatchSize: 2,
+		DryRun:    true,
+	}}
+	store := dataplane.NewInMemoryPolicyStore()
+
+	rollouts, err := ApplyPolicyRollouts(context.Background(), state, ReconcileOptions{
+		Node:  "node-a",
+		Store: store,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result ReconcileResult
+	ApplyPolicyRolloutResults(&result, rollouts)
+	if result.PolicyRollouts != 1 || result.PolicyRolloutPlanned != 2 || result.PolicyRolloutApplied != 0 || result.PolicyRolloutFailed != 0 {
+		t.Fatalf("rollout summary = %+v rollouts=%+v, want planned dry-run rollout", result, rollouts)
+	}
+	if len(rollouts) != 1 || !rollouts[0].Rollout.DryRun || rollouts[0].Rollout.BatchSize != 2 {
+		t.Fatalf("rollouts = %+v, want dry-run rollout with batch size 2", rollouts)
+	}
+	if phases := []string{rollouts[0].Rollout.Items[0].Phase, rollouts[0].Rollout.Items[1].Phase}; !slices.Equal(phases, []string{"planned", "planned"}) {
+		t.Fatalf("dry-run rollout phases = %+v, want planned items", phases)
+	}
+	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 0 {
+		t.Fatalf("pod-a entries = %+v, want no live mutation for desired-state dry-run", entries)
+	}
+	if entries := store.Entries(model.EndpointKey("prod", "pod-b")); len(entries) != 0 {
+		t.Fatalf("pod-b entries = %+v, want no live mutation for desired-state dry-run", entries)
+	}
+}
+
 func TestApplyPolicyRolloutsResumesAppliedEndpoints(t *testing.T) {
 	state := rolloutPolicyState()
 	state.PolicyRollouts = []control.PolicyRollout{{

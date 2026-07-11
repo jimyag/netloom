@@ -1375,6 +1375,7 @@ func ApplyPolicyRollouts(ctx context.Context, state control.DesiredState, option
 		result, err := RolloutPolicyEndpoints(ctx, state, options, PolicyEndpointRolloutOptions{
 			EndpointIDs:               endpointIDs,
 			BatchSize:                 rollout.BatchSize,
+			DryRun:                    rollout.DryRun,
 			PressureAware:             rollout.PressureAware,
 			PressureThresholdPercent:  rollout.PressureThresholdPercent,
 			PressureAwareMinBatchSize: rollout.PressureAwareMinBatchSize,

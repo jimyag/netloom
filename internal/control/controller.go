@@ -175,6 +175,7 @@ type PolicyRollout struct {
 	Node                      string               `json:"node,omitempty"`
 	Endpoints                 []string             `json:"endpoints,omitempty"`
 	BatchSize                 int                  `json:"batch_size"`
+	DryRun                    bool                 `json:"dry_run,omitempty"`
 	PressureAware             bool                 `json:"pressure_aware"`
 	PressureThresholdPercent  uint32               `json:"pressure_threshold_percent"`
 	PressureAwareMinBatchSize int                  `json:"pressure_aware_min_batch_size"`
