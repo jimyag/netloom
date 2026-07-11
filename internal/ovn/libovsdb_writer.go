@@ -1355,7 +1355,11 @@ func (w *LibOVSDBTopologyWriter) detachDNSRowFromSwitch(switchUUID, dnsUUID stri
 }
 
 func (w *LibOVSDBTopologyWriter) syncLoadBalancerHealthChecks(ctx context.Context, lbUUID string, lb model.LoadBalancer, frontends []model.LoadBalancerFrontend) ([]ovsdb.Operation, error) {
-	existing, err := w.healthChecksByLoadBalancer(ctx, lb.VPC, lb.Name)
+	ovnLBName := ""
+	if len(frontends) > 0 {
+		ovnLBName = loadBalancerProtocolName(lb.VPC, lb.Name, frontends[0].Protocol)
+	}
+	existing, err := w.healthChecksByLoadBalancerName(ctx, ovnLBName, lb.VPC, lb.Name)
 	if err != nil {
 		return nil, err
 	}
@@ -1366,6 +1370,10 @@ func (w *LibOVSDBTopologyWriter) syncLoadBalancerHealthChecks(ctx context.Contex
 	desiredVIPs := make(map[string]struct{})
 	var ops []ovsdb.Operation
 	lbRow := &ovnnb.LoadBalancer{UUID: lbUUID}
+	lbHealthCheckRefs, err := w.loadBalancerHealthCheckRefs(ctx, lbUUID)
+	if err != nil {
+		return nil, err
+	}
 	if lb.HealthCheck.Enabled {
 		for _, frontend := range frontends {
 			desired := desiredLoadBalancerHealthCheck(lb, frontend)
@@ -1389,7 +1397,8 @@ func (w *LibOVSDBTopologyWriter) syncLoadBalancerHealthChecks(ctx context.Contex
 				ops = append(ops, attachOps...)
 				continue
 			}
-			keep := rows[0]
+			keepIndex := preferredReferencedRow(lbHealthCheckRefs, rows, func(row ovnnb.LoadBalancerHealthCheck) string { return row.UUID })
+			keep := rows[keepIndex]
 			nextExternalIDs := mergeManagedExternalIDs(keep.ExternalIDs, desired.ExternalIDs)
 			if keep.Vip != desired.Vip || !reflect.DeepEqual(keep.Options, desired.Options) || !reflect.DeepEqual(keep.ExternalIDs, nextExternalIDs) {
 				keep.Vip = desired.Vip
@@ -1401,8 +1410,11 @@ func (w *LibOVSDBTopologyWriter) syncLoadBalancerHealthChecks(ctx context.Contex
 				}
 				ops = append(ops, updateOps...)
 			}
-			for i := 1; i < len(rows); i++ {
-				deleteOps, err := w.deleteLoadBalancerHealthCheck(lbUUID, &rows[i])
+			for i := range rows {
+				if i == keepIndex {
+					continue
+				}
+				deleteOps, err := w.deleteLoadBalancerHealthCheckFromParents(&rows[i])
 				if err != nil {
 					return nil, err
 				}
@@ -1415,7 +1427,7 @@ func (w *LibOVSDBTopologyWriter) syncLoadBalancerHealthChecks(ctx context.Contex
 			continue
 		}
 		for i := range rows {
-			deleteOps, err := w.deleteLoadBalancerHealthCheck(lbUUID, &rows[i])
+			deleteOps, err := w.deleteLoadBalancerHealthCheckFromParents(&rows[i])
 			if err != nil {
 				return nil, err
 			}
@@ -1457,7 +1469,7 @@ func (w *LibOVSDBTopologyWriter) deleteStaleLoadBalancers(ctx context.Context, r
 			return nil, err
 		}
 		for j := range hcRows {
-			deleteOps, err := w.deleteLoadBalancerHealthCheck(rows[i].UUID, &hcRows[j])
+			deleteOps, err := w.deleteLoadBalancerHealthCheckFromParents(&hcRows[j])
 			if err != nil {
 				return nil, err
 			}
@@ -1817,6 +1829,17 @@ func (w *LibOVSDBTopologyWriter) loadBalancerByName(ctx context.Context, name st
 		return nil, false, nil
 	}
 	return &rows[0], true, nil
+}
+
+func (w *LibOVSDBTopologyWriter) loadBalancerHealthCheckRefs(ctx context.Context, uuid string) ([]string, error) {
+	var rows []ovnnb.LoadBalancer
+	if err := w.client.WhereCache(func(row *ovnnb.LoadBalancer) bool { return row.UUID == uuid }).List(ctx, &rows); err != nil {
+		return nil, fmt.Errorf("list load balancer %s from libovsdb cache: %w", uuid, err)
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	return rows[0].HealthCheck, nil
 }
 
 func (w *LibOVSDBTopologyWriter) netloomDNSRows(ctx context.Context) ([]ovnnb.DNS, error) {

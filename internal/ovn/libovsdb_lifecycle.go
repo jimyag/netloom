@@ -937,7 +937,8 @@ func (w *LibOVSDBTopologyWriter) repairSteadyStateLoadBalancerHealthCheckRefs(ct
 				ops = append(ops, insertOps...)
 				continue
 			}
-			keep := rows[0]
+			keepIndex := preferredReferencedRow(lbRow.HealthCheck, rows, func(row ovnnb.LoadBalancerHealthCheck) string { return row.UUID })
+			keep := rows[keepIndex]
 			nextExternalIDs := mergeManagedExternalIDs(keep.ExternalIDs, desired.ExternalIDs)
 			if keep.Vip != desired.Vip || !reflect.DeepEqual(keep.Options, desired.Options) || !reflect.DeepEqual(keep.ExternalIDs, nextExternalIDs) {
 				keep.Vip = desired.Vip
@@ -960,8 +961,11 @@ func (w *LibOVSDBTopologyWriter) repairSteadyStateLoadBalancerHealthCheckRefs(ct
 				}
 				ops = append(ops, insertOps...)
 			}
-			for i := 1; i < len(rows); i++ {
-				deleteOps, err := w.deleteLoadBalancerHealthCheck(lbRow.UUID, &rows[i])
+			for i := range rows {
+				if i == keepIndex {
+					continue
+				}
+				deleteOps, err := w.deleteLoadBalancerHealthCheckFromParents(&rows[i])
 				if err != nil {
 					return nil, err
 				}
@@ -980,12 +984,13 @@ func (w *LibOVSDBTopologyWriter) repairSteadyStateLoadBalancerHealthCheckRefs(ct
 	for vip, rows := range existingByVIP {
 		if _, ok := desiredVIPs[vip]; ok {
 			if len(rows) > 0 {
-				desiredUUIDs[rows[0].UUID] = struct{}{}
+				keepIndex := preferredReferencedRow(lbRow.HealthCheck, rows, func(row ovnnb.LoadBalancerHealthCheck) string { return row.UUID })
+				desiredUUIDs[rows[keepIndex].UUID] = struct{}{}
 			}
 			continue
 		}
 		for i := range rows {
-			deleteOps, err := w.deleteLoadBalancerHealthCheck(lbRow.UUID, &rows[i])
+			deleteOps, err := w.deleteLoadBalancerHealthCheckFromParents(&rows[i])
 			if err != nil {
 				return nil, err
 			}
