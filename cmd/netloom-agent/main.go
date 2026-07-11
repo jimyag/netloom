@@ -471,13 +471,24 @@ func runDesiredStateImportWithStore(ctx context.Context, opts desiredStateImport
 	if err != nil {
 		return err
 	}
+	summary, err := control.MarshalDesiredStateSummaryJSON(state)
+	if err != nil {
+		return err
+	}
 	if err := store.SetOpenVSwitchExternalID(ctx, "netloom_owner", "netloom"); err != nil {
 		return err
 	}
 	if err := store.SetOpenVSwitchExternalID(ctx, control.DesiredStateOpenVSwitchExternalID, string(raw)); err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(stdout, "desired_state vpcs=%d subnets=%d endpoints=%d external_id=%s\n", len(state.VPCs), len(state.Subnets), len(state.Endpoints), control.DesiredStateOpenVSwitchExternalID)
+	revision := control.DesiredStateRevision(raw)
+	if err := store.SetOpenVSwitchExternalID(ctx, control.DesiredStateRevisionOpenVSwitchExternalID, revision); err != nil {
+		return err
+	}
+	if err := store.SetOpenVSwitchExternalID(ctx, control.DesiredStateSummaryOpenVSwitchExternalID, string(summary)); err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(stdout, "desired_state vpcs=%d subnets=%d endpoints=%d revision=%s external_id=%s\n", len(state.VPCs), len(state.Subnets), len(state.Endpoints), revision, control.DesiredStateOpenVSwitchExternalID)
 	return err
 }
 
@@ -527,6 +538,13 @@ func loadDesiredStateFromPathOrOVSDB(ctx context.Context, path string, store ope
 	}
 	if !ok || strings.TrimSpace(raw) == "" {
 		return control.DesiredState{}, fmt.Errorf("missing Open_vSwitch external_ids:%s", control.DesiredStateOpenVSwitchExternalID)
+	}
+	revision, _, err := store.OpenVSwitchExternalID(ctx, control.DesiredStateRevisionOpenVSwitchExternalID)
+	if err != nil {
+		return control.DesiredState{}, err
+	}
+	if err := control.ValidateDesiredStateRevision([]byte(raw), revision); err != nil {
+		return control.DesiredState{}, fmt.Errorf("validate Open_vSwitch external_ids:%s: %w", control.DesiredStateRevisionOpenVSwitchExternalID, err)
 	}
 	state, err := control.LoadDesiredStateJSON(strings.NewReader(raw))
 	if err != nil {

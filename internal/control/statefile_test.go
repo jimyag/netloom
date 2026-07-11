@@ -1,9 +1,12 @@
 package control
 
 import (
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jimyag/netloom/internal/model"
 )
 
 func TestLoadDesiredStateJSONDecodesSnakeCaseState(t *testing.T) {
@@ -212,6 +215,52 @@ func TestLoadDesiredStateJSONRejectsUnknownFields(t *testing.T) {
 	_, err := LoadDesiredStateJSON(strings.NewReader(`{"vpcs": [], "surprise": true}`))
 	if err == nil {
 		t.Fatal("expected unknown field to fail")
+	}
+}
+
+func TestDesiredStateRevisionAndSummary(t *testing.T) {
+	state := DesiredState{
+		VPCs:             []model.VPC{{Name: "prod"}},
+		ProviderNetworks: []model.ProviderNetwork{{Name: "physnet-a"}},
+		IdentityGroups:   []model.IdentityGroup{{Name: "frontend", VPC: "prod"}},
+		Subnets: []model.Subnet{{
+			Name:    "apps",
+			VPC:     "prod",
+			CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway: netip.MustParseAddr("10.10.0.1"),
+		}},
+		Endpoints:      []model.Endpoint{{ID: "pod-a", VPC: "prod", Subnet: "apps"}},
+		RouteTables:    []model.RouteTable{{Name: "main", VPC: "prod"}},
+		PolicyRoutes:   []model.PolicyRoute{{Name: "via-fw", VPC: "prod", Priority: 100}},
+		Gateways:       []model.Gateway{{Name: "gw-a", VPC: "prod"}},
+		NATRules:       []model.NATRule{{Name: "snat", VPC: "prod"}},
+		LoadBalancers:  []model.LoadBalancer{{Name: "api", VPC: "prod"}},
+		SecurityGroups: []model.SecurityGroup{{Name: "web", VPC: "prod"}},
+		CIDRGroups:     []model.CIDRGroup{{Name: "corp", VPC: "prod"}},
+		DNSRecords:     []model.DNSRecord{{Name: "api.example.com"}},
+		PolicyRollouts: []PolicyRollout{{Name: "canary", BatchSize: 1}},
+	}
+	raw, err := MarshalDesiredStateJSON(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision := DesiredStateRevision(raw)
+	if !strings.HasPrefix(revision, "sha256:") {
+		t.Fatalf("revision = %q, want sha256 prefix", revision)
+	}
+	if err := ValidateDesiredStateRevision(raw, revision); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateDesiredStateRevision(raw, "sha256:bad"); err == nil {
+		t.Fatal("expected revision mismatch to fail")
+	}
+	summary := SummarizeDesiredState(state)
+	if summary.VPCs != 1 || summary.ProviderNetworks != 1 || summary.IdentityGroups != 1 ||
+		summary.Subnets != 1 || summary.Endpoints != 1 || summary.RouteTables != 1 ||
+		summary.PolicyRoutes != 1 || summary.Gateways != 1 || summary.NATRules != 1 ||
+		summary.LoadBalancers != 1 || summary.SecurityGroups != 1 || summary.CIDRGroups != 1 ||
+		summary.DNSRecords != 1 || summary.PolicyRollouts != 1 {
+		t.Fatalf("summary = %+v, want every count populated", summary)
 	}
 }
 

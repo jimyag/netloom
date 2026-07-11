@@ -104,6 +104,24 @@ func TestControllerLoadsDesiredStateFromOpenVSwitchExternalID(t *testing.T) {
 	}
 }
 
+func TestControllerLoadDesiredStateFromOpenVSwitchRejectsRevisionMismatch(t *testing.T) {
+	raw, err := control.MarshalDesiredStateJSON(control.DesiredState{
+		VPCs: []model.VPC{{Name: "prod"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := fakeOpenVSwitchExternalIDReader{values: map[string]string{
+		control.DesiredStateOpenVSwitchExternalID:         string(raw),
+		control.DesiredStateRevisionOpenVSwitchExternalID: "sha256:bad",
+	}}
+
+	_, err = loadDesiredStateFromPathOrOVSDB(t.Context(), "", store)
+	if err == nil || !strings.Contains(err.Error(), "revision mismatch") {
+		t.Fatalf("err = %v, want revision mismatch", err)
+	}
+}
+
 func TestControllerWithIdentityGroupObservationsMergesRemoteFeed(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "Bearer feed-token" {

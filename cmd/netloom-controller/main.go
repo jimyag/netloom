@@ -1390,6 +1390,13 @@ func loadDesiredStateFromPathOrOVSDB(ctx context.Context, path string, store ope
 	if !ok || strings.TrimSpace(raw) == "" {
 		return control.DesiredState{}, fmt.Errorf("missing Open_vSwitch external_ids:%s", control.DesiredStateOpenVSwitchExternalID)
 	}
+	revision, _, err := store.OpenVSwitchExternalID(ctx, control.DesiredStateRevisionOpenVSwitchExternalID)
+	if err != nil {
+		return control.DesiredState{}, err
+	}
+	if err := control.ValidateDesiredStateRevision([]byte(raw), revision); err != nil {
+		return control.DesiredState{}, fmt.Errorf("validate Open_vSwitch external_ids:%s: %w", control.DesiredStateRevisionOpenVSwitchExternalID, err)
+	}
 	state, err := control.LoadDesiredStateJSON(strings.NewReader(raw))
 	if err != nil {
 		return control.DesiredState{}, fmt.Errorf("decode Open_vSwitch external_ids:%s: %w", control.DesiredStateOpenVSwitchExternalID, err)

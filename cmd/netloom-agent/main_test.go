@@ -393,7 +393,7 @@ func TestRunDesiredStateImportWithStoreWritesOpenVSwitchExternalID(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := stdout.String(); !strings.Contains(got, "desired_state vpcs=1 subnets=1 endpoints=1") || !strings.Contains(got, control.DesiredStateOpenVSwitchExternalID) {
+	if got := stdout.String(); !strings.Contains(got, "desired_state vpcs=1 subnets=1 endpoints=1") || !strings.Contains(got, "revision=sha256:") || !strings.Contains(got, control.DesiredStateOpenVSwitchExternalID) {
 		t.Fatalf("stdout = %q, want import summary", got)
 	}
 	if owner := store.values["netloom_owner"]; owner != "netloom" {
@@ -409,6 +409,16 @@ func TestRunDesiredStateImportWithStoreWritesOpenVSwitchExternalID(t *testing.T)
 	}
 	if len(state.VPCs) != 1 || state.VPCs[0].Name != "prod" || len(state.Endpoints) != 1 || state.Endpoints[0].ID != "pod-a" {
 		t.Fatalf("state = %+v, want imported prod/pod-a state", state)
+	}
+	if got := store.values[control.DesiredStateRevisionOpenVSwitchExternalID]; got != control.DesiredStateRevision([]byte(raw)) {
+		t.Fatalf("revision external_id = %q, want hash for desired state", got)
+	}
+	var summary control.DesiredStateSummary
+	if err := json.Unmarshal([]byte(store.values[control.DesiredStateSummaryOpenVSwitchExternalID]), &summary); err != nil {
+		t.Fatal(err)
+	}
+	if summary.VPCs != 1 || summary.Subnets != 1 || summary.Endpoints != 1 {
+		t.Fatalf("summary = %+v, want imported object counts", summary)
 	}
 }
 
@@ -433,7 +443,7 @@ func TestRunDesiredStateImportWritesRealOpenVSwitchOVSDB(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := stdout.String(); !strings.Contains(got, "desired_state vpcs=1") || !strings.Contains(got, control.DesiredStateOpenVSwitchExternalID) {
+	if got := stdout.String(); !strings.Contains(got, "desired_state vpcs=1") || !strings.Contains(got, "revision=sha256:") || !strings.Contains(got, control.DesiredStateOpenVSwitchExternalID) {
 		t.Fatalf("stdout = %q, want import summary", got)
 	}
 	root := singleAgentVSwitchRoot(t, t.Context(), client)
@@ -450,6 +460,12 @@ func TestRunDesiredStateImportWritesRealOpenVSwitchOVSDB(t *testing.T) {
 	}
 	if len(state.VPCs) != 1 || state.VPCs[0].Name != "prod" {
 		t.Fatalf("state = %+v, want imported prod VPC", state)
+	}
+	if got := root.ExternalIDs[control.DesiredStateRevisionOpenVSwitchExternalID]; got != control.DesiredStateRevision([]byte(raw)) {
+		t.Fatalf("revision external_id = %q, want hash for desired state", got)
+	}
+	if root.ExternalIDs[control.DesiredStateSummaryOpenVSwitchExternalID] == "" {
+		t.Fatalf("root external IDs = %+v, want desired state summary", root.ExternalIDs)
 	}
 }
 
@@ -475,6 +491,24 @@ func TestLoadDesiredStateFromOpenVSwitchExternalIDStore(t *testing.T) {
 	}
 	if len(state.VPCs) != 1 || state.VPCs[0].Name != "prod" || len(state.Endpoints) != 1 || state.Endpoints[0].ID != "pod-a" {
 		t.Fatalf("state = %+v, want OVSDB desired state", state)
+	}
+}
+
+func TestLoadDesiredStateFromOpenVSwitchExternalIDRejectsRevisionMismatch(t *testing.T) {
+	raw, err := control.MarshalDesiredStateJSON(control.DesiredState{
+		VPCs: []model.VPC{{Name: "prod"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &fakeOpenVSwitchExternalIDStore{values: map[string]string{
+		control.DesiredStateOpenVSwitchExternalID:         string(raw),
+		control.DesiredStateRevisionOpenVSwitchExternalID: "sha256:bad",
+	}}
+
+	_, err = loadDesiredStateFromPathOrOVSDB(t.Context(), "", store)
+	if err == nil || !strings.Contains(err.Error(), "revision mismatch") {
+		t.Fatalf("err = %v, want revision mismatch", err)
 	}
 }
 
