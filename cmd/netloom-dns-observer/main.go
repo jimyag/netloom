@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -20,6 +21,7 @@ import (
 	"github.com/jimyag/netloom/internal/dnsobserver"
 	"github.com/jimyag/netloom/internal/linuxdatapath"
 	"github.com/jimyag/netloom/internal/model"
+	"golang.org/x/sys/unix"
 )
 
 type options struct {
@@ -35,6 +37,9 @@ type options struct {
 	listenTCP       string
 	upstreamTCP     string
 	tcpTimeout      time.Duration
+	captureIface    string
+	captureCount    uint
+	captureDuration time.Duration
 }
 
 type result struct {
@@ -65,6 +70,9 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer, 
 	flags.StringVar(&opts.listenTCP, "listen-tcp", os.Getenv("NETLOOM_DNS_OBSERVER_LISTEN_TCP"), "TCP address to listen on as a DNS proxy/capture path")
 	flags.StringVar(&opts.upstreamTCP, "upstream-tcp", os.Getenv("NETLOOM_DNS_OBSERVER_UPSTREAM_TCP"), "upstream TCP DNS server used with -listen-tcp")
 	flags.DurationVar(&opts.tcpTimeout, "tcp-timeout", 2*time.Second, "TCP upstream timeout used with -listen-tcp")
+	flags.StringVar(&opts.captureIface, "capture-iface", os.Getenv("NETLOOM_DNS_OBSERVER_CAPTURE_IFACE"), "interface name to passively capture UDP DNS responses with AF_PACKET")
+	flags.UintVar(&opts.captureCount, "capture-count", 0, "number of DNS response packets to capture before exiting; 0 means unlimited")
+	flags.DurationVar(&opts.captureDuration, "capture-duration", 0, "maximum AF_PACKET capture duration; 0 means run until context cancellation or -capture-count")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -79,14 +87,23 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer, 
 	if opts.defaultTTL > uint(^uint32(0)) {
 		return fmt.Errorf("-default-ttl exceeds uint32")
 	}
-	if strings.TrimSpace(opts.listenUDP) != "" && strings.TrimSpace(opts.listenTCP) != "" {
-		return fmt.Errorf("-listen-udp and -listen-tcp cannot be used together")
+	activeInputs := 0
+	for _, value := range []string{opts.listenUDP, opts.listenTCP, opts.captureIface} {
+		if strings.TrimSpace(value) != "" {
+			activeInputs++
+		}
+	}
+	if activeInputs > 1 {
+		return fmt.Errorf("-listen-udp, -listen-tcp, and -capture-iface are mutually exclusive")
 	}
 	if strings.TrimSpace(opts.listenUDP) != "" {
 		return runUDPProxy(ctx, opts, store, stdout, now)
 	}
 	if strings.TrimSpace(opts.listenTCP) != "" {
 		return runTCPProxy(ctx, opts, store, stdout, now)
+	}
+	if strings.TrimSpace(opts.captureIface) != "" {
+		return runPacketCapture(ctx, opts, store, stdout, now)
 	}
 
 	observedAt, err := observedAt(opts.observedAtValue, now)
@@ -179,6 +196,35 @@ func runTCPProxy(ctx context.Context, opts options, store dnsObservationStore, s
 	return proxy.Serve(ctx, listener)
 }
 
+func runPacketCapture(ctx context.Context, opts options, store dnsObservationStore, stdout io.Writer, now func() time.Time) error {
+	if opts.captureDuration < 0 {
+		return fmt.Errorf("-capture-duration must not be negative")
+	}
+	captureCtx := ctx
+	cancel := func() {}
+	if opts.captureDuration > 0 {
+		captureCtx, cancel = context.WithTimeout(ctx, opts.captureDuration)
+	}
+	defer cancel()
+	capture, err := newAFPacketDNSCapture(strings.TrimSpace(opts.captureIface))
+	if err != nil {
+		return err
+	}
+	defer capture.Close()
+	fmt.Fprintf(stdout, "netloom-dns-observer capturing iface=%s\n", strings.TrimSpace(opts.captureIface))
+	result, err := capture.Serve(captureCtx, passiveDNSObserver{
+		store:         store,
+		mergeExisting: opts.mergeExisting,
+		defaultTTL:    uint32(opts.defaultTTL),
+		now:           now,
+	}, int(opts.captureCount))
+	if err != nil && !(opts.captureDuration > 0 && errorsIsContextDeadline(err)) {
+		return err
+	}
+	fmt.Fprintf(stdout, "netloom-dns-observer captured packets=%d records=%d written=%d\n", result.Packets, result.Records, result.Written)
+	return nil
+}
+
 type dnsUDPProxy struct {
 	store         dnsObservationStore
 	upstream      string
@@ -187,6 +233,216 @@ type dnsUDPProxy struct {
 	defaultTTL    uint32
 	now           func() time.Time
 	mu            sync.Mutex
+}
+
+type passiveDNSObserver struct {
+	store         dnsObservationStore
+	mergeExisting bool
+	defaultTTL    uint32
+	now           func() time.Time
+	mu            sync.Mutex
+}
+
+func (o passiveDNSObserver) Observe(ctx context.Context, packet []byte) (int, int, error) {
+	observedAt := o.now().UTC()
+	records, err := dnsobserver.RecordsFromResponse(packet, observedAt)
+	if err != nil || len(records) == 0 {
+		return 0, 0, err
+	}
+	for i := range records {
+		if records[i].TTLSeconds == 0 && o.defaultTTL > 0 {
+			records[i].TTLSeconds = o.defaultTTL
+			records[i].ObservedAt = observedAt
+		}
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	merged, err := mergeAndSaveDNSObservations(ctx, o.store, records, observedAt, o.mergeExisting)
+	if err != nil {
+		return 0, 0, err
+	}
+	return len(records), len(merged), nil
+}
+
+type dnsPacketObserver interface {
+	Observe(context.Context, []byte) (records int, written int, err error)
+}
+
+type afPacketDNSCapture struct {
+	fd int
+}
+
+func newAFPacketDNSCapture(ifaceName string) (*afPacketDNSCapture, error) {
+	if ifaceName == "" {
+		return nil, fmt.Errorf("-capture-iface is required")
+	}
+	iface, err := net.InterfaceByName(ifaceName)
+	if err != nil {
+		return nil, err
+	}
+	fd, err := unix.Socket(unix.AF_PACKET, unix.SOCK_RAW, int(htons(unix.ETH_P_ALL)))
+	if err != nil {
+		return nil, err
+	}
+	if err := unix.Bind(fd, &unix.SockaddrLinklayer{
+		Protocol: htons(unix.ETH_P_ALL),
+		Ifindex:  iface.Index,
+	}); err != nil {
+		_ = unix.Close(fd)
+		return nil, err
+	}
+	return &afPacketDNSCapture{fd: fd}, nil
+}
+
+func (c *afPacketDNSCapture) Close() error {
+	if c == nil || c.fd < 0 {
+		return nil
+	}
+	err := unix.Close(c.fd)
+	c.fd = -1
+	return err
+}
+
+func (c *afPacketDNSCapture) Serve(ctx context.Context, observer dnsPacketObserver, maxPackets int) (result, error) {
+	if c == nil || c.fd < 0 {
+		return result{}, fmt.Errorf("AF_PACKET capture is closed")
+	}
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = c.Close()
+		case <-done:
+		}
+	}()
+	defer close(done)
+	buf := make([]byte, 65535)
+	var out result
+	for {
+		n, _, err := unix.Recvfrom(c.fd, buf, 0)
+		if err != nil {
+			if ctx.Err() != nil {
+				return out, ctx.Err()
+			}
+			return out, err
+		}
+		packet, ok := dnsResponseFromEthernetFrame(buf[:n])
+		if !ok {
+			continue
+		}
+		records, written, err := observer.Observe(ctx, packet)
+		if err != nil {
+			continue
+		}
+		out.Packets++
+		out.Records += records
+		out.Written = written
+		if maxPackets > 0 && out.Packets >= maxPackets {
+			return out, nil
+		}
+	}
+}
+
+func dnsResponseFromEthernetFrame(frame []byte) ([]byte, bool) {
+	if len(frame) < 14 {
+		return nil, false
+	}
+	etherType := binary.BigEndian.Uint16(frame[12:14])
+	offset := 14
+	for etherType == 0x8100 || etherType == 0x88a8 {
+		if len(frame) < offset+4 {
+			return nil, false
+		}
+		etherType = binary.BigEndian.Uint16(frame[offset+2 : offset+4])
+		offset += 4
+	}
+	switch etherType {
+	case 0x0800:
+		return dnsResponseFromIPv4Packet(frame[offset:])
+	case 0x86dd:
+		return dnsResponseFromIPv6Packet(frame[offset:])
+	default:
+		return nil, false
+	}
+}
+
+func dnsResponseFromIPv4Packet(packet []byte) ([]byte, bool) {
+	if len(packet) < 20 || packet[0]>>4 != 4 {
+		return nil, false
+	}
+	ihl := int(packet[0]&0x0f) * 4
+	if ihl < 20 || len(packet) < ihl {
+		return nil, false
+	}
+	totalLen := int(binary.BigEndian.Uint16(packet[2:4]))
+	if totalLen < ihl || totalLen > len(packet) {
+		return nil, false
+	}
+	if packet[9] != unix.IPPROTO_UDP {
+		return nil, false
+	}
+	return dnsResponseFromUDPPacket(packet[ihl:totalLen])
+}
+
+func dnsResponseFromIPv6Packet(packet []byte) ([]byte, bool) {
+	if len(packet) < 40 || packet[0]>>4 != 6 {
+		return nil, false
+	}
+	payloadLen := int(binary.BigEndian.Uint16(packet[4:6]))
+	if payloadLen+40 > len(packet) {
+		return nil, false
+	}
+	nextHeader := packet[6]
+	offset := 40
+	end := 40 + payloadLen
+	for {
+		switch nextHeader {
+		case unix.IPPROTO_UDP:
+			return dnsResponseFromUDPPacket(packet[offset:end])
+		case 0, 43, 60:
+			if offset+2 > end {
+				return nil, false
+			}
+			nextHeader = packet[offset]
+			headerLen := (int(packet[offset+1]) + 1) * 8
+			if offset+headerLen > end {
+				return nil, false
+			}
+			offset += headerLen
+		case 44:
+			if offset+8 > end {
+				return nil, false
+			}
+			nextHeader = packet[offset]
+			offset += 8
+		default:
+			return nil, false
+		}
+	}
+}
+
+func dnsResponseFromUDPPacket(packet []byte) ([]byte, bool) {
+	if len(packet) < 8 {
+		return nil, false
+	}
+	srcPort := binary.BigEndian.Uint16(packet[0:2])
+	udpLen := int(binary.BigEndian.Uint16(packet[4:6]))
+	if srcPort != 53 || udpLen < 8 || udpLen > len(packet) {
+		return nil, false
+	}
+	payload := packet[8:udpLen]
+	if len(payload) < 12 || payload[2]&0x80 == 0 {
+		return nil, false
+	}
+	return append([]byte(nil), payload...), true
+}
+
+func htons(value uint16) uint16 {
+	return (value << 8) | (value >> 8)
+}
+
+func errorsIsContextDeadline(err error) bool {
+	return errors.Is(err, context.DeadlineExceeded)
 }
 
 type dnsTCPProxy struct {

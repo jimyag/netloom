@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/binary"
 	"fmt"
 	"math/rand"
 	"net"
@@ -209,6 +210,52 @@ func TestRunWritesDNSObservationsToOpenVSwitchOVSDB(t *testing.T) {
 	}
 	if len(records) != 1 || records[0].Name != "api.example.com" || records[0].IPs[0].String() != "203.0.113.10" {
 		t.Fatalf("records = %+v", records)
+	}
+}
+
+func TestDNSResponseFromEthernetFrameExtractsIPv4UDPResponse(t *testing.T) {
+	packet := dnsResponse(
+		dnsQuestion("api.example.com", 1),
+		dnsAnswerPtr(12, 1, 60, []byte{203, 0, 113, 10}),
+	)
+	frame := ethernetIPv4UDPFrame(packet, 53, 53000, false)
+
+	got, ok := dnsResponseFromEthernetFrame(frame)
+	if !ok {
+		t.Fatal("expected DNS response to be extracted from IPv4 UDP frame")
+	}
+	if !bytes.Equal(got, packet) {
+		t.Fatalf("dns payload = %x, want %x", got, packet)
+	}
+}
+
+func TestDNSResponseFromEthernetFrameExtractsVLANIPv6UDPResponse(t *testing.T) {
+	packet := dnsResponse(
+		dnsQuestion("api.example.com", 28),
+		dnsAnswerPtr(12, 28, 60, netip.MustParseAddr("2001:db8::10").AsSlice()),
+	)
+	frame := ethernetIPv6UDPFrame(packet, 53, 53000, true)
+
+	got, ok := dnsResponseFromEthernetFrame(frame)
+	if !ok {
+		t.Fatal("expected DNS response to be extracted from VLAN IPv6 UDP frame")
+	}
+	if !bytes.Equal(got, packet) {
+		t.Fatalf("dns payload = %x, want %x", got, packet)
+	}
+}
+
+func TestDNSResponseFromEthernetFrameIgnoresQueriesAndNonDNSResponses(t *testing.T) {
+	query := dnsQuery("api.example.com", 1)
+	if _, ok := dnsResponseFromEthernetFrame(ethernetIPv4UDPFrame(query, 53000, 53, false)); ok {
+		t.Fatal("DNS query should not be captured as a response")
+	}
+	response := dnsResponse(
+		dnsQuestion("api.example.com", 1),
+		dnsAnswerPtr(12, 1, 60, []byte{203, 0, 113, 10}),
+	)
+	if _, ok := dnsResponseFromEthernetFrame(ethernetIPv4UDPFrame(response, 53000, 53, false)); ok {
+		t.Fatal("non-53 source port should not be captured as a DNS response")
 	}
 }
 
@@ -533,6 +580,55 @@ func dnsResponse(question []byte, answers ...[]byte) []byte {
 		packet = append(packet, answer...)
 	}
 	return packet
+}
+
+func ethernetIPv4UDPFrame(payload []byte, srcPort, dstPort uint16, vlan bool) []byte {
+	udp := udpDatagram(payload, srcPort, dstPort)
+	ip := make([]byte, 20+len(udp))
+	ip[0] = 0x45
+	binary.BigEndian.PutUint16(ip[2:4], uint16(len(ip)))
+	ip[8] = 64
+	ip[9] = 17
+	copy(ip[12:16], []byte{192, 0, 2, 53})
+	copy(ip[16:20], []byte{192, 0, 2, 10})
+	copy(ip[20:], udp)
+	return ethernetFrame(0x0800, ip, vlan)
+}
+
+func ethernetIPv6UDPFrame(payload []byte, srcPort, dstPort uint16, vlan bool) []byte {
+	udp := udpDatagram(payload, srcPort, dstPort)
+	ip := make([]byte, 40+len(udp))
+	ip[0] = 0x60
+	binary.BigEndian.PutUint16(ip[4:6], uint16(len(udp)))
+	ip[6] = 17
+	ip[7] = 64
+	copy(ip[8:24], netip.MustParseAddr("2001:db8::53").AsSlice())
+	copy(ip[24:40], netip.MustParseAddr("2001:db8::10").AsSlice())
+	copy(ip[40:], udp)
+	return ethernetFrame(0x86dd, ip, vlan)
+}
+
+func ethernetFrame(etherType uint16, payload []byte, vlan bool) []byte {
+	frame := []byte{
+		0x02, 0x00, 0x00, 0x00, 0x00, 0x10,
+		0x02, 0x00, 0x00, 0x00, 0x00, 0x53,
+	}
+	if vlan {
+		frame = appendUint16(frame, 0x8100)
+		frame = appendUint16(frame, 100)
+	}
+	frame = appendUint16(frame, etherType)
+	frame = append(frame, payload...)
+	return frame
+}
+
+func udpDatagram(payload []byte, srcPort, dstPort uint16) []byte {
+	udp := make([]byte, 8+len(payload))
+	binary.BigEndian.PutUint16(udp[0:2], srcPort)
+	binary.BigEndian.PutUint16(udp[2:4], dstPort)
+	binary.BigEndian.PutUint16(udp[4:6], uint16(len(udp)))
+	copy(udp[8:], payload)
+	return udp
 }
 
 func dnsQuery(name string, rrType uint16) []byte {
