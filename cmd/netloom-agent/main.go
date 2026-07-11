@@ -37,6 +37,7 @@ const (
 	defaultMetadataRoot     = "/var/run/netloom-ebpf-meta/policy"
 	policyRolloutStateKey   = "netloom_policy_rollout_state"
 	policyRolloutHistoryKey = "netloom_policy_rollout_history"
+	agentOVSDBStatusKey     = "netloom_agent_status"
 )
 
 func main() {
@@ -952,24 +953,36 @@ func reconcileStateFileOnceWithRuntimeStores(ctx context.Context, path, node, st
 	start := time.Now()
 	file, err := os.Open(path)
 	if err != nil {
-		observeAgentReconcileFailure(metrics, agent.ReconcileResult{Node: node}, storeName, err, time.Since(start))
+		result := agent.ReconcileResult{Node: node}
+		duration := time.Since(start)
+		syncAgentOVSDBStatus(ctx, identityGroupStore, result, storeName, err, duration)
+		observeAgentReconcileFailure(metrics, result, storeName, err, duration)
 		return err
 	}
 	defer file.Close()
 
 	state, err := control.LoadDesiredStateJSON(file)
 	if err != nil {
-		observeAgentReconcileFailure(metrics, agent.ReconcileResult{Node: node}, storeName, err, time.Since(start))
+		result := agent.ReconcileResult{Node: node}
+		duration := time.Since(start)
+		syncAgentOVSDBStatus(ctx, identityGroupStore, result, storeName, err, duration)
+		observeAgentReconcileFailure(metrics, result, storeName, err, duration)
 		return err
 	}
 	if agent.HasActivePolicyRollouts(state, node) && rolloutStateStore == nil {
 		err := errors.New("policy_rollouts require NETLOOM_OVSDB_ENDPOINT for Open_vSwitch rollout state")
-		observeAgentReconcileFailure(metrics, agent.ReconcileResult{Node: node}, storeName, err, time.Since(start))
+		result := agent.ReconcileResult{Node: node}
+		duration := time.Since(start)
+		syncAgentOVSDBStatus(ctx, identityGroupStore, result, storeName, err, duration)
+		observeAgentReconcileFailure(metrics, result, storeName, err, duration)
 		return err
 	}
 	state, err = withRuntimeObservationsAtContextCacheStore(ctx, state, time.Now().UTC(), identityGroupFeedCache, dnsObservationStore, identityGroupStore)
 	if err != nil {
-		observeAgentReconcileFailure(metrics, agent.ReconcileResult{Node: node}, storeName, err, time.Since(start))
+		result := agent.ReconcileResult{Node: node}
+		duration := time.Since(start)
+		syncAgentOVSDBStatus(ctx, identityGroupStore, result, storeName, err, duration)
+		observeAgentReconcileFailure(metrics, result, storeName, err, duration)
 		return err
 	}
 	result, err := agent.ReconcileNodeWithOptions(ctx, state, agent.ReconcileOptions{
@@ -988,6 +1001,7 @@ func reconcileStateFileOnceWithRuntimeStores(ctx context.Context, path, node, st
 	if err != nil {
 		duration := time.Since(start)
 		printReconcileFailure(result, storeName, err, duration)
+		syncAgentOVSDBStatus(ctx, identityGroupStore, result, storeName, err, duration)
 		observeAgentReconcileFailure(metrics, result, storeName, err, duration)
 		return err
 	}
@@ -996,6 +1010,7 @@ func reconcileStateFileOnceWithRuntimeStores(ctx context.Context, path, node, st
 	if err != nil {
 		duration := time.Since(start)
 		printReconcileFailure(result, storeName, err, duration)
+		syncAgentOVSDBStatus(ctx, identityGroupStore, result, storeName, err, duration)
 		observeAgentReconcileFailure(metrics, result, storeName, err, duration)
 		return err
 	}
@@ -1007,6 +1022,7 @@ func reconcileStateFileOnceWithRuntimeStores(ctx context.Context, path, node, st
 	}); err != nil {
 		duration := time.Since(start)
 		printReconcileFailure(result, storeName, err, duration)
+		syncAgentOVSDBStatus(ctx, identityGroupStore, result, storeName, err, duration)
 		observeAgentReconcileFailure(metrics, result, storeName, err, duration)
 		return err
 	} else {
@@ -1015,6 +1031,7 @@ func reconcileStateFileOnceWithRuntimeStores(ctx context.Context, path, node, st
 		if err := savePolicyRolloutResume(ctx, rolloutStateStore, node, storeName, rollouts); err != nil {
 			duration := time.Since(start)
 			printReconcileFailure(result, storeName, err, duration)
+			syncAgentOVSDBStatus(ctx, identityGroupStore, result, storeName, err, duration)
 			observeAgentReconcileFailure(metrics, result, storeName, err, duration)
 			return err
 		}
@@ -1022,6 +1039,7 @@ func reconcileStateFileOnceWithRuntimeStores(ctx context.Context, path, node, st
 	duration := time.Since(start)
 	recordNamedPolicyRolloutHistory(metrics, "desired-state", rolloutHistory, result.Node, storeName, duration)
 	printReconcileResult(result, storeName, duration)
+	syncAgentOVSDBStatus(ctx, identityGroupStore, result, storeName, nil, duration)
 	observeAgentReconcileResultWithState(metrics, result, storeName, duration, state)
 	return nil
 }
@@ -1188,6 +1206,142 @@ func printReconcileResult(result agent.ReconcileResult, storeName string, durati
 
 func printReconcileFailure(result agent.ReconcileResult, storeName string, err error, duration time.Duration) {
 	fmt.Printf("netloom-agent reconcile failed node=%s store=%s endpoints=%d programs=%d entries=%d policy_map_entries=%d policy_map_capacity=%d policy_map_pressure_max=%d policy_map_pressure_endpoint=%s policy_map_pressure_endpoints=%d policy_pressure_mitigated=%d policy_pressure_quarantined=%d policy_pressure_quarantine_endpoint=%s policy_rollouts=%d policy_rollout_planned=%d policy_rollout_applied=%d policy_rollout_skipped=%d policy_rollout_failed=%d policy_rollout_rolled_back=%d policy_rollout_rollback_failed=%d policy_rollout_slo_failed=%d policy_rollout_probe_failed=%d policy_rollout_paused=%d policy_map_drift_endpoints=%d policy_map_drift_missing=%d policy_map_drift_extra=%d policy_map_drift_changed=%d policy_gc_endpoints=%d policy_added=%d policy_updated=%d policy_deleted=%d policy_unchanged=%d policy_events=%d policy_failed=%d policy_rollbacks=%d policy_failed_endpoint=%s policy_failed_revision=%d policy_revision_max=%d policy_last_error=%s policy_rule_packets=%d policy_rule_bytes=%d policy_rule_allowed=%d policy_rule_dropped=%d policy_rule_rejected=%d policy_rule_logged=%d policy_rule_stats=%s tcx_eligible=%d tcx_skipped=%d tcx=%s tcx_failed=%d tcx_rollbacks=%d tcx_failed_target=%s tcx_last_error=%s provider_networks=%d provider_links=%d provider_ready=%d provider_degraded=%d provider_status=%s provider_network_status=%s provider_issues=%s provider_inventory_total=%d provider_inventory_ready=%d provider_inventory_degraded=%d provider_inventory_status=%s err=%s reconcile_duration_ms=%d\n", result.Node, storeName, result.Endpoints, result.Programs, result.Entries, result.PolicyMapEntries, result.PolicyMapCapacity, result.PolicyMapPressureMax, formatResultValue(result.PolicyMapPressureEndpoint), result.PolicyMapPressureEndpoints, result.PolicyPressureMitigated, result.PolicyPressureQuarantined, formatResultValue(result.PolicyPressureQuarantineEndpoint), result.PolicyRollouts, result.PolicyRolloutPlanned, result.PolicyRolloutApplied, result.PolicyRolloutSkipped, result.PolicyRolloutFailed, result.PolicyRolloutRolledBack, result.PolicyRolloutRollbackFailed, result.PolicyRolloutSLOFailed, result.PolicyRolloutProbeFailed, result.PolicyRolloutPaused, result.PolicyMapDriftEndpoints, result.PolicyMapDriftMissing, result.PolicyMapDriftExtra, result.PolicyMapDriftChanged, result.PolicyGCEndpoints, result.PolicyAdded, result.PolicyUpdated, result.PolicyDeleted, result.PolicyUnchanged, result.PolicyEvents, result.PolicyFailed, result.PolicyRollbacks, formatResultValue(result.PolicyFailedEndpoint), result.PolicyFailedRevision, result.PolicyRevisionMax, formatResultError(result.PolicyLastError), result.PolicyRulePackets, result.PolicyRuleBytes, result.PolicyRuleAllowed, result.PolicyRuleDropped, result.PolicyRuleRejected, result.PolicyRuleLogged, formatEndpointRuleStats(result.PolicyRuleStats), result.TCXEligible, result.TCXSkipped, result.TCX, result.TCXFailed, result.TCXRollbacks, formatResultValue(result.TCXFailedTarget), formatResultError(result.TCXLastError), result.ProviderNetworks, result.ProviderLinks, result.ProviderReady, result.ProviderDegraded, formatProviderStatus(result.ProviderStatus), formatProviderNetworkStatus(result.ProviderNetworkStatus), formatProviderIssues(result.ProviderIssues), result.ProviderInventoryTotal, result.ProviderInventoryReady, result.ProviderInventoryDegraded, formatProviderInventoryStatus(result.ProviderInventoryStatus), formatResultError(fmt.Sprint(err)), duration.Milliseconds())
+}
+
+type agentOVSDBStatus struct {
+	SchemaVersion                 int    `json:"schema_version"`
+	UpdatedAt                     string `json:"updated_at"`
+	Node                          string `json:"node"`
+	Store                         string `json:"store"`
+	Status                        string `json:"status"`
+	Error                         string `json:"error,omitempty"`
+	Endpoints                     int    `json:"endpoints"`
+	Programs                      int    `json:"programs"`
+	Entries                       int    `json:"entries"`
+	PolicyMapEntries              uint32 `json:"policy_map_entries"`
+	PolicyMapCapacity             uint32 `json:"policy_map_capacity"`
+	PolicyMapPressureMax          uint32 `json:"policy_map_pressure_max"`
+	PolicyMapPressureEndpoint     string `json:"policy_map_pressure_endpoint,omitempty"`
+	PolicyPressureMitigated       int    `json:"policy_pressure_mitigated"`
+	PolicyPressureQuarantined     int    `json:"policy_pressure_quarantined"`
+	PolicyRollouts                int    `json:"policy_rollouts"`
+	PolicyRolloutPlanned          int    `json:"policy_rollout_planned"`
+	PolicyRolloutApplied          int    `json:"policy_rollout_applied"`
+	PolicyRolloutSkipped          int    `json:"policy_rollout_skipped"`
+	PolicyRolloutFailed           int    `json:"policy_rollout_failed"`
+	PolicyRolloutRolledBack       int    `json:"policy_rollout_rolled_back"`
+	PolicyRolloutRollbackFailed   int    `json:"policy_rollout_rollback_failed"`
+	PolicyRolloutSLOFailed        int    `json:"policy_rollout_slo_failed"`
+	PolicyRolloutProbeFailed      int    `json:"policy_rollout_probe_failed"`
+	PolicyRolloutPaused           int    `json:"policy_rollout_paused"`
+	PolicyMapDriftEndpoints       int    `json:"policy_map_drift_endpoints"`
+	PolicyMapDriftMissing         int    `json:"policy_map_drift_missing"`
+	PolicyMapDriftExtra           int    `json:"policy_map_drift_extra"`
+	PolicyMapDriftChanged         int    `json:"policy_map_drift_changed"`
+	PolicyGCEndpoints             int    `json:"policy_gc_endpoints"`
+	PolicyFailed                  int    `json:"policy_failed"`
+	PolicyRollbacks               int    `json:"policy_rollbacks"`
+	PolicyFailedEndpoint          string `json:"policy_failed_endpoint,omitempty"`
+	PolicyFailedRevision          uint64 `json:"policy_failed_revision,omitempty"`
+	PolicyRevisionMax             uint64 `json:"policy_revision_max"`
+	PolicyLastError               string `json:"policy_last_error,omitempty"`
+	TCX                           string `json:"tcx"`
+	TCXFailed                     int    `json:"tcx_failed"`
+	TCXRollbacks                  int    `json:"tcx_rollbacks"`
+	TCXFailedTarget               string `json:"tcx_failed_target,omitempty"`
+	TCXLastError                  string `json:"tcx_last_error,omitempty"`
+	Datapath                      string `json:"datapath,omitempty"`
+	LocalIPs                      int    `json:"local_ips"`
+	RemoteRoutes                  int    `json:"remote_routes"`
+	PolicyRoutes                  int    `json:"policy_routes"`
+	ProviderNetworks              int    `json:"provider_networks"`
+	ProviderLinks                 int    `json:"provider_links"`
+	ProviderReady                 int    `json:"provider_ready"`
+	ProviderDegraded              int    `json:"provider_degraded"`
+	ProviderIssues                int    `json:"provider_issues"`
+	ProviderInventoryTotal        int    `json:"provider_inventory_total"`
+	ProviderInventoryReady        int    `json:"provider_inventory_ready"`
+	ProviderInventoryDegraded     int    `json:"provider_inventory_degraded"`
+	Cleanup                       bool   `json:"cleanup"`
+	ReconcileDurationMilliseconds int64  `json:"reconcile_duration_ms"`
+}
+
+func syncAgentOVSDBStatus(ctx context.Context, store openVSwitchExternalIDStore, result agent.ReconcileResult, storeName string, reconcileErr error, duration time.Duration) {
+	if store == nil {
+		return
+	}
+	status := agentOVSDBStatus{
+		SchemaVersion:                 1,
+		UpdatedAt:                     time.Now().UTC().Format(time.RFC3339Nano),
+		Node:                          result.Node,
+		Store:                         storeName,
+		Status:                        "success",
+		Endpoints:                     result.Endpoints,
+		Programs:                      result.Programs,
+		Entries:                       result.Entries,
+		PolicyMapEntries:              result.PolicyMapEntries,
+		PolicyMapCapacity:             result.PolicyMapCapacity,
+		PolicyMapPressureMax:          result.PolicyMapPressureMax,
+		PolicyMapPressureEndpoint:     result.PolicyMapPressureEndpoint,
+		PolicyPressureMitigated:       result.PolicyPressureMitigated,
+		PolicyPressureQuarantined:     result.PolicyPressureQuarantined,
+		PolicyRollouts:                result.PolicyRollouts,
+		PolicyRolloutPlanned:          result.PolicyRolloutPlanned,
+		PolicyRolloutApplied:          result.PolicyRolloutApplied,
+		PolicyRolloutSkipped:          result.PolicyRolloutSkipped,
+		PolicyRolloutFailed:           result.PolicyRolloutFailed,
+		PolicyRolloutRolledBack:       result.PolicyRolloutRolledBack,
+		PolicyRolloutRollbackFailed:   result.PolicyRolloutRollbackFailed,
+		PolicyRolloutSLOFailed:        result.PolicyRolloutSLOFailed,
+		PolicyRolloutProbeFailed:      result.PolicyRolloutProbeFailed,
+		PolicyRolloutPaused:           result.PolicyRolloutPaused,
+		PolicyMapDriftEndpoints:       result.PolicyMapDriftEndpoints,
+		PolicyMapDriftMissing:         result.PolicyMapDriftMissing,
+		PolicyMapDriftExtra:           result.PolicyMapDriftExtra,
+		PolicyMapDriftChanged:         result.PolicyMapDriftChanged,
+		PolicyGCEndpoints:             result.PolicyGCEndpoints,
+		PolicyFailed:                  result.PolicyFailed,
+		PolicyRollbacks:               result.PolicyRollbacks,
+		PolicyFailedEndpoint:          result.PolicyFailedEndpoint,
+		PolicyFailedRevision:          result.PolicyFailedRevision,
+		PolicyRevisionMax:             result.PolicyRevisionMax,
+		PolicyLastError:               result.PolicyLastError,
+		TCX:                           result.TCX,
+		TCXFailed:                     result.TCXFailed,
+		TCXRollbacks:                  result.TCXRollbacks,
+		TCXFailedTarget:               result.TCXFailedTarget,
+		TCXLastError:                  result.TCXLastError,
+		Datapath:                      result.Datapath,
+		LocalIPs:                      result.LocalIPs,
+		RemoteRoutes:                  result.RemoteRoutes,
+		PolicyRoutes:                  result.PolicyRoutes,
+		ProviderNetworks:              result.ProviderNetworks,
+		ProviderLinks:                 result.ProviderLinks,
+		ProviderReady:                 result.ProviderReady,
+		ProviderDegraded:              result.ProviderDegraded,
+		ProviderIssues:                len(result.ProviderIssues),
+		ProviderInventoryTotal:        result.ProviderInventoryTotal,
+		ProviderInventoryReady:        result.ProviderInventoryReady,
+		ProviderInventoryDegraded:     result.ProviderInventoryDegraded,
+		Cleanup:                       result.Cleanup,
+		ReconcileDurationMilliseconds: duration.Milliseconds(),
+	}
+	if reconcileErr != nil {
+		status.Status = "error"
+		status.Error = reconcileErr.Error()
+	}
+	raw, err := json.Marshal(status)
+	if err != nil {
+		log.Printf("encode Open_vSwitch agent status: %v", err)
+		return
+	}
+	if err := store.SetOpenVSwitchExternalID(ctx, "netloom_owner", "netloom"); err != nil {
+		log.Printf("write Open_vSwitch external_ids:netloom_owner: %v", err)
+		return
+	}
+	if err := store.SetOpenVSwitchExternalID(ctx, agentOVSDBStatusKey, string(raw)); err != nil {
+		log.Printf("write Open_vSwitch external_ids:%s: %v", agentOVSDBStatusKey, err)
+	}
 }
 
 func formatResultValue(value string) string {

@@ -855,6 +855,53 @@ func TestReconcileStateFileOnceAppliesDesiredPolicyRollout(t *testing.T) {
 	}
 }
 
+func TestReconcileStateFileOnceWritesAgentStatusToOpenVSwitchExternalID(t *testing.T) {
+	statePath := writeAgentState(t, control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:             "pod-a",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"web"},
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "allow-http",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("172.30.0.0/24"),
+				Ports:      []model.PortRange{{From: 80, To: 80}},
+				Action:     model.ActionAllow,
+			}},
+		}},
+	})
+	store := dataplane.NewInMemoryPolicyStore()
+	statusStore := &fakeOpenVSwitchExternalIDStore{}
+
+	if err := reconcileStateFileOnceWithRuntimeStores(context.Background(), statePath, "node-a", "memory", store, time.Second, nil, nil, nil, nil, nil, statusStore); err != nil {
+		t.Fatal(err)
+	}
+
+	if owner := statusStore.values["netloom_owner"]; owner != "netloom" {
+		t.Fatalf("netloom_owner = %q, want netloom", owner)
+	}
+	raw := statusStore.values[agentOVSDBStatusKey]
+	if raw == "" {
+		t.Fatalf("missing %s external_id", agentOVSDBStatusKey)
+	}
+	var status agentOVSDBStatus
+	if err := json.Unmarshal([]byte(raw), &status); err != nil {
+		t.Fatalf("decode %s: %v", agentOVSDBStatusKey, err)
+	}
+	if status.Status != "success" || status.Node != "node-a" || status.Store != "memory" || status.Endpoints != 1 || status.PolicyMapEntries != 1 {
+		t.Fatalf("agent OVSDB status = %+v, want successful node-a memory reconcile with one policy entry", status)
+	}
+}
+
 func TestReconcileStateFileOnceResumesPersistedPolicyRolloutState(t *testing.T) {
 	state := control.DesiredState{
 		Endpoints: []model.Endpoint{
