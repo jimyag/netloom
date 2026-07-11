@@ -68,6 +68,11 @@ func main() {
 				log.Fatal(err)
 			}
 			return
+		case "desired-state-export":
+			if err := runDesiredStateExport(context.Background(), os.Args[2:], os.Stdout); err != nil {
+				log.Fatal(err)
+			}
+			return
 		}
 	}
 
@@ -136,6 +141,10 @@ type identityGroupsImportOptions struct {
 type desiredStateImportOptions struct {
 	inputFile string
 	ovsdb     string
+}
+
+type desiredStateExportOptions struct {
+	ovsdb string
 }
 
 type policyStatusOutput struct {
@@ -489,6 +498,41 @@ func runDesiredStateImportWithStore(ctx context.Context, opts desiredStateImport
 		return err
 	}
 	_, err = fmt.Fprintf(stdout, "desired_state vpcs=%d subnets=%d endpoints=%d revision=%s external_id=%s\n", len(state.VPCs), len(state.Subnets), len(state.Endpoints), revision, control.DesiredStateOpenVSwitchExternalID)
+	return err
+}
+
+func runDesiredStateExport(ctx context.Context, args []string, stdout io.Writer) error {
+	var opts desiredStateExportOptions
+	flags := flag.NewFlagSet("netloom-agent desired-state-export", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	flags.StringVar(&opts.ovsdb, "ovsdb", os.Getenv("NETLOOM_OVSDB_ENDPOINT"), "Open_vSwitch OVSDB endpoint")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(opts.ovsdb) == "" {
+		return errors.New("missing -ovsdb or NETLOOM_OVSDB_ENDPOINT")
+	}
+	client, closeStore, err := newOpenVSwitchClient(ctx, opts.ovsdb)
+	if err != nil {
+		return err
+	}
+	defer closeStore()
+	return runDesiredStateExportWithStore(ctx, stdout, linuxdatapath.NewLibOVSDBProviderSyncer(client))
+}
+
+func runDesiredStateExportWithStore(ctx context.Context, stdout io.Writer, store openVSwitchExternalIDStore) error {
+	if store == nil {
+		return errors.New("missing Open_vSwitch external_id store")
+	}
+	state, err := loadDesiredStateFromPathOrOVSDB(ctx, "", store)
+	if err != nil {
+		return err
+	}
+	raw, err := control.MarshalDesiredStateJSON(state)
+	if err != nil {
+		return err
+	}
+	_, err = stdout.Write(append(raw, '\n'))
 	return err
 }
 

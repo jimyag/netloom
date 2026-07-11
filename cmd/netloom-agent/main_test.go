@@ -469,6 +469,62 @@ func TestRunDesiredStateImportWritesRealOpenVSwitchOVSDB(t *testing.T) {
 	}
 }
 
+func TestRunDesiredStateExportWithStoreReadsOpenVSwitchExternalID(t *testing.T) {
+	raw, err := control.MarshalDesiredStateJSON(control.DesiredState{
+		VPCs: []model.VPC{{Name: "prod"}},
+		Subnets: []model.Subnet{{
+			Name:    "apps",
+			VPC:     "prod",
+			CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway: netip.MustParseAddr("10.10.0.1"),
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &fakeOpenVSwitchExternalIDStore{values: map[string]string{
+		control.DesiredStateOpenVSwitchExternalID:         string(raw),
+		control.DesiredStateRevisionOpenVSwitchExternalID: control.DesiredStateRevision(raw),
+	}}
+	var stdout bytes.Buffer
+	if err := runDesiredStateExportWithStore(t.Context(), &stdout, store); err != nil {
+		t.Fatal(err)
+	}
+	state, err := control.LoadDesiredStateJSON(strings.NewReader(stdout.String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.VPCs) != 1 || state.VPCs[0].Name != "prod" || len(state.Subnets) != 1 || state.Subnets[0].Name != "apps" {
+		t.Fatalf("exported state = %+v, want prod/apps from OVSDB", state)
+	}
+}
+
+func TestRunDesiredStateExportReadsRealOpenVSwitchOVSDB(t *testing.T) {
+	endpoint, client, cleanup := newTestAgentVSwitchOVSDB(t)
+	defer cleanup()
+	raw, err := control.MarshalDesiredStateJSON(control.DesiredState{
+		VPCs: []model.VPC{{Name: "prod"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	insertAgentVSwitchRows(t, t.Context(), client, &vswitch.OpenvSwitch{ExternalIDs: map[string]string{
+		control.DesiredStateOpenVSwitchExternalID:         string(raw),
+		control.DesiredStateRevisionOpenVSwitchExternalID: control.DesiredStateRevision(raw),
+	}})
+	var stdout bytes.Buffer
+	if err := runDesiredStateExport(t.Context(), []string{"-ovsdb", endpoint}, &stdout); err != nil {
+		t.Fatal(err)
+	}
+	state, err := control.LoadDesiredStateJSON(strings.NewReader(stdout.String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.VPCs) != 1 || state.VPCs[0].Name != "prod" {
+		t.Fatalf("exported state = %+v, want prod from real OVSDB", state)
+	}
+}
+
 func TestLoadDesiredStateFromOpenVSwitchExternalIDStore(t *testing.T) {
 	raw, err := control.MarshalDesiredStateJSON(control.DesiredState{
 		VPCs: []model.VPC{{Name: "prod"}},
