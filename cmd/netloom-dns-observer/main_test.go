@@ -292,20 +292,30 @@ func TestTCPProxyForwardsResponsesAndWritesDNSObservations(t *testing.T) {
 	}
 	defer upstream.Close()
 	go func() {
-		conn, err := upstream.Accept()
-		if err != nil {
-			return
+		answers := []struct {
+			name string
+			ip   []byte
+		}{
+			{name: "api.example.com", ip: []byte{203, 0, 113, 11}},
+			{name: "db.example.com", ip: []byte{203, 0, 113, 12}},
 		}
-		defer conn.Close()
-		query, err := readTCPDNSMessage(conn)
-		if err != nil || len(query) == 0 {
-			return
+		for _, answer := range answers {
+			conn, err := upstream.Accept()
+			if err != nil {
+				return
+			}
+			query, err := readTCPDNSMessage(conn)
+			if err != nil || len(query) == 0 {
+				_ = conn.Close()
+				return
+			}
+			response := dnsResponse(
+				dnsQuestion(answer.name, 1),
+				dnsAnswerPtr(12, 1, 60, answer.ip),
+			)
+			_ = writeTCPDNSMessage(conn, response)
+			_ = conn.Close()
 		}
-		response := dnsResponse(
-			dnsQuestion("api.example.com", 1),
-			dnsAnswerPtr(12, 1, 60, []byte{203, 0, 113, 11}),
-		)
-		_ = writeTCPDNSMessage(conn, response)
 	}()
 
 	ovsdb := &fakeOpenVSwitchExternalIDStore{}
@@ -343,12 +353,30 @@ func TestTCPProxyForwardsResponsesAndWritesDNSObservations(t *testing.T) {
 	if len(response) == 0 {
 		t.Fatal("empty DNS response from TCP proxy")
 	}
+	if err := writeTCPDNSMessage(client, dnsQuery("db.example.com", 1)); err != nil {
+		t.Fatal(err)
+	}
+	response, err = readTCPDNSMessage(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response) == 0 {
+		t.Fatal("empty second DNS response from TCP proxy")
+	}
 	requireEventually(t, func() bool {
 		records, err := store.Load(t.Context())
 		if err != nil {
 			return false
 		}
-		return len(records) == 1 && records[0].Name == "api.example.com" && records[0].IPs[0] == netip.MustParseAddr("203.0.113.11")
+		seen := map[string]netip.Addr{}
+		for _, record := range records {
+			if len(record.IPs) > 0 {
+				seen[record.Name] = record.IPs[0]
+			}
+		}
+		return len(records) == 2 &&
+			seen["api.example.com"] == netip.MustParseAddr("203.0.113.11") &&
+			seen["db.example.com"] == netip.MustParseAddr("203.0.113.12")
 	})
 	cancel()
 	select {

@@ -324,7 +324,7 @@ the cache lifetime that should govern FQDN-derived policy entries. The
 `netloom-dns-observer` command wraps that parser as a
 sidecar-friendly bridge: it accepts newline-delimited base64 or hex DNS
 responses, one raw DNS response, UDP proxy traffic, or DNS-over-TCP proxy
-traffic, and merges the derived records into local OVSDB
+traffic, including multiple queries on one TCP client connection, and merges the derived records into local OVSDB
 `Open_vSwitch.external_ids:netloom_dns_observations`. Packet interception can
 therefore be layered on top of this command or parser without changing policy
 compilation.

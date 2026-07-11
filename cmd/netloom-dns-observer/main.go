@@ -223,31 +223,33 @@ func (p *dnsTCPProxy) Serve(ctx context.Context, listener net.Listener) error {
 
 func (p *dnsTCPProxy) handleConn(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
-	query, err := readTCPDNSMessage(conn)
-	if err != nil {
-		return
-	}
-	response, err := p.exchange(ctx, query)
-	if err != nil {
-		return
-	}
-	if err := writeTCPDNSMessage(conn, response); err != nil {
-		return
-	}
-	observedAt := p.now().UTC()
-	records, err := dnsobserver.RecordsFromResponse(response, observedAt)
-	if err != nil || len(records) == 0 {
-		return
-	}
-	for i := range records {
-		if records[i].TTLSeconds == 0 && p.defaultTTL > 0 {
-			records[i].TTLSeconds = p.defaultTTL
-			records[i].ObservedAt = observedAt
+	for {
+		query, err := readTCPDNSMessage(conn)
+		if err != nil {
+			return
 		}
+		response, err := p.exchange(ctx, query)
+		if err != nil {
+			return
+		}
+		if err := writeTCPDNSMessage(conn, response); err != nil {
+			return
+		}
+		observedAt := p.now().UTC()
+		records, err := dnsobserver.RecordsFromResponse(response, observedAt)
+		if err != nil || len(records) == 0 {
+			continue
+		}
+		for i := range records {
+			if records[i].TTLSeconds == 0 && p.defaultTTL > 0 {
+				records[i].TTLSeconds = p.defaultTTL
+				records[i].ObservedAt = observedAt
+			}
+		}
+		p.mu.Lock()
+		_, _ = mergeAndSaveDNSObservations(ctx, p.store, records, observedAt, p.mergeExisting)
+		p.mu.Unlock()
 	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	_, _ = mergeAndSaveDNSObservations(ctx, p.store, records, observedAt, p.mergeExisting)
 }
 
 func (p *dnsTCPProxy) exchange(ctx context.Context, query []byte) ([]byte, error) {
