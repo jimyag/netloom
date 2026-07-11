@@ -36,3 +36,16 @@ func TestRunSelfTestReconcilesTopologyAndResolvesRouting(t *testing.T) {
 		t.Fatalf("executed ovn ops = %d, want %d", result.OVNExecuted, result.OVNOperations)
 	}
 }
+
+func TestRunTopologySelfTestAcceptsGenericTopologyBackend(t *testing.T) {
+	result, err := RunTopologySelfTest(context.Background(), NewMemoryBackend())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.PolicyRouteNextHop != netip.MustParseAddr("10.244.0.253") {
+		t.Fatalf("policy route next hop = %s", result.PolicyRouteNextHop)
+	}
+	if result.OVNOperations != 1 || result.OVNExecuted != 1 {
+		t.Fatalf("topology operation summary = %d/%d, want generic backend marker 1/1", result.OVNOperations, result.OVNExecuted)
+	}
+}

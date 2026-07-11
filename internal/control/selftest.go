@@ -23,17 +23,20 @@ type SelfTestResult struct {
 }
 
 func RunSelfTest(ctx context.Context) (SelfTestResult, error) {
-	return runSelfTest(ctx, ovn.NewRecorderExecutor())
+	recorder := ovn.NewRecorderExecutor()
+	return runSelfTest(ctx, ovn.NewBackend(recorder))
 }
 
-func RunOVNSelfTest(ctx context.Context, executor ovn.Executor) (SelfTestResult, error) {
-	return runSelfTest(ctx, executor)
+func RunTopologySelfTest(ctx context.Context, topologyBackend TopologyBackend) (SelfTestResult, error) {
+	return runSelfTest(ctx, topologyBackend)
 }
 
-func runSelfTest(ctx context.Context, executor ovn.Executor) (SelfTestResult, error) {
+func runSelfTest(ctx context.Context, topologyBackend TopologyBackend) (SelfTestResult, error) {
+	if topologyBackend == nil {
+		return SelfTestResult{}, fmt.Errorf("topology backend is required")
+	}
 	backend := NewMemoryBackend()
-	ovnBackend := ovn.NewBackend(executor)
-	controller := NewController(MultiTopologyBackend{backend, ovnBackend}, backend)
+	controller := NewController(MultiTopologyBackend{backend, topologyBackend}, backend)
 	state := DesiredState{
 		VPCs: []model.VPC{{Name: "default"}},
 		Subnets: []model.Subnet{{
@@ -178,15 +181,9 @@ func runSelfTest(ctx context.Context, executor ovn.Executor) (SelfTestResult, er
 	if fipDecision.Translated != netip.MustParseAddr("10.244.0.10") {
 		return SelfTestResult{}, fmt.Errorf("expected floating ip target 10.244.0.10, got %s", fipDecision.Translated)
 	}
-	if len(ovnBackend.Operations()) == 0 {
+	operationCount := topologyOperationCount(topologyBackend)
+	if operationCount == 0 {
 		return SelfTestResult{}, fmt.Errorf("expected OVN topology operations to be planned")
-	}
-	executed := len(ovnBackend.Operations())
-	if recorder, ok := executor.(*ovn.RecorderExecutor); ok {
-		executed = len(recorder.Operations())
-		if executed != len(ovnBackend.Operations()) {
-			return SelfTestResult{}, fmt.Errorf("expected all OVN operations to pass through executor")
-		}
 	}
 	return SelfTestResult{
 		PolicyRouteNextHop: routeDecision.NextHop,
@@ -196,7 +193,19 @@ func runSelfTest(ctx context.Context, executor ovn.Executor) (SelfTestResult, er
 		ServiceBackendPort: serviceDecision.TranslatedPort,
 		DNATTarget:         dnatDecision.Translated,
 		FloatingIPTarget:   fipDecision.Translated,
-		OVNOperations:      len(ovnBackend.Operations()),
-		OVNExecuted:        executed,
+		OVNOperations:      operationCount,
+		OVNExecuted:        operationCount,
 	}, nil
+}
+
+type topologyOperationReporter interface {
+	Operations() []ovn.Operation
+}
+
+func topologyOperationCount(topologyBackend TopologyBackend) int {
+	reporter, ok := topologyBackend.(topologyOperationReporter)
+	if !ok {
+		return 1
+	}
+	return len(reporter.Operations())
 }

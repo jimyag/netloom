@@ -80,9 +80,9 @@ func TestControllerWithIdentityGroupObservationsMergesRemoteFeed(t *testing.T) {
 	}
 }
 
-func TestNBCTLTimeoutParsesMilliseconds(t *testing.T) {
-	t.Setenv("NETLOOM_OVN_NBCTL_TIMEOUT_MS", "250")
-	timeout, err := nbctlTimeout()
+func TestOVNLibOVSDBConnectTimeoutParsesMilliseconds(t *testing.T) {
+	t.Setenv("NETLOOM_OVN_LIBOVSDB_CONNECT_TIMEOUT_MS", "250")
+	timeout, err := ovnLibOVSDBConnectTimeout()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,68 +91,11 @@ func TestNBCTLTimeoutParsesMilliseconds(t *testing.T) {
 	}
 }
 
-func TestNBCTLTimeoutRejectsInvalidValue(t *testing.T) {
-	t.Setenv("NETLOOM_OVN_NBCTL_TIMEOUT_MS", "slow")
-	_, err := nbctlTimeout()
+func TestOVNLibOVSDBConnectTimeoutRejectsInvalidValue(t *testing.T) {
+	t.Setenv("NETLOOM_OVN_LIBOVSDB_CONNECT_TIMEOUT_MS", "slow")
+	_, err := ovnLibOVSDBConnectTimeout()
 	if err == nil {
-		t.Fatal("expected invalid nbctl timeout to fail")
-	}
-}
-
-func TestNBCTLRetryAttemptsParsesValue(t *testing.T) {
-	t.Setenv("NETLOOM_OVN_NBCTL_RETRY_ATTEMPTS", "5")
-	attempts, err := nbctlRetryAttempts()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if attempts != 5 {
-		t.Fatalf("retry attempts = %d, want 5", attempts)
-	}
-}
-
-func TestNBCTLRetryAttemptsRejectsInvalidValue(t *testing.T) {
-	t.Setenv("NETLOOM_OVN_NBCTL_RETRY_ATTEMPTS", "often")
-	_, err := nbctlRetryAttempts()
-	if err == nil {
-		t.Fatal("expected invalid nbctl retry attempts to fail")
-	}
-}
-
-func TestNBCTLRetryInitialBackoffParsesMilliseconds(t *testing.T) {
-	t.Setenv("NETLOOM_OVN_NBCTL_RETRY_INITIAL_BACKOFF_MS", "75")
-	backoff, err := nbctlRetryInitialBackoff()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if backoff != 75*time.Millisecond {
-		t.Fatalf("initial backoff = %s, want 75ms", backoff)
-	}
-}
-
-func TestNBCTLRetryInitialBackoffRejectsInvalidValue(t *testing.T) {
-	t.Setenv("NETLOOM_OVN_NBCTL_RETRY_INITIAL_BACKOFF_MS", "soon")
-	_, err := nbctlRetryInitialBackoff()
-	if err == nil {
-		t.Fatal("expected invalid initial backoff to fail")
-	}
-}
-
-func TestNBCTLRetryMaxBackoffParsesMilliseconds(t *testing.T) {
-	t.Setenv("NETLOOM_OVN_NBCTL_RETRY_MAX_BACKOFF_MS", "900")
-	backoff, err := nbctlRetryMaxBackoff()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if backoff != 900*time.Millisecond {
-		t.Fatalf("max backoff = %s, want 900ms", backoff)
-	}
-}
-
-func TestNBCTLRetryMaxBackoffRejectsInvalidValue(t *testing.T) {
-	t.Setenv("NETLOOM_OVN_NBCTL_RETRY_MAX_BACKOFF_MS", "later")
-	_, err := nbctlRetryMaxBackoff()
-	if err == nil {
-		t.Fatal("expected invalid max backoff to fail")
+		t.Fatal("expected invalid libovsdb connect timeout to fail")
 	}
 }
 
@@ -1105,6 +1048,15 @@ func TestOVNTopologyBackendDefaultsToLibOVSDBWhenEndpointConfigured(t *testing.T
 	t.Setenv("NETLOOM_OVN_TOPOLOGY_BACKEND", "")
 	t.Setenv("NETLOOM_OVN_LIBOVSDB_ENDPOINT", "unix:/run/ovn/ovnnb_db.sock")
 	t.Setenv("NETLOOM_OVN_NBCTL_DB", "")
+	if got := ovnTopologyBackendFromEnv(); got != "libovsdb" {
+		t.Fatalf("topology backend = %q, want libovsdb", got)
+	}
+}
+
+func TestOVNTopologyBackendTreatsNBCTLDBAsLibOVSDBEndpoint(t *testing.T) {
+	t.Setenv("NETLOOM_OVN_TOPOLOGY_BACKEND", "")
+	t.Setenv("NETLOOM_OVN_LIBOVSDB_ENDPOINT", "")
+	t.Setenv("NETLOOM_OVN_NBCTL_DB", "unix:/run/ovn/ovnnb_db.sock")
 	if got := ovnTopologyBackendFromEnv(); got != "libovsdb" {
 		t.Fatalf("topology backend = %q, want libovsdb", got)
 	}

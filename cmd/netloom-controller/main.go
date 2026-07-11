@@ -37,14 +37,12 @@ func main() {
 		return
 	}
 
-	result, err := control.RunSelfTest(ctx)
-	if db := os.Getenv("NETLOOM_OVN_NBCTL_DB"); db != "" {
-		executor, executorErr := newNBCTLExecutorFromEnv(db)
-		if executorErr != nil {
-			log.Fatal(executorErr)
-		}
-		result, err = control.RunOVNSelfTest(ctx, executor)
+	ovnRuntime, err := newOVNTopologyRuntimeFromEnv()
+	if err != nil {
+		log.Fatal(err)
 	}
+	defer ovnRuntime.closeRuntime()
+	result, err := control.RunTopologySelfTest(ctx, ovnRuntime.backend)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -109,6 +107,12 @@ type ovnTopologyRuntime struct {
 	cleanup    ovnCleanupStatsReporter
 	health     ovnHealthChecker
 	close      func()
+}
+
+func (r ovnTopologyRuntime) closeRuntime() {
+	if r.close != nil {
+		r.close()
+	}
 }
 
 type libovsdbDialFunc func(context.Context, string, string) (libovsdbclient.Client, func(), error)
@@ -1761,7 +1765,7 @@ func newOVNNBClientForEndpoint(ctx context.Context, owner, endpoint string) (lib
 	if err != nil {
 		return nil, nil, fmt.Errorf("create OVN northbound libovsdb client: %w", err)
 	}
-	timeout, err := nbctlTimeout()
+	timeout, err := ovnLibOVSDBConnectTimeout()
 	if err != nil {
 		client.Close()
 		return nil, nil, err
@@ -2149,84 +2153,14 @@ func indexString(values []string, value string) int {
 	return -1
 }
 
-func newNBCTLExecutorFromEnv(db string) (*ovn.NBCTLExecutor, error) {
-	executor := ovn.NewNBCTLExecutor("ovn-nbctl", "--db="+db)
-	timeout, err := nbctlTimeout()
-	if err != nil {
-		return nil, err
-	}
-	executor.Timeout = timeout
-	retryAttempts, err := nbctlRetryAttempts()
-	if err != nil {
-		return nil, err
-	}
-	executor.RetryPolicy.Attempts = retryAttempts
-	initialBackoff, err := nbctlRetryInitialBackoff()
-	if err != nil {
-		return nil, err
-	}
-	maxBackoff, err := nbctlRetryMaxBackoff()
-	if err != nil {
-		return nil, err
-	}
-	executor.RetryPolicy.InitialBackoff = initialBackoff
-	executor.RetryPolicy.MaxBackoff = maxBackoff
-	return executor, nil
-}
-
-func nbctlTimeout() (time.Duration, error) {
-	raw := os.Getenv("NETLOOM_OVN_NBCTL_TIMEOUT_MS")
+func ovnLibOVSDBConnectTimeout() (time.Duration, error) {
+	raw := os.Getenv("NETLOOM_OVN_LIBOVSDB_CONNECT_TIMEOUT_MS")
 	if raw == "" {
-		return ovn.DefaultNBCTLTimeout, nil
+		return 30 * time.Second, nil
 	}
 	ms, err := strconv.Atoi(raw)
 	if err != nil {
-		return 0, fmt.Errorf("invalid NETLOOM_OVN_NBCTL_TIMEOUT_MS: %w", err)
-	}
-	if ms <= 0 {
-		return 0, nil
-	}
-	return time.Duration(ms) * time.Millisecond, nil
-}
-
-func nbctlRetryAttempts() (int, error) {
-	raw := os.Getenv("NETLOOM_OVN_NBCTL_RETRY_ATTEMPTS")
-	if raw == "" {
-		return ovn.DefaultNBCTLRetryAttempts, nil
-	}
-	attempts, err := strconv.Atoi(raw)
-	if err != nil {
-		return 0, fmt.Errorf("invalid NETLOOM_OVN_NBCTL_RETRY_ATTEMPTS: %w", err)
-	}
-	if attempts <= 0 {
-		return 1, nil
-	}
-	return attempts, nil
-}
-
-func nbctlRetryInitialBackoff() (time.Duration, error) {
-	raw := os.Getenv("NETLOOM_OVN_NBCTL_RETRY_INITIAL_BACKOFF_MS")
-	if raw == "" {
-		return ovn.DefaultNBCTLRetryInitialBackoff, nil
-	}
-	ms, err := strconv.Atoi(raw)
-	if err != nil {
-		return 0, fmt.Errorf("invalid NETLOOM_OVN_NBCTL_RETRY_INITIAL_BACKOFF_MS: %w", err)
-	}
-	if ms <= 0 {
-		return 0, nil
-	}
-	return time.Duration(ms) * time.Millisecond, nil
-}
-
-func nbctlRetryMaxBackoff() (time.Duration, error) {
-	raw := os.Getenv("NETLOOM_OVN_NBCTL_RETRY_MAX_BACKOFF_MS")
-	if raw == "" {
-		return ovn.DefaultNBCTLRetryMaxBackoff, nil
-	}
-	ms, err := strconv.Atoi(raw)
-	if err != nil {
-		return 0, fmt.Errorf("invalid NETLOOM_OVN_NBCTL_RETRY_MAX_BACKOFF_MS: %w", err)
+		return 0, fmt.Errorf("invalid NETLOOM_OVN_LIBOVSDB_CONNECT_TIMEOUT_MS: %w", err)
 	}
 	if ms <= 0 {
 		return 0, nil
