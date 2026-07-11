@@ -1994,6 +1994,125 @@ func TestLibOVSDBTopologyWriterEnsuresPolicyRouteByName(t *testing.T) {
 	})
 }
 
+func TestLibOVSDBTopologyWriterKeepsReferencedDuplicatePolicyRoute(t *testing.T) {
+	ctx := context.Background()
+	client, closeFn := newTestOVNNBClient(t)
+	defer closeFn()
+
+	if _, err := client.MonitorAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	writer := NewLibOVSDBTopologyWriter(client)
+	if err := writer.EnsureVPC(ctx, model.VPC{Name: "prod"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureVPC(ctx, model.VPC{Name: "dev"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureSubnet(ctx, model.Subnet{
+		Name:    "db",
+		VPC:     "dev",
+		CIDR:    netip.MustParsePrefix("10.20.0.0/24"),
+		Gateway: netip.MustParseAddr("10.20.0.1"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	route := model.PolicyRoute{
+		Name:     "via-fw",
+		VPC:      "prod",
+		Priority: 100,
+		Match: model.RouteMatch{
+			Source:      netip.MustParsePrefix("10.10.0.0/24"),
+			Destination: netip.MustParsePrefix("10.30.0.0/24"),
+		},
+		Action: model.RouteAction{Type: model.ActionReroute, NextHops: []netip.Addr{netip.MustParseAddr("10.10.0.254")}},
+	}
+	if err := writer.EnsurePolicyRoute(ctx, route); err != nil {
+		t.Fatal(err)
+	}
+
+	var routers []ovnnb.LogicalRouter
+	var policies []ovnnb.LogicalRouterPolicy
+	requireEventually(t, func() bool {
+		routers = nil
+		if err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("prod") }).List(ctx, &routers); err != nil || len(routers) != 1 || len(routers[0].Policies) != 1 {
+			return false
+		}
+		policies = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalRouterPolicy) bool {
+			return row.ExternalIDs["netloom_vpc"] == "prod" && row.ExternalIDs["netloom_policy_route"] == "via-fw"
+		}).List(ctx, &policies)
+		return err == nil && len(policies) == 1
+	})
+	referencedUUID := routers[0].Policies[0]
+	if policies[0].UUID != referencedUUID {
+		t.Fatalf("router policy refs = %+v policy row = %s, want referenced row", routers[0].Policies, policies[0].UUID)
+	}
+
+	duplicate := desiredPolicyRouteRow(route)
+	duplicate.UUID = ovsdbNamedUUID("duplicate_policy_route")
+	duplicate.Priority = 90
+	duplicate.Action = ovnnb.LogicalRouterPolicyActionDrop
+	duplicate.Nexthop = nil
+	duplicate.Nexthops = nil
+	var devRouters []ovnnb.LogicalRouter
+	requireEventually(t, func() bool {
+		devRouters = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("dev") }).List(ctx, &devRouters)
+		return err == nil && len(devRouters) == 1
+	})
+	createOps, err := client.Create(&duplicate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attachDuplicate, err := writer.attachPolicyRoute(&devRouters[0], duplicate.UUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	duplicateOps := append(createOps, attachDuplicate...)
+	results, err := client.Transact(ctx, duplicateOps...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, duplicateOps); err != nil {
+		t.Fatalf("attach duplicate policy route operation errors=%+v: %v", opErrors, err)
+	}
+	requireEventually(t, func() bool {
+		policies = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalRouterPolicy) bool {
+			return row.ExternalIDs["netloom_vpc"] == "prod" && row.ExternalIDs["netloom_policy_route"] == "via-fw"
+		}).List(ctx, &policies)
+		return err == nil && len(policies) == 2
+	})
+
+	if err := writer.EnsurePolicyRoute(ctx, route); err != nil {
+		t.Fatal(err)
+	}
+	requireEventually(t, func() bool {
+		routers = nil
+		if err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("prod") }).List(ctx, &routers); err != nil || len(routers) != 1 || len(routers[0].Policies) != 1 {
+			return false
+		}
+		policies = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalRouterPolicy) bool {
+			return row.ExternalIDs["netloom_vpc"] == "prod" && row.ExternalIDs["netloom_policy_route"] == "via-fw"
+		}).List(ctx, &policies)
+		if err != nil ||
+			len(policies) != 1 ||
+			policies[0].UUID != referencedUUID ||
+			routers[0].Policies[0] != referencedUUID ||
+			policies[0].Priority != 100 ||
+			policies[0].Action != ovnnb.LogicalRouterPolicyActionReroute ||
+			policies[0].Nexthop == nil ||
+			*policies[0].Nexthop != "10.10.0.254" {
+			return false
+		}
+		devRouters = nil
+		err = client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("dev") }).List(ctx, &devRouters)
+		return err == nil && len(devRouters) == 1 && len(devRouters[0].Policies) == 0
+	})
+}
+
 func TestLibOVSDBTopologyWriterEnsuresGatewayRouterMetadata(t *testing.T) {
 	ctx := context.Background()
 	client, closeFn := newTestOVNNBClient(t)

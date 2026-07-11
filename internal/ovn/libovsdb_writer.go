@@ -442,7 +442,8 @@ func (w *LibOVSDBTopologyWriter) policyRouteOperations(ctx context.Context, rout
 		}
 		ops = append(ops, attachOps...)
 	} else {
-		keep := existing[0]
+		keepIndex := preferredReferencedRow(router.Policies, existing, func(row ovnnb.LogicalRouterPolicy) string { return row.UUID })
+		keep := existing[keepIndex]
 		nextExternalIDs := mergeManagedExternalIDs(keep.ExternalIDs, desired.ExternalIDs)
 		if !containsString(router.Policies, keep.UUID) {
 			attachOps, err := w.attachPolicyRoute(router, keep.UUID)
@@ -469,8 +470,11 @@ func (w *LibOVSDBTopologyWriter) policyRouteOperations(ctx context.Context, rout
 			}
 			ops = append(ops, updateOps...)
 		}
-		for i := 1; i < len(existing); i++ {
-			deleteOps, err := w.deletePolicyRoute(router.UUID, &existing[i])
+		for i := range existing {
+			if i == keepIndex {
+				continue
+			}
+			deleteOps, err := w.deletePolicyRouteFromParents(&existing[i])
 			if err != nil {
 				return nil, err
 			}
