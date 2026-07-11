@@ -182,6 +182,7 @@ type PolicyEndpointRolloutOptions struct {
 	EndpointIDs               []string
 	BatchSize                 int
 	DryRun                    bool
+	Cancelled                 bool
 	PressureAware             bool
 	PressureThresholdPercent  uint32
 	PressureAwareMinBatchSize int
@@ -214,6 +215,7 @@ type PolicyEndpointRolloutOptions struct {
 
 type PolicyEndpointRollout struct {
 	DryRun                    bool                        `json:"dry_run"`
+	Cancelled                 bool                        `json:"cancelled,omitempty"`
 	BatchSize                 int                         `json:"batch_size"`
 	RequestedBatchSize        int                         `json:"requested_batch_size,omitempty"`
 	PressureAware             bool                        `json:"pressure_aware,omitempty"`
@@ -431,6 +433,7 @@ func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, opt
 	}
 	rollout := PolicyEndpointRollout{
 		DryRun:                   rolloutOptions.DryRun,
+		Cancelled:                rolloutOptions.Cancelled,
 		BatchSize:                batchSize,
 		RequestedBatchSize:       requestedBatchSize,
 		PressureAware:            rolloutOptions.PressureAware,
@@ -489,6 +492,10 @@ func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, opt
 	}
 	if rolloutOptions.DryRun {
 		return rollout, nil
+	}
+	if rolloutOptions.Cancelled {
+		cancelRolloutItems(&rollout)
+		return syncPolicyRolloutChangeStatus(ctx, rolloutOptions, endpointIDs, rollout), nil
 	}
 	now := time.Now().UTC()
 	if rolloutOptions.ApprovalRequired && rolloutExpired(rolloutOptions.ApprovalExpiresAt, now) {
@@ -717,6 +724,7 @@ type policyRolloutChangeStatusRequest struct {
 	RolledBack      int      `json:"rolled_back,omitempty"`
 	RollbackFailed  int      `json:"rollback_failed,omitempty"`
 	Paused          bool     `json:"paused,omitempty"`
+	Cancelled       bool     `json:"cancelled,omitempty"`
 	ApprovalPending bool     `json:"approval_pending,omitempty"`
 	AckPending      bool     `json:"ack_pending,omitempty"`
 	SLOFailed       bool     `json:"slo_failed,omitempty"`
@@ -883,6 +891,7 @@ func postPolicyRolloutChangeStatus(ctx context.Context, options PolicyEndpointRo
 		RolledBack:      rollout.RolledBack,
 		RollbackFailed:  rollout.RollbackFailed,
 		Paused:          rollout.Paused,
+		Cancelled:       rollout.Cancelled,
 		ApprovalPending: rollout.ApprovalPending,
 		AckPending:      rollout.AckPending,
 		SLOFailed:       rollout.SLOFailed,
@@ -928,6 +937,8 @@ func postPolicyRolloutChangeStatus(ctx context.Context, options PolicyEndpointRo
 
 func policyRolloutChangeStatus(rollout PolicyEndpointRollout) string {
 	switch {
+	case rollout.Cancelled:
+		return "cancelled"
 	case rollout.AckPending:
 		return "ack_pending"
 	case rollout.ApprovalPending:
@@ -955,6 +966,16 @@ func pauseRolloutItems(rollout *PolicyEndpointRollout, afterBatch int, reason st
 	for i := range rollout.Items {
 		if rollout.Items[i].Phase == "planned" {
 			setRolloutItemPhase(&rollout.Items[i], "paused", reason)
+			rollout.Skipped++
+		}
+	}
+}
+
+func cancelRolloutItems(rollout *PolicyEndpointRollout) {
+	rollout.Cancelled = true
+	for i := range rollout.Items {
+		if rollout.Items[i].Phase == "planned" {
+			setRolloutItemPhase(&rollout.Items[i], "cancelled", "operator_cancelled")
 			rollout.Skipped++
 		}
 	}
@@ -1376,6 +1397,7 @@ func ApplyPolicyRollouts(ctx context.Context, state control.DesiredState, option
 			EndpointIDs:               endpointIDs,
 			BatchSize:                 rollout.BatchSize,
 			DryRun:                    rollout.DryRun,
+			Cancelled:                 rollout.Cancelled,
 			PressureAware:             rollout.PressureAware,
 			PressureThresholdPercent:  rollout.PressureThresholdPercent,
 			PressureAwareMinBatchSize: rollout.PressureAwareMinBatchSize,

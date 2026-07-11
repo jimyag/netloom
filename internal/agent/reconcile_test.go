@@ -1464,6 +1464,46 @@ func TestApplyPolicyRolloutsDryRunPlansWithoutApplying(t *testing.T) {
 	}
 }
 
+func TestApplyPolicyRolloutsCancelsWithoutApplying(t *testing.T) {
+	state := rolloutPolicyState()
+	state.PolicyRollouts = []control.PolicyRollout{{
+		Name:      "web-canary-cancel",
+		Node:      "node-a",
+		Endpoints: []string{"prod/pod-a", "prod/pod-b"},
+		BatchSize: 1,
+		Cancelled: true,
+	}}
+	store := dataplane.NewInMemoryPolicyStore()
+
+	rollouts, err := ApplyPolicyRollouts(context.Background(), state, ReconcileOptions{
+		Node:  "node-a",
+		Store: store,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result ReconcileResult
+	ApplyPolicyRolloutResults(&result, rollouts)
+	if result.PolicyRollouts != 1 || result.PolicyRolloutPlanned != 2 || result.PolicyRolloutApplied != 0 || result.PolicyRolloutSkipped != 2 || result.PolicyRolloutPaused != 0 {
+		t.Fatalf("rollout summary = %+v rollouts=%+v, want cancelled planned rollout without pause", result, rollouts)
+	}
+	if len(rollouts) != 1 || !rollouts[0].Rollout.Cancelled || rollouts[0].Rollout.Paused {
+		t.Fatalf("rollouts = %+v, want cancelled rollout that is not paused", rollouts)
+	}
+	if phases := []string{rollouts[0].Rollout.Items[0].Phase, rollouts[0].Rollout.Items[1].Phase}; !slices.Equal(phases, []string{"cancelled", "cancelled"}) {
+		t.Fatalf("cancelled rollout phases = %+v, want cancelled items", phases)
+	}
+	if reasons := []string{rollouts[0].Rollout.Items[0].Reason, rollouts[0].Rollout.Items[1].Reason}; !slices.Equal(reasons, []string{"operator_cancelled", "operator_cancelled"}) {
+		t.Fatalf("cancelled rollout reasons = %+v, want operator_cancelled", reasons)
+	}
+	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 0 {
+		t.Fatalf("pod-a entries = %+v, want no live mutation for cancelled rollout", entries)
+	}
+	if entries := store.Entries(model.EndpointKey("prod", "pod-b")); len(entries) != 0 {
+		t.Fatalf("pod-b entries = %+v, want no live mutation for cancelled rollout", entries)
+	}
+}
+
 func TestApplyPolicyRolloutsResumesAppliedEndpoints(t *testing.T) {
 	state := rolloutPolicyState()
 	state.PolicyRollouts = []control.PolicyRollout{{
@@ -2054,6 +2094,60 @@ func TestApplyPolicyRolloutsSyncsAckPendingChangeStatus(t *testing.T) {
 	}
 	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 0 {
 		t.Fatalf("pod-a entries = %+v, want no mutation before ack", entries)
+	}
+}
+
+func TestApplyPolicyRolloutsSyncsCancelledChangeStatus(t *testing.T) {
+	state := rolloutPolicyState()
+	var statusRequests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		statusRequests++
+		if r.Method != http.MethodPost {
+			t.Fatalf("status method = %s, want POST", r.Method)
+		}
+		var request struct {
+			ApprovalRef string `json:"approval_ref"`
+			Status      string `json:"status"`
+			Cancelled   bool   `json:"cancelled"`
+			Paused      bool   `json:"paused"`
+			Applied     int    `json:"applied"`
+			Skipped     int    `json:"skipped"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode status request: %v", err)
+		}
+		if request.ApprovalRef != "chg-cancel" || request.Status != "cancelled" || !request.Cancelled || request.Paused || request.Applied != 0 || request.Skipped != 1 {
+			t.Fatalf("status request = %+v, want cancelled summary", request)
+		}
+		_, _ = w.Write([]byte(`{"synced":true,"status":"cancelled","url":"https://changes.example/chg-cancel"}`))
+	}))
+	defer server.Close()
+
+	state.PolicyRollouts = []control.PolicyRollout{{
+		Name:            "cancel-status",
+		Node:            "node-a",
+		Endpoints:       []string{"prod/pod-a"},
+		BatchSize:       1,
+		ApprovalRef:     "chg-cancel",
+		Cancelled:       true,
+		ChangeStatusURL: server.URL,
+	}}
+	store := dataplane.NewInMemoryPolicyStore()
+	rollouts, err := ApplyPolicyRollouts(context.Background(), state, ReconcileOptions{
+		Node:  "node-a",
+		Store: store,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if statusRequests != 1 {
+		t.Fatalf("status requests = %d, want 1", statusRequests)
+	}
+	if len(rollouts) != 1 || !rollouts[0].Rollout.ChangeStatusSynced || !rollouts[0].Rollout.Cancelled || rollouts[0].Rollout.ExternalChangeStatus != "cancelled" || rollouts[0].Rollout.ExternalChangeURL != "https://changes.example/chg-cancel" {
+		t.Fatalf("rollouts = %+v, want synced cancelled rollout", rollouts)
+	}
+	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 0 {
+		t.Fatalf("pod-a entries = %+v, want no mutation for cancelled rollout", entries)
 	}
 }
 
