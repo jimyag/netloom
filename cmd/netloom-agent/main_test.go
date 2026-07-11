@@ -2686,6 +2686,7 @@ func TestPolicyEndpointAPIRolloutSyncsExternalChangeStatus(t *testing.T) {
 		}
 		var request struct {
 			ApprovalRef string   `json:"approval_ref"`
+			Revision    string   `json:"revision"`
 			Status      string   `json:"status"`
 			Endpoints   []string `json:"endpoints"`
 			Applied     int      `json:"applied"`
@@ -2693,14 +2694,14 @@ func TestPolicyEndpointAPIRolloutSyncsExternalChangeStatus(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Fatalf("decode change status request: %v", err)
 		}
-		if request.ApprovalRef != "chg-4567" || request.Status != "applied" || request.Applied != 1 || !reflect.DeepEqual(request.Endpoints, []string{model.EndpointKey("prod", "pod-a")}) {
+		if request.ApprovalRef != "chg-4567" || request.Revision != "manual-rev-1" || request.Status != "applied" || request.Applied != 1 || !reflect.DeepEqual(request.Endpoints, []string{model.EndpointKey("prod", "pod-a")}) {
 			t.Fatalf("status request = %+v, want applied change status", request)
 		}
 		_, _ = w.Write([]byte(`{"synced":true,"status":"implemented","url":"https://changes.example/chg-4567"}`))
 	}))
 	defer server.Close()
 
-	body := bytes.NewBufferString(`{"endpoints":["prod/pod-a"],"batch_size":1,"approval_required":true,"approved":true,"approval_ref":"chg-4567","change_status_url":"` + server.URL + `","change_status_timeout_ms":500}`)
+	body := bytes.NewBufferString(`{"endpoints":["prod/pod-a"],"revision":"manual-rev-1","batch_size":1,"approval_required":true,"approved":true,"approval_ref":"chg-4567","change_status_url":"` + server.URL + `","change_status_timeout_ms":500}`)
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/policy/endpoints/rollout", body)
 	metrics.handlePolicyEndpoints(recorder, request)
@@ -2713,6 +2714,9 @@ func TestPolicyEndpointAPIRolloutSyncsExternalChangeStatus(t *testing.T) {
 	}
 	if statusRequests != 1 {
 		t.Fatalf("status requests = %d, want 1", statusRequests)
+	}
+	if got.Rollout.Revision != "manual-rev-1" {
+		t.Fatalf("rollout revision = %q, want manual-rev-1", got.Rollout.Revision)
 	}
 	if !got.RolledOut || !got.Rollout.ChangeStatusSynced || got.Rollout.ExternalChangeStatus != "implemented" || got.Rollout.ExternalChangeURL != "https://changes.example/chg-4567" {
 		t.Fatalf("change status rollout response = %+v, want synced external change status", got)

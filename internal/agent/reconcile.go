@@ -719,6 +719,7 @@ type policyRolloutApprovalCallbackResponse struct {
 type policyRolloutChangeStatusRequest struct {
 	ApprovalRef     string   `json:"approval_ref,omitempty"`
 	AckRef          string   `json:"ack_ref,omitempty"`
+	Revision        string   `json:"revision,omitempty"`
 	Status          string   `json:"status"`
 	Endpoints       []string `json:"endpoints"`
 	Planned         int      `json:"planned"`
@@ -886,6 +887,7 @@ func postPolicyRolloutChangeStatus(ctx context.Context, options PolicyEndpointRo
 	payload := policyRolloutChangeStatusRequest{
 		ApprovalRef:     rollout.ApprovalRef,
 		AckRef:          rollout.AckRef,
+		Revision:        rollout.Revision,
 		Status:          status,
 		Endpoints:       append([]string(nil), endpointIDs...),
 		Planned:         rollout.Planned,

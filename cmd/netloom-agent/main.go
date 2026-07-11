@@ -236,6 +236,7 @@ type ovsdbDNSObservationStore struct {
 
 type policyEndpointRolloutRequest struct {
 	Endpoints                 []string                     `json:"endpoints"`
+	Revision                  string                       `json:"revision,omitempty"`
 	BatchSize                 int                          `json:"batch_size"`
 	DryRun                    bool                         `json:"dry_run"`
 	PressureAware             bool                         `json:"pressure_aware"`
@@ -2162,6 +2163,17 @@ func (m *agentMetrics) rolloutPolicyEndpoints(ctx context.Context, request polic
 	if err != nil {
 		return agent.PolicyEndpointRollout{}, fmt.Errorf("ack_expires_at: %w", err)
 	}
+	revision := strings.TrimSpace(request.Revision)
+	if revision == "" {
+		revision, err = agent.PolicyRolloutRevision(snapshot.State, control.PolicyRollout{
+			Name:      "manual",
+			Node:      snapshot.Result.Node,
+			Endpoints: append([]string(nil), request.Endpoints...),
+		}, endpoints)
+		if err != nil {
+			return agent.PolicyEndpointRollout{}, fmt.Errorf("revision: %w", err)
+		}
+	}
 	rollout, err := agent.RolloutPolicyEndpoints(ctx, snapshot.State, agent.ReconcileOptions{
 		Node:                        snapshot.Result.Node,
 		Store:                       m.store,
@@ -2169,6 +2181,7 @@ func (m *agentMetrics) rolloutPolicyEndpoints(ctx context.Context, request polic
 		PolicyRolloutApprovalSecret: policyRolloutApprovalSecret(),
 	}, agent.PolicyEndpointRolloutOptions{
 		EndpointIDs:               endpoints,
+		Revision:                  revision,
 		BatchSize:                 request.BatchSize,
 		DryRun:                    request.DryRun,
 		PressureAware:             request.PressureAware,
