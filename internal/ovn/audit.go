@@ -826,7 +826,7 @@ func staleManagedColumnShouldDrift(table, key string) bool {
 	switch table {
 	case "Logical_Switch_Port":
 		switch key {
-		case "type", "options", "tag", "dhcpv4_options", "dhcpv6_options":
+		case "type", "options", "tag", "port_security", "dhcpv4_options", "dhcpv6_options":
 			return true
 		default:
 			return false
