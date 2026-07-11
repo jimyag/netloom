@@ -138,10 +138,10 @@ func TestPolicyPressureQuarantineParsesEnabledValues(t *testing.T) {
 	}
 }
 
-func TestLinuxDatapathOptionsParsesBackend(t *testing.T) {
+func TestLinuxDatapathOptionsUsesNetlinkBackend(t *testing.T) {
 	t.Setenv("NETLOOM_LINUX_DATAPATH", "1")
 	t.Setenv("NETLOOM_LINUX_DATAPATH_MODE", "netns")
-	t.Setenv("NETLOOM_LINUX_DATAPATH_BACKEND", "netlink")
+	t.Setenv("NETLOOM_LINUX_DATAPATH_BACKEND", "command")
 	t.Setenv("NETLOOM_PROVIDER_NETWORK_LINKS", "physnet-a=eth1, physnet-b = bond0.100")
 	t.Setenv("NETLOOM_POLICY_ROUTE_TABLE_BASE", "22000")
 	t.Setenv("NETLOOM_POLICY_ROUTE_TABLE_SIZE", "64")
@@ -156,7 +156,7 @@ func TestLinuxDatapathOptionsParsesBackend(t *testing.T) {
 		t.Fatalf("mode = %s, want netns", options.Mode)
 	}
 	if options.Backend != "netlink" {
-		t.Fatalf("backend = %s, want netlink", options.Backend)
+		t.Fatalf("backend = %s, want hard-coded netlink package path", options.Backend)
 	}
 	if options.ProviderLinks["physnet-a"] != "eth1" || options.ProviderLinks["physnet-b"] != "bond0.100" {
 		t.Fatalf("provider links = %#v", options.ProviderLinks)
@@ -463,16 +463,10 @@ func TestWithRuntimeObservationsMergesIdentityGroups(t *testing.T) {
 		t.Fatalf("identity groups = %+v, want observed frontend-api", state.IdentityGroups)
 	}
 
-	result, err := agent.ReconcileNodeWithOptions(context.Background(), state, agent.ReconcileOptions{
-		Node:  "node-a",
-		Store: dataplane.NewInMemoryPolicyStore(),
-		LinuxDatapath: &linuxdatapath.Options{
-			Node:              "node-a",
-			Backend:           "command",
-			SyncOVSDB:         true,
-			ProviderInventory: []linuxdatapath.ProviderInterface{{Name: "eth1", Ready: true, State: "up"}},
-			Executor:          agentNoopExecutor{},
-		},
+	ops, result, err := linuxdatapath.Plan(context.Background(), state, linuxdatapath.Options{
+		Node:              "node-a",
+		SyncOVSDB:         true,
+		ProviderInventory: []linuxdatapath.ProviderInterface{{Name: "eth1", Ready: true, State: "up"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -480,12 +474,9 @@ func TestWithRuntimeObservationsMergesIdentityGroups(t *testing.T) {
 	if result.ProviderNetworks != 1 || result.ProviderLinks != 1 {
 		t.Fatalf("provider result = %+v, want provider network/link from observed identity group state", result)
 	}
-}
-
-type agentNoopExecutor struct{}
-
-func (agentNoopExecutor) Execute(context.Context, linuxdatapath.Operation) error {
-	return nil
+	if !strings.Contains(stringifyAgentOps(ops), "nw_src=10.10.0.10") {
+		t.Fatalf("provider queue ops = %s, want endpoint-scoped identity group flow", stringifyAgentOps(ops))
+	}
 }
 
 func TestWithIdentityGroupObservationsPrunesExpiredGroups(t *testing.T) {
@@ -2956,4 +2947,17 @@ func singleAgentVSwitchRoot(t *testing.T, ctx context.Context, client libovsdbcl
 		t.Fatalf("Open_vSwitch rows = %d, want 1: %+v", len(rows), rows)
 	}
 	return rows[0]
+}
+
+func stringifyAgentOps(ops []linuxdatapath.Operation) string {
+	var builder strings.Builder
+	for _, op := range ops {
+		builder.WriteString(op.Command)
+		if len(op.Args) != 0 {
+			builder.WriteByte(' ')
+			builder.WriteString(strings.Join(op.Args, " "))
+		}
+		builder.WriteByte('\n')
+	}
+	return builder.String()
 }

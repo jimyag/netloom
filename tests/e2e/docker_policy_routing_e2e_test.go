@@ -36,7 +36,6 @@ func TestDockerLinuxPolicyRoutingProgramsAndCleansRuntimeState(t *testing.T) {
 			"NETLOOM_STATE_FILE=" + statePath +
 			" NETLOOM_NODE_NAME=node-b" +
 			" NETLOOM_LINUX_DATAPATH=1" +
-			" NETLOOM_LINUX_DATAPATH_BACKEND=netlink" +
 			" NETLOOM_LINUX_DATAPATH_CLEANUP=1" +
 			" /netloom/bin/netloom-agent"
 		return run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "sh", "-c", script)
@@ -111,7 +110,6 @@ func TestDockerLinuxPolicyRoutingProgramsAndCleansECMPRuntimeState(t *testing.T)
 			"NETLOOM_STATE_FILE=" + statePath +
 			" NETLOOM_NODE_NAME=node-b" +
 			" NETLOOM_LINUX_DATAPATH=1" +
-			" NETLOOM_LINUX_DATAPATH_BACKEND=netlink" +
 			" NETLOOM_LINUX_DATAPATH_CLEANUP=1" +
 			" /netloom/bin/netloom-agent"
 		return run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "sh", "-c", script)
@@ -176,7 +174,6 @@ func TestDockerLinuxPolicyRoutingAllowUsesMainTable(t *testing.T) {
 			"NETLOOM_STATE_FILE=" + statePath +
 			" NETLOOM_NODE_NAME=node-b" +
 			" NETLOOM_LINUX_DATAPATH=1" +
-			" NETLOOM_LINUX_DATAPATH_BACKEND=netlink" +
 			" NETLOOM_LINUX_DATAPATH_CLEANUP=1" +
 			" /netloom/bin/netloom-agent"
 		return run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "sh", "-c", script)
@@ -239,7 +236,6 @@ func TestDockerLinuxPolicyRoutingRejectUsesUnreachableRoute(t *testing.T) {
 			"NETLOOM_STATE_FILE=" + statePath +
 			" NETLOOM_NODE_NAME=node-b" +
 			" NETLOOM_LINUX_DATAPATH=1" +
-			" NETLOOM_LINUX_DATAPATH_BACKEND=netlink" +
 			" NETLOOM_LINUX_DATAPATH_CLEANUP=1" +
 			" /netloom/bin/netloom-agent"
 		return run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "sh", "-c", script)
@@ -301,7 +297,6 @@ func TestDockerLinuxPolicyRoutingProgramsIPv6RuntimeState(t *testing.T) {
 			"NETLOOM_STATE_FILE=" + statePath +
 			" NETLOOM_NODE_NAME=node-b" +
 			" NETLOOM_LINUX_DATAPATH=1" +
-			" NETLOOM_LINUX_DATAPATH_BACKEND=netlink" +
 			" NETLOOM_LINUX_DATAPATH_CLEANUP=1" +
 			" /netloom/bin/netloom-agent"
 		return run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "node-b", "sh", "-c", script)

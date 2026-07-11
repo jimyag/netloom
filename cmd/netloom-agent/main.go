@@ -2986,7 +2986,7 @@ func linuxDatapathOptions() *linuxdatapath.Options {
 	}
 	return &linuxdatapath.Options{
 		Mode:                 getenvDefault("NETLOOM_LINUX_DATAPATH_MODE", "local"),
-		Backend:              getenvDefault("NETLOOM_LINUX_DATAPATH_BACKEND", "netlink"),
+		Backend:              "netlink",
 		LocalDevice:          getenvDefault("NETLOOM_DATAPATH_DEV", "lo"),
 		UnderlayDevice:       getenvDefault("NETLOOM_UNDERLAY_DEV", "eth0"),
 		ProviderLinks:        parseProviderLinks(os.Getenv("NETLOOM_PROVIDER_NETWORK_LINKS")),
