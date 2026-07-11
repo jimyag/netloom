@@ -193,67 +193,7 @@ func Apply(ctx context.Context, state control.DesiredState, options Options) (Re
 	case "netlink":
 		result, err = ApplyNetlink(ctx, state, options)
 	case "command":
-		discoveredInventory := len(options.ProviderInventory) == 0
-		if discoveredInventory {
-			options.ProviderInventory, err = discoverProviderInventory()
-			if err != nil {
-				return Result{}, err
-			}
-		}
-		result.ProviderInventoryStatus = append([]ProviderInterface(nil), options.ProviderInventory...)
-		result.ProviderInventoryTotal, result.ProviderInventoryReady, result.ProviderInventoryDegraded = summarizeProviderInventory(options.ProviderInventory)
-		providerSpecs, err := desiredProviderNetworkLinkSpecs(state, options.Node, options.ProviderLinks, options.ProviderInventory)
-		if err != nil {
-			applyProviderPlanningIssue(&result, state, err)
-			return result, err
-		}
-		planOptions := options
-		if options.ProviderOVSDBSyncer != nil {
-			planOptions.SyncOVSDB = false
-		}
-		var ops []Operation
-		ops, result, err = Plan(ctx, state, planOptions)
-		if err != nil {
-			return result, err
-		}
-		executor := options.Executor
-		if executor == nil {
-			executor = CommandExecutor{}
-		}
-		for _, op := range ops {
-			if err := executor.Execute(ctx, op); err != nil {
-				return result, err
-			}
-		}
-		if options.SyncOVSDB && options.ProviderOVSDBSyncer != nil {
-			if err := options.ProviderOVSDBSyncer.SyncProviderOVSDB(ctx, desiredProviderOVSDBRowsForIdentityGroups(providerSpecs, state.IdentityGroups, state.Endpoints), options.CleanupStale); err != nil {
-				return result, err
-			}
-			if err := executeProviderQueueFlows(ctx, options, state, providerSpecs, options.CleanupStale); err != nil {
-				return result, err
-			}
-		}
-		if discoveredInventory {
-			inventory, invErr := discoverProviderInventory()
-			if invErr == nil {
-				result.ProviderInventoryStatus = append([]ProviderInterface(nil), inventory...)
-				result.ProviderInventoryTotal, result.ProviderInventoryReady, result.ProviderInventoryDegraded = summarizeProviderInventory(inventory)
-				result.ProviderStatus = providerLinkStatusesFromInventory(providerSpecs, inventory)
-				result.ProviderReady, result.ProviderDegraded = summarizeProviderLinkHealth(result.ProviderStatus)
-				result.ProviderIssues = providerRuntimeIssues(result.ProviderStatus, result.ProviderIssues, options.Node)
-				result.ProviderNetworkStatus = providerNetworkStatuses(state, result.ProviderStatus, result.ProviderIssues)
-			}
-		} else {
-			result.ProviderStatus = providerLinkStatusesFromInventory(providerSpecs, options.ProviderInventory)
-			result.ProviderReady, result.ProviderDegraded = summarizeProviderLinkHealth(result.ProviderStatus)
-			result.ProviderIssues = providerRuntimeIssues(result.ProviderStatus, result.ProviderIssues, options.Node)
-			result.ProviderNetworkStatus = providerNetworkStatuses(state, result.ProviderStatus, result.ProviderIssues)
-		}
-		if options.SyncOVSDB {
-			if err := appendProviderOVSDBIssues(ctx, &result, state, options, providerSpecs); err != nil {
-				return result, err
-			}
-		}
+		return Result{}, errors.New("linux datapath command backend has been removed; use netlink")
 	default:
 		return Result{}, fmt.Errorf("unsupported linux datapath backend %q", options.Backend)
 	}

@@ -4527,12 +4527,44 @@ func TestReconcileNodeReportsProviderNetworkCountsFromLinuxDatapath(t *testing.T
 		Node:  "node-a",
 		Store: dataplane.NewInMemoryPolicyStore(),
 		LinuxDatapath: &linuxdatapath.Options{
-			LocalDevice:       "nl0",
-			Mode:              "local",
-			Backend:           "command",
-			Executor:          noopExecutor{},
-			ProviderInventory: []linuxdatapath.ProviderInterface{{Name: "eth1", Ready: true}},
+			LocalDevice: "nl0",
+			Mode:        "local",
 		},
+		LinuxDatapathApply: linuxDatapathApplyResult(linuxdatapath.Result{
+			Device:                 "nl0",
+			ProviderNetworks:       1,
+			ProviderLinks:          1,
+			ProviderReady:          0,
+			ProviderDegraded:       1,
+			ProviderInventoryTotal: 1,
+			ProviderInventoryReady: 1,
+			ProviderInventoryStatus: []linuxdatapath.ProviderInterface{
+				{Name: "eth1", Ready: true},
+			},
+			ProviderStatus: []linuxdatapath.ProviderLinkStatus{{
+				ProviderNetwork: "physnet-a",
+				ParentDevice:    "eth1",
+				VLAN:            100,
+				LinkName:        "nlv100",
+				ParentState:     "up",
+				LinkState:       "missing",
+			}},
+			ProviderNetworkStatus: []linuxdatapath.ProviderNetworkStatus{{
+				ProviderNetwork: "physnet-a",
+				Ready:           false,
+				LinkCount:       1,
+				TenantCount:     1,
+				SubnetCount:     1,
+				EndpointCount:   1,
+				TenantUsage: []linuxdatapath.ProviderTenantUsage{{
+					Tenant:       "prod",
+					Subnets:      1,
+					Endpoints:    1,
+					MaxSubnets:   1,
+					MaxEndpoints: 2,
+				}},
+			}},
+		}, nil),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -4642,11 +4674,12 @@ func TestReconcileNodeFailsWhenStrictProviderHealthIsEnabled(t *testing.T) {
 		LinuxDatapath: &linuxdatapath.Options{
 			LocalDevice:          "nl0",
 			Mode:                 "local",
-			Backend:              "command",
-			Executor:             noopExecutor{},
-			ProviderInventory:    []linuxdatapath.ProviderInterface{{Name: "eth1", Ready: true}},
 			StrictProviderHealth: true,
 		},
+		LinuxDatapathApply: linuxDatapathApplyResult(linuxdatapath.Result{
+			Device:           "nl0",
+			ProviderDegraded: 1,
+		}, fmt.Errorf("provider health degraded: ready=0 degraded=1")),
 	})
 	if err == nil || !strings.Contains(err.Error(), "provider health degraded") {
 		t.Fatalf("err = %v, want strict provider health failure", err)
@@ -4684,13 +4717,23 @@ func TestReconcileNodeFailureKeepsProviderInventoryOnCandidateResolutionError(t 
 		LinuxDatapath: &linuxdatapath.Options{
 			LocalDevice: "nl0",
 			Mode:        "local",
-			Backend:     "command",
-			Executor:    noopExecutor{},
-			ProviderInventory: []linuxdatapath.ProviderInterface{
+		},
+		LinuxDatapathApply: linuxDatapathApplyResult(linuxdatapath.Result{
+			Device:                    "nl0",
+			ProviderInventoryTotal:    2,
+			ProviderInventoryReady:    1,
+			ProviderInventoryDegraded: 1,
+			ProviderInventoryStatus: []linuxdatapath.ProviderInterface{
 				{Name: "eth1", Ready: true, State: "up"},
 				{Name: "eth2", Ready: false, State: "down"},
 			},
-		},
+			ProviderIssues: []linuxdatapath.ProviderIssue{{
+				ProviderNetwork: "physnet-a",
+				Node:            "node-a",
+				Reason:          "candidate-unresolved",
+				Detail:          "ens5,bond0",
+			}},
+		}, fmt.Errorf(`provider network "physnet-a" on node "node-a" could not resolve candidate interfaces ens5,bond0`)),
 	})
 	if err == nil || !strings.Contains(err.Error(), `provider network "physnet-a" on node "node-a" could not resolve candidate interfaces ens5,bond0`) {
 		t.Fatalf("err = %v, want candidate resolution failure", err)
@@ -4737,13 +4780,29 @@ func TestReconcileNodeFailureKeepsProviderInventoryOnMissingProviderMapping(t *t
 		LinuxDatapath: &linuxdatapath.Options{
 			LocalDevice: "nl0",
 			Mode:        "local",
-			Backend:     "command",
-			Executor:    noopExecutor{},
-			ProviderInventory: []linuxdatapath.ProviderInterface{
+		},
+		LinuxDatapathApply: linuxDatapathApplyResult(linuxdatapath.Result{
+			Device:                    "nl0",
+			ProviderInventoryTotal:    2,
+			ProviderInventoryReady:    1,
+			ProviderInventoryDegraded: 1,
+			ProviderInventoryStatus: []linuxdatapath.ProviderInterface{
 				{Name: "eth1", Ready: true, State: "up"},
 				{Name: "eth2", Ready: false, State: "down"},
 			},
-		},
+			ProviderIssues: []linuxdatapath.ProviderIssue{{
+				ProviderNetwork: "physnet-a",
+				Node:            "node-a",
+				VLAN:            100,
+				Reason:          "missing-parent-mapping",
+			}},
+			ProviderNetworkStatus: []linuxdatapath.ProviderNetworkStatus{{
+				ProviderNetwork: "physnet-a",
+				Ready:           false,
+				IssueCount:      1,
+				Reasons:         []string{"missing-parent-mapping"},
+			}},
+		}, fmt.Errorf(`provider network "physnet-a" requires parent device mapping on node "node-a"`)),
 	})
 	if err == nil || !strings.Contains(err.Error(), `provider network "physnet-a" requires parent device mapping on node "node-a"`) {
 		t.Fatalf("err = %v, want missing provider mapping failure", err)
@@ -4806,13 +4865,24 @@ func TestReconcileNodeFailureKeepsProviderInventoryOnProviderConflict(t *testing
 		LinuxDatapath: &linuxdatapath.Options{
 			LocalDevice: "nl0",
 			Mode:        "local",
-			Backend:     "command",
-			Executor:    noopExecutor{},
-			ProviderInventory: []linuxdatapath.ProviderInterface{
+		},
+		LinuxDatapathApply: linuxDatapathApplyResult(linuxdatapath.Result{
+			Device:                    "nl0",
+			ProviderInventoryTotal:    2,
+			ProviderInventoryReady:    1,
+			ProviderInventoryDegraded: 1,
+			ProviderInventoryStatus: []linuxdatapath.ProviderInterface{
 				{Name: "eth1", Ready: true, State: "up"},
 				{Name: "eth2", Ready: false, State: "down"},
 			},
-		},
+			ProviderIssues: []linuxdatapath.ProviderIssue{{
+				ProviderNetwork: "physnet-a",
+				Node:            "node-a",
+				ParentDevice:    "eth1",
+				VLAN:            100,
+				Reason:          "parent-vlan-conflict",
+			}},
+		}, fmt.Errorf(`provider networks "physnet-a" and "physnet-b" both require parent eth1 vlan 100`)),
 	})
 	if err == nil || !strings.Contains(err.Error(), `provider networks "physnet-a" and "physnet-b" both require parent eth1 vlan 100`) {
 		t.Fatalf("err = %v, want provider conflict failure", err)
@@ -4825,10 +4895,10 @@ func TestReconcileNodeFailureKeepsProviderInventoryOnProviderConflict(t *testing
 	}
 }
 
-type noopExecutor struct{}
-
-func (noopExecutor) Execute(context.Context, linuxdatapath.Operation) error {
-	return nil
+func linuxDatapathApplyResult(result linuxdatapath.Result, err error) func(context.Context, control.DesiredState, linuxdatapath.Options) (linuxdatapath.Result, error) {
+	return func(context.Context, control.DesiredState, linuxdatapath.Options) (linuxdatapath.Result, error) {
+		return result, err
+	}
 }
 
 func TestReconcileNodeExpandsRemoteEndpointSelector(t *testing.T) {

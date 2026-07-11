@@ -182,58 +182,10 @@ func TestPlanSyncsProviderBridgeMappingsToOVSDB(t *testing.T) {
 	}
 }
 
-func TestApplyCommandUsesDirectProviderOVSDBSyncer(t *testing.T) {
-	state := control.DesiredState{
-		ProviderNetworks: []model.ProviderNetwork{{
-			Name: "physnet-a",
-			Nodes: []model.ProviderNetworkNode{{
-				Node:      "node-a",
-				Interface: "eth1",
-			}},
-		}},
-		Subnets: []model.Subnet{{
-			Name:            "apps",
-			VPC:             "prod",
-			CIDR:            netip.MustParsePrefix("10.10.0.0/24"),
-			Gateway:         netip.MustParseAddr("10.10.0.1"),
-			ProviderNetwork: "physnet-a",
-			VLAN:            100,
-		}},
-		Endpoints: []model.Endpoint{{
-			ID:     "pod-a",
-			VPC:    "prod",
-			Subnet: "apps",
-			IP:     netip.MustParseAddr("10.10.0.10"),
-			Node:   "node-a",
-		}},
-	}
-	syncer := &recordingProviderOVSDBSyncer{}
-	var executed []Operation
-	_, err := Apply(context.Background(), state, Options{
-		Node:                "node-a",
-		LocalDevice:         "nl0",
-		Backend:             "command",
-		SyncOVSDB:           true,
-		ProviderOVSDBSyncer: syncer,
-		Executor: commandExecutorFunc(func(_ context.Context, op Operation) error {
-			executed = append(executed, op)
-			if op.Command == "ovs-vsctl" {
-				t.Fatalf("direct provider OVSDB syncer should avoid ovs-vsctl op: %+v", op)
-			}
-			return nil
-		}),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if syncer.calls != 1 || syncer.cleanup {
-		t.Fatalf("syncer calls=%d cleanup=%t, want one non-cleanup sync", syncer.calls, syncer.cleanup)
-	}
-	if got := syncer.rows.OpenVSwitch.ExternalIDs["ovn-bridge-mappings"]; !strings.Contains(got, "physnet-a:") {
-		t.Fatalf("syncer mappings = %q, want physnet-a mapping", got)
-	}
-	if len(executed) == 0 {
-		t.Fatal("expected non-OVSDB datapath operations to execute")
+func TestApplyRejectsCommandBackend(t *testing.T) {
+	_, err := Apply(context.Background(), control.DesiredState{}, Options{Backend: "command"})
+	if err == nil || !strings.Contains(err.Error(), "command backend has been removed") {
+		t.Fatalf("err = %v, want command backend removed error", err)
 	}
 }
 
@@ -271,7 +223,7 @@ func TestExecuteProviderOVSDBSyncUsesDirectSyncer(t *testing.T) {
 	}
 }
 
-func TestApplyCommandUsesDirectProviderOVSDBStatusReader(t *testing.T) {
+func TestAppendProviderOVSDBIssuesUsesDirectStatusReader(t *testing.T) {
 	state := control.DesiredState{
 		ProviderNetworks: []model.ProviderNetwork{{
 			Name: "physnet-a",
@@ -307,18 +259,27 @@ func TestApplyCommandUsesDirectProviderOVSDBStatusReader(t *testing.T) {
 		PortState:       "up",
 		InterfaceState:  "up",
 	}}}
-	result, err := Apply(context.Background(), state, Options{
-		Node:                 "node-a",
-		LocalDevice:          "nl0",
-		Backend:              "command",
-		ProviderInventory:    []ProviderInterface{{Name: "eth1", Ready: true}, {Name: providerNetworkLinkName("physnet-a", "eth1", 100), Ready: true}},
-		SyncOVSDB:            true,
-		ProviderOVSDBSyncer:  &recordingProviderOVSDBSyncer{},
-		ProviderOVSDBReader:  reader,
-		StrictProviderHealth: true,
-		Executor:             noopCommandExecutor{},
-	})
-	if err == nil || !strings.Contains(err.Error(), "ovsdb-mapping-missing") {
+	inventory := []ProviderInterface{{Name: "eth1", Ready: true}, {Name: providerNetworkLinkName("physnet-a", "eth1", 100), Ready: true}}
+	specs, err := desiredProviderNetworkLinkSpecs(state, "node-a", nil, inventory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := Result{
+		ProviderStatus: providerLinkStatusesFromInventory(specs, inventory),
+	}
+	result.ProviderReady, result.ProviderDegraded = summarizeProviderLinkHealth(result.ProviderStatus)
+	result.ProviderNetworkStatus = providerNetworkStatuses(state, result.ProviderStatus, result.ProviderIssues)
+
+	err = appendProviderOVSDBIssues(context.Background(), &result, state, Options{
+		Node:                "node-a",
+		SyncOVSDB:           true,
+		ProviderOVSDBSyncer: &recordingProviderOVSDBSyncer{},
+		ProviderOVSDBReader: reader,
+	}, specs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateProviderHealth(result, Options{StrictProviderHealth: true}); err == nil || !strings.Contains(err.Error(), "ovsdb-mapping-missing") {
 		t.Fatalf("err = %v, want strict provider health failure with direct OVSDB reader issue", err)
 	}
 	if !providerIssuesContainReason(result.ProviderIssues, "ovsdb-mapping-missing") {
@@ -1094,46 +1055,28 @@ func TestSummarizeProviderLinkHealth(t *testing.T) {
 	}
 }
 
-func TestApplyStrictProviderHealthFailsForDegradedProviderLinks(t *testing.T) {
-	state := control.DesiredState{
-		ProviderNetworks: []model.ProviderNetwork{{
-			Name: "physnet-a",
-			Nodes: []model.ProviderNetworkNode{{
-				Node:      "node-a",
-				Interface: "eth1",
-			}},
-		}},
-		Subnets: []model.Subnet{{
-			Name:            "apps",
-			VPC:             "prod",
-			CIDR:            netip.MustParsePrefix("10.10.0.0/24"),
-			Gateway:         netip.MustParseAddr("10.10.0.1"),
+func TestValidateProviderHealthFailsForDegradedProviderLinks(t *testing.T) {
+	err := validateProviderHealth(Result{
+		ProviderDegraded: 1,
+		ProviderStatus: []ProviderLinkStatus{{
 			ProviderNetwork: "physnet-a",
+			ParentDevice:    "eth1",
 			VLAN:            100,
+			LinkName:        "nlv100",
+			ParentState:     "up",
+			LinkState:       "missing",
 		}},
-		Endpoints: []model.Endpoint{{
-			ID:     "pod-a",
-			VPC:    "prod",
-			Subnet: "apps",
-			IP:     netip.MustParseAddr("10.10.0.10"),
-			Node:   "node-a",
+		ProviderNetworkStatus: []ProviderNetworkStatus{{
+			ProviderNetwork: "physnet-a",
+			Ready:           false,
+			IssueCount:      1,
+			Reasons:         []string{"link-missing"},
 		}},
-	}
-	_, err := Apply(context.Background(), state, Options{
-		Node:                 "node-a",
-		LocalDevice:          "nl0",
-		Backend:              "command",
-		Executor:             noopCommandExecutor{},
-		StrictProviderHealth: true,
-	})
+	}, Options{StrictProviderHealth: true})
 	if err == nil || !strings.Contains(err.Error(), "provider health degraded") {
 		t.Fatalf("err = %v, want strict provider health failure", err)
 	}
 }
-
-type noopCommandExecutor struct{}
-
-func (noopCommandExecutor) Execute(context.Context, Operation) error { return nil }
 
 type commandExecutorFunc func(context.Context, Operation) error
 
@@ -1200,7 +1143,7 @@ func TestPlanNetNSProgramsVethAndNamespace(t *testing.T) {
 	}
 }
 
-func TestApplyCommandAutoDiscoversCandidateProviderInterface(t *testing.T) {
+func TestDiscoverProviderInventorySelectsCandidateProviderInterface(t *testing.T) {
 	previous := listSystemInterfaces
 	defer func() { listSystemInterfaces = previous }()
 	listSystemInterfaces = func() ([]net.Interface, error) {
@@ -1234,101 +1177,50 @@ func TestApplyCommandAutoDiscoversCandidateProviderInterface(t *testing.T) {
 			Node:   "node-a",
 		}},
 	}
-	result, err := Apply(context.Background(), state, Options{
-		Node:        "node-a",
-		LocalDevice: "nl0",
-		Backend:     "command",
-		Executor:    noopCommandExecutor{},
-	})
+	inventory, err := discoverProviderInventory()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.ProviderLinks != 1 {
-		t.Fatalf("provider links = %d, want 1", result.ProviderLinks)
+	specs, err := desiredProviderNetworkLinkSpecs(state, "node-a", nil, inventory)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if result.ProviderInventoryTotal != 2 || result.ProviderInventoryReady != 1 || result.ProviderInventoryDegraded != 1 {
-		t.Fatalf("provider inventory summary = %+v, want total=2 ready=1 degraded=1", result)
+	total, ready, degraded := summarizeProviderInventory(inventory)
+	if total != 2 || ready != 1 || degraded != 1 {
+		t.Fatalf("provider inventory summary = total:%d ready:%d degraded:%d, want 2/1/1", total, ready, degraded)
 	}
-	if got := result.ProviderInventoryStatus[0]; got.Name != "lo" || got.State != "down" {
+	if got := inventory[0]; got.Name != "lo" || got.State != "down" {
 		t.Fatalf("provider inventory status[0] = %+v, want lo down", got)
 	}
-	if got := result.ProviderStatus[0].ParentDevice; got != "eth1" {
+	if len(specs) != 1 {
+		t.Fatalf("provider specs = %+v, want one spec", specs)
+	}
+	if got := specs[0].ParentDevice; got != "eth1" {
 		t.Fatalf("selected provider parent = %s, want eth1", got)
 	}
 }
 
-func TestApplyCommandRefreshesProviderHealthAfterExecution(t *testing.T) {
-	previous := listSystemInterfaces
-	defer func() { listSystemInterfaces = previous }()
-
-	call := 0
+func TestProviderLinkStatusesFromInventoryReportsReadyLink(t *testing.T) {
 	linkName := providerNetworkLinkName("physnet-a", "eth1", 100)
-	listSystemInterfaces = func() ([]net.Interface, error) {
-		call++
-		if call == 1 {
-			return []net.Interface{{Name: "eth1", Flags: net.FlagUp}}, nil
-		}
-		return []net.Interface{
-			{Name: "eth1", Flags: net.FlagUp},
-			{Name: linkName, Flags: net.FlagUp},
-		}, nil
-	}
-
-	state := control.DesiredState{
-		ProviderNetworks: []model.ProviderNetwork{{
-			Name: "physnet-a",
-			Nodes: []model.ProviderNetworkNode{{
-				Node:      "node-a",
-				Interface: "eth1",
-			}},
-		}},
-		Subnets: []model.Subnet{{
-			Name:            "apps",
-			VPC:             "prod",
-			CIDR:            netip.MustParsePrefix("10.10.0.0/24"),
-			Gateway:         netip.MustParseAddr("10.10.0.1"),
-			ProviderNetwork: "physnet-a",
-			VLAN:            100,
-		}},
-		Endpoints: []model.Endpoint{{
-			ID:     "pod-a",
-			VPC:    "prod",
-			Subnet: "apps",
-			IP:     netip.MustParseAddr("10.10.0.10"),
-			Node:   "node-a",
-		}},
-	}
-	result, err := Apply(context.Background(), state, Options{
-		Node:        "node-a",
-		LocalDevice: "nl0",
-		Backend:     "command",
-		Executor: commandExecutorFunc(func(context.Context, Operation) error {
-			return nil
-		}),
-		StrictProviderHealth: true,
+	statuses := providerLinkStatusesFromInventory([]providerNetworkLinkSpec{{
+		ProviderNetwork: "physnet-a",
+		ParentDevice:    "eth1",
+		VLAN:            100,
+		Name:            linkName,
+	}}, []ProviderInterface{
+		{Name: "eth1", Ready: true, State: "up"},
+		{Name: linkName, Ready: true, State: "up"},
 	})
-	if err != nil {
-		t.Fatal(err)
+	ready, degraded := summarizeProviderLinkHealth(statuses)
+	if ready != 1 || degraded != 0 {
+		t.Fatalf("provider health = ready:%d degraded:%d, want 1/0", ready, degraded)
 	}
-	if result.ProviderReady != 1 || result.ProviderDegraded != 0 {
-		t.Fatalf("provider health = ready:%d degraded:%d, want 1/0", result.ProviderReady, result.ProviderDegraded)
-	}
-	if result.ProviderInventoryTotal != 2 || result.ProviderInventoryReady != 2 || result.ProviderInventoryDegraded != 0 {
-		t.Fatalf("provider inventory summary = %+v, want total=2 ready=2 degraded=0", result)
-	}
-	if got := result.ProviderStatus[0]; !got.Ready || got.ParentState != "up" || got.LinkState != "up" {
+	if got := statuses[0]; !got.Ready || got.ParentState != "up" || got.LinkState != "up" {
 		t.Fatalf("provider status = %+v, want ready up/up", got)
 	}
 }
 
-func TestApplyCommandReportsProviderRuntimeLinkDrift(t *testing.T) {
-	previous := listSystemInterfaces
-	defer func() { listSystemInterfaces = previous }()
-
-	listSystemInterfaces = func() ([]net.Interface, error) {
-		return []net.Interface{{Name: "eth1", Flags: net.FlagUp}}, nil
-	}
-
+func TestProviderLinkStatusesFromInventoryReportsRuntimeLinkDrift(t *testing.T) {
 	state := control.DesiredState{
 		ProviderNetworks: []model.ProviderNetwork{{
 			Name: "physnet-a",
@@ -1353,87 +1245,26 @@ func TestApplyCommandReportsProviderRuntimeLinkDrift(t *testing.T) {
 			Node:   "node-a",
 		}},
 	}
-	result, err := Apply(context.Background(), state, Options{
-		Node:        "node-a",
-		LocalDevice: "nl0",
-		Backend:     "command",
-		Executor:    noopCommandExecutor{},
-	})
+	inventory := []ProviderInterface{{Name: "eth1", Ready: true, State: "up"}}
+	specs, err := desiredProviderNetworkLinkSpecs(state, "node-a", nil, inventory)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.ProviderReady != 0 || result.ProviderDegraded != 1 {
-		t.Fatalf("provider health = ready:%d degraded:%d, want 0/1", result.ProviderReady, result.ProviderDegraded)
+	statuses := providerLinkStatusesFromInventory(specs, inventory)
+	ready, degraded := summarizeProviderLinkHealth(statuses)
+	if ready != 0 || degraded != 1 {
+		t.Fatalf("provider health = ready:%d degraded:%d, want 0/1", ready, degraded)
 	}
-	if len(result.ProviderIssues) != 1 || result.ProviderIssues[0].Reason != "link-missing" {
-		t.Fatalf("provider issues = %+v, want link-missing", result.ProviderIssues)
+	issues := providerRuntimeIssues(statuses, nil, "node-a")
+	if len(issues) != 1 || issues[0].Reason != "link-missing" {
+		t.Fatalf("provider issues = %+v, want link-missing", issues)
 	}
-	if result.ProviderIssues[0].ProviderNetwork != "physnet-a" || result.ProviderIssues[0].Node != "node-a" || result.ProviderIssues[0].ParentDevice != "eth1" || result.ProviderIssues[0].VLAN != 100 {
-		t.Fatalf("provider issue identity = %+v, want physnet-a eth1 vlan 100", result.ProviderIssues[0])
+	if issues[0].ProviderNetwork != "physnet-a" || issues[0].Node != "node-a" || issues[0].ParentDevice != "eth1" || issues[0].VLAN != 100 {
+		t.Fatalf("provider issue identity = %+v, want physnet-a eth1 vlan 100", issues[0])
 	}
-	if len(result.ProviderNetworkStatus) != 1 || result.ProviderNetworkStatus[0].Ready || result.ProviderNetworkStatus[0].IssueCount != 1 || result.ProviderNetworkStatus[0].Reasons[0] != "link-missing" {
-		t.Fatalf("provider network status = %+v, want link-missing reason", result.ProviderNetworkStatus)
-	}
-}
-
-func TestApplyCommandReturnsPlannedProviderStatusWhenExecutorFails(t *testing.T) {
-	previous := listSystemInterfaces
-	defer func() { listSystemInterfaces = previous }()
-
-	listSystemInterfaces = func() ([]net.Interface, error) {
-		return []net.Interface{
-			{Name: "eth1", Flags: net.FlagUp},
-			{Name: "lo"},
-		}, nil
-	}
-
-	state := control.DesiredState{
-		ProviderNetworks: []model.ProviderNetwork{{
-			Name: "physnet-a",
-			Nodes: []model.ProviderNetworkNode{{
-				Node:      "node-a",
-				Interface: "eth1",
-			}},
-		}},
-		Subnets: []model.Subnet{{
-			Name:            "apps",
-			VPC:             "prod",
-			CIDR:            netip.MustParsePrefix("10.10.0.0/24"),
-			Gateway:         netip.MustParseAddr("10.10.0.1"),
-			ProviderNetwork: "physnet-a",
-			VLAN:            100,
-		}},
-		Endpoints: []model.Endpoint{{
-			ID:     "pod-a",
-			VPC:    "prod",
-			Subnet: "apps",
-			IP:     netip.MustParseAddr("10.10.0.10"),
-			Node:   "node-a",
-		}},
-	}
-
-	result, err := Apply(context.Background(), state, Options{
-		Node:        "node-a",
-		LocalDevice: "nl0",
-		Backend:     "command",
-		Executor: commandExecutorFunc(func(_ context.Context, op Operation) error {
-			return fmt.Errorf("boom on %s %s", op.Command, strings.Join(op.Args, " "))
-		}),
-	})
-	if err == nil || !strings.Contains(err.Error(), "boom on") {
-		t.Fatalf("err = %v, want executor failure", err)
-	}
-	if result.ProviderNetworks != 1 || result.ProviderLinks != 1 {
-		t.Fatalf("provider counts = %+v, want provider_networks=1 provider_links=1", result)
-	}
-	if result.ProviderInventoryTotal != 2 || result.ProviderInventoryReady != 1 || result.ProviderInventoryDegraded != 1 {
-		t.Fatalf("provider inventory summary = %+v, want total=2 ready=1 degraded=1", result)
-	}
-	if len(result.ProviderStatus) != 1 || result.ProviderStatus[0].ProviderNetwork != "physnet-a" {
-		t.Fatalf("provider status = %+v, want planned physnet-a status retained", result.ProviderStatus)
-	}
-	if result.ProviderStatus[0].ParentDevice != "eth1" || result.ProviderStatus[0].VLAN != 100 {
-		t.Fatalf("provider status[0] = %+v, want eth1 vlan 100", result.ProviderStatus[0])
+	networkStatuses := providerNetworkStatuses(state, statuses, issues)
+	if len(networkStatuses) != 1 || networkStatuses[0].Ready || networkStatuses[0].IssueCount != 1 || networkStatuses[0].Reasons[0] != "link-missing" {
+		t.Fatalf("provider network status = %+v, want link-missing reason", networkStatuses)
 	}
 }
 
@@ -1535,7 +1366,7 @@ func TestProviderOVSDBRuntimeIssuesReportsQoSAndQueueDrift(t *testing.T) {
 	}
 }
 
-func TestApplyCommandReportsProviderOVSDBStatusIssues(t *testing.T) {
+func TestAppendProviderOVSDBIssuesReportsProvidedStatusIssues(t *testing.T) {
 	state := control.DesiredState{
 		ProviderNetworks: []model.ProviderNetwork{{
 			Name: "physnet-a",
@@ -1560,11 +1391,15 @@ func TestApplyCommandReportsProviderOVSDBStatusIssues(t *testing.T) {
 			Node:   "node-a",
 		}},
 	}
-
-	result, err := Apply(context.Background(), state, Options{
-		Node:        "node-a",
-		LocalDevice: "nl0",
-		Backend:     "command",
+	specs, err := desiredProviderNetworkLinkSpecs(state, "node-a", nil, []ProviderInterface{{Name: "eth1", Ready: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := Result{
+		ProviderStatus: providerLinkStatusesFromInventory(specs, []ProviderInterface{{Name: "eth1", Ready: true}, {Name: providerNetworkLinkName("physnet-a", "eth1", 100), Ready: true}}),
+	}
+	err = appendProviderOVSDBIssues(context.Background(), &result, state, Options{
+		Node: "node-a",
 		ProviderOVSDBStatus: []ProviderOVSDBStatus{{
 			ProviderNetwork: "physnet-a",
 			Bridge:          providerNetworkBridgeName("physnet-a"),
@@ -1576,8 +1411,7 @@ func TestApplyCommandReportsProviderOVSDBStatusIssues(t *testing.T) {
 			PortState:       "up",
 			InterfaceState:  "up",
 		}},
-		Executor: noopCommandExecutor{},
-	})
+	}, specs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1614,12 +1448,15 @@ func TestStrictProviderHealthFailsOnProviderOVSDBStatusIssue(t *testing.T) {
 			Node:   "node-a",
 		}},
 	}
-
-	_, err := Apply(context.Background(), state, Options{
-		Node:                 "node-a",
-		LocalDevice:          "nl0",
-		Backend:              "command",
-		StrictProviderHealth: true,
+	specs, err := desiredProviderNetworkLinkSpecs(state, "node-a", nil, []ProviderInterface{{Name: "eth1", Ready: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := Result{
+		ProviderStatus: providerLinkStatusesFromInventory(specs, []ProviderInterface{{Name: "eth1", Ready: true}, {Name: providerNetworkLinkName("physnet-a", "eth1", 100), Ready: true}}),
+	}
+	err = appendProviderOVSDBIssues(context.Background(), &result, state, Options{
+		Node: "node-a",
 		ProviderOVSDBStatus: []ProviderOVSDBStatus{{
 			ProviderNetwork: "physnet-a",
 			Bridge:          providerNetworkBridgeName("physnet-a"),
@@ -1631,8 +1468,11 @@ func TestStrictProviderHealthFailsOnProviderOVSDBStatusIssue(t *testing.T) {
 			PortState:       "up",
 			InterfaceState:  "up",
 		}},
-		Executor: noopCommandExecutor{},
-	})
+	}, specs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = validateProviderHealth(result, Options{StrictProviderHealth: true})
 	if err == nil || !strings.Contains(err.Error(), "ovsdb-mapping-missing") {
 		t.Fatalf("err = %v, want strict provider health failure with ovsdb-mapping-missing", err)
 	}

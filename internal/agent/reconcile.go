@@ -166,6 +166,7 @@ type ReconcileOptions struct {
 	PolicyRolloutApprovalSecret       string
 	PolicyRolloutResume               map[string][]string
 	LinuxDatapath                     *linuxdatapath.Options
+	LinuxDatapathApply                func(context.Context, control.DesiredState, linuxdatapath.Options) (linuxdatapath.Result, error)
 }
 
 type PolicyEndpointPlan struct {
@@ -1902,7 +1903,11 @@ func prepareReconcile(ctx context.Context, state control.DesiredState, options R
 	if options.LinuxDatapath != nil {
 		linuxOptions := *options.LinuxDatapath
 		linuxOptions.Node = options.Node
-		linuxResult, err := linuxdatapath.Apply(ctx, state, linuxOptions)
+		applyLinuxDatapath := linuxdatapath.Apply
+		if options.LinuxDatapathApply != nil {
+			applyLinuxDatapath = options.LinuxDatapathApply
+		}
+		linuxResult, err := applyLinuxDatapath(ctx, state, linuxOptions)
 		result.Datapath = "linux:" + linuxResult.Device
 		result.LocalIPs = linuxResult.LocalAddresses
 		result.RemoteRoutes = linuxResult.RemoteRoutes
