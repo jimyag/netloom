@@ -60,25 +60,13 @@ func (w *LibOVSDBTopologyWriter) EnsureVPC(ctx context.Context, vpc model.VPC) e
 			return fmt.Errorf("create logical router %s: %w", router.Name, err)
 		}
 	} else {
-		nextExternalIDs := mergeStringMap(existing.ExternalIDs, router.ExternalIDs)
-		nextOptions := existing.Options
-		if existing.ExternalIDs["netloom_gateway"] == "" {
-			nextOptions = nil
-		}
-		if reflect.DeepEqual(existing.ExternalIDs, nextExternalIDs) &&
-			equalBoolPointers(existing.Enabled, router.Enabled) &&
-			reflect.DeepEqual(existing.Options, nextOptions) &&
-			len(existing.LoadBalancerGroup) == 0 {
-			return nil
-		}
-		existing.ExternalIDs = nextExternalIDs
-		existing.Enabled = router.Enabled
-		existing.Options = nextOptions
-		existing.LoadBalancerGroup = nil
-		ops, err = w.client.Where(existing).Update(existing, &existing.ExternalIDs, &existing.Enabled, &existing.Options, &existing.LoadBalancerGroup)
+		ops, err = w.logicalRouterConfigOperations(existing, router, existing.ExternalIDs["netloom_gateway"] != "")
 		if err != nil {
-			return fmt.Errorf("update logical router %s external IDs: %w", router.Name, err)
+			return err
 		}
+	}
+	if len(ops) == 0 {
+		return nil
 	}
 	results, err := w.client.Transact(ctx, ops...)
 	if err != nil {
@@ -88,6 +76,30 @@ func (w *LibOVSDBTopologyWriter) EnsureVPC(ctx context.Context, vpc model.VPC) e
 		return fmt.Errorf("logical router %s operation errors=%+v: %w", router.Name, opErrors, err)
 	}
 	return nil
+}
+
+func (w *LibOVSDBTopologyWriter) logicalRouterConfigOperations(existing, desired *ovnnb.LogicalRouter, preserveGateway bool) ([]ovsdb.Operation, error) {
+	nextExternalIDs := mergeStringMap(existing.ExternalIDs, desired.ExternalIDs)
+	nextOptions := existing.Options
+	if !preserveGateway {
+		nextExternalIDs = clearGatewayExternalIDs(nextExternalIDs)
+		nextOptions = clearGatewayRouterOptions(nextOptions)
+	}
+	if reflect.DeepEqual(existing.ExternalIDs, nextExternalIDs) &&
+		equalBoolPointers(existing.Enabled, desired.Enabled) &&
+		reflect.DeepEqual(existing.Options, nextOptions) &&
+		len(existing.LoadBalancerGroup) == 0 {
+		return nil, nil
+	}
+	existing.ExternalIDs = nextExternalIDs
+	existing.Enabled = desired.Enabled
+	existing.Options = nextOptions
+	existing.LoadBalancerGroup = nil
+	ops, err := w.client.Where(existing).Update(existing, &existing.ExternalIDs, &existing.Enabled, &existing.Options, &existing.LoadBalancerGroup)
+	if err != nil {
+		return nil, fmt.Errorf("update logical router %s external IDs: %w", existing.Name, err)
+	}
+	return ops, nil
 }
 
 func (w *LibOVSDBTopologyWriter) EnsureSubnet(ctx context.Context, subnet model.Subnet) error {
@@ -1897,6 +1909,22 @@ func isGatewayExternalID(key string) bool {
 	}
 }
 
+func clearGatewayExternalIDs(values map[string]string) map[string]string {
+	out := cloneStringMap(values)
+	for key := range out {
+		if isGatewayExternalID(key) {
+			delete(out, key)
+		}
+	}
+	return out
+}
+
+func clearGatewayRouterOptions(values map[string]string) map[string]string {
+	out := cloneStringMap(values)
+	delete(out, "chassis")
+	return out
+}
+
 func mergeStringMap(base map[string]string, overlay map[string]string) map[string]string {
 	out := make(map[string]string, len(base)+len(overlay))
 	for key, value := range base {
@@ -2076,6 +2104,7 @@ func ovnPolicyRouteAction(action model.Action) ovnnb.LogicalRouterPolicyAction {
 func gatewayExternalIDs(gateway model.Gateway) map[string]string {
 	out := map[string]string{
 		"netloom_owner":               "netloom",
+		"netloom_vpc":                 gateway.VPC,
 		"netloom_gateway":             gateway.Name,
 		"netloom_gateway_lan_ip":      gateway.LANIP.String(),
 		"netloom_gateway_distributed": fmt.Sprintf("%t", gateway.Distributed),

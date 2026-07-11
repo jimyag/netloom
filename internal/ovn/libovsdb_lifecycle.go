@@ -384,7 +384,7 @@ func (w *LibOVSDBTopologyWriter) cleanupUnexpectedLiveOperations(ctx context.Con
 		}
 		ops = append(ops, deleteOps...)
 	}
-	lrRows, err := w.unexpectedLogicalRouters(ctx, expected)
+	lrRows, err := w.unexpectedLogicalRouters(ctx, expected, expectedLogicalRouterNames(desired))
 	if err != nil {
 		return nil, CleanupStats{}, err
 	}
@@ -412,6 +412,21 @@ func (w *LibOVSDBTopologyWriter) repairSteadyStateCoreNames(ctx context.Context,
 			return nil, err
 		}
 		ops = append(ops, nextOps...)
+		router, ok, err := w.logicalRouterByName(ctx, logicalRouter(name))
+		if err != nil {
+			return nil, err
+		}
+		if ok && isNetloomManaged(router.ExternalIDs) {
+			desiredRouter := &ovnnb.LogicalRouter{
+				Name:        logicalRouter(name),
+				ExternalIDs: map[string]string{"netloom_owner": "netloom", "netloom_vpc": name},
+			}
+			nextOps, err = w.logicalRouterConfigOperations(router, desiredRouter, desiredHasGatewayForVPC(desired, name))
+			if err != nil {
+				return nil, err
+			}
+			ops = append(ops, nextOps...)
+		}
 	}
 	subnets := make([]model.Subnet, 0, len(desired.Subnets))
 	for _, subnet := range desired.Subnets {
@@ -1466,15 +1481,37 @@ func expectedLogicalSwitchNames(desired topology.State) map[string]struct{} {
 	return out
 }
 
-func (w *LibOVSDBTopologyWriter) unexpectedLogicalRouters(ctx context.Context, expected map[string]map[string]string) ([]ovnnb.LogicalRouter, error) {
+func (w *LibOVSDBTopologyWriter) unexpectedLogicalRouters(ctx context.Context, expected map[string]map[string]string, expectedNames map[string]struct{}) ([]ovnnb.LogicalRouter, error) {
 	var rows []ovnnb.LogicalRouter
 	if err := w.client.WhereCache(func(row *ovnnb.LogicalRouter) bool {
+		if isNetloomManaged(row.ExternalIDs) {
+			if _, ok := expectedNames[row.Name]; ok {
+				return false
+			}
+		}
 		return unexpectedManagedRow("Logical_Router", row.UUID, row.ExternalIDs, expected)
 	}).List(ctx, &rows); err != nil {
 		return nil, err
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].UUID < rows[j].UUID })
 	return rows, nil
+}
+
+func expectedLogicalRouterNames(desired topology.State) map[string]struct{} {
+	out := make(map[string]struct{}, len(desired.VPCs))
+	for name := range desired.VPCs {
+		out[logicalRouter(name)] = struct{}{}
+	}
+	return out
+}
+
+func desiredHasGatewayForVPC(desired topology.State, vpc string) bool {
+	for _, gateway := range desired.Gateways {
+		if gateway.VPC == vpc {
+			return true
+		}
+	}
+	return false
 }
 
 func (w *LibOVSDBTopologyWriter) unexpectedLogicalSwitchPorts(ctx context.Context, expected map[string]map[string]string) ([]ovnnb.LogicalSwitchPort, error) {

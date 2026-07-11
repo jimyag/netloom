@@ -109,6 +109,102 @@ func TestLibOVSDBTopologyWriterClearsStaleVPCLogicalRouterOptions(t *testing.T) 
 	})
 }
 
+func TestLibOVSDBTopologyWriterCleanupRepairsVPCRouterDriftInSteadyState(t *testing.T) {
+	ctx := context.Background()
+	client, closeFn := newTestOVNNBClient(t)
+	defer closeFn()
+
+	if _, err := client.MonitorAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	writer := NewLibOVSDBTopologyWriter(client)
+	state := topology.State{
+		VPCs: map[string]model.VPC{"prod": {Name: "prod"}},
+	}
+	if err := writer.CleanupTopology(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureVPC(ctx, state.VPCs["prod"]); err != nil {
+		t.Fatal(err)
+	}
+
+	var routers []ovnnb.LogicalRouter
+	requireEventually(t, func() bool {
+		routers = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("prod") }).List(ctx, &routers)
+		return err == nil && len(routers) == 1
+	})
+	routerUUID := routers[0].UUID
+	staleGroup := &ovnnb.LoadBalancerGroup{
+		UUID: ovsdbNamedUUID("cleanup-stale-router-lbg"),
+		Name: "cleanup-stale-router-lbg",
+	}
+	createGroupOps, err := client.Create(staleGroup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := client.Transact(ctx, createGroupOps...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, createGroupOps); err != nil {
+		t.Fatalf("create stale router load balancer group operation errors=%+v: %v", opErrors, err)
+	}
+	var groups []ovnnb.LoadBalancerGroup
+	requireEventually(t, func() bool {
+		groups = nil
+		err := client.WhereCache(func(row *ovnnb.LoadBalancerGroup) bool { return row.Name == "cleanup-stale-router-lbg" }).List(ctx, &groups)
+		return err == nil && len(groups) == 1
+	})
+
+	routers[0].ExternalIDs = map[string]string{
+		"netloom_owner": "netloom",
+		"netloom_vpc":   "wrong",
+		"custom":        "keep",
+	}
+	routers[0].Options = map[string]string{"chassis": "node-old", "custom": "keep"}
+	routers[0].LoadBalancerGroup = []string{groups[0].UUID}
+	updateOps, err := client.Where(&routers[0]).Update(&routers[0], &routers[0].ExternalIDs, &routers[0].Options, &routers[0].LoadBalancerGroup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err = client.Transact(ctx, updateOps...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, updateOps); err != nil {
+		t.Fatalf("seed router drift operation errors=%+v: %v", opErrors, err)
+	}
+	requireEventually(t, func() bool {
+		routers = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("prod") }).List(ctx, &routers)
+		return err == nil && len(routers) == 1 &&
+			routers[0].UUID == routerUUID &&
+			routers[0].ExternalIDs["netloom_vpc"] == "wrong" &&
+			routers[0].Options["chassis"] == "node-old" &&
+			len(routers[0].LoadBalancerGroup) == 1
+	})
+
+	if err := writer.CleanupTopology(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	requireEventually(t, func() bool {
+		routers = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("prod") }).List(ctx, &routers)
+		return err == nil && len(routers) == 1 &&
+			routers[0].UUID == routerUUID &&
+			routers[0].ExternalIDs["custom"] == "keep" &&
+			routers[0].ExternalIDs["netloom_vpc"] == "prod" &&
+			routers[0].Options["custom"] == "keep" &&
+			routers[0].Options["chassis"] == "" &&
+			len(routers[0].LoadBalancerGroup) == 0
+	})
+	stats := writer.LastCleanupStats()
+	if stats.FirstReconcileGC || stats.Operations == 0 {
+		t.Fatalf("cleanup stats = %+v, want steady-state VPC router repair operations", stats)
+	}
+}
+
 func TestLibOVSDBTopologyWriterEnsuresSubnetLogicalSwitch(t *testing.T) {
 	ctx := context.Background()
 	client, closeFn := newTestOVNNBClient(t)
