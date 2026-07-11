@@ -1076,7 +1076,9 @@ func TestLibOVSDBTopologyWriterCleanupRepairsEndpointSwitchPortDriftInSteadyStat
 	port.PortSecurity = nil
 	port.Options = map[string]string{"network_name": "physnet-a"}
 	port.Tag = &tag
-	updateOps, err := client.Where(&port).Update(&port, &port.Type, &port.Addresses, &port.PortSecurity, &port.Options, &port.Tag)
+	disabled := false
+	port.Enabled = &disabled
+	updateOps, err := client.Where(&port).Update(&port, &port.Type, &port.Addresses, &port.PortSecurity, &port.Options, &port.Tag, &port.Enabled)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1096,7 +1098,9 @@ func TestLibOVSDBTopologyWriterCleanupRepairsEndpointSwitchPortDriftInSteadyStat
 			len(ports[0].PortSecurity) == 0 &&
 			ports[0].Options["network_name"] == "physnet-a" &&
 			ports[0].Tag != nil &&
-			*ports[0].Tag == 200
+			*ports[0].Tag == 200 &&
+			ports[0].Enabled != nil &&
+			!*ports[0].Enabled
 	})
 
 	if err := writer.CleanupTopology(ctx, state); err != nil {
@@ -1110,6 +1114,7 @@ func TestLibOVSDBTopologyWriterCleanupRepairsEndpointSwitchPortDriftInSteadyStat
 			ports[0].Type == "" &&
 			len(ports[0].Options) == 0 &&
 			ports[0].Tag == nil &&
+			ports[0].Enabled == nil &&
 			len(ports[0].Addresses) == 1 &&
 			ports[0].Addresses[0] == "02:00:00:00:00:20 10.10.0.20" &&
 			len(ports[0].PortSecurity) == 1 &&

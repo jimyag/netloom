@@ -167,7 +167,7 @@ func managedAuditNBCTLColumns(table string) []string {
 	case "Logical_Router":
 		columns = append(columns, "name", "options", "ports", "load_balancers", "nat", "policies", "static_routes")
 	case "Logical_Switch_Port":
-		columns = append(columns, "name", "type", "addresses", "port_security", "options", "tag")
+		columns = append(columns, "name", "type", "addresses", "port_security", "options", "tag", "enabled")
 	case "Logical_Router_Port":
 		columns = append(columns, "name", "mac", "networks", "ipv6_ra_configs")
 	case "Logical_Router_Policy":
@@ -815,6 +815,9 @@ func countManagedProvidedFieldDrift(table string, live, expected map[string]stri
 		if !staleManagedColumnShouldDrift(table, key) || value == "" {
 			continue
 		}
+		if table == "Logical_Switch_Port" && key == "enabled" && strings.EqualFold(value, "true") {
+			continue
+		}
 		if _, ok := expected[key]; !ok {
 			drift++
 		}
@@ -826,7 +829,7 @@ func staleManagedColumnShouldDrift(table, key string) bool {
 	switch table {
 	case "Logical_Switch_Port":
 		switch key {
-		case "type", "options", "tag", "port_security", "dhcpv4_options", "dhcpv6_options":
+		case "type", "options", "tag", "enabled", "port_security", "dhcpv4_options", "dhcpv6_options":
 			return true
 		default:
 			return false

@@ -100,6 +100,7 @@ func (r *LibOVSDBManagedReader) ManagedOVNRows(ctx context.Context, table string
 				"port_security":  stringSliceField(row.PortSecurity),
 				"options":        mapField(row.Options),
 				"tag":            intPointerField(row.Tag),
+				"enabled":        boolPointerField(row.Enabled),
 				"dhcpv4_options": dhcpOptionsRefField(row.Dhcpv4Options, dhcpOptions),
 				"dhcpv6_options": dhcpOptionsRefField(row.Dhcpv6Options, dhcpOptions),
 			}
@@ -471,6 +472,13 @@ func managedOVNRowsFromModels[T any](table string, rows []T, identity func(T) (s
 }
 
 func intPointerField(value *int) string {
+	if value == nil {
+		return ""
+	}
+	return fmt.Sprint(*value)
+}
+
+func boolPointerField(value *bool) string {
 	if value == nil {
 		return ""
 	}

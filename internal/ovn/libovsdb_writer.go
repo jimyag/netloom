@@ -896,7 +896,8 @@ func (w *LibOVSDBTopologyWriter) ensureLogicalSwitchPort(ctx context.Context, sw
 		reflect.DeepEqual(existing.Addresses, desired.Addresses) &&
 		reflect.DeepEqual(existing.Options, desired.Options) &&
 		reflect.DeepEqual(existing.ExternalIDs, nextExternalIDs) &&
-		equalIntPointers(existing.Tag, nextTag) {
+		equalIntPointers(existing.Tag, nextTag) &&
+		equalBoolPointers(existing.Enabled, desired.Enabled) {
 		return existing.UUID, ops, nil
 	}
 	existing.Type = desired.Type
@@ -904,7 +905,8 @@ func (w *LibOVSDBTopologyWriter) ensureLogicalSwitchPort(ctx context.Context, sw
 	existing.Options = desired.Options
 	existing.ExternalIDs = nextExternalIDs
 	existing.Tag = nextTag
-	updateOps, err := w.client.Where(existing).Update(existing, &existing.Type, &existing.Addresses, &existing.Options, &existing.ExternalIDs, &existing.Tag)
+	existing.Enabled = desired.Enabled
+	updateOps, err := w.client.Where(existing).Update(existing, &existing.Type, &existing.Addresses, &existing.Options, &existing.ExternalIDs, &existing.Tag, &existing.Enabled)
 	if err != nil {
 		return "", nil, fmt.Errorf("update logical switch port %s: %w", desired.Name, err)
 	}
@@ -955,7 +957,8 @@ func (w *LibOVSDBTopologyWriter) ensureEndpointSwitchPort(ctx context.Context, s
 		reflect.DeepEqual(existing.ExternalIDs, nextExternalIDs) &&
 		existing.Type == desired.Type &&
 		reflect.DeepEqual(existing.Options, desired.Options) &&
-		equalIntPointers(existing.Tag, desired.Tag) {
+		equalIntPointers(existing.Tag, desired.Tag) &&
+		equalBoolPointers(existing.Enabled, desired.Enabled) {
 		return existing.UUID, ops, nil
 	}
 	existing.Addresses = desired.Addresses
@@ -964,7 +967,8 @@ func (w *LibOVSDBTopologyWriter) ensureEndpointSwitchPort(ctx context.Context, s
 	existing.Type = desired.Type
 	existing.Options = desired.Options
 	existing.Tag = desired.Tag
-	updateOps, err := w.client.Where(existing).Update(existing, &existing.Addresses, &existing.PortSecurity, &existing.ExternalIDs, &existing.Type, &existing.Options, &existing.Tag)
+	existing.Enabled = desired.Enabled
+	updateOps, err := w.client.Where(existing).Update(existing, &existing.Addresses, &existing.PortSecurity, &existing.ExternalIDs, &existing.Type, &existing.Options, &existing.Tag, &existing.Enabled)
 	if err != nil {
 		return "", nil, fmt.Errorf("update endpoint logical switch port %s: %w", desired.Name, err)
 	}
@@ -2343,6 +2347,13 @@ func replaceManagedRouterPortRAConfig(base, desired map[string]string) map[strin
 }
 
 func equalIntPointers(a, b *int) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+func equalBoolPointers(a, b *bool) bool {
 	if a == nil || b == nil {
 		return a == b
 	}

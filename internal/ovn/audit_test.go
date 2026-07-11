@@ -886,6 +886,55 @@ func TestAuditManagedObjectsFromReaderReportsStaleEndpointPortSecurityColumn(t *
 	}
 }
 
+func TestAuditManagedObjectsFromReaderReportsDisabledEndpointLogicalSwitchPort(t *testing.T) {
+	endpoint := model.Endpoint{
+		ID:     "pod-a",
+		VPC:    "prod",
+		Subnet: "apps",
+		Node:   "node-a",
+		IP:     netip.MustParseAddr("10.10.0.20"),
+	}
+	desired := topology.State{
+		Subnets: map[string]model.Subnet{
+			subnetStateKey("prod", "apps"): {Name: "apps", VPC: "prod"},
+		},
+		Endpoints: map[string]model.Endpoint{
+			"prod/pod-a": endpoint,
+		},
+	}
+	baseRow := ManagedOVNRow{Table: "Logical_Switch_Port", UUID: "lsp-pod-a", ExternalIDs: map[string]string{
+		"netloom_owner":    "netloom",
+		"netloom_vpc":      "prod",
+		"netloom_endpoint": endpointExternalID("prod", "pod-a"),
+		"netloom_node":     "node-a",
+		"netloom_subnet":   "apps",
+	}, Fields: map[string]string{
+		"name":      logicalPort("prod", "pod-a"),
+		"addresses": endpointAddress(endpoint),
+	}}
+
+	reader := fakeManagedOVNReader{rows: map[string][]ManagedOVNRow{
+		"Logical_Switch_Port": {baseRow},
+	}}
+	reader.rows["Logical_Switch_Port"][0].Fields["enabled"] = "true"
+	stats, err := AuditManagedObjectsFromReaderWithDesired(context.Background(), reader, desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.DriftedManagedRows != 0 || stats.DriftedManagedFields != 0 {
+		t.Fatalf("enabled=true drift stats = %+v, want no drift", stats)
+	}
+
+	reader.rows["Logical_Switch_Port"][0].Fields["enabled"] = "false"
+	stats, err = AuditManagedObjectsFromReaderWithDesired(context.Background(), reader, desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.DriftedManagedRows != 1 || stats.DriftedManagedFields != 1 {
+		t.Fatalf("enabled=false drift stats = %+v, want one field drift", stats)
+	}
+}
+
 func TestAuditManagedObjectsFromReaderReportsStaleLoadBalancerColumns(t *testing.T) {
 	lb := model.LoadBalancer{
 		Name: "api",
