@@ -2685,19 +2685,20 @@ func TestPolicyEndpointAPIRolloutChecksApprovalCallback(t *testing.T) {
 		}
 		var request struct {
 			ApprovalRef string   `json:"approval_ref"`
+			Revision    string   `json:"revision"`
 			Endpoints   []string `json:"endpoints"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Fatalf("decode callback request: %v", err)
 		}
-		if request.ApprovalRef != "chg-3456" || !reflect.DeepEqual(request.Endpoints, []string{model.EndpointKey("prod", "pod-a")}) {
-			t.Fatalf("callback request = %+v, want approval ref and endpoint", request)
+		if request.ApprovalRef != "chg-3456" || request.Revision != "manual-callback-rev-1" || !reflect.DeepEqual(request.Endpoints, []string{model.EndpointKey("prod", "pod-a")}) {
+			t.Fatalf("callback request = %+v, want approval ref, revision, and endpoint", request)
 		}
 		_, _ = w.Write([]byte(`{"approved":true}`))
 	}))
 	defer server.Close()
 
-	body := bytes.NewBufferString(`{"endpoints":["prod/pod-a"],"batch_size":1,"approval_required":true,"approved":true,"approval_ref":"chg-3456","approval_callback_url":"` + server.URL + `","approval_callback_timeout_ms":500}`)
+	body := bytes.NewBufferString(`{"endpoints":["prod/pod-a"],"revision":"manual-callback-rev-1","batch_size":1,"approval_required":true,"approved":true,"approval_ref":"chg-3456","approval_callback_url":"` + server.URL + `","approval_callback_timeout_ms":500}`)
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/policy/endpoints/rollout", body)
 	metrics.handlePolicyEndpoints(recorder, request)
@@ -2825,19 +2826,20 @@ func TestPolicyEndpointAPIRolloutPollsExternalChangeStatus(t *testing.T) {
 		}
 		var request struct {
 			ApprovalRef string   `json:"approval_ref"`
+			Revision    string   `json:"revision"`
 			Endpoints   []string `json:"endpoints"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Fatalf("decode change poll request: %v", err)
 		}
-		if request.ApprovalRef != "chg-5678" || !reflect.DeepEqual(request.Endpoints, []string{model.EndpointKey("prod", "pod-a")}) {
-			t.Fatalf("poll request = %+v, want approval ref and endpoint", request)
+		if request.ApprovalRef != "chg-5678" || request.Revision != "manual-poll-rev-1" || !reflect.DeepEqual(request.Endpoints, []string{model.EndpointKey("prod", "pod-a")}) {
+			t.Fatalf("poll request = %+v, want approval ref, revision, and endpoint", request)
 		}
 		_, _ = w.Write([]byte(`{"allowed":true,"status":"approved"}`))
 	}))
 	defer server.Close()
 
-	body := bytes.NewBufferString(`{"endpoints":["prod/pod-a"],"batch_size":1,"approval_ref":"chg-5678","change_poll_url":"` + server.URL + `","change_poll_timeout_ms":500}`)
+	body := bytes.NewBufferString(`{"endpoints":["prod/pod-a"],"revision":"manual-poll-rev-1","batch_size":1,"approval_ref":"chg-5678","change_poll_url":"` + server.URL + `","change_poll_timeout_ms":500}`)
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/policy/endpoints/rollout", body)
 	metrics.handlePolicyEndpoints(recorder, request)

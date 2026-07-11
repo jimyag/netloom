@@ -708,6 +708,7 @@ func verifyPolicyRolloutApprovalSignature(secret, signature, approvalRef string,
 
 type policyRolloutApprovalCallbackRequest struct {
 	ApprovalRef string   `json:"approval_ref,omitempty"`
+	Revision    string   `json:"revision,omitempty"`
 	Endpoints   []string `json:"endpoints"`
 }
 
@@ -745,6 +746,7 @@ type policyRolloutChangeStatusResponse struct {
 
 type policyRolloutChangePollRequest struct {
 	ApprovalRef string   `json:"approval_ref,omitempty"`
+	Revision    string   `json:"revision,omitempty"`
 	Endpoints   []string `json:"endpoints"`
 }
 
@@ -768,6 +770,7 @@ func requestPolicyRolloutApproval(ctx context.Context, options PolicyEndpointRol
 	defer cancel()
 	payload := policyRolloutApprovalCallbackRequest{
 		ApprovalRef: options.ApprovalRef,
+		Revision:    options.Revision,
 		Endpoints:   append([]string(nil), endpointIDs...),
 	}
 	sort.Strings(payload.Endpoints)
@@ -811,6 +814,7 @@ func pollPolicyRolloutChangeStatus(ctx context.Context, options PolicyEndpointRo
 	defer cancel()
 	payload := policyRolloutChangePollRequest{
 		ApprovalRef: options.ApprovalRef,
+		Revision:    options.Revision,
 		Endpoints:   append([]string(nil), endpointIDs...),
 	}
 	sort.Strings(payload.Endpoints)

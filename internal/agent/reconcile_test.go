@@ -1953,13 +1953,14 @@ func TestApplyPolicyRolloutsChecksApprovalCallback(t *testing.T) {
 		}
 		var request struct {
 			ApprovalRef string   `json:"approval_ref"`
+			Revision    string   `json:"revision"`
 			Endpoints   []string `json:"endpoints"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Fatalf("decode callback request: %v", err)
 		}
-		if request.ApprovalRef != "chg-7777" || !slices.Equal(request.Endpoints, []string{model.EndpointKey("prod", "pod-a"), model.EndpointKey("prod", "pod-b")}) {
-			t.Fatalf("callback request = %+v, want approval ref and sorted endpoints", request)
+		if request.ApprovalRef != "chg-7777" || request.Revision != "approval-rev-1" || !slices.Equal(request.Endpoints, []string{model.EndpointKey("prod", "pod-a"), model.EndpointKey("prod", "pod-b")}) {
+			t.Fatalf("callback request = %+v, want approval ref, revision, and sorted endpoints", request)
 		}
 		_, _ = w.Write([]byte(`{"approved":true}`))
 	}))
@@ -1968,6 +1969,7 @@ func TestApplyPolicyRolloutsChecksApprovalCallback(t *testing.T) {
 	state.PolicyRollouts = []control.PolicyRollout{{
 		Name:                      "approval-callback",
 		Node:                      "node-a",
+		Revision:                  "approval-rev-1",
 		Endpoints:                 []string{"prod/pod-a", "prod/pod-b"},
 		BatchSize:                 1,
 		ApprovalRequired:          true,
@@ -2211,13 +2213,14 @@ func TestApplyPolicyRolloutsPollsExternalChangeStatusBeforeApply(t *testing.T) {
 		}
 		var request struct {
 			ApprovalRef string   `json:"approval_ref"`
+			Revision    string   `json:"revision"`
 			Endpoints   []string `json:"endpoints"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Fatalf("decode poll request: %v", err)
 		}
-		if request.ApprovalRef != "chg-1000" || !slices.Equal(request.Endpoints, []string{model.EndpointKey("prod", "pod-a")}) {
-			t.Fatalf("poll request = %+v, want approval ref and endpoint", request)
+		if request.ApprovalRef != "chg-1000" || request.Revision != "poll-rev-1" || !slices.Equal(request.Endpoints, []string{model.EndpointKey("prod", "pod-a")}) {
+			t.Fatalf("poll request = %+v, want approval ref, revision, and endpoint", request)
 		}
 		_, _ = w.Write([]byte(`{"allowed":true,"status":"approved","url":"https://changes.example/chg-1000"}`))
 	}))
@@ -2226,6 +2229,7 @@ func TestApplyPolicyRolloutsPollsExternalChangeStatusBeforeApply(t *testing.T) {
 	state.PolicyRollouts = []control.PolicyRollout{{
 		Name:                "change-poll",
 		Node:                "node-a",
+		Revision:            "poll-rev-1",
 		Endpoints:           []string{"prod/pod-a"},
 		BatchSize:           1,
 		ApprovalRequired:    true,
