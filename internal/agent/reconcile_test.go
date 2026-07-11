@@ -706,6 +706,58 @@ func TestReconcileNodeQuarantinesDesiredEndpointWhenPolicyMapPressureRemainsHigh
 	}
 }
 
+func TestReconcileNodeDoesNotQuarantineBelowQuarantineThreshold(t *testing.T) {
+	endpointID := model.EndpointKey("prod", "pod-a")
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:             "pod-a",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"web"},
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "allow-http",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("0.0.0.0/0"),
+				Ports:      []model.PortRange{{From: 80, To: 80}},
+				Action:     model.ActionAllow,
+			}},
+		}},
+	}
+	store := &capacityPolicyStore{
+		InMemoryPolicyStore: dataplane.NewInMemoryPolicyStore(),
+		capacity:            2,
+	}
+
+	result, err := ReconcileNodeWithOptions(context.Background(), state, ReconcileOptions{
+		Node:                              "node-a",
+		Store:                             store,
+		PolicyPressureMitigationThreshold: 40,
+		PolicyPressureQuarantineThreshold: 90,
+		PolicyPressureQuarantine:          true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.PolicyMapPressureMax != 50 {
+		t.Fatalf("policy pressure max = %d, want 50", result.PolicyMapPressureMax)
+	}
+	if result.PolicyPressureQuarantined != 0 || result.PolicyPressureQuarantineEndpoint != "" {
+		t.Fatalf("policy quarantine result = %d/%q, want none", result.PolicyPressureQuarantined, result.PolicyPressureQuarantineEndpoint)
+	}
+	entries := store.Entries(endpointID)
+	if len(entries) != 1 || entries[0].Value.Deny != 0 {
+		t.Fatalf("entries = %+v, want original allow policy", entries)
+	}
+}
+
 func TestReconcileNodeKeepsSameEndpointIDScopedByVPCInPolicyLifecycle(t *testing.T) {
 	state := control.DesiredState{
 		Endpoints: []model.Endpoint{

@@ -161,6 +161,7 @@ type ReconcileOptions struct {
 	ConntrackIdle                     time.Duration
 	PolicyGCMaxIdle                   time.Duration
 	PolicyPressureMitigationThreshold uint32
+	PolicyPressureQuarantineThreshold uint32
 	PolicyPressureQuarantine          bool
 	DeferPolicyApply                  bool
 	PolicyRolloutApprovalSecret       string
@@ -1770,7 +1771,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, state control.DesiredState, 
 	if err := populatePolicyMapUsageResult(ctx, options.Store, &result); err != nil {
 		return result, err
 	}
-	if err := mitigatePolicyMapPressureResult(ctx, options.Store, programs, options.PolicyPressureMitigationThreshold, options.PolicyPressureQuarantine, &result); err != nil {
+	if err := mitigatePolicyMapPressureResult(ctx, options.Store, programs, options.PolicyPressureMitigationThreshold, options.PolicyPressureQuarantineThreshold, options.PolicyPressureQuarantine, &result); err != nil {
 		return result, err
 	}
 	if err := populatePolicyMapDriftResult(ctx, options.Store, &result); err != nil {
@@ -1983,7 +1984,7 @@ func prepareReconcile(ctx context.Context, state control.DesiredState, options R
 	if err := populatePolicyMapUsageResult(ctx, options.Store, &result); err != nil {
 		return ReconcileResult{}, nil, nil, err
 	}
-	if err := mitigatePolicyMapPressureResult(ctx, options.Store, localPrograms, options.PolicyPressureMitigationThreshold, options.PolicyPressureQuarantine, &result); err != nil {
+	if err := mitigatePolicyMapPressureResult(ctx, options.Store, localPrograms, options.PolicyPressureMitigationThreshold, options.PolicyPressureQuarantineThreshold, options.PolicyPressureQuarantine, &result); err != nil {
 		return ReconcileResult{}, nil, nil, err
 	}
 	if err := populatePolicyMapDriftResult(ctx, options.Store, &result); err != nil {
@@ -2061,40 +2062,48 @@ func policyRuleRef(rule policy.Rule) string {
 	return strings.Join([]string{rule.VPC, rule.SecurityGroup, rule.ID}, "/")
 }
 
-func mitigatePolicyMapPressureResult(ctx context.Context, store PolicyStore, programs []policy.Program, threshold uint32, quarantine bool, result *ReconcileResult) error {
-	if result == nil || threshold == 0 || result.PolicyMapPressureMax < threshold {
+func mitigatePolicyMapPressureResult(ctx context.Context, store PolicyStore, programs []policy.Program, mitigationThreshold, quarantineThreshold uint32, quarantine bool, result *ReconcileResult) error {
+	if result == nil {
 		return nil
-	}
-	inventory, ok := store.(PolicyEndpointInventory)
-	if !ok {
-		return nil
-	}
-	endpointIDs, err := inventory.EndpointIDs(ctx)
-	if err != nil {
-		return fmt.Errorf("list policy endpoints for pressure mitigation: %w", err)
 	}
 	keep := make(map[string]struct{}, len(programs))
 	for _, program := range programs {
 		keep[program.EndpointID] = struct{}{}
 	}
-	mitigated := 0
-	for _, endpointID := range endpointIDs {
-		if _, ok := keep[endpointID]; ok {
-			continue
+
+	if mitigationThreshold > 0 && result.PolicyMapPressureMax >= mitigationThreshold {
+		inventory, ok := store.(PolicyEndpointInventory)
+		if ok {
+			endpointIDs, err := inventory.EndpointIDs(ctx)
+			if err != nil {
+				return fmt.Errorf("list policy endpoints for pressure mitigation: %w", err)
+			}
+			mitigated := 0
+			for _, endpointID := range endpointIDs {
+				if _, ok := keep[endpointID]; ok {
+					continue
+				}
+				if err := store.DeleteEndpoint(ctx, endpointID); err != nil {
+					return fmt.Errorf("mitigate policy map pressure by deleting endpoint %s: %w", endpointID, err)
+				}
+				mitigated++
+			}
+			result.PolicyPressureMitigated = mitigated
+			if mitigated > 0 {
+				if err := populatePolicyMapUsageResult(ctx, store, result); err != nil {
+					return err
+				}
+			}
 		}
-		if err := store.DeleteEndpoint(ctx, endpointID); err != nil {
-			return fmt.Errorf("mitigate policy map pressure by deleting endpoint %s: %w", endpointID, err)
-		}
-		mitigated++
 	}
-	result.PolicyPressureMitigated = mitigated
-	if mitigated == 0 {
-		return quarantinePolicyMapPressureResult(ctx, store, keep, threshold, quarantine, result)
+
+	if quarantineThreshold == 0 {
+		quarantineThreshold = mitigationThreshold
 	}
-	if err := populatePolicyMapUsageResult(ctx, store, result); err != nil {
-		return err
+	if quarantineThreshold == 0 {
+		return nil
 	}
-	return quarantinePolicyMapPressureResult(ctx, store, keep, threshold, quarantine, result)
+	return quarantinePolicyMapPressureResult(ctx, store, keep, quarantineThreshold, quarantine, result)
 }
 
 func quarantinePolicyMapPressureResult(ctx context.Context, store PolicyStore, keep map[string]struct{}, threshold uint32, quarantine bool, result *ReconcileResult) error {

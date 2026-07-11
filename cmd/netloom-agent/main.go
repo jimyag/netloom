@@ -970,6 +970,7 @@ func reconcileStateFile(ctx context.Context, path, node, storeName string, recon
 		ConntrackIdle:                     conntrackIdleTimeout(),
 		PolicyGCMaxIdle:                   policyGCMaxIdle(),
 		PolicyPressureMitigationThreshold: policyPressureMitigationThreshold(),
+		PolicyPressureQuarantineThreshold: policyPressureQuarantineThreshold(),
 		PolicyPressureQuarantine:          policyPressureQuarantine(),
 		DeferPolicyApply:                  agent.HasActivePolicyRollouts(state, node),
 		PolicyRolloutApprovalSecret:       policyRolloutApprovalSecret(),
@@ -1063,6 +1064,7 @@ func reconcileStateFileOnceWithRuntimeStores(ctx context.Context, path, node, st
 		TCXHold:                           hold,
 		PolicyGCMaxIdle:                   policyGCMaxIdle(),
 		PolicyPressureMitigationThreshold: policyPressureMitigationThreshold(),
+		PolicyPressureQuarantineThreshold: policyPressureQuarantineThreshold(),
 		PolicyPressureQuarantine:          policyPressureQuarantine(),
 		DeferPolicyApply:                  agent.HasActivePolicyRollouts(state, node),
 		PolicyRolloutApprovalSecret:       policyRolloutApprovalSecret(),
@@ -3204,6 +3206,17 @@ func policyGCMaxIdle() time.Duration {
 
 func policyPressureMitigationThreshold() uint32 {
 	value := getenvIntDefault("NETLOOM_POLICY_PRESSURE_MITIGATION_THRESHOLD", 0)
+	if value < 0 {
+		return 0
+	}
+	if value > 100 {
+		return 100
+	}
+	return uint32(value)
+}
+
+func policyPressureQuarantineThreshold() uint32 {
+	value := getenvIntDefault("NETLOOM_POLICY_PRESSURE_QUARANTINE_THRESHOLD", 0)
 	if value < 0 {
 		return 0
 	}

@@ -144,6 +144,17 @@ func TestPolicyPressureMitigationThresholdParsesPercent(t *testing.T) {
 	}
 }
 
+func TestPolicyPressureQuarantineThresholdParsesPercent(t *testing.T) {
+	t.Setenv("NETLOOM_POLICY_PRESSURE_QUARANTINE_THRESHOLD", "95")
+	if got := policyPressureQuarantineThreshold(); got != 95 {
+		t.Fatalf("policy pressure quarantine threshold = %d, want 95", got)
+	}
+	t.Setenv("NETLOOM_POLICY_PRESSURE_QUARANTINE_THRESHOLD", "125")
+	if got := policyPressureQuarantineThreshold(); got != 100 {
+		t.Fatalf("policy pressure quarantine threshold = %d, want capped 100", got)
+	}
+}
+
 func TestPolicyPressureQuarantineParsesEnabledValues(t *testing.T) {
 	for _, value := range []string{"1", "true", "yes", "on"} {
 		t.Setenv("NETLOOM_POLICY_PRESSURE_QUARANTINE", value)
