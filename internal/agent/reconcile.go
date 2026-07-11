@@ -1797,6 +1797,14 @@ func UnquarantinePolicyEndpoint(ctx context.Context, state control.DesiredState,
 	return status, nil
 }
 
+func RollbackPolicyEndpoint(ctx context.Context, state control.DesiredState, options ReconcileOptions, endpointID string) (dataplane.PolicyEndpointStatus, error) {
+	status, err := RegeneratePolicyEndpoint(ctx, state, options, endpointID)
+	if err != nil {
+		return dataplane.PolicyEndpointStatus{}, fmt.Errorf("rollback policy endpoint %s: %w", endpointID, err)
+	}
+	return status, nil
+}
+
 func quarantinePolicyMapEntries() []dataplane.PolicyMapEntry {
 	return []dataplane.PolicyMapEntry{
 		quarantinePolicyMapEntry(dataplane.DirectionIngress),
