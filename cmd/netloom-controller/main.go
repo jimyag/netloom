@@ -30,14 +30,8 @@ import (
 
 func main() {
 	ctx := context.Background()
-	if stateFile := os.Getenv("NETLOOM_STATE_FILE"); stateFile != "" {
-		if err := runStateFile(ctx, stateFile); err != nil {
-			log.Fatal(err)
-		}
-		return
-	}
-	if strings.TrimSpace(os.Getenv("NETLOOM_OVSDB_ENDPOINT")) != "" {
-		if err := runStateFile(ctx, ""); err != nil {
+	if path, ok := desiredStateRuntimePathFromEnv(); ok {
+		if err := runStateFile(ctx, path); err != nil {
 			log.Fatal(err)
 		}
 		return
@@ -53,6 +47,16 @@ func main() {
 		log.Fatal(err)
 	}
 	fmt.Printf("netloom-controller reconciled bootstrap state policy_next_hop=%s snat=%s gateway=%s service_backend=%s:%d dnat=%s floating_ip=%s ovn_ops=%d ovn_executed=%d\n", result.PolicyRouteNextHop, result.SNATAddress, result.Gateway, result.ServiceBackend, result.ServiceBackendPort, result.DNATTarget, result.FloatingIPTarget, result.OVNOperations, result.OVNExecuted)
+}
+
+func desiredStateRuntimePathFromEnv() (string, bool) {
+	if path := strings.TrimSpace(os.Getenv("NETLOOM_STATE_FILE")); path != "" {
+		return path, true
+	}
+	if strings.TrimSpace(os.Getenv("NETLOOM_OVSDB_ENDPOINT")) != "" {
+		return "", true
+	}
+	return "", false
 }
 
 func runStateFile(ctx context.Context, path string) error {

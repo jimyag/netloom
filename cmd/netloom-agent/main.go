@@ -71,14 +71,8 @@ func main() {
 		}
 	}
 
-	if stateFile := os.Getenv("NETLOOM_STATE_FILE"); stateFile != "" {
-		if err := runStateFile(context.Background(), stateFile); err != nil {
-			log.Fatal(err)
-		}
-		return
-	}
-	if strings.TrimSpace(os.Getenv("NETLOOM_OVSDB_ENDPOINT")) != "" {
-		if err := runStateFile(context.Background(), ""); err != nil {
+	if path, ok := desiredStateRuntimePathFromEnv(); ok {
+		if err := runStateFile(context.Background(), path); err != nil {
 			log.Fatal(err)
 		}
 		return
@@ -89,6 +83,16 @@ func main() {
 		log.Fatal(err)
 	}
 	fmt.Printf("netloom-agent ready for node policy and dataplane reconciliation endpoint=%s entries=%d allow=%s deny=%s policy_allowed=%d policy_dropped=%d policy_conntrack=%d policy_established=%d policy_logged=%d rule_stats=%s rule_catalog=%s drop_events=%d policy_events=%d trace_events=%d tcx=%s\n", result.EndpointID, result.Entries, result.Allowed, result.Denied, result.PolicyStats.Allowed, result.PolicyStats.Dropped, result.PolicyStats.Conntrack, result.PolicyStats.Established, result.PolicyStats.Logged, formatRuleStats(result.RuleStats), formatRuleCatalog(result.RuleCatalog), result.DropEvents, result.PolicyEvents, result.TraceEvents, result.TCX)
+}
+
+func desiredStateRuntimePathFromEnv() (string, bool) {
+	if path := strings.TrimSpace(os.Getenv("NETLOOM_STATE_FILE")); path != "" {
+		return path, true
+	}
+	if strings.TrimSpace(os.Getenv("NETLOOM_OVSDB_ENDPOINT")) != "" {
+		return "", true
+	}
+	return "", false
 }
 
 type policyExplainOptions struct {

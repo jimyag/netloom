@@ -82,6 +82,25 @@ func TestEnsureDirAccessibleAcceptsDirectory(t *testing.T) {
 	}
 }
 
+func TestDesiredStateRuntimePathFromEnvUsesOVSDBWithoutStateFile(t *testing.T) {
+	t.Setenv("NETLOOM_OVSDB_ENDPOINT", "unix:/var/run/openvswitch/db.sock")
+
+	path, ok := desiredStateRuntimePathFromEnv()
+	if !ok || path != "" {
+		t.Fatalf("desiredStateRuntimePathFromEnv() = %q/%v, want OVSDB runtime with empty path", path, ok)
+	}
+}
+
+func TestDesiredStateRuntimePathFromEnvPrefersExplicitStateFile(t *testing.T) {
+	t.Setenv("NETLOOM_STATE_FILE", " /tmp/netloom-state.json ")
+	t.Setenv("NETLOOM_OVSDB_ENDPOINT", "unix:/var/run/openvswitch/db.sock")
+
+	path, ok := desiredStateRuntimePathFromEnv()
+	if !ok || path != "/tmp/netloom-state.json" {
+		t.Fatalf("desiredStateRuntimePathFromEnv() = %q/%v, want explicit state file", path, ok)
+	}
+}
+
 func TestReconcileIntervalParsesMilliseconds(t *testing.T) {
 	t.Setenv("NETLOOM_RECONCILE_INTERVAL_MS", "250")
 	interval, err := reconcileInterval()
