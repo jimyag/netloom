@@ -27,7 +27,7 @@ func TestDockerControllerClearsLocalnetTagWhenProviderVLANIsRemoved(t *testing.T
 	applyState := func(path, stateJSON string) string {
 		script := "cat >" + path + " <<'EOF'\n" + stateJSON + "\nEOF\n" +
 			"NETLOOM_STATE_FILE=" + path +
-			" NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock" +
+			" NETLOOM_OVN_LIBOVSDB_ENDPOINT=unix:/var/run/ovn/ovnnb_db.sock" +
 			" /netloom/bin/netloom-controller"
 		return run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", script)
 	}

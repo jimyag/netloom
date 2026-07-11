@@ -52,7 +52,7 @@ func TestDockerMultiNodeLab(t *testing.T) {
 			t.Fatalf("controller output missing %q:\n%s", expected, controllerOutput)
 		}
 	}
-	liveControllerOutput := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "-e", "NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock", "ovn-central", "/netloom/bin/netloom-controller")
+	liveControllerOutput := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "-e", "NETLOOM_OVN_LIBOVSDB_ENDPOINT=unix:/var/run/ovn/ovnnb_db.sock", "ovn-central", "/netloom/bin/netloom-controller")
 	for _, expected := range []string{"ovn_ops=", "ovn_executed="} {
 		if !strings.Contains(liveControllerOutput, expected) {
 			t.Fatalf("live controller output missing %q:\n%s", expected, liveControllerOutput)
@@ -65,7 +65,7 @@ func TestDockerMultiNodeLab(t *testing.T) {
 			t.Fatalf("state-file controller output missing %q:\n%s", expected, stateOutput)
 		}
 	}
-	liveStateScript := "cat >/tmp/netloom-state.json <<'EOF'\n" + desiredStateJSON() + "\nEOF\nNETLOOM_STATE_FILE=/tmp/netloom-state.json NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller"
+	liveStateScript := "cat >/tmp/netloom-state.json <<'EOF'\n" + desiredStateJSON() + "\nEOF\nNETLOOM_STATE_FILE=/tmp/netloom-state.json NETLOOM_OVN_LIBOVSDB_ENDPOINT=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller"
 	liveStateOutput := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", liveStateScript)
 	for _, expected := range []string{"reconciled desired state", "policy_routes=1", "nat_rules=4", "load_balancers=1", "security_groups=1"} {
 		if !strings.Contains(liveStateOutput, expected) {
@@ -144,7 +144,7 @@ func TestDockerMultiNodeLab(t *testing.T) {
 	atomicControllerWatchState := func(stateJSON string) string {
 		return "tmp=$(mktemp " + controllerWatchTmpTemplate + ") && cat >\"$tmp\" <<'EOF'\n" + stateJSON + "\nEOF\nmv \"$tmp\" " + controllerWatchPath
 	}
-	startControllerWatch := atomicControllerWatchState(desiredStateJSON()) + "\nNETLOOM_STATE_FILE=" + controllerWatchPath + " NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock NETLOOM_RECONCILE_INTERVAL_MS=500 /netloom/bin/netloom-controller >/tmp/netloom-controller-watch.log 2>&1 &"
+	startControllerWatch := atomicControllerWatchState(desiredStateJSON()) + "\nNETLOOM_STATE_FILE=" + controllerWatchPath + " NETLOOM_OVN_LIBOVSDB_ENDPOINT=unix:/var/run/ovn/ovnnb_db.sock NETLOOM_RECONCILE_INTERVAL_MS=500 /netloom/bin/netloom-controller >/tmp/netloom-controller-watch.log 2>&1 &"
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", startControllerWatch)
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "for i in $(seq 1 15); do grep -q 'reconciled desired state' /tmp/netloom-controller-watch.log 2>/dev/null && exit 0; sleep 1; done; cat /tmp/netloom-controller-watch.log; exit 1")
 	updateControllerWatch := atomicControllerWatchState(desiredStateWithUpdatedLoadBalancerJSON())

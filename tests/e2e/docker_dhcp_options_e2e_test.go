@@ -27,7 +27,7 @@ func TestDockerControllerProgramsDHCPDNSAndSearchDomains(t *testing.T) {
 	statePath := "/tmp/netloom-dhcp-options-state.json"
 	stateScript := "cat >" + statePath + " <<'EOF'\n" + desiredStateWithDHCPDNSAndSearchDomainsJSON() + "\nEOF\n" +
 		"NETLOOM_STATE_FILE=" + statePath +
-		" NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock" +
+		" NETLOOM_OVN_LIBOVSDB_ENDPOINT=unix:/var/run/ovn/ovnnb_db.sock" +
 		" /netloom/bin/netloom-controller"
 	controllerOutput := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", stateScript)
 	for _, expected := range []string{"reconciled desired state", "subnets=1", "endpoints=1", "ovn_ops=", "ovn_executed="} {

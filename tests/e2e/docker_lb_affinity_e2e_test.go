@@ -36,7 +36,7 @@ func TestDockerControllerProgramsLoadBalancerSessionAffinity(t *testing.T) {
 		"ovn-central",
 		"sh",
 		"-c",
-		"cat >"+statePath+" <<'EOF'\n"+desiredStateWithSessionAffinityJSON()+"\nEOF\nNETLOOM_STATE_FILE="+statePath+" NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller",
+		"cat >"+statePath+" <<'EOF'\n"+desiredStateWithSessionAffinityJSON()+"\nEOF\nNETLOOM_STATE_FILE="+statePath+" NETLOOM_OVN_LIBOVSDB_ENDPOINT=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller",
 	)
 	if !strings.Contains(output, "reconciled desired state") {
 		t.Fatalf("session affinity reconcile did not succeed:\n%s", output)

@@ -33,7 +33,7 @@ func TestDockerControllerReconcileIdempotent(t *testing.T) {
 	waitForOVN(t, ctx, composeFile)
 
 	applyState := func() string {
-		stateScript := "cat >/tmp/netloom-state.json <<'EOF'\n" + desiredStateJSON() + "\nEOF\nNETLOOM_STATE_FILE=/tmp/netloom-state.json NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller"
+		stateScript := "cat >/tmp/netloom-state.json <<'EOF'\n" + desiredStateJSON() + "\nEOF\nNETLOOM_STATE_FILE=/tmp/netloom-state.json NETLOOM_OVN_LIBOVSDB_ENDPOINT=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller"
 		return run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", stateScript)
 	}
 
@@ -81,7 +81,7 @@ func TestDockerControllerReplayDoesNotChangeOVNState(t *testing.T) {
 
 	statePath := "/tmp/netloom-state-replay.json"
 	prepareStateScript := "cat >" + statePath + " <<'EOF'\n" + desiredStateJSON() + "\nEOF\n"
-	applyState := "NETLOOM_STATE_FILE=" + statePath + " NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller"
+	applyState := "NETLOOM_STATE_FILE=" + statePath + " NETLOOM_OVN_LIBOVSDB_ENDPOINT=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller"
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", prepareStateScript+applyState)
 
 	endpointID := endpointExternalIDForOVN("file", "file-pod-a")
@@ -135,7 +135,7 @@ func TestDockerControllerConcurrentReconcilesAreStable(t *testing.T) {
 	waitForOVN(t, ctx, composeFile)
 
 	stateScript := "cat >/tmp/netloom-state.json <<'EOF'\n" + desiredStateJSON() + "\nEOF\n"
-	stateCommand := stateScript + "NETLOOM_STATE_FILE=/tmp/netloom-state.json NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller"
+	stateCommand := stateScript + "NETLOOM_STATE_FILE=/tmp/netloom-state.json NETLOOM_OVN_LIBOVSDB_ENDPOINT=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller"
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", stateCommand)
 
 	endpointID := endpointExternalIDForOVN("file", "file-pod-a")
@@ -158,7 +158,7 @@ func TestDockerControllerConcurrentReconcilesAreStable(t *testing.T) {
 	atomicallyRefreshState := "tmp=$(mktemp /tmp/netloom-state-concurrent-XXXXXXXXXXXX.tmp) && cp " + baseStatePath + " \"$tmp\" && mv \"$tmp\" " + reconcileStatePath
 
 	watchLog := "/tmp/netloom-controller-concurrent-watch.log"
-	watchCommand := atomicallyRefreshState + "\n" + "NETLOOM_STATE_FILE=" + reconcileStatePath + " NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock NETLOOM_RECONCILE_INTERVAL_MS=300 /netloom/bin/netloom-controller >" + watchLog + " 2>&1"
+	watchCommand := atomicallyRefreshState + "\n" + "NETLOOM_STATE_FILE=" + reconcileStatePath + " NETLOOM_OVN_LIBOVSDB_ENDPOINT=unix:/var/run/ovn/ovnnb_db.sock NETLOOM_RECONCILE_INTERVAL_MS=300 /netloom/bin/netloom-controller >" + watchLog + " 2>&1"
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", watchCommand+" &")
 	waitForControllerWatch := func(expected string) {
 		for i := 0; i < 20; i++ {
@@ -245,7 +245,7 @@ func TestDockerControllerConcurrentReconcilesAreStableAcrossVPCs(t *testing.T) {
 	atomicallyRefreshState := "tmp=$(mktemp /tmp/netloom-state-dual-concurrent-XXXXXXXXXXXX.tmp) && cp " + baseStatePath + " \"$tmp\" && mv \"$tmp\" " + reconcileStatePath
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "cp "+baseStatePath+" "+reconcileStatePath)
 	watchLog := "/tmp/netloom-controller-dual-vpc-concurrent-watch.log"
-	watchCommand := atomicallyRefreshState + "\n" + "NETLOOM_STATE_FILE=" + reconcileStatePath + " NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock NETLOOM_RECONCILE_INTERVAL_MS=300 /netloom/bin/netloom-controller >" + watchLog + " 2>&1"
+	watchCommand := atomicallyRefreshState + "\n" + "NETLOOM_STATE_FILE=" + reconcileStatePath + " NETLOOM_OVN_LIBOVSDB_ENDPOINT=unix:/var/run/ovn/ovnnb_db.sock NETLOOM_RECONCILE_INTERVAL_MS=300 /netloom/bin/netloom-controller >" + watchLog + " 2>&1"
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", watchCommand+" &")
 	waitForControllerWatch := func(expected string) {
 		for i := 0; i < 20; i++ {
@@ -350,7 +350,7 @@ func TestDockerControllerWatchRecoversFromRestart(t *testing.T) {
 	statePath := "/tmp/netloom-state-restart.json"
 	controllerPIDFile := "/tmp/netloom-controller-watch-restart.pid"
 	stateScript := "cat >" + statePath + " <<'EOF'\n" + desiredStateJSON() + "\nEOF\n"
-	stateCommand := stateScript + "NETLOOM_STATE_FILE=" + statePath + " NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller"
+	stateCommand := stateScript + "NETLOOM_STATE_FILE=" + statePath + " NETLOOM_OVN_LIBOVSDB_ENDPOINT=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller"
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", stateCommand)
 
 	endpointID := endpointExternalIDForOVN("file", "file-pod-a")
@@ -360,7 +360,7 @@ func TestDockerControllerWatchRecoversFromRestart(t *testing.T) {
 	}
 
 	watchLog := "/tmp/netloom-controller-watch-restart.log"
-	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "cat /dev/null > "+watchLog+" && "+stateScript+"\n"+"NETLOOM_STATE_FILE="+statePath+" NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock NETLOOM_RECONCILE_INTERVAL_MS=300 /netloom/bin/netloom-controller >"+watchLog+" 2>&1 &")
+	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "cat /dev/null > "+watchLog+" && "+stateScript+"\n"+"NETLOOM_STATE_FILE="+statePath+" NETLOOM_OVN_LIBOVSDB_ENDPOINT=unix:/var/run/ovn/ovnnb_db.sock NETLOOM_RECONCILE_INTERVAL_MS=300 /netloom/bin/netloom-controller >"+watchLog+" 2>&1 &")
 	waitForControllerWatch := func(expected string) {
 		for i := 0; i < 20; i++ {
 			output := runAllowFailure(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "grep -Fq '"+expected+"' "+watchLog+" && exit 0 || exit 1")
@@ -373,7 +373,7 @@ func TestDockerControllerWatchRecoversFromRestart(t *testing.T) {
 		t.Fatalf("controller watch did not emit %q in time:\n%s", expected, logOutput)
 	}
 	startControllerWatch := func() {
-		run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "cat /dev/null > "+watchLog+"; (NETLOOM_STATE_FILE="+statePath+" NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock NETLOOM_RECONCILE_INTERVAL_MS=300 /netloom/bin/netloom-controller >"+watchLog+" 2>&1 &) ; echo $! > "+controllerPIDFile)
+		run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "cat /dev/null > "+watchLog+"; (NETLOOM_STATE_FILE="+statePath+" NETLOOM_OVN_LIBOVSDB_ENDPOINT=unix:/var/run/ovn/ovnnb_db.sock NETLOOM_RECONCILE_INTERVAL_MS=300 /netloom/bin/netloom-controller >"+watchLog+" 2>&1 &) ; echo $! > "+controllerPIDFile)
 	}
 	stopControllerWatch := func() {
 		runAllowFailure(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "pid=$(cat "+controllerPIDFile+" 2>/dev/null || true); [ -n \"$pid\" ] && kill -9 \"$pid\" || true; rm -f "+controllerPIDFile)
@@ -425,7 +425,7 @@ func TestDockerControllerWatchRecoversFromOVNDBRestart(t *testing.T) {
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "cat >"+updatedStatePath+" <<'EOF'\n"+desiredStateWithUpdatedStaticRouteJSON()+"\nEOF")
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "cp", baseStatePath, statePath)
 
-	startControllerWatch := "cat /dev/null > " + controllerLogPath + "; (NETLOOM_STATE_FILE=" + statePath + " NETLOOM_RECONCILE_INTERVAL_MS=250 NETLOOM_RECONCILE_FAILURE_BACKOFF_MS=100 NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller >" + controllerLogPath + " 2>&1 &) ; echo $! > " + controllerPIDPath
+	startControllerWatch := "cat /dev/null > " + controllerLogPath + "; (NETLOOM_STATE_FILE=" + statePath + " NETLOOM_RECONCILE_INTERVAL_MS=250 NETLOOM_RECONCILE_FAILURE_BACKOFF_MS=100 NETLOOM_OVN_LIBOVSDB_ENDPOINT=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller >" + controllerLogPath + " 2>&1 &) ; echo $! > " + controllerPIDPath
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", startControllerWatch)
 	t.Cleanup(func() {
 		runAllowFailure(t, context.Background(), "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "pid=$(cat "+controllerPIDPath+" 2>/dev/null || true); [ -n \"$pid\" ] && kill -9 \"$pid\" || true; rm -f "+controllerPIDPath)
@@ -488,7 +488,7 @@ func TestDockerControllerReconcileSupportsSameEndpointIDAcrossVPCs(t *testing.T)
 
 	statePath := "/tmp/netloom-state-dual-vpc.json"
 	stateScript := "cat >" + statePath + " <<'EOF'\n" + desiredDualVPCStateJSON() + "\nEOF\n"
-	stateCommand := stateScript + "NETLOOM_STATE_FILE=" + statePath + " NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller"
+	stateCommand := stateScript + "NETLOOM_STATE_FILE=" + statePath + " NETLOOM_OVN_LIBOVSDB_ENDPOINT=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller"
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", stateCommand)
 
 	fileEndpoint := endpointExternalIDForOVN("file", "shared-pod")
@@ -531,7 +531,7 @@ func TestDockerControllerSupportsSameResourceNamesAcrossVPCs(t *testing.T) {
 
 	statePath := "/tmp/netloom-state-dual-vpc-same-name.json"
 	stateScript := "cat >" + statePath + " <<'EOF'\n" + desiredDualVPCSameNameStateJSON() + "\nEOF\n"
-	stateCommand := stateScript + "NETLOOM_STATE_FILE=" + statePath + " NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller"
+	stateCommand := stateScript + "NETLOOM_STATE_FILE=" + statePath + " NETLOOM_OVN_LIBOVSDB_ENDPOINT=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller"
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", stateCommand)
 
 	fileEndpoint := endpointExternalIDForOVN("file", "shared-pod")
@@ -639,7 +639,7 @@ func TestDockerControllerReplaySameResourceNamesAcrossVPCs(t *testing.T) {
 
 	statePath := "/tmp/netloom-state-dual-vpc-same-name-replay.json"
 	stateScript := "cat >" + statePath + " <<'EOF'\n" + desiredDualVPCSameNameStateJSON() + "\nEOF\n"
-	stateCommand := stateScript + "NETLOOM_STATE_FILE=" + statePath + " NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller"
+	stateCommand := stateScript + "NETLOOM_STATE_FILE=" + statePath + " NETLOOM_OVN_LIBOVSDB_ENDPOINT=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller"
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", stateCommand)
 
 	fileEndpoint := endpointExternalIDForOVN("file", "shared-pod")
@@ -742,7 +742,7 @@ func TestDockerControllerSameResourceNamesAcrossVPCsIncludeRoutes(t *testing.T) 
 
 	statePath := "/tmp/netloom-state-dual-vpc-same-name-routes.json"
 	stateScript := "cat >" + statePath + " <<'EOF'\n" + desiredDualVPCSameNameStateJSON() + "\nEOF\n"
-	stateCommand := stateScript + "NETLOOM_STATE_FILE=" + statePath + " NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller"
+	stateCommand := stateScript + "NETLOOM_STATE_FILE=" + statePath + " NETLOOM_OVN_LIBOVSDB_ENDPOINT=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller"
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", stateCommand)
 
 	fileRoutes := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "ovn-nbctl", "--db=unix:/var/run/ovn/ovnnb_db.sock", "lr-route-list", "nl_lr_file")
@@ -789,7 +789,7 @@ func TestDockerControllerStateReplayDetectsManagedOVNLeaks(t *testing.T) {
 
 	statePath := "/tmp/netloom-state-leak.json"
 	stateScript := "cat >" + statePath + " <<'EOF'\n" + desiredStateJSON() + "\nEOF\n"
-	stateCommand := stateScript + "NETLOOM_STATE_FILE=" + statePath + " NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller"
+	stateCommand := stateScript + "NETLOOM_STATE_FILE=" + statePath + " NETLOOM_OVN_LIBOVSDB_ENDPOINT=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller"
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", stateCommand)
 
 	beforeManagedRows := map[string]int{
@@ -916,7 +916,7 @@ func TestDockerControllerRestartRecoversManagedOVNLeakCleanup(t *testing.T) {
 
 	statePath := "/tmp/netloom-state-leak-restart.json"
 	stateWrite := "cat >" + statePath + " <<'EOF'\n" + desiredStateJSON() + "\nEOF\n"
-	stateCommand := stateWrite + "NETLOOM_STATE_FILE=" + statePath + " NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller"
+	stateCommand := stateWrite + "NETLOOM_STATE_FILE=" + statePath + " NETLOOM_OVN_LIBOVSDB_ENDPOINT=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller"
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", stateCommand)
 
 	before := map[string]int{
@@ -928,7 +928,7 @@ func TestDockerControllerRestartRecoversManagedOVNLeakCleanup(t *testing.T) {
 	controllerLog := "/tmp/netloom-controller-leak-restart.log"
 	controllerPID := "/tmp/netloom-controller-leak-restart.pid"
 	routerName := "nl_lr_file"
-	controllerRun := "cat /dev/null > " + controllerLog + "; (NETLOOM_STATE_FILE=" + statePath + " NETLOOM_RECONCILE_INTERVAL_MS=300 NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller >" + controllerLog + " 2>&1 &) ; echo $! > " + controllerPID
+	controllerRun := "cat /dev/null > " + controllerLog + "; (NETLOOM_STATE_FILE=" + statePath + " NETLOOM_RECONCILE_INTERVAL_MS=300 NETLOOM_OVN_LIBOVSDB_ENDPOINT=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller >" + controllerLog + " 2>&1 &) ; echo $! > " + controllerPID
 	startController := func() {
 		run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", controllerRun)
 	}
@@ -1026,7 +1026,7 @@ func TestDockerControllerPolicyRouteSingleHopDeltaRemovesDuplicateManagedRows(t 
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "cat >"+updatedState+" <<'EOF'\n"+desiredStateWithPolicyRouteNexthopJSON("10.245.0.252")+"\nEOF")
 
 	runPolicyRouteReconcile := func(path string) {
-		command := "NETLOOM_STATE_FILE=" + path + " NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller"
+		command := "NETLOOM_STATE_FILE=" + path + " NETLOOM_OVN_LIBOVSDB_ENDPOINT=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller"
 		output := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", command)
 		if !strings.Contains(output, "reconciled desired state") {
 			t.Fatalf("controller reconcile on %s did not succeed: %s", path, output)
@@ -1114,7 +1114,7 @@ func TestDockerControllerPolicyRouteECMPFirstReconcilePreservesCanonicalRow(t *t
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "cat >"+updatedState+" <<'EOF'\n"+desiredStateWithPolicyRouteECMPNexthopsJSON("10.245.0.252", "10.245.0.253")+"\nEOF")
 
 	runPolicyRouteReconcile := func(path string) {
-		command := "NETLOOM_STATE_FILE=" + path + " NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller"
+		command := "NETLOOM_STATE_FILE=" + path + " NETLOOM_OVN_LIBOVSDB_ENDPOINT=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller"
 		output := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", command)
 		if !strings.Contains(output, "reconciled desired state") {
 			t.Fatalf("controller reconcile on %s did not succeed: %s", path, output)
@@ -1204,7 +1204,7 @@ func TestDockerControllerStateReplayDetectsManagedOVNLeaksAcrossVPCs(t *testing.
 
 	statePath := "/tmp/netloom-state-leak-dual.json"
 	stateScript := "cat >" + statePath + " <<'EOF'\n" + desiredDualVPCStateJSON() + "\nEOF\n"
-	stateCommand := stateScript + "NETLOOM_STATE_FILE=" + statePath + " NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller"
+	stateCommand := stateScript + "NETLOOM_STATE_FILE=" + statePath + " NETLOOM_OVN_LIBOVSDB_ENDPOINT=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller"
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", stateCommand)
 
 	beforeManagedRows := map[string]map[string]int{
@@ -1290,7 +1290,7 @@ func TestDockerControllerReplayDetectsManagedOVNLeaksAcrossVPCsIdempotent(t *tes
 
 	statePath := "/tmp/netloom-state-leak-dual-replay-idempotent.json"
 	stateScript := "cat >" + statePath + " <<'EOF'\n" + desiredDualVPCStateJSON() + "\nEOF\n"
-	stateCommand := stateScript + "NETLOOM_STATE_FILE=" + statePath + " NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller"
+	stateCommand := stateScript + "NETLOOM_STATE_FILE=" + statePath + " NETLOOM_OVN_LIBOVSDB_ENDPOINT=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller"
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", stateCommand)
 
 	beforeManagedRows := map[string]map[string]int{
@@ -1370,7 +1370,7 @@ func TestDockerControllerReplayDoesNotChangeOVNStateAcrossVPCs(t *testing.T) {
 	waitForOVN(t, ctx, composeFile)
 
 	stateScript := "cat >/tmp/netloom-state-replay-dual-vpc.json <<'EOF'\n" + desiredDualVPCStateJSON() + "\nEOF\n"
-	runCommand := stateScript + "NETLOOM_STATE_FILE=/tmp/netloom-state-replay-dual-vpc.json NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller"
+	runCommand := stateScript + "NETLOOM_STATE_FILE=/tmp/netloom-state-replay-dual-vpc.json NETLOOM_OVN_LIBOVSDB_ENDPOINT=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller"
 
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", runCommand)
 
@@ -1440,7 +1440,7 @@ func TestDockerControllerReplaysRecoverOnDualVPCRestart(t *testing.T) {
 
 	controllerLogPath := "/tmp/netloom-controller-dual-vpc-watch.log"
 	controllerPIDPath := "/tmp/netloom-controller-dual-vpc-watch.pid"
-	controllerRun := "cat /dev/null > " + controllerLogPath + "; (NETLOOM_STATE_FILE=" + statePath + " NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock NETLOOM_RECONCILE_INTERVAL_MS=250 /netloom/bin/netloom-controller >" + controllerLogPath + " 2>&1 &) ; echo $! > " + controllerPIDPath
+	controllerRun := "cat /dev/null > " + controllerLogPath + "; (NETLOOM_STATE_FILE=" + statePath + " NETLOOM_OVN_LIBOVSDB_ENDPOINT=unix:/var/run/ovn/ovnnb_db.sock NETLOOM_RECONCILE_INTERVAL_MS=250 /netloom/bin/netloom-controller >" + controllerLogPath + " 2>&1 &) ; echo $! > " + controllerPIDPath
 	startControllerWatch := func() {
 		run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", controllerRun)
 	}
@@ -1566,7 +1566,7 @@ func TestDockerControllerRouteTableECMPDeltaIsIncremental(t *testing.T) {
 	writeFile(backToSingleState, desiredStateWithStaticRouteFromECMPToSingleJSON())
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "cp", baseState, controllerStatePath)
 
-	startControllerWatch := "cat /dev/null > " + controllerLogPath + "; (NETLOOM_STATE_FILE=" + controllerStatePath + " NETLOOM_RECONCILE_INTERVAL_MS=250 NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller >" + controllerLogPath + " 2>&1 &) ; echo $! > " + controllerPIDPath
+	startControllerWatch := "cat /dev/null > " + controllerLogPath + "; (NETLOOM_STATE_FILE=" + controllerStatePath + " NETLOOM_RECONCILE_INTERVAL_MS=250 NETLOOM_OVN_LIBOVSDB_ENDPOINT=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller >" + controllerLogPath + " 2>&1 &) ; echo $! > " + controllerPIDPath
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", startControllerWatch)
 	waitForControllerWatch := func(expected string) {
 		for i := 0; i < 20; i++ {
@@ -1668,7 +1668,7 @@ func TestDockerControllerRouteTableECMPDeltaSurvivesRestart(t *testing.T) {
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "cat >"+singleState+" <<'EOF'\n"+desiredStateWithStaticRouteFromECMPToSingleJSON()+"\nEOF")
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "cp "+baseState+" "+controllerStatePath)
 
-	controllerStateTemplate := "NETLOOM_STATE_FILE=" + controllerStatePath + " NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock NETLOOM_RECONCILE_INTERVAL_MS=300 /netloom/bin/netloom-controller >" + controllerLogPath + " 2>&1"
+	controllerStateTemplate := "NETLOOM_STATE_FILE=" + controllerStatePath + " NETLOOM_OVN_LIBOVSDB_ENDPOINT=unix:/var/run/ovn/ovnnb_db.sock NETLOOM_RECONCILE_INTERVAL_MS=300 /netloom/bin/netloom-controller >" + controllerLogPath + " 2>&1"
 	startWatch := func() {
 		run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "cat /dev/null > "+controllerLogPath+"; ("+controllerStateTemplate+" &) ; echo $! > "+controllerPIDPath)
 	}
@@ -1795,7 +1795,7 @@ func TestDockerControllerRouteTableECMPDeltaIsIdempotentForOneShotReconcile(t *t
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "cat >"+singleState+" <<'EOF'\n"+desiredStateWithStaticRouteFromECMPToSingleJSON()+"\nEOF")
 
 	runRouteReconcile := func(path string) {
-		command := "NETLOOM_STATE_FILE=" + path + " NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller"
+		command := "NETLOOM_STATE_FILE=" + path + " NETLOOM_OVN_LIBOVSDB_ENDPOINT=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller"
 		output := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", command)
 		if !strings.Contains(output, "reconciled desired state") {
 			t.Fatalf("controller reconcile on %s did not succeed: %s", path, output)
@@ -1934,7 +1934,7 @@ func TestDockerControllerRouteTableECMPDeltaIsOrderInsensitive(t *testing.T) {
 	)
 
 	runRouteReconcile := func(path string) {
-		command := "NETLOOM_STATE_FILE=" + path + " NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller"
+		command := "NETLOOM_STATE_FILE=" + path + " NETLOOM_OVN_LIBOVSDB_ENDPOINT=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller"
 		output := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", command)
 		if !strings.Contains(output, "reconciled desired state") {
 			t.Fatalf("controller reconcile on %s did not succeed: %s", path, output)
@@ -2026,7 +2026,7 @@ func TestDockerControllerRouteTableECMPDeltaIsOrderInsensitiveIPv6(t *testing.T)
 	run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", "cat >"+reorderedECMPState+" <<'EOF'\n"+reorderedState+"\nEOF")
 
 	runRouteReconcile := func(path string) {
-		command := "NETLOOM_STATE_FILE=" + path + " NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller"
+		command := "NETLOOM_STATE_FILE=" + path + " NETLOOM_OVN_LIBOVSDB_ENDPOINT=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller"
 		output := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", command)
 		if !strings.Contains(output, "reconciled desired state") {
 			t.Fatalf("controller reconcile on %s did not succeed: %s", path, output)
@@ -2296,7 +2296,7 @@ func TestDockerControllerReconcileIPv6VPC(t *testing.T) {
 		"ovn-central",
 		"sh",
 		"-c",
-		stateCommand+"NETLOOM_STATE_FILE="+statePath+" NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller",
+		stateCommand+"NETLOOM_STATE_FILE="+statePath+" NETLOOM_OVN_LIBOVSDB_ENDPOINT=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller",
 	)
 	if !strings.Contains(reconcileOutput, "reconciled desired state") {
 		t.Fatalf("ipv6 desired-state reconcile did not succeed:\n%s", reconcileOutput)
@@ -2374,7 +2374,7 @@ func TestDockerControllerReconcileSubnetExcludeCIDRs(t *testing.T) {
 		"ovn-central",
 		"sh",
 		"-c",
-		"cat >"+statePath+" <<'EOF'\n"+desiredStateWithExcludeCIDRsJSON()+"\nEOF\nNETLOOM_STATE_FILE="+statePath+" NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller",
+		"cat >"+statePath+" <<'EOF'\n"+desiredStateWithExcludeCIDRsJSON()+"\nEOF\nNETLOOM_STATE_FILE="+statePath+" NETLOOM_OVN_LIBOVSDB_ENDPOINT=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller",
 	)
 	if !strings.Contains(reconcileOutput, "reconciled desired state") {
 		t.Fatalf("exclude-cidr desired-state reconcile did not succeed:\n%s", reconcileOutput)
@@ -2443,7 +2443,7 @@ func TestDockerControllerReconcileDualStackVPC(t *testing.T) {
 		"ovn-central",
 		"sh",
 		"-c",
-		"cat >"+statePath+" <<'EOF'\n"+desiredStateDualStackJSON()+"\nEOF\nNETLOOM_STATE_FILE="+statePath+" NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller",
+		"cat >"+statePath+" <<'EOF'\n"+desiredStateDualStackJSON()+"\nEOF\nNETLOOM_STATE_FILE="+statePath+" NETLOOM_OVN_LIBOVSDB_ENDPOINT=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller",
 	)
 	if !strings.Contains(reconcileOutput, "reconciled desired state") {
 		t.Fatalf("dual-stack desired-state reconcile did not succeed:\n%s", reconcileOutput)
@@ -2607,7 +2607,7 @@ func TestDockerControllerToggleDualStackLoadBalancerHealthChecks(t *testing.T) {
 			"ovn-central",
 			"sh",
 			"-c",
-			"cat >"+statePath+" <<'EOF'\n"+stateJSON+"\nEOF\nNETLOOM_STATE_FILE="+statePath+" NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller",
+			"cat >"+statePath+" <<'EOF'\n"+stateJSON+"\nEOF\nNETLOOM_STATE_FILE="+statePath+" NETLOOM_OVN_LIBOVSDB_ENDPOINT=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller",
 		)
 	}
 

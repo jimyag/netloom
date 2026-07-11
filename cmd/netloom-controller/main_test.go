@@ -1021,7 +1021,6 @@ func TestNewOVNAuditReaderRejectsNBCTLBackend(t *testing.T) {
 func TestNewOVNAuditReaderRequiresEndpointForLibOVSDB(t *testing.T) {
 	t.Setenv("NETLOOM_OVN_AUDIT_BACKEND", "libovsdb")
 	t.Setenv("NETLOOM_OVN_LIBOVSDB_ENDPOINT", "")
-	t.Setenv("NETLOOM_OVN_NBCTL_DB", "")
 	_, _, err := newOVNAuditReaderFromEnv()
 	if err == nil {
 		t.Fatal("expected libovsdb audit backend without endpoint to fail")
@@ -1047,16 +1046,6 @@ func TestNewOVNTopologyRuntimeRejectsNBCTLBackend(t *testing.T) {
 func TestOVNTopologyBackendDefaultsToLibOVSDBWhenEndpointConfigured(t *testing.T) {
 	t.Setenv("NETLOOM_OVN_TOPOLOGY_BACKEND", "")
 	t.Setenv("NETLOOM_OVN_LIBOVSDB_ENDPOINT", "unix:/run/ovn/ovnnb_db.sock")
-	t.Setenv("NETLOOM_OVN_NBCTL_DB", "")
-	if got := ovnTopologyBackendFromEnv(); got != "libovsdb" {
-		t.Fatalf("topology backend = %q, want libovsdb", got)
-	}
-}
-
-func TestOVNTopologyBackendTreatsNBCTLDBAsLibOVSDBEndpoint(t *testing.T) {
-	t.Setenv("NETLOOM_OVN_TOPOLOGY_BACKEND", "")
-	t.Setenv("NETLOOM_OVN_LIBOVSDB_ENDPOINT", "")
-	t.Setenv("NETLOOM_OVN_NBCTL_DB", "unix:/run/ovn/ovnnb_db.sock")
 	if got := ovnTopologyBackendFromEnv(); got != "libovsdb" {
 		t.Fatalf("topology backend = %q, want libovsdb", got)
 	}
@@ -1065,7 +1054,6 @@ func TestOVNTopologyBackendTreatsNBCTLDBAsLibOVSDBEndpoint(t *testing.T) {
 func TestOVNTopologyBackendDefaultsToRecorderWithoutEndpoint(t *testing.T) {
 	t.Setenv("NETLOOM_OVN_TOPOLOGY_BACKEND", "")
 	t.Setenv("NETLOOM_OVN_LIBOVSDB_ENDPOINT", "")
-	t.Setenv("NETLOOM_OVN_NBCTL_DB", "")
 	if got := ovnTopologyBackendFromEnv(); got != "recorder" {
 		t.Fatalf("topology backend = %q, want recorder dry-run", got)
 	}
@@ -1082,7 +1070,6 @@ func TestOVNTopologyBackendRejectsExplicitNBCTL(t *testing.T) {
 func TestNewOVNTopologyRuntimeRequiresEndpointForLibOVSDB(t *testing.T) {
 	t.Setenv("NETLOOM_OVN_TOPOLOGY_BACKEND", "libovsdb")
 	t.Setenv("NETLOOM_OVN_LIBOVSDB_ENDPOINT", "")
-	t.Setenv("NETLOOM_OVN_NBCTL_DB", "")
 	_, err := newOVNTopologyRuntimeFromEnv()
 	if err == nil {
 		t.Fatal("expected libovsdb topology backend without endpoint to fail")
@@ -1092,7 +1079,6 @@ func TestNewOVNTopologyRuntimeRequiresEndpointForLibOVSDB(t *testing.T) {
 func TestOVNAuditBackendDefaultsToLibOVSDBWhenEndpointConfigured(t *testing.T) {
 	t.Setenv("NETLOOM_OVN_AUDIT_BACKEND", "")
 	t.Setenv("NETLOOM_OVN_LIBOVSDB_ENDPOINT", "unix:/run/ovn/ovnnb_db.sock")
-	t.Setenv("NETLOOM_OVN_NBCTL_DB", "")
 	if got := ovnAuditBackendFromEnv(); got != "libovsdb" {
 		t.Fatalf("audit backend = %q, want libovsdb", got)
 	}
@@ -1101,7 +1087,6 @@ func TestOVNAuditBackendDefaultsToLibOVSDBWhenEndpointConfigured(t *testing.T) {
 func TestOVNAuditBackendDefaultsToDisabledWithoutEndpoint(t *testing.T) {
 	t.Setenv("NETLOOM_OVN_AUDIT_BACKEND", "")
 	t.Setenv("NETLOOM_OVN_LIBOVSDB_ENDPOINT", "")
-	t.Setenv("NETLOOM_OVN_NBCTL_DB", "")
 	if got := ovnAuditBackendFromEnv(); got != "disabled" {
 		t.Fatalf("audit backend = %q, want disabled", got)
 	}

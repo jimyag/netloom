@@ -27,7 +27,7 @@ func TestDockerControllerProgramsDistributedGatewayAndFloatingIPs(t *testing.T) 
 	statePath := "/tmp/netloom-distributed-gateway-nat-state.json"
 	stateScript := "cat >" + statePath + " <<'EOF'\n" + desiredStateWithDistributedGatewayAndFloatingIPsJSON() + "\nEOF\n" +
 		"NETLOOM_STATE_FILE=" + statePath +
-		" NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock" +
+		" NETLOOM_OVN_LIBOVSDB_ENDPOINT=unix:/var/run/ovn/ovnnb_db.sock" +
 		" /netloom/bin/netloom-controller"
 	controllerOutput := run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", stateScript)
 	for _, expected := range []string{"reconciled desired state", "gateways=1", "nat_rules=1", "ovn_ops=", "ovn_executed="} {
@@ -87,7 +87,7 @@ func TestDockerControllerTransitionsDistributedGatewayAndCleansDistributedFloati
 	applyState := func(path, stateJSON string) string {
 		script := "cat >" + path + " <<'EOF'\n" + stateJSON + "\nEOF\n" +
 			"NETLOOM_STATE_FILE=" + path +
-			" NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock" +
+			" NETLOOM_OVN_LIBOVSDB_ENDPOINT=unix:/var/run/ovn/ovnnb_db.sock" +
 			" /netloom/bin/netloom-controller"
 		return run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", script)
 	}
@@ -136,7 +136,7 @@ func TestDockerControllerClearsStaleNATPortMetadata(t *testing.T) {
 	applyState := func(path, stateJSON string) string {
 		script := "cat >" + path + " <<'EOF'\n" + stateJSON + "\nEOF\n" +
 			"NETLOOM_STATE_FILE=" + path +
-			" NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock" +
+			" NETLOOM_OVN_LIBOVSDB_ENDPOINT=unix:/var/run/ovn/ovnnb_db.sock" +
 			" /netloom/bin/netloom-controller"
 		return run(t, ctx, "docker", "compose", "-f", composeFile, "exec", "-T", "ovn-central", "sh", "-c", script)
 	}

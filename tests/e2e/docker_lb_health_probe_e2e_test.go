@@ -47,7 +47,7 @@ func TestDockerControllerActiveLBHealthProbeConvergesOVNBackends(t *testing.T) {
 			"ovn-central",
 			"sh",
 			"-c",
-			"cat >"+statePath+" <<'EOF'\n"+desiredStateLBHealthProbeJSON()+"\nEOF\nNETLOOM_STATE_FILE="+statePath+" NETLOOM_LB_HEALTH_PROBE=1 NETLOOM_OVN_NBCTL_DB=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller",
+			"cat >"+statePath+" <<'EOF'\n"+desiredStateLBHealthProbeJSON()+"\nEOF\nNETLOOM_STATE_FILE="+statePath+" NETLOOM_LB_HEALTH_PROBE=1 NETLOOM_OVN_LIBOVSDB_ENDPOINT=unix:/var/run/ovn/ovnnb_db.sock /netloom/bin/netloom-controller",
 		)
 	}
 

@@ -1597,7 +1597,7 @@ func ovnAuditBackendFromEnv() string {
 func newOVNNBClientFromEnv(owner string) (libovsdbclient.Client, func(), error) {
 	endpoints := ovnLibOVSDBEndpointsFromEnv()
 	if len(endpoints) == 0 {
-		return nil, nil, fmt.Errorf("%s requires NETLOOM_OVN_LIBOVSDB_ENDPOINT or NETLOOM_OVN_NBCTL_DB", owner)
+		return nil, nil, fmt.Errorf("%s requires NETLOOM_OVN_LIBOVSDB_ENDPOINT", owner)
 	}
 	return newOVNNBClientFromEndpoints(context.Background(), owner, endpoints)
 }
@@ -1605,7 +1605,7 @@ func newOVNNBClientFromEnv(owner string) (libovsdbclient.Client, func(), error) 
 func newLibOVSDBClusterConnectorFromEnv(owner string) (*libovsdbClusterConnector, libovsdbclient.Client, func(), error) {
 	endpoints := ovnLibOVSDBEndpointsFromEnv()
 	if len(endpoints) == 0 {
-		return nil, nil, nil, fmt.Errorf("%s requires NETLOOM_OVN_LIBOVSDB_ENDPOINT or NETLOOM_OVN_NBCTL_DB", owner)
+		return nil, nil, nil, fmt.Errorf("%s requires NETLOOM_OVN_LIBOVSDB_ENDPOINT", owner)
 	}
 	cluster := newLibOVSDBClusterConnector(owner, endpoints, newOVNNBClientForEndpoint, ovnLeaderProbeFromEnv())
 	client, closeFn, err := cluster.Connect(context.Background())
@@ -1617,9 +1617,6 @@ func newLibOVSDBClusterConnectorFromEnv(owner string) (*libovsdbClusterConnector
 
 func ovnLibOVSDBEndpointsFromEnv() []string {
 	raw := strings.TrimSpace(os.Getenv("NETLOOM_OVN_LIBOVSDB_ENDPOINT"))
-	if raw == "" {
-		raw = strings.TrimSpace(os.Getenv("NETLOOM_OVN_NBCTL_DB"))
-	}
 	if raw == "" {
 		return nil
 	}
