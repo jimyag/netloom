@@ -40,6 +40,9 @@ type options struct {
 	captureIface    string
 	captureCount    uint
 	captureDuration time.Duration
+	nfqueue         int
+	nfqueueCount    uint
+	nfqueueDuration time.Duration
 }
 
 type result struct {
@@ -73,6 +76,9 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer, 
 	flags.StringVar(&opts.captureIface, "capture-iface", os.Getenv("NETLOOM_DNS_OBSERVER_CAPTURE_IFACE"), "interface name to passively capture UDP DNS responses with AF_PACKET")
 	flags.UintVar(&opts.captureCount, "capture-count", 0, "number of DNS response packets to capture before exiting; 0 means unlimited")
 	flags.DurationVar(&opts.captureDuration, "capture-duration", 0, "maximum AF_PACKET capture duration; 0 means run until context cancellation or -capture-count")
+	flags.IntVar(&opts.nfqueue, "nfqueue", -1, "netfilter NFQUEUE number to observe DNS responses from; requires build tag netloom_nfqueue")
+	flags.UintVar(&opts.nfqueueCount, "nfqueue-count", 0, "number of NFQUEUE DNS response packets to observe before exiting; 0 means unlimited")
+	flags.DurationVar(&opts.nfqueueDuration, "nfqueue-duration", 0, "maximum NFQUEUE capture duration; 0 means run until context cancellation or -nfqueue-count")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -93,8 +99,14 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer, 
 			activeInputs++
 		}
 	}
+	if opts.nfqueue >= 0 {
+		activeInputs++
+	}
 	if activeInputs > 1 {
-		return fmt.Errorf("-listen-udp, -listen-tcp, and -capture-iface are mutually exclusive")
+		return fmt.Errorf("-listen-udp, -listen-tcp, -capture-iface, and -nfqueue are mutually exclusive")
+	}
+	if opts.nfqueue < -1 {
+		return fmt.Errorf("-nfqueue must be non-negative")
 	}
 	if strings.TrimSpace(opts.listenUDP) != "" {
 		return runUDPProxy(ctx, opts, store, stdout, now)
@@ -104,6 +116,9 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer, 
 	}
 	if strings.TrimSpace(opts.captureIface) != "" {
 		return runPacketCapture(ctx, opts, store, stdout, now)
+	}
+	if opts.nfqueue >= 0 {
+		return runNFQueueCapture(ctx, opts, store, stdout, now)
 	}
 
 	observedAt, err := observedAt(opts.observedAtValue, now)
@@ -225,6 +240,35 @@ func runPacketCapture(ctx context.Context, opts options, store dnsObservationSto
 	return nil
 }
 
+func runNFQueueCapture(ctx context.Context, opts options, store dnsObservationStore, stdout io.Writer, now func() time.Time) error {
+	if opts.nfqueueDuration < 0 {
+		return fmt.Errorf("-nfqueue-duration must not be negative")
+	}
+	captureCtx := ctx
+	cancel := func() {}
+	if opts.nfqueueDuration > 0 {
+		captureCtx, cancel = context.WithTimeout(ctx, opts.nfqueueDuration)
+	}
+	defer cancel()
+	capture, err := newNFQueueDNSCapture(opts.nfqueue)
+	if err != nil {
+		return err
+	}
+	defer capture.Close()
+	fmt.Fprintf(stdout, "netloom-dns-observer capturing nfqueue=%d\n", opts.nfqueue)
+	result, err := capture.Serve(captureCtx, passiveDNSObserver{
+		store:         store,
+		mergeExisting: opts.mergeExisting,
+		defaultTTL:    uint32(opts.defaultTTL),
+		now:           now,
+	}, int(opts.nfqueueCount))
+	if err != nil && !(opts.nfqueueDuration > 0 && errorsIsContextDeadline(err)) {
+		return err
+	}
+	fmt.Fprintf(stdout, "netloom-dns-observer nfqueue packets=%d records=%d written=%d\n", result.Packets, result.Records, result.Written)
+	return nil
+}
+
 type dnsUDPProxy struct {
 	store         dnsObservationStore
 	upstream      string
@@ -266,6 +310,11 @@ func (o passiveDNSObserver) Observe(ctx context.Context, packet []byte) (int, in
 
 type dnsPacketObserver interface {
 	Observe(context.Context, []byte) (records int, written int, err error)
+}
+
+type dnsCapture interface {
+	Close() error
+	Serve(context.Context, dnsPacketObserver, int) (result, error)
 }
 
 type afPacketDNSCapture struct {
@@ -361,6 +410,20 @@ func dnsResponseFromEthernetFrame(frame []byte) ([]byte, bool) {
 		return dnsResponseFromIPv4Packet(frame[offset:])
 	case 0x86dd:
 		return dnsResponseFromIPv6Packet(frame[offset:])
+	default:
+		return nil, false
+	}
+}
+
+func dnsResponseFromIPPacket(packet []byte) ([]byte, bool) {
+	if len(packet) == 0 {
+		return nil, false
+	}
+	switch packet[0] >> 4 {
+	case 4:
+		return dnsResponseFromIPv4Packet(packet)
+	case 6:
+		return dnsResponseFromIPv6Packet(packet)
 	default:
 		return nil, false
 	}

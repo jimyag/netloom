@@ -229,6 +229,44 @@ func TestDNSResponseFromEthernetFrameExtractsIPv4UDPResponse(t *testing.T) {
 	}
 }
 
+func TestDNSResponseFromIPPacketExtractsIPv4UDPResponse(t *testing.T) {
+	packet := dnsResponse(
+		dnsQuestion("api.example.com", 1),
+		dnsAnswerPtr(12, 1, 60, []byte{203, 0, 113, 10}),
+	)
+	frame := ethernetIPv4UDPFrame(packet, 53, 53000, false)
+
+	got, ok := dnsResponseFromIPPacket(frame[14:])
+	if !ok {
+		t.Fatal("expected DNS response to be extracted from IPv4 packet")
+	}
+	if !bytes.Equal(got, packet) {
+		t.Fatalf("dns payload = %x, want %x", got, packet)
+	}
+}
+
+func TestDNSResponseFromIPPacketExtractsIPv6UDPResponse(t *testing.T) {
+	packet := dnsResponse(
+		dnsQuestion("api.example.com", 28),
+		dnsAnswerPtr(12, 28, 60, netip.MustParseAddr("2001:db8::10").AsSlice()),
+	)
+	frame := ethernetIPv6UDPFrame(packet, 53, 53000, false)
+
+	got, ok := dnsResponseFromIPPacket(frame[14:])
+	if !ok {
+		t.Fatal("expected DNS response to be extracted from IPv6 packet")
+	}
+	if !bytes.Equal(got, packet) {
+		t.Fatalf("dns payload = %x, want %x", got, packet)
+	}
+}
+
+func TestDNSResponseFromIPPacketIgnoresUnknownVersion(t *testing.T) {
+	if _, ok := dnsResponseFromIPPacket([]byte{0xf0}); ok {
+		t.Fatal("unknown IP version should not be captured")
+	}
+}
+
 func TestDNSResponseFromEthernetFrameExtractsVLANIPv6UDPResponse(t *testing.T) {
 	packet := dnsResponse(
 		dnsQuestion("api.example.com", 28),
