@@ -599,7 +599,7 @@ func (w *LibOVSDBTopologyWriter) EnsureNATRule(ctx context.Context, rule model.N
 			if i == keepIndex {
 				continue
 			}
-			deleteOps, err := w.deleteNATRule(router.UUID, &existing[i])
+			deleteOps, err := w.deleteNATRuleFromParents(&existing[i])
 			if err != nil {
 				return err
 			}

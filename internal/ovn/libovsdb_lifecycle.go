@@ -779,7 +779,7 @@ func (w *LibOVSDBTopologyWriter) repairSteadyStateNATRules(ctx context.Context, 
 			if i == keepIndex {
 				continue
 			}
-			deleteOps, err := w.deleteNATRule(router.UUID, &existing[i])
+			deleteOps, err := w.deleteNATRuleFromParents(&existing[i])
 			if err != nil {
 				return nil, err
 			}

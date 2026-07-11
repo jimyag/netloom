@@ -2452,6 +2452,116 @@ func TestLibOVSDBTopologyWriterEnsuresNATRules(t *testing.T) {
 	})
 }
 
+func TestLibOVSDBTopologyWriterKeepsReferencedDuplicateNATRule(t *testing.T) {
+	ctx := context.Background()
+	client, closeFn := newTestOVNNBClient(t)
+	defer closeFn()
+
+	if _, err := client.MonitorAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	writer := NewLibOVSDBTopologyWriter(client)
+	if err := writer.EnsureVPC(ctx, model.VPC{Name: "prod"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureVPC(ctx, model.VPC{Name: "dev"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureSubnet(ctx, model.Subnet{
+		Name:    "db",
+		VPC:     "dev",
+		CIDR:    netip.MustParsePrefix("10.20.0.0/24"),
+		Gateway: netip.MustParseAddr("10.20.0.1"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rule := model.NATRule{
+		Name:       "egress",
+		VPC:        "prod",
+		Type:       model.ActionSNAT,
+		MatchCIDR:  netip.MustParsePrefix("10.10.0.0/24"),
+		ExternalIP: netip.MustParseAddr("198.51.100.10"),
+	}
+	if err := writer.EnsureNATRule(ctx, rule); err != nil {
+		t.Fatal(err)
+	}
+
+	var prodRouters []ovnnb.LogicalRouter
+	var nats []ovnnb.NAT
+	requireEventually(t, func() bool {
+		prodRouters = nil
+		if err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("prod") }).List(ctx, &prodRouters); err != nil || len(prodRouters) != 1 || len(prodRouters[0].Nat) != 1 {
+			return false
+		}
+		nats = nil
+		err := client.WhereCache(func(row *ovnnb.NAT) bool {
+			return row.ExternalIDs["netloom_vpc"] == "prod" && row.ExternalIDs["netloom_nat"] == "egress"
+		}).List(ctx, &nats)
+		return err == nil && len(nats) == 1
+	})
+	referencedUUID := prodRouters[0].Nat[0]
+	if nats[0].UUID != referencedUUID {
+		t.Fatalf("router NAT refs = %+v NAT row = %s, want referenced row", prodRouters[0].Nat, nats[0].UUID)
+	}
+
+	duplicate := desiredNATRuleRow(rule)
+	duplicate.UUID = ovsdbNamedUUID("duplicate_nat_rule")
+	duplicate.LogicalIP = "10.99.0.0/24"
+	var devRouters []ovnnb.LogicalRouter
+	requireEventually(t, func() bool {
+		devRouters = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("dev") }).List(ctx, &devRouters)
+		return err == nil && len(devRouters) == 1
+	})
+	createOps, err := client.Create(&duplicate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attachDuplicate, err := writer.attachNATRule(&devRouters[0], duplicate.UUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	duplicateOps := append(createOps, attachDuplicate...)
+	results, err := client.Transact(ctx, duplicateOps...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, duplicateOps); err != nil {
+		t.Fatalf("attach duplicate NAT operation errors=%+v: %v", opErrors, err)
+	}
+	requireEventually(t, func() bool {
+		nats = nil
+		err := client.WhereCache(func(row *ovnnb.NAT) bool {
+			return row.ExternalIDs["netloom_vpc"] == "prod" && row.ExternalIDs["netloom_nat"] == "egress"
+		}).List(ctx, &nats)
+		return err == nil && len(nats) == 2
+	})
+
+	if err := writer.EnsureNATRule(ctx, rule); err != nil {
+		t.Fatal(err)
+	}
+	requireEventually(t, func() bool {
+		prodRouters = nil
+		if err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("prod") }).List(ctx, &prodRouters); err != nil || len(prodRouters) != 1 || len(prodRouters[0].Nat) != 1 {
+			return false
+		}
+		nats = nil
+		err := client.WhereCache(func(row *ovnnb.NAT) bool {
+			return row.ExternalIDs["netloom_vpc"] == "prod" && row.ExternalIDs["netloom_nat"] == "egress"
+		}).List(ctx, &nats)
+		if err != nil ||
+			len(nats) != 1 ||
+			nats[0].UUID != referencedUUID ||
+			prodRouters[0].Nat[0] != referencedUUID ||
+			nats[0].LogicalIP != "10.10.0.0/24" {
+			return false
+		}
+		devRouters = nil
+		err = client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("dev") }).List(ctx, &devRouters)
+		return err == nil && len(devRouters) == 1 && len(devRouters[0].Nat) == 0
+	})
+}
+
 func TestLibOVSDBTopologyWriterEnsuresLoadBalancerAndHealthChecks(t *testing.T) {
 	ctx := context.Background()
 	client, closeFn := newTestOVNNBClient(t)
