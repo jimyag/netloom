@@ -1067,6 +1067,14 @@ func TestNewOVNAuditReaderRejectsInvalidBackend(t *testing.T) {
 	}
 }
 
+func TestNewOVNAuditReaderRejectsNBCTLBackend(t *testing.T) {
+	t.Setenv("NETLOOM_OVN_AUDIT_BACKEND", "nbctl")
+	_, _, err := newOVNAuditReaderFromEnv()
+	if err == nil {
+		t.Fatal("expected nbctl audit backend to fail")
+	}
+}
+
 func TestNewOVNAuditReaderRequiresEndpointForLibOVSDB(t *testing.T) {
 	t.Setenv("NETLOOM_OVN_AUDIT_BACKEND", "libovsdb")
 	t.Setenv("NETLOOM_OVN_LIBOVSDB_ENDPOINT", "")
@@ -1085,6 +1093,14 @@ func TestNewOVNTopologyRuntimeRejectsInvalidBackend(t *testing.T) {
 	}
 }
 
+func TestNewOVNTopologyRuntimeRejectsNBCTLBackend(t *testing.T) {
+	t.Setenv("NETLOOM_OVN_TOPOLOGY_BACKEND", "nbctl")
+	_, err := newOVNTopologyRuntimeFromEnv()
+	if err == nil {
+		t.Fatal("expected nbctl topology backend to fail")
+	}
+}
+
 func TestOVNTopologyBackendDefaultsToLibOVSDBWhenEndpointConfigured(t *testing.T) {
 	t.Setenv("NETLOOM_OVN_TOPOLOGY_BACKEND", "")
 	t.Setenv("NETLOOM_OVN_LIBOVSDB_ENDPOINT", "unix:/run/ovn/ovnnb_db.sock")
@@ -1098,16 +1114,16 @@ func TestOVNTopologyBackendDefaultsToRecorderWithoutEndpoint(t *testing.T) {
 	t.Setenv("NETLOOM_OVN_TOPOLOGY_BACKEND", "")
 	t.Setenv("NETLOOM_OVN_LIBOVSDB_ENDPOINT", "")
 	t.Setenv("NETLOOM_OVN_NBCTL_DB", "")
-	if got := ovnTopologyBackendFromEnv(); got != "nbctl" {
-		t.Fatalf("topology backend = %q, want nbctl recorder", got)
+	if got := ovnTopologyBackendFromEnv(); got != "recorder" {
+		t.Fatalf("topology backend = %q, want recorder dry-run", got)
 	}
 }
 
-func TestOVNTopologyBackendAllowsExplicitNBCTL(t *testing.T) {
+func TestOVNTopologyBackendRejectsExplicitNBCTL(t *testing.T) {
 	t.Setenv("NETLOOM_OVN_TOPOLOGY_BACKEND", "nbctl")
 	t.Setenv("NETLOOM_OVN_LIBOVSDB_ENDPOINT", "unix:/run/ovn/ovnnb_db.sock")
-	if got := ovnTopologyBackendFromEnv(); got != "nbctl" {
-		t.Fatalf("topology backend = %q, want explicit nbctl", got)
+	if _, err := newOVNTopologyRuntimeFromEnv(); err == nil {
+		t.Fatal("expected explicit nbctl topology backend to fail")
 	}
 }
 
@@ -1130,11 +1146,20 @@ func TestOVNAuditBackendDefaultsToLibOVSDBWhenEndpointConfigured(t *testing.T) {
 	}
 }
 
-func TestOVNAuditBackendAllowsExplicitNBCTL(t *testing.T) {
+func TestOVNAuditBackendDefaultsToDisabledWithoutEndpoint(t *testing.T) {
+	t.Setenv("NETLOOM_OVN_AUDIT_BACKEND", "")
+	t.Setenv("NETLOOM_OVN_LIBOVSDB_ENDPOINT", "")
+	t.Setenv("NETLOOM_OVN_NBCTL_DB", "")
+	if got := ovnAuditBackendFromEnv(); got != "disabled" {
+		t.Fatalf("audit backend = %q, want disabled", got)
+	}
+}
+
+func TestOVNAuditBackendRejectsExplicitNBCTL(t *testing.T) {
 	t.Setenv("NETLOOM_OVN_AUDIT_BACKEND", "nbctl")
 	t.Setenv("NETLOOM_OVN_LIBOVSDB_ENDPOINT", "unix:/run/ovn/ovnnb_db.sock")
-	if got := ovnAuditBackendFromEnv(); got != "nbctl" {
-		t.Fatalf("audit backend = %q, want explicit nbctl", got)
+	if _, _, err := newOVNAuditReaderFromEnv(); err == nil {
+		t.Fatal("expected explicit nbctl audit backend to fail")
 	}
 }
 

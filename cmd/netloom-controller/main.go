@@ -1464,15 +1464,8 @@ func (c clusteredOVNHealthChecker) OVNClusterHealth() ovnClusterHealthSnapshot {
 
 func newOVNTopologyRuntimeFromEnv() (ovnTopologyRuntime, error) {
 	backend := ovnTopologyBackendFromEnv()
-	if backend == "nbctl" {
+	if backend == "recorder" {
 		var executor ovn.Executor = ovn.NewRecorderExecutor()
-		if db := os.Getenv("NETLOOM_OVN_NBCTL_DB"); db != "" {
-			nbctl, err := newNBCTLExecutorFromEnv(db)
-			if err != nil {
-				return ovnTopologyRuntime{}, err
-			}
-			executor = nbctl
-		}
 		ovnBackend := ovn.NewBackend(executor)
 		return ovnTopologyRuntime{
 			backend:    ovnBackend,
@@ -1483,7 +1476,7 @@ func newOVNTopologyRuntimeFromEnv() (ovnTopologyRuntime, error) {
 		}, nil
 	}
 	if backend != "libovsdb" {
-		return ovnTopologyRuntime{}, fmt.Errorf("invalid NETLOOM_OVN_TOPOLOGY_BACKEND %q", backend)
+		return ovnTopologyRuntime{}, fmt.Errorf("invalid NETLOOM_OVN_TOPOLOGY_BACKEND %q: use libovsdb or leave unset for recorder dry-run", backend)
 	}
 	cluster, client, closeFn, err := newLibOVSDBClusterConnectorFromEnv("NETLOOM_OVN_TOPOLOGY_BACKEND=libovsdb")
 	if err != nil {
@@ -1514,11 +1507,11 @@ func newOVNTopologyRuntimeFromEnv() (ovnTopologyRuntime, error) {
 
 func newOVNAuditReaderFromEnv() (ovn.ManagedOVNReader, func(), error) {
 	backend := ovnAuditBackendFromEnv()
-	if backend == "nbctl" {
+	if backend == "disabled" {
 		return nil, nil, nil
 	}
 	if backend != "libovsdb" {
-		return nil, nil, fmt.Errorf("invalid NETLOOM_OVN_AUDIT_BACKEND %q", backend)
+		return nil, nil, fmt.Errorf("invalid NETLOOM_OVN_AUDIT_BACKEND %q: use libovsdb or leave unset", backend)
 	}
 	client, closeFn, err := newOVNNBClientFromEnv("NETLOOM_OVN_AUDIT_BACKEND=libovsdb")
 	if err != nil {
@@ -1583,7 +1576,7 @@ func ovnTopologyBackendFromEnv() string {
 	if len(ovnLibOVSDBEndpointsFromEnv()) > 0 {
 		return "libovsdb"
 	}
-	return "nbctl"
+	return "recorder"
 }
 
 func ovnAuditBackendFromEnv() string {
@@ -1594,7 +1587,7 @@ func ovnAuditBackendFromEnv() string {
 	if len(ovnLibOVSDBEndpointsFromEnv()) > 0 {
 		return "libovsdb"
 	}
-	return "nbctl"
+	return "disabled"
 }
 
 func newOVNNBClientFromEnv(owner string) (libovsdbclient.Client, func(), error) {

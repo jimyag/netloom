@@ -101,15 +101,15 @@ direction using TCX multi-program anchors.
 The controller can reconcile either the built-in bootstrap state or a JSON
 desired-state file. Docker e2e tests exercise the JSON path against a live OVN
 Northbound database and verify TCX ACL behavior in privileged node containers.
-OVN programming is emitted as idempotent `ovn-nbctl` operations with
-`external_ids:netloom_owner=netloom` metadata, and the live executor batches a
-reconcile step into one `ovn-nbctl` transaction.
+Live OVN programming uses the local OVN Northbound OVSDB model and libovsdb
+transactions with `external_ids:netloom_owner=netloom` metadata. The command
+planner remains useful for dry-run and regression tests, but it is not the
+controller runtime path when an OVN endpoint is configured.
 In periodic state-file mode the controller keeps a persistent topology backend,
-compares the previous desired snapshot with the current one, and emits
-`--if-exists` delete operations for netloom-owned logical ports, NAT rules,
-routes, policies, switches, router ports, and routers that are no longer
-desired. Docker e2e verifies endpoint and SNAT deletion against the live OVN
-Northbound database.
+compares the previous desired snapshot with the current one, and deletes
+netloom-owned logical ports, NAT rules, routes, policies, switches, router
+ports, and routers that are no longer desired. Docker e2e verifies endpoint and
+SNAT deletion against the live OVN Northbound database.
 
 Service VIP handling follows OVN load-balancer behavior closely enough for
 control-plane validation. DNAT rules without port mapping are all-protocol
