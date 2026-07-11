@@ -98,14 +98,16 @@ path: IPv4-only policies attach the IPv4 program, IPv6-only policies attach the
 IPv6 program, and mixed policies attach both programs to the same interface and
 direction using TCX multi-program anchors.
 
-The controller can reconcile either the built-in bootstrap state or a JSON
-desired-state file. Docker e2e tests exercise the JSON path against a live OVN
-Northbound database and verify TCX ACL behavior in privileged node containers.
+The controller can reconcile either the built-in bootstrap state, a JSON
+desired-state file, or desired state imported into the local Open vSwitch
+database at `Open_vSwitch.external_ids:netloom_desired_state`. Docker e2e tests
+exercise the JSON path against a live OVN Northbound database and verify TCX ACL
+behavior in privileged node containers.
 Live OVN programming uses the local OVN Northbound OVSDB model and libovsdb
 transactions with `external_ids:netloom_owner=netloom` metadata. The command
 planner remains useful for dry-run and regression tests, but it is not the
 controller runtime path when an OVN endpoint is configured.
-In periodic state-file mode the controller keeps a persistent topology backend,
+In periodic reconcile mode the controller keeps a persistent topology backend,
 compares the previous desired snapshot with the current one, and deletes
 netloom-owned logical ports, NAT rules, routes, policies, switches, router
 ports, and routers that are no longer desired. Docker e2e verifies endpoint and

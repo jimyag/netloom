@@ -63,11 +63,22 @@ func main() {
 				log.Fatal(err)
 			}
 			return
+		case "desired-state-import":
+			if err := runDesiredStateImport(context.Background(), os.Args[2:], os.Stdin, os.Stdout); err != nil {
+				log.Fatal(err)
+			}
+			return
 		}
 	}
 
 	if stateFile := os.Getenv("NETLOOM_STATE_FILE"); stateFile != "" {
 		if err := runStateFile(context.Background(), stateFile); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+	if strings.TrimSpace(os.Getenv("NETLOOM_OVSDB_ENDPOINT")) != "" {
+		if err := runStateFile(context.Background(), ""); err != nil {
 			log.Fatal(err)
 		}
 		return
@@ -114,6 +125,11 @@ type routeExplainOptions struct {
 }
 
 type identityGroupsImportOptions struct {
+	inputFile string
+	ovsdb     string
+}
+
+type desiredStateImportOptions struct {
 	inputFile string
 	ovsdb     string
 }
@@ -267,9 +283,6 @@ func runPolicyExplain(args []string, stdout io.Writer) error {
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if opts.stateFile == "" {
-		return errors.New("missing -state or NETLOOM_STATE_FILE")
-	}
 	if opts.vpc == "" {
 		return errors.New("missing -vpc")
 	}
@@ -280,12 +293,7 @@ func runPolicyExplain(args []string, stdout io.Writer) error {
 		return errors.New("missing -direction")
 	}
 
-	file, err := os.Open(opts.stateFile)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	state, err := control.LoadDesiredStateJSON(file)
+	state, err := loadDesiredStateFromPathOrOVSDB(context.Background(), opts.stateFile, nil)
 	if err != nil {
 		return err
 	}
@@ -312,9 +320,6 @@ func runPolicyStatus(args []string, stdout io.Writer) error {
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if opts.stateFile == "" {
-		return errors.New("missing -state or NETLOOM_STATE_FILE")
-	}
 	if strings.TrimSpace(opts.node) == "" {
 		hostname, err := os.Hostname()
 		if err != nil {
@@ -323,12 +328,7 @@ func runPolicyStatus(args []string, stdout io.Writer) error {
 		opts.node = hostname
 	}
 
-	file, err := os.Open(opts.stateFile)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	state, err := control.LoadDesiredStateJSON(file)
+	state, err := loadDesiredStateFromPathOrOVSDB(context.Background(), opts.stateFile, nil)
 	if err != nil {
 		return err
 	}
@@ -366,15 +366,7 @@ func runRouteExplain(args []string, stdout io.Writer) error {
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if opts.stateFile == "" {
-		return errors.New("missing -state or NETLOOM_STATE_FILE")
-	}
-	file, err := os.Open(opts.stateFile)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	state, err := control.LoadDesiredStateJSON(file)
+	state, err := loadDesiredStateFromPathOrOVSDB(context.Background(), opts.stateFile, nil)
 	if err != nil {
 		return err
 	}
@@ -433,7 +425,60 @@ func runIdentityGroupsImportWithStore(ctx context.Context, opts identityGroupsIm
 	return err
 }
 
+func runDesiredStateImport(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) error {
+	var opts desiredStateImportOptions
+	flags := flag.NewFlagSet("netloom-agent desired-state-import", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	flags.StringVar(&opts.inputFile, "in", "-", "desired-state JSON path or - for stdin")
+	flags.StringVar(&opts.ovsdb, "ovsdb", os.Getenv("NETLOOM_OVSDB_ENDPOINT"), "Open_vSwitch OVSDB endpoint")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(opts.ovsdb) == "" {
+		return errors.New("missing -ovsdb or NETLOOM_OVSDB_ENDPOINT")
+	}
+	client, closeStore, err := newOpenVSwitchClient(ctx, opts.ovsdb)
+	if err != nil {
+		return err
+	}
+	defer closeStore()
+	return runDesiredStateImportWithStore(ctx, opts, stdin, stdout, linuxdatapath.NewLibOVSDBProviderSyncer(client))
+}
+
+func runDesiredStateImportWithStore(ctx context.Context, opts desiredStateImportOptions, stdin io.Reader, stdout io.Writer, store openVSwitchExternalIDStore) error {
+	if store == nil {
+		return errors.New("missing Open_vSwitch external_id store")
+	}
+	input, closeInput, err := desiredStateImportInput(opts.inputFile, stdin)
+	if err != nil {
+		return err
+	}
+	if closeInput != nil {
+		defer closeInput()
+	}
+	state, err := control.LoadDesiredStateJSON(input)
+	if err != nil {
+		return err
+	}
+	raw, err := control.MarshalDesiredStateJSON(state)
+	if err != nil {
+		return err
+	}
+	if err := store.SetOpenVSwitchExternalID(ctx, "netloom_owner", "netloom"); err != nil {
+		return err
+	}
+	if err := store.SetOpenVSwitchExternalID(ctx, control.DesiredStateOpenVSwitchExternalID, string(raw)); err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(stdout, "desired_state vpcs=%d subnets=%d endpoints=%d external_id=%s\n", len(state.VPCs), len(state.Subnets), len(state.Endpoints), control.DesiredStateOpenVSwitchExternalID)
+	return err
+}
+
 func identityGroupsImportInput(path string, stdin io.Reader) (io.Reader, func(), error) {
+	return desiredStateImportInput(path, stdin)
+}
+
+func desiredStateImportInput(path string, stdin io.Reader) (io.Reader, func(), error) {
 	path = strings.TrimSpace(path)
 	if path == "" || path == "-" {
 		if stdin == nil {
@@ -446,6 +491,41 @@ func identityGroupsImportInput(path string, stdin io.Reader) (io.Reader, func(),
 		return nil, nil, err
 	}
 	return file, func() { _ = file.Close() }, nil
+}
+
+func loadDesiredStateFromPathOrOVSDB(ctx context.Context, path string, store openVSwitchExternalIDStore) (control.DesiredState, error) {
+	path = strings.TrimSpace(path)
+	if path != "" {
+		file, err := os.Open(path)
+		if err != nil {
+			return control.DesiredState{}, err
+		}
+		defer file.Close()
+		return control.LoadDesiredStateJSON(file)
+	}
+	if store == nil {
+		envStore, closeStore, err := identityGroupObservationStoreFromEnv(ctx)
+		if err != nil {
+			return control.DesiredState{}, err
+		}
+		defer closeStore()
+		store = envStore
+	}
+	if store == nil {
+		return control.DesiredState{}, errors.New("missing -state, NETLOOM_STATE_FILE, or NETLOOM_OVSDB_ENDPOINT with Open_vSwitch desired state")
+	}
+	raw, ok, err := store.OpenVSwitchExternalID(ctx, control.DesiredStateOpenVSwitchExternalID)
+	if err != nil {
+		return control.DesiredState{}, err
+	}
+	if !ok || strings.TrimSpace(raw) == "" {
+		return control.DesiredState{}, fmt.Errorf("missing Open_vSwitch external_ids:%s", control.DesiredStateOpenVSwitchExternalID)
+	}
+	state, err := control.LoadDesiredStateJSON(strings.NewReader(raw))
+	if err != nil {
+		return control.DesiredState{}, fmt.Errorf("decode Open_vSwitch external_ids:%s: %w", control.DesiredStateOpenVSwitchExternalID, err)
+	}
+	return state, nil
 }
 
 func filterPolicyEndpointStatuses(statuses []dataplane.PolicyEndpointStatus, endpoint string, endpoints []model.Endpoint) []dataplane.PolicyEndpointStatus {
@@ -859,18 +939,6 @@ func runStateFile(ctx context.Context, path string) error {
 
 func reconcileStateFile(ctx context.Context, path, node, storeName string, reconciler *agent.Reconciler, metrics *agentMetrics, identityGroupFeedCache *control.IdentityGroupObservationCache) error {
 	start := time.Now()
-	file, err := os.Open(path)
-	if err != nil {
-		observeAgentReconcileFailure(metrics, agent.ReconcileResult{Node: node}, storeName, err, time.Since(start))
-		return err
-	}
-	defer file.Close()
-
-	state, err := control.LoadDesiredStateJSON(file)
-	if err != nil {
-		observeAgentReconcileFailure(metrics, agent.ReconcileResult{Node: node}, storeName, err, time.Since(start))
-		return err
-	}
 	linuxOptions, rolloutStateStore, dnsObservationStore, identityGroupStore, closeLinuxOptions, err := linuxDatapathOptionsWithOVSDBSyncer(ctx)
 	if err != nil {
 		duration := time.Since(start)
@@ -880,6 +948,12 @@ func reconcileStateFile(ctx context.Context, path, node, storeName string, recon
 		return err
 	}
 	defer closeLinuxOptions()
+
+	state, err := loadDesiredStateFromPathOrOVSDB(ctx, path, identityGroupStore)
+	if err != nil {
+		observeAgentReconcileFailure(metrics, agent.ReconcileResult{Node: node}, storeName, err, time.Since(start))
+		return err
+	}
 	state, err = withRuntimeObservationsAtContextCacheStore(ctx, state, time.Now().UTC(), identityGroupFeedCache, dnsObservationStore, identityGroupStore)
 	if err != nil {
 		observeAgentReconcileFailure(metrics, agent.ReconcileResult{Node: node}, storeName, err, time.Since(start))
@@ -953,17 +1027,7 @@ func reconcileStateFileOnce(ctx context.Context, path, node, storeName string, s
 
 func reconcileStateFileOnceWithRuntimeStores(ctx context.Context, path, node, storeName string, store agent.PolicyStore, hold time.Duration, metrics *agentMetrics, identityGroupFeedCache *control.IdentityGroupObservationCache, linuxOptions *linuxdatapath.Options, rolloutStateStore policyRolloutStateStore, dnsObservationStore dnsObservationStore, identityGroupStore openVSwitchExternalIDStore) error {
 	start := time.Now()
-	file, err := os.Open(path)
-	if err != nil {
-		result := agent.ReconcileResult{Node: node}
-		duration := time.Since(start)
-		syncAgentOVSDBStatus(ctx, identityGroupStore, result, storeName, err, duration)
-		observeAgentReconcileFailure(metrics, result, storeName, err, duration)
-		return err
-	}
-	defer file.Close()
-
-	state, err := control.LoadDesiredStateJSON(file)
+	state, err := loadDesiredStateFromPathOrOVSDB(ctx, path, identityGroupStore)
 	if err != nil {
 		result := agent.ReconcileResult{Node: node}
 		duration := time.Since(start)

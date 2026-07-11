@@ -7,6 +7,8 @@ import (
 	"io"
 )
 
+const DesiredStateOpenVSwitchExternalID = "netloom_desired_state"
+
 func LoadDesiredStateJSON(r io.Reader) (DesiredState, error) {
 	var state DesiredState
 	decoder := json.NewDecoder(r)
@@ -19,4 +21,8 @@ func LoadDesiredStateJSON(r io.Reader) (DesiredState, error) {
 		return DesiredState{}, fmt.Errorf("decode desired state: multiple JSON documents")
 	}
 	return state, nil
+}
+
+func MarshalDesiredStateJSON(state DesiredState) ([]byte, error) {
+	return json.Marshal(state)
 }

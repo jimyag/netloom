@@ -59,6 +59,32 @@ func TestControllerWithIdentityGroupObservationsMergesRuntimeGroups(t *testing.T
 	}
 }
 
+func TestControllerLoadsDesiredStateFromOpenVSwitchExternalID(t *testing.T) {
+	raw, err := control.MarshalDesiredStateJSON(control.DesiredState{
+		VPCs: []model.VPC{{Name: "prod"}},
+		Subnets: []model.Subnet{{
+			Name:    "apps",
+			VPC:     "prod",
+			CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway: netip.MustParseAddr("10.10.0.1"),
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := fakeOpenVSwitchExternalIDReader{values: map[string]string{
+		control.DesiredStateOpenVSwitchExternalID: string(raw),
+	}}
+
+	state, err := loadDesiredStateFromPathOrOVSDB(t.Context(), "", store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.VPCs) != 1 || state.VPCs[0].Name != "prod" || len(state.Subnets) != 1 || state.Subnets[0].Name != "apps" {
+		t.Fatalf("state = %+v, want OVSDB desired state", state)
+	}
+}
+
 func TestControllerWithIdentityGroupObservationsMergesRemoteFeed(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "Bearer feed-token" {

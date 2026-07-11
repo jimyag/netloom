@@ -36,6 +36,12 @@ func main() {
 		}
 		return
 	}
+	if strings.TrimSpace(os.Getenv("NETLOOM_OVSDB_ENDPOINT")) != "" {
+		if err := runStateFile(ctx, ""); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 
 	ovnRuntime, err := newOVNTopologyRuntimeFromEnv()
 	if err != nil {
@@ -96,6 +102,8 @@ type stateFileReconciler struct {
 	auditCloser            func()
 	ovsStatus              ovsdbControlStatusWriter
 	ovsStatusClose         func()
+	ovsState               openVSwitchExternalIDReader
+	ovsStateClose          func()
 	metrics                *controllerMetrics
 	identityGroupFeedCache *control.IdentityGroupObservationCache
 }
@@ -277,6 +285,19 @@ func newStateFileReconciler(ctx context.Context) (*stateFileReconciler, error) {
 		}
 		return nil, err
 	}
+	ovsState, ovsStateClose, err := identityGroupObservationStoreFromEnv(ctx)
+	if err != nil {
+		if ovsStatusClose != nil {
+			ovsStatusClose()
+		}
+		if auditCloser != nil {
+			auditCloser()
+		}
+		if ovnRuntime.close != nil {
+			ovnRuntime.close()
+		}
+		return nil, err
+	}
 	return &stateFileReconciler{
 		memory:                 memory,
 		executor:               ovnRuntime.executor,
@@ -291,6 +312,8 @@ func newStateFileReconciler(ctx context.Context) (*stateFileReconciler, error) {
 		auditCloser:            auditCloser,
 		ovsStatus:              ovsStatus,
 		ovsStatusClose:         ovsStatusClose,
+		ovsState:               ovsState,
+		ovsStateClose:          ovsStateClose,
 		identityGroupFeedCache: &control.IdentityGroupObservationCache{},
 	}, nil
 }
@@ -298,6 +321,10 @@ func newStateFileReconciler(ctx context.Context) (*stateFileReconciler, error) {
 func (r *stateFileReconciler) Close() {
 	if r == nil {
 		return
+	}
+	if r.ovsStateClose != nil {
+		r.ovsStateClose()
+		r.ovsStateClose = nil
 	}
 	if r.ovsStatusClose != nil {
 		r.ovsStatusClose()
@@ -317,6 +344,7 @@ func (r *stateFileReconciler) reconcile(ctx context.Context, path string) error 
 	start := time.Now()
 	ovnHealth := r.probeOVNHealth(ctx)
 	var state control.DesiredState
+	var err error
 	if ovnHealth.Snapshot.Status == "error" {
 		reconcileErr := fmt.Errorf("ovn health check: %w", ovnHealth.err)
 		duration := time.Since(start)
@@ -324,16 +352,7 @@ func (r *stateFileReconciler) reconcile(ctx context.Context, path string) error 
 		r.observeReconcileFailure("ovn_health", state, control.LoadBalancerHealthSummary{}, ovnHealth.Snapshot, 0, 0, reconcileErr, duration)
 		return reconcileErr
 	}
-	file, err := os.Open(path)
-	if err != nil {
-		duration := time.Since(start)
-		printControllerReconcileFailure("load_state", state, control.LoadBalancerHealthSummary{}, ovnHealth.Snapshot, 0, 0, err, duration)
-		r.observeReconcileFailure("load_state", state, control.LoadBalancerHealthSummary{}, ovnHealth.Snapshot, 0, 0, err, duration)
-		return err
-	}
-	defer file.Close()
-
-	state, err = control.LoadDesiredStateJSON(file)
+	state, err = loadDesiredStateFromPathOrOVSDB(ctx, path, r.ovsState)
 	if err != nil {
 		duration := time.Since(start)
 		printControllerReconcileFailure("load_state", state, control.LoadBalancerHealthSummary{}, ovnHealth.Snapshot, 0, 0, err, duration)
@@ -1312,6 +1331,41 @@ func loadIdentityGroupObservationsFromOpenVSwitchExternalID(ctx context.Context,
 		return nil, fmt.Errorf("decode Open_vSwitch external_ids:%s: %w", control.IdentityGroupObservationsOpenVSwitchExternalID, err)
 	}
 	return groups, nil
+}
+
+func loadDesiredStateFromPathOrOVSDB(ctx context.Context, path string, store openVSwitchExternalIDReader) (control.DesiredState, error) {
+	path = strings.TrimSpace(path)
+	if path != "" {
+		file, err := os.Open(path)
+		if err != nil {
+			return control.DesiredState{}, err
+		}
+		defer file.Close()
+		return control.LoadDesiredStateJSON(file)
+	}
+	if store == nil {
+		envStore, closeStore, err := identityGroupObservationStoreFromEnv(ctx)
+		if err != nil {
+			return control.DesiredState{}, err
+		}
+		defer closeStore()
+		store = envStore
+	}
+	if store == nil {
+		return control.DesiredState{}, errors.New("missing NETLOOM_STATE_FILE or NETLOOM_OVSDB_ENDPOINT with Open_vSwitch desired state")
+	}
+	raw, ok, err := store.OpenVSwitchExternalID(ctx, control.DesiredStateOpenVSwitchExternalID)
+	if err != nil {
+		return control.DesiredState{}, err
+	}
+	if !ok || strings.TrimSpace(raw) == "" {
+		return control.DesiredState{}, fmt.Errorf("missing Open_vSwitch external_ids:%s", control.DesiredStateOpenVSwitchExternalID)
+	}
+	state, err := control.LoadDesiredStateJSON(strings.NewReader(raw))
+	if err != nil {
+		return control.DesiredState{}, fmt.Errorf("decode Open_vSwitch external_ids:%s: %w", control.DesiredStateOpenVSwitchExternalID, err)
+	}
+	return state, nil
 }
 
 func identityGroupFeedTimeout() time.Duration {

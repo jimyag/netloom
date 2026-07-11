@@ -346,6 +346,108 @@ func TestRunIdentityGroupsImportWritesRealOpenVSwitchOVSDB(t *testing.T) {
 	}
 }
 
+func TestRunDesiredStateImportWithStoreWritesOpenVSwitchExternalID(t *testing.T) {
+	store := &fakeOpenVSwitchExternalIDStore{}
+	var stdout bytes.Buffer
+	err := runDesiredStateImportWithStore(t.Context(), desiredStateImportOptions{inputFile: "-"}, strings.NewReader(`{
+		"vpcs": [{"name": "prod"}],
+		"subnets": [{"name": "apps", "vpc": "prod", "cidr": "10.10.0.0/24", "gateway": "10.10.0.1"}],
+		"endpoints": [{"id": "pod-a", "vpc": "prod", "subnet": "apps", "ip": "10.10.0.10", "node": "node-a"}],
+		"route_tables": [],
+		"policy_routes": [],
+		"gateways": [],
+		"nat_rules": [],
+		"load_balancers": [],
+		"security_groups": []
+	}`), &stdout, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := stdout.String(); !strings.Contains(got, "desired_state vpcs=1 subnets=1 endpoints=1") || !strings.Contains(got, control.DesiredStateOpenVSwitchExternalID) {
+		t.Fatalf("stdout = %q, want import summary", got)
+	}
+	if owner := store.values["netloom_owner"]; owner != "netloom" {
+		t.Fatalf("netloom_owner = %q, want netloom", owner)
+	}
+	raw, ok := store.values[control.DesiredStateOpenVSwitchExternalID]
+	if !ok {
+		t.Fatalf("missing %s external_id", control.DesiredStateOpenVSwitchExternalID)
+	}
+	state, err := control.LoadDesiredStateJSON(strings.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.VPCs) != 1 || state.VPCs[0].Name != "prod" || len(state.Endpoints) != 1 || state.Endpoints[0].ID != "pod-a" {
+		t.Fatalf("state = %+v, want imported prod/pod-a state", state)
+	}
+}
+
+func TestRunDesiredStateImportWritesRealOpenVSwitchOVSDB(t *testing.T) {
+	endpoint, client, cleanup := newTestAgentVSwitchOVSDB(t)
+	defer cleanup()
+	insertAgentVSwitchRows(t, t.Context(), client, &vswitch.OpenvSwitch{ExternalIDs: map[string]string{
+		"ovn-bridge-mappings": "physnet-a:br-provider",
+	}})
+	var stdout bytes.Buffer
+	err := runDesiredStateImport(t.Context(), []string{"-ovsdb", endpoint}, strings.NewReader(`{
+		"vpcs": [{"name": "prod"}],
+		"subnets": [],
+		"endpoints": [],
+		"route_tables": [],
+		"policy_routes": [],
+		"gateways": [],
+		"nat_rules": [],
+		"load_balancers": [],
+		"security_groups": []
+	}`), &stdout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := stdout.String(); !strings.Contains(got, "desired_state vpcs=1") || !strings.Contains(got, control.DesiredStateOpenVSwitchExternalID) {
+		t.Fatalf("stdout = %q, want import summary", got)
+	}
+	root := singleAgentVSwitchRoot(t, t.Context(), client)
+	if got := root.ExternalIDs["ovn-bridge-mappings"]; got != "physnet-a:br-provider" {
+		t.Fatalf("ovn-bridge-mappings = %q, want preserved existing external_id", got)
+	}
+	raw := root.ExternalIDs[control.DesiredStateOpenVSwitchExternalID]
+	if raw == "" {
+		t.Fatalf("root external IDs = %+v, want desired state", root.ExternalIDs)
+	}
+	state, err := control.LoadDesiredStateJSON(strings.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.VPCs) != 1 || state.VPCs[0].Name != "prod" {
+		t.Fatalf("state = %+v, want imported prod VPC", state)
+	}
+}
+
+func TestLoadDesiredStateFromOpenVSwitchExternalIDStore(t *testing.T) {
+	raw, err := control.MarshalDesiredStateJSON(control.DesiredState{
+		VPCs: []model.VPC{{Name: "prod"}},
+		Endpoints: []model.Endpoint{{
+			ID:   "pod-a",
+			VPC:  "prod",
+			Node: "node-a",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &fakeOpenVSwitchExternalIDStore{values: map[string]string{
+		control.DesiredStateOpenVSwitchExternalID: string(raw),
+	}}
+
+	state, err := loadDesiredStateFromPathOrOVSDB(t.Context(), "", store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.VPCs) != 1 || state.VPCs[0].Name != "prod" || len(state.Endpoints) != 1 || state.Endpoints[0].ID != "pod-a" {
+		t.Fatalf("state = %+v, want OVSDB desired state", state)
+	}
+}
+
 func TestRunIdentityGroupsImportWithStoreRejectsPatchOnlyFeed(t *testing.T) {
 	store := &fakeOpenVSwitchExternalIDStore{}
 	var stdout bytes.Buffer
