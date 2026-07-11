@@ -8,7 +8,6 @@ import (
 	"net"
 	"net/netip"
 	"os"
-	"os/exec"
 	"runtime"
 	"sort"
 	"strconv"
@@ -553,46 +552,13 @@ func cleanupStaleRemoteRoutes(root *netlink.Handle, desired map[string]struct{},
 }
 
 func executeProviderOVSDBSync(ctx context.Context, options Options, state control.DesiredState, specs []providerNetworkLinkSpec, cleanup bool) error {
-	if options.ProviderOVSDBSyncer != nil {
-		if err := options.ProviderOVSDBSyncer.SyncProviderOVSDB(ctx, desiredProviderOVSDBRowsForIdentityGroups(specs, state.IdentityGroups, state.Endpoints), cleanup); err != nil {
-			return err
-		}
-		return executeProviderQueueFlows(ctx, options, state, specs, cleanup)
+	if options.ProviderOVSDBSyncer == nil {
+		return errors.New("provider OVSDB sync requires libovsdb syncer")
 	}
-	if err := executeProviderOVSDBMappings(ctx, options, specs); err != nil {
+	if err := options.ProviderOVSDBSyncer.SyncProviderOVSDB(ctx, desiredProviderOVSDBRowsForIdentityGroups(specs, state.IdentityGroups, state.Endpoints), cleanup); err != nil {
 		return err
 	}
-	if err := executeProviderQueueFlows(ctx, options, state, specs, cleanup); err != nil {
-		return err
-	}
-	if cleanup {
-		return executeProviderOVSDBCleanup(ctx, options, specs)
-	}
-	return nil
-}
-
-func executeProviderOVSDBMappings(ctx context.Context, options Options, specs []providerNetworkLinkSpec) error {
-	executor := options.Executor
-	if executor == nil {
-		executor = CommandExecutor{}
-	}
-	for _, op := range planProviderOVSDBMappings(specs) {
-		if err := executor.Execute(ctx, op); err != nil {
-			return fmt.Errorf("sync provider OVSDB mapping: %w", err)
-		}
-	}
-	return nil
-}
-
-func executeProviderOVSDBCleanup(ctx context.Context, options Options, specs []providerNetworkLinkSpec) error {
-	executor := options.Executor
-	if executor == nil {
-		executor = CommandExecutor{}
-	}
-	if err := executor.Execute(ctx, planProviderOVSDBCleanup(specs)); err != nil {
-		return fmt.Errorf("cleanup provider OVSDB mapping: %w", err)
-	}
-	return nil
+	return executeProviderQueueFlows(ctx, options, state, specs, cleanup)
 }
 
 func executeProviderQueueFlows(ctx context.Context, options Options, state control.DesiredState, specs []providerNetworkLinkSpec, cleanup bool) error {
@@ -631,158 +597,7 @@ func providerOVSDBStatuses(ctx context.Context, options Options, specs []provide
 	if options.ProviderOVSDBReader != nil {
 		return options.ProviderOVSDBReader.ReadProviderOVSDBStatus(ctx, desiredProviderOVSDBRows(specs))
 	}
-	return readProviderOVSDBStatuses(ctx, specs), nil
-}
-
-func readProviderOVSDBStatuses(ctx context.Context, specs []providerNetworkLinkSpec) []ProviderOVSDBStatus {
-	statuses := make([]ProviderOVSDBStatus, 0, len(specs))
-	mappings, mappingErr := ovsVSCTLRead(ctx, "get", "Open_vSwitch", ".", "external_ids:ovn-bridge-mappings")
-	for _, spec := range specs {
-		bridge := providerNetworkBridgeName(spec.ProviderNetwork)
-		status := ProviderOVSDBStatus{
-			ProviderNetwork: spec.ProviderNetwork,
-			Bridge:          bridge,
-			LinkName:        spec.Name,
-			ParentDevice:    spec.ParentDevice,
-			VLAN:            spec.VLAN,
-			BridgeState:     "up",
-			MappingState:    "up",
-			PortState:       "up",
-			InterfaceState:  "up",
-			QoSState:        "up",
-			QueueState:      "up",
-		}
-		if err := ovsVSCTLRun(ctx, "br-exists", bridge); err != nil {
-			status.BridgeState = "missing"
-		}
-		if mappingErr != nil || !ovsBridgeMappingsContain(mappings, spec.ProviderNetwork, bridge) {
-			status.MappingState = "missing"
-		}
-		currentBridge, err := ovsVSCTLRead(ctx, "port-to-br", spec.Name)
-		if err != nil {
-			status.PortState = "missing"
-		} else if strings.TrimSpace(currentBridge) != bridge {
-			status.PortState = "bridge-mismatch"
-		} else {
-			status.PortState = providerOVSDBPortState(ctx, spec)
-		}
-		if status.InterfaceState == "up" {
-			status.InterfaceState = providerOVSDBInterfaceState(ctx, spec)
-		}
-		status.QoSState, status.QueueState = providerOVSDBQoSState(ctx, spec)
-		statuses = append(statuses, status)
-	}
-	return statuses
-}
-
-func providerOVSDBPortState(ctx context.Context, spec providerNetworkLinkSpec) string {
-	for key, want := range providerOVSDBLinkExternalIDs(spec) {
-		got, err := ovsVSCTLRead(ctx, "get", "port", spec.Name, "external_ids:"+key)
-		if err != nil {
-			return "missing"
-		}
-		if ovsDBValue(got) != want {
-			return "external-ids-mismatch"
-		}
-	}
-	return "up"
-}
-
-func providerOVSDBInterfaceState(ctx context.Context, spec providerNetworkLinkSpec) string {
-	for key, want := range providerOVSDBLinkExternalIDs(spec) {
-		got, err := ovsVSCTLRead(ctx, "get", "interface", spec.Name, "external_ids:"+key)
-		if err != nil {
-			return "missing"
-		}
-		if ovsDBValue(got) != want {
-			return "external-ids-mismatch"
-		}
-	}
-	return "up"
-}
-
-func providerOVSDBQoSState(ctx context.Context, spec providerNetworkLinkSpec) (string, string) {
-	desiredQoS := providerOVSDBQoSExternalIDs(spec)
-	hasDesiredQoS := spec.QoS.EgressRateBPS != 0 || spec.QoS.EgressBurstBPS != 0 || len(spec.TenantQueues) > 0
-	qosUUIDRaw, err := ovsVSCTLRead(ctx, "get", "port", spec.Name, "qos")
-	qosUUID := ovsDBValue(qosUUIDRaw)
-	if !hasDesiredQoS {
-		if err != nil || qosUUID == "" || qosUUID == "[]" {
-			return "up", "up"
-		}
-		owner, ownerErr := ovsVSCTLRead(ctx, "get", "qos", qosUUID, "external_ids:netloom_owner")
-		if ownerErr == nil && ovsDBValue(owner) == "netloom" {
-			return "unexpected", "up"
-		}
-		return "up", "up"
-	}
-	if err != nil || qosUUID == "" || qosUUID == "[]" {
-		return "missing", providerOVSDBDesiredQueueState(ctx, spec, "")
-	}
-	if got, err := ovsVSCTLRead(ctx, "get", "qos", qosUUID, "type"); err != nil || ovsDBValue(got) != "linux-htb" {
-		return "mismatch", providerOVSDBDesiredQueueState(ctx, spec, qosUUID)
-	}
-	for key, want := range desiredQoS {
-		got, err := ovsVSCTLRead(ctx, "get", "qos", qosUUID, "external_ids:"+key)
-		if err != nil {
-			return "mismatch", providerOVSDBDesiredQueueState(ctx, spec, qosUUID)
-		}
-		if ovsDBValue(got) != want {
-			return "mismatch", providerOVSDBDesiredQueueState(ctx, spec, qosUUID)
-		}
-	}
-	for key, want := range providerOVSDBQoSOtherConfig(spec) {
-		got, err := ovsVSCTLRead(ctx, "get", "qos", qosUUID, "other_config:"+key)
-		if err != nil {
-			return "mismatch", providerOVSDBDesiredQueueState(ctx, spec, qosUUID)
-		}
-		if ovsDBValue(got) != want {
-			return "mismatch", providerOVSDBDesiredQueueState(ctx, spec, qosUUID)
-		}
-	}
-	return "up", providerOVSDBDesiredQueueState(ctx, spec, qosUUID)
-}
-
-func providerOVSDBDesiredQueueState(ctx context.Context, spec providerNetworkLinkSpec, qosUUID string) string {
-	if len(spec.TenantQueues) == 0 {
-		return "up"
-	}
-	if qosUUID == "" {
-		return "missing"
-	}
-	desiredQueueIDs := make(map[string]struct{}, len(spec.TenantQueues))
-	for _, policy := range spec.TenantQueues {
-		desiredQueueIDs[strconv.Itoa(policy.QueueID)] = struct{}{}
-	}
-	queuesRaw, err := ovsVSCTLRead(ctx, "get", "qos", qosUUID, "queues")
-	if err != nil {
-		return "mismatch"
-	}
-	for queueID := range ovsDBMapKeys(queuesRaw) {
-		if _, ok := desiredQueueIDs[queueID]; !ok {
-			return "mismatch"
-		}
-	}
-	for _, policy := range spec.TenantQueues {
-		queueUUIDRaw, err := ovsVSCTLRead(ctx, "get", "qos", qosUUID, "queues:"+strconv.Itoa(policy.QueueID))
-		queueUUID := ovsDBValue(queueUUIDRaw)
-		if err != nil || queueUUID == "" || queueUUID == "[]" {
-			return "missing"
-		}
-		for key, want := range providerOVSDBQueueExternalIDs(spec, policy) {
-			got, err := ovsVSCTLRead(ctx, "get", "queue", queueUUID, "external_ids:"+key)
-			if err != nil || ovsDBValue(got) != want {
-				return "mismatch"
-			}
-		}
-		for key, want := range providerOVSDBQueueOtherConfig(policy) {
-			got, err := ovsVSCTLRead(ctx, "get", "queue", queueUUID, "other_config:"+key)
-			if err != nil || ovsDBValue(got) != want {
-				return "mismatch"
-			}
-		}
-	}
-	return "up"
+	return nil, nil
 }
 
 func providerOVSDBLinkExternalIDs(spec providerNetworkLinkSpec) map[string]string {
@@ -818,38 +633,6 @@ func ovsDBValue(raw string) string {
 	value := strings.TrimSpace(raw)
 	value = strings.Trim(value, `"`)
 	return value
-}
-
-func ovsDBMapKeys(raw string) map[string]struct{} {
-	value := strings.TrimSpace(ovsDBValue(raw))
-	value = strings.Trim(value, "{}[] ")
-	out := make(map[string]struct{})
-	if value == "" {
-		return out
-	}
-	for _, item := range strings.Split(value, ",") {
-		key, _, ok := strings.Cut(strings.TrimSpace(item), "=")
-		if !ok {
-			continue
-		}
-		key = strings.Trim(strings.TrimSpace(key), `"`)
-		if key != "" {
-			out[key] = struct{}{}
-		}
-	}
-	return out
-}
-
-func ovsVSCTLRun(ctx context.Context, args ...string) error {
-	return exec.CommandContext(ctx, "ovs-vsctl", args...).Run()
-}
-
-func ovsVSCTLRead(ctx context.Context, args ...string) (string, error) {
-	output, err := exec.CommandContext(ctx, "ovs-vsctl", args...).CombinedOutput()
-	if err != nil {
-		return "", err
-	}
-	return string(output), nil
 }
 
 func cleanupStaleManagedAddrs(handle *netlink.Handle, link netlink.Link, desired map[string]struct{}) error {
