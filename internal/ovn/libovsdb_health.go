@@ -74,21 +74,40 @@ func (w *LibOVSDBTopologyWriter) HealthCheck(ctx context.Context) (time.Duration
 		return time.Since(start), err
 	}
 	if !w.client.Connected() {
-		if err := w.reconnectHealthClient(ctx, start); err != nil {
+		if err := w.reconnectHealthClient(ctx, start, false); err != nil {
 			return time.Since(start), err
 		}
 	}
-	if err := w.client.Echo(ctx); err != nil {
-		return time.Since(start), fmt.Errorf("OVN northbound libovsdb echo: %w", err)
+	if err := w.echoHealthClient(ctx); err != nil {
+		if reconnectErr := w.reconnectHealthClient(ctx, start, true); reconnectErr != nil {
+			return time.Since(start), fmt.Errorf("OVN northbound libovsdb echo: %w; reconnect failed: %w", err, reconnectErr)
+		}
+		if retryErr := w.echoHealthClient(ctx); retryErr != nil {
+			return time.Since(start), fmt.Errorf("OVN northbound libovsdb echo after reconnect: %w", retryErr)
+		}
 	}
 	w.recordHealthReconnectSuccess()
 	return time.Since(start), nil
 }
 
-func (w *LibOVSDBTopologyWriter) reconnectHealthClient(ctx context.Context, start time.Time) error {
+func (w *LibOVSDBTopologyWriter) echoHealthClient(ctx context.Context) error {
+	w.mu.Lock()
+	echo := w.healthEcho
+	client := w.client
+	w.mu.Unlock()
+	if client == nil {
+		return fmt.Errorf("libovsdb topology writer has no client")
+	}
+	if echo != nil {
+		return echo(ctx, client)
+	}
+	return client.Echo(ctx)
+}
+
+func (w *LibOVSDBTopologyWriter) reconnectHealthClient(ctx context.Context, start time.Time, force bool) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.client.Connected() {
+	if !force && w.client.Connected() {
 		return nil
 	}
 	if !w.reconnectEnabled {
@@ -120,6 +139,9 @@ func (w *LibOVSDBTopologyWriter) reconnectHealthClient(ctx context.Context, star
 			oldClient.Close()
 		}
 		return nil
+	}
+	if force {
+		w.client.Disconnect()
 	}
 	if err := w.client.Connect(ctx); err != nil {
 		w.recordHealthReconnectFailureLocked(now)

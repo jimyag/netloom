@@ -2,6 +2,7 @@ package ovn
 
 import (
 	"context"
+	"fmt"
 	"net/netip"
 	"testing"
 	"time"
@@ -3290,6 +3291,43 @@ func TestLibOVSDBTopologyWriterHealthCheckReconnectsDisconnectedClient(t *testin
 	}
 	if client.Connected() {
 		t.Fatal("old client should remain disconnected after replacement")
+	}
+}
+
+func TestLibOVSDBTopologyWriterHealthCheckReconnectsAfterEchoFailure(t *testing.T) {
+	ctx := context.Background()
+	client, closeFn := newTestOVNNBClient(t)
+
+	if _, err := client.MonitorAll(ctx); err != nil {
+		closeFn()
+		t.Fatal(err)
+	}
+	writer := NewLibOVSDBTopologyWriter(client)
+	writer.EnableHealthReconnect(0, 0)
+	writer.SetHealthReconnectClientFactory(closeFn, func(context.Context) (libovsdbclient.Client, func(), error) {
+		nextClient, nextClose := newTestOVNNBClient(t)
+		if _, err := nextClient.MonitorAll(ctx); err != nil {
+			nextClose()
+			return nil, nil, err
+		}
+		return nextClient, nextClose, nil
+	})
+	writer.healthEcho = func(ctx context.Context, c libovsdbclient.Client) error {
+		if c == client {
+			return fmt.Errorf("forced echo failure")
+		}
+		return c.Echo(ctx)
+	}
+	t.Cleanup(writer.Close)
+
+	if !client.Connected() {
+		t.Fatal("initial client should be connected before echo failure")
+	}
+	if latency, err := writer.HealthCheck(ctx); err != nil {
+		t.Fatalf("health check should reconnect after echo failure: latency=%s err=%v", latency, err)
+	}
+	if client.Connected() {
+		t.Fatal("old client should be closed after echo-failure replacement")
 	}
 }
 

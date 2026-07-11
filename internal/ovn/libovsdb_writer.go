@@ -31,6 +31,7 @@ type LibOVSDBTopologyWriter struct {
 	reconnectClient         func(context.Context) (client.Client, func(), error)
 	reconnectFailures       int
 	nextReconnect           time.Time
+	healthEcho              func(context.Context, client.Client) error
 }
 
 func NewLibOVSDBTopologyWriter(client client.Client) *LibOVSDBTopologyWriter {
