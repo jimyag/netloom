@@ -1076,7 +1076,7 @@ func TestReconcileStateFileOnceResumesPersistedPolicyRolloutState(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(doc.Rollouts) != 1 || doc.Rollouts[0].Name != "web-canary" || !reflect.DeepEqual(doc.Rollouts[0].AppliedEndpoints, []string{model.EndpointKey("prod", "pod-a")}) {
+	if len(doc.Rollouts) != 1 || doc.Rollouts[0].Name != "web-canary" || doc.Rollouts[0].Revision == "" || !reflect.DeepEqual(doc.Rollouts[0].AppliedEndpoints, []string{model.EndpointKey("prod", "pod-a")}) {
 		t.Fatalf("rollout state = %+v, want paused web-canary with pod-a applied", doc)
 	}
 	eventsAfterFirst := len(store.Events())
@@ -1101,6 +1101,69 @@ func TestReconcileStateFileOnceResumesPersistedPolicyRolloutState(t *testing.T) 
 	}
 	if len(doc.Rollouts) != 0 {
 		t.Fatalf("rollout state after completion = %+v, want cleared state", doc)
+	}
+}
+
+func TestLoadPolicyRolloutResumeIgnoresStaleRevision(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{
+			{ID: "pod-a", VPC: "prod", Subnet: "apps", IP: netip.MustParseAddr("10.10.0.10"), Node: "node-a", SecurityGroups: []string{"web"}},
+		},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "allow-http",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("172.30.0.0/24"),
+				Ports:      []model.PortRange{{From: 80, To: 80}},
+				Action:     model.ActionAllow,
+			}},
+		}},
+		PolicyRollouts: []control.PolicyRollout{{
+			Name:      "web-canary",
+			Node:      "node-a",
+			Endpoints: []string{"prod/pod-a"},
+			BatchSize: 1,
+		}},
+	}
+	revision, err := agent.PolicyRolloutRevision(state, state.PolicyRollouts[0], []string{model.EndpointKey("prod", "pod-a")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := ovsdbPolicyRolloutStateStore{syncer: &fakeOpenVSwitchExternalIDStore{}}
+	if err := store.Save(t.Context(), policyRolloutStateDocument{Rollouts: []policyRolloutStateEntry{{
+		Name:             "web-canary",
+		Node:             "node-a",
+		Revision:         "stale",
+		AppliedEndpoints: []string{model.EndpointKey("prod", "pod-a")},
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	resume, err := loadPolicyRolloutResume(t.Context(), store, "node-a", state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resume) != 0 {
+		t.Fatalf("resume = %+v, want stale revision ignored", resume)
+	}
+
+	if err := store.Save(t.Context(), policyRolloutStateDocument{Rollouts: []policyRolloutStateEntry{{
+		Name:             "web-canary",
+		Node:             "node-a",
+		Revision:         revision,
+		AppliedEndpoints: []string{model.EndpointKey("prod", "pod-a")},
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	resume, err = loadPolicyRolloutResume(t.Context(), store, "node-a", state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(resume["web-canary"], []string{model.EndpointKey("prod", "pod-a")}) {
+		t.Fatalf("resume = %+v, want matching revision restored", resume)
 	}
 }
 

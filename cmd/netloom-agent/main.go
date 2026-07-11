@@ -195,6 +195,7 @@ type policyRolloutStateDocument struct {
 type policyRolloutStateEntry struct {
 	Name             string    `json:"name"`
 	Node             string    `json:"node,omitempty"`
+	Revision         string    `json:"revision,omitempty"`
 	Store            string    `json:"store,omitempty"`
 	UpdatedAt        time.Time `json:"updated_at"`
 	AppliedEndpoints []string  `json:"applied_endpoints,omitempty"`
@@ -983,7 +984,7 @@ func reconcileStateFile(ctx context.Context, path, node, storeName string, recon
 		return err
 	}
 	var rolloutHistory []agent.NamedPolicyEndpointRollout
-	rolloutResume, err := loadPolicyRolloutResume(ctx, rolloutStateStore, node)
+	rolloutResume, err := loadPolicyRolloutResume(ctx, rolloutStateStore, node, state)
 	if err != nil {
 		duration := time.Since(start)
 		printReconcileFailure(result, storeName, err, duration)
@@ -1078,7 +1079,7 @@ func reconcileStateFileOnceWithRuntimeStores(ctx context.Context, path, node, st
 		return err
 	}
 	var rolloutHistory []agent.NamedPolicyEndpointRollout
-	rolloutResume, err := loadPolicyRolloutResume(ctx, rolloutStateStore, node)
+	rolloutResume, err := loadPolicyRolloutResume(ctx, rolloutStateStore, node, state)
 	if err != nil {
 		duration := time.Since(start)
 		printReconcileFailure(result, storeName, err, duration)
@@ -1703,11 +1704,15 @@ func recordNamedPolicyRolloutHistory(metrics *agentMetrics, source string, rollo
 	}
 }
 
-func loadPolicyRolloutResume(ctx context.Context, store policyRolloutStateStore, node string) (map[string][]string, error) {
+func loadPolicyRolloutResume(ctx context.Context, store policyRolloutStateStore, node string, state control.DesiredState) (map[string][]string, error) {
 	if store == nil {
 		return nil, nil
 	}
 	doc, err := store.Load(ctx)
+	if err != nil {
+		return nil, err
+	}
+	revisions, err := desiredPolicyRolloutRevisions(state, node)
 	if err != nil {
 		return nil, err
 	}
@@ -1716,9 +1721,72 @@ func loadPolicyRolloutResume(ctx context.Context, store policyRolloutStateStore,
 		if entry.Name == "" || (entry.Node != "" && entry.Node != node) {
 			continue
 		}
+		if revision := revisions[entry.Name]; revision == "" || entry.Revision != revision {
+			continue
+		}
 		out[entry.Name] = uniqueStrings(append(out[entry.Name], entry.AppliedEndpoints...))
 	}
 	return out, nil
+}
+
+func desiredPolicyRolloutRevisions(state control.DesiredState, node string) (map[string]string, error) {
+	out := make(map[string]string)
+	for _, rollout := range state.PolicyRollouts {
+		if rollout.Disabled || (rollout.Node != "" && rollout.Node != node) {
+			continue
+		}
+		endpointIDs, err := rolloutEndpointIDsForRevision(state, rollout)
+		if err != nil {
+			return nil, fmt.Errorf("policy rollout %q: %w", rollout.Name, err)
+		}
+		revision, err := agent.PolicyRolloutRevision(state, rollout, endpointIDs)
+		if err != nil {
+			return nil, fmt.Errorf("policy rollout %q: %w", rollout.Name, err)
+		}
+		out[rollout.Name] = revision
+	}
+	return out, nil
+}
+
+func rolloutEndpointIDsForRevision(state control.DesiredState, rollout control.PolicyRollout) ([]string, error) {
+	if len(rollout.Endpoints) == 0 {
+		return nil, nil
+	}
+	out := make([]string, 0, len(rollout.Endpoints))
+	for _, ref := range rollout.Endpoints {
+		endpointID, err := resolveDesiredEndpointRefForRevision(state.Endpoints, ref)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, endpointID)
+	}
+	return out, nil
+}
+
+func resolveDesiredEndpointRefForRevision(endpoints []model.Endpoint, ref string) (string, error) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return "", fmt.Errorf("endpoint reference is empty")
+	}
+	if strings.Contains(ref, "\x00") {
+		for _, endpoint := range endpoints {
+			if model.EndpointKey(endpoint.VPC, endpoint.ID) == ref {
+				return ref, nil
+			}
+		}
+		return "", fmt.Errorf("endpoint %q not found in desired state", ref)
+	}
+	vpc, id, ok := strings.Cut(ref, "/")
+	if !ok || vpc == "" || id == "" {
+		return "", fmt.Errorf("endpoint reference %q must use vpc/id", ref)
+	}
+	endpointID := model.EndpointKey(vpc, id)
+	for _, endpoint := range endpoints {
+		if model.EndpointKey(endpoint.VPC, endpoint.ID) == endpointID {
+			return endpointID, nil
+		}
+	}
+	return "", fmt.Errorf("endpoint %q not found in desired state", ref)
 }
 
 func savePolicyRolloutResume(ctx context.Context, store policyRolloutStateStore, node, storeName string, rollouts []agent.NamedPolicyEndpointRollout) error {
@@ -1744,6 +1812,7 @@ func savePolicyRolloutResume(ctx context.Context, store policyRolloutStateStore,
 		next = append(next, policyRolloutStateEntry{
 			Name:             named.Name,
 			Node:             node,
+			Revision:         named.Rollout.Revision,
 			Store:            storeName,
 			UpdatedAt:        time.Now().UTC(),
 			AppliedEndpoints: applied,

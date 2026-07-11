@@ -173,6 +173,7 @@ type DesiredState struct {
 type PolicyRollout struct {
 	Name                      string               `json:"name"`
 	Node                      string               `json:"node,omitempty"`
+	Revision                  string               `json:"revision,omitempty"`
 	Endpoints                 []string             `json:"endpoints,omitempty"`
 	BatchSize                 int                  `json:"batch_size"`
 	DryRun                    bool                 `json:"dry_run,omitempty"`

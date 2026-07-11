@@ -181,6 +181,7 @@ type PolicyEndpointPlan struct {
 
 type PolicyEndpointRolloutOptions struct {
 	EndpointIDs               []string
+	Revision                  string
 	BatchSize                 int
 	DryRun                    bool
 	Cancelled                 bool
@@ -215,6 +216,7 @@ type PolicyEndpointRolloutOptions struct {
 }
 
 type PolicyEndpointRollout struct {
+	Revision                  string                      `json:"revision,omitempty"`
 	DryRun                    bool                        `json:"dry_run"`
 	Cancelled                 bool                        `json:"cancelled,omitempty"`
 	BatchSize                 int                         `json:"batch_size"`
@@ -433,6 +435,7 @@ func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, opt
 		return PolicyEndpointRollout{}, err
 	}
 	rollout := PolicyEndpointRollout{
+		Revision:                 rolloutOptions.Revision,
 		DryRun:                   rolloutOptions.DryRun,
 		Cancelled:                rolloutOptions.Cancelled,
 		BatchSize:                batchSize,
@@ -1394,8 +1397,13 @@ func ApplyPolicyRollouts(ctx context.Context, state control.DesiredState, option
 		if err != nil {
 			return nil, fmt.Errorf("policy rollout %q ack_expires_at: %w", rollout.Name, err)
 		}
+		revision, err := PolicyRolloutRevision(state, rollout, endpointIDs)
+		if err != nil {
+			return nil, fmt.Errorf("policy rollout %q revision: %w", rollout.Name, err)
+		}
 		result, err := RolloutPolicyEndpoints(ctx, state, options, PolicyEndpointRolloutOptions{
 			EndpointIDs:               endpointIDs,
+			Revision:                  revision,
 			BatchSize:                 rollout.BatchSize,
 			DryRun:                    rollout.DryRun,
 			Cancelled:                 rollout.Cancelled,
@@ -1437,6 +1445,38 @@ func ApplyPolicyRollouts(ctx context.Context, state control.DesiredState, option
 		}
 	}
 	return out, nil
+}
+
+func PolicyRolloutRevision(state control.DesiredState, rollout control.PolicyRollout, endpointIDs []string) (string, error) {
+	revision := strings.TrimSpace(rollout.Revision)
+	if revision != "" {
+		return revision, nil
+	}
+	payload := struct {
+		Name      string               `json:"name"`
+		Node      string               `json:"node,omitempty"`
+		Endpoints []string             `json:"endpoints,omitempty"`
+		Desired   control.DesiredState `json:"desired"`
+	}{
+		Name:      rollout.Name,
+		Node:      rollout.Node,
+		Endpoints: uniquePolicyEndpointIDs(endpointIDs),
+		Desired: control.DesiredState{
+			Subnets:        append([]model.Subnet(nil), state.Subnets...),
+			Endpoints:      append([]model.Endpoint(nil), state.Endpoints...),
+			Gateways:       append([]model.Gateway(nil), state.Gateways...),
+			LoadBalancers:  append([]model.LoadBalancer(nil), state.LoadBalancers...),
+			SecurityGroups: append([]model.SecurityGroup(nil), state.SecurityGroups...),
+			CIDRGroups:     append([]model.CIDRGroup(nil), state.CIDRGroups...),
+			DNSRecords:     append([]model.DNSRecord(nil), state.DNSRecords...),
+		},
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(raw)
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
 func parsePolicyRolloutTime(value string) (time.Time, error) {
