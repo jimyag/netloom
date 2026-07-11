@@ -372,7 +372,7 @@ func (w *LibOVSDBTopologyWriter) cleanupUnexpectedLiveOperations(ctx context.Con
 		}
 		ops = append(ops, nextOps...)
 	}
-	lsRows, err := w.unexpectedLogicalSwitches(ctx, expected)
+	lsRows, err := w.unexpectedLogicalSwitches(ctx, expected, expectedLogicalSwitchNames(desired))
 	if err != nil {
 		return nil, CleanupStats{}, err
 	}
@@ -594,6 +594,11 @@ func (w *LibOVSDBTopologyWriter) repairSteadyStateSubnetPorts(ctx context.Contex
 			ExternalIDs: logicalSwitchExternalIDs(subnet),
 			OtherConfig: logicalSwitchOtherConfig(subnet),
 		}
+		switchOps, err := w.logicalSwitchConfigOperations(existingSwitch, desiredSwitch)
+		if err != nil {
+			return nil, err
+		}
+		ops = append(ops, switchOps...)
 		nextOps, err := w.subnetPortOperations(ctx, router, desiredSwitch, existingSwitch, subnet)
 		if err != nil {
 			return nil, err
@@ -1437,15 +1442,28 @@ func (w *LibOVSDBTopologyWriter) transact(ctx context.Context, label string, ops
 	return nil
 }
 
-func (w *LibOVSDBTopologyWriter) unexpectedLogicalSwitches(ctx context.Context, expected map[string]map[string]string) ([]ovnnb.LogicalSwitch, error) {
+func (w *LibOVSDBTopologyWriter) unexpectedLogicalSwitches(ctx context.Context, expected map[string]map[string]string, expectedNames map[string]struct{}) ([]ovnnb.LogicalSwitch, error) {
 	var rows []ovnnb.LogicalSwitch
 	if err := w.client.WhereCache(func(row *ovnnb.LogicalSwitch) bool {
+		if isNetloomManaged(row.ExternalIDs) {
+			if _, ok := expectedNames[row.Name]; ok {
+				return false
+			}
+		}
 		return unexpectedManagedRow("Logical_Switch", row.UUID, row.ExternalIDs, expected)
 	}).List(ctx, &rows); err != nil {
 		return nil, err
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].UUID < rows[j].UUID })
 	return rows, nil
+}
+
+func expectedLogicalSwitchNames(desired topology.State) map[string]struct{} {
+	out := make(map[string]struct{}, len(desired.Subnets))
+	for _, subnet := range desired.Subnets {
+		out[logicalSwitch(subnet.VPC, subnet.Name)] = struct{}{}
+	}
+	return out
 }
 
 func (w *LibOVSDBTopologyWriter) unexpectedLogicalRouters(ctx context.Context, expected map[string]map[string]string) ([]ovnnb.LogicalRouter, error) {

@@ -122,26 +122,11 @@ func (w *LibOVSDBTopologyWriter) EnsureSubnet(ctx context.Context, subnet model.
 			return fmt.Errorf("create logical switch %s: %w", ls.Name, err)
 		}
 	} else {
-		nextExternalIDs := mergeManagedExternalIDs(existingSwitch.ExternalIDs, ls.ExternalIDs)
-		nextOtherConfig := replaceLogicalSwitchIPAMConfig(existingSwitch.OtherConfig, ls.OtherConfig)
-		if !reflect.DeepEqual(existingSwitch.ExternalIDs, nextExternalIDs) ||
-			!reflect.DeepEqual(existingSwitch.OtherConfig, nextOtherConfig) ||
-			len(existingSwitch.ACLs) != 0 ||
-			len(existingSwitch.ForwardingGroups) != 0 ||
-			len(existingSwitch.LoadBalancerGroup) != 0 ||
-			len(existingSwitch.QOSRules) != 0 {
-			existingSwitch.ExternalIDs = nextExternalIDs
-			existingSwitch.OtherConfig = nextOtherConfig
-			existingSwitch.ACLs = nil
-			existingSwitch.ForwardingGroups = nil
-			existingSwitch.LoadBalancerGroup = nil
-			existingSwitch.QOSRules = nil
-			updateOps, err := w.client.Where(existingSwitch).Update(existingSwitch, &existingSwitch.ExternalIDs, &existingSwitch.OtherConfig, &existingSwitch.ACLs, &existingSwitch.ForwardingGroups, &existingSwitch.LoadBalancerGroup, &existingSwitch.QOSRules)
-			if err != nil {
-				return fmt.Errorf("update logical switch %s: %w", ls.Name, err)
-			}
-			ops = append(ops, updateOps...)
+		updateOps, err := w.logicalSwitchConfigOperations(existingSwitch, ls)
+		if err != nil {
+			return err
 		}
+		ops = append(ops, updateOps...)
 	}
 	subnetOps, err := w.subnetPortOperations(ctx, router, ls, existingSwitch, subnet)
 	if err != nil {
@@ -159,6 +144,30 @@ func (w *LibOVSDBTopologyWriter) EnsureSubnet(ctx context.Context, subnet model.
 		return fmt.Errorf("subnet %s/%s operation errors=%+v: %w", subnet.VPC, subnet.Name, opErrors, err)
 	}
 	return nil
+}
+
+func (w *LibOVSDBTopologyWriter) logicalSwitchConfigOperations(existing, desired *ovnnb.LogicalSwitch) ([]ovsdb.Operation, error) {
+	nextExternalIDs := mergeManagedExternalIDs(existing.ExternalIDs, desired.ExternalIDs)
+	nextOtherConfig := replaceLogicalSwitchIPAMConfig(existing.OtherConfig, desired.OtherConfig)
+	if reflect.DeepEqual(existing.ExternalIDs, nextExternalIDs) &&
+		reflect.DeepEqual(existing.OtherConfig, nextOtherConfig) &&
+		len(existing.ACLs) == 0 &&
+		len(existing.ForwardingGroups) == 0 &&
+		len(existing.LoadBalancerGroup) == 0 &&
+		len(existing.QOSRules) == 0 {
+		return nil, nil
+	}
+	existing.ExternalIDs = nextExternalIDs
+	existing.OtherConfig = nextOtherConfig
+	existing.ACLs = nil
+	existing.ForwardingGroups = nil
+	existing.LoadBalancerGroup = nil
+	existing.QOSRules = nil
+	updateOps, err := w.client.Where(existing).Update(existing, &existing.ExternalIDs, &existing.OtherConfig, &existing.ACLs, &existing.ForwardingGroups, &existing.LoadBalancerGroup, &existing.QOSRules)
+	if err != nil {
+		return nil, fmt.Errorf("update logical switch %s: %w", existing.Name, err)
+	}
+	return updateOps, nil
 }
 
 func (w *LibOVSDBTopologyWriter) EnsureEndpoint(ctx context.Context, endpoint model.Endpoint) error {

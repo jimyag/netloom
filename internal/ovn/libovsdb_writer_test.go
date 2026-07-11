@@ -278,6 +278,114 @@ func TestLibOVSDBTopologyWriterUpdatesSubnetIPAMConfig(t *testing.T) {
 	}
 }
 
+func TestLibOVSDBTopologyWriterCleanupRepairsSubnetSwitchDriftInSteadyState(t *testing.T) {
+	ctx := context.Background()
+	client, closeFn := newTestOVNNBClient(t)
+	defer closeFn()
+
+	if _, err := client.MonitorAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	writer := NewLibOVSDBTopologyWriter(client)
+	subnet := model.Subnet{
+		Name:         "apps",
+		VPC:          "prod",
+		CIDR:         netip.MustParsePrefix("10.10.0.0/24"),
+		Gateway:      netip.MustParseAddr("10.10.0.1"),
+		ExcludeCIDRs: []netip.Prefix{netip.MustParsePrefix("10.10.0.10/32")},
+	}
+	state := topology.State{
+		VPCs:    map[string]model.VPC{"prod": {Name: "prod"}},
+		Subnets: map[string]model.Subnet{subnetStateKey("prod", "apps"): subnet},
+	}
+	if err := writer.CleanupTopology(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureVPC(ctx, state.VPCs["prod"]); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureSubnet(ctx, subnet); err != nil {
+		t.Fatal(err)
+	}
+
+	staleGroup := &ovnnb.LoadBalancerGroup{
+		UUID: ovsdbNamedUUID("cleanup-stale-lbg"),
+		Name: "cleanup-stale-lbg",
+	}
+	createGroupOps, err := client.Create(staleGroup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := client.Transact(ctx, createGroupOps...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, createGroupOps); err != nil {
+		t.Fatalf("create stale load balancer group operation errors=%+v: %v", opErrors, err)
+	}
+	var groups []ovnnb.LoadBalancerGroup
+	requireEventually(t, func() bool {
+		groups = nil
+		err := client.WhereCache(func(row *ovnnb.LoadBalancerGroup) bool { return row.Name == "cleanup-stale-lbg" }).List(ctx, &groups)
+		return err == nil && len(groups) == 1
+	})
+
+	sw := singleLogicalSwitchByName(t, ctx, client, logicalSwitch("prod", "apps"))
+	sw.ExternalIDs = map[string]string{
+		"netloom_owner":  "netloom",
+		"netloom_vpc":    "prod",
+		"netloom_subnet": "wrong",
+		"custom":         "keep",
+	}
+	sw.OtherConfig = map[string]string{
+		"subnet":      "10.99.0.0/24",
+		"exclude_ips": "10.99.0.1",
+		"custom":      "keep",
+	}
+	sw.LoadBalancerGroup = []string{groups[0].UUID}
+	updateSwitchOps, err := client.Where(&sw).Update(&sw, &sw.ExternalIDs, &sw.OtherConfig, &sw.LoadBalancerGroup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err = client.Transact(ctx, updateSwitchOps...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, updateSwitchOps); err != nil {
+		t.Fatalf("seed subnet switch drift operation errors=%+v: %v", opErrors, err)
+	}
+	requireEventually(t, func() bool {
+		next := singleLogicalSwitchByName(t, ctx, client, logicalSwitch("prod", "apps"))
+		return next.ExternalIDs["netloom_subnet"] == "wrong" &&
+			next.OtherConfig["subnet"] == "10.99.0.0/24" &&
+			len(next.LoadBalancerGroup) == 1
+	})
+
+	if err := writer.CleanupTopology(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	requireEventually(t, func() bool {
+		var switches []ovnnb.LogicalSwitch
+		err := client.WhereCache(func(row *ovnnb.LogicalSwitch) bool {
+			return row.Name == logicalSwitch("prod", "apps")
+		}).List(ctx, &switches)
+		if err != nil || len(switches) != 1 {
+			return false
+		}
+		next := switches[0]
+		return next.ExternalIDs["custom"] == "keep" &&
+			next.ExternalIDs["netloom_subnet"] == "apps" &&
+			next.OtherConfig["custom"] == "keep" &&
+			next.OtherConfig["subnet"] == "10.10.0.0/24" &&
+			next.OtherConfig["exclude_ips"] == "10.10.0.1 10.10.0.10" &&
+			len(next.LoadBalancerGroup) == 0
+	})
+	stats := writer.LastCleanupStats()
+	if stats.FirstReconcileGC || stats.Operations == 0 {
+		t.Fatalf("cleanup stats = %+v, want steady-state subnet switch repair operations", stats)
+	}
+}
+
 func TestLibOVSDBTopologyWriterEnsuresSubnetLocalnetPort(t *testing.T) {
 	ctx := context.Background()
 	client, closeFn := newTestOVNNBClient(t)
