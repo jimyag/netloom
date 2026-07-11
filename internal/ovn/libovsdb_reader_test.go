@@ -181,7 +181,8 @@ func TestAuditManagedObjectsReportsColumnDriftFromLibOVSDBReader(t *testing.T) {
 		t.Fatalf("logical routers = %d, want one", len(routers))
 	}
 	routers[0].Name = "renamed-prod-router"
-	updateRouter, err := client.Where(&routers[0]).Update(&routers[0], &routers[0].Name)
+	routers[0].Options = map[string]string{"chassis": "node-old"}
+	updateRouter, err := client.Where(&routers[0]).Update(&routers[0], &routers[0].Name, &routers[0].Options)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,10 +231,10 @@ func TestAuditManagedObjectsReportsColumnDriftFromLibOVSDBReader(t *testing.T) {
 	requireEventually(t, func() bool {
 		var err error
 		stats, err = AuditManagedObjectsFromReaderWithDesired(ctx, reader, desired)
-		return err == nil && stats.DriftedManagedRows == 4 && stats.DriftedManagedFields == 4
+		return err == nil && stats.DriftedManagedRows == 4 && stats.DriftedManagedFields == 5
 	})
-	if stats.DriftedManagedRows != 4 || stats.DriftedManagedFields != 4 {
-		t.Fatalf("audit stats = %+v, want four column drifted managed rows", stats)
+	if stats.DriftedManagedRows != 4 || stats.DriftedManagedFields != 5 {
+		t.Fatalf("audit stats = %+v, want four column drifted managed rows and five fields", stats)
 	}
 }
 

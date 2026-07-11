@@ -828,7 +828,7 @@ func countManagedProvidedFieldDrift(table string, live, expected map[string]stri
 func staleManagedColumnShouldDrift(table, key string) bool {
 	switch table {
 	case "Logical_Router", "Logical_Router_Port":
-		return key == "enabled"
+		return key == "enabled" || (table == "Logical_Router" && key == "options")
 	case "Logical_Switch_Port":
 		switch key {
 		case "type", "options", "tag", "enabled", "port_security", "dhcpv4_options", "dhcpv6_options":

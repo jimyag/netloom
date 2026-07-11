@@ -38,6 +38,53 @@ func TestLibOVSDBTopologyWriterEnsuresVPCLogicalRouter(t *testing.T) {
 	}
 }
 
+func TestLibOVSDBTopologyWriterClearsStaleVPCLogicalRouterOptions(t *testing.T) {
+	ctx := context.Background()
+	client, closeFn := newTestOVNNBClient(t)
+	defer closeFn()
+
+	if _, err := client.MonitorAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	writer := NewLibOVSDBTopologyWriter(client)
+	if err := writer.EnsureVPC(ctx, model.VPC{Name: "prod"}); err != nil {
+		t.Fatal(err)
+	}
+
+	var routers []ovnnb.LogicalRouter
+	requireEventually(t, func() bool {
+		routers = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("prod") }).List(ctx, &routers)
+		return err == nil && len(routers) == 1
+	})
+	routers[0].Options = map[string]string{"chassis": "node-old"}
+	ops, err := client.Where(&routers[0]).Update(&routers[0], &routers[0].Options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := client.Transact(ctx, ops...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, ops); err != nil {
+		t.Fatalf("seed router options drift operation errors=%+v: %v", opErrors, err)
+	}
+	requireEventually(t, func() bool {
+		routers = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("prod") }).List(ctx, &routers)
+		return err == nil && len(routers) == 1 && routers[0].Options["chassis"] == "node-old"
+	})
+
+	if err := writer.EnsureVPC(ctx, model.VPC{Name: "prod"}); err != nil {
+		t.Fatal(err)
+	}
+	requireEventually(t, func() bool {
+		routers = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("prod") }).List(ctx, &routers)
+		return err == nil && len(routers) == 1 && len(routers[0].Options) == 0
+	})
+}
+
 func TestLibOVSDBTopologyWriterEnsuresSubnetLogicalSwitch(t *testing.T) {
 	ctx := context.Background()
 	client, closeFn := newTestOVNNBClient(t)
@@ -1702,6 +1749,14 @@ func TestLibOVSDBTopologyWriterEnsuresGatewayRouterMetadata(t *testing.T) {
 		router.ExternalIDs["netloom_gateway_distributed"] != "false" {
 		t.Fatalf("gateway router external IDs = %+v, want centralized gateway metadata", router.ExternalIDs)
 	}
+	if err := writer.EnsureVPC(ctx, model.VPC{Name: "prod"}); err != nil {
+		t.Fatal(err)
+	}
+	requireEventually(t, func() bool {
+		routers = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("prod") }).List(ctx, &routers)
+		return err == nil && len(routers) == 1 && routers[0].Options["chassis"] == "node-a"
+	})
 
 	if err := writer.EnsureGateway(ctx, model.Gateway{
 		Name:        "gw-a",

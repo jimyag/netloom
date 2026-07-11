@@ -799,6 +799,31 @@ func TestAuditManagedObjectsFromReaderReportsFieldDrift(t *testing.T) {
 	}
 }
 
+func TestAuditManagedObjectsFromReaderReportsStaleLogicalRouterOptions(t *testing.T) {
+	reader := fakeManagedOVNReader{rows: map[string][]ManagedOVNRow{
+		"Logical_Router": {
+			{Table: "Logical_Router", UUID: "lr-prod", ExternalIDs: map[string]string{
+				"netloom_owner": "netloom",
+				"netloom_vpc":   "prod",
+			}, Fields: map[string]string{
+				"name":    logicalRouter("prod"),
+				"options": "chassis=node-old",
+			}},
+		},
+	}}
+	desired := topology.State{
+		VPCs: map[string]model.VPC{"prod": {Name: "prod"}},
+	}
+
+	stats, err := AuditManagedObjectsFromReaderWithDesired(context.Background(), reader, desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.DriftedManagedRows != 1 || stats.DriftedManagedFields != 1 {
+		t.Fatalf("stale router options drift stats = %+v, want one field drift", stats)
+	}
+}
+
 func TestAuditManagedObjectsFromReaderReportsStaleLogicalSwitchPortColumns(t *testing.T) {
 	endpoint := model.Endpoint{
 		ID:     "pod-a",
