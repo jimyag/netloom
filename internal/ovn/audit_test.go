@@ -101,7 +101,7 @@ func TestNBCTLExecutorManagedOVNRowsResolvesLogicalRouterReferences(t *testing.T
 	script := `#!/bin/sh
 printf '%s\n' "$*" >> "` + logPath + `"
 case "$*" in
-  *"--columns=_uuid,external_ids,name,options,ports,load_balancers,nat,policies,static_routes,enabled find Logical_Router external_ids:netloom_owner=netloom"*) printf 'lr-prod,"{netloom_owner=netloom,netloom_vpc=prod}",nl_lr_prod,"{}",[lrp-apps],[lb-api],[nat-egress],[policy-via-fw],[route-main],[]\n' ;;
+  *"--columns=_uuid,external_ids,name,options,ports,load_balancers,load_balancer_group,nat,policies,static_routes,enabled find Logical_Router external_ids:netloom_owner=netloom"*) printf 'lr-prod,"{netloom_owner=netloom,netloom_vpc=prod}",nl_lr_prod,"{}",[lrp-apps],[lb-api],[],[nat-egress],[policy-via-fw],[route-main],[]\n' ;;
   *"--columns=_uuid,external_ids,name find Logical_Router_Port external_ids:netloom_owner=netloom"*) printf 'lrp-apps,"{netloom_owner=netloom,netloom_subnet=apps}",nl_lrp_prod_apps\n' ;;
   *"--columns=_uuid,external_ids,name find Load_Balancer external_ids:netloom_owner=netloom"*) printf 'lb-api,"{netloom_owner=netloom,netloom_vpc=prod,netloom_load_balancer=api,netloom_protocol=tcp}",nl_lb_prod_api_tcp\n' ;;
   *"--columns=_uuid,external_ids find NAT external_ids:netloom_owner=netloom"*) printf 'nat-egress,"{netloom_owner=netloom,netloom_vpc=prod,netloom_nat=egress}"\n' ;;
@@ -140,7 +140,7 @@ esac
 	}
 	logged := string(logData)
 	for _, expected := range []string{
-		"--columns=_uuid,external_ids,name,options,ports,load_balancers,nat,policies,static_routes",
+		"--columns=_uuid,external_ids,name,options,ports,load_balancers,load_balancer_group,nat,policies,static_routes,enabled",
 		"find Logical_Router_Port external_ids:netloom_owner=netloom",
 		"find NAT external_ids:netloom_owner=netloom",
 		"find Logical_Router_Static_Route external_ids:netloom_owner=netloom",
@@ -806,8 +806,9 @@ func TestAuditManagedObjectsFromReaderReportsStaleLogicalRouterOptions(t *testin
 				"netloom_owner": "netloom",
 				"netloom_vpc":   "prod",
 			}, Fields: map[string]string{
-				"name":    logicalRouter("prod"),
-				"options": "chassis=node-old",
+				"name":                logicalRouter("prod"),
+				"options":             "chassis=node-old",
+				"load_balancer_group": "lbg-old",
 			}},
 		},
 	}}
@@ -819,8 +820,8 @@ func TestAuditManagedObjectsFromReaderReportsStaleLogicalRouterOptions(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stats.DriftedManagedRows != 1 || stats.DriftedManagedFields != 1 {
-		t.Fatalf("stale router options drift stats = %+v, want one field drift", stats)
+	if stats.DriftedManagedRows != 1 || stats.DriftedManagedFields != 2 {
+		t.Fatalf("stale router options drift stats = %+v, want two field drift", stats)
 	}
 }
 

@@ -57,12 +57,34 @@ func TestLibOVSDBTopologyWriterClearsStaleVPCLogicalRouterOptions(t *testing.T) 
 		err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("prod") }).List(ctx, &routers)
 		return err == nil && len(routers) == 1
 	})
-	routers[0].Options = map[string]string{"chassis": "node-old"}
-	ops, err := client.Where(&routers[0]).Update(&routers[0], &routers[0].Options)
+	staleGroup := &ovnnb.LoadBalancerGroup{
+		UUID: ovsdbNamedUUID("stale-router-lbg"),
+		Name: "stale-router-lbg",
+	}
+	createGroupOps, err := client.Create(staleGroup)
 	if err != nil {
 		t.Fatal(err)
 	}
-	results, err := client.Transact(ctx, ops...)
+	results, err := client.Transact(ctx, createGroupOps...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, createGroupOps); err != nil {
+		t.Fatalf("create stale router load balancer group operation errors=%+v: %v", opErrors, err)
+	}
+	var groups []ovnnb.LoadBalancerGroup
+	requireEventually(t, func() bool {
+		groups = nil
+		err := client.WhereCache(func(row *ovnnb.LoadBalancerGroup) bool { return row.Name == "stale-router-lbg" }).List(ctx, &groups)
+		return err == nil && len(groups) == 1
+	})
+	routers[0].Options = map[string]string{"chassis": "node-old"}
+	routers[0].LoadBalancerGroup = []string{groups[0].UUID}
+	ops, err := client.Where(&routers[0]).Update(&routers[0], &routers[0].Options, &routers[0].LoadBalancerGroup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err = client.Transact(ctx, ops...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +94,7 @@ func TestLibOVSDBTopologyWriterClearsStaleVPCLogicalRouterOptions(t *testing.T) 
 	requireEventually(t, func() bool {
 		routers = nil
 		err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("prod") }).List(ctx, &routers)
-		return err == nil && len(routers) == 1 && routers[0].Options["chassis"] == "node-old"
+		return err == nil && len(routers) == 1 && routers[0].Options["chassis"] == "node-old" && len(routers[0].LoadBalancerGroup) == 1
 	})
 
 	if err := writer.EnsureVPC(ctx, model.VPC{Name: "prod"}); err != nil {
@@ -81,7 +103,7 @@ func TestLibOVSDBTopologyWriterClearsStaleVPCLogicalRouterOptions(t *testing.T) 
 	requireEventually(t, func() bool {
 		routers = nil
 		err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("prod") }).List(ctx, &routers)
-		return err == nil && len(routers) == 1 && len(routers[0].Options) == 0
+		return err == nil && len(routers) == 1 && len(routers[0].Options) == 0 && len(routers[0].LoadBalancerGroup) == 0
 	})
 }
 

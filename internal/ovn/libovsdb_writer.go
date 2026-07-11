@@ -66,13 +66,15 @@ func (w *LibOVSDBTopologyWriter) EnsureVPC(ctx context.Context, vpc model.VPC) e
 		}
 		if reflect.DeepEqual(existing.ExternalIDs, nextExternalIDs) &&
 			equalBoolPointers(existing.Enabled, router.Enabled) &&
-			reflect.DeepEqual(existing.Options, nextOptions) {
+			reflect.DeepEqual(existing.Options, nextOptions) &&
+			len(existing.LoadBalancerGroup) == 0 {
 			return nil
 		}
 		existing.ExternalIDs = nextExternalIDs
 		existing.Enabled = router.Enabled
 		existing.Options = nextOptions
-		ops, err = w.client.Where(existing).Update(existing, &existing.ExternalIDs, &existing.Enabled, &existing.Options)
+		existing.LoadBalancerGroup = nil
+		ops, err = w.client.Where(existing).Update(existing, &existing.ExternalIDs, &existing.Enabled, &existing.Options, &existing.LoadBalancerGroup)
 		if err != nil {
 			return fmt.Errorf("update logical router %s external IDs: %w", router.Name, err)
 		}
