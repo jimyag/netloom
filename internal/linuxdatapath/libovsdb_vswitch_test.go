@@ -130,6 +130,11 @@ func TestLibOVSDBProviderSyncerCreatesProviderControllers(t *testing.T) {
 		statuses[0].ControllerDetail != "target=tcp:192.0.2.10:6653,connected=false" {
 		t.Fatalf("statuses = %+v, want disconnected controller before OVS connects with target detail", statuses)
 	}
+	if !containsProviderString(statuses[0].ControllerUUIDs, controller.UUID) ||
+		!containsProviderString(statuses[0].ControllerTargets, "tcp:192.0.2.10:6653") ||
+		statuses[0].BridgeUUID != bridge.UUID {
+		t.Fatalf("status path = %+v, want controller and bridge attribution", statuses[0])
+	}
 	controller.IsConnected = true
 	controller.Status = map[string]string{
 		"state": "ACTIVE",
@@ -542,6 +547,13 @@ func TestLibOVSDBProviderSyncerReadsProviderStatus(t *testing.T) {
 	if status.ProviderNetwork != "physnet-a" || status.BridgeState != "up" || status.MappingState != "up" || status.PortState != "up" || status.InterfaceState != "up" {
 		t.Fatalf("status = %+v, want all up", status)
 	}
+	root := singleVSwitchRoot(t, ctx, client)
+	bridge := singleBridgeByName(t, ctx, client, providerNetworkBridgeName("physnet-a"))
+	port := singlePortByName(t, ctx, client, "nlv100")
+	iface := singleInterfaceByName(t, ctx, client, "nlv100")
+	if status.OpenVSwitchUUID != root.UUID || status.BridgeUUID != bridge.UUID || status.PortUUID != port.UUID || status.InterfaceUUID != iface.UUID {
+		t.Fatalf("status path = %+v, want root/bridge/port/interface attribution", status)
+	}
 }
 
 func TestLibOVSDBProviderSyncerReadsProviderStatusDrift(t *testing.T) {
@@ -682,6 +694,9 @@ func TestLibOVSDBProviderSyncerReadsProviderQoSDrift(t *testing.T) {
 	if statuses[0].PortState != "up" || statuses[0].QoSState != "mismatch" || statuses[0].QueueState != "up" {
 		t.Fatalf("status = %+v, want port up, qos mismatch, queue up", statuses[0])
 	}
+	if statuses[0].QoSUUID != qos.UUID {
+		t.Fatalf("status QoS UUID = %q, want %q", statuses[0].QoSUUID, qos.UUID)
+	}
 }
 
 func TestLibOVSDBProviderSyncerReadsProviderQueueDrift(t *testing.T) {
@@ -722,6 +737,9 @@ func TestLibOVSDBProviderSyncerReadsProviderQueueDrift(t *testing.T) {
 	}
 	if statuses[0].PortState != "up" || statuses[0].QoSState != "up" || statuses[0].QueueState != "mismatch" {
 		t.Fatalf("status = %+v, want port up, qos up, queue mismatch", statuses[0])
+	}
+	if !containsProviderString(statuses[0].QueueUUIDs, queue.UUID) {
+		t.Fatalf("status queue UUIDs = %+v, want %s", statuses[0].QueueUUIDs, queue.UUID)
 	}
 }
 

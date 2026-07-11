@@ -95,19 +95,27 @@ type ProviderIssue struct {
 }
 
 type ProviderOVSDBStatus struct {
-	ProviderNetwork  string
-	Bridge           string
-	LinkName         string
-	ParentDevice     string
-	VLAN             uint16
-	BridgeState      string
-	MappingState     string
-	PortState        string
-	InterfaceState   string
-	QoSState         string
-	QueueState       string
-	ControllerState  string
-	ControllerDetail string
+	ProviderNetwork   string
+	OpenVSwitchUUID   string
+	Bridge            string
+	BridgeUUID        string
+	LinkName          string
+	PortUUID          string
+	InterfaceUUID     string
+	ParentDevice      string
+	VLAN              uint16
+	QoSUUID           string
+	QueueUUIDs        []string
+	ControllerUUIDs   []string
+	ControllerTargets []string
+	BridgeState       string
+	MappingState      string
+	PortState         string
+	InterfaceState    string
+	QoSState          string
+	QueueState        string
+	ControllerState   string
+	ControllerDetail  string
 }
 
 type ProviderNetworkStatus struct {
@@ -865,27 +873,70 @@ func providerOVSDBStatusIssues(status ProviderOVSDBStatus, node string) []Provid
 }
 
 func providerOVSDBIssueDetail(status ProviderOVSDBStatus, kind, state string) string {
+	path := providerOVSDBPathDetail(status)
 	switch kind {
 	case "ovsdb-bridge":
-		return status.Bridge + ":" + fallbackProviderState(state)
+		return appendProviderIssuePath(status.Bridge+":"+fallbackProviderState(state), path)
 	case "ovsdb-port":
-		return status.LinkName + ":" + fallbackProviderState(state)
+		return appendProviderIssuePath(status.LinkName+":"+fallbackProviderState(state), path)
 	case "ovsdb-interface":
-		return status.LinkName + ":" + fallbackProviderState(state)
+		return appendProviderIssuePath(status.LinkName+":"+fallbackProviderState(state), path)
 	case "ovsdb-qos":
-		return status.LinkName + ":" + fallbackProviderState(state)
+		return appendProviderIssuePath(status.LinkName+":"+fallbackProviderState(state), path)
 	case "ovsdb-queue":
-		return status.LinkName + ":" + fallbackProviderState(state)
+		return appendProviderIssuePath(status.LinkName+":"+fallbackProviderState(state), path)
 	case "ovsdb-mapping":
-		return status.ProviderNetwork + ":" + status.Bridge + ":" + fallbackProviderState(state)
+		return appendProviderIssuePath(status.ProviderNetwork+":"+status.Bridge+":"+fallbackProviderState(state), path)
 	case "ovsdb-controller":
 		if status.ControllerDetail != "" {
-			return status.Bridge + ":" + fallbackProviderState(state) + ":" + status.ControllerDetail
+			return appendProviderIssuePath(status.Bridge+":"+fallbackProviderState(state)+":"+status.ControllerDetail, path)
 		}
-		return status.Bridge + ":" + fallbackProviderState(state)
+		return appendProviderIssuePath(status.Bridge+":"+fallbackProviderState(state), path)
 	default:
-		return fallbackProviderState(state)
+		return appendProviderIssuePath(fallbackProviderState(state), path)
 	}
+}
+
+func appendProviderIssuePath(detail, path string) string {
+	if path == "" {
+		return detail
+	}
+	if detail == "" {
+		return path
+	}
+	return detail + ":" + path
+}
+
+func providerOVSDBPathDetail(status ProviderOVSDBStatus) string {
+	var parts []string
+	if status.OpenVSwitchUUID != "" {
+		parts = append(parts, "root="+status.OpenVSwitchUUID)
+	}
+	if status.BridgeUUID != "" {
+		parts = append(parts, "bridge="+status.BridgeUUID)
+	}
+	if status.PortUUID != "" {
+		parts = append(parts, "port="+status.PortUUID)
+	}
+	if status.InterfaceUUID != "" {
+		parts = append(parts, "interface="+status.InterfaceUUID)
+	}
+	if status.QoSUUID != "" {
+		parts = append(parts, "qos="+status.QoSUUID)
+	}
+	if len(status.QueueUUIDs) > 0 {
+		parts = append(parts, "queues="+strings.Join(status.QueueUUIDs, "+"))
+	}
+	if len(status.ControllerUUIDs) > 0 {
+		parts = append(parts, "controllers="+strings.Join(status.ControllerUUIDs, "+"))
+	}
+	if len(status.ControllerTargets) > 0 {
+		parts = append(parts, "controller_targets="+strings.Join(status.ControllerTargets, "+"))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "ovsdb_path{" + strings.Join(parts, ";") + "}"
 }
 
 func providerLinkStatusIssues(status ProviderLinkStatus, node string) []ProviderIssue {

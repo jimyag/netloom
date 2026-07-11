@@ -278,8 +278,10 @@ func (s *LibOVSDBProviderSyncer) ReadProviderOVSDBStatus(ctx context.Context, ro
 		return nil, err
 	}
 	mappings := ""
+	openVSwitchUUID := ""
 	if openvSwitch != nil {
 		mappings = openvSwitch.ExternalIDs["ovn-bridge-mappings"]
+		openVSwitchUUID = openvSwitch.UUID
 	}
 	bridgeByName := make(map[string]vswitch.Bridge, len(rows.Bridges))
 	for _, bridge := range rows.Bridges {
@@ -311,6 +313,7 @@ func (s *LibOVSDBProviderSyncer) ReadProviderOVSDBStatus(ctx context.Context, ro
 		}
 		status := ProviderOVSDBStatus{
 			ProviderNetwork: spec.ProviderNetwork,
+			OpenVSwitchUUID: openVSwitchUUID,
 			Bridge:          bridgeName,
 			LinkName:        spec.Name,
 			ParentDevice:    spec.ParentDevice,
@@ -329,6 +332,13 @@ func (s *LibOVSDBProviderSyncer) ReadProviderOVSDBStatus(ctx context.Context, ro
 		if !ok {
 			status.BridgeState = "missing"
 		} else {
+			status.BridgeUUID = bridge.UUID
+			controllerUUIDs, controllerTargets, err := s.bridgeControllerPath(ctx, bridge.Controller)
+			if err != nil {
+				return nil, err
+			}
+			status.ControllerUUIDs = controllerUUIDs
+			status.ControllerTargets = controllerTargets
 			controllerState, controllerDetail, err := s.bridgeControllerState(ctx, bridge, bridgeByName[bridgeName])
 			if err != nil {
 				return nil, err
@@ -353,6 +363,15 @@ func (s *LibOVSDBProviderSyncer) ReadProviderOVSDBStatus(ctx context.Context, ro
 			statuses = append(statuses, status)
 			continue
 		}
+		status.PortUUID = port.UUID
+		if port.QOS != nil {
+			status.QoSUUID = *port.QOS
+			queueUUIDs, err := s.portQueueUUIDs(ctx, *port.QOS)
+			if err != nil {
+				return nil, err
+			}
+			status.QueueUUIDs = queueUUIDs
+		}
 		if status.BridgeState == "up" && !containsProviderString(bridge.Ports, port.UUID) {
 			status.PortState = "bridge-mismatch"
 		} else if !providerExternalIDsMatch(port.ExternalIDs, providerOVSDBLinkExternalIDs(spec)) {
@@ -372,6 +391,9 @@ func (s *LibOVSDBProviderSyncer) ReadProviderOVSDBStatus(ctx context.Context, ro
 			status.InterfaceState = "missing"
 		} else if !providerExternalIDsMatch(iface.ExternalIDs, providerOVSDBLinkExternalIDs(spec)) {
 			status.InterfaceState = "external-ids-mismatch"
+		}
+		if ok {
+			status.InterfaceUUID = iface.UUID
 		}
 		statuses = append(statuses, status)
 	}
@@ -562,6 +584,39 @@ func controllerStatusDetail(controllers []vswitch.Controller) string {
 	}
 	sort.Strings(parts)
 	return strings.Join(parts, ";")
+}
+
+func (s *LibOVSDBProviderSyncer) bridgeControllerPath(ctx context.Context, controllerUUIDs []string) ([]string, []string, error) {
+	if len(controllerUUIDs) == 0 {
+		return nil, nil, nil
+	}
+	uuids := make([]string, 0, len(controllerUUIDs))
+	targets := make([]string, 0, len(controllerUUIDs))
+	for _, controllerUUID := range controllerUUIDs {
+		controller, ok, err := s.controllerByUUID(ctx, controllerUUID)
+		if err != nil {
+			return nil, nil, err
+		}
+		uuids = append(uuids, controllerUUID)
+		if ok && controller.Target != "" {
+			targets = append(targets, controller.Target)
+		}
+	}
+	return sortedUniqueStrings(uuids), sortedUniqueStrings(targets), nil
+}
+
+func (s *LibOVSDBProviderSyncer) portQueueUUIDs(ctx context.Context, qosUUID string) ([]string, error) {
+	qos, ok, err := s.qosByUUID(ctx, qosUUID)
+	if err != nil || !ok {
+		return nil, err
+	}
+	queueUUIDs := make([]string, 0, len(qos.Queues))
+	for _, queueUUID := range qos.Queues {
+		if queueUUID != "" {
+			queueUUIDs = append(queueUUIDs, queueUUID)
+		}
+	}
+	return sortedUniqueStrings(queueUUIDs), nil
 }
 
 func (s *LibOVSDBProviderSyncer) controllerByProviderName(ctx context.Context, name string) (*vswitch.Controller, bool, error) {
