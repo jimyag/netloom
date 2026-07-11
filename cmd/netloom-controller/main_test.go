@@ -293,6 +293,80 @@ func TestParseOVNClusterStatusExtractsEndpointDetails(t *testing.T) {
 	}
 }
 
+func TestSummarizeOVNClusterHealthReportsQuorumState(t *testing.T) {
+	tests := []struct {
+		name      string
+		snapshot  ovnClusterHealthSnapshot
+		status    string
+		reachable int
+		quorum    int
+		leaders   int
+	}{
+		{
+			name:     "unknown without endpoint probes",
+			snapshot: ovnClusterHealthSnapshot{ConfiguredEndpoints: 3},
+			status:   "unknown",
+			quorum:   2,
+		},
+		{
+			name: "ok when every endpoint is reachable with one leader",
+			snapshot: ovnClusterHealthSnapshot{ConfiguredEndpoints: 3, Endpoints: []ovnClusterEndpointSnapshot{
+				{Endpoint: "tcp:a:6641", Reachable: true, Leader: true},
+				{Endpoint: "tcp:b:6641", Reachable: true},
+				{Endpoint: "tcp:c:6641", Reachable: true},
+			}},
+			status:    "ok",
+			reachable: 3,
+			quorum:    2,
+			leaders:   1,
+		},
+		{
+			name: "degraded when quorum remains but a member is unreachable",
+			snapshot: ovnClusterHealthSnapshot{ConfiguredEndpoints: 3, Endpoints: []ovnClusterEndpointSnapshot{
+				{Endpoint: "tcp:a:6641", Reachable: true, Leader: true},
+				{Endpoint: "tcp:b:6641", Reachable: true},
+				{Endpoint: "tcp:c:6641"},
+			}},
+			status:    "degraded",
+			reachable: 2,
+			quorum:    2,
+			leaders:   1,
+		},
+		{
+			name: "lost when reachable endpoints fall below quorum",
+			snapshot: ovnClusterHealthSnapshot{ConfiguredEndpoints: 3, Endpoints: []ovnClusterEndpointSnapshot{
+				{Endpoint: "tcp:a:6641", Reachable: true, Leader: true},
+				{Endpoint: "tcp:b:6641"},
+				{Endpoint: "tcp:c:6641"},
+			}},
+			status:    "lost",
+			reachable: 1,
+			quorum:    2,
+			leaders:   1,
+		},
+		{
+			name: "split brain takes precedence over quorum",
+			snapshot: ovnClusterHealthSnapshot{ConfiguredEndpoints: 3, Endpoints: []ovnClusterEndpointSnapshot{
+				{Endpoint: "tcp:a:6641", Reachable: true, Leader: true},
+				{Endpoint: "tcp:b:6641", Reachable: true, Leader: true},
+				{Endpoint: "tcp:c:6641", Reachable: true},
+			}},
+			status:    "split-brain",
+			reachable: 3,
+			quorum:    2,
+			leaders:   2,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := summarizeOVNClusterHealth(tt.snapshot)
+			if got.QuorumStatus != tt.status || got.ReachableEndpoints != tt.reachable || got.QuorumSize != tt.quorum || got.LeaderCount != tt.leaders {
+				t.Fatalf("summary = %+v, want status=%s reachable=%d quorum=%d leaders=%d", got, tt.status, tt.reachable, tt.quorum, tt.leaders)
+			}
+		})
+	}
+}
+
 func TestOVNDBMaintenanceTargetsFromEnvParsesTargets(t *testing.T) {
 	t.Setenv("NETLOOM_OVN_DB_COMPACT_TARGETS", "/run/ovn/ovnnb_db.ctl=OVN_Northbound,/run/ovn/ovnsb_db.ctl=OVN_Southbound,/run/ovn/ovnnb_db.ctl=OVN_Northbound")
 	targets := ovnDBMaintenanceTargetsFromEnv()
@@ -463,6 +537,14 @@ func TestLibOVSDBClusterConnectorPrefersProbedLeaderEndpoint(t *testing.T) {
 				LeaderID:  "self",
 				Reachable: true,
 				Leader:    true,
+			}, {
+				Endpoint:  "tcp:a:6641",
+				Target:    "target-a",
+				Role:      "follower",
+				Status:    "cluster member",
+				ServerID:  "server-a",
+				LeaderID:  "server-b",
+				Reachable: true,
 			}},
 		}, nil
 	})
@@ -479,7 +561,10 @@ func TestLibOVSDBClusterConnectorPrefersProbedLeaderEndpoint(t *testing.T) {
 	if snapshot.LeaderProbeStatus != "ok" || snapshot.LeaderProbeError != "" {
 		t.Fatalf("leader probe snapshot = %+v, want ok without error", snapshot)
 	}
-	if len(snapshot.Endpoints) != 1 || snapshot.Endpoints[0].ServerID != "server-b" {
+	if snapshot.QuorumStatus != "ok" || snapshot.ReachableEndpoints != 2 || snapshot.QuorumSize != 2 || snapshot.LeaderCount != 1 {
+		t.Fatalf("cluster quorum snapshot = %+v, want reachable leader quorum", snapshot)
+	}
+	if len(snapshot.Endpoints) != 2 || snapshot.Endpoints[0].ServerID != "server-b" {
 		t.Fatalf("cluster endpoint statuses = %+v, want probed leader details", snapshot.Endpoints)
 	}
 }
@@ -510,6 +595,9 @@ func TestLibOVSDBClusterConnectorReportsLeaderProbeFailure(t *testing.T) {
 	}
 	if snapshot.LeaderProbeStatus != "error" || !strings.Contains(snapshot.LeaderProbeError, "cluster status unavailable") {
 		t.Fatalf("leader probe snapshot = %+v, want recorded probe error", snapshot)
+	}
+	if snapshot.QuorumStatus != "lost" || snapshot.ReachableEndpoints != 0 || snapshot.QuorumSize != 2 {
+		t.Fatalf("cluster quorum snapshot = %+v, want lost quorum", snapshot)
 	}
 	if len(snapshot.Endpoints) != 1 || snapshot.Endpoints[0].Reachable {
 		t.Fatalf("cluster endpoint statuses = %+v, want unreachable target details", snapshot.Endpoints)
@@ -750,6 +838,22 @@ func TestControllerMetricsExportsLatestSuccess(t *testing.T) {
 				LeaderID:  "self",
 				Reachable: true,
 				Leader:    true,
+			}, {
+				Endpoint:  "tcp:10.0.0.1:6641",
+				Target:    "ovnnb-a.ctl",
+				Role:      "follower",
+				Status:    "cluster member",
+				ServerID:  "server-a",
+				LeaderID:  "server-b",
+				Reachable: true,
+			}, {
+				Endpoint:  "tcp:10.0.0.3:6641",
+				Target:    "ovnnb-c.ctl",
+				Role:      "follower",
+				Status:    "cluster member",
+				ServerID:  "server-c",
+				LeaderID:  "server-b",
+				Reachable: true,
 			}},
 		},
 		OVNOps:      7,
@@ -827,6 +931,10 @@ func TestControllerMetricsExportsLatestSuccess(t *testing.T) {
 		`netloom_controller_ovn_cluster_leader_probe_status{ovn_health="ok",status="ok"} 1`,
 		`netloom_controller_ovn_cluster_leader_preferred{ovn_health="ok"} 1`,
 		`netloom_controller_ovn_cluster_endpoints{ovn_health="ok"} 3`,
+		`netloom_controller_ovn_cluster_reachable_endpoints{ovn_health="ok"} 3`,
+		`netloom_controller_ovn_cluster_quorum_size{ovn_health="ok"} 2`,
+		`netloom_controller_ovn_cluster_leaders{ovn_health="ok"} 1`,
+		`netloom_controller_ovn_cluster_quorum_status{ovn_health="ok",status="ok"} 1`,
 		`netloom_controller_ovn_cluster_failovers{ovn_health="ok"} 1`,
 		`netloom_controller_ovn_cluster_endpoint_status{active="1",endpoint="tcp:10.0.0.2:6641",leader="1",leader_id="self",ovn_health="ok",role="leader",server_id="server-b",status="cluster member",target="ovnnb-b.ctl"} 1`,
 		`netloom_controller_ovn_operations_planned{ovn_health="ok"} 7`,
@@ -935,7 +1043,19 @@ func TestSyncOVSDBControlStatusPersistsAuditSummary(t *testing.T) {
 		context.Background(),
 		state,
 		control.LoadBalancerHealthSummary{Checked: 2, Healthy: 1, Unhealthy: 1},
-		ovnHealthSnapshot{Status: "ok", Latency: 25 * time.Millisecond, ConsecutiveSuccesses: 1},
+		ovnHealthSnapshot{
+			Status:               "ok",
+			Latency:              25 * time.Millisecond,
+			ConsecutiveSuccesses: 1,
+			Cluster: ovnClusterHealthSnapshot{
+				ConfiguredEndpoints: 3,
+				Endpoints: []ovnClusterEndpointSnapshot{
+					{Endpoint: "tcp:a:6641", Reachable: true, Leader: true},
+					{Endpoint: "tcp:b:6641", Reachable: true},
+					{Endpoint: "tcp:c:6641"},
+				},
+			},
+		},
 		7,
 		6,
 		"ok",
@@ -964,6 +1084,9 @@ func TestSyncOVSDBControlStatusPersistsAuditSummary(t *testing.T) {
 	}
 	if status.OVNHealth.Status != "ok" || status.OVNOps != 7 || status.OVNExecuted != 6 {
 		t.Fatalf("ovn execution status = %+v, want health and operation counts", status)
+	}
+	if status.OVNHealth.Cluster.QuorumStatus != "degraded" || status.OVNHealth.Cluster.ReachableEndpoints != 2 || status.OVNHealth.Cluster.QuorumSize != 2 || status.OVNHealth.Cluster.LeaderCount != 1 {
+		t.Fatalf("ovn cluster status = %+v, want degraded quorum summary", status.OVNHealth.Cluster)
 	}
 	if status.OVNAudit.ManagedLogicalRouters != 1 || status.OVNAudit.DriftedManagedRows != 2 {
 		t.Fatalf("ovn audit status = %+v, want audit counts", status.OVNAudit)

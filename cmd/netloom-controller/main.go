@@ -202,7 +202,11 @@ type ovnClusterHealthSnapshot struct {
 	LeaderEndpoint      string                       `json:"leader_endpoint,omitempty"`
 	LeaderProbeStatus   string                       `json:"leader_probe_status,omitempty"`
 	LeaderProbeError    string                       `json:"leader_probe_error,omitempty"`
+	QuorumStatus        string                       `json:"quorum_status,omitempty"`
 	ConfiguredEndpoints int                          `json:"configured_endpoints"`
+	ReachableEndpoints  int                          `json:"reachable_endpoints"`
+	QuorumSize          int                          `json:"quorum_size"`
+	LeaderCount         int                          `json:"leader_count"`
 	Failovers           int                          `json:"failovers"`
 	LeaderPreferred     bool                         `json:"leader_preferred"`
 	Endpoints           []ovnClusterEndpointSnapshot `json:"endpoints,omitempty"`
@@ -399,7 +403,7 @@ func (r *stateFileReconciler) reconcile(ctx context.Context, path string) error 
 		log.Printf("netloom-controller failed to sync Open_vSwitch control status: %v", err)
 	}
 	fmt.Printf(
-		"netloom-controller reconciled desired state vpcs=%d subnets=%d endpoints=%d route_tables=%d policy_routes=%d gateways=%d nat_rules=%d load_balancers=%d security_groups=%d policy_entries=%d lb_health_checked=%d lb_health_healthy=%d lb_health_unhealthy=%d ovn_health=%s ovn_health_latency_ms=%d ovn_health_consecutive_failures=%d ovn_health_consecutive_successes=%d ovn_health_recovering=%d ovn_cluster_active_endpoint=%s ovn_cluster_leader_endpoint=%s ovn_cluster_leader_probe_status=%s ovn_cluster_leader_probe_error=%s ovn_cluster_leader_preferred=%d ovn_cluster_endpoints=%d ovn_cluster_failovers=%d ovn_ops=%d ovn_executed=%d ovn_audit=%s ovn_live_managed=%d ovn_live_duplicates=%d ovn_live_incomplete=%d ovn_live_missing=%d ovn_live_unexpected=%d ovn_live_drifted_rows=%d ovn_live_drifted_fields=%d ovn_audit_error=%s ovn_stale_advisory=%s ovn_stale_burden=%d ovn_stale_threshold=%d ovn_maintenance=%s ovn_maintenance_attempted=%d ovn_maintenance_succeeded=%d ovn_maintenance_failed=%d ovn_maintenance_latency_ms=%d ovn_maintenance_error=%s reconcile_duration_ms=%d\n",
+		"netloom-controller reconciled desired state vpcs=%d subnets=%d endpoints=%d route_tables=%d policy_routes=%d gateways=%d nat_rules=%d load_balancers=%d security_groups=%d policy_entries=%d lb_health_checked=%d lb_health_healthy=%d lb_health_unhealthy=%d ovn_health=%s ovn_health_latency_ms=%d ovn_health_consecutive_failures=%d ovn_health_consecutive_successes=%d ovn_health_recovering=%d ovn_cluster_active_endpoint=%s ovn_cluster_leader_endpoint=%s ovn_cluster_leader_probe_status=%s ovn_cluster_leader_probe_error=%s ovn_cluster_quorum_status=%s ovn_cluster_reachable_endpoints=%d ovn_cluster_quorum_size=%d ovn_cluster_leaders=%d ovn_cluster_leader_preferred=%d ovn_cluster_endpoints=%d ovn_cluster_failovers=%d ovn_ops=%d ovn_executed=%d ovn_audit=%s ovn_live_managed=%d ovn_live_duplicates=%d ovn_live_incomplete=%d ovn_live_missing=%d ovn_live_unexpected=%d ovn_live_drifted_rows=%d ovn_live_drifted_fields=%d ovn_audit_error=%s ovn_stale_advisory=%s ovn_stale_burden=%d ovn_stale_threshold=%d ovn_maintenance=%s ovn_maintenance_attempted=%d ovn_maintenance_succeeded=%d ovn_maintenance_failed=%d ovn_maintenance_latency_ms=%d ovn_maintenance_error=%s reconcile_duration_ms=%d\n",
 		len(state.VPCs),
 		len(state.Subnets),
 		len(state.Endpoints),
@@ -422,6 +426,10 @@ func (r *stateFileReconciler) reconcile(ctx context.Context, path string) error 
 		formatResultValue(ovnHealth.Snapshot.Cluster.LeaderEndpoint),
 		formatResultValue(ovnHealth.Snapshot.Cluster.LeaderProbeStatus),
 		formatResultError(ovnHealth.Snapshot.Cluster.LeaderProbeError),
+		formatResultValue(ovnHealth.Snapshot.Cluster.QuorumStatus),
+		ovnHealth.Snapshot.Cluster.ReachableEndpoints,
+		ovnHealth.Snapshot.Cluster.QuorumSize,
+		ovnHealth.Snapshot.Cluster.LeaderCount,
 		boolMetric(ovnHealth.Snapshot.Cluster.LeaderPreferred),
 		ovnHealth.Snapshot.Cluster.ConfiguredEndpoints,
 		ovnHealth.Snapshot.Cluster.Failovers,
@@ -488,7 +496,7 @@ func printControllerReconcileFailure(phase string, state control.DesiredState, h
 		phase = "unknown"
 	}
 	fmt.Printf(
-		"netloom-controller reconcile failed reconcile_phase=%s vpcs=%d subnets=%d endpoints=%d route_tables=%d policy_routes=%d gateways=%d nat_rules=%d load_balancers=%d security_groups=%d policy_entries=%d lb_health_checked=%d lb_health_healthy=%d lb_health_unhealthy=%d ovn_health=%s ovn_health_latency_ms=%d ovn_health_consecutive_failures=%d ovn_health_consecutive_successes=%d ovn_health_recovering=%d ovn_cluster_active_endpoint=%s ovn_cluster_leader_endpoint=%s ovn_cluster_leader_probe_status=%s ovn_cluster_leader_probe_error=%s ovn_cluster_leader_preferred=%d ovn_cluster_endpoints=%d ovn_cluster_failovers=%d ovn_ops=%d ovn_executed=%d err=%q reconcile_duration_ms=%d\n",
+		"netloom-controller reconcile failed reconcile_phase=%s vpcs=%d subnets=%d endpoints=%d route_tables=%d policy_routes=%d gateways=%d nat_rules=%d load_balancers=%d security_groups=%d policy_entries=%d lb_health_checked=%d lb_health_healthy=%d lb_health_unhealthy=%d ovn_health=%s ovn_health_latency_ms=%d ovn_health_consecutive_failures=%d ovn_health_consecutive_successes=%d ovn_health_recovering=%d ovn_cluster_active_endpoint=%s ovn_cluster_leader_endpoint=%s ovn_cluster_leader_probe_status=%s ovn_cluster_leader_probe_error=%s ovn_cluster_quorum_status=%s ovn_cluster_reachable_endpoints=%d ovn_cluster_quorum_size=%d ovn_cluster_leaders=%d ovn_cluster_leader_preferred=%d ovn_cluster_endpoints=%d ovn_cluster_failovers=%d ovn_ops=%d ovn_executed=%d err=%q reconcile_duration_ms=%d\n",
 		phase,
 		len(state.VPCs),
 		len(state.Subnets),
@@ -512,6 +520,10 @@ func printControllerReconcileFailure(phase string, state control.DesiredState, h
 		formatResultValue(ovnHealth.Cluster.LeaderEndpoint),
 		formatResultValue(ovnHealth.Cluster.LeaderProbeStatus),
 		formatResultError(ovnHealth.Cluster.LeaderProbeError),
+		formatResultValue(ovnHealth.Cluster.QuorumStatus),
+		ovnHealth.Cluster.ReachableEndpoints,
+		ovnHealth.Cluster.QuorumSize,
+		ovnHealth.Cluster.LeaderCount,
 		boolMetric(ovnHealth.Cluster.LeaderPreferred),
 		ovnHealth.Cluster.ConfiguredEndpoints,
 		ovnHealth.Cluster.Failovers,
@@ -659,6 +671,7 @@ func (r *stateFileReconciler) syncOVSDBControlStatus(ctx context.Context, state 
 	if r == nil || r.ovsStatus == nil {
 		return nil
 	}
+	ovnHealth.Cluster = summarizeOVNClusterHealth(ovnHealth.Cluster)
 	status := controllerOVSDBStatus{
 		SchemaVersion:       1,
 		UpdatedAt:           time.Now().UTC().Format(time.RFC3339Nano),
@@ -934,6 +947,7 @@ func (m *controllerMetrics) handleMetrics(w http.ResponseWriter, _ *http.Request
 }
 
 func writeControllerMetrics(w metricWriter, snapshot controllerMetricsSnapshot, totals controllerMetricsTotals) {
+	snapshot.OVNCluster = summarizeOVNClusterHealth(snapshot.OVNCluster)
 	success := 0
 	if snapshot.Success {
 		success = 1
@@ -1016,6 +1030,17 @@ func writeControllerMetrics(w metricWriter, snapshot controllerMetricsSnapshot, 
 	fmt.Fprintf(w, "netloom_controller_ovn_cluster_leader_preferred%s %d\n", baseLabels, boolMetric(snapshot.OVNCluster.LeaderPreferred))
 	writeMetricType(w, "netloom_controller_ovn_cluster_endpoints", "gauge")
 	fmt.Fprintf(w, "netloom_controller_ovn_cluster_endpoints%s %d\n", baseLabels, snapshot.OVNCluster.ConfiguredEndpoints)
+	writeMetricType(w, "netloom_controller_ovn_cluster_reachable_endpoints", "gauge")
+	fmt.Fprintf(w, "netloom_controller_ovn_cluster_reachable_endpoints%s %d\n", baseLabels, snapshot.OVNCluster.ReachableEndpoints)
+	writeMetricType(w, "netloom_controller_ovn_cluster_quorum_size", "gauge")
+	fmt.Fprintf(w, "netloom_controller_ovn_cluster_quorum_size%s %d\n", baseLabels, snapshot.OVNCluster.QuorumSize)
+	writeMetricType(w, "netloom_controller_ovn_cluster_leaders", "gauge")
+	fmt.Fprintf(w, "netloom_controller_ovn_cluster_leaders%s %d\n", baseLabels, snapshot.OVNCluster.LeaderCount)
+	writeMetricType(w, "netloom_controller_ovn_cluster_quorum_status", "gauge")
+	fmt.Fprintf(w, "netloom_controller_ovn_cluster_quorum_status%s 1\n", prometheusLabels(map[string]string{
+		"ovn_health": fallbackMetricsLabel(snapshot.OVNHealthStatus, "disabled"),
+		"status":     fallbackMetricsLabel(snapshot.OVNCluster.QuorumStatus, "disabled"),
+	}))
 	writeMetricType(w, "netloom_controller_ovn_cluster_failovers", "gauge")
 	fmt.Fprintf(w, "netloom_controller_ovn_cluster_failovers%s %d\n", baseLabels, snapshot.OVNCluster.Failovers)
 	writeMetricType(w, "netloom_controller_ovn_cluster_endpoint_status", "gauge")
@@ -1791,7 +1816,7 @@ func (c *libovsdbClusterConnector) Snapshot() ovnClusterHealthSnapshot {
 	} else if leaderStatus == "" {
 		leaderStatus = "unknown"
 	}
-	return ovnClusterHealthSnapshot{
+	snapshot := ovnClusterHealthSnapshot{
 		ActiveEndpoint:      c.current,
 		LeaderEndpoint:      c.leader,
 		LeaderProbeStatus:   leaderStatus,
@@ -1801,6 +1826,42 @@ func (c *libovsdbClusterConnector) Snapshot() ovnClusterHealthSnapshot {
 		LeaderPreferred:     c.leader != "" && c.current == c.leader,
 		Endpoints:           append([]ovnClusterEndpointSnapshot(nil), c.statuses...),
 	}
+	return summarizeOVNClusterHealth(snapshot)
+}
+
+func summarizeOVNClusterHealth(snapshot ovnClusterHealthSnapshot) ovnClusterHealthSnapshot {
+	snapshot.ReachableEndpoints = 0
+	snapshot.QuorumSize = 0
+	snapshot.LeaderCount = 0
+	snapshot.QuorumStatus = ""
+	if snapshot.ConfiguredEndpoints <= 0 {
+		snapshot.QuorumStatus = "disabled"
+		return snapshot
+	}
+	snapshot.QuorumSize = snapshot.ConfiguredEndpoints/2 + 1
+	if len(snapshot.Endpoints) == 0 {
+		snapshot.QuorumStatus = "unknown"
+		return snapshot
+	}
+	for _, endpoint := range snapshot.Endpoints {
+		if endpoint.Reachable {
+			snapshot.ReachableEndpoints++
+		}
+		if endpoint.Leader {
+			snapshot.LeaderCount++
+		}
+	}
+	switch {
+	case snapshot.LeaderCount > 1:
+		snapshot.QuorumStatus = "split-brain"
+	case snapshot.ReachableEndpoints < snapshot.QuorumSize:
+		snapshot.QuorumStatus = "lost"
+	case snapshot.ReachableEndpoints < snapshot.ConfiguredEndpoints || snapshot.LeaderCount == 0:
+		snapshot.QuorumStatus = "degraded"
+	default:
+		snapshot.QuorumStatus = "ok"
+	}
+	return snapshot
 }
 
 func newOVNNBClientFromEndpoints(ctx context.Context, owner string, endpoints []string) (libovsdbclient.Client, func(), error) {
