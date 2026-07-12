@@ -105,6 +105,22 @@ func TestTCXRuleMetricsFromValueClassifiesCounters(t *testing.T) {
 	}
 }
 
+func TestTCXAttachmentMetricsEndpointIDLabelsAttachContext(t *testing.T) {
+	attachment := &TCXAttachment{Result: TCXSelfTestResult{
+		Interface: "eth0",
+		Direction: "ingress",
+		Mode:      "policy-l4-dual",
+	}}
+	if got := attachment.metricsEndpointID(2); got != "tcx:iface=eth0 direction=ingress attach=2" {
+		t.Fatalf("endpoint id = %q", got)
+	}
+
+	attachment = &TCXAttachment{}
+	if got := attachment.metricsEndpointID(1); got != "tcx:iface=unknown direction=unknown attach=1" {
+		t.Fatalf("fallback endpoint id = %q", got)
+	}
+}
+
 func TestIPv4L4ACLRulesFromProgramProjectsExactIngressPolicy(t *testing.T) {
 	program := policy.Program{
 		EndpointID: testEndpointA,

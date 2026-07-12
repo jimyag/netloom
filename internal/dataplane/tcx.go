@@ -112,6 +112,7 @@ func (a *TCXAttachment) PolicyRuleMetrics(ctx context.Context) ([]RuleMetrics, e
 		maps = append(maps, a.aclMap)
 	}
 	maps = append(maps, a.aclMaps...)
+	endpointID := a.metricsEndpointID(len(maps))
 	byCookie := make(map[uint32]RuleMetrics)
 	for _, aclMap := range maps {
 		if aclMap == nil {
@@ -124,6 +125,7 @@ func (a *TCXAttachment) PolicyRuleMetrics(ctx context.Context) ([]RuleMetrics, e
 		for _, value := range values {
 			metrics := tcxRuleMetricsFromValue(value)
 			existing := byCookie[metrics.RuleCookie]
+			existing.EndpointID = endpointID
 			existing.RuleCookie = metrics.RuleCookie
 			existing.Packets += metrics.Packets
 			existing.Bytes += metrics.Bytes
@@ -144,6 +146,21 @@ func (a *TCXAttachment) PolicyRuleMetrics(ctx context.Context) ([]RuleMetrics, e
 		return out[i].RuleCookie < out[j].RuleCookie
 	})
 	return out, nil
+}
+
+func (a *TCXAttachment) metricsEndpointID(attachCount int) string {
+	if a == nil {
+		return ""
+	}
+	iface := a.Result.Interface
+	if iface == "" {
+		iface = "unknown"
+	}
+	direction := a.Result.Direction
+	if direction == "" {
+		direction = "unknown"
+	}
+	return fmt.Sprintf("tcx:iface=%s direction=%s attach=%d", iface, direction, attachCount)
 }
 
 type IPv4L4Key struct {
