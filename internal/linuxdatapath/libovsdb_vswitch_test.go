@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"net/netip"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -177,6 +178,51 @@ func TestLibOVSDBProviderSyncerRepairsProviderPortConfig(t *testing.T) {
 	if port.Tag == nil || *port.Tag != 100 || port.VLANMode == nil || *port.VLANMode != vswitch.PortVLANModeAccess ||
 		port.OtherConfig["netloom-provider-mode"] != "access" {
 		t.Fatalf("port after drift repair = %+v, want desired OVSDB VLAN config columns restored", port)
+	}
+}
+
+func TestLibOVSDBProviderSyncerRepairsProviderBridgeConfig(t *testing.T) {
+	client, cleanup := newTestVSwitchClient(t)
+	defer cleanup()
+	ctx := context.Background()
+	insertVSwitchRows(t, ctx, client, &vswitch.OpenvSwitch{})
+
+	rows := desiredProviderOVSDBRows([]providerNetworkLinkSpec{{
+		ProviderNetwork: "physnet-a",
+		ParentDevice:    "eth1",
+		VLAN:            100,
+		Name:            "nlv100",
+	}})
+	syncer := NewLibOVSDBProviderSyncer(client)
+	if err := syncer.SyncProviderOVSDB(ctx, rows, false); err != nil {
+		t.Fatal(err)
+	}
+	bridge := singleBridgeByName(t, ctx, client, providerNetworkBridgeName("physnet-a"))
+	if !reflect.DeepEqual(bridge.Protocols, []vswitch.BridgeProtocols{vswitch.BridgeProtocolsOpenflow13}) {
+		t.Fatalf("bridge protocols = %+v, want OpenFlow13", bridge.Protocols)
+	}
+
+	bridge.Protocols = nil
+	updateOps, err := client.Where(bridge).Update(bridge, &bridge.Protocols)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transactVSwitchOps(t, ctx, client, updateOps)
+
+	statuses, err := syncer.ReadProviderOVSDBStatus(ctx, rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(statuses) != 1 || statuses[0].BridgeState != "mismatch" {
+		t.Fatalf("statuses = %+v, want provider bridge config mismatch", statuses)
+	}
+
+	if err := syncer.SyncProviderOVSDB(ctx, rows, false); err != nil {
+		t.Fatal(err)
+	}
+	bridge = singleBridgeByName(t, ctx, client, providerNetworkBridgeName("physnet-a"))
+	if !reflect.DeepEqual(bridge.Protocols, []vswitch.BridgeProtocols{vswitch.BridgeProtocolsOpenflow13}) {
+		t.Fatalf("bridge protocols after repair = %+v, want OpenFlow13", bridge.Protocols)
 	}
 }
 

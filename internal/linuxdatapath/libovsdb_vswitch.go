@@ -383,6 +383,8 @@ func (s *LibOVSDBProviderSyncer) ReadProviderOVSDBStatus(ctx context.Context, ro
 			status.BridgeUUID = bridge.UUID
 			if !providerExternalIDsMatch(bridge.ExternalIDs, bridgeByName[bridgeName].ExternalIDs) {
 				status.BridgeState = "external-ids-mismatch"
+			} else if !providerBridgeConfigEqual(*bridge, bridgeByName[bridgeName]) {
+				status.BridgeState = "mismatch"
 			}
 			controllerUUIDs, controllerTargets, err := s.bridgeControllerPath(ctx, bridge.Controller)
 			if err != nil {
@@ -724,16 +726,29 @@ func (s *LibOVSDBProviderSyncer) ensureBridge(ctx context.Context, desired vswit
 			return "", nil, err
 		}
 	}
-	if reflect.DeepEqual(existing.ExternalIDs, nextExternalIDs) && reflect.DeepEqual(sortedUniqueStrings(existing.Controller), sortedUniqueStrings(nextController)) {
+	if providerBridgeConfigEqual(*existing, desired) &&
+		reflect.DeepEqual(existing.ExternalIDs, nextExternalIDs) &&
+		reflect.DeepEqual(sortedUniqueStrings(existing.Controller), sortedUniqueStrings(nextController)) {
 		return existing.UUID, nil, nil
 	}
 	existing.ExternalIDs = nextExternalIDs
 	existing.Controller = sortedUniqueStrings(nextController)
-	ops, err := s.client.Where(existing).Update(existing, &existing.ExternalIDs, &existing.Controller)
+	existing.DatapathType = desired.DatapathType
+	existing.FailMode = desired.FailMode
+	existing.OtherConfig = desired.OtherConfig
+	existing.Protocols = desired.Protocols
+	ops, err := s.client.Where(existing).Update(existing, &existing.ExternalIDs, &existing.Controller, &existing.DatapathType, &existing.FailMode, &existing.OtherConfig, &existing.Protocols)
 	if err != nil {
 		return "", nil, fmt.Errorf("update OVS bridge %s: %w", desired.Name, err)
 	}
 	return existing.UUID, ops, nil
+}
+
+func providerBridgeConfigEqual(got, desired vswitch.Bridge) bool {
+	return got.DatapathType == desired.DatapathType &&
+		bridgeFailModePointersEqual(got.FailMode, desired.FailMode) &&
+		reflect.DeepEqual(got.OtherConfig, desired.OtherConfig) &&
+		reflect.DeepEqual(sortedBridgeProtocols(got.Protocols), sortedBridgeProtocols(desired.Protocols))
 }
 
 func (s *LibOVSDBProviderSyncer) ensurePort(ctx context.Context, desired vswitch.Port) (string, []ovsdb.Operation, error) {
@@ -1639,6 +1654,19 @@ func portVLANModePointersEqual(a, b *vswitch.PortVLANMode) bool {
 		return a == b
 	}
 	return *a == *b
+}
+
+func bridgeFailModePointersEqual(a, b *vswitch.BridgeFailMode) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+func sortedBridgeProtocols(values []vswitch.BridgeProtocols) []vswitch.BridgeProtocols {
+	out := append([]vswitch.BridgeProtocols(nil), values...)
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
 }
 
 func providerExternalIDsMatch(got map[string]string, want map[string]string) bool {

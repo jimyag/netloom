@@ -14,6 +14,7 @@ import (
 
 	"github.com/jimyag/netloom/internal/control"
 	"github.com/jimyag/netloom/internal/model"
+	"github.com/jimyag/netloom/internal/ovn/ovsdb/vswitch"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 )
@@ -440,6 +441,9 @@ func TestDesiredProviderOVSDBRowsBuildsTypedVSwitchRows(t *testing.T) {
 	for _, bridge := range rows.Bridges {
 		if bridge.ExternalIDs["netloom_provider_network"] == "physnet-a" && len(bridge.Controller) != 1 {
 			t.Fatalf("bridge controllers = %+v, want physnet-a controller identity", bridge.Controller)
+		}
+		if !reflect.DeepEqual(bridge.Protocols, []vswitch.BridgeProtocols{vswitch.BridgeProtocolsOpenflow13}) {
+			t.Fatalf("bridge protocols = %+v, want OpenFlow13", bridge.Protocols)
 		}
 	}
 	if len(rows.Ports) != 3 || rows.Ports[0].Name != "nlv100" || rows.Ports[0].Interfaces[0] != "nlv100" {

@@ -42,7 +42,8 @@ func desiredProviderOVSDBRowsForIdentityGroups(specs []providerNetworkLinkSpec, 
 		bridge, ok := bridgeByName[bridgeName]
 		if !ok {
 			bridge = &vswitch.Bridge{
-				Name: bridgeName,
+				Name:      bridgeName,
+				Protocols: []vswitch.BridgeProtocols{vswitch.BridgeProtocolsOpenflow13},
 				ExternalIDs: map[string]string{
 					"netloom_owner":            "netloom",
 					"netloom_provider_network": spec.ProviderNetwork,
