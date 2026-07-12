@@ -885,6 +885,10 @@ func appendIPv4ProjectedRule(rules *[]IPv4L4ACLRule, seen map[IPv4L4Key]int32, c
 			existing.Precedence == candidate.Precedence && existing.Action != candidate.Action {
 			return fmt.Errorf("conflicting TCX ACL actions for identical match key")
 		}
+		if existingKey == candidateKey &&
+			existing.Precedence == candidate.Precedence && existing.Action == candidate.Action && existing.Reject != candidate.Reject {
+			return fmt.Errorf("conflicting TCX ACL reject actions for identical match key")
+		}
 		if existingKey == candidateKey && existing.Precedence == candidate.Precedence && existing.Action == candidate.Action {
 			current[i].Log = existing.Log || candidate.Log
 			current[i].Reject = existing.Reject || candidate.Reject
@@ -915,6 +919,10 @@ func appendIPv6ProjectedRule(rules *[]IPv6L4ACLRule, seen map[IPv6L4Key]int32, c
 		if existingKey == candidateKey &&
 			existing.Precedence == candidate.Precedence && existing.Action != candidate.Action {
 			return fmt.Errorf("conflicting TCX ACL actions for identical match key")
+		}
+		if existingKey == candidateKey &&
+			existing.Precedence == candidate.Precedence && existing.Action == candidate.Action && existing.Reject != candidate.Reject {
+			return fmt.Errorf("conflicting TCX ACL reject actions for identical match key")
 		}
 		if existingKey == candidateKey && existing.Precedence == candidate.Precedence && existing.Action == candidate.Action {
 			current[i].Log = existing.Log || candidate.Log

@@ -1260,6 +1260,34 @@ func TestIPv4L4ACLRulesFromProgramsKeepsHigherPrecedenceDuplicateKey(t *testing.
 	}
 }
 
+func TestIPv4L4ACLRulesFromProgramRejectsSamePrecedenceDropRejectConflict(t *testing.T) {
+	program := policy.Program{
+		EndpointID: testEndpointA,
+		EndpointIP: netip.MustParseAddr("10.10.0.10"),
+		Rules: []policy.Rule{{
+			ID:         "drop-web",
+			Priority:   100,
+			Direction:  model.DirectionIngress,
+			Protocol:   model.ProtocolTCP,
+			RemoteCIDR: netip.MustParsePrefix("172.30.0.11/32"),
+			Ports:      []model.PortRange{{From: 8080, To: 8080}},
+			Action:     model.ActionDrop,
+		}, {
+			ID:         "reject-web",
+			Priority:   100,
+			Direction:  model.DirectionIngress,
+			Protocol:   model.ProtocolTCP,
+			RemoteCIDR: netip.MustParsePrefix("172.30.0.11/32"),
+			Ports:      []model.PortRange{{From: 8080, To: 8080}},
+			Action:     model.ActionReject,
+		}},
+	}
+	_, err := IPv4L4ACLRulesFromProgram(program)
+	if err == nil || !strings.Contains(err.Error(), "conflicting TCX ACL reject actions") {
+		t.Fatalf("error = %v, want drop/reject conflict", err)
+	}
+}
+
 func TestIPv4L4ACLRulesFromProgramProjectsExactRemoteEndpoint(t *testing.T) {
 	program := policy.Program{
 		EndpointID: testEndpointA,
@@ -1424,6 +1452,34 @@ func TestIPv6L4ACLRulesFromProgramsKeepsHigherPrecedenceDuplicateKey(t *testing.
 	}
 	if len(rules) != 1 || rules[0].Action != TCXDrop {
 		t.Fatalf("rules = %+v, want higher-precedence drop only", rules)
+	}
+}
+
+func TestIPv6L4ACLRulesFromProgramRejectsSamePrecedenceDropRejectConflict(t *testing.T) {
+	program := policy.Program{
+		EndpointID: testEndpointA,
+		EndpointIP: netip.MustParseAddr("fd00:10::10"),
+		Rules: []policy.Rule{{
+			ID:         "drop-v6-web",
+			Priority:   100,
+			Direction:  model.DirectionIngress,
+			Protocol:   model.ProtocolTCP,
+			RemoteCIDR: netip.MustParsePrefix("fd00:10::11/128"),
+			Ports:      []model.PortRange{{From: 8080, To: 8080}},
+			Action:     model.ActionDrop,
+		}, {
+			ID:         "reject-v6-web",
+			Priority:   100,
+			Direction:  model.DirectionIngress,
+			Protocol:   model.ProtocolTCP,
+			RemoteCIDR: netip.MustParsePrefix("fd00:10::11/128"),
+			Ports:      []model.PortRange{{From: 8080, To: 8080}},
+			Action:     model.ActionReject,
+		}},
+	}
+	_, err := IPv6L4ACLRulesFromProgram(program)
+	if err == nil || !strings.Contains(err.Error(), "conflicting TCX ACL reject actions") {
+		t.Fatalf("error = %v, want drop/reject conflict", err)
 	}
 }
 
