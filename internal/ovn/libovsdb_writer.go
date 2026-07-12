@@ -790,7 +790,7 @@ func (w *LibOVSDBTopologyWriter) subnetPortOperations(ctx context.Context, route
 		Name:        routerPortName(router.Name, subnet.Name),
 		MAC:         deterministicMAC(subnet),
 		Networks:    []string{subnet.Gateway.String() + "/" + fmt.Sprint(subnet.CIDR.Bits())},
-		ExternalIDs: map[string]string{"netloom_owner": "netloom", "netloom_subnet": subnet.Name},
+		ExternalIDs: map[string]string{"netloom_owner": "netloom", "netloom_vpc": subnet.VPC, "netloom_subnet": subnet.Name},
 	}
 	if subnet.DHCP.Enabled && subnet.CIDR.Addr().Is6() {
 		routerPort.Ipv6RaConfigs = map[string]string{"address_mode": "dhcpv6_stateful"}
@@ -800,7 +800,7 @@ func (w *LibOVSDBTopologyWriter) subnetPortOperations(ctx context.Context, route
 		Type:        "router",
 		Addresses:   []string{routerPort.MAC},
 		Options:     map[string]string{"router-port": routerPort.Name},
-		ExternalIDs: map[string]string{"netloom_owner": "netloom", "netloom_subnet": subnet.Name, "netloom_role": "router"},
+		ExternalIDs: map[string]string{"netloom_owner": "netloom", "netloom_vpc": subnet.VPC, "netloom_subnet": subnet.Name, "netloom_role": "router"},
 	}
 	var ops []ovsdb.Operation
 	_, routerPortOps, err := w.ensureLogicalRouterPort(ctx, router, routerPort)
@@ -819,7 +819,7 @@ func (w *LibOVSDBTopologyWriter) subnetPortOperations(ctx context.Context, route
 			Type:        "localnet",
 			Addresses:   []string{"unknown"},
 			Options:     map[string]string{"network_name": subnet.ProviderNetwork},
-			ExternalIDs: map[string]string{"netloom_owner": "netloom", "netloom_subnet": subnet.Name, "netloom_provider_network": subnet.ProviderNetwork},
+			ExternalIDs: map[string]string{"netloom_owner": "netloom", "netloom_vpc": subnet.VPC, "netloom_subnet": subnet.Name, "netloom_provider_network": subnet.ProviderNetwork},
 		}
 		if subnet.VLAN != 0 {
 			tag := int(subnet.VLAN)

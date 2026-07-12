@@ -336,10 +336,10 @@ func expectedManagedAuditRows(desired topology.State) map[string]map[string]stri
 	}
 	for _, subnet := range desired.Subnets {
 		addAuditExpectedRow(out, "Logical_Switch", "netloom_vpc", subnet.VPC, "netloom_subnet", subnet.Name)
-		addAuditExpectedRow(out, "Logical_Router_Port", "netloom_subnet", subnet.Name)
-		addAuditExpectedRow(out, "Logical_Switch_Port", "netloom_subnet", subnet.Name, "netloom_role", "router")
+		addAuditExpectedRow(out, "Logical_Router_Port", "netloom_vpc", subnet.VPC, "netloom_subnet", subnet.Name)
+		addAuditExpectedRow(out, "Logical_Switch_Port", "netloom_vpc", subnet.VPC, "netloom_subnet", subnet.Name, "netloom_role", "router")
 		if subnet.ProviderNetwork != "" {
-			addAuditExpectedRow(out, "Logical_Switch_Port", "netloom_subnet", subnet.Name, "netloom_provider_network", subnet.ProviderNetwork)
+			addAuditExpectedRow(out, "Logical_Switch_Port", "netloom_vpc", subnet.VPC, "netloom_subnet", subnet.Name, "netloom_provider_network", subnet.ProviderNetwork)
 		}
 	}
 	for _, endpoint := range desired.Endpoints {
@@ -472,13 +472,13 @@ func expectedManagedAuditColumns(desired topology.State) map[string]map[string]s
 			"mac":             deterministicMAC(subnet),
 			"networks":        strings.Join([]string{subnet.Gateway.String() + "/" + fmt.Sprint(subnet.CIDR.Bits())}, ","),
 			"ipv6_ra_configs": routerPortIPv6RAConfigsField(subnet),
-		}, "netloom_subnet", subnet.Name)
+		}, "netloom_vpc", subnet.VPC, "netloom_subnet", subnet.Name)
 		addAuditExpectedColumns(out, "Logical_Switch_Port", map[string]string{
 			"name":      switchRouterPortName(logicalSwitch(subnet.VPC, subnet.Name), subnet.Name),
 			"type":      "router",
 			"addresses": deterministicMAC(subnet),
 			"options":   mapField(map[string]string{"router-port": routerPortName(logicalRouter(subnet.VPC), subnet.Name)}),
-		}, "netloom_subnet", subnet.Name, "netloom_role", "router")
+		}, "netloom_vpc", subnet.VPC, "netloom_subnet", subnet.Name, "netloom_role", "router")
 		if subnet.ProviderNetwork != "" {
 			fields := map[string]string{
 				"name":      localnetPortName(logicalSwitch(subnet.VPC, subnet.Name), subnet.Name),
@@ -489,7 +489,7 @@ func expectedManagedAuditColumns(desired topology.State) map[string]map[string]s
 			if subnet.VLAN != 0 {
 				fields["tag"] = fmt.Sprint(subnet.VLAN)
 			}
-			addAuditExpectedColumns(out, "Logical_Switch_Port", fields, "netloom_subnet", subnet.Name, "netloom_provider_network", subnet.ProviderNetwork)
+			addAuditExpectedColumns(out, "Logical_Switch_Port", fields, "netloom_vpc", subnet.VPC, "netloom_subnet", subnet.Name, "netloom_provider_network", subnet.ProviderNetwork)
 		}
 	}
 	for key, names := range expectedSwitchPorts(desired.Subnets, desired.Endpoints) {
@@ -1185,11 +1185,11 @@ func managedAuditIdentity(table, uuid string, externalIDs map[string]string) (st
 			return auditIdentity(table, externalIDs, "netloom_vpc", "netloom_endpoint")
 		}
 		if externalIDs["netloom_provider_network"] != "" {
-			return auditIdentity(table, externalIDs, "netloom_subnet", "netloom_provider_network")
+			return auditIdentity(table, externalIDs, "netloom_vpc", "netloom_subnet", "netloom_provider_network")
 		}
-		return auditIdentity(table, externalIDs, "netloom_subnet", "netloom_role")
+		return auditIdentity(table, externalIDs, "netloom_vpc", "netloom_subnet", "netloom_role")
 	case "Logical_Router_Port":
-		return auditIdentity(table, externalIDs, "netloom_subnet")
+		return auditIdentity(table, externalIDs, "netloom_vpc", "netloom_subnet")
 	case "Logical_Router_Policy":
 		return auditIdentity(table, externalIDs, "netloom_vpc", "netloom_policy_route")
 	case "Logical_Router_Static_Route":

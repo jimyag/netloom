@@ -311,6 +311,9 @@ func TestLibOVSDBTopologyWriterEnsuresSubnetLogicalSwitch(t *testing.T) {
 	if routerPorts[0].MAC == "" || len(routerPorts[0].Networks) != 1 || routerPorts[0].Networks[0] != "10.10.0.1/24" {
 		t.Fatalf("logical router port = %+v, want gateway MAC and network", routerPorts[0])
 	}
+	if routerPorts[0].ExternalIDs["netloom_vpc"] != "prod" || routerPorts[0].ExternalIDs["netloom_subnet"] != "apps" {
+		t.Fatalf("logical router port external IDs = %+v, want VPC-scoped subnet identity", routerPorts[0].ExternalIDs)
+	}
 	var switchPorts []ovnnb.LogicalSwitchPort
 	requireEventually(t, func() bool {
 		switchPorts = nil
@@ -321,6 +324,9 @@ func TestLibOVSDBTopologyWriterEnsuresSubnetLogicalSwitch(t *testing.T) {
 	})
 	if switchPorts[0].Type != "router" || switchPorts[0].Options["router-port"] != routerPorts[0].Name {
 		t.Fatalf("logical switch router port = %+v, want router port options", switchPorts[0])
+	}
+	if switchPorts[0].ExternalIDs["netloom_vpc"] != "prod" || switchPorts[0].ExternalIDs["netloom_subnet"] != "apps" {
+		t.Fatalf("logical switch router port external IDs = %+v, want VPC-scoped subnet identity", switchPorts[0].ExternalIDs)
 	}
 	var routers []ovnnb.LogicalRouter
 	requireEventually(t, func() bool {
@@ -524,6 +530,9 @@ func TestLibOVSDBTopologyWriterEnsuresSubnetLocalnetPort(t *testing.T) {
 	port := ports[0]
 	if port.Type != "localnet" || port.Options["network_name"] != "physnet-a" || port.Tag == nil || *port.Tag != 100 {
 		t.Fatalf("localnet port = %+v, want provider network and VLAN tag", port)
+	}
+	if port.ExternalIDs["netloom_vpc"] != "prod" || port.ExternalIDs["netloom_subnet"] != "apps" {
+		t.Fatalf("localnet port external IDs = %+v, want VPC-scoped subnet identity", port.ExternalIDs)
 	}
 	var switches []ovnnb.LogicalSwitch
 	requireEventually(t, func() bool {

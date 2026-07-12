@@ -450,13 +450,14 @@ func (w *LibOVSDBTopologyWriter) repairSteadyStateCoreNames(ctx context.Context,
 			return nil, err
 		}
 		ops = append(ops, nextOps...)
-		nextOps, err = w.repairLogicalRouterPortName(ctx, subnet.Name, routerPortName(logicalRouter(subnet.VPC), subnet.Name))
+		nextOps, err = w.repairLogicalRouterPortName(ctx, subnet.VPC, subnet.Name, routerPortName(logicalRouter(subnet.VPC), subnet.Name))
 		if err != nil {
 			return nil, err
 		}
 		ops = append(ops, nextOps...)
 		nextOps, err = w.repairLogicalSwitchPortName(ctx, func(row *ovnnb.LogicalSwitchPort) bool {
 			return row.ExternalIDs["netloom_owner"] == "netloom" &&
+				row.ExternalIDs["netloom_vpc"] == subnet.VPC &&
 				row.ExternalIDs["netloom_subnet"] == subnet.Name &&
 				row.ExternalIDs["netloom_role"] == "router"
 		}, switchRouterPortName(logicalSwitch(subnet.VPC, subnet.Name), subnet.Name))
@@ -538,12 +539,14 @@ func (w *LibOVSDBTopologyWriter) repairLogicalSwitchName(ctx context.Context, vp
 	return ops, nil
 }
 
-func (w *LibOVSDBTopologyWriter) repairLogicalRouterPortName(ctx context.Context, subnet, desiredName string) ([]ovsdb.Operation, error) {
+func (w *LibOVSDBTopologyWriter) repairLogicalRouterPortName(ctx context.Context, vpc, subnet, desiredName string) ([]ovsdb.Operation, error) {
 	var rows []ovnnb.LogicalRouterPort
 	if err := w.client.WhereCache(func(row *ovnnb.LogicalRouterPort) bool {
-		return row.ExternalIDs["netloom_owner"] == "netloom" && row.ExternalIDs["netloom_subnet"] == subnet
+		return row.ExternalIDs["netloom_owner"] == "netloom" &&
+			row.ExternalIDs["netloom_vpc"] == vpc &&
+			row.ExternalIDs["netloom_subnet"] == subnet
 	}).List(ctx, &rows); err != nil {
-		return nil, fmt.Errorf("list logical router port identity %s: %w", subnet, err)
+		return nil, fmt.Errorf("list logical router port identity %s/%s: %w", vpc, subnet, err)
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].UUID < rows[j].UUID })
 	var ops []ovsdb.Operation

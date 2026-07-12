@@ -207,13 +207,93 @@ func TestAuditManagedRowsCountsDuplicatesAndIncompleteRows(t *testing.T) {
 
 func TestAuditLogicalSwitchPortIdentityAcceptsRouterAndLocalnetPorts(t *testing.T) {
 	rows := []ManagedOVNRow{
-		{Table: "Logical_Switch_Port", UUID: "uuid-router", ExternalIDs: map[string]string{"netloom_owner": "netloom", "netloom_subnet": "apps", "netloom_role": "router"}},
-		{Table: "Logical_Switch_Port", UUID: "uuid-localnet", ExternalIDs: map[string]string{"netloom_owner": "netloom", "netloom_subnet": "apps", "netloom_provider_network": "physnet-a"}},
+		{Table: "Logical_Switch_Port", UUID: "uuid-router", ExternalIDs: map[string]string{"netloom_owner": "netloom", "netloom_vpc": "prod", "netloom_subnet": "apps", "netloom_role": "router"}},
+		{Table: "Logical_Switch_Port", UUID: "uuid-localnet", ExternalIDs: map[string]string{"netloom_owner": "netloom", "netloom_vpc": "prod", "netloom_subnet": "apps", "netloom_provider_network": "physnet-a"}},
 	}
 
 	result := auditManagedRows("Logical_Switch_Port", rows)
 	if result.count != 2 || result.incomplete != 0 || result.duplicates != 0 {
 		t.Fatalf("logical switch port audit = %+v, want two complete unique managed ports", result)
+	}
+}
+
+func TestAuditManagedObjectsScopesSubnetPortsByVPC(t *testing.T) {
+	prodSubnet := model.Subnet{
+		Name:    "apps",
+		VPC:     "prod",
+		CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+		Gateway: netip.MustParseAddr("10.10.0.1"),
+	}
+	devSubnet := model.Subnet{
+		Name:    "apps",
+		VPC:     "dev",
+		CIDR:    netip.MustParsePrefix("10.20.0.0/24"),
+		Gateway: netip.MustParseAddr("10.20.0.1"),
+	}
+	reader := fakeManagedOVNReader{rows: map[string][]ManagedOVNRow{
+		"Logical_Router": {
+			{Table: "Logical_Router", UUID: "lr-prod", ExternalIDs: map[string]string{"netloom_owner": "netloom", "netloom_vpc": "prod"}, Fields: map[string]string{
+				"name":  logicalRouter("prod"),
+				"ports": routerPortName(logicalRouter("prod"), "apps"),
+			}},
+			{Table: "Logical_Router", UUID: "lr-dev", ExternalIDs: map[string]string{"netloom_owner": "netloom", "netloom_vpc": "dev"}, Fields: map[string]string{
+				"name":  logicalRouter("dev"),
+				"ports": routerPortName(logicalRouter("dev"), "apps"),
+			}},
+		},
+		"Logical_Switch": {
+			{Table: "Logical_Switch", UUID: "ls-prod-apps", ExternalIDs: map[string]string{"netloom_owner": "netloom", "netloom_vpc": "prod", "netloom_subnet": "apps"}, Fields: map[string]string{
+				"name":         logicalSwitch("prod", "apps"),
+				"other_config": mapField(logicalSwitchOtherConfig(prodSubnet)),
+				"ports":        switchRouterPortName(logicalSwitch("prod", "apps"), "apps"),
+			}},
+			{Table: "Logical_Switch", UUID: "ls-dev-apps", ExternalIDs: map[string]string{"netloom_owner": "netloom", "netloom_vpc": "dev", "netloom_subnet": "apps"}, Fields: map[string]string{
+				"name":         logicalSwitch("dev", "apps"),
+				"other_config": mapField(logicalSwitchOtherConfig(devSubnet)),
+				"ports":        switchRouterPortName(logicalSwitch("dev", "apps"), "apps"),
+			}},
+		},
+		"Logical_Router_Port": {
+			{Table: "Logical_Router_Port", UUID: "lrp-prod-apps", ExternalIDs: map[string]string{"netloom_owner": "netloom", "netloom_vpc": "prod", "netloom_subnet": "apps"}, Fields: map[string]string{
+				"name":     routerPortName(logicalRouter("prod"), "apps"),
+				"mac":      deterministicMAC(prodSubnet),
+				"networks": "10.10.0.1/24",
+			}},
+			{Table: "Logical_Router_Port", UUID: "lrp-dev-apps", ExternalIDs: map[string]string{"netloom_owner": "netloom", "netloom_vpc": "dev", "netloom_subnet": "apps"}, Fields: map[string]string{
+				"name":     routerPortName(logicalRouter("dev"), "apps"),
+				"mac":      deterministicMAC(devSubnet),
+				"networks": "10.20.0.1/24",
+			}},
+		},
+		"Logical_Switch_Port": {
+			{Table: "Logical_Switch_Port", UUID: "lsp-prod-router", ExternalIDs: map[string]string{"netloom_owner": "netloom", "netloom_vpc": "prod", "netloom_subnet": "apps", "netloom_role": "router"}, Fields: map[string]string{
+				"name":      switchRouterPortName(logicalSwitch("prod", "apps"), "apps"),
+				"type":      "router",
+				"addresses": deterministicMAC(prodSubnet),
+				"options":   mapField(map[string]string{"router-port": routerPortName(logicalRouter("prod"), "apps")}),
+			}},
+			{Table: "Logical_Switch_Port", UUID: "lsp-dev-router", ExternalIDs: map[string]string{"netloom_owner": "netloom", "netloom_vpc": "dev", "netloom_subnet": "apps", "netloom_role": "router"}, Fields: map[string]string{
+				"name":      switchRouterPortName(logicalSwitch("dev", "apps"), "apps"),
+				"type":      "router",
+				"addresses": deterministicMAC(devSubnet),
+				"options":   mapField(map[string]string{"router-port": routerPortName(logicalRouter("dev"), "apps")}),
+			}},
+		},
+	}}
+	desired := topology.State{
+		VPCs: map[string]model.VPC{"prod": {Name: "prod"}, "dev": {Name: "dev"}},
+		Subnets: map[string]model.Subnet{
+			subnetStateKey("prod", "apps"): prodSubnet,
+			subnetStateKey("dev", "apps"):  devSubnet,
+		},
+	}
+
+	stats, err := AuditManagedObjectsFromReaderWithDesired(context.Background(), reader, desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.DuplicateManagedRows != 0 || stats.IncompleteManagedRows != 0 || stats.MissingManagedRows != 0 || stats.UnexpectedManagedRows != 0 || stats.DriftedManagedRows != 0 {
+		t.Fatalf("same-subnet-name audit stats = %+v, want no duplicate/missing/drift", stats)
 	}
 }
 
@@ -347,6 +427,7 @@ func TestAuditManagedObjectsFromReaderReportsLoadBalancerParentAttachmentDrift(t
 		"Logical_Router_Port": {
 			{Table: "Logical_Router_Port", UUID: "lrp-apps", ExternalIDs: map[string]string{
 				"netloom_owner":  "netloom",
+				"netloom_vpc":    "prod",
 				"netloom_subnet": "apps",
 			}, Fields: map[string]string{
 				"name":     routerPortName(logicalRouter("prod"), "apps"),
@@ -357,6 +438,7 @@ func TestAuditManagedObjectsFromReaderReportsLoadBalancerParentAttachmentDrift(t
 		"Logical_Switch_Port": {
 			{Table: "Logical_Switch_Port", UUID: "lsp-router", ExternalIDs: map[string]string{
 				"netloom_owner":  "netloom",
+				"netloom_vpc":    "prod",
 				"netloom_subnet": "apps",
 				"netloom_role":   "router",
 			}, Fields: map[string]string{
@@ -439,6 +521,7 @@ func TestAuditManagedObjectsFromReaderReportsRouterAndSwitchPortAttachmentDrift(
 		"Logical_Router_Port": {
 			{Table: "Logical_Router_Port", UUID: "lrp-apps", ExternalIDs: map[string]string{
 				"netloom_owner":  "netloom",
+				"netloom_vpc":    "prod",
 				"netloom_subnet": "apps",
 			}, Fields: map[string]string{
 				"name":     routerPortName(logicalRouter("prod"), "apps"),
@@ -449,6 +532,7 @@ func TestAuditManagedObjectsFromReaderReportsRouterAndSwitchPortAttachmentDrift(
 		"Logical_Switch_Port": {
 			{Table: "Logical_Switch_Port", UUID: "lsp-router", ExternalIDs: map[string]string{
 				"netloom_owner":  "netloom",
+				"netloom_vpc":    "prod",
 				"netloom_subnet": "apps",
 				"netloom_role":   "router",
 			}, Fields: map[string]string{
@@ -501,6 +585,7 @@ func TestAuditManagedObjectsFromReaderReportsIPv6RouterPortRADrift(t *testing.T)
 		"Logical_Router_Port": {
 			{Table: "Logical_Router_Port", UUID: "lrp-apps-v6", ExternalIDs: map[string]string{
 				"netloom_owner":  "netloom",
+				"netloom_vpc":    "prod",
 				"netloom_subnet": "apps-v6",
 			}, Fields: map[string]string{
 				"name":            routerPortName(logicalRouter("prod"), "apps-v6"),
@@ -1022,6 +1107,7 @@ func TestAuditManagedObjectsFromReaderReportsDisabledLogicalRouterAndRouterPort(
 	}}
 	routerPortRow := ManagedOVNRow{Table: "Logical_Router_Port", UUID: "lrp-apps", ExternalIDs: map[string]string{
 		"netloom_owner":  "netloom",
+		"netloom_vpc":    "prod",
 		"netloom_subnet": "apps",
 	}, Fields: map[string]string{
 		"name":            routerPortName(logicalRouter("prod"), "apps"),
@@ -1177,6 +1263,7 @@ func TestAuditManagedObjectsFromReaderReportsCoreNameColumnDrift(t *testing.T) {
 		"Logical_Router_Port": {
 			{Table: "Logical_Router_Port", UUID: "lrp-apps", ExternalIDs: map[string]string{
 				"netloom_owner":  "netloom",
+				"netloom_vpc":    "prod",
 				"netloom_subnet": "apps",
 			}, Fields: map[string]string{
 				"name":     "renamed-router-port",
@@ -1187,6 +1274,7 @@ func TestAuditManagedObjectsFromReaderReportsCoreNameColumnDrift(t *testing.T) {
 		"Logical_Switch_Port": {
 			{Table: "Logical_Switch_Port", UUID: "lsp-router", ExternalIDs: map[string]string{
 				"netloom_owner":  "netloom",
+				"netloom_vpc":    "prod",
 				"netloom_subnet": "apps",
 				"netloom_role":   "router",
 			}, Fields: map[string]string{
