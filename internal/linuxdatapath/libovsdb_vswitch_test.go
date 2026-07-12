@@ -1071,6 +1071,137 @@ func TestLibOVSDBProviderSyncerCleansStaleProviderRows(t *testing.T) {
 	}
 }
 
+func TestLibOVSDBProviderSyncerCleansDuplicateProviderRows(t *testing.T) {
+	client, cleanup := newTestVSwitchClient(t)
+	defer cleanup()
+	ctx := context.Background()
+	insertVSwitchRows(t, ctx, client, &vswitch.OpenvSwitch{})
+
+	rows := desiredProviderOVSDBRows([]providerNetworkLinkSpec{{
+		ProviderNetwork:   "physnet-a",
+		ParentDevice:      "eth1",
+		VLAN:              100,
+		Name:              "nlv100",
+		ControllerTargets: []string{"tcp:192.0.2.10:6653"},
+		TenantQueues: []model.ProviderNetworkTenantQueuePolicy{{
+			Tenant:     "prod",
+			QueueID:    10,
+			MaxRateBPS: 500000000,
+		}},
+	}})
+	syncer := NewLibOVSDBProviderSyncer(client)
+	if err := syncer.SyncProviderOVSDB(ctx, rows, false); err != nil {
+		t.Fatal(err)
+	}
+
+	qos := singleQoSByProviderName(t, ctx, client, "qos-nlv100")
+	queue := singleQueueByProviderName(t, ctx, client, "queue-nlv100-10")
+	controllerName := rows.Controllers[0].ExternalIDs["netloom_provider_controller"]
+	bridge := singleBridgeByName(t, ctx, client, providerNetworkBridgeName("physnet-a"))
+	duplicateQoS := &vswitch.QoS{
+		UUID:        "duplicate_qos_nlv100",
+		Type:        "linux-htb",
+		ExternalIDs: map[string]string{"netloom_owner": "netloom", "netloom_provider_qos": "qos-nlv100"},
+		OtherConfig: map[string]string{"max-rate": "1"},
+	}
+	duplicateQueue := &vswitch.Queue{
+		UUID:        "duplicate_queue_nlv100_10",
+		ExternalIDs: map[string]string{"netloom_owner": "netloom", "netloom_provider_queue": "queue-nlv100-10"},
+		OtherConfig: map[string]string{"max-rate": "1"},
+	}
+	duplicateController := &vswitch.Controller{
+		UUID:        "duplicate_controller_physnet_a",
+		Target:      "tcp:192.0.2.10:6653",
+		ExternalIDs: map[string]string{"netloom_owner": "netloom", "netloom_provider_controller": controllerName},
+	}
+	manualInterface := &vswitch.Interface{UUID: "duplicate_qos_interface", Name: "duplicate-qos-port"}
+	manualPort := &vswitch.Port{
+		UUID:        "duplicate_qos_port",
+		Name:        "duplicate-qos-port",
+		ExternalIDs: map[string]string{"owner": "test"},
+		Interfaces:  []string{manualInterface.UUID},
+		QOS:         &duplicateQoS.UUID,
+	}
+	createQoSOps, err := client.Create(duplicateQoS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	createQueueOps, err := client.Create(duplicateQueue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	createControllerOps, err := client.Create(duplicateController)
+	if err != nil {
+		t.Fatal(err)
+	}
+	createInterfaceOps, err := client.Create(manualInterface)
+	if err != nil {
+		t.Fatal(err)
+	}
+	createPortOps, err := client.Create(manualPort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	qos.Queues[99] = duplicateQueue.UUID
+	updateQoSOps, err := client.Where(qos).Update(qos, &qos.Queues)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attachPortOps, err := client.Where(bridge).Mutate(bridge, ovsmodel.Mutation{
+		Field:   &bridge.Ports,
+		Mutator: ovsdb.MutateOperationInsert,
+		Value:   []string{manualPort.UUID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	attachControllerOps, err := client.Where(bridge).Mutate(bridge, ovsmodel.Mutation{
+		Field:   &bridge.Controller,
+		Mutator: ovsdb.MutateOperationInsert,
+		Value:   []string{duplicateController.UUID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ops := append(createQoSOps, createQueueOps...)
+	ops = append(ops, createControllerOps...)
+	ops = append(ops, createInterfaceOps...)
+	ops = append(ops, createPortOps...)
+	ops = append(ops, updateQoSOps...)
+	ops = append(ops, attachPortOps...)
+	ops = append(ops, attachControllerOps...)
+	transactVSwitchOps(t, ctx, client, ops)
+
+	if err := syncer.SyncProviderOVSDB(ctx, rows, true); err != nil {
+		t.Fatal(err)
+	}
+	if countQoSByProviderName(t, ctx, client, "qos-nlv100") != 1 {
+		t.Fatal("duplicate provider QoS was not deleted")
+	}
+	if countQueuesByProviderName(t, ctx, client, "queue-nlv100-10") != 1 {
+		t.Fatal("duplicate provider Queue was not deleted")
+	}
+	if countControllersByProviderName(t, ctx, client, controllerName) != 1 {
+		t.Fatal("duplicate provider Controller was not deleted")
+	}
+	qos = singleQoSByProviderName(t, ctx, client, "qos-nlv100")
+	queue = singleQueueByProviderName(t, ctx, client, "queue-nlv100-10")
+	if qos.Queues[10] != queue.UUID || qos.Queues[99] != "" || len(qos.Queues) != 1 {
+		t.Fatalf("qos queues = %+v, want only canonical queue %s", qos.Queues, queue.UUID)
+	}
+	var ports []vswitch.Port
+	if err := client.WhereCache(func(row *vswitch.Port) bool { return row.Name == "duplicate-qos-port" }).List(ctx, &ports); err != nil {
+		t.Fatal(err)
+	}
+	if len(ports) != 1 || ports[0].QOS != nil {
+		t.Fatalf("manual port = %+v, want duplicate QoS ref detached", ports)
+	}
+	bridge = singleBridgeByName(t, ctx, client, providerNetworkBridgeName("physnet-a"))
+	if containsProviderString(bridge.Controller, duplicateController.UUID) {
+		t.Fatalf("bridge controllers = %+v, want duplicate controller detached", bridge.Controller)
+	}
+}
+
 func TestLibOVSDBProviderSyncerCleansStaleProviderPortOnSharedBridge(t *testing.T) {
 	client, cleanup := newTestVSwitchClient(t)
 	defer cleanup()
