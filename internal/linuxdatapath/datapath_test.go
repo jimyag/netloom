@@ -536,7 +536,7 @@ func TestDesiredProviderOVSDBRowsBuildsTypedVSwitchRows(t *testing.T) {
 	}
 }
 
-func TestPlanCleansStaleProviderOVSDBBridgesWhenCleanupEnabled(t *testing.T) {
+func TestPlanSkipsProviderOVSDBShellCleanupWhenDirectSyncEnabled(t *testing.T) {
 	state := control.DesiredState{
 		ProviderNetworks: []model.ProviderNetwork{{
 			Name: "physnet-a",
@@ -577,53 +577,22 @@ func TestPlanCleansStaleProviderOVSDBBridgesWhenCleanupEnabled(t *testing.T) {
 	joined := stringifyOps(ops)
 	for _, expected := range []string{
 		"external_ids:ovn-bridge-mappings=physnet-a:" + bridge,
-		"find bridge external_ids:netloom_owner=netloom",
-		"del-br \"$br\"",
-		keepSet([]string{bridge}),
 		"ip link del \"$link\"",
 	} {
 		if !strings.Contains(joined, expected) {
-			t.Fatalf("provider ovsdb cleanup ops missing %q:\n%s", expected, joined)
+			t.Fatalf("provider cleanup ops missing %q:\n%s", expected, joined)
 		}
 	}
-}
-
-func TestPlanProviderOVSDBCleanupDeduplicatesDesiredBridges(t *testing.T) {
-	bridge := providerNetworkBridgeName("physnet-a")
-	op := planProviderOVSDBCleanup([]providerNetworkLinkSpec{
-		{ProviderNetwork: "physnet-a", ParentDevice: "eth1", VLAN: 100, Name: "nlv100"},
-		{ProviderNetwork: "physnet-a", ParentDevice: "eth1", VLAN: 200, Name: "nlv200"},
-	})
-	script := strings.Join(op.Args, " ")
-	if strings.Count(script, bridge) != 1 {
-		t.Fatalf("cleanup script should keep bridge once, got %q", script)
-	}
-}
-
-func TestPlanProviderOVSDBCleanupRemovesStaleQoSAndQueues(t *testing.T) {
-	op := planProviderOVSDBCleanup([]providerNetworkLinkSpec{{
-		ProviderNetwork: "physnet-a",
-		ParentDevice:    "eth1",
-		VLAN:            100,
-		Name:            "nlv100",
-		TenantQueues: []model.ProviderNetworkTenantQueuePolicy{{
-			Tenant:  "prod",
-			QueueID: 10,
-		}},
-	}})
-	script := strings.Join(op.Args, " ")
-	for _, expected := range []string{
+	for _, unexpected := range []string{
+		"find bridge external_ids:netloom_owner=netloom",
 		"find qos external_ids:netloom_owner=netloom",
-		"external_ids:netloom_provider_qos",
-		keepSet([]string{"qos-nlv100"}),
-		"destroy qos \"$qos\"",
 		"find queue external_ids:netloom_owner=netloom",
-		"external_ids:netloom_provider_queue",
-		keepSet([]string{"queue-nlv100-10"}),
+		"del-br \"$br\"",
+		"destroy qos \"$qos\"",
 		"destroy queue \"$queue\"",
 	} {
-		if !strings.Contains(script, expected) {
-			t.Fatalf("provider ovsdb cleanup script missing %q:\n%s", expected, script)
+		if strings.Contains(joined, unexpected) {
+			t.Fatalf("direct provider OVSDB cleanup should avoid shell fragment %q:\n%s", unexpected, joined)
 		}
 	}
 }

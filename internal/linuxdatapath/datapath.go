@@ -291,7 +291,6 @@ func Plan(ctx context.Context, state control.DesiredState, options Options) ([]O
 	}
 	if options.CleanupStale {
 		if options.SyncOVSDB {
-			ops = append(ops, planProviderOVSDBCleanup(providerSpecs))
 			ops = append(ops, planProviderQueueFlowCleanup(providerSpecs, desiredProviderQueueFlows(state, providerSpecs)))
 		}
 		ops = append(ops, planProviderNetworkLinkCleanup(providerSpecs))
@@ -1488,54 +1487,6 @@ func ovsVSCTLOperation(args ...string) Operation {
 
 func ovsOFCTLOperation(args ...string) Operation {
 	return Operation{Command: "ovs-ofctl", Args: args}
-}
-
-func planProviderOVSDBCleanup(specs []providerNetworkLinkSpec) Operation {
-	rows := desiredProviderOVSDBRows(specs)
-	bridges := make([]string, 0, len(rows.Bridges))
-	qosNames := make([]string, 0, len(rows.QoS))
-	queueNames := make([]string, 0, len(rows.Queues))
-	seen := make(map[string]struct{}, len(specs))
-	for _, bridge := range rows.Bridges {
-		if _, ok := seen[bridge.Name]; ok {
-			continue
-		}
-		seen[bridge.Name] = struct{}{}
-		bridges = append(bridges, bridge.Name)
-	}
-	seen = make(map[string]struct{}, len(rows.QoS))
-	for _, qos := range rows.QoS {
-		name := qos.ExternalIDs["netloom_provider_qos"]
-		if name == "" {
-			continue
-		}
-		if _, ok := seen[name]; ok {
-			continue
-		}
-		seen[name] = struct{}{}
-		qosNames = append(qosNames, name)
-	}
-	seen = make(map[string]struct{}, len(rows.Queues))
-	for _, queue := range rows.Queues {
-		name := queue.ExternalIDs["netloom_provider_queue"]
-		if name == "" {
-			continue
-		}
-		if _, ok := seen[name]; ok {
-			continue
-		}
-		seen[name] = struct{}{}
-		queueNames = append(queueNames, name)
-	}
-	sort.Strings(bridges)
-	sort.Strings(qosNames)
-	sort.Strings(queueNames)
-	parts := []string{
-		"for br in $(ovs-vsctl --bare --columns=name find bridge external_ids:netloom_owner=netloom 2>/dev/null || true); do case '" + keepSet(bridges) + "' in *\" $br \"*) ;; *) ovs-vsctl --if-exists del-br \"$br\" ;; esac; done",
-		"for qos in $(ovs-vsctl --bare --columns=_uuid find qos external_ids:netloom_owner=netloom 2>/dev/null || true); do name=$(ovs-vsctl get qos \"$qos\" external_ids:netloom_provider_qos 2>/dev/null || true); name=${name%\\\"}; name=${name#\\\"}; case '" + keepSet(qosNames) + "' in *\" $name \"*) ;; *) ovs-vsctl destroy qos \"$qos\" ;; esac; done",
-		"for queue in $(ovs-vsctl --bare --columns=_uuid find queue external_ids:netloom_owner=netloom 2>/dev/null || true); do name=$(ovs-vsctl get queue \"$queue\" external_ids:netloom_provider_queue 2>/dev/null || true); name=${name%\\\"}; name=${name#\\\"}; case '" + keepSet(queueNames) + "' in *\" $name \"*) ;; *) ovs-vsctl destroy queue \"$queue\" ;; esac; done",
-	}
-	return shellOperation(strings.Join(parts, "; "))
 }
 
 func planProviderNetworkLinkCleanup(specs []providerNetworkLinkSpec) Operation {
