@@ -125,6 +125,61 @@ func TestLibOVSDBProviderSyncerRepairsProviderInterfaceConfig(t *testing.T) {
 	}
 }
 
+func TestLibOVSDBProviderSyncerRepairsProviderPortConfig(t *testing.T) {
+	client, cleanup := newTestVSwitchClient(t)
+	defer cleanup()
+	ctx := context.Background()
+	insertVSwitchRows(t, ctx, client, &vswitch.OpenvSwitch{})
+
+	rows := desiredProviderOVSDBRows([]providerNetworkLinkSpec{{
+		ProviderNetwork: "physnet-a",
+		ParentDevice:    "eth1",
+		VLAN:            100,
+		Name:            "nlv100",
+	}})
+	tag := 100
+	vlanMode := vswitch.PortVLANModeAccess
+	rows.Ports[0].Tag = &tag
+	rows.Ports[0].VLANMode = &vlanMode
+	rows.Ports[0].OtherConfig = map[string]string{"netloom-provider-mode": "access"}
+
+	syncer := NewLibOVSDBProviderSyncer(client)
+	if err := syncer.SyncProviderOVSDB(ctx, rows, false); err != nil {
+		t.Fatal(err)
+	}
+	port := singlePortByName(t, ctx, client, "nlv100")
+	if port.Tag == nil || *port.Tag != 100 || port.VLANMode == nil || *port.VLANMode != vswitch.PortVLANModeAccess ||
+		port.OtherConfig["netloom-provider-mode"] != "access" {
+		t.Fatalf("port = %+v, want desired OVSDB VLAN config columns persisted", port)
+	}
+
+	port.Tag = nil
+	port.VLANMode = nil
+	port.OtherConfig = nil
+	updateOps, err := client.Where(port).Update(port, &port.Tag, &port.VLANMode, &port.OtherConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transactVSwitchOps(t, ctx, client, updateOps)
+
+	statuses, err := syncer.ReadProviderOVSDBStatus(ctx, rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(statuses) != 1 || statuses[0].PortState != "mismatch" {
+		t.Fatalf("statuses = %+v, want provider port config mismatch", statuses)
+	}
+
+	if err := syncer.SyncProviderOVSDB(ctx, rows, false); err != nil {
+		t.Fatal(err)
+	}
+	port = singlePortByName(t, ctx, client, "nlv100")
+	if port.Tag == nil || *port.Tag != 100 || port.VLANMode == nil || *port.VLANMode != vswitch.PortVLANModeAccess ||
+		port.OtherConfig["netloom-provider-mode"] != "access" {
+		t.Fatalf("port after drift repair = %+v, want desired OVSDB VLAN config columns restored", port)
+	}
+}
+
 func TestLibOVSDBProviderSyncerOpenVSwitchExternalID(t *testing.T) {
 	client, cleanup := newTestVSwitchClient(t)
 	defer cleanup()

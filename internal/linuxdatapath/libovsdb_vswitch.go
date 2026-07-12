@@ -427,6 +427,8 @@ func (s *LibOVSDBProviderSyncer) ReadProviderOVSDBStatus(ctx context.Context, ro
 			status.PortState = "bridge-mismatch"
 		} else if !providerExternalIDsMatch(port.ExternalIDs, providerOVSDBLinkExternalIDs(spec)) {
 			status.PortState = "external-ids-mismatch"
+		} else if !providerPortConfigEqual(*port, desiredPort) {
+			status.PortState = "mismatch"
 		} else {
 			portInterfaceState, err := s.providerPortInterfaceRefsState(ctx, port, desiredPort)
 			if err != nil {
@@ -759,17 +761,31 @@ func (s *LibOVSDBProviderSyncer) ensurePort(ctx context.Context, desired vswitch
 			nextQOS = existing.QOS
 		}
 	}
-	if reflect.DeepEqual(existing.ExternalIDs, nextExternalIDs) && reflect.DeepEqual(sortedUniqueStrings(existing.Interfaces), nextInterfaces) && stringPointersEqual(existing.QOS, nextQOS) {
+	if providerPortConfigEqual(*existing, desired) &&
+		reflect.DeepEqual(existing.ExternalIDs, nextExternalIDs) &&
+		reflect.DeepEqual(sortedUniqueStrings(existing.Interfaces), nextInterfaces) &&
+		stringPointersEqual(existing.QOS, nextQOS) {
 		return existing.UUID, nil, nil
 	}
 	existing.ExternalIDs = nextExternalIDs
 	existing.Interfaces = nextInterfaces
 	existing.QOS = nextQOS
-	updateOps, err := s.client.Where(existing).Update(existing, &existing.ExternalIDs, &existing.Interfaces, &existing.QOS)
+	existing.OtherConfig = desired.OtherConfig
+	existing.Tag = desired.Tag
+	existing.Trunks = desired.Trunks
+	existing.VLANMode = desired.VLANMode
+	updateOps, err := s.client.Where(existing).Update(existing, &existing.ExternalIDs, &existing.Interfaces, &existing.QOS, &existing.OtherConfig, &existing.Tag, &existing.Trunks, &existing.VLANMode)
 	if err != nil {
 		return "", nil, fmt.Errorf("update OVS port %s: %w", desired.Name, err)
 	}
 	return existing.UUID, updateOps, nil
+}
+
+func providerPortConfigEqual(got, desired vswitch.Port) bool {
+	return reflect.DeepEqual(got.OtherConfig, desired.OtherConfig) &&
+		intPointersEqual(got.Tag, desired.Tag) &&
+		reflect.DeepEqual(got.Trunks, desired.Trunks) &&
+		portVLANModePointersEqual(got.VLANMode, desired.VLANMode)
 }
 
 func (s *LibOVSDBProviderSyncer) nonManagedControllerRefs(ctx context.Context, controllerUUIDs []string) ([]string, error) {
@@ -1612,6 +1628,13 @@ func stringPointersEqual(a, b *string) bool {
 }
 
 func intPointersEqual(a, b *int) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+func portVLANModePointersEqual(a, b *vswitch.PortVLANMode) bool {
 	if a == nil || b == nil {
 		return a == b
 	}
