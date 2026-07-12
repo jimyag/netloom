@@ -442,6 +442,12 @@ func TestDesiredProviderOVSDBRowsBuildsTypedVSwitchRows(t *testing.T) {
 		if bridge.ExternalIDs["netloom_provider_network"] == "physnet-a" && len(bridge.Controller) != 1 {
 			t.Fatalf("bridge controllers = %+v, want physnet-a controller identity", bridge.Controller)
 		}
+		if bridge.ExternalIDs["netloom_provider_network"] == "physnet-a" && (bridge.FailMode == nil || *bridge.FailMode != vswitch.BridgeFailModeSecure) {
+			t.Fatalf("bridge fail mode = %v, want secure for controlled provider bridge", bridge.FailMode)
+		}
+		if bridge.ExternalIDs["netloom_provider_network"] == "physnet-b" && bridge.FailMode != nil {
+			t.Fatalf("bridge fail mode = %v, want nil for uncontrolled provider bridge", bridge.FailMode)
+		}
 		if !reflect.DeepEqual(bridge.Protocols, []vswitch.BridgeProtocols{vswitch.BridgeProtocolsOpenflow13}) {
 			t.Fatalf("bridge protocols = %+v, want OpenFlow13", bridge.Protocols)
 		}

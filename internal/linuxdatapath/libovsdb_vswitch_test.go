@@ -188,10 +188,11 @@ func TestLibOVSDBProviderSyncerRepairsProviderBridgeConfig(t *testing.T) {
 	insertVSwitchRows(t, ctx, client, &vswitch.OpenvSwitch{})
 
 	rows := desiredProviderOVSDBRows([]providerNetworkLinkSpec{{
-		ProviderNetwork: "physnet-a",
-		ParentDevice:    "eth1",
-		VLAN:            100,
-		Name:            "nlv100",
+		ProviderNetwork:   "physnet-a",
+		ParentDevice:      "eth1",
+		VLAN:              100,
+		Name:              "nlv100",
+		ControllerTargets: []string{"tcp:192.0.2.10:6653"},
 	}})
 	syncer := NewLibOVSDBProviderSyncer(client)
 	if err := syncer.SyncProviderOVSDB(ctx, rows, false); err != nil {
@@ -201,9 +202,13 @@ func TestLibOVSDBProviderSyncerRepairsProviderBridgeConfig(t *testing.T) {
 	if !reflect.DeepEqual(bridge.Protocols, []vswitch.BridgeProtocols{vswitch.BridgeProtocolsOpenflow13}) {
 		t.Fatalf("bridge protocols = %+v, want OpenFlow13", bridge.Protocols)
 	}
+	if bridge.FailMode == nil || *bridge.FailMode != vswitch.BridgeFailModeSecure {
+		t.Fatalf("bridge fail mode = %v, want secure", bridge.FailMode)
+	}
 
 	bridge.Protocols = nil
-	updateOps, err := client.Where(bridge).Update(bridge, &bridge.Protocols)
+	bridge.FailMode = nil
+	updateOps, err := client.Where(bridge).Update(bridge, &bridge.Protocols, &bridge.FailMode)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,6 +228,9 @@ func TestLibOVSDBProviderSyncerRepairsProviderBridgeConfig(t *testing.T) {
 	bridge = singleBridgeByName(t, ctx, client, providerNetworkBridgeName("physnet-a"))
 	if !reflect.DeepEqual(bridge.Protocols, []vswitch.BridgeProtocols{vswitch.BridgeProtocolsOpenflow13}) {
 		t.Fatalf("bridge protocols after repair = %+v, want OpenFlow13", bridge.Protocols)
+	}
+	if bridge.FailMode == nil || *bridge.FailMode != vswitch.BridgeFailModeSecure {
+		t.Fatalf("bridge fail mode after repair = %v, want secure", bridge.FailMode)
 	}
 }
 

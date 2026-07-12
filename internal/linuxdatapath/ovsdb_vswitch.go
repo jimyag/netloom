@@ -56,6 +56,8 @@ func desiredProviderOVSDBRowsForIdentityGroups(specs []providerNetworkLinkSpec, 
 		}
 		bridge.Ports = appendUniqueString(bridge.Ports, spec.Name)
 		for _, target := range spec.ControllerTargets {
+			failMode := vswitch.BridgeFailModeSecure
+			bridge.FailMode = &failMode
 			controllerName := providerOVSDBControllerName(spec.ProviderNetwork, target)
 			bridge.Controller = appendUniqueString(bridge.Controller, controllerName)
 			controllerByName[controllerName] = vswitch.Controller{
