@@ -105,6 +105,14 @@ func TestLibOVSDBProviderSyncerRepairsProviderInterfaceConfig(t *testing.T) {
 	}
 	transactVSwitchOps(t, ctx, client, updateOps)
 
+	statuses, err := syncer.ReadProviderOVSDBStatus(ctx, rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(statuses) != 1 || statuses[0].InterfaceState != "mismatch" {
+		t.Fatalf("statuses = %+v, want provider interface config mismatch", statuses)
+	}
+
 	if err := syncer.SyncProviderOVSDB(ctx, rows, false); err != nil {
 		t.Fatal(err)
 	}

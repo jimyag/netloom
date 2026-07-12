@@ -315,11 +315,15 @@ func (s *LibOVSDBProviderSyncer) ReadProviderOVSDBStatus(ctx context.Context, ro
 	providerByBridge := make(map[string]string, len(rows.Bridges))
 	desiredQoSByName := make(map[string]vswitch.QoS, len(rows.QoS))
 	desiredQueueByName := make(map[string]vswitch.Queue, len(rows.Queues))
+	desiredInterfaceByName := make(map[string]vswitch.Interface, len(rows.Interfaces))
 	for _, qos := range rows.QoS {
 		desiredQoSByName[qos.ExternalIDs["netloom_provider_qos"]] = qos
 	}
 	for _, queue := range rows.Queues {
 		desiredQueueByName[queue.ExternalIDs["netloom_provider_queue"]] = queue
+	}
+	for _, iface := range rows.Interfaces {
+		desiredInterfaceByName[iface.Name] = iface
 	}
 	for _, bridge := range rows.Bridges {
 		provider := bridge.ExternalIDs["netloom_provider_network"]
@@ -413,8 +417,8 @@ func (s *LibOVSDBProviderSyncer) ReadProviderOVSDBStatus(ctx context.Context, ro
 		}
 		if !ok {
 			status.InterfaceState = "missing"
-		} else if !providerExternalIDsMatch(iface.ExternalIDs, providerOVSDBLinkExternalIDs(spec)) {
-			status.InterfaceState = "external-ids-mismatch"
+		} else {
+			status.InterfaceState = providerInterfaceOVSDBState(*iface, desiredInterfaceByName[spec.Name], spec)
 		}
 		if ok {
 			status.InterfaceUUID = iface.UUID
@@ -795,6 +799,27 @@ func (s *LibOVSDBProviderSyncer) ensureInterface(ctx context.Context, desired vs
 		return "", nil, fmt.Errorf("update OVS interface %s: %w", desired.Name, err)
 	}
 	return existing.UUID, ops, nil
+}
+
+func providerInterfaceOVSDBState(got vswitch.Interface, desired vswitch.Interface, spec providerNetworkLinkSpec) string {
+	if desired.Name == "" {
+		desired = vswitch.Interface{
+			Name:        spec.Name,
+			ExternalIDs: providerOVSDBLinkExternalIDs(spec),
+		}
+	}
+	if !providerExternalIDsMatch(got.ExternalIDs, desired.ExternalIDs) {
+		return "external-ids-mismatch"
+	}
+	if got.Type != desired.Type ||
+		!reflect.DeepEqual(got.Options, desired.Options) ||
+		!reflect.DeepEqual(got.OtherConfig, desired.OtherConfig) ||
+		!stringPointersEqual(got.MAC, desired.MAC) ||
+		!intPointersEqual(got.MTURequest, desired.MTURequest) ||
+		!intPointersEqual(got.OfportRequest, desired.OfportRequest) {
+		return "mismatch"
+	}
+	return "up"
 }
 
 func (s *LibOVSDBProviderSyncer) attachPortToBridge(_ context.Context, bridge *vswitch.Bridge, portUUID string) ([]ovsdb.Operation, error) {
