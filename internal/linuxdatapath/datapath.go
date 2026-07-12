@@ -14,7 +14,6 @@ import (
 
 	"github.com/jimyag/netloom/internal/control"
 	"github.com/jimyag/netloom/internal/model"
-	"github.com/jimyag/netloom/internal/ovn/ovsdb/vswitch"
 )
 
 type Operation struct {
@@ -286,7 +285,7 @@ func Plan(ctx context.Context, state control.DesiredState, options Options) ([]O
 	result.ProviderNetworkStatus = providerNetworkStatuses(state, result.ProviderStatus, result.ProviderIssues)
 	ops = append(ops, planProviderNetworkLinks(providerSpecs)...)
 	if options.SyncOVSDB {
-		ops = append(ops, planProviderOVSDBMappingsForIdentityGroups(providerSpecs, state.IdentityGroups, state.Endpoints)...)
+		ops = append(ops, planProviderOVSDBDirectSync(providerSpecs, state.IdentityGroups, state.Endpoints, options.CleanupStale))
 		ops = append(ops, planProviderQueueFlows(state, providerSpecs)...)
 	}
 	if options.CleanupStale {
@@ -1081,55 +1080,20 @@ func planProviderNetworkLinks(specs []providerNetworkLinkSpec) []Operation {
 	return ops
 }
 
-func planProviderOVSDBMappings(specs []providerNetworkLinkSpec) []Operation {
-	return planProviderOVSDBMappingsForIdentityGroups(specs, nil, nil)
-}
-
-func planProviderOVSDBMappingsForIdentityGroups(specs []providerNetworkLinkSpec, identityGroups []model.IdentityGroup, endpoints []model.Endpoint) []Operation {
-	if len(specs) == 0 {
-		return []Operation{ovsVSCTLOperation("set", "Open_vSwitch", ".", "external_ids:netloom_owner=netloom", "external_ids:ovn-bridge-mappings=", "external_ids:netloom_identity_groups=")}
-	}
+func planProviderOVSDBDirectSync(specs []providerNetworkLinkSpec, identityGroups []model.IdentityGroup, endpoints []model.Endpoint, cleanup bool) Operation {
 	rows := desiredProviderOVSDBRowsForIdentityGroups(specs, identityGroups, endpoints)
-	ops := make([]Operation, 0, len(rows.Bridges)+len(rows.Ports)*3+len(rows.QoS)+1)
-	bridgeByPort := make(map[string]string, len(rows.Ports))
-	queueByName := make(map[string]vswitchQueue, len(rows.Queues))
-	for _, queue := range rows.Queues {
-		queueByName[queue.ExternalIDs["netloom_provider_queue"]] = vswitchQueue{
-			externalIDs: queue.ExternalIDs,
-			otherConfig: queue.OtherConfig,
-		}
+	return Operation{
+		Command: "libovsdb-provider-sync",
+		Args: []string{
+			"cleanup=" + strconv.FormatBool(cleanup),
+			"bridges=" + strconv.Itoa(len(rows.Bridges)),
+			"ports=" + strconv.Itoa(len(rows.Ports)),
+			"interfaces=" + strconv.Itoa(len(rows.Interfaces)),
+			"qos=" + strconv.Itoa(len(rows.QoS)),
+			"queues=" + strconv.Itoa(len(rows.Queues)),
+			"identity_groups=" + strconv.Itoa(len(identityGroups)),
+		},
 	}
-	for _, bridge := range rows.Bridges {
-		ops = append(ops,
-			ovsVSCTLOperation("--may-exist", "add-br", bridge.Name),
-			ovsVSCTLOperation(append([]string{"set", "bridge", bridge.Name}, externalIDArgs(bridge.ExternalIDs)...)...),
-		)
-		for _, port := range bridge.Ports {
-			bridgeByPort[port] = bridge.Name
-		}
-	}
-	for _, port := range rows.Ports {
-		ops = append(ops,
-			planProviderOVSDBPort(bridgeByPort[port.Name], port.Name),
-			ovsVSCTLOperation(append([]string{"set", "port", port.Name}, externalIDArgs(port.ExternalIDs)...)...),
-		)
-		if port.QOS == nil {
-			ops = append(ops, planProviderOVSDBClearManagedQoS(port.Name))
-		}
-	}
-	for _, qos := range rows.QoS {
-		ops = append(ops, planProviderOVSDBQoS(qos, queueByName))
-	}
-	for _, iface := range rows.Interfaces {
-		ops = append(ops, ovsVSCTLOperation(append([]string{"set", "interface", iface.Name}, externalIDArgs(iface.ExternalIDs)...)...))
-	}
-	ops = append(ops, ovsVSCTLOperation(append([]string{"set", "Open_vSwitch", "."}, externalIDArgs(rows.OpenVSwitch.ExternalIDs)...)...))
-	return ops
-}
-
-type vswitchQueue struct {
-	externalIDs map[string]string
-	otherConfig map[string]string
 }
 
 func planProviderQueueFlows(state control.DesiredState, specs []providerNetworkLinkSpec) []Operation {
@@ -1404,85 +1368,6 @@ func providerQueueFlowCleanupBridges(specs []providerNetworkLinkSpec) []string {
 
 func providerQueueFlowCleanupScript(bridge string, keep []string) string {
 	return "for cookie in $(ovs-ofctl --names --no-stats dump-flows " + bridge + " cookie=" + providerQueueFlowCookieHex(providerQueueFlowCookie) + "/" + providerQueueFlowCookieHex(providerQueueFlowCookieMask) + " 2>/dev/null | sed -n 's/.*cookie=\\(0x[0-9a-fA-F]*\\).*/\\1/p'); do case '" + keepSet(keep) + "' in *\" $cookie \"*) ;; *) ovs-ofctl --strict del-flows " + bridge + " \"cookie=$cookie/-1\" ;; esac; done"
-}
-
-func externalIDArgs(values map[string]string) []string {
-	keys := make([]string, 0, len(values))
-	for key := range values {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	args := make([]string, 0, len(keys))
-	for _, key := range keys {
-		args = append(args, "external_ids:"+key+"="+values[key])
-	}
-	return args
-}
-
-func planProviderOVSDBPort(bridge, link string) Operation {
-	return shellOperation("current=$(ovs-vsctl port-to-br " + shellQuote(link) + " 2>/dev/null || true); if [ -n \"$current\" ] && [ \"$current\" != " + shellQuote(bridge) + " ]; then ovs-vsctl --if-exists del-port \"$current\" " + shellQuote(link) + "; fi; ovs-vsctl --may-exist add-port " + shellQuote(bridge) + " " + shellQuote(link))
-}
-
-func planProviderOVSDBQoS(qos vswitch.QoS, queueByName map[string]vswitchQueue) Operation {
-	qosName := qos.ExternalIDs["netloom_provider_qos"]
-	parts := []string{
-		"qos=$(ovs-vsctl --bare --columns=_uuid find qos external_ids:netloom_owner=netloom external_ids:netloom_provider_qos=" + shellArg(qosName) + " | head -n1)",
-		"if [ -z \"$qos\" ]; then qos=$(ovs-vsctl create qos " + strings.Join(providerOVSDBSetArgs(qos.ExternalIDs, nil), " ") + "); fi",
-		"ovs-vsctl set qos \"$qos\" type=" + shellArg(qos.Type) + " queues={}",
-		"ovs-vsctl set qos \"$qos\" " + strings.Join(providerOVSDBSetArgs(qos.ExternalIDs, qos.OtherConfig), " "),
-	}
-	queueIDs := make([]int, 0, len(qos.Queues))
-	for queueID := range qos.Queues {
-		queueIDs = append(queueIDs, queueID)
-	}
-	sort.Ints(queueIDs)
-	for _, queueID := range queueIDs {
-		queueName := qos.Queues[queueID]
-		queue, ok := queueByName[queueName]
-		if !ok {
-			continue
-		}
-		queueVar := "queue_" + strconv.Itoa(queueID)
-		parts = append(parts,
-			queueVar+"=$(ovs-vsctl --bare --columns=_uuid find queue external_ids:netloom_owner=netloom external_ids:netloom_provider_queue="+shellArg(queueName)+" | head -n1)",
-			"if [ -z \"$"+queueVar+"\" ]; then "+queueVar+"=$(ovs-vsctl create queue "+strings.Join(providerOVSDBSetArgs(queue.externalIDs, nil), " ")+"); fi",
-			"ovs-vsctl clear queue \"$"+queueVar+"\" external_ids other_config",
-			"ovs-vsctl set queue \"$"+queueVar+"\" "+strings.Join(providerOVSDBSetArgs(queue.externalIDs, queue.otherConfig), " "),
-			"ovs-vsctl set qos \"$qos\" queues:"+strconv.Itoa(queueID)+"=\"$"+queueVar+"\"",
-		)
-	}
-	portName := strings.TrimPrefix(qosName, "qos-")
-	parts = append(parts, "ovs-vsctl set port "+shellArg(portName)+" qos=\"$qos\"")
-	return shellOperation(strings.Join(parts, "; "))
-}
-
-func planProviderOVSDBClearManagedQoS(portName string) Operation {
-	return shellOperation("qos=$(ovs-vsctl get port " + shellArg(portName) + " qos 2>/dev/null || true); qos=${qos%\\\"}; qos=${qos#\\\"}; if [ -n \"$qos\" ] && [ \"$qos\" != '[]' ]; then owner=$(ovs-vsctl get qos \"$qos\" external_ids:netloom_owner 2>/dev/null || true); owner=${owner%\\\"}; owner=${owner#\\\"}; if [ \"$owner\" = netloom ]; then ovs-vsctl clear port " + shellArg(portName) + " qos; fi; fi")
-}
-
-func providerOVSDBSetArgs(externalIDs, otherConfig map[string]string) []string {
-	args := make([]string, 0, len(externalIDs)+len(otherConfig))
-	keys := make([]string, 0, len(externalIDs))
-	for key := range externalIDs {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	for _, key := range keys {
-		args = append(args, shellArg("external_ids:"+key+"="+externalIDs[key]))
-	}
-	keys = keys[:0]
-	for key := range otherConfig {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	for _, key := range keys {
-		args = append(args, shellArg("other_config:"+key+"="+otherConfig[key]))
-	}
-	return args
-}
-
-func ovsVSCTLOperation(args ...string) Operation {
-	return Operation{Command: "ovs-vsctl", Args: args}
 }
 
 func ovsOFCTLOperation(args ...string) Operation {

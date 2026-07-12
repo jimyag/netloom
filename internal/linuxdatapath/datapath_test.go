@@ -163,17 +163,10 @@ func TestPlanSyncsProviderBridgeMappingsToOVSDB(t *testing.T) {
 		t.Fatal(err)
 	}
 	link := providerNetworkLinkName("physnet-a", "eth1", 100)
-	bridge := providerNetworkBridgeName("physnet-a")
 	want := []Operation{
 		shellOperation("ip link show " + link + " >/dev/null 2>&1 || ip link add link eth1 name " + link + " type vlan id 100"),
 		{Command: "ip", Args: []string{"link", "set", link, "up"}},
-		{Command: "ovs-vsctl", Args: []string{"--may-exist", "add-br", bridge}},
-		{Command: "ovs-vsctl", Args: []string{"set", "bridge", bridge, "external_ids:netloom_owner=netloom", "external_ids:netloom_provider_network=physnet-a"}},
-		planProviderOVSDBPort(bridge, link),
-		{Command: "ovs-vsctl", Args: []string{"set", "port", link, "external_ids:netloom_owner=netloom", "external_ids:netloom_parent_device=eth1", "external_ids:netloom_provider_network=physnet-a", "external_ids:netloom_vlan=100"}},
-		planProviderOVSDBClearManagedQoS(link),
-		{Command: "ovs-vsctl", Args: []string{"set", "interface", link, "external_ids:netloom_owner=netloom", "external_ids:netloom_parent_device=eth1", "external_ids:netloom_provider_network=physnet-a", "external_ids:netloom_vlan=100"}},
-		{Command: "ovs-vsctl", Args: []string{"set", "Open_vSwitch", ".", "external_ids:netloom_identity_groups=", "external_ids:netloom_owner=netloom", "external_ids:ovn-bridge-mappings=physnet-a:" + bridge}},
+		{Command: "libovsdb-provider-sync", Args: []string{"cleanup=false", "bridges=1", "ports=1", "interfaces=1", "qos=0", "queues=0", "identity_groups=0"}},
 		{Command: "ip", Args: []string{"link", "set", "nl0", "up"}},
 		{Command: "ip", Args: []string{"addr", "replace", "10.10.0.10/32", "dev", "nl0"}},
 	}
@@ -326,7 +319,7 @@ func (r staticProviderOVSDBStatusReader) ReadProviderOVSDBStatus(context.Context
 	return append([]ProviderOVSDBStatus(nil), r.statuses...), r.err
 }
 
-func TestPlanClearsProviderBridgeMappingsWhenOVSDBSyncHasNoProviders(t *testing.T) {
+func TestPlanMarksProviderOVSDBDirectSyncWhenNoProviders(t *testing.T) {
 	ops, _, err := Plan(context.Background(), control.DesiredState{}, Options{
 		Node:      "node-a",
 		SyncOVSDB: true,
@@ -335,7 +328,7 @@ func TestPlanClearsProviderBridgeMappingsWhenOVSDBSyncHasNoProviders(t *testing.
 		t.Fatal(err)
 	}
 	want := []Operation{
-		{Command: "ovs-vsctl", Args: []string{"set", "Open_vSwitch", ".", "external_ids:netloom_owner=netloom", "external_ids:ovn-bridge-mappings=", "external_ids:netloom_identity_groups="}},
+		{Command: "libovsdb-provider-sync", Args: []string{"cleanup=false", "bridges=0", "ports=0", "interfaces=0", "qos=0", "queues=0", "identity_groups=0"}},
 		{Command: "ip", Args: []string{"link", "set", "lo", "up"}},
 	}
 	if !reflect.DeepEqual(ops, want) {
@@ -343,39 +336,19 @@ func TestPlanClearsProviderBridgeMappingsWhenOVSDBSyncHasNoProviders(t *testing.
 	}
 }
 
-func TestPlanProviderOVSDBPortRepairsWrongBridgeDrift(t *testing.T) {
-	op := planProviderOVSDBPort("nlbr-good", "nlv100")
-	script := strings.Join(op.Args, " ")
-	for _, expected := range []string{
-		"ovs-vsctl port-to-br nlv100",
-		"[ \"$current\" != nlbr-good ]",
-		"ovs-vsctl --if-exists del-port \"$current\" nlv100",
-		"ovs-vsctl --may-exist add-port nlbr-good nlv100",
-	} {
-		if !strings.Contains(script, expected) {
-			t.Fatalf("provider ovsdb port repair script missing %q:\n%s", expected, script)
-		}
-	}
-}
-
-func TestPlanProviderOVSDBMappingsDeduplicatesProviderBridgeMappings(t *testing.T) {
-	bridge := providerNetworkBridgeName("physnet-a")
-	ops := planProviderOVSDBMappings([]providerNetworkLinkSpec{
+func TestPlanProviderOVSDBDirectSyncSummarizesDesiredRows(t *testing.T) {
+	op := planProviderOVSDBDirectSync([]providerNetworkLinkSpec{
 		{ProviderNetwork: "physnet-a", ParentDevice: "eth1", VLAN: 100, Name: "nlv100"},
 		{ProviderNetwork: "physnet-a", ParentDevice: "eth1", VLAN: 200, Name: "nlv200"},
-	})
-	if len(ops) == 0 {
-		t.Fatal("expected ovsdb operations")
-	}
-	last := ops[len(ops)-1]
-	want := Operation{Command: "ovs-vsctl", Args: []string{"set", "Open_vSwitch", ".", "external_ids:netloom_identity_groups=", "external_ids:netloom_owner=netloom", "external_ids:ovn-bridge-mappings=physnet-a:" + bridge}}
-	if !reflect.DeepEqual(last, want) {
-		t.Fatalf("last op = %#v, want %#v", last, want)
+	}, []model.IdentityGroup{{Name: "frontend-api"}}, nil, true)
+	want := Operation{Command: "libovsdb-provider-sync", Args: []string{"cleanup=true", "bridges=1", "ports=2", "interfaces=2", "qos=0", "queues=0", "identity_groups=1"}}
+	if !reflect.DeepEqual(op, want) {
+		t.Fatalf("op = %#v, want %#v", op, want)
 	}
 }
 
-func TestPlanProviderOVSDBMappingsProgramsQoSAndQueues(t *testing.T) {
-	ops := planProviderOVSDBMappings([]providerNetworkLinkSpec{{
+func TestPlanProviderOVSDBDirectSyncSummarizesQoSAndQueues(t *testing.T) {
+	op := planProviderOVSDBDirectSync([]providerNetworkLinkSpec{{
 		ProviderNetwork: "physnet-a",
 		ParentDevice:    "eth1",
 		VLAN:            100,
@@ -388,33 +361,10 @@ func TestPlanProviderOVSDBMappingsProgramsQoSAndQueues(t *testing.T) {
 			QueueID:    10,
 			MaxRateBPS: 500000000,
 		}},
-	}})
-	var script string
-	for _, op := range ops {
-		if op.Command == "sh" && strings.Contains(strings.Join(op.Args, " "), "find qos external_ids:netloom_owner=netloom external_ids:netloom_provider_qos='qos-nlv100'") {
-			script = strings.Join(op.Args, " ")
-			break
-		}
-	}
-	if script == "" {
-		t.Fatalf("ops = %#v, want provider QoS sync script", ops)
-	}
-	for _, expected := range []string{
-		"find qos external_ids:netloom_owner=netloom external_ids:netloom_provider_qos='qos-nlv100'",
-		"create qos 'external_ids:netloom_owner=netloom'",
-		"set qos \"$qos\" type='linux-htb' queues={}",
-		"'other_config:max-rate=1000000000'",
-		"find queue external_ids:netloom_owner=netloom external_ids:netloom_provider_queue='queue-nlv100-10'",
-		"create queue 'external_ids:netloom_owner=netloom'",
-		"clear queue \"$queue_10\" external_ids other_config",
-		"set queue \"$queue_10\"",
-		"'other_config:max-rate=500000000'",
-		"set qos \"$qos\" queues:10=\"$queue_10\"",
-		"set port 'nlv100' qos=\"$qos\"",
-	} {
-		if !strings.Contains(script, expected) {
-			t.Fatalf("provider QoS script missing %q:\n%s", expected, script)
-		}
+	}}, nil, nil, false)
+	want := Operation{Command: "libovsdb-provider-sync", Args: []string{"cleanup=false", "bridges=1", "ports=1", "interfaces=1", "qos=1", "queues=1", "identity_groups=0"}}
+	if !reflect.DeepEqual(op, want) {
+		t.Fatalf("op = %#v, want %#v", op, want)
 	}
 }
 
@@ -573,10 +523,9 @@ func TestPlanSkipsProviderOVSDBShellCleanupWhenDirectSyncEnabled(t *testing.T) {
 	if !result.CleanupPlanned {
 		t.Fatal("cleanup was not marked as planned")
 	}
-	bridge := providerNetworkBridgeName("physnet-a")
 	joined := stringifyOps(ops)
 	for _, expected := range []string{
-		"external_ids:ovn-bridge-mappings=physnet-a:" + bridge,
+		"libovsdb-provider-sync cleanup=true bridges=1 ports=1 interfaces=1 qos=0 queues=0 identity_groups=0",
 		"ip link del \"$link\"",
 	} {
 		if !strings.Contains(joined, expected) {
