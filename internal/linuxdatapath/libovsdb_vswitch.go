@@ -375,6 +375,9 @@ func (s *LibOVSDBProviderSyncer) ReadProviderOVSDBStatus(ctx context.Context, ro
 			status.BridgeState = "missing"
 		} else {
 			status.BridgeUUID = bridge.UUID
+			if !providerExternalIDsMatch(bridge.ExternalIDs, bridgeByName[bridgeName].ExternalIDs) {
+				status.BridgeState = "external-ids-mismatch"
+			}
 			controllerUUIDs, controllerTargets, err := s.bridgeControllerPath(ctx, bridge.Controller)
 			if err != nil {
 				return nil, err

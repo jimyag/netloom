@@ -661,6 +661,39 @@ func TestLibOVSDBProviderSyncerReadsProviderStatusDrift(t *testing.T) {
 	}
 }
 
+func TestLibOVSDBProviderSyncerReadsProviderBridgeExternalIDDrift(t *testing.T) {
+	client, cleanup := newTestVSwitchClient(t)
+	defer cleanup()
+	ctx := context.Background()
+	insertVSwitchRows(t, ctx, client, &vswitch.OpenvSwitch{})
+
+	rows := desiredProviderOVSDBRows([]providerNetworkLinkSpec{{
+		ProviderNetwork: "physnet-a",
+		ParentDevice:    "eth1",
+		VLAN:            100,
+		Name:            "nlv100",
+	}})
+	syncer := NewLibOVSDBProviderSyncer(client)
+	if err := syncer.SyncProviderOVSDB(ctx, rows, false); err != nil {
+		t.Fatal(err)
+	}
+	bridge := singleBridgeByName(t, ctx, client, providerNetworkBridgeName("physnet-a"))
+	bridge.ExternalIDs["netloom_provider_network"] = "physnet-b"
+	ops, err := client.Where(bridge).Update(bridge, &bridge.ExternalIDs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transactVSwitchOps(t, ctx, client, ops)
+
+	statuses, err := syncer.ReadProviderOVSDBStatus(ctx, rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(statuses) != 1 || statuses[0].BridgeState != "external-ids-mismatch" {
+		t.Fatalf("statuses = %+v, want bridge external id drift", statuses)
+	}
+}
+
 func TestLibOVSDBProviderSyncerReadsProviderPortInterfaceDrift(t *testing.T) {
 	client, cleanup := newTestVSwitchClient(t)
 	defer cleanup()
