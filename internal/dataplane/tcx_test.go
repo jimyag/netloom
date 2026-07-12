@@ -279,7 +279,7 @@ func TestIPv4L4ACLRulesFromProgramPreservesLogFlag(t *testing.T) {
 				Action:     model.ActionDrop,
 			},
 			{
-				ID:         "drop-web-logged",
+				ID:         "drop-web",
 				Direction:  model.DirectionIngress,
 				Protocol:   model.ProtocolTCP,
 				RemoteCIDR: netip.MustParsePrefix("172.30.0.20/32"),
@@ -299,6 +299,35 @@ func TestIPv4L4ACLRulesFromProgramPreservesLogFlag(t *testing.T) {
 	}
 	if !rules[0].Log {
 		t.Fatalf("merged TCX rule lost log flag: %+v", rules[0])
+	}
+}
+
+func TestIPv4L4ACLRulesFromProgramRejectsSamePrecedenceRuleCookieConflict(t *testing.T) {
+	program := policy.Program{
+		EndpointID: testEndpointA,
+		Rules: []policy.Rule{
+			{
+				ID:         "drop-web-a",
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("172.30.0.20/32"),
+				Ports:      []model.PortRange{{From: 8080, To: 8080}},
+				Action:     model.ActionDrop,
+			},
+			{
+				ID:         "drop-web-b",
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("172.30.0.20/32"),
+				Ports:      []model.PortRange{{From: 8080, To: 8080}},
+				Action:     model.ActionDrop,
+			},
+		},
+	}
+
+	_, err := IPv4L4ACLRulesFromProgram(program)
+	if err == nil || !strings.Contains(err.Error(), "conflicting TCX ACL rule cookies") {
+		t.Fatalf("error = %v, want rule cookie conflict", err)
 	}
 }
 
@@ -662,7 +691,7 @@ func TestIPv6L4ACLRulesFromProgramPreservesLogFlag(t *testing.T) {
 				Action:     model.ActionDrop,
 			},
 			{
-				ID:         "drop-v6-web-logged",
+				ID:         "drop-v6-web",
 				Direction:  model.DirectionIngress,
 				Protocol:   model.ProtocolTCP,
 				RemoteCIDR: netip.MustParsePrefix("fd00:10::20/128"),
@@ -682,6 +711,35 @@ func TestIPv6L4ACLRulesFromProgramPreservesLogFlag(t *testing.T) {
 	}
 	if !rules[0].Log {
 		t.Fatalf("merged TCX rule lost log flag: %+v", rules[0])
+	}
+}
+
+func TestIPv6L4ACLRulesFromProgramRejectsSamePrecedenceRuleCookieConflict(t *testing.T) {
+	program := policy.Program{
+		EndpointID: testEndpointA,
+		Rules: []policy.Rule{
+			{
+				ID:         "drop-v6-web-a",
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("fd00:10::20/128"),
+				Ports:      []model.PortRange{{From: 8443, To: 8443}},
+				Action:     model.ActionDrop,
+			},
+			{
+				ID:         "drop-v6-web-b",
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("fd00:10::20/128"),
+				Ports:      []model.PortRange{{From: 8443, To: 8443}},
+				Action:     model.ActionDrop,
+			},
+		},
+	}
+
+	_, err := IPv6L4ACLRulesFromProgram(program)
+	if err == nil || !strings.Contains(err.Error(), "conflicting TCX ACL rule cookies") {
+		t.Fatalf("error = %v, want rule cookie conflict", err)
 	}
 }
 
