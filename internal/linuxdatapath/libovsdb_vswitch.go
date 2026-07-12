@@ -128,6 +128,7 @@ func (s *LibOVSDBProviderSyncer) SyncProviderOVSDB(ctx context.Context, rows Pro
 	queueUUIDByName := make(map[string]string, len(rows.Queues))
 	desiredQueueSet := make(map[string]struct{}, len(rows.Queues))
 	interfaceUUIDByName := make(map[string]string, len(rows.Interfaces))
+	desiredInterfaceSet := make(map[string]struct{}, len(rows.Interfaces))
 	for _, controller := range rows.Controllers {
 		name := controller.ExternalIDs["netloom_provider_controller"]
 		if name == "" {
@@ -205,6 +206,7 @@ func (s *LibOVSDBProviderSyncer) SyncProviderOVSDB(ctx context.Context, rows Pro
 		if iface.Name == "" {
 			return fmt.Errorf("provider Interface row is missing name")
 		}
+		desiredInterfaceSet[iface.Name] = struct{}{}
 		ifaceUUID, ifaceOps, err := s.ensureInterface(ctx, iface)
 		if err != nil {
 			return err
@@ -271,6 +273,11 @@ func (s *LibOVSDBProviderSyncer) SyncProviderOVSDB(ctx context.Context, rows Pro
 			return err
 		}
 		ops = append(ops, cleanupOps...)
+		interfaceOps, err := s.cleanupStaleProviderInterfaces(ctx, desiredInterfaceSet)
+		if err != nil {
+			return err
+		}
+		ops = append(ops, interfaceOps...)
 		qosOps, err := s.cleanupStaleProviderQoS(ctx, desiredQoSSet)
 		if err != nil {
 			return err
@@ -926,6 +933,37 @@ func (s *LibOVSDBProviderSyncer) cleanupStaleProviderBridges(ctx context.Context
 	return ops, nil
 }
 
+func (s *LibOVSDBProviderSyncer) cleanupStaleProviderInterfaces(ctx context.Context, desired map[string]struct{}) ([]ovsdb.Operation, error) {
+	var rows []vswitch.Interface
+	if err := s.client.WhereCache(func(row *vswitch.Interface) bool {
+		if row.ExternalIDs["netloom_owner"] != "netloom" ||
+			row.ExternalIDs["netloom_provider_network"] == "" ||
+			row.ExternalIDs["netloom_parent_device"] == "" ||
+			row.ExternalIDs["netloom_vlan"] == "" {
+			return false
+		}
+		_, ok := desired[row.Name]
+		return !ok
+	}).List(ctx, &rows); err != nil {
+		return nil, fmt.Errorf("list stale OVS provider interfaces: %w", err)
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].UUID < rows[j].UUID })
+	var ops []ovsdb.Operation
+	for i := range rows {
+		detachOps, err := s.detachInterfaceFromPorts(ctx, rows[i].UUID)
+		if err != nil {
+			return nil, err
+		}
+		ops = append(ops, detachOps...)
+		deleteOps, err := s.client.Where(&rows[i]).Delete()
+		if err != nil {
+			return nil, fmt.Errorf("delete stale OVS provider interface %s: %w", rows[i].Name, err)
+		}
+		ops = append(ops, deleteOps...)
+	}
+	return ops, nil
+}
+
 func (s *LibOVSDBProviderSyncer) cleanupStaleProviderQoS(ctx context.Context, desired map[string]struct{}) ([]ovsdb.Operation, error) {
 	var rows []vswitch.QoS
 	if err := s.client.WhereCache(func(row *vswitch.QoS) bool {
@@ -1003,6 +1041,35 @@ func (s *LibOVSDBProviderSyncer) cleanupStaleProviderControllers(ctx context.Con
 			return nil, fmt.Errorf("delete stale OVS provider Controller %s: %w", rows[i].ExternalIDs["netloom_provider_controller"], err)
 		}
 		ops = append(ops, deleteOps...)
+	}
+	return ops, nil
+}
+
+func (s *LibOVSDBProviderSyncer) detachInterfaceFromPorts(ctx context.Context, interfaceUUID string) ([]ovsdb.Operation, error) {
+	var ports []vswitch.Port
+	if err := s.client.WhereCache(func(row *vswitch.Port) bool {
+		return containsProviderString(row.Interfaces, interfaceUUID)
+	}).List(ctx, &ports); err != nil {
+		return nil, fmt.Errorf("list OVS ports containing interface %s: %w", interfaceUUID, err)
+	}
+	sort.Slice(ports, func(i, j int) bool { return ports[i].UUID < ports[j].UUID })
+	var ops []ovsdb.Operation
+	for i := range ports {
+		next := make([]string, 0, len(ports[i].Interfaces))
+		for _, ref := range ports[i].Interfaces {
+			if ref != interfaceUUID {
+				next = append(next, ref)
+			}
+		}
+		if reflect.DeepEqual(ports[i].Interfaces, next) {
+			continue
+		}
+		ports[i].Interfaces = sortedUniqueStrings(next)
+		nextOps, err := s.client.Where(&ports[i]).Update(&ports[i], &ports[i].Interfaces)
+		if err != nil {
+			return nil, fmt.Errorf("detach OVS interface %s from port %s: %w", interfaceUUID, ports[i].Name, err)
+		}
+		ops = append(ops, nextOps...)
 	}
 	return ops, nil
 }

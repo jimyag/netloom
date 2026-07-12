@@ -855,6 +855,82 @@ func TestLibOVSDBProviderSyncerCleansStaleProviderRows(t *testing.T) {
 	}
 }
 
+func TestLibOVSDBProviderSyncerDetachesStaleProviderInterfaceFromPorts(t *testing.T) {
+	client, cleanup := newTestVSwitchClient(t)
+	defer cleanup()
+	ctx := context.Background()
+	insertVSwitchRows(t, ctx, client, &vswitch.OpenvSwitch{})
+
+	rows := desiredProviderOVSDBRows([]providerNetworkLinkSpec{{
+		ProviderNetwork: "physnet-a",
+		ParentDevice:    "eth1",
+		VLAN:            100,
+		Name:            "nlv100",
+	}})
+	syncer := NewLibOVSDBProviderSyncer(client)
+	if err := syncer.SyncProviderOVSDB(ctx, rows, false); err != nil {
+		t.Fatal(err)
+	}
+	bridge := singleBridgeByName(t, ctx, client, providerNetworkBridgeName("physnet-a"))
+	keeperInterface := &vswitch.Interface{
+		UUID: "@manual_keep_interface",
+		Name: "manual-keep",
+	}
+	staleInterface := &vswitch.Interface{
+		UUID: "@stale_provider_interface",
+		Name: "nlv-stale",
+		ExternalIDs: map[string]string{
+			"netloom_owner":            "netloom",
+			"netloom_provider_network": "physnet-a",
+			"netloom_parent_device":    "eth1",
+			"netloom_vlan":             "200",
+		},
+	}
+	keeperOps, err := client.Create(keeperInterface)
+	if err != nil {
+		t.Fatal(err)
+	}
+	staleOps, err := client.Create(staleInterface)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manualPort := &vswitch.Port{
+		UUID:        "@manual_stale_interface_port",
+		Name:        "manual-stale-interface-port",
+		ExternalIDs: map[string]string{"owner": "test"},
+		Interfaces:  []string{keeperInterface.UUID, staleInterface.UUID},
+	}
+	portOps, err := client.Create(manualPort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attachOps, err := client.Where(bridge).Mutate(bridge, ovsmodel.Mutation{
+		Field:   &bridge.Ports,
+		Mutator: ovsdb.MutateOperationInsert,
+		Value:   []string{manualPort.UUID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	transactVSwitchOps(t, ctx, client, append(append(append(keeperOps, staleOps...), portOps...), attachOps...))
+	keeperInterface = singleInterfaceByName(t, ctx, client, "manual-keep")
+	staleInterface = singleInterfaceByName(t, ctx, client, "nlv-stale")
+
+	if err := syncer.SyncProviderOVSDB(ctx, rows, true); err != nil {
+		t.Fatal(err)
+	}
+	if countInterfacesByName(t, ctx, client, "nlv-stale") != 0 {
+		t.Fatal("stale provider interface was not deleted")
+	}
+	var ports []vswitch.Port
+	if err := client.WhereCache(func(row *vswitch.Port) bool { return row.Name == "manual-stale-interface-port" }).List(ctx, &ports); err != nil {
+		t.Fatal(err)
+	}
+	if len(ports) != 1 || !containsProviderString(ports[0].Interfaces, keeperInterface.UUID) || containsProviderString(ports[0].Interfaces, staleInterface.UUID) {
+		t.Fatalf("manual port interfaces = %+v, want stale provider interface detached and keeper retained", ports)
+	}
+}
+
 func TestLibOVSDBProviderSyncerDetachesStaleQoSFromPorts(t *testing.T) {
 	client, cleanup := newTestVSwitchClient(t)
 	defer cleanup()
