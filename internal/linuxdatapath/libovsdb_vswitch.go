@@ -127,6 +127,7 @@ func (s *LibOVSDBProviderSyncer) SyncProviderOVSDB(ctx context.Context, rows Pro
 	desiredQoSSet := make(map[string]struct{}, len(rows.QoS))
 	queueUUIDByName := make(map[string]string, len(rows.Queues))
 	desiredQueueSet := make(map[string]struct{}, len(rows.Queues))
+	interfaceUUIDByName := make(map[string]string, len(rows.Interfaces))
 	for _, controller := range rows.Controllers {
 		name := controller.ExternalIDs["netloom_provider_controller"]
 		if name == "" {
@@ -200,6 +201,17 @@ func (s *LibOVSDBProviderSyncer) SyncProviderOVSDB(ctx context.Context, rows Pro
 		ops = append(ops, qosOps...)
 		qosUUIDByName[name] = qosUUID
 	}
+	for _, iface := range rows.Interfaces {
+		if iface.Name == "" {
+			return fmt.Errorf("provider Interface row is missing name")
+		}
+		ifaceUUID, ifaceOps, err := s.ensureInterface(ctx, iface)
+		if err != nil {
+			return err
+		}
+		ops = append(ops, ifaceOps...)
+		interfaceUUIDByName[iface.Name] = ifaceUUID
+	}
 
 	for _, port := range rows.Ports {
 		if port.QOS != nil {
@@ -207,6 +219,18 @@ func (s *LibOVSDBProviderSyncer) SyncProviderOVSDB(ctx context.Context, rows Pro
 				port.QOS = &qosUUID
 			}
 		}
+		if len(port.Interfaces) == 0 {
+			return fmt.Errorf("provider Port %s has no Interface refs", port.Name)
+		}
+		interfaces := make([]string, 0, len(port.Interfaces))
+		for _, interfaceName := range port.Interfaces {
+			interfaceUUID := interfaceUUIDByName[interfaceName]
+			if interfaceUUID == "" {
+				return fmt.Errorf("provider Port %s references unknown Interface %s", port.Name, interfaceName)
+			}
+			interfaces = append(interfaces, interfaceUUID)
+		}
+		port.Interfaces = sortedUniqueStrings(interfaces)
 		portUUID, portOps, err := s.ensurePort(ctx, port)
 		if err != nil {
 			return err
@@ -678,16 +702,6 @@ func (s *LibOVSDBProviderSyncer) ensureBridge(ctx context.Context, desired vswit
 }
 
 func (s *LibOVSDBProviderSyncer) ensurePort(ctx context.Context, desired vswitch.Port) (string, []ovsdb.Operation, error) {
-	var ops []ovsdb.Operation
-	interfaceUUID, interfaceOps, err := s.ensureInterface(ctx, vswitch.Interface{
-		Name:        desired.Name,
-		ExternalIDs: desired.ExternalIDs,
-	})
-	if err != nil {
-		return "", nil, err
-	}
-	ops = append(ops, interfaceOps...)
-	desired.Interfaces = []string{interfaceUUID}
 	existing, ok, err := s.portByName(ctx, desired.Name)
 	if err != nil {
 		return "", nil, err
@@ -698,11 +712,10 @@ func (s *LibOVSDBProviderSyncer) ensurePort(ctx context.Context, desired vswitch
 		if err != nil {
 			return "", nil, fmt.Errorf("create OVS port %s: %w", desired.Name, err)
 		}
-		ops = append(ops, createOps...)
-		return desired.UUID, ops, nil
+		return desired.UUID, createOps, nil
 	}
 	nextExternalIDs := mergeProviderManagedExternalIDs(existing.ExternalIDs, desired.ExternalIDs)
-	nextInterfaces := sortedUniqueStrings(append(existing.Interfaces, interfaceUUID))
+	nextInterfaces := sortedUniqueStrings(desired.Interfaces)
 	nextQOS := desired.QOS
 	if desired.QOS == nil && existing.QOS != nil {
 		managed, err := s.qosUUIDIsNetloomManaged(ctx, *existing.QOS)
@@ -714,7 +727,7 @@ func (s *LibOVSDBProviderSyncer) ensurePort(ctx context.Context, desired vswitch
 		}
 	}
 	if reflect.DeepEqual(existing.ExternalIDs, nextExternalIDs) && reflect.DeepEqual(sortedUniqueStrings(existing.Interfaces), nextInterfaces) && stringPointersEqual(existing.QOS, nextQOS) {
-		return existing.UUID, ops, nil
+		return existing.UUID, nil, nil
 	}
 	existing.ExternalIDs = nextExternalIDs
 	existing.Interfaces = nextInterfaces
@@ -723,8 +736,7 @@ func (s *LibOVSDBProviderSyncer) ensurePort(ctx context.Context, desired vswitch
 	if err != nil {
 		return "", nil, fmt.Errorf("update OVS port %s: %w", desired.Name, err)
 	}
-	ops = append(ops, updateOps...)
-	return existing.UUID, ops, nil
+	return existing.UUID, updateOps, nil
 }
 
 func (s *LibOVSDBProviderSyncer) nonManagedControllerRefs(ctx context.Context, controllerUUIDs []string) ([]string, error) {
@@ -762,13 +774,25 @@ func (s *LibOVSDBProviderSyncer) ensureInterface(ctx context.Context, desired vs
 		return desired.UUID, ops, nil
 	}
 	nextExternalIDs := mergeProviderManagedExternalIDs(existing.ExternalIDs, desired.ExternalIDs)
-	if reflect.DeepEqual(existing.ExternalIDs, nextExternalIDs) {
+	if reflect.DeepEqual(existing.ExternalIDs, nextExternalIDs) &&
+		existing.Type == desired.Type &&
+		reflect.DeepEqual(existing.Options, desired.Options) &&
+		reflect.DeepEqual(existing.OtherConfig, desired.OtherConfig) &&
+		stringPointersEqual(existing.MAC, desired.MAC) &&
+		intPointersEqual(existing.MTURequest, desired.MTURequest) &&
+		intPointersEqual(existing.OfportRequest, desired.OfportRequest) {
 		return existing.UUID, nil, nil
 	}
 	existing.ExternalIDs = nextExternalIDs
-	ops, err := s.client.Where(existing).Update(existing, &existing.ExternalIDs)
+	existing.Type = desired.Type
+	existing.Options = desired.Options
+	existing.OtherConfig = desired.OtherConfig
+	existing.MAC = desired.MAC
+	existing.MTURequest = desired.MTURequest
+	existing.OfportRequest = desired.OfportRequest
+	ops, err := s.client.Where(existing).Update(existing, &existing.ExternalIDs, &existing.Type, &existing.Options, &existing.OtherConfig, &existing.MAC, &existing.MTURequest, &existing.OfportRequest)
 	if err != nil {
-		return "", nil, fmt.Errorf("update OVS interface %s external IDs: %w", desired.Name, err)
+		return "", nil, fmt.Errorf("update OVS interface %s: %w", desired.Name, err)
 	}
 	return existing.UUID, ops, nil
 }

@@ -62,6 +62,61 @@ func TestLibOVSDBProviderSyncerCreatesProviderRows(t *testing.T) {
 	}
 }
 
+func TestLibOVSDBProviderSyncerRepairsProviderInterfaceConfig(t *testing.T) {
+	client, cleanup := newTestVSwitchClient(t)
+	defer cleanup()
+	ctx := context.Background()
+	insertVSwitchRows(t, ctx, client, &vswitch.OpenvSwitch{})
+
+	rows := desiredProviderOVSDBRows([]providerNetworkLinkSpec{{
+		ProviderNetwork: "physnet-a",
+		ParentDevice:    "eth1",
+		VLAN:            100,
+		Name:            "nlv100",
+	}})
+	mtuRequest := 9000
+	ofportRequest := 42
+	rows.Interfaces[0].Type = "internal"
+	rows.Interfaces[0].Options = map[string]string{"peer": "nlv100-peer"}
+	rows.Interfaces[0].OtherConfig = map[string]string{"hwaddr": "02:00:00:00:00:2a"}
+	rows.Interfaces[0].MTURequest = &mtuRequest
+	rows.Interfaces[0].OfportRequest = &ofportRequest
+
+	syncer := NewLibOVSDBProviderSyncer(client)
+	if err := syncer.SyncProviderOVSDB(ctx, rows, false); err != nil {
+		t.Fatal(err)
+	}
+	iface := singleInterfaceByName(t, ctx, client, "nlv100")
+	if iface.Type != "internal" || iface.Options["peer"] != "nlv100-peer" ||
+		iface.OtherConfig["hwaddr"] != "02:00:00:00:00:2a" ||
+		iface.MTURequest == nil || *iface.MTURequest != 9000 ||
+		iface.OfportRequest == nil || *iface.OfportRequest != 42 {
+		t.Fatalf("interface = %+v, want desired OVSDB config columns persisted", iface)
+	}
+
+	iface.Type = ""
+	iface.Options = nil
+	iface.OtherConfig = nil
+	iface.MTURequest = nil
+	iface.OfportRequest = nil
+	updateOps, err := client.Where(iface).Update(iface, &iface.Type, &iface.Options, &iface.OtherConfig, &iface.MTURequest, &iface.OfportRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transactVSwitchOps(t, ctx, client, updateOps)
+
+	if err := syncer.SyncProviderOVSDB(ctx, rows, false); err != nil {
+		t.Fatal(err)
+	}
+	iface = singleInterfaceByName(t, ctx, client, "nlv100")
+	if iface.Type != "internal" || iface.Options["peer"] != "nlv100-peer" ||
+		iface.OtherConfig["hwaddr"] != "02:00:00:00:00:2a" ||
+		iface.MTURequest == nil || *iface.MTURequest != 9000 ||
+		iface.OfportRequest == nil || *iface.OfportRequest != 42 {
+		t.Fatalf("interface after drift repair = %+v, want desired OVSDB config columns restored", iface)
+	}
+}
+
 func TestLibOVSDBProviderSyncerOpenVSwitchExternalID(t *testing.T) {
 	client, cleanup := newTestVSwitchClient(t)
 	defer cleanup()
