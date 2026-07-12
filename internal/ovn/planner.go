@@ -71,12 +71,12 @@ func (p *Planner) EnsureSubnet(_ context.Context, subnet model.Subnet) error {
 		Operation{Command: "ls-add", Flags: []string{"--may-exist"}, Args: []string{switchName}},
 		setOperation("logical_switch", switchName, "external_ids:netloom_owner=netloom", "external_ids:netloom_subnet="+subnet.Name, "external_ids:netloom_vpc="+subnet.VPC),
 		Operation{Command: "lrp-add", Flags: []string{"--may-exist"}, Args: []string{router, routerPort, routerMAC, subnet.Gateway.String() + "/" + fmt.Sprint(subnet.CIDR.Bits())}},
-		setOperation("logical_router_port", routerPort, "external_ids:netloom_owner=netloom", "external_ids:netloom_subnet="+subnet.Name),
+		setOperation("logical_router_port", routerPort, "external_ids:netloom_owner=netloom", "external_ids:netloom_subnet="+subnet.Name, "external_ids:netloom_vpc="+subnet.VPC),
 		Operation{Command: "lsp-add", Flags: []string{"--may-exist"}, Args: []string{switchName, switchPort}},
 		Operation{Command: "lsp-set-type", Args: []string{switchPort, "router"}},
 		Operation{Command: "lsp-set-addresses", Args: []string{switchPort, routerMAC}},
 		Operation{Command: "lsp-set-options", Args: []string{switchPort, "router-port=" + routerPort}},
-		setOperation("logical_switch_port", switchPort, "external_ids:netloom_owner=netloom", "external_ids:netloom_subnet="+subnet.Name, "external_ids:netloom_role=router"),
+		setOperation("logical_switch_port", switchPort, "external_ids:netloom_owner=netloom", "external_ids:netloom_subnet="+subnet.Name, "external_ids:netloom_vpc="+subnet.VPC, "external_ids:netloom_role=router"),
 	)
 	p.ops = append(p.ops, logicalSwitchIPAMOperations(switchName, subnet)...)
 	if subnet.DHCP.Enabled && subnet.CIDR.Addr().Is6() {
@@ -89,7 +89,7 @@ func (p *Planner) EnsureSubnet(_ context.Context, subnet model.Subnet) error {
 		p.ops = append(p.ops,
 			Operation{Command: "lsp-del", Flags: []string{"--if-exists"}, Args: []string{localnetPort}},
 			Operation{Command: "lsp-add-localnet-port", Flags: []string{"--may-exist"}, Args: []string{switchName, localnetPort, subnet.ProviderNetwork}},
-			setOperation("logical_switch_port", localnetPort, "external_ids:netloom_owner=netloom", "external_ids:netloom_subnet="+subnet.Name, "external_ids:netloom_provider_network="+subnet.ProviderNetwork),
+			setOperation("logical_switch_port", localnetPort, "external_ids:netloom_owner=netloom", "external_ids:netloom_subnet="+subnet.Name, "external_ids:netloom_vpc="+subnet.VPC, "external_ids:netloom_provider_network="+subnet.ProviderNetwork),
 		)
 		if subnet.VLAN != 0 {
 			p.ops = append(p.ops, setOperation("logical_switch_port", localnetPort, fmt.Sprintf("tag=%d", subnet.VLAN)))

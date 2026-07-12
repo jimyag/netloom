@@ -1172,11 +1172,14 @@ func TestLibOVSDBTopologyWriterCleanupRepairsCoreNameDriftInSteadyState(t *testi
 		}).List(ctx, &switches); err != nil {
 			return false
 		}
-		if err := client.WhereCache(func(row *ovnnb.LogicalRouterPort) bool { return row.ExternalIDs["netloom_subnet"] == "apps" }).List(ctx, &routerPorts); err != nil {
+		if err := client.WhereCache(func(row *ovnnb.LogicalRouterPort) bool {
+			return row.ExternalIDs["netloom_vpc"] == "prod" && row.ExternalIDs["netloom_subnet"] == "apps"
+		}).List(ctx, &routerPorts); err != nil {
 			return false
 		}
 		if err := client.WhereCache(func(row *ovnnb.LogicalSwitchPort) bool {
-			return row.ExternalIDs["netloom_subnet"] == "apps" &&
+			return row.ExternalIDs["netloom_vpc"] == "prod" &&
+				row.ExternalIDs["netloom_subnet"] == "apps" &&
 				(row.ExternalIDs["netloom_role"] == "router" || row.ExternalIDs["netloom_endpoint"] == endpointExternalID("prod", "pod-a"))
 		}).List(ctx, &switchPorts); err != nil {
 			return false

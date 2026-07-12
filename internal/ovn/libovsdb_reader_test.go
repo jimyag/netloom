@@ -627,7 +627,9 @@ func TestAuditManagedObjectsReportsDisabledLogicalRouterAndRouterPortFromLibOVSD
 		t.Fatal(err)
 	}
 	var ports []ovnnb.LogicalRouterPort
-	if err := client.WhereCache(func(row *ovnnb.LogicalRouterPort) bool { return row.ExternalIDs["netloom_subnet"] == "apps" }).List(ctx, &ports); err != nil {
+	if err := client.WhereCache(func(row *ovnnb.LogicalRouterPort) bool {
+		return row.ExternalIDs["netloom_vpc"] == "prod" && row.ExternalIDs["netloom_subnet"] == "apps"
+	}).List(ctx, &ports); err != nil {
 		t.Fatal(err)
 	}
 	if len(ports) != 1 {
@@ -1027,7 +1029,7 @@ func TestAuditManagedObjectsReportsIPv6RouterPortRADriftFromLibOVSDBReader(t *te
 
 	var ports []ovnnb.LogicalRouterPort
 	if err := client.WhereCache(func(row *ovnnb.LogicalRouterPort) bool {
-		return row.ExternalIDs["netloom_subnet"] == "apps-v6"
+		return row.ExternalIDs["netloom_vpc"] == "prod" && row.ExternalIDs["netloom_subnet"] == "apps-v6"
 	}).List(ctx, &ports); err != nil {
 		t.Fatal(err)
 	}

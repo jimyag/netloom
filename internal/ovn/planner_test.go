@@ -121,6 +121,9 @@ func TestPlannerMapsNetloomObjectsToOVNOperations(t *testing.T) {
 		"--if-exists lsp-del nl_ls_prod_apps_to_apps_localnet",
 		"lsp-add-localnet-port nl_ls_prod_apps nl_ls_prod_apps_to_apps_localnet physnet-a",
 		"external_ids:netloom_provider_network=physnet-a",
+		"set logical_router_port nl_lr_prod_to_apps external_ids:netloom_owner=netloom external_ids:netloom_subnet=apps external_ids:netloom_vpc=prod",
+		"set logical_switch_port nl_ls_prod_apps_to_apps_router external_ids:netloom_owner=netloom external_ids:netloom_subnet=apps external_ids:netloom_vpc=prod external_ids:netloom_role=router",
+		"set logical_switch_port nl_ls_prod_apps_to_apps_localnet external_ids:netloom_owner=netloom external_ids:netloom_subnet=apps external_ids:netloom_vpc=prod external_ids:netloom_provider_network=physnet-a",
 		"set logical_switch_port nl_ls_prod_apps_to_apps_localnet tag=100",
 		"--id=@nl_dhcp_prod_pod_ha create DHCP_Options cidr=10.10.0.0/24",
 		"options:server_id=10.10.0.1",
@@ -179,6 +182,10 @@ func TestPlannerScopesLogicalSwitchesByVPC(t *testing.T) {
 		"--may-exist ls-add nl_ls_dev_apps",
 		"--may-exist lsp-add nl_ls_prod_apps nl_lp_prod_pod-a",
 		"--may-exist lsp-add nl_ls_dev_apps nl_lp_dev_pod-a",
+		"set logical_router_port nl_lr_prod_to_apps external_ids:netloom_owner=netloom external_ids:netloom_subnet=apps external_ids:netloom_vpc=prod",
+		"set logical_router_port nl_lr_dev_to_apps external_ids:netloom_owner=netloom external_ids:netloom_subnet=apps external_ids:netloom_vpc=dev",
+		"set logical_switch_port nl_ls_prod_apps_to_apps_router external_ids:netloom_owner=netloom external_ids:netloom_subnet=apps external_ids:netloom_vpc=prod external_ids:netloom_role=router",
+		"set logical_switch_port nl_ls_dev_apps_to_apps_router external_ids:netloom_owner=netloom external_ids:netloom_subnet=apps external_ids:netloom_vpc=dev external_ids:netloom_role=router",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("OVN operations missing %q:\n%s", expected, joined)
