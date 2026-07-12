@@ -890,6 +890,11 @@ func (s *LibOVSDBProviderSyncer) cleanupStaleProviderQoS(ctx context.Context, de
 	}
 	var ops []ovsdb.Operation
 	for i := range rows {
+		detachOps, err := s.detachQoSFromPorts(ctx, rows[i].UUID)
+		if err != nil {
+			return nil, err
+		}
+		ops = append(ops, detachOps...)
 		deleteOps, err := s.client.Where(&rows[i]).Delete()
 		if err != nil {
 			return nil, fmt.Errorf("delete stale OVS provider QoS %s: %w", rows[i].ExternalIDs["netloom_provider_qos"], err)
@@ -912,6 +917,11 @@ func (s *LibOVSDBProviderSyncer) cleanupStaleProviderQueues(ctx context.Context,
 	}
 	var ops []ovsdb.Operation
 	for i := range rows {
+		detachOps, err := s.detachQueueFromQoS(ctx, rows[i].UUID)
+		if err != nil {
+			return nil, err
+		}
+		ops = append(ops, detachOps...)
 		deleteOps, err := s.client.Where(&rows[i]).Delete()
 		if err != nil {
 			return nil, fmt.Errorf("delete stale OVS provider Queue %s: %w", rows[i].ExternalIDs["netloom_provider_queue"], err)
@@ -1096,6 +1106,11 @@ func (s *LibOVSDBProviderSyncer) deleteQoSIfManaged(ctx context.Context, uuid st
 		return nil, nil
 	}
 	var ops []ovsdb.Operation
+	detachOps, err := s.detachQoSFromPorts(ctx, uuid)
+	if err != nil {
+		return nil, err
+	}
+	ops = append(ops, detachOps...)
 	deleteOps, err := s.client.Where(qos).Delete()
 	if err != nil {
 		return nil, fmt.Errorf("delete OVS QoS %s: %w", uuid, err)
@@ -1107,12 +1122,78 @@ func (s *LibOVSDBProviderSyncer) deleteQoSIfManaged(ctx context.Context, uuid st
 			return nil, err
 		}
 		if ok && queue.ExternalIDs["netloom_owner"] == "netloom" && queue.ExternalIDs["netloom_provider_queue"] != "" {
+			detachQueueOps, err := s.detachQueueFromQoSExcept(ctx, queueUUID, qos.UUID)
+			if err != nil {
+				return nil, err
+			}
+			ops = append(ops, detachQueueOps...)
 			deleteQueueOps, err := s.client.Where(queue).Delete()
 			if err != nil {
 				return nil, fmt.Errorf("delete OVS Queue %s: %w", queueUUID, err)
 			}
 			ops = append(ops, deleteQueueOps...)
 		}
+	}
+	return ops, nil
+}
+
+func (s *LibOVSDBProviderSyncer) detachQoSFromPorts(ctx context.Context, qosUUID string) ([]ovsdb.Operation, error) {
+	var ports []vswitch.Port
+	if err := s.client.WhereCache(func(row *vswitch.Port) bool {
+		return row.QOS != nil && *row.QOS == qosUUID
+	}).List(ctx, &ports); err != nil {
+		return nil, fmt.Errorf("list OVS ports for QoS %s: %w", qosUUID, err)
+	}
+	sort.Slice(ports, func(i, j int) bool { return ports[i].UUID < ports[j].UUID })
+	var ops []ovsdb.Operation
+	for i := range ports {
+		ports[i].QOS = nil
+		updateOps, err := s.client.Where(&ports[i]).Update(&ports[i], &ports[i].QOS)
+		if err != nil {
+			return nil, fmt.Errorf("detach OVS QoS %s from port %s: %w", qosUUID, ports[i].Name, err)
+		}
+		ops = append(ops, updateOps...)
+	}
+	return ops, nil
+}
+
+func (s *LibOVSDBProviderSyncer) detachQueueFromQoS(ctx context.Context, queueUUID string) ([]ovsdb.Operation, error) {
+	return s.detachQueueFromQoSExcept(ctx, queueUUID, "")
+}
+
+func (s *LibOVSDBProviderSyncer) detachQueueFromQoSExcept(ctx context.Context, queueUUID, skipQoSUUID string) ([]ovsdb.Operation, error) {
+	var rows []vswitch.QoS
+	if err := s.client.WhereCache(func(row *vswitch.QoS) bool {
+		if row.UUID == skipQoSUUID {
+			return false
+		}
+		for _, ref := range row.Queues {
+			if ref == queueUUID {
+				return true
+			}
+		}
+		return false
+	}).List(ctx, &rows); err != nil {
+		return nil, fmt.Errorf("list OVS QoS rows for Queue %s: %w", queueUUID, err)
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].UUID < rows[j].UUID })
+	var ops []ovsdb.Operation
+	for i := range rows {
+		next := make(map[int]string, len(rows[i].Queues))
+		for queueID, ref := range rows[i].Queues {
+			if ref != queueUUID {
+				next[queueID] = ref
+			}
+		}
+		if reflect.DeepEqual(rows[i].Queues, next) {
+			continue
+		}
+		rows[i].Queues = next
+		updateOps, err := s.client.Where(&rows[i]).Update(&rows[i], &rows[i].Queues)
+		if err != nil {
+			return nil, fmt.Errorf("detach OVS Queue %s from QoS %s: %w", queueUUID, rows[i].ExternalIDs["netloom_provider_qos"], err)
+		}
+		ops = append(ops, updateOps...)
 	}
 	return ops, nil
 }

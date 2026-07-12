@@ -792,6 +792,169 @@ func TestLibOVSDBProviderSyncerCleansStaleProviderRows(t *testing.T) {
 	}
 }
 
+func TestLibOVSDBProviderSyncerDetachesStaleQoSFromPorts(t *testing.T) {
+	client, cleanup := newTestVSwitchClient(t)
+	defer cleanup()
+	ctx := context.Background()
+	insertVSwitchRows(t, ctx, client, &vswitch.OpenvSwitch{})
+
+	withQoS := desiredProviderOVSDBRows([]providerNetworkLinkSpec{{
+		ProviderNetwork: "physnet-a",
+		ParentDevice:    "eth1",
+		VLAN:            100,
+		Name:            "nlv100",
+		QoS: model.ProviderNetworkQoS{
+			EgressRateBPS: 1000000000,
+		},
+	}})
+	syncer := NewLibOVSDBProviderSyncer(client)
+	if err := syncer.SyncProviderOVSDB(ctx, withQoS, false); err != nil {
+		t.Fatal(err)
+	}
+	qos := singleQoSByProviderName(t, ctx, client, "qos-nlv100")
+	bridge := singleBridgeByName(t, ctx, client, providerNetworkBridgeName("physnet-a"))
+	manualInterface := &vswitch.Interface{
+		UUID: "manual_qos_interface",
+		Name: "manual-qos-port",
+	}
+	manualPort := &vswitch.Port{
+		UUID:        "manual_qos_port",
+		Name:        "manual-qos-port",
+		ExternalIDs: map[string]string{"owner": "test"},
+		Interfaces:  []string{manualInterface.UUID},
+		QOS:         &qos.UUID,
+	}
+	createIfaceOps, err := client.Create(manualInterface)
+	if err != nil {
+		t.Fatal(err)
+	}
+	createOps, err := client.Create(manualPort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attachOps, err := client.Where(bridge).Mutate(bridge, ovsmodel.Mutation{
+		Field:   &bridge.Ports,
+		Mutator: ovsdb.MutateOperationInsert,
+		Value:   []string{manualPort.UUID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	transactVSwitchOps(t, ctx, client, append(append(createIfaceOps, createOps...), attachOps...))
+
+	withoutQoS := desiredProviderOVSDBRows([]providerNetworkLinkSpec{{
+		ProviderNetwork: "physnet-a",
+		ParentDevice:    "eth1",
+		VLAN:            100,
+		Name:            "nlv100",
+	}})
+	if err := syncer.SyncProviderOVSDB(ctx, withoutQoS, true); err != nil {
+		t.Fatal(err)
+	}
+	if countQoSByProviderName(t, ctx, client, "qos-nlv100") != 0 {
+		t.Fatal("stale provider QoS was not deleted")
+	}
+	var ports []vswitch.Port
+	if err := client.WhereCache(func(row *vswitch.Port) bool { return row.Name == "manual-qos-port" }).List(ctx, &ports); err != nil {
+		t.Fatal(err)
+	}
+	if len(ports) != 1 || ports[0].QOS != nil {
+		t.Fatalf("manual port = %+v, want stale QoS ref detached", ports)
+	}
+}
+
+func TestLibOVSDBProviderSyncerDetachesStaleQueueFromQoS(t *testing.T) {
+	client, cleanup := newTestVSwitchClient(t)
+	defer cleanup()
+	ctx := context.Background()
+	insertVSwitchRows(t, ctx, client, &vswitch.OpenvSwitch{})
+
+	withQueues := desiredProviderOVSDBRows([]providerNetworkLinkSpec{{
+		ProviderNetwork: "physnet-a",
+		ParentDevice:    "eth1",
+		VLAN:            100,
+		Name:            "nlv100",
+		TenantQueues: []model.ProviderNetworkTenantQueuePolicy{{
+			Tenant:     "prod",
+			QueueID:    10,
+			MaxRateBPS: 500000000,
+		}, {
+			Tenant:     "prod",
+			QueueID:    20,
+			MaxRateBPS: 250000000,
+		}},
+	}})
+	syncer := NewLibOVSDBProviderSyncer(client)
+	if err := syncer.SyncProviderOVSDB(ctx, withQueues, false); err != nil {
+		t.Fatal(err)
+	}
+	staleQueue := singleQueueByProviderName(t, ctx, client, "queue-nlv100-20")
+	bridge := singleBridgeByName(t, ctx, client, providerNetworkBridgeName("physnet-a"))
+	manualQoS := &vswitch.QoS{
+		UUID:        "manual_queue_qos",
+		Type:        "linux-htb",
+		ExternalIDs: map[string]string{"owner": "test"},
+		Queues:      map[int]string{20: staleQueue.UUID},
+	}
+	manualInterface := &vswitch.Interface{
+		UUID: "manual_queue_interface",
+		Name: "manual-queue-port",
+	}
+	manualPort := &vswitch.Port{
+		UUID:        "manual_queue_port",
+		Name:        "manual-queue-port",
+		ExternalIDs: map[string]string{"owner": "test"},
+		Interfaces:  []string{manualInterface.UUID},
+		QOS:         &manualQoS.UUID,
+	}
+	createOps, err := client.Create(manualQoS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	createIfaceOps, err := client.Create(manualInterface)
+	if err != nil {
+		t.Fatal(err)
+	}
+	createPortOps, err := client.Create(manualPort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attachOps, err := client.Where(bridge).Mutate(bridge, ovsmodel.Mutation{
+		Field:   &bridge.Ports,
+		Mutator: ovsdb.MutateOperationInsert,
+		Value:   []string{manualPort.UUID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	transactVSwitchOps(t, ctx, client, append(append(append(createOps, createIfaceOps...), createPortOps...), attachOps...))
+
+	withoutQueue20 := desiredProviderOVSDBRows([]providerNetworkLinkSpec{{
+		ProviderNetwork: "physnet-a",
+		ParentDevice:    "eth1",
+		VLAN:            100,
+		Name:            "nlv100",
+		TenantQueues: []model.ProviderNetworkTenantQueuePolicy{{
+			Tenant:     "prod",
+			QueueID:    10,
+			MaxRateBPS: 500000000,
+		}},
+	}})
+	if err := syncer.SyncProviderOVSDB(ctx, withoutQueue20, true); err != nil {
+		t.Fatal(err)
+	}
+	if countQueuesByProviderName(t, ctx, client, "queue-nlv100-20") != 0 {
+		t.Fatal("stale provider queue was not deleted")
+	}
+	var qosRows []vswitch.QoS
+	if err := client.WhereCache(func(row *vswitch.QoS) bool { return row.ExternalIDs["owner"] == "test" }).List(ctx, &qosRows); err != nil {
+		t.Fatal(err)
+	}
+	if len(qosRows) != 1 || len(qosRows[0].Queues) != 0 {
+		t.Fatalf("manual QoS = %+v, want stale queue ref detached", qosRows)
+	}
+}
+
 func newTestVSwitchClient(t *testing.T) (libovsdbclient.Client, func()) {
 	t.Helper()
 	clientModel, err := vswitch.FullDatabaseModel()
