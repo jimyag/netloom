@@ -360,6 +360,12 @@ func (w *LibOVSDBTopologyWriter) cleanupUnexpectedLiveOperations(ctx context.Con
 		}
 		ops = append(ops, nextOps...)
 	}
+	gatewayOps, staleGateways, err := w.unexpectedGatewayMetadataOperations(ctx, desired)
+	if err != nil {
+		return nil, CleanupStats{}, err
+	}
+	stats.StaleGateways += staleGateways
+	ops = append(ops, gatewayOps...)
 	lbRows, err := w.unexpectedLoadBalancers(ctx, expected)
 	if err != nil {
 		return nil, CleanupStats{}, err
@@ -1188,18 +1194,64 @@ func (w *LibOVSDBTopologyWriter) clearGatewayOperations(ctx context.Context, gat
 	if err != nil || !ok {
 		return nil, err
 	}
-	nextExternalIDs := cloneStringMap(router.ExternalIDs)
-	for _, key := range []string{"netloom_gateway", "netloom_external_if", "netloom_gateway_lan_ip", "netloom_gateway_distributed"} {
-		delete(nextExternalIDs, key)
-	}
-	nextOptions := cloneStringMap(router.Options)
-	delete(nextOptions, "chassis")
+	return w.clearGatewayRouterOperations(router)
+}
+
+func (w *LibOVSDBTopologyWriter) clearGatewayRouterOperations(router *ovnnb.LogicalRouter) ([]ovsdb.Operation, error) {
+	nextExternalIDs := clearGatewayExternalIDs(router.ExternalIDs)
+	nextOptions := clearGatewayRouterOptions(router.Options)
 	if equalStringMaps(router.ExternalIDs, nextExternalIDs) && equalStringMaps(router.Options, nextOptions) {
 		return nil, nil
 	}
 	router.ExternalIDs = nextExternalIDs
 	router.Options = nextOptions
 	return w.client.Where(router).Update(router, &router.ExternalIDs, &router.Options)
+}
+
+func (w *LibOVSDBTopologyWriter) unexpectedGatewayMetadataOperations(ctx context.Context, desired topology.State) ([]ovsdb.Operation, int, error) {
+	desiredVPCs := make(map[string]struct{}, len(desired.VPCs))
+	for name := range desired.VPCs {
+		desiredVPCs[name] = struct{}{}
+	}
+	desiredGatewayVPCs := make(map[string]struct{}, len(desired.Gateways))
+	for _, gateway := range desired.Gateways {
+		desiredGatewayVPCs[gateway.VPC] = struct{}{}
+	}
+	var routers []ovnnb.LogicalRouter
+	if err := w.client.WhereCache(func(row *ovnnb.LogicalRouter) bool {
+		return isNetloomManaged(row.ExternalIDs)
+	}).List(ctx, &routers); err != nil {
+		return nil, 0, fmt.Errorf("list logical routers for stale gateway metadata: %w", err)
+	}
+	sort.Slice(routers, func(i, j int) bool { return routers[i].UUID < routers[j].UUID })
+	var ops []ovsdb.Operation
+	var stale int
+	for i := range routers {
+		vpc := routers[i].ExternalIDs["netloom_vpc"]
+		if _, ok := desiredVPCs[vpc]; !ok {
+			continue
+		}
+		if _, ok := desiredGatewayVPCs[vpc]; ok || !hasGatewayRouterMetadata(routers[i]) {
+			continue
+		}
+		nextOps, err := w.clearGatewayRouterOperations(&routers[i])
+		if err != nil {
+			return nil, 0, err
+		}
+		ops = append(ops, nextOps...)
+		stale++
+	}
+	return ops, stale, nil
+}
+
+func hasGatewayRouterMetadata(router ovnnb.LogicalRouter) bool {
+	for key := range router.ExternalIDs {
+		if isGatewayExternalID(key) {
+			return true
+		}
+	}
+	_, ok := router.Options["chassis"]
+	return ok
 }
 
 func (w *LibOVSDBTopologyWriter) deleteLogicalSwitchPortFromParents(port *ovnnb.LogicalSwitchPort) ([]ovsdb.Operation, error) {

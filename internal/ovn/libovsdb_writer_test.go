@@ -189,7 +189,7 @@ func TestLibOVSDBTopologyWriterCleanupRepairsVPCRouterDriftInSteadyState(t *test
 	if err := writer.CleanupTopology(ctx, state); err != nil {
 		t.Fatal(err)
 	}
-	requireEventually(t, func() bool {
+	finalStateOK := func() bool {
 		routers = nil
 		err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("prod") }).List(ctx, &routers)
 		return err == nil && len(routers) == 1 &&
@@ -199,7 +199,14 @@ func TestLibOVSDBTopologyWriterCleanupRepairsVPCRouterDriftInSteadyState(t *test
 			routers[0].Options["custom"] == "keep" &&
 			routers[0].Options["chassis"] == "" &&
 			len(routers[0].LoadBalancerGroup) == 0
-	})
+	}
+	if !eventually(finalStateOK) {
+		routers = nil
+		if err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("prod") }).List(ctx, &routers); err != nil {
+			t.Fatal(err)
+		}
+		t.Fatalf("router after repair = %+v", routers)
+	}
 	stats := writer.LastCleanupStats()
 	if stats.FirstReconcileGC || stats.Operations == 0 {
 		t.Fatalf("cleanup stats = %+v, want steady-state VPC router repair operations", stats)
@@ -3105,6 +3112,84 @@ func TestLibOVSDBTopologyWriterFirstCleanupDeletesUnexpectedLiveObjects(t *testi
 		stats.StaleDHCPOptions != 1 ||
 		stats.StaleLBHealthChecks != 1 {
 		t.Fatalf("cleanup stats = %+v, want first reconcile live orphan counts by OVN table category", stats)
+	}
+}
+
+func TestLibOVSDBTopologyWriterFirstCleanupClearsUnexpectedGatewayMetadata(t *testing.T) {
+	ctx := context.Background()
+	client, closeFn := newTestOVNNBClient(t)
+	defer closeFn()
+
+	if _, err := client.MonitorAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	writer := NewLibOVSDBTopologyWriter(client)
+	state := topology.State{
+		VPCs: map[string]model.VPC{"prod": {Name: "prod"}},
+	}
+	if err := writer.EnsureVPC(ctx, state.VPCs["prod"]); err != nil {
+		t.Fatal(err)
+	}
+
+	var routers []ovnnb.LogicalRouter
+	requireEventually(t, func() bool {
+		routers = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("prod") }).List(ctx, &routers)
+		return err == nil && len(routers) == 1
+	})
+	routers[0].ExternalIDs["netloom_gateway"] = "gw-stale"
+	routers[0].ExternalIDs["netloom_external_if"] = "eth9"
+	routers[0].ExternalIDs["netloom_gateway_lan_ip"] = "10.10.0.254"
+	routers[0].ExternalIDs["netloom_gateway_distributed"] = "false"
+	routers[0].ExternalIDs["custom"] = "keep"
+	routers[0].Options = map[string]string{"chassis": "node-old", "custom": "keep"}
+	updateOps, err := client.Where(&routers[0]).Update(&routers[0], &routers[0].ExternalIDs, &routers[0].Options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := client.Transact(ctx, updateOps...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, updateOps); err != nil {
+		t.Fatalf("seed stale gateway metadata operation errors=%+v: %v", opErrors, err)
+	}
+	requireEventually(t, func() bool {
+		routers = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("prod") }).List(ctx, &routers)
+		return err == nil && len(routers) == 1 &&
+			routers[0].ExternalIDs["netloom_gateway"] == "gw-stale" &&
+			routers[0].Options["chassis"] == "node-old"
+	})
+
+	gcWriter := NewLibOVSDBTopologyWriter(client)
+	if err := gcWriter.CleanupTopology(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	requireEventually(t, func() bool {
+		routers = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("prod") }).List(ctx, &routers)
+		if err != nil || len(routers) != 1 {
+			return false
+		}
+		_, hasGateway := routers[0].ExternalIDs["netloom_gateway"]
+		_, hasExternalIF := routers[0].ExternalIDs["netloom_external_if"]
+		_, hasGatewayLANIP := routers[0].ExternalIDs["netloom_gateway_lan_ip"]
+		_, hasDistributed := routers[0].ExternalIDs["netloom_gateway_distributed"]
+		_, hasChassis := routers[0].Options["chassis"]
+		return !hasGateway &&
+			!hasExternalIF &&
+			!hasGatewayLANIP &&
+			!hasDistributed &&
+			!hasChassis &&
+			routers[0].ExternalIDs["netloom_owner"] == "netloom" &&
+			routers[0].ExternalIDs["netloom_vpc"] == "prod" &&
+			routers[0].ExternalIDs["custom"] == "keep" &&
+			routers[0].Options["custom"] == "keep"
+	})
+	stats := gcWriter.LastCleanupStats()
+	if !stats.FirstReconcileGC || stats.StaleGateways != 1 || stats.Operations == 0 {
+		t.Fatalf("cleanup stats = %+v, want first reconcile stale gateway metadata cleanup", stats)
 	}
 }
 
