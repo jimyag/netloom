@@ -855,6 +855,62 @@ func TestLibOVSDBProviderSyncerCleansStaleProviderRows(t *testing.T) {
 	}
 }
 
+func TestLibOVSDBProviderSyncerCleansStaleProviderPortOnSharedBridge(t *testing.T) {
+	client, cleanup := newTestVSwitchClient(t)
+	defer cleanup()
+	ctx := context.Background()
+	insertVSwitchRows(t, ctx, client, &vswitch.OpenvSwitch{})
+
+	withTwoLinks := desiredProviderOVSDBRows([]providerNetworkLinkSpec{{
+		ProviderNetwork: "physnet-a",
+		ParentDevice:    "eth1",
+		VLAN:            100,
+		Name:            "nlv100",
+	}, {
+		ProviderNetwork: "physnet-a",
+		ParentDevice:    "eth1",
+		VLAN:            200,
+		Name:            "nlv200",
+		TenantQueues: []model.ProviderNetworkTenantQueuePolicy{{
+			Tenant:     "prod",
+			QueueID:    20,
+			MaxRateBPS: 250000000,
+		}},
+	}})
+	syncer := NewLibOVSDBProviderSyncer(client)
+	if err := syncer.SyncProviderOVSDB(ctx, withTwoLinks, false); err != nil {
+		t.Fatal(err)
+	}
+
+	onlyVLAN100 := desiredProviderOVSDBRows([]providerNetworkLinkSpec{{
+		ProviderNetwork: "physnet-a",
+		ParentDevice:    "eth1",
+		VLAN:            100,
+		Name:            "nlv100",
+	}})
+	if err := syncer.SyncProviderOVSDB(ctx, onlyVLAN100, true); err != nil {
+		t.Fatal(err)
+	}
+
+	bridge := singleBridgeByName(t, ctx, client, providerNetworkBridgeName("physnet-a"))
+	port := singlePortByName(t, ctx, client, "nlv100")
+	if !containsProviderString(bridge.Ports, port.UUID) {
+		t.Fatalf("bridge ports = %+v, want desired port %s retained", bridge.Ports, port.UUID)
+	}
+	if countPortsByName(t, ctx, client, "nlv200") != 0 {
+		t.Fatal("stale provider port nlv200 was not deleted")
+	}
+	if countInterfacesByName(t, ctx, client, "nlv200") != 0 {
+		t.Fatal("stale provider interface nlv200 was not deleted")
+	}
+	if countQoSByProviderName(t, ctx, client, "qos-nlv200") != 0 {
+		t.Fatal("stale provider QoS nlv200 was not deleted")
+	}
+	if countQueuesByProviderName(t, ctx, client, "queue-nlv200-20") != 0 {
+		t.Fatal("stale provider Queue nlv200 was not deleted")
+	}
+}
+
 func TestLibOVSDBProviderSyncerDetachesStaleProviderInterfaceFromPorts(t *testing.T) {
 	client, cleanup := newTestVSwitchClient(t)
 	defer cleanup()

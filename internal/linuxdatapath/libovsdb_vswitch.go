@@ -129,6 +129,7 @@ func (s *LibOVSDBProviderSyncer) SyncProviderOVSDB(ctx context.Context, rows Pro
 	desiredQueueSet := make(map[string]struct{}, len(rows.Queues))
 	interfaceUUIDByName := make(map[string]string, len(rows.Interfaces))
 	desiredInterfaceSet := make(map[string]struct{}, len(rows.Interfaces))
+	desiredPortSet := make(map[string]struct{}, len(rows.Ports))
 	for _, controller := range rows.Controllers {
 		name := controller.ExternalIDs["netloom_provider_controller"]
 		if name == "" {
@@ -216,6 +217,7 @@ func (s *LibOVSDBProviderSyncer) SyncProviderOVSDB(ctx context.Context, rows Pro
 	}
 
 	for _, port := range rows.Ports {
+		desiredPortSet[port.Name] = struct{}{}
 		if port.QOS != nil {
 			if qosUUID := qosUUIDByName[*port.QOS]; qosUUID != "" {
 				port.QOS = &qosUUID
@@ -273,6 +275,11 @@ func (s *LibOVSDBProviderSyncer) SyncProviderOVSDB(ctx context.Context, rows Pro
 			return err
 		}
 		ops = append(ops, cleanupOps...)
+		portOps, err := s.cleanupStaleProviderPorts(ctx, desiredPortSet)
+		if err != nil {
+			return err
+		}
+		ops = append(ops, portOps...)
 		interfaceOps, err := s.cleanupStaleProviderInterfaces(ctx, desiredInterfaceSet)
 		if err != nil {
 			return err
@@ -933,6 +940,44 @@ func (s *LibOVSDBProviderSyncer) cleanupStaleProviderBridges(ctx context.Context
 	return ops, nil
 }
 
+func (s *LibOVSDBProviderSyncer) cleanupStaleProviderPorts(ctx context.Context, desired map[string]struct{}) ([]ovsdb.Operation, error) {
+	var rows []vswitch.Port
+	if err := s.client.WhereCache(func(row *vswitch.Port) bool {
+		if row.ExternalIDs["netloom_owner"] != "netloom" ||
+			row.ExternalIDs["netloom_provider_network"] == "" ||
+			row.ExternalIDs["netloom_parent_device"] == "" ||
+			row.ExternalIDs["netloom_vlan"] == "" {
+			return false
+		}
+		_, ok := desired[row.Name]
+		return !ok
+	}).List(ctx, &rows); err != nil {
+		return nil, fmt.Errorf("list stale OVS provider ports: %w", err)
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].UUID < rows[j].UUID })
+	var ops []ovsdb.Operation
+	for i := range rows {
+		detachOps, err := s.detachPortFromBridges(ctx, rows[i].UUID)
+		if err != nil {
+			return nil, err
+		}
+		ops = append(ops, detachOps...)
+		if rows[i].QOS != nil {
+			qosOps, err := s.deleteQoSIfManaged(ctx, *rows[i].QOS)
+			if err != nil {
+				return nil, err
+			}
+			ops = append(ops, qosOps...)
+		}
+		deleteOps, err := s.client.Where(&rows[i]).Delete()
+		if err != nil {
+			return nil, fmt.Errorf("delete stale OVS provider port %s: %w", rows[i].Name, err)
+		}
+		ops = append(ops, deleteOps...)
+	}
+	return ops, nil
+}
+
 func (s *LibOVSDBProviderSyncer) cleanupStaleProviderInterfaces(ctx context.Context, desired map[string]struct{}) ([]ovsdb.Operation, error) {
 	var rows []vswitch.Interface
 	if err := s.client.WhereCache(func(row *vswitch.Interface) bool {
@@ -1041,6 +1086,29 @@ func (s *LibOVSDBProviderSyncer) cleanupStaleProviderControllers(ctx context.Con
 			return nil, fmt.Errorf("delete stale OVS provider Controller %s: %w", rows[i].ExternalIDs["netloom_provider_controller"], err)
 		}
 		ops = append(ops, deleteOps...)
+	}
+	return ops, nil
+}
+
+func (s *LibOVSDBProviderSyncer) detachPortFromBridges(ctx context.Context, portUUID string) ([]ovsdb.Operation, error) {
+	var bridges []vswitch.Bridge
+	if err := s.client.WhereCache(func(row *vswitch.Bridge) bool {
+		return containsProviderString(row.Ports, portUUID)
+	}).List(ctx, &bridges); err != nil {
+		return nil, fmt.Errorf("list OVS bridges containing port %s: %w", portUUID, err)
+	}
+	sort.Slice(bridges, func(i, j int) bool { return bridges[i].UUID < bridges[j].UUID })
+	var ops []ovsdb.Operation
+	for i := range bridges {
+		nextOps, err := s.client.Where(&bridges[i]).Mutate(&bridges[i], ovsmodel.Mutation{
+			Field:   &bridges[i].Ports,
+			Mutator: ovsdb.MutateOperationDelete,
+			Value:   []string{portUUID},
+		})
+		if err != nil {
+			return nil, fmt.Errorf("detach OVS port %s from bridge %s: %w", portUUID, bridges[i].Name, err)
+		}
+		ops = append(ops, nextOps...)
 	}
 	return ops, nil
 }
