@@ -661,6 +661,47 @@ func TestLibOVSDBProviderSyncerReadsProviderStatusDrift(t *testing.T) {
 	}
 }
 
+func TestLibOVSDBProviderSyncerReadsProviderPortInterfaceDrift(t *testing.T) {
+	client, cleanup := newTestVSwitchClient(t)
+	defer cleanup()
+	ctx := context.Background()
+	insertVSwitchRows(t, ctx, client, &vswitch.OpenvSwitch{})
+
+	rows := desiredProviderOVSDBRows([]providerNetworkLinkSpec{{
+		ProviderNetwork: "physnet-a",
+		ParentDevice:    "eth1",
+		VLAN:            100,
+		Name:            "nlv100",
+	}})
+	syncer := NewLibOVSDBProviderSyncer(client)
+	if err := syncer.SyncProviderOVSDB(ctx, rows, false); err != nil {
+		t.Fatal(err)
+	}
+	wrongIface := &vswitch.Interface{
+		UUID: "@wrong_provider_interface",
+		Name: "wrong-provider-interface",
+	}
+	createIfaceOps, err := client.Create(wrongIface)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := singlePortByName(t, ctx, client, "nlv100")
+	port.Interfaces = []string{wrongIface.UUID}
+	portOps, err := client.Where(port).Update(port, &port.Interfaces)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transactVSwitchOps(t, ctx, client, append(createIfaceOps, portOps...))
+
+	statuses, err := syncer.ReadProviderOVSDBStatus(ctx, rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(statuses) != 1 || statuses[0].PortState != "interface-missing" || statuses[0].InterfaceState != "missing" {
+		t.Fatalf("statuses = %+v, want missing desired interface reported on port and interface state", statuses)
+	}
+}
+
 func TestLibOVSDBProviderSyncerReadsProviderControllerDrift(t *testing.T) {
 	client, cleanup := newTestVSwitchClient(t)
 	defer cleanup()

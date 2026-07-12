@@ -418,6 +418,12 @@ func (s *LibOVSDBProviderSyncer) ReadProviderOVSDBStatus(ctx context.Context, ro
 			status.PortState = "bridge-mismatch"
 		} else if !providerExternalIDsMatch(port.ExternalIDs, providerOVSDBLinkExternalIDs(spec)) {
 			status.PortState = "external-ids-mismatch"
+		} else {
+			portInterfaceState, err := s.providerPortInterfaceRefsState(ctx, port, desiredPort)
+			if err != nil {
+				return nil, err
+			}
+			status.PortState = portInterfaceState
 		}
 		qosState, queueState, err := s.providerPortQoSState(ctx, port, desiredPort, desiredQoSByName, desiredQueueByName)
 		if err != nil {
@@ -834,6 +840,24 @@ func providerInterfaceOVSDBState(got vswitch.Interface, desired vswitch.Interfac
 		return "mismatch"
 	}
 	return "up"
+}
+
+func (s *LibOVSDBProviderSyncer) providerPortInterfaceRefsState(ctx context.Context, port *vswitch.Port, desired vswitch.Port) (string, error) {
+	desiredUUIDs := make([]string, 0, len(desired.Interfaces))
+	for _, ifaceName := range desired.Interfaces {
+		iface, ok, err := s.interfaceByName(ctx, ifaceName)
+		if err != nil {
+			return "", err
+		}
+		if !ok {
+			return "interface-missing", nil
+		}
+		desiredUUIDs = append(desiredUUIDs, iface.UUID)
+	}
+	if !reflect.DeepEqual(sortedUniqueStrings(port.Interfaces), sortedUniqueStrings(desiredUUIDs)) {
+		return "interface-mismatch", nil
+	}
+	return "up", nil
 }
 
 func (s *LibOVSDBProviderSyncer) attachPortToBridge(_ context.Context, bridge *vswitch.Bridge, portUUID string) ([]ovsdb.Operation, error) {
