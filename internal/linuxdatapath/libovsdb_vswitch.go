@@ -317,9 +317,14 @@ func (s *LibOVSDBProviderSyncer) ReadProviderOVSDBStatus(ctx context.Context, ro
 	}
 	mappings := ""
 	openVSwitchUUID := ""
+	openVSwitchState := "missing"
 	if openvSwitch != nil {
 		mappings = openvSwitch.ExternalIDs["ovn-bridge-mappings"]
 		openVSwitchUUID = openvSwitch.UUID
+		openVSwitchState = "up"
+		if !providerExternalIDsMatch(openvSwitch.ExternalIDs, rows.OpenVSwitch.ExternalIDs) {
+			openVSwitchState = "external-ids-mismatch"
+		}
 	}
 	bridgeByName := make(map[string]vswitch.Bridge, len(rows.Bridges))
 	for _, bridge := range rows.Bridges {
@@ -354,18 +359,19 @@ func (s *LibOVSDBProviderSyncer) ReadProviderOVSDBStatus(ctx context.Context, ro
 			return nil, err
 		}
 		status := ProviderOVSDBStatus{
-			ProviderNetwork: spec.ProviderNetwork,
-			OpenVSwitchUUID: openVSwitchUUID,
-			Bridge:          bridgeName,
-			LinkName:        spec.Name,
-			ParentDevice:    spec.ParentDevice,
-			VLAN:            spec.VLAN,
-			BridgeState:     "up",
-			MappingState:    "up",
-			PortState:       "up",
-			InterfaceState:  "up",
-			QoSState:        "up",
-			QueueState:      "up",
+			ProviderNetwork:  spec.ProviderNetwork,
+			OpenVSwitchUUID:  openVSwitchUUID,
+			OpenVSwitchState: openVSwitchState,
+			Bridge:           bridgeName,
+			LinkName:         spec.Name,
+			ParentDevice:     spec.ParentDevice,
+			VLAN:             spec.VLAN,
+			BridgeState:      "up",
+			MappingState:     "up",
+			PortState:        "up",
+			InterfaceState:   "up",
+			QoSState:         "up",
+			QueueState:       "up",
 		}
 		bridge, ok, err := s.bridgeByName(ctx, bridgeName)
 		if err != nil {

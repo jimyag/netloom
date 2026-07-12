@@ -96,6 +96,7 @@ type ProviderIssue struct {
 type ProviderOVSDBStatus struct {
 	ProviderNetwork   string
 	OpenVSwitchUUID   string
+	OpenVSwitchState  string
 	Bridge            string
 	BridgeUUID        string
 	LinkName          string
@@ -848,6 +849,7 @@ func providerOVSDBStatusIssues(status ProviderOVSDBStatus, node string) []Provid
 		kind  string
 		state string
 	}{
+		{kind: "ovsdb-root", state: status.OpenVSwitchState},
 		{kind: "ovsdb-bridge", state: status.BridgeState},
 		{kind: "ovsdb-mapping", state: status.MappingState},
 		{kind: "ovsdb-port", state: status.PortState},
@@ -873,6 +875,8 @@ func providerOVSDBStatusIssues(status ProviderOVSDBStatus, node string) []Provid
 func providerOVSDBIssueDetail(status ProviderOVSDBStatus, kind, state string) string {
 	path := providerOVSDBPathDetail(status)
 	switch kind {
+	case "ovsdb-root":
+		return appendProviderIssuePath("Open_vSwitch:"+fallbackProviderState(state), path)
 	case "ovsdb-bridge":
 		return appendProviderIssuePath(status.Bridge+":"+fallbackProviderState(state), path)
 	case "ovsdb-port":

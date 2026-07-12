@@ -1226,15 +1226,16 @@ func TestAppendProviderOVSDBIssuesReportsProvidedStatusIssues(t *testing.T) {
 	err = appendProviderOVSDBIssues(context.Background(), &result, state, Options{
 		Node: "node-a",
 		ProviderOVSDBStatus: []ProviderOVSDBStatus{{
-			ProviderNetwork: "physnet-a",
-			Bridge:          providerNetworkBridgeName("physnet-a"),
-			LinkName:        providerNetworkLinkName("physnet-a", "eth1", 100),
-			ParentDevice:    "eth1",
-			VLAN:            100,
-			BridgeState:     "missing",
-			MappingState:    "up",
-			PortState:       "up",
-			InterfaceState:  "up",
+			ProviderNetwork:  "physnet-a",
+			OpenVSwitchState: "external-ids-mismatch",
+			Bridge:           providerNetworkBridgeName("physnet-a"),
+			LinkName:         providerNetworkLinkName("physnet-a", "eth1", 100),
+			ParentDevice:     "eth1",
+			VLAN:             100,
+			BridgeState:      "missing",
+			MappingState:     "up",
+			PortState:        "up",
+			InterfaceState:   "up",
 		}},
 	}, specs)
 	if err != nil {
@@ -1243,8 +1244,13 @@ func TestAppendProviderOVSDBIssuesReportsProvidedStatusIssues(t *testing.T) {
 	if !providerIssuesContainReason(result.ProviderIssues, "ovsdb-bridge-missing") {
 		t.Fatalf("provider issues = %+v, want ovsdb-bridge-missing", result.ProviderIssues)
 	}
-	if len(result.ProviderNetworkStatus) != 1 || result.ProviderNetworkStatus[0].Ready || !providerNetworkStatusContainsReason(result.ProviderNetworkStatus[0], "ovsdb-bridge-missing") {
-		t.Fatalf("provider network status = %+v, want ovsdb bridge issue", result.ProviderNetworkStatus)
+	if !providerIssuesContainReason(result.ProviderIssues, "ovsdb-root-drift") {
+		t.Fatalf("provider issues = %+v, want ovsdb-root-drift", result.ProviderIssues)
+	}
+	if len(result.ProviderNetworkStatus) != 1 || result.ProviderNetworkStatus[0].Ready ||
+		!providerNetworkStatusContainsReason(result.ProviderNetworkStatus[0], "ovsdb-bridge-missing") ||
+		!providerNetworkStatusContainsReason(result.ProviderNetworkStatus[0], "ovsdb-root-drift") {
+		t.Fatalf("provider network status = %+v, want ovsdb root and bridge issues", result.ProviderNetworkStatus)
 	}
 }
 
