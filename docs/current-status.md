@@ -2,6 +2,15 @@
 
 本文档按裸金属 SDN 产品视角说明 `netloom` 目前已经实现的能力、主要入口和还没有补齐的生产化内容。
 
+## 结论
+
+主要 SDN 功能已经实现，可以继续进入裸金属部署、容量压测和运维交付阶段。
+
+当前已经具备 VPC、子网、网关、安全组、安全组规则、策略路由、NAT、负载均衡、
+Provider Network、Linux datapath、eBPF/TCX ACL、状态观测和 policy lifecycle 的主路径。
+缺口主要集中在生产化材料和长期验证：多节点部署、证书和 systemd/container unit、
+备份恢复、升级回滚、容量压测、告警规则和故障处理 runbook。
+
 ## 已实现的主路径
 
 `netloom` 当前主路径已经实现：controller 负责把 desired state 收敛到 OVN Northbound，agent 负责本机 Open vSwitch、Linux datapath 和 eBPF/TCX 安全策略。
