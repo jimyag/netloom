@@ -78,7 +78,7 @@
 | Policy explain | 已实现 | `netloom-agent policy-explain` | command tests |
 | Policy status | 已实现 | `netloom-agent policy-status` | command tests |
 | Policy rule observability | 已实现 | agent `/policy/rules` JSON API and Prometheus rule counters | `TestPolicyRulesAPIReportsCatalogAndCounters` |
-| Policy update events | 已实现 | agent `/policy/events` JSON API for recent endpoint policy-map update events | `TestPolicyEventsAPIReportsRecentEndpointEvents` |
+| Policy update events | 已实现 | agent `/policy/events` JSON API, local OVS `netloom_policy_events` persistence, and `netloom-agent policy-events` for recent endpoint policy-map update events | `TestPolicyEventsAPIReportsRecentEndpointEvents`、`TestRunPolicyEventsWithStoreReportsFilteredJSON`、`TestAgentMetricsPersistsPolicyEventsToOpenVSwitchExternalID` |
 | Policy map entry inspection | 已实现 | `netloom-agent policy-entries` and agent `/policy/entries/{endpoint}` JSON API for live endpoint policy-map entries | `TestRunPolicyEntriesReportsEndpointMapJSON`、`TestPolicyEntriesAPIReportsEndpointPolicyMapEntries` |
 | Route explain | 已实现 | `netloom-agent route-explain` | command tests |
 | Endpoint action history | 已实现 | agent `GET /policy/endpoints/actions/history` and `netloom-agent policy-action-history`; endpoint/action/success/limit filters; persists successful and failed lifecycle actions in local OVS `netloom_policy_endpoint_action_history` when OVSDB is configured | `TestPolicyEndpointAPIPersistsActionHistoryToOpenVSwitchExternalID`、`TestPolicyEndpointActionHistoryAPIFiltersEndpointActionAndLimit`、`TestPolicyEndpointActionHistoryRecordsFailedAction`、`TestRunPolicyActionHistoryWithStoreReportsFilteredJSON` |

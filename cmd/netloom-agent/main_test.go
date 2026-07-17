@@ -2234,8 +2234,8 @@ func TestPolicyEventsAPIReportsRecentEndpointEvents(t *testing.T) {
 	if !got.Ready || !got.LastReconcileSuccess || got.Node != "node-a" || got.Store != "memory" {
 		t.Fatalf("policy events summary = %+v, want ready node-a memory success", got)
 	}
-	if got.TotalEvents != 3 || got.EventCount != 1 || got.Limit != 1 {
-		t.Fatalf("policy event counts = %+v, want total=3 event_count=1 limit=1", got)
+	if got.TotalEvents != 3 || got.EventCount != 1 || got.Limit != 1 || got.FilterEndpoint != "prod/pod-a" {
+		t.Fatalf("policy event counts = %+v, want total=3 event_count=1 limit=1 filter=prod/pod-a", got)
 	}
 	if len(got.Events) != 1 || got.Events[0].EndpointID != podA || got.Events[0].Revision != 2 || !got.Events[0].Success {
 		t.Fatalf("events = %+v, want latest successful pod-a revision 2", got.Events)
@@ -2274,6 +2274,119 @@ func TestPolicyEventsAPIRejectsInvalidLimit(t *testing.T) {
 	}
 	if !strings.Contains(recorder.Body.String(), "invalid limit") {
 		t.Fatalf("body missing invalid limit error: %s", recorder.Body.String())
+	}
+}
+
+func TestRunPolicyEventsWithStoreReportsFilteredJSON(t *testing.T) {
+	store := ovsdbPolicyEventsStore{syncer: &fakeOpenVSwitchExternalIDStore{}}
+	if err := store.Save(t.Context(), policyEventsDocument{
+		Node:                 "node-a",
+		Store:                "ebpf",
+		LastReconcileSuccess: true,
+		UpdatedAt:            time.Date(2026, 7, 17, 1, 2, 3, 0, time.UTC),
+		TotalEvents:          3,
+		Events: []dataplane.PolicyUpdateEvent{{
+			EndpointID: model.EndpointKey("prod", "pod-a"),
+			Revision:   1,
+			Success:    true,
+		}, {
+			EndpointID: model.EndpointKey("prod", "pod-b"),
+			Revision:   1,
+			Success:    true,
+		}, {
+			EndpointID: model.EndpointKey("prod", "pod-a"),
+			Revision:   2,
+			Success:    false,
+			Error:      "apply failed",
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var stdout bytes.Buffer
+	if err := runPolicyEventsWithStore(t.Context(), policyEventsOptions{endpoint: "prod/pod-a", limit: 1}, &stdout, store); err != nil {
+		t.Fatal(err)
+	}
+	var got policyEventsOutput
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode policy-events output: %v\n%s", err, stdout.String())
+	}
+	if !got.Ready || !got.LastReconcileSuccess || got.Node != "node-a" || got.Store != "ebpf" {
+		t.Fatalf("policy events summary = %+v, want ready node-a ebpf", got)
+	}
+	if got.TotalEvents != 3 || got.EventCount != 1 || got.Limit != 1 || got.FilterEndpoint != "prod/pod-a" {
+		t.Fatalf("policy event counts = %+v, want total=3 event_count=1 limit=1 filter=prod/pod-a", got)
+	}
+	if len(got.Events) != 1 || got.Events[0].Revision != 2 || got.Events[0].Success {
+		t.Fatalf("events = %+v, want latest failed pod-a revision 2", got.Events)
+	}
+}
+
+func TestRunPolicyEventsReadsRealOpenVSwitchOVSDB(t *testing.T) {
+	endpoint, client, cleanup := newTestAgentVSwitchOVSDB(t)
+	defer cleanup()
+	raw, err := json.Marshal(policyEventsDocument{
+		Node:                 "node-a",
+		Store:                "ebpf",
+		LastReconcileSuccess: true,
+		TotalEvents:          1,
+		Events: []dataplane.PolicyUpdateEvent{{
+			EndpointID: model.EndpointKey("prod", "pod-a"),
+			Revision:   1,
+			Success:    true,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	insertAgentVSwitchRows(t, t.Context(), client, &vswitch.OpenvSwitch{ExternalIDs: map[string]string{
+		policyEventsKey: string(raw),
+	}})
+	var stdout bytes.Buffer
+	if err := runPolicyEvents(t.Context(), []string{"-ovsdb", endpoint}, &stdout); err != nil {
+		t.Fatal(err)
+	}
+	var got policyEventsOutput
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode policy-events output: %v\n%s", err, stdout.String())
+	}
+	if got.Node != "node-a" || got.Store != "ebpf" || len(got.Events) != 1 || got.Events[0].EndpointID != model.EndpointKey("prod", "pod-a") {
+		t.Fatalf("policy events = %+v, want persisted pod-a event", got)
+	}
+}
+
+func TestAgentMetricsPersistsPolicyEventsToOpenVSwitchExternalID(t *testing.T) {
+	store := dataplane.NewInMemoryPolicyStore()
+	endpointID := model.EndpointKey("prod", "pod-a")
+	if err := store.ReplaceEndpoint(t.Context(), endpointID, []dataplane.PolicyMapEntry{{
+		Key: dataplane.PolicyKey{
+			PrefixLen:      dataplane.StaticPrefixBits,
+			Direction:      dataplane.DirectionIngress,
+			Protocol:       6,
+			RemoteIdentity: 10,
+		},
+		Value: dataplane.PolicyEntry{RuleCookie: 42},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	ovsdb := &fakeOpenVSwitchExternalIDStore{}
+	metrics := newAgentMetrics(store)
+	configurePolicyEventsStore(metrics, ovsdbPolicyEventsStore{syncer: ovsdb})
+
+	observeAgentReconcileResult(metrics, agent.ReconcileResult{Node: "node-a"}, "ebpf", time.Millisecond)
+
+	raw := ovsdb.values[policyEventsKey]
+	if raw == "" {
+		t.Fatalf("missing %s external_id", policyEventsKey)
+	}
+	var doc policyEventsDocument
+	if err := json.Unmarshal([]byte(raw), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.Node != "node-a" || doc.Store != "ebpf" || !doc.LastReconcileSuccess || doc.TotalEvents != 1 {
+		t.Fatalf("policy events doc = %+v, want successful node-a ebpf snapshot", doc)
+	}
+	if len(doc.Events) != 1 || doc.Events[0].EndpointID != endpointID || doc.Events[0].Revision != 1 {
+		t.Fatalf("policy events = %+v, want pod-a revision 1", doc.Events)
 	}
 }
 

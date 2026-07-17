@@ -117,6 +117,10 @@ Inspect policy state, policy-map entries, and routing decisions:
   -ovsdb unix:/var/run/openvswitch/db.sock \
   -endpoint prod/vm-a \
   -success false
+./netloom-agent policy-events \
+  -ovsdb unix:/var/run/openvswitch/db.sock \
+  -endpoint prod/vm-a \
+  -limit 20
 ./netloom-agent policy-freeze-state \
   -ovsdb unix:/var/run/openvswitch/db.sock \
   -endpoint prod/vm-a

@@ -38,6 +38,7 @@ const (
 	policyRolloutStateKey   = "netloom_policy_rollout_state"
 	policyRolloutHistoryKey = "netloom_policy_rollout_history"
 	policyActionHistoryKey  = "netloom_policy_endpoint_action_history"
+	policyEventsKey         = "netloom_policy_events"
 	policyFreezeStateKey    = "netloom_policy_freeze_state"
 	agentOVSDBStatusKey     = "netloom_agent_status"
 	identityGroupsStateKey  = "netloom_identity_groups"
@@ -68,6 +69,11 @@ func main() {
 			return
 		case "policy-action-history":
 			if err := runPolicyActionHistory(context.Background(), os.Args[2:], os.Stdout); err != nil {
+				log.Fatal(err)
+			}
+			return
+		case "policy-events":
+			if err := runPolicyEvents(context.Background(), os.Args[2:], os.Stdout); err != nil {
 				log.Fatal(err)
 			}
 			return
@@ -181,6 +187,12 @@ type policyActionHistoryOptions struct {
 	endpoint string
 	action   string
 	success  string
+	limit    int
+}
+
+type policyEventsOptions struct {
+	ovsdb    string
+	endpoint string
 	limit    int
 }
 
@@ -304,9 +316,11 @@ type policyEventsOutput struct {
 	Ready                bool                          `json:"ready"`
 	LastReconcileSuccess bool                          `json:"last_reconcile_success"`
 	LastReconcileError   string                        `json:"last_reconcile_error,omitempty"`
+	UpdatedAt            time.Time                     `json:"updated_at,omitempty"`
 	TotalEvents          int                           `json:"total_events"`
 	EventCount           int                           `json:"event_count"`
 	Limit                int                           `json:"limit"`
+	FilterEndpoint       string                        `json:"filter_endpoint,omitempty"`
 	Events               []dataplane.PolicyUpdateEvent `json:"events"`
 }
 
@@ -412,6 +426,16 @@ type policyActionHistoryEntry struct {
 	Error       string    `json:"error,omitempty"`
 }
 
+type policyEventsDocument struct {
+	Node                 string                        `json:"node,omitempty"`
+	Store                string                        `json:"store,omitempty"`
+	LastReconcileSuccess bool                          `json:"last_reconcile_success"`
+	LastReconcileError   string                        `json:"last_reconcile_error,omitempty"`
+	UpdatedAt            time.Time                     `json:"updated_at,omitempty"`
+	TotalEvents          int                           `json:"total_events"`
+	Events               []dataplane.PolicyUpdateEvent `json:"events"`
+}
+
 type policyRolloutStateDocument struct {
 	Rollouts []policyRolloutStateEntry `json:"rollouts"`
 }
@@ -480,6 +504,11 @@ type policyActionHistoryStore interface {
 	Append(context.Context, policyActionHistoryEntry) error
 }
 
+type policyEventsStore interface {
+	Load(context.Context) (policyEventsDocument, error)
+	Save(context.Context, policyEventsDocument) error
+}
+
 type dnsObservationStore interface {
 	LoadDNSObservations(context.Context) ([]model.DNSRecord, error)
 }
@@ -502,6 +531,10 @@ type ovsdbPolicyRolloutHistoryStore struct {
 }
 
 type ovsdbPolicyActionHistoryStore struct {
+	syncer openVSwitchExternalIDStore
+}
+
+type ovsdbPolicyEventsStore struct {
 	syncer openVSwitchExternalIDStore
 }
 
@@ -788,6 +821,62 @@ func runPolicyActionHistoryWithStore(ctx context.Context, opts policyActionHisto
 		FilterAction:   action,
 		FilterSuccess:  success,
 		History:        recent,
+	}
+	encoder := json.NewEncoder(stdout)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(output)
+}
+
+func runPolicyEvents(ctx context.Context, args []string, stdout io.Writer) error {
+	opts := policyEventsOptions{limit: defaultPolicyEventsLimit}
+	flags := flag.NewFlagSet("netloom-agent policy-events", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	flags.StringVar(&opts.ovsdb, "ovsdb", os.Getenv("NETLOOM_OVSDB_ENDPOINT"), "Open_vSwitch OVSDB endpoint")
+	flags.StringVar(&opts.endpoint, "endpoint", "", "optional endpoint key or endpoint ID to include")
+	flags.IntVar(&opts.limit, "limit", defaultPolicyEventsLimit, "maximum recent policy update events")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(opts.ovsdb) == "" {
+		return errors.New("missing -ovsdb or NETLOOM_OVSDB_ENDPOINT")
+	}
+	client, closeStore, err := newOpenVSwitchClient(ctx, opts.ovsdb)
+	if err != nil {
+		return err
+	}
+	defer closeStore()
+	return runPolicyEventsWithStore(ctx, opts, stdout, ovsdbPolicyEventsStore{syncer: linuxdatapath.NewLibOVSDBProviderSyncer(client)})
+}
+
+func runPolicyEventsWithStore(ctx context.Context, opts policyEventsOptions, stdout io.Writer, store policyEventsStore) error {
+	if store == nil {
+		return errors.New("missing policy events store")
+	}
+	if opts.limit < 0 {
+		return fmt.Errorf("invalid limit %d", opts.limit)
+	}
+	if opts.limit > maxPolicyEventsLimit {
+		opts.limit = maxPolicyEventsLimit
+	}
+	doc, err := store.Load(ctx)
+	if err != nil {
+		return err
+	}
+	endpoint := strings.TrimSpace(opts.endpoint)
+	filtered := filterPolicyUpdateEvents(doc.Events, endpoint)
+	recent := recentPolicyUpdateEvents(filtered, opts.limit)
+	output := policyEventsOutput{
+		Node:                 doc.Node,
+		Store:                doc.Store,
+		Ready:                true,
+		LastReconcileSuccess: doc.LastReconcileSuccess,
+		LastReconcileError:   doc.LastReconcileError,
+		UpdatedAt:            doc.UpdatedAt,
+		TotalEvents:          doc.TotalEvents,
+		EventCount:           len(recent),
+		Limit:                opts.limit,
+		FilterEndpoint:       endpoint,
+		Events:               recent,
 	}
 	encoder := json.NewEncoder(stdout)
 	encoder.SetIndent("", "  ")
@@ -1350,6 +1439,7 @@ func policyEventsOutputFromSnapshot(snapshot agentMetricsSnapshot, events []data
 		TotalEvents:          len(events),
 		EventCount:           len(recent),
 		Limit:                limit,
+		FilterEndpoint:       strings.TrimSpace(endpoint),
 		Events:               recent,
 	}
 }
@@ -1417,6 +1507,14 @@ func recentPolicyUpdateEvents(events []dataplane.PolicyUpdateEvent, limit int) [
 	if limit <= 0 {
 		return nil
 	}
+	if len(events) <= limit {
+		return append([]dataplane.PolicyUpdateEvent(nil), events...)
+	}
+	return append([]dataplane.PolicyUpdateEvent(nil), events[len(events)-limit:]...)
+}
+
+func trimPolicyUpdateEvents(events []dataplane.PolicyUpdateEvent) []dataplane.PolicyUpdateEvent {
+	const limit = 128
 	if len(events) <= limit {
 		return append([]dataplane.PolicyUpdateEvent(nil), events...)
 	}
@@ -1853,6 +1951,12 @@ func runStateFile(ctx context.Context, path string) error {
 	if err := configurePolicyActionHistory(ctx, metrics, actionHistoryStore); err != nil {
 		return err
 	}
+	eventsStore, closeEventsStore, err := policyEventsStoreFromEnv(ctx)
+	if err != nil {
+		return err
+	}
+	defer closeEventsStore()
+	configurePolicyEventsStore(metrics, eventsStore)
 	freezeStore, closeFreezeStore, err := policyFreezeStateStoreFromEnv(ctx)
 	if err != nil {
 		return err
@@ -2507,6 +2611,7 @@ type agentMetrics struct {
 	rolloutHistory      []policyRolloutHistoryEntry
 	actionHistoryStore  policyActionHistoryStore
 	actionHistory       []policyActionHistoryEntry
+	policyEventsStore   policyEventsStore
 	freezeStateStore    policyFreezeStateStore
 	frozenEndpoints     map[string]time.Time
 }
@@ -2618,6 +2723,15 @@ func configurePolicyActionHistory(ctx context.Context, metrics *agentMetrics, st
 	metrics.actionHistoryStore = store
 	metrics.actionHistory = history
 	return nil
+}
+
+func configurePolicyEventsStore(metrics *agentMetrics, store policyEventsStore) {
+	if metrics == nil || store == nil {
+		return
+	}
+	metrics.mu.Lock()
+	defer metrics.mu.Unlock()
+	metrics.policyEventsStore = store
 }
 
 func configurePolicyFreezeState(ctx context.Context, metrics *agentMetrics, store policyFreezeStateStore) error {
@@ -3094,6 +3208,46 @@ func (s ovsdbPolicyActionHistoryStore) Append(ctx context.Context, entry policyA
 	return s.syncer.SetOpenVSwitchExternalID(ctx, policyActionHistoryKey, string(raw))
 }
 
+func (s ovsdbPolicyEventsStore) Load(ctx context.Context) (policyEventsDocument, error) {
+	var doc policyEventsDocument
+	if s.syncer == nil {
+		return doc, nil
+	}
+	raw, ok, err := s.syncer.OpenVSwitchExternalID(ctx, policyEventsKey)
+	if err != nil {
+		return doc, err
+	}
+	if !ok || strings.TrimSpace(raw) == "" {
+		return doc, nil
+	}
+	if err := json.Unmarshal([]byte(raw), &doc); err != nil {
+		return doc, fmt.Errorf("decode Open_vSwitch external_ids:%s: %w", policyEventsKey, err)
+	}
+	doc.Events = trimPolicyUpdateEvents(doc.Events)
+	if doc.TotalEvents < len(doc.Events) {
+		doc.TotalEvents = len(doc.Events)
+	}
+	return doc, nil
+}
+
+func (s ovsdbPolicyEventsStore) Save(ctx context.Context, doc policyEventsDocument) error {
+	if s.syncer == nil {
+		return nil
+	}
+	doc.Events = trimPolicyUpdateEvents(doc.Events)
+	if doc.TotalEvents < len(doc.Events) {
+		doc.TotalEvents = len(doc.Events)
+	}
+	if doc.UpdatedAt.IsZero() {
+		doc.UpdatedAt = time.Now().UTC()
+	}
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		return fmt.Errorf("encode Open_vSwitch external_ids:%s: %w", policyEventsKey, err)
+	}
+	return s.syncer.SetOpenVSwitchExternalID(ctx, policyEventsKey, string(raw))
+}
+
 func (s ovsdbDNSObservationStore) LoadDNSObservations(ctx context.Context) ([]model.DNSRecord, error) {
 	if s.syncer == nil {
 		return nil, nil
@@ -3212,10 +3366,38 @@ func (m *agentMetrics) observe(snapshot agentMetricsSnapshot) {
 		return
 	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.snapshot = snapshot
 	m.totals.observe(snapshot)
 	m.ready = true
+	eventStore := m.policyEventsStore
+	events := policyUpdateEventsFromStore(m.store)
+	m.mu.Unlock()
+	if eventStore != nil {
+		doc := policyEventsDocumentFromSnapshot(snapshot, events)
+		if err := eventStore.Save(context.Background(), doc); err != nil {
+			log.Printf("persist policy events: %v", err)
+		}
+	}
+}
+
+func policyUpdateEventsFromStore(store agent.PolicyStore) []dataplane.PolicyUpdateEvent {
+	eventStore, ok := store.(agent.PolicyEventStore)
+	if !ok {
+		return nil
+	}
+	return eventStore.Events()
+}
+
+func policyEventsDocumentFromSnapshot(snapshot agentMetricsSnapshot, events []dataplane.PolicyUpdateEvent) policyEventsDocument {
+	return policyEventsDocument{
+		Node:                 snapshot.Result.Node,
+		Store:                snapshot.Store,
+		LastReconcileSuccess: snapshot.Success,
+		LastReconcileError:   snapshot.Error,
+		UpdatedAt:            time.Now().UTC(),
+		TotalEvents:          len(events),
+		Events:               trimPolicyUpdateEvents(events),
+	}
 }
 
 func (t *agentMetricsTotals) observe(snapshot agentMetricsSnapshot) {
@@ -5305,6 +5487,18 @@ func policyActionHistoryStoreFromEnv(ctx context.Context) (policyActionHistorySt
 		return nil, func() {}, err
 	}
 	return ovsdbPolicyActionHistoryStore{syncer: linuxdatapath.NewLibOVSDBProviderSyncer(client)}, closeFn, nil
+}
+
+func policyEventsStoreFromEnv(ctx context.Context) (policyEventsStore, func(), error) {
+	endpoint := strings.TrimSpace(os.Getenv("NETLOOM_OVSDB_ENDPOINT"))
+	if endpoint == "" {
+		return nil, func() {}, nil
+	}
+	client, closeFn, err := newOpenVSwitchClient(ctx, endpoint)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	return ovsdbPolicyEventsStore{syncer: linuxdatapath.NewLibOVSDBProviderSyncer(client)}, closeFn, nil
 }
 
 func policyFreezeStateStoreFromEnv(ctx context.Context) (policyFreezeStateStore, func(), error) {

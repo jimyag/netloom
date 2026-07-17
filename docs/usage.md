@@ -447,6 +447,23 @@ ovs-vsctl get Open_vSwitch . external_ids:netloom_policy_endpoint_action_history
 `success` 和 `limit` 查询最近的相关动作。`policy-action-history` CLI 会从本机
 Open_vSwitch OVSDB 读取同一个 key，适合在没有打开 agent HTTP listener 时做节点本地审计。
 
+查看最近的 policy map 更新事件：
+
+```bash
+curl -s http://127.0.0.1:9092/policy/events
+curl -s 'http://127.0.0.1:9092/policy/events/prod/vm-a?limit=20'
+netloom-agent policy-events \
+  -ovsdb unix:/var/run/openvswitch/db.sock \
+  -endpoint prod/vm-a \
+  -limit 20
+ovs-vsctl get Open_vSwitch . external_ids:netloom_policy_events
+```
+
+如果 agent 配置了 `NETLOOM_OVSDB_ENDPOINT`，最近的 endpoint policy map 更新事件会写入
+`Open_vSwitch.external_ids:netloom_policy_events`，包括 endpoint、revision、diff stats、
+success/error 和 overflow remediation 信息，用于节点重启后继续审计 Cilium-style policy
+regeneration 结果。
+
 查看 endpoint policy rollout 历史：
 
 ```bash
