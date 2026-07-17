@@ -81,7 +81,7 @@
 | Policy update events | 已实现 | agent `/policy/events` JSON API for recent endpoint policy-map update events | `TestPolicyEventsAPIReportsRecentEndpointEvents` |
 | Policy map entry inspection | 已实现 | `netloom-agent policy-entries` and agent `/policy/entries/{endpoint}` JSON API for live endpoint policy-map entries | `TestRunPolicyEntriesReportsEndpointMapJSON`、`TestPolicyEntriesAPIReportsEndpointPolicyMapEntries` |
 | Route explain | 已实现 | `netloom-agent route-explain` | command tests |
-| Endpoint action history | 已实现 | agent `GET /policy/endpoints/actions/history`; endpoint/action/limit filters; persists lifecycle actions in local OVS `netloom_policy_endpoint_action_history` when OVSDB is configured | `TestPolicyEndpointAPIPersistsActionHistoryToOpenVSwitchExternalID`、`TestPolicyEndpointActionHistoryAPIFiltersEndpointActionAndLimit` |
+| Endpoint action history | 已实现 | agent `GET /policy/endpoints/actions/history`; endpoint/action/success/limit filters; persists successful and failed lifecycle actions in local OVS `netloom_policy_endpoint_action_history` when OVSDB is configured | `TestPolicyEndpointAPIPersistsActionHistoryToOpenVSwitchExternalID`、`TestPolicyEndpointActionHistoryAPIFiltersEndpointActionAndLimit`、`TestPolicyEndpointActionHistoryRecordsFailedAction` |
 | Identity group import/feed | 已实现 | `identity-groups-import`, remote feed env vars | controller/agent tests |
 | DNS observer | 已实现 | UDP/TCP proxy, AF_PACKET capture, OVSDB observations | `go test ./cmd/netloom-dns-observer` |
 | Metrics | 已实现 | controller/agent `/metrics` | command tests |

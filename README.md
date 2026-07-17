@@ -22,8 +22,9 @@ e2e tests:
   routes, RPDB policy routing, and provider interface selection.
 - Security group compilation into Cilium-style endpoint policy maps.
 - eBPF/TCX ACL datapath for ingress and egress IPv4/IPv6 TCP, UDP, SCTP, and ICMP.
-- Policy rollout, status, explain, desired-state import/export, DNS observation,
-  health, audit, and Prometheus metrics entry points.
+- Policy rollout, endpoint lifecycle controls, successful/failed action audit,
+  status, explain, desired-state import/export, DNS observation, health, audit,
+  and Prometheus metrics entry points.
 
 See [docs/features.md](docs/features.md) for the detailed capability matrix and
 known gaps.

@@ -303,6 +303,7 @@ type policyActionHistoryOutput struct {
 	Limit          int                        `json:"limit"`
 	FilterEndpoint string                     `json:"filter_endpoint,omitempty"`
 	FilterAction   string                     `json:"filter_action,omitempty"`
+	FilterSuccess  *bool                      `json:"filter_success,omitempty"`
 	History        []policyActionHistoryEntry `json:"history"`
 }
 
@@ -327,6 +328,8 @@ type policyActionHistoryEntry struct {
 	Revision    uint64    `json:"revision,omitempty"`
 	Entries     uint32    `json:"entries,omitempty"`
 	ExpiresAt   time.Time `json:"expires_at,omitempty"`
+	Success     bool      `json:"success"`
+	Error       string    `json:"error,omitempty"`
 }
 
 type policyRolloutStateDocument struct {
@@ -2258,6 +2261,9 @@ func (m *agentMetrics) recordPolicyActionHistory(ctx context.Context, entry poli
 	if entry.CompletedAt.IsZero() {
 		entry.CompletedAt = time.Now().UTC()
 	}
+	if entry.Error == "" {
+		entry.Success = true
+	}
 	m.mu.Lock()
 	m.actionHistory = trimPolicyActionHistory(append(m.actionHistory, entry))
 	store := m.actionHistoryStore
@@ -2286,7 +2292,7 @@ func (m *agentMetrics) policyActionHistory() []policyActionHistoryEntry {
 	return append([]policyActionHistoryEntry(nil), m.actionHistory...)
 }
 
-func filterPolicyActionHistory(history []policyActionHistoryEntry, endpoint, action string) []policyActionHistoryEntry {
+func filterPolicyActionHistory(history []policyActionHistoryEntry, endpoint, action string, success *bool) []policyActionHistoryEntry {
 	endpoint = strings.TrimSpace(endpoint)
 	action = strings.TrimSpace(action)
 	candidates := map[string]struct{}{}
@@ -2296,6 +2302,9 @@ func filterPolicyActionHistory(history []policyActionHistoryEntry, endpoint, act
 	out := make([]policyActionHistoryEntry, 0, len(history))
 	for _, entry := range history {
 		if action != "" && entry.Action != action {
+			continue
+		}
+		if success != nil && entry.Success != *success {
 			continue
 		}
 		if endpoint != "" {
@@ -3424,8 +3433,14 @@ func (m *agentMetrics) handlePolicyActionHistory(w http.ResponseWriter, r *http.
 	}
 	endpoint := strings.TrimSpace(r.URL.Query().Get("endpoint"))
 	action := strings.TrimSpace(r.URL.Query().Get("action"))
+	success, err := policyActionSuccessFromRequest(r)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
 	history := m.policyActionHistory()
-	filtered := filterPolicyActionHistory(history, endpoint, action)
+	filtered := filterPolicyActionHistory(history, endpoint, action, success)
 	recent := recentPolicyActionHistory(filtered, limit)
 	encoder := json.NewEncoder(w)
 	encoder.SetIndent("", "  ")
@@ -3436,6 +3451,7 @@ func (m *agentMetrics) handlePolicyActionHistory(w http.ResponseWriter, r *http.
 		Limit:          limit,
 		FilterEndpoint: endpoint,
 		FilterAction:   action,
+		FilterSuccess:  success,
 		History:        recent,
 	})
 }
@@ -3557,6 +3573,7 @@ func (m *agentMetrics) handlePolicyEndpointDelete(w http.ResponseWriter, r *http
 		case strings.Contains(err.Error(), "missing"):
 			status = http.StatusBadRequest
 		}
+		m.recordPolicyEndpointActionFailure(r.Context(), "delete", endpoint, err)
 		w.WriteHeader(status)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
@@ -3626,6 +3643,7 @@ func (m *agentMetrics) handlePolicyEndpointRegenerate(w http.ResponseWriter, r *
 		case strings.Contains(err.Error(), "missing"), strings.Contains(err.Error(), "required"), strings.Contains(err.Error(), "assigned to node"):
 			statusCode = http.StatusBadRequest
 		}
+		m.recordPolicyEndpointActionFailure(r.Context(), "regenerate", endpoint, err)
 		w.WriteHeader(statusCode)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
@@ -3730,6 +3748,24 @@ func (m *agentMetrics) recordPolicyEndpointAction(ctx context.Context, entry pol
 	}
 }
 
+func (m *agentMetrics) recordPolicyEndpointActionFailure(ctx context.Context, action, endpoint string, actionErr error) {
+	if actionErr == nil {
+		return
+	}
+	endpointID := strings.TrimSpace(endpoint)
+	if m != nil {
+		if resolved, err := m.resolvePolicyEndpointID(endpoint); err == nil {
+			endpointID = resolved
+		}
+	}
+	m.recordPolicyEndpointAction(ctx, policyActionHistoryEntry{
+		Action:     action,
+		EndpointID: endpointID,
+		Success:    false,
+		Error:      actionErr.Error(),
+	})
+}
+
 func decodePolicyEndpointFreezeRequest(r *http.Request) (policyEndpointFreezeRequest, error) {
 	var request policyEndpointFreezeRequest
 	if r == nil || r.Body == nil || r.Body == http.NoBody {
@@ -3801,6 +3837,7 @@ func (m *agentMetrics) handlePolicyEndpointFreeze(w http.ResponseWriter, r *http
 		case strings.Contains(err.Error(), "missing"), strings.Contains(err.Error(), "required"):
 			statusCode = http.StatusBadRequest
 		}
+		m.recordPolicyEndpointActionFailure(r.Context(), "freeze", endpoint, err)
 		w.WriteHeader(statusCode)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
@@ -3839,6 +3876,7 @@ func (m *agentMetrics) handlePolicyEndpointUnfreeze(w http.ResponseWriter, r *ht
 		case strings.Contains(err.Error(), "missing"), strings.Contains(err.Error(), "required"):
 			statusCode = http.StatusBadRequest
 		}
+		m.recordPolicyEndpointActionFailure(r.Context(), "unfreeze", endpoint, err)
 		w.WriteHeader(statusCode)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
@@ -3874,6 +3912,7 @@ func (m *agentMetrics) handlePolicyEndpointQuarantine(w http.ResponseWriter, r *
 		case strings.Contains(err.Error(), "missing"), strings.Contains(err.Error(), "required"), strings.Contains(err.Error(), "assigned to node"):
 			statusCode = http.StatusBadRequest
 		}
+		m.recordPolicyEndpointActionFailure(r.Context(), "quarantine", endpoint, err)
 		w.WriteHeader(statusCode)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
@@ -3910,6 +3949,7 @@ func (m *agentMetrics) handlePolicyEndpointUnquarantine(w http.ResponseWriter, r
 		case strings.Contains(err.Error(), "missing"), strings.Contains(err.Error(), "required"), strings.Contains(err.Error(), "assigned to node"):
 			statusCode = http.StatusBadRequest
 		}
+		m.recordPolicyEndpointActionFailure(r.Context(), "unquarantine", endpoint, err)
 		w.WriteHeader(statusCode)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
@@ -3946,6 +3986,7 @@ func (m *agentMetrics) handlePolicyEndpointRollback(w http.ResponseWriter, r *ht
 		case strings.Contains(err.Error(), "missing"), strings.Contains(err.Error(), "required"), strings.Contains(err.Error(), "assigned to node"):
 			statusCode = http.StatusBadRequest
 		}
+		m.recordPolicyEndpointActionFailure(r.Context(), "rollback", endpoint, err)
 		w.WriteHeader(statusCode)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
@@ -4034,6 +4075,18 @@ func policyEventsLimitFromRequest(r *http.Request) (int, error) {
 		return maxPolicyEventsLimit, nil
 	}
 	return limit, nil
+}
+
+func policyActionSuccessFromRequest(r *http.Request) (*bool, error) {
+	raw := strings.TrimSpace(r.URL.Query().Get("success"))
+	if raw == "" {
+		return nil, nil
+	}
+	value, err := strconv.ParseBool(raw)
+	if err != nil {
+		return nil, fmt.Errorf("invalid success %q", raw)
+	}
+	return &value, nil
 }
 
 func policyEndpointActionFromRequest(r *http.Request) (string, string) {

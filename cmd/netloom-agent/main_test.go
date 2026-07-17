@@ -2714,10 +2714,10 @@ func TestPolicyEndpointAPIPersistsActionHistoryToOpenVSwitchExternalID(t *testin
 	if len(persisted) != 2 {
 		t.Fatalf("persisted action history entries = %d, want 2: %s", len(persisted), raw)
 	}
-	if persisted[0].Action != "freeze" || persisted[0].EndpointID != endpointID || persisted[0].Node != "node-a" || persisted[0].Store != "memory" || persisted[0].ExpiresAt.IsZero() {
+	if persisted[0].Action != "freeze" || persisted[0].EndpointID != endpointID || persisted[0].Node != "node-a" || persisted[0].Store != "memory" || persisted[0].ExpiresAt.IsZero() || !persisted[0].Success {
 		t.Fatalf("persisted freeze action = %+v, want audited freeze", persisted[0])
 	}
-	if persisted[1].Action != "unfreeze" || persisted[1].EndpointID != endpointID || persisted[1].Node != "node-a" || persisted[1].Store != "memory" {
+	if persisted[1].Action != "unfreeze" || persisted[1].EndpointID != endpointID || persisted[1].Node != "node-a" || persisted[1].Store != "memory" || !persisted[1].Success {
 		t.Fatalf("persisted unfreeze action = %+v, want audited unfreeze", persisted[1])
 	}
 
@@ -2742,9 +2742,9 @@ func TestPolicyEndpointAPIPersistsActionHistoryToOpenVSwitchExternalID(t *testin
 
 func TestPolicyEndpointActionHistoryAPIFiltersEndpointActionAndLimit(t *testing.T) {
 	history := []policyActionHistoryEntry{
-		{ID: "1", Action: "freeze", EndpointID: model.EndpointKey("prod", "pod-a"), Node: "node-a", Store: "memory", CompletedAt: time.Now().Add(-3 * time.Minute)},
-		{ID: "2", Action: "unfreeze", EndpointID: model.EndpointKey("prod", "pod-a"), Node: "node-a", Store: "memory", CompletedAt: time.Now().Add(-2 * time.Minute)},
-		{ID: "3", Action: "freeze", EndpointID: model.EndpointKey("prod", "pod-b"), Node: "node-a", Store: "memory", CompletedAt: time.Now().Add(-time.Minute)},
+		{ID: "1", Action: "freeze", EndpointID: model.EndpointKey("prod", "pod-a"), Node: "node-a", Store: "memory", CompletedAt: time.Now().Add(-3 * time.Minute), Success: true},
+		{ID: "2", Action: "unfreeze", EndpointID: model.EndpointKey("prod", "pod-a"), Node: "node-a", Store: "memory", CompletedAt: time.Now().Add(-2 * time.Minute), Success: true},
+		{ID: "3", Action: "freeze", EndpointID: model.EndpointKey("prod", "pod-b"), Node: "node-a", Store: "memory", CompletedAt: time.Now().Add(-time.Minute), Success: false, Error: "policy endpoint is frozen"},
 	}
 	raw, err := json.Marshal(history)
 	if err != nil {
@@ -2758,7 +2758,7 @@ func TestPolicyEndpointActionHistoryAPIFiltersEndpointActionAndLimit(t *testing.
 	}
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodGet, "/policy/endpoints/actions/history?endpoint=prod/pod-a&action=freeze&limit=1", nil)
+	request := httptest.NewRequest(http.MethodGet, "/policy/endpoints/actions/history?endpoint=prod/pod-a&action=freeze&success=true&limit=1", nil)
 	metrics.handlePolicyEndpoints(recorder, request)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("history status = %d, body=%s", recorder.Code, recorder.Body.String())
@@ -2767,11 +2767,84 @@ func TestPolicyEndpointActionHistoryAPIFiltersEndpointActionAndLimit(t *testing.
 	if err := json.Unmarshal(recorder.Body.Bytes(), &output); err != nil {
 		t.Fatalf("decode action history response: %v\n%s", err, recorder.Body.String())
 	}
-	if !output.Ready || output.TotalEvents != 3 || output.EventCount != 1 || output.Limit != 1 || output.FilterEndpoint != "prod/pod-a" || output.FilterAction != "freeze" {
+	if !output.Ready || output.TotalEvents != 3 || output.EventCount != 1 || output.Limit != 1 || output.FilterEndpoint != "prod/pod-a" || output.FilterAction != "freeze" || output.FilterSuccess == nil || !*output.FilterSuccess {
 		t.Fatalf("action history metadata = %+v, want filtered endpoint/action/limit", output)
 	}
-	if len(output.History) != 1 || output.History[0].ID != "1" || output.History[0].EndpointID != model.EndpointKey("prod", "pod-a") || output.History[0].Action != "freeze" {
+	if len(output.History) != 1 || output.History[0].ID != "1" || output.History[0].EndpointID != model.EndpointKey("prod", "pod-a") || output.History[0].Action != "freeze" || !output.History[0].Success {
 		t.Fatalf("action history = %+v, want only prod/pod-a freeze", output.History)
+	}
+}
+
+func TestPolicyEndpointActionHistoryRecordsFailedAction(t *testing.T) {
+	endpointID := model.EndpointKey("prod", "pod-a")
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:     "pod-a",
+			VPC:    "prod",
+			Subnet: "apps",
+			IP:     netip.MustParseAddr("10.10.0.10"),
+			Node:   "node-a",
+		}},
+	}
+	store := dataplane.NewInMemoryPolicyStore()
+	historyOVSDB := &fakeOpenVSwitchExternalIDStore{}
+	freezeOVSDB := &fakeOpenVSwitchExternalIDStore{}
+	metrics := newAgentMetrics(store)
+	if err := configurePolicyActionHistory(t.Context(), metrics, ovsdbPolicyActionHistoryStore{syncer: historyOVSDB}); err != nil {
+		t.Fatal(err)
+	}
+	if err := configurePolicyFreezeState(t.Context(), metrics, ovsdbPolicyFreezeStateStore{syncer: freezeOVSDB}); err != nil {
+		t.Fatal(err)
+	}
+	observeAgentReconcileResultWithState(metrics, agent.ReconcileResult{
+		Node: "node-a",
+		PolicyEndpointStatus: []dataplane.PolicyEndpointStatus{{
+			EndpointID: endpointID,
+			Revision:   1,
+			Entries:    1,
+		}},
+	}, "memory", time.Millisecond, state)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/policy/endpoints/prod/pod-a/freeze", nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("freeze status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPost, "/policy/endpoints/prod/pod-a/regenerate", nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("regenerate status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	raw := historyOVSDB.values[policyActionHistoryKey]
+	var persisted []policyActionHistoryEntry
+	if err := json.Unmarshal([]byte(raw), &persisted); err != nil {
+		t.Fatalf("decode persisted action history: %v", err)
+	}
+	if len(persisted) != 2 {
+		t.Fatalf("persisted action history entries = %d, want 2: %s", len(persisted), raw)
+	}
+	if persisted[0].Action != "freeze" || persisted[0].EndpointID != endpointID || !persisted[0].Success {
+		t.Fatalf("persisted freeze action = %+v, want successful freeze", persisted[0])
+	}
+	if persisted[1].Action != "regenerate" || persisted[1].EndpointID != endpointID || persisted[1].Success || !strings.Contains(persisted[1].Error, "frozen") {
+		t.Fatalf("persisted regenerate action = %+v, want failed frozen regenerate", persisted[1])
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/policy/endpoints/actions/history?action=regenerate&success=false", nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("history status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var output policyActionHistoryOutput
+	if err := json.Unmarshal(recorder.Body.Bytes(), &output); err != nil {
+		t.Fatalf("decode action history response: %v\n%s", err, recorder.Body.String())
+	}
+	if output.FilterSuccess == nil || *output.FilterSuccess || output.EventCount != 1 || len(output.History) != 1 || output.History[0].Success {
+		t.Fatalf("action history output = %+v, want failed regenerate only", output)
 	}
 }
 

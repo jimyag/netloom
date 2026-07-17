@@ -21,7 +21,7 @@
 | ACL 执行 | 已实现 | 由 eBPF/TCX 执行 ingress/egress TCP、UDP、SCTP、ICMP，安全组不写 OVN ACL。 |
 | Desired State | 已实现 | 支持 JSON 文件，也支持存入本机 Open_vSwitch OVSDB `external_ids`。 |
 | 状态和观测 | 已实现 | controller `/status`、agent `/metrics`、policy status、policy explain、route explain、policy rules、policy events、policy entries。 |
-| Rollout / lifecycle | 已实现 | 支持 policy dry-run、batch rollout、approval、ack、finalize、SLO/probe、rollback、quarantine、freeze/unfreeze、freeze TTL 和 endpoint action history。 |
+| Rollout / lifecycle | 已实现 | 支持 policy dry-run、batch rollout、approval、ack、finalize、SLO/probe、rollback、quarantine、freeze/unfreeze、freeze TTL 和成功/失败 endpoint action history。 |
 
 ## 运行入口
 
