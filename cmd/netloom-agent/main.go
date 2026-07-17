@@ -240,8 +240,10 @@ type policyEventsOptions struct {
 }
 
 type policyRulesOptions struct {
-	ovsdb    string
-	endpoint string
+	ovsdb      string
+	endpoint   string
+	ruleCookie string
+	ruleRef    string
 }
 
 type policyRolloutHistoryOptions struct {
@@ -363,6 +365,8 @@ type policyRulesOutput struct {
 	LastReconcileError   string             `json:"last_reconcile_error,omitempty"`
 	UpdatedAt            time.Time          `json:"updated_at,omitempty"`
 	FilterEndpoint       string             `json:"filter_endpoint,omitempty"`
+	FilterRuleCookie     uint32             `json:"filter_rule_cookie,omitempty"`
+	FilterRuleRef        string             `json:"filter_rule_ref,omitempty"`
 	RuleCount            int                `json:"rule_count"`
 	Packets              uint64             `json:"packets"`
 	Bytes                uint64             `json:"bytes"`
@@ -1198,6 +1202,8 @@ func runPolicyRules(ctx context.Context, args []string, stdout io.Writer) error 
 	flags.SetOutput(io.Discard)
 	flags.StringVar(&opts.ovsdb, "ovsdb", os.Getenv("NETLOOM_OVSDB_ENDPOINT"), "Open_vSwitch OVSDB endpoint")
 	flags.StringVar(&opts.endpoint, "endpoint", "", "optional endpoint key or endpoint ID to include")
+	flags.StringVar(&opts.ruleCookie, "rule-cookie", "", "optional dataplane rule cookie to include")
+	flags.StringVar(&opts.ruleRef, "rule-ref", "", "optional policy rule reference to include")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -1220,7 +1226,11 @@ func runPolicyRulesWithStore(ctx context.Context, opts policyRulesOptions, stdou
 	if err != nil {
 		return err
 	}
-	output := policyRulesOutputFromDocument(doc, strings.TrimSpace(opts.endpoint))
+	filter, err := policyRuleFilterFromOptions(opts)
+	if err != nil {
+		return err
+	}
+	output := policyRulesOutputFromDocument(doc, filter)
 	encoder := json.NewEncoder(stdout)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(output)
@@ -1790,17 +1800,49 @@ func policyStatusDocumentFromSnapshot(snapshot agentMetricsSnapshot) policyStatu
 	}
 }
 
-func policyRulesOutputFromResult(result agent.ReconcileResult, storeName, endpoint string) policyRulesOutput {
-	stats := filterPolicyRuleStats(result.PolicyRuleStats, endpoint)
-	catalog := filterPolicyRuleCatalog(result.PolicyRuleCatalog, endpoint)
-	rules := mergePolicyRuleStatsAndCatalog(stats, catalog)
-	output := policyRulesOutputFromRules(result.Node, storeName, rules, strings.TrimSpace(endpoint))
+type policyRuleFilter struct {
+	Endpoint   string
+	RuleCookie *uint32
+	RuleRef    string
+}
+
+func policyRuleFilterFromOptions(opts policyRulesOptions) (policyRuleFilter, error) {
+	return policyRuleFilterFromValues(opts.endpoint, opts.ruleCookie, opts.ruleRef)
+}
+
+func policyRuleFilterFromRequest(r *http.Request, endpoint string) (policyRuleFilter, error) {
+	return policyRuleFilterFromValues(endpoint, r.URL.Query().Get("rule_cookie"), r.URL.Query().Get("rule_ref"))
+}
+
+func policyRuleFilterFromValues(endpoint, ruleCookie, ruleRef string) (policyRuleFilter, error) {
+	filter := policyRuleFilter{
+		Endpoint: strings.TrimSpace(endpoint),
+		RuleRef:  strings.TrimSpace(ruleRef),
+	}
+	ruleCookie = strings.TrimSpace(ruleCookie)
+	if ruleCookie == "" {
+		return filter, nil
+	}
+	value, err := strconv.ParseUint(ruleCookie, 10, 32)
+	if err != nil {
+		return filter, fmt.Errorf("invalid rule cookie %q", ruleCookie)
+	}
+	cookie := uint32(value)
+	filter.RuleCookie = &cookie
+	return filter, nil
+}
+
+func policyRulesOutputFromResult(result agent.ReconcileResult, storeName string, filter policyRuleFilter) policyRulesOutput {
+	stats := filterPolicyRuleStats(result.PolicyRuleStats, filter.Endpoint)
+	catalog := filterPolicyRuleCatalog(result.PolicyRuleCatalog, filter.Endpoint)
+	rules := filterPolicyRuleOutputs(mergePolicyRuleStatsAndCatalog(stats, catalog), filter)
+	output := policyRulesOutputFromRules(result.Node, storeName, rules, filter)
 	return output
 }
 
-func policyRulesOutputFromDocument(doc policyRulesDocument, endpoint string) policyRulesOutput {
-	rules := filterPolicyRuleOutputs(doc.Rules, endpoint)
-	output := policyRulesOutputFromRules(doc.Node, doc.Store, rules, strings.TrimSpace(endpoint))
+func policyRulesOutputFromDocument(doc policyRulesDocument, filter policyRuleFilter) policyRulesOutput {
+	rules := filterPolicyRuleOutputs(doc.Rules, filter)
+	output := policyRulesOutputFromRules(doc.Node, doc.Store, rules, filter)
 	output.Ready = true
 	output.LastReconcileSuccess = doc.LastReconcileSuccess
 	output.LastReconcileError = doc.LastReconcileError
@@ -1808,13 +1850,15 @@ func policyRulesOutputFromDocument(doc policyRulesDocument, endpoint string) pol
 	return output
 }
 
-func policyRulesOutputFromRules(node, store string, rules []policyRuleOutput, endpoint string) policyRulesOutput {
+func policyRulesOutputFromRules(node, store string, rules []policyRuleOutput, filter policyRuleFilter) policyRulesOutput {
 	output := policyRulesOutput{
-		Node:           node,
-		Store:          store,
-		FilterEndpoint: endpoint,
-		RuleCount:      len(rules),
-		Rules:          rules,
+		Node:             node,
+		Store:            store,
+		FilterEndpoint:   filter.Endpoint,
+		FilterRuleRef:    filter.RuleRef,
+		FilterRuleCookie: filterRuleCookieValue(filter),
+		RuleCount:        len(rules),
+		Rules:            rules,
 	}
 	for _, rule := range rules {
 		output.Packets += rule.Packets
@@ -1973,18 +2017,37 @@ func trimPolicyUpdateEvents(events []dataplane.PolicyUpdateEvent) []dataplane.Po
 	return append([]dataplane.PolicyUpdateEvent(nil), events[len(events)-limit:]...)
 }
 
-func filterPolicyRuleOutputs(rules []policyRuleOutput, endpoint string) []policyRuleOutput {
-	endpoint = strings.TrimSpace(endpoint)
-	if endpoint == "" {
+func filterPolicyRuleOutputs(rules []policyRuleOutput, filter policyRuleFilter) []policyRuleOutput {
+	if filter.Endpoint == "" && filter.RuleCookie == nil && filter.RuleRef == "" {
 		return append([]policyRuleOutput(nil), rules...)
 	}
 	out := make([]policyRuleOutput, 0, len(rules))
 	for _, rule := range rules {
-		if policyRuleEndpointMatches(rule.EndpointID, endpoint) {
+		if policyRuleMatches(rule, filter) {
 			out = append(out, rule)
 		}
 	}
 	return out
+}
+
+func policyRuleMatches(rule policyRuleOutput, filter policyRuleFilter) bool {
+	if filter.Endpoint != "" && !policyRuleEndpointMatches(rule.EndpointID, filter.Endpoint) {
+		return false
+	}
+	if filter.RuleCookie != nil && rule.RuleCookie != *filter.RuleCookie {
+		return false
+	}
+	if filter.RuleRef != "" && rule.RuleRef != filter.RuleRef {
+		return false
+	}
+	return true
+}
+
+func filterRuleCookieValue(filter policyRuleFilter) uint32 {
+	if filter.RuleCookie == nil {
+		return 0
+	}
+	return *filter.RuleCookie
 }
 
 func filterPolicyRuleStats(stats []dataplane.RuleMetrics, endpoint string) []dataplane.RuleMetrics {
@@ -4163,7 +4226,7 @@ func policyEventsDocumentFromSnapshot(snapshot agentMetricsSnapshot, events []da
 }
 
 func policyRulesDocumentFromSnapshot(snapshot agentMetricsSnapshot) policyRulesDocument {
-	output := policyRulesOutputFromResult(snapshot.Result, snapshot.Store, "")
+	output := policyRulesOutputFromResult(snapshot.Result, snapshot.Store, policyRuleFilter{})
 	return policyRulesDocument{
 		Node:                 output.Node,
 		Store:                output.Store,
@@ -5040,17 +5103,23 @@ func (m *agentMetrics) handlePolicyRules(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	endpoint := policyRuleEndpointFromRequest(r)
+	filter, err := policyRuleFilterFromRequest(r, endpoint)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
 	snapshot, _, ready := m.snapshotValue()
 	if !ready {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "policy rule metrics are not ready"})
 		return
 	}
-	output := policyRulesOutputFromResult(snapshot.Result, snapshot.Store, endpoint)
+	output := policyRulesOutputFromResult(snapshot.Result, snapshot.Store, filter)
 	output.Ready = true
 	output.LastReconcileSuccess = snapshot.Success
 	output.LastReconcileError = snapshot.Error
-	if endpoint != "" && len(output.Rules) == 0 {
+	if (filter.Endpoint != "" || filter.RuleCookie != nil || filter.RuleRef != "") && len(output.Rules) == 0 {
 		w.WriteHeader(http.StatusNotFound)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "policy rule metrics not found"})
 		return

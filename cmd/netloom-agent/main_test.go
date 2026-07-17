@@ -2868,6 +2868,67 @@ func TestPolicyRulesAPIReportsCatalogAndCounters(t *testing.T) {
 	}
 }
 
+func TestPolicyRulesAPIFiltersByRuleCookie(t *testing.T) {
+	metrics := newAgentMetrics()
+	endpointID := model.EndpointKey("prod", "pod-a")
+	observeAgentReconcileResult(metrics, agent.ReconcileResult{
+		Node: "node-a",
+		PolicyRuleStats: []dataplane.RuleMetrics{{
+			EndpointID: endpointID,
+			RuleCookie: 42,
+			Packets:    5,
+			Bytes:      640,
+			Allowed:    3,
+		}},
+		PolicyRuleCatalog: []agent.PolicyRuleCatalogEntry{{
+			EndpointID:    endpointID,
+			RuleCookie:    42,
+			RuleRef:       "sg/web/allow-http",
+			VPC:           "prod",
+			SecurityGroup: "web",
+			RuleID:        "allow-http",
+		}, {
+			EndpointID:    endpointID,
+			RuleCookie:    43,
+			RuleRef:       "sg/web/allow-https",
+			VPC:           "prod",
+			SecurityGroup: "web",
+			RuleID:        "allow-https",
+		}},
+	}, "ebpf", time.Millisecond)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/policy/rules?rule_cookie=42", nil)
+	metrics.handlePolicyRules(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var got policyRulesOutput
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode policy rules response: %v\n%s", err, recorder.Body.String())
+	}
+	if got.FilterRuleCookie != 42 || got.RuleCount != 1 || got.Packets != 5 {
+		t.Fatalf("policy rules summary = %+v, want cookie 42 counters", got)
+	}
+	if len(got.Rules) != 1 || got.Rules[0].RuleCookie != 42 || got.Rules[0].RuleRef != "sg/web/allow-http" {
+		t.Fatalf("rules = %+v, want only cookie 42", got.Rules)
+	}
+}
+
+func TestPolicyRulesAPIRejectsInvalidRuleCookie(t *testing.T) {
+	metrics := newAgentMetrics()
+	observeAgentReconcileResult(metrics, agent.ReconcileResult{Node: "node-a"}, "memory", time.Millisecond)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/policy/rules?rule_cookie=bad", nil)
+	metrics.handlePolicyRules(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestRunPolicyRulesWithStoreReportsFilteredJSON(t *testing.T) {
 	store := ovsdbPolicyRulesStore{syncer: &fakeOpenVSwitchExternalIDStore{}}
 	if err := store.Save(t.Context(), policyRulesDocument{
@@ -2911,6 +2972,46 @@ func TestRunPolicyRulesWithStoreReportsFilteredJSON(t *testing.T) {
 	}
 	if len(got.Rules) != 1 || got.Rules[0].RuleCookie != 42 || got.Rules[0].RuleRef != "sg/web/allow-http" {
 		t.Fatalf("rules = %+v, want pod-a allow-http rule", got.Rules)
+	}
+}
+
+func TestRunPolicyRulesWithStoreFiltersByRuleRef(t *testing.T) {
+	store := ovsdbPolicyRulesStore{syncer: &fakeOpenVSwitchExternalIDStore{}}
+	if err := store.Save(t.Context(), policyRulesDocument{
+		Node:                 "node-a",
+		Store:                "ebpf",
+		LastReconcileSuccess: true,
+		Rules: []policyRuleOutput{{
+			EndpointID: "prod\x00pod-a",
+			RuleCookie: 42,
+			RuleRef:    "sg/web/allow-http",
+			Packets:    5,
+			Bytes:      640,
+			Allowed:    3,
+		}, {
+			EndpointID: "prod\x00pod-a",
+			RuleCookie: 43,
+			RuleRef:    "sg/web/allow-https",
+			Packets:    7,
+			Bytes:      700,
+			Allowed:    7,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var stdout bytes.Buffer
+	if err := runPolicyRulesWithStore(t.Context(), policyRulesOptions{ruleRef: "sg/web/allow-https"}, &stdout, store); err != nil {
+		t.Fatal(err)
+	}
+	var got policyRulesOutput
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode policy-rules output: %v\n%s", err, stdout.String())
+	}
+	if got.FilterRuleRef != "sg/web/allow-https" || got.RuleCount != 1 || got.Packets != 7 || got.Allowed != 7 {
+		t.Fatalf("policy rules summary = %+v, want filtered allow-https rule", got)
+	}
+	if len(got.Rules) != 1 || got.Rules[0].RuleCookie != 43 || got.Rules[0].RuleRef != "sg/web/allow-https" {
+		t.Fatalf("rules = %+v, want allow-https rule", got.Rules)
 	}
 }
 
