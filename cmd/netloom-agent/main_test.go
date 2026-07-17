@@ -870,6 +870,49 @@ func TestRunPolicyEntriesRequiresEndpoint(t *testing.T) {
 	}
 }
 
+func TestRunAgentStatusWithStoreReportsOpenVSwitchStatus(t *testing.T) {
+	status := agentOVSDBStatus{
+		SchemaVersion:                 1,
+		UpdatedAt:                     time.Now().UTC().Format(time.RFC3339Nano),
+		Node:                          "node-a",
+		Store:                         "ebpf",
+		Status:                        "success",
+		Endpoints:                     2,
+		PolicyMapEntries:              4,
+		PolicyRolloutApplied:          1,
+		TCX:                           "attached",
+		Datapath:                      "linux",
+		ProviderReady:                 1,
+		ReconcileDurationMilliseconds: 12,
+	}
+	raw, err := json.Marshal(status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &fakeOpenVSwitchExternalIDStore{values: map[string]string{
+		agentOVSDBStatusKey: string(raw),
+	}}
+	var out bytes.Buffer
+	if err := runAgentStatusWithStore(t.Context(), &out, store); err != nil {
+		t.Fatal(err)
+	}
+	var got agentOVSDBStatus
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("decode agent-status output: %v\n%s", err, out.String())
+	}
+	if got.Node != "node-a" || got.Store != "ebpf" || got.Status != "success" || got.PolicyMapEntries != 4 || got.PolicyRolloutApplied != 1 || got.ProviderReady != 1 {
+		t.Fatalf("agent status = %+v, want decoded OVSDB status", got)
+	}
+}
+
+func TestRunAgentStatusWithStoreRequiresStatusExternalID(t *testing.T) {
+	var out bytes.Buffer
+	err := runAgentStatusWithStore(t.Context(), &out, &fakeOpenVSwitchExternalIDStore{})
+	if err == nil || !strings.Contains(err.Error(), "missing Open_vSwitch external_ids:netloom_agent_status") {
+		t.Fatalf("err = %v, want missing agent status", err)
+	}
+}
+
 func TestRunPolicyActionHistoryWithStoreReportsFilteredJSON(t *testing.T) {
 	history := []policyActionHistoryEntry{
 		{ID: "1", Action: "freeze", EndpointID: model.EndpointKey("prod", "vm-a"), Node: "node-a", Store: "ebpf", CompletedAt: time.Now().Add(-3 * time.Minute), Success: true},

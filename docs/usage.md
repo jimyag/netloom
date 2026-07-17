@@ -308,9 +308,14 @@ NETLOOM_AGENT_METRICS_ADDR=:9092 \
 查看 OVSDB 中的运行状态：
 
 ```bash
+./netloom-agent agent-status -ovsdb unix:/var/run/openvswitch/db.sock
 ovs-vsctl get Open_vSwitch . external_ids:netloom_controller_status
 ovs-vsctl get Open_vSwitch . external_ids:netloom_agent_status
 ```
+
+`agent-status` CLI 会解码 `Open_vSwitch.external_ids:netloom_agent_status`，
+用于查看最近一次 agent reconcile 的 policy/eBPF rollout、TCX、provider、datapath
+和错误状态。
 
 查看安全策略状态：
 

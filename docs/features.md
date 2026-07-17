@@ -85,6 +85,7 @@
 | Identity group import/feed | 已实现 | `identity-groups-import`, remote feed env vars | controller/agent tests |
 | DNS observer | 已实现 | UDP/TCP proxy, AF_PACKET capture, OVSDB observations | `go test ./cmd/netloom-dns-observer` |
 | Metrics | 已实现 | controller/agent `/metrics` | command tests |
+| Agent status CLI | 已实现 | `netloom-agent agent-status` reads local OVS `netloom_agent_status` | `TestRunAgentStatusWithStoreReportsOpenVSwitchStatus` |
 | Controller status API | 已实现 | controller `/status` JSON API for OVN health/audit/cluster/stale state | `TestControllerStatusAPIExportsLatestOVNStatus` |
 | OVN health/audit/maintenance | 已实现 | libovsdb health, audit stats, compact/stale hooks | `go test ./cmd/netloom-controller ./internal/ovn` |
 | Policy freeze/unfreeze | 已实现 | agent `/policy/endpoints/{endpoint}/freeze` and `/unfreeze`; optional TTL/expiry; `netloom-agent policy-freeze-state`; persists frozen endpoints in local OVS `netloom_policy_freeze_state` when OVSDB is configured | `TestPolicyEndpointAPIPersistsFreezeStateToOpenVSwitchExternalID`、`TestPolicyEndpointAPIDropsExpiredFreezeStateFromOpenVSwitchExternalID`、`TestReconcileNodeSkipsFrozenPolicyEndpointApply`、`TestRunPolicyFreezeStateWithStoreReportsActiveFrozenEndpoints` |

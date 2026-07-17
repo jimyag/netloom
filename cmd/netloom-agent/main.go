@@ -55,6 +55,11 @@ func main() {
 				log.Fatal(err)
 			}
 			return
+		case "agent-status":
+			if err := runAgentStatus(context.Background(), os.Args[2:], os.Stdout); err != nil {
+				log.Fatal(err)
+			}
+			return
 		case "policy-entries":
 			if err := runPolicyEntries(os.Args[2:], os.Stdout); err != nil {
 				log.Fatal(err)
@@ -148,6 +153,10 @@ type policyStatusOptions struct {
 	stateFile string
 	node      string
 	endpoint  string
+}
+
+type agentStatusOptions struct {
+	ovsdb string
 }
 
 type policyEntriesOptions struct {
@@ -606,6 +615,45 @@ func runPolicyStatus(args []string, stdout io.Writer) error {
 	encoder := json.NewEncoder(stdout)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(output)
+}
+
+func runAgentStatus(ctx context.Context, args []string, stdout io.Writer) error {
+	var opts agentStatusOptions
+	flags := flag.NewFlagSet("netloom-agent agent-status", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	flags.StringVar(&opts.ovsdb, "ovsdb", os.Getenv("NETLOOM_OVSDB_ENDPOINT"), "Open_vSwitch OVSDB endpoint")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(opts.ovsdb) == "" {
+		return errors.New("missing -ovsdb or NETLOOM_OVSDB_ENDPOINT")
+	}
+	client, closeStore, err := newOpenVSwitchClient(ctx, opts.ovsdb)
+	if err != nil {
+		return err
+	}
+	defer closeStore()
+	return runAgentStatusWithStore(ctx, stdout, linuxdatapath.NewLibOVSDBProviderSyncer(client))
+}
+
+func runAgentStatusWithStore(ctx context.Context, stdout io.Writer, store openVSwitchExternalIDStore) error {
+	if store == nil {
+		return errors.New("missing Open_vSwitch external_id store")
+	}
+	raw, ok, err := store.OpenVSwitchExternalID(ctx, agentOVSDBStatusKey)
+	if err != nil {
+		return err
+	}
+	if !ok || strings.TrimSpace(raw) == "" {
+		return fmt.Errorf("missing Open_vSwitch external_ids:%s", agentOVSDBStatusKey)
+	}
+	var status agentOVSDBStatus
+	if err := json.Unmarshal([]byte(raw), &status); err != nil {
+		return fmt.Errorf("decode Open_vSwitch external_ids:%s: %w", agentOVSDBStatusKey, err)
+	}
+	encoder := json.NewEncoder(stdout)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(status)
 }
 
 func runPolicyEntries(args []string, stdout io.Writer) error {

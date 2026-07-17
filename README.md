@@ -107,6 +107,7 @@ NETLOOM_PROVIDER_NETWORK_LINKS=physnet-a=eth1 \
 Inspect policy state, policy-map entries, and routing decisions:
 
 ```bash
+./netloom-agent agent-status -ovsdb unix:/var/run/openvswitch/db.sock
 ./netloom-agent policy-status -state /etc/netloom/state.json -node node-a
 ./netloom-agent policy-entries -state /etc/netloom/state.json -node node-a -endpoint prod/vm-a
 ./netloom-agent policy-action-history \
