@@ -1334,6 +1334,56 @@ func TestIPv4L4ACLRulesFromProgramsKeepsHigherPrecedenceDuplicateKey(t *testing.
 	}
 }
 
+func TestIPv4L4ACLRulesFromSecurityGroupChoosesDropAtSamePriority(t *testing.T) {
+	endpoint := model.Endpoint{
+		ID:             "pod-a",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"web"},
+	}
+	program, err := policy.CompileForEndpoint(endpoint, map[string]model.SecurityGroup{
+		"web": {
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{
+				{
+					ID:         "allow-web",
+					Priority:   100,
+					Direction:  model.DirectionIngress,
+					Protocol:   model.ProtocolTCP,
+					RemoteCIDR: netip.MustParsePrefix("172.30.0.11/32"),
+					Ports:      []model.PortRange{{From: 8080, To: 8080}},
+					Action:     model.ActionAllow,
+				},
+				{
+					ID:         "drop-web",
+					Priority:   100,
+					Direction:  model.DirectionIngress,
+					Protocol:   model.ProtocolTCP,
+					RemoteCIDR: netip.MustParsePrefix("172.30.0.11/32"),
+					Ports:      []model.PortRange{{From: 8080, To: 8080}},
+					Action:     model.ActionDrop,
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules, err := IPv4L4ACLRulesFromProgram(program)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 1 || rules[0].Action != TCXDrop || rules[0].Reject {
+		t.Fatalf("rules = %+v, want one drop rule", rules)
+	}
+	if rules[0].RuleCookie != stableCookie("prod/web/drop-web") {
+		t.Fatalf("rule cookie = %d, want drop-web cookie", rules[0].RuleCookie)
+	}
+}
+
 func TestIPv4L4ACLRulesFromProgramChoosesDropForSamePrecedenceAllowConflict(t *testing.T) {
 	program := policy.Program{
 		EndpointID: testEndpointA,
@@ -1566,6 +1616,56 @@ func TestIPv6L4ACLRulesFromProgramsKeepsHigherPrecedenceDuplicateKey(t *testing.
 	}
 	if len(rules) != 1 || rules[0].Action != TCXDrop {
 		t.Fatalf("rules = %+v, want higher-precedence drop only", rules)
+	}
+}
+
+func TestIPv6L4ACLRulesFromSecurityGroupChoosesRejectAtSamePriority(t *testing.T) {
+	endpoint := model.Endpoint{
+		ID:             "pod-a",
+		VPC:            "prod",
+		Subnet:         "apps-v6",
+		IP:             netip.MustParseAddr("fd00:10::10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"web"},
+	}
+	program, err := policy.CompileForEndpoint(endpoint, map[string]model.SecurityGroup{
+		"web": {
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{
+				{
+					ID:         "drop-v6-web",
+					Priority:   100,
+					Direction:  model.DirectionIngress,
+					Protocol:   model.ProtocolTCP,
+					RemoteCIDR: netip.MustParsePrefix("fd00:10::11/128"),
+					Ports:      []model.PortRange{{From: 8080, To: 8080}},
+					Action:     model.ActionDrop,
+				},
+				{
+					ID:         "reject-v6-web",
+					Priority:   100,
+					Direction:  model.DirectionIngress,
+					Protocol:   model.ProtocolTCP,
+					RemoteCIDR: netip.MustParsePrefix("fd00:10::11/128"),
+					Ports:      []model.PortRange{{From: 8080, To: 8080}},
+					Action:     model.ActionReject,
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules, err := IPv6L4ACLRulesFromProgram(program)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 1 || rules[0].Action != TCXDrop || !rules[0].Reject {
+		t.Fatalf("rules = %+v, want one reject rule", rules)
+	}
+	if rules[0].RuleCookie != stableCookie("prod/web/reject-v6-web") {
+		t.Fatalf("rule cookie = %d, want reject-v6-web cookie", rules[0].RuleCookie)
 	}
 }
 

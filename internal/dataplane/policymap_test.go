@@ -386,6 +386,114 @@ func TestPolicyBackendHonorsLowerSecurityGroupRulePriority(t *testing.T) {
 	}
 }
 
+func TestPolicyBackendHonorsSecurityGroupDenyAtSamePriority(t *testing.T) {
+	endpoint := model.Endpoint{
+		ID:             "pod-a",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"web"},
+	}
+	program, err := policy.CompileForEndpoint(endpoint, map[string]model.SecurityGroup{
+		"web": {
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{
+				{
+					ID:         "allow-api",
+					Priority:   100,
+					Direction:  model.DirectionIngress,
+					Protocol:   model.ProtocolTCP,
+					RemoteCIDR: netip.MustParsePrefix("192.0.2.10/32"),
+					Ports:      []model.PortRange{{From: 443, To: 443}},
+					Action:     model.ActionAllow,
+				},
+				{
+					ID:         "drop-api",
+					Priority:   100,
+					Direction:  model.DirectionIngress,
+					Protocol:   model.ProtocolTCP,
+					RemoteCIDR: netip.MustParsePrefix("192.0.2.10/32"),
+					Ports:      []model.PortRange{{From: 443, To: 443}},
+					Action:     model.ActionDrop,
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := EncodeProgram(program)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	decision := Evaluate(entries, Packet{
+		RemoteIP:  netip.MustParseAddr("192.0.2.10"),
+		Direction: DirectionIngress,
+		Protocol:  6,
+		DestPort:  443,
+	})
+	if decision.Verdict != VerdictDrop || decision.Match == nil || decision.Match.Value.RuleCookie != stableCookie("prod/web/drop-api") {
+		t.Fatalf("decision = %+v, want same-priority SecurityGroup drop-api to win", decision)
+	}
+}
+
+func TestPolicyBackendHonorsSecurityGroupRejectAtSamePriority(t *testing.T) {
+	endpoint := model.Endpoint{
+		ID:             "pod-a",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"web"},
+	}
+	program, err := policy.CompileForEndpoint(endpoint, map[string]model.SecurityGroup{
+		"web": {
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{
+				{
+					ID:         "drop-api",
+					Priority:   100,
+					Direction:  model.DirectionIngress,
+					Protocol:   model.ProtocolTCP,
+					RemoteCIDR: netip.MustParsePrefix("192.0.2.10/32"),
+					Ports:      []model.PortRange{{From: 443, To: 443}},
+					Action:     model.ActionDrop,
+				},
+				{
+					ID:         "reject-api",
+					Priority:   100,
+					Direction:  model.DirectionIngress,
+					Protocol:   model.ProtocolTCP,
+					RemoteCIDR: netip.MustParsePrefix("192.0.2.10/32"),
+					Ports:      []model.PortRange{{From: 443, To: 443}},
+					Action:     model.ActionReject,
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := EncodeProgram(program)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	decision := Evaluate(entries, Packet{
+		RemoteIP:  netip.MustParseAddr("192.0.2.10"),
+		Direction: DirectionIngress,
+		Protocol:  6,
+		DestPort:  443,
+	})
+	if decision.Verdict != VerdictReject || decision.Match == nil || decision.Match.Value.RuleCookie != stableCookie("prod/web/reject-api") {
+		t.Fatalf("decision = %+v, want same-priority SecurityGroup reject-api to win", decision)
+	}
+}
+
 func TestEncodeProgramChoosesDenyForSamePriorityDuplicateKey(t *testing.T) {
 	program := policy.Program{
 		EndpointID: model.EndpointKey("prod", "pod-a"),
