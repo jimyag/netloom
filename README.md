@@ -134,6 +134,7 @@ Desired state can also be stored in local Open_vSwitch OVSDB:
 
 ## Documentation
 
+- [Documentation index](docs/README.md)
 - [Quickstart](docs/quickstart.md)
 - [Current implementation status](docs/current-status.md)
 - [Feature matrix](docs/features.md)
