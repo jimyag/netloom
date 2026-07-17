@@ -1664,14 +1664,40 @@ func (w *LibOVSDBTopologyWriter) expectedLoadBalancerHealthCheckRefs(ctx context
 }
 
 func (w *LibOVSDBTopologyWriter) unexpectedDHCPOptions(ctx context.Context, expected map[string]map[string]string) ([]ovnnb.DHCPOptions, error) {
+	expectedRefs, err := w.expectedLogicalSwitchPortDHCPRefs(ctx, expected)
+	if err != nil {
+		return nil, err
+	}
 	var rows []ovnnb.DHCPOptions
 	if err := w.client.WhereCache(func(row *ovnnb.DHCPOptions) bool {
+		if _, ok := expectedRefs[row.UUID]; ok {
+			return false
+		}
 		return unexpectedManagedRow("DHCP_Options", row.UUID, row.ExternalIDs, expected)
 	}).List(ctx, &rows); err != nil {
 		return nil, err
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].UUID < rows[j].UUID })
 	return rows, nil
+}
+
+func (w *LibOVSDBTopologyWriter) expectedLogicalSwitchPortDHCPRefs(ctx context.Context, expected map[string]map[string]string) (map[string]struct{}, error) {
+	var ports []ovnnb.LogicalSwitchPort
+	if err := w.client.WhereCache(func(row *ovnnb.LogicalSwitchPort) bool {
+		return !unexpectedManagedRow("Logical_Switch_Port", row.UUID, row.ExternalIDs, expected)
+	}).List(ctx, &ports); err != nil {
+		return nil, err
+	}
+	refs := make(map[string]struct{})
+	for _, port := range ports {
+		if uuid := pointerStringValue(port.Dhcpv4Options); uuid != "" {
+			refs[uuid] = struct{}{}
+		}
+		if uuid := pointerStringValue(port.Dhcpv6Options); uuid != "" {
+			refs[uuid] = struct{}{}
+		}
+	}
+	return refs, nil
 }
 
 func (w *LibOVSDBTopologyWriter) unexpectedStaticRoutes(ctx context.Context, expected map[string]struct{}) ([]ovnnb.LogicalRouterStaticRoute, error) {

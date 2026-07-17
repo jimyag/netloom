@@ -1773,6 +1773,11 @@ func (w *LibOVSDBTopologyWriter) ensureEndpointDHCPOptions(ctx context.Context, 
 	if err != nil {
 		return nil, "", err
 	}
+	referenced, err := w.dhcpOptionsByUUIDs(ctx, []string{currentUUID})
+	if err != nil {
+		return nil, "", err
+	}
+	rows = mergeDHCPOptions(rows, referenced)
 	var ops []ovsdb.Operation
 	if !enabled {
 		for i := range rows {
@@ -1909,6 +1914,44 @@ func (w *LibOVSDBTopologyWriter) endpointDHCPOptionsByEndpoint(ctx context.Conte
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].UUID < rows[j].UUID })
 	return rows, nil
+}
+
+func (w *LibOVSDBTopologyWriter) dhcpOptionsByUUIDs(ctx context.Context, uuids []string) ([]ovnnb.DHCPOptions, error) {
+	want := make(map[string]struct{}, len(uuids))
+	for _, uuid := range uuids {
+		if uuid == "" {
+			continue
+		}
+		want[uuid] = struct{}{}
+	}
+	if len(want) == 0 {
+		return nil, nil
+	}
+	var rows []ovnnb.DHCPOptions
+	if err := w.client.WhereCache(func(row *ovnnb.DHCPOptions) bool {
+		_, ok := want[row.UUID]
+		return ok
+	}).List(ctx, &rows); err != nil {
+		return nil, fmt.Errorf("list DHCP options by UUID from libovsdb cache: %w", err)
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].UUID < rows[j].UUID })
+	return rows, nil
+}
+
+func mergeDHCPOptions(groups ...[]ovnnb.DHCPOptions) []ovnnb.DHCPOptions {
+	seen := make(map[string]struct{})
+	var rows []ovnnb.DHCPOptions
+	for _, group := range groups {
+		for _, row := range group {
+			if _, ok := seen[row.UUID]; ok {
+				continue
+			}
+			seen[row.UUID] = struct{}{}
+			rows = append(rows, row)
+		}
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].UUID < rows[j].UUID })
+	return rows
 }
 
 func (w *LibOVSDBTopologyWriter) staticRoutesByRouteTable(ctx context.Context, table model.RouteTable) ([]ovnnb.LogicalRouterStaticRoute, error) {
