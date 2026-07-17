@@ -851,6 +851,7 @@ func TestAuditManagedObjectsFromReaderReportsRouterAndSwitchPortAttachmentDrift(
 				"netloom_vpc":      "prod",
 				"netloom_endpoint": endpointExternalID("prod", "pod-a"),
 				"netloom_node":     "node-a",
+				"netloom_role":     "router",
 				"netloom_subnet":   "apps",
 			}, Fields: map[string]string{
 				"name":          logicalPort("prod", "pod-a"),
@@ -873,8 +874,8 @@ func TestAuditManagedObjectsFromReaderReportsRouterAndSwitchPortAttachmentDrift(
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stats.DriftedManagedRows != 2 || stats.DriftedManagedFields != 2 {
-		t.Fatalf("router/switch port attachment drift stats = %+v, want router and switch port attachment drift", stats)
+	if stats.DriftedManagedRows != 3 || stats.DriftedManagedFields != 3 {
+		t.Fatalf("router/switch port attachment drift stats = %+v, want router, switch port, and endpoint role drift", stats)
 	}
 }
 
@@ -1284,6 +1285,7 @@ func TestAuditManagedObjectsFromReaderReportsStaleLogicalSwitchPortColumns(t *te
 				"netloom_vpc":      "prod",
 				"netloom_endpoint": endpointExternalID("prod", "pod-a"),
 				"netloom_node":     "node-a",
+				"netloom_role":     "router",
 				"netloom_subnet":   "apps",
 			}, Fields: map[string]string{
 				"name":             logicalPort("prod", "pod-a"),
@@ -1310,8 +1312,11 @@ func TestAuditManagedObjectsFromReaderReportsStaleLogicalSwitchPortColumns(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stats.DriftedManagedRows != 1 || stats.DriftedManagedFields != 5 {
-		t.Fatalf("stale logical switch port column drift stats = %+v, want type/options/tag/ha_chassis_group/dhcp drift", stats)
+	if stats.DriftedManagedRows != 1 || stats.DriftedManagedFields != 6 {
+		t.Fatalf("stale logical switch port column drift stats = %+v, want role/type/options/tag/ha_chassis_group/dhcp drift", stats)
+	}
+	if got := stats.DriftedManagedFieldCounts["Logical_Switch_Port.external_ids.netloom_role"]; got != 1 {
+		t.Fatalf("field drift counts = %+v, want stale endpoint role external_id drift", stats.DriftedManagedFieldCounts)
 	}
 }
 

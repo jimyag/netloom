@@ -1045,7 +1045,7 @@ func managedFieldDrift(table string, live, expected map[string]string) []string 
 		}
 	}
 	for key := range live {
-		if !staleManagedExternalIDShouldDrift(table, key) {
+		if !staleManagedExternalIDShouldDrift(table, key, live) {
 			continue
 		}
 		if _, ok := expected[key]; !ok {
@@ -1055,7 +1055,7 @@ func managedFieldDrift(table string, live, expected map[string]string) []string 
 	return drift
 }
 
-func staleManagedExternalIDShouldDrift(table, key string) bool {
+func staleManagedExternalIDShouldDrift(table, key string, live map[string]string) bool {
 	switch table {
 	case "NAT":
 		switch key {
@@ -1071,6 +1071,8 @@ func staleManagedExternalIDShouldDrift(table, key string) bool {
 		default:
 			return false
 		}
+	case "Logical_Switch_Port":
+		return key == "netloom_role" && live["netloom_endpoint"] != ""
 	}
 	return false
 }
