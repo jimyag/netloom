@@ -5629,6 +5629,7 @@ func (s *policyRolloutUsageStore) PolicyRuleMetrics(context.Context) ([]dataplan
 
 func TestAgentMetricsExportsLatestPolicyAndTCXCounters(t *testing.T) {
 	metrics := newAgentMetrics()
+	lastSeen := time.Unix(1_725_000_123, 0).UTC()
 	observeAgentReconcileResult(metrics, agent.ReconcileResult{
 		Node:                       "node-a",
 		Endpoints:                  1,
@@ -5672,11 +5673,17 @@ func TestAgentMetricsExportsLatestPolicyAndTCXCounters(t *testing.T) {
 		PolicyMapDriftMissing:   2,
 		PolicyMapDriftExtra:     3,
 		PolicyMapDriftChanged:   4,
-		PolicyRulePackets:       3,
-		PolicyRuleBytes:         384,
-		PolicyRuleAllowed:       2,
-		PolicyRuleDropped:       1,
-		PolicyRuleLogged:        1,
+		PolicyEndpointStatus: []dataplane.PolicyEndpointStatus{{
+			EndpointID: "prod\x00pod-a",
+			Revision:   7,
+			Entries:    12,
+			LastSeen:   &lastSeen,
+		}},
+		PolicyRulePackets: 3,
+		PolicyRuleBytes:   384,
+		PolicyRuleAllowed: 2,
+		PolicyRuleDropped: 1,
+		PolicyRuleLogged:  1,
 		PolicyRuleStats: []dataplane.RuleMetrics{
 			{EndpointID: "prod\x00pod-a", RuleCookie: 7, Packets: 1, Bytes: 256, Dropped: 1, DenyDrops: 1},
 			{EndpointID: "tcx:iface=eth0 direction=ingress attach=2", RuleCookie: 42, Packets: 2, Bytes: 128, Allowed: 2, Logged: 1},
@@ -5766,6 +5773,7 @@ func TestAgentMetricsExportsLatestPolicyAndTCXCounters(t *testing.T) {
 		`netloom_agent_policy_rollout_probe_failed_total{node="node-a",store="ebpf"} 1`,
 		`netloom_agent_policy_rollout_paused_total{node="node-a",store="ebpf"} 1`,
 		`netloom_agent_policy_rollout_cancelled_total{node="node-a",store="ebpf"} 1`,
+		`netloom_agent_policy_endpoint_last_seen_timestamp_seconds{endpoint="prod\x00pod-a",node="node-a",store="ebpf"} 1725000123`,
 		`netloom_agent_policy_map_drift_endpoints{node="node-a",store="ebpf"} 1`,
 		`netloom_agent_policy_map_drift_missing_entries{node="node-a",store="ebpf"} 2`,
 		`netloom_agent_policy_map_drift_extra_entries{node="node-a",store="ebpf"} 3`,

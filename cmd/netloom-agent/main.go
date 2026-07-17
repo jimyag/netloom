@@ -6517,6 +6517,17 @@ func writeAgentMetrics(w ioStringWriter, snapshot agentMetricsSnapshot, totals a
 	}
 	writeMetricType(w, "netloom_agent_policy_map_pressure_endpoints", "gauge")
 	fmt.Fprintf(w, "netloom_agent_policy_map_pressure_endpoints%s %d\n", baseLabels, result.PolicyMapPressureEndpoints)
+	writeMetricType(w, "netloom_agent_policy_endpoint_last_seen_timestamp_seconds", "gauge")
+	for _, status := range result.PolicyEndpointStatus {
+		if status.LastSeen == nil || status.LastSeen.IsZero() {
+			continue
+		}
+		fmt.Fprintf(w, "netloom_agent_policy_endpoint_last_seen_timestamp_seconds%s %d\n", prometheusLabels(map[string]string{
+			"node":     result.Node,
+			"store":    snapshot.Store,
+			"endpoint": status.EndpointID,
+		}), status.LastSeen.Unix())
+	}
 	writeMetricType(w, "netloom_agent_policy_map_drift_endpoints", "gauge")
 	fmt.Fprintf(w, "netloom_agent_policy_map_drift_endpoints%s %d\n", baseLabels, result.PolicyMapDriftEndpoints)
 	writeMetricType(w, "netloom_agent_policy_map_drift_missing_entries", "gauge")
