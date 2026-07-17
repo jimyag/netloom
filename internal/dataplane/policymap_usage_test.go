@@ -79,6 +79,9 @@ func TestInMemoryPolicyStoreReportsEndpointStatuses(t *testing.T) {
 	if !status.HasLastEvent || !status.LastEvent.Success || status.LastEvent.EndpointID != endpointA || status.LastEvent.Revision != 1 {
 		t.Fatalf("last event = %+v has=%t, want successful endpoint event", status.LastEvent, status.HasLastEvent)
 	}
+	if status.LastEvent.OccurredAt == nil || status.LastEvent.OccurredAt.IsZero() {
+		t.Fatalf("last event occurred_at is zero in status %+v, want timestamped policy update event", status)
+	}
 }
 
 func TestSummarizePolicyMapUsageCalculatesPressureBands(t *testing.T) {

@@ -105,6 +105,9 @@ func TestEBPFPolicyStoreClearsPolicyMapOverflowWhenConfigured(t *testing.T) {
 	if len(events) != 1 || !events[0].Success || !events[0].Remediated || events[0].Remediation != string(PolicyMapOverflowClear) {
 		t.Fatalf("events after overflow remediation = %+v, want successful clear remediation event", events)
 	}
+	if events[0].OccurredAt == nil || events[0].OccurredAt.IsZero() {
+		t.Fatalf("overflow remediation event occurred_at is zero in %+v, want timestamped remediation event", events[0])
+	}
 	if !strings.Contains(events[0].Error, "policy map capacity exceeded") {
 		t.Fatalf("overflow remediation event error = %q, want original overflow reason", events[0].Error)
 	}

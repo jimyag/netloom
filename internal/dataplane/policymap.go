@@ -130,6 +130,7 @@ type PolicyUpdateEvent struct {
 	EndpointID       string            `json:"endpoint_id"`
 	PreviousRevision uint64            `json:"previous_revision"`
 	Revision         uint64            `json:"revision"`
+	OccurredAt       *time.Time        `json:"occurred_at,omitempty"`
 	Stats            PolicyUpdateStats `json:"stats"`
 	RuleCookies      []uint32          `json:"rule_cookies,omitempty"`
 	RuleRefs         []string          `json:"rule_refs,omitempty"`
@@ -227,14 +228,16 @@ func (s *InMemoryPolicyStore) ReplaceEndpoint(_ context.Context, endpointID stri
 	}
 	stats := plan.Stats()
 	stats.Revision = revision
+	now := time.Now()
 	s.endpoints[endpointID] = canonicalPolicyEntries(next)
 	s.revisions[endpointID] = revision
 	s.lastStats[endpointID] = stats
-	s.lastSeen[endpointID] = time.Now()
+	s.lastSeen[endpointID] = now
 	s.events = append(s.events, PolicyUpdateEvent{
 		EndpointID:       endpointID,
 		PreviousRevision: previousRevision,
 		Revision:         revision,
+		OccurredAt:       policyEventOccurredAt(now),
 		Stats:            stats,
 		RuleCookies:      ruleCookies,
 		Success:          true,
@@ -248,6 +251,7 @@ func (s *InMemoryPolicyStore) recordPolicyUpdateFailure(endpointID string, previ
 		EndpointID:       endpointID,
 		PreviousRevision: previousRevision,
 		Revision:         revision,
+		OccurredAt:       policyEventOccurredAt(time.Now()),
 		Stats:            stats,
 		RuleCookies:      ruleCookies,
 		Success:          false,
@@ -447,6 +451,13 @@ func (s *InMemoryPolicyStore) PolicyEndpointStatuses(_ context.Context) ([]Polic
 }
 
 func policyEndpointLastSeen(t time.Time) *time.Time {
+	if t.IsZero() {
+		return nil
+	}
+	return &t
+}
+
+func policyEventOccurredAt(t time.Time) *time.Time {
 	if t.IsZero() {
 		return nil
 	}

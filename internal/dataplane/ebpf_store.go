@@ -129,15 +129,17 @@ func (s *EBPFPolicyStore) ReplaceEndpoint(ctx context.Context, endpointID string
 	old := s.maps[endpointID]
 	stats := plan.Stats()
 	stats.Revision = revision
+	now := time.Now()
 	s.maps[endpointID] = next
 	s.entries[endpointID] = canonicalPolicyEntries(entries)
 	s.revisions[endpointID] = revision
 	s.lastStats[endpointID] = stats
-	s.lastSeen[endpointID] = time.Now()
+	s.lastSeen[endpointID] = now
 	s.events = append(s.events, PolicyUpdateEvent{
 		EndpointID:       endpointID,
 		PreviousRevision: previousRevision,
 		Revision:         revision,
+		OccurredAt:       policyEventOccurredAt(now),
 		Stats:            stats,
 		RuleCookies:      ruleCookies,
 		Success:          true,
@@ -171,14 +173,16 @@ func (s *EBPFPolicyStore) clearEndpointPolicyAfterOverflowLocked(ctx context.Con
 	}
 	stats := clearPlan.Stats()
 	stats.Revision = revision
+	now := time.Now()
 	s.entries[endpointID] = nil
 	s.revisions[endpointID] = revision
 	s.lastStats[endpointID] = stats
-	s.lastSeen[endpointID] = time.Now()
+	s.lastSeen[endpointID] = now
 	s.events = append(s.events, PolicyUpdateEvent{
 		EndpointID:       endpointID,
 		PreviousRevision: previousRevision,
 		Revision:         revision,
+		OccurredAt:       policyEventOccurredAt(now),
 		Stats:            stats,
 		RuleCookies:      policyUpdateRuleCookies(oldEntries, clearPlan),
 		Success:          true,
@@ -529,6 +533,7 @@ func (s *EBPFPolicyStore) recordPolicyUpdateFailure(endpointID string, previousR
 		EndpointID:       endpointID,
 		PreviousRevision: previousRevision,
 		Revision:         revision,
+		OccurredAt:       policyEventOccurredAt(time.Now()),
 		Stats:            stats,
 		RuleCookies:      ruleCookies,
 		Success:          false,

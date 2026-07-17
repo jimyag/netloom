@@ -5630,6 +5630,7 @@ func (s *policyRolloutUsageStore) PolicyRuleMetrics(context.Context) ([]dataplan
 func TestAgentMetricsExportsLatestPolicyAndTCXCounters(t *testing.T) {
 	metrics := newAgentMetrics()
 	lastSeen := time.Unix(1_725_000_123, 0).UTC()
+	eventTime := time.Unix(1_725_000_120, 0).UTC()
 	observeAgentReconcileResult(metrics, agent.ReconcileResult{
 		Node:                       "node-a",
 		Endpoints:                  1,
@@ -5681,7 +5682,7 @@ func TestAgentMetricsExportsLatestPolicyAndTCXCounters(t *testing.T) {
 			PressurePercent:  75,
 			PressureSeverity: dataplane.PolicyMapPressureNormal,
 			Drift:            dataplane.PolicyMapDrift{Drifted: true, Missing: 2, Extra: 3, Changed: 4},
-			LastEvent:        dataplane.PolicyUpdateEvent{EndpointID: "prod\x00pod-a", Revision: 7, Stats: dataplane.PolicyUpdateStats{Added: 2, Updated: 3, Deleted: 4, Unchanged: 5}, Success: true, Remediated: true, Remediation: string(dataplane.PolicyMapOverflowClear)},
+			LastEvent:        dataplane.PolicyUpdateEvent{EndpointID: "prod\x00pod-a", Revision: 7, OccurredAt: &eventTime, Stats: dataplane.PolicyUpdateStats{Added: 2, Updated: 3, Deleted: 4, Unchanged: 5}, Success: true, Remediated: true, Remediation: string(dataplane.PolicyMapOverflowClear)},
 			HasLastEvent:     true,
 			LastSeen:         &lastSeen,
 		}},
@@ -5791,6 +5792,7 @@ func TestAgentMetricsExportsLatestPolicyAndTCXCounters(t *testing.T) {
 		`netloom_agent_policy_endpoint_last_event_revision{endpoint="prod\x00pod-a",node="node-a",store="ebpf"} 7`,
 		`netloom_agent_policy_endpoint_last_event_success{endpoint="prod\x00pod-a",node="node-a",store="ebpf"} 1`,
 		`netloom_agent_policy_endpoint_last_event_remediated{endpoint="prod\x00pod-a",node="node-a",store="ebpf"} 1`,
+		`netloom_agent_policy_endpoint_last_event_timestamp_seconds{endpoint="prod\x00pod-a",node="node-a",store="ebpf"} 1725000120`,
 		`netloom_agent_policy_endpoint_last_event_added_entries{endpoint="prod\x00pod-a",node="node-a",store="ebpf"} 2`,
 		`netloom_agent_policy_endpoint_last_event_updated_entries{endpoint="prod\x00pod-a",node="node-a",store="ebpf"} 3`,
 		`netloom_agent_policy_endpoint_last_event_deleted_entries{endpoint="prod\x00pod-a",node="node-a",store="ebpf"} 4`,
