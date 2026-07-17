@@ -193,20 +193,24 @@ type policyExplainOptions struct {
 }
 
 type policyStatusOptions struct {
-	stateFile        string
-	node             string
-	endpoint         string
-	pressureSeverity string
-	drifted          string
-	revisionBelow    uint64
+	stateFile           string
+	node                string
+	endpoint            string
+	pressureSeverity    string
+	drifted             string
+	revisionBelow       uint64
+	lastEventSuccess    string
+	lastEventRemediated string
 }
 
 type policyStatusExportOptions struct {
-	ovsdb            string
-	endpoint         string
-	pressureSeverity string
-	drifted          string
-	revisionBelow    uint64
+	ovsdb               string
+	endpoint            string
+	pressureSeverity    string
+	drifted             string
+	revisionBelow       uint64
+	lastEventSuccess    string
+	lastEventRemediated string
 }
 
 type policyRevisionWaitOptions struct {
@@ -315,32 +319,34 @@ type desiredStateExportOptions struct {
 type policyMapPressureHotspot = dataplane.PolicyMapPressureHotspot
 
 type policyStatusOutput struct {
-	Node                   string                           `json:"node"`
-	Store                  string                           `json:"store"`
-	Ready                  bool                             `json:"ready"`
-	LastReconcileSuccess   bool                             `json:"last_reconcile_success"`
-	LastReconcileError     string                           `json:"last_reconcile_error,omitempty"`
-	UpdatedAt              time.Time                        `json:"updated_at,omitempty"`
-	FilterEndpoint         string                           `json:"filter_endpoint,omitempty"`
-	FilterPressureSeverity string                           `json:"filter_pressure_severity,omitempty"`
-	FilterDrifted          *bool                            `json:"filter_drifted,omitempty"`
-	FilterRevisionBelow    uint64                           `json:"filter_revision_below,omitempty"`
-	EndpointCount          int                              `json:"endpoint_count"`
-	PolicyMapEntries       uint32                           `json:"policy_map_entries"`
-	PolicyMapCapacity      uint32                           `json:"policy_map_capacity"`
-	PressureMax            uint32                           `json:"pressure_max"`
-	PressureEndpoint       string                           `json:"pressure_endpoint,omitempty"`
-	PressureSeverity       string                           `json:"pressure_severity"`
-	PressureEndpoints      int                              `json:"pressure_endpoints"`
-	PressureHotspots       []policyMapPressureHotspot       `json:"pressure_hotspots,omitempty"`
-	DriftEndpoints         int                              `json:"drift_endpoints"`
-	DriftMissing           int                              `json:"drift_missing"`
-	DriftExtra             int                              `json:"drift_extra"`
-	DriftChanged           int                              `json:"drift_changed"`
-	PolicyRevisionMax      uint64                           `json:"policy_revision_max"`
-	FrozenEndpoints        []string                         `json:"frozen_endpoints,omitempty"`
-	FrozenEndpointExpiry   map[string]time.Time             `json:"frozen_endpoint_expiry,omitempty"`
-	Statuses               []dataplane.PolicyEndpointStatus `json:"statuses"`
+	Node                      string                           `json:"node"`
+	Store                     string                           `json:"store"`
+	Ready                     bool                             `json:"ready"`
+	LastReconcileSuccess      bool                             `json:"last_reconcile_success"`
+	LastReconcileError        string                           `json:"last_reconcile_error,omitempty"`
+	UpdatedAt                 time.Time                        `json:"updated_at,omitempty"`
+	FilterEndpoint            string                           `json:"filter_endpoint,omitempty"`
+	FilterPressureSeverity    string                           `json:"filter_pressure_severity,omitempty"`
+	FilterDrifted             *bool                            `json:"filter_drifted,omitempty"`
+	FilterRevisionBelow       uint64                           `json:"filter_revision_below,omitempty"`
+	FilterLastEventSuccess    *bool                            `json:"filter_last_event_success,omitempty"`
+	FilterLastEventRemediated *bool                            `json:"filter_last_event_remediated,omitempty"`
+	EndpointCount             int                              `json:"endpoint_count"`
+	PolicyMapEntries          uint32                           `json:"policy_map_entries"`
+	PolicyMapCapacity         uint32                           `json:"policy_map_capacity"`
+	PressureMax               uint32                           `json:"pressure_max"`
+	PressureEndpoint          string                           `json:"pressure_endpoint,omitempty"`
+	PressureSeverity          string                           `json:"pressure_severity"`
+	PressureEndpoints         int                              `json:"pressure_endpoints"`
+	PressureHotspots          []policyMapPressureHotspot       `json:"pressure_hotspots,omitempty"`
+	DriftEndpoints            int                              `json:"drift_endpoints"`
+	DriftMissing              int                              `json:"drift_missing"`
+	DriftExtra                int                              `json:"drift_extra"`
+	DriftChanged              int                              `json:"drift_changed"`
+	PolicyRevisionMax         uint64                           `json:"policy_revision_max"`
+	FrozenEndpoints           []string                         `json:"frozen_endpoints,omitempty"`
+	FrozenEndpointExpiry      map[string]time.Time             `json:"frozen_endpoint_expiry,omitempty"`
+	Statuses                  []dataplane.PolicyEndpointStatus `json:"statuses"`
 }
 
 type policyStatusDocument struct {
@@ -857,6 +863,8 @@ func runPolicyStatus(args []string, stdout io.Writer) error {
 	flags.StringVar(&opts.pressureSeverity, "pressure-severity", "", "optional policy map pressure severity to include: normal, warning, critical, full, or unknown")
 	flags.StringVar(&opts.drifted, "drifted", "", "optional policy map drift filter: true or false")
 	flags.Uint64Var(&opts.revisionBelow, "revision-below", 0, "optional policy revision threshold; include endpoints below this revision")
+	flags.StringVar(&opts.lastEventSuccess, "last-event-success", "", "optional last policy update event success filter: true or false")
+	flags.StringVar(&opts.lastEventRemediated, "last-event-remediated", "", "optional last policy update event remediation filter: true or false")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -892,12 +900,22 @@ func runPolicyStatus(args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	statuses := filterPolicyEndpointStatuses(result.PolicyEndpointStatus, opts.endpoint, opts.pressureSeverity, drifted, opts.revisionBelow, state.Endpoints)
+	lastEventSuccess, err := parseOptionalBoolFilter(opts.lastEventSuccess, "last-event-success")
+	if err != nil {
+		return err
+	}
+	lastEventRemediated, err := parseOptionalBoolFilter(opts.lastEventRemediated, "last-event-remediated")
+	if err != nil {
+		return err
+	}
+	statuses := filterPolicyEndpointStatuses(result.PolicyEndpointStatus, opts.endpoint, opts.pressureSeverity, drifted, opts.revisionBelow, lastEventSuccess, lastEventRemediated, state.Endpoints)
 	output := policyStatusOutputFromResult(result, storeName, statuses)
 	output.FilterEndpoint = strings.TrimSpace(opts.endpoint)
 	output.FilterPressureSeverity = strings.TrimSpace(opts.pressureSeverity)
 	output.FilterDrifted = drifted
 	output.FilterRevisionBelow = opts.revisionBelow
+	output.FilterLastEventSuccess = lastEventSuccess
+	output.FilterLastEventRemediated = lastEventRemediated
 	encoder := json.NewEncoder(stdout)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(output)
@@ -912,6 +930,8 @@ func runPolicyStatusExport(ctx context.Context, args []string, stdout io.Writer)
 	flags.StringVar(&opts.pressureSeverity, "pressure-severity", "", "optional policy map pressure severity to include: normal, warning, critical, full, or unknown")
 	flags.StringVar(&opts.drifted, "drifted", "", "optional policy map drift filter: true or false")
 	flags.Uint64Var(&opts.revisionBelow, "revision-below", 0, "optional policy revision threshold; include endpoints below this revision")
+	flags.StringVar(&opts.lastEventSuccess, "last-event-success", "", "optional last policy update event success filter: true or false")
+	flags.StringVar(&opts.lastEventRemediated, "last-event-remediated", "", "optional last policy update event remediation filter: true or false")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -941,7 +961,15 @@ func runPolicyStatusExportWithStore(ctx context.Context, opts policyStatusExport
 	if err != nil {
 		return err
 	}
-	output := policyStatusOutputFromDocument(doc, strings.TrimSpace(opts.endpoint), strings.TrimSpace(opts.pressureSeverity), drifted, opts.revisionBelow)
+	lastEventSuccess, err := parseOptionalBoolFilter(opts.lastEventSuccess, "last-event-success")
+	if err != nil {
+		return err
+	}
+	lastEventRemediated, err := parseOptionalBoolFilter(opts.lastEventRemediated, "last-event-remediated")
+	if err != nil {
+		return err
+	}
+	output := policyStatusOutputFromDocument(doc, strings.TrimSpace(opts.endpoint), strings.TrimSpace(opts.pressureSeverity), drifted, opts.revisionBelow, lastEventSuccess, lastEventRemediated)
 	encoder := json.NewEncoder(stdout)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(output)
@@ -993,7 +1021,7 @@ func runPolicyRevisionWaitWithStore(ctx context.Context, opts policyRevisionWait
 			return err
 		}
 		lastDoc = doc
-		statuses := filterPolicyEndpointStatuses(doc.Statuses, opts.endpoint, "", nil, 0, nil)
+		statuses := filterPolicyEndpointStatuses(doc.Statuses, opts.endpoint, "", nil, 0, nil, nil, nil)
 		if len(statuses) > 0 {
 			lastStatus = statuses[0]
 			sawEndpoint = true
@@ -1813,10 +1841,10 @@ func loadDesiredStateFromPathOrOVSDB(ctx context.Context, path string, store ope
 	return state, nil
 }
 
-func filterPolicyEndpointStatuses(statuses []dataplane.PolicyEndpointStatus, endpoint, pressureSeverity string, drifted *bool, revisionBelow uint64, endpoints []model.Endpoint) []dataplane.PolicyEndpointStatus {
+func filterPolicyEndpointStatuses(statuses []dataplane.PolicyEndpointStatus, endpoint, pressureSeverity string, drifted *bool, revisionBelow uint64, lastEventSuccess, lastEventRemediated *bool, endpoints []model.Endpoint) []dataplane.PolicyEndpointStatus {
 	endpoint = strings.TrimSpace(endpoint)
 	pressureSeverity = strings.TrimSpace(pressureSeverity)
-	if endpoint == "" && pressureSeverity == "" && drifted == nil && revisionBelow == 0 {
+	if endpoint == "" && pressureSeverity == "" && drifted == nil && revisionBelow == 0 && lastEventSuccess == nil && lastEventRemediated == nil {
 		return append([]dataplane.PolicyEndpointStatus(nil), statuses...)
 	}
 	keys := map[string]struct{}{endpoint: {}}
@@ -1837,6 +1865,12 @@ func filterPolicyEndpointStatuses(statuses []dataplane.PolicyEndpointStatus, end
 			continue
 		}
 		if revisionBelow != 0 && status.Revision >= revisionBelow {
+			continue
+		}
+		if lastEventSuccess != nil && (!status.HasLastEvent || status.LastEvent.Success != *lastEventSuccess) {
+			continue
+		}
+		if lastEventRemediated != nil && (!status.HasLastEvent || status.LastEvent.Remediated != *lastEventRemediated) {
 			continue
 		}
 		if endpoint == "" {
@@ -1896,33 +1930,35 @@ func policyStatusOutputFromResult(result agent.ReconcileResult, storeName string
 	}
 }
 
-func policyStatusOutputFromDocument(doc policyStatusDocument, endpoint, pressureSeverity string, drifted *bool, revisionBelow uint64) policyStatusOutput {
-	filtered := filterPolicyEndpointStatuses(doc.Statuses, endpoint, pressureSeverity, drifted, revisionBelow, nil)
+func policyStatusOutputFromDocument(doc policyStatusDocument, endpoint, pressureSeverity string, drifted *bool, revisionBelow uint64, lastEventSuccess, lastEventRemediated *bool) policyStatusOutput {
+	filtered := filterPolicyEndpointStatuses(doc.Statuses, endpoint, pressureSeverity, drifted, revisionBelow, lastEventSuccess, lastEventRemediated, nil)
 	return policyStatusOutput{
-		Node:                   doc.Node,
-		Store:                  doc.Store,
-		Ready:                  true,
-		LastReconcileSuccess:   doc.LastReconcileSuccess,
-		LastReconcileError:     doc.LastReconcileError,
-		UpdatedAt:              doc.UpdatedAt,
-		FilterEndpoint:         strings.TrimSpace(endpoint),
-		FilterPressureSeverity: strings.TrimSpace(pressureSeverity),
-		FilterDrifted:          drifted,
-		FilterRevisionBelow:    revisionBelow,
-		EndpointCount:          len(filtered),
-		PolicyMapEntries:       doc.PolicyMapEntries,
-		PolicyMapCapacity:      doc.PolicyMapCapacity,
-		PressureMax:            doc.PressureMax,
-		PressureEndpoint:       doc.PressureEndpoint,
-		PressureSeverity:       doc.PressureSeverity,
-		PressureEndpoints:      doc.PressureEndpoints,
-		PressureHotspots:       append([]dataplane.PolicyMapPressureHotspot(nil), doc.PressureHotspots...),
-		DriftEndpoints:         doc.DriftEndpoints,
-		DriftMissing:           doc.DriftMissing,
-		DriftExtra:             doc.DriftExtra,
-		DriftChanged:           doc.DriftChanged,
-		PolicyRevisionMax:      doc.PolicyRevisionMax,
-		Statuses:               filtered,
+		Node:                      doc.Node,
+		Store:                     doc.Store,
+		Ready:                     true,
+		LastReconcileSuccess:      doc.LastReconcileSuccess,
+		LastReconcileError:        doc.LastReconcileError,
+		UpdatedAt:                 doc.UpdatedAt,
+		FilterEndpoint:            strings.TrimSpace(endpoint),
+		FilterPressureSeverity:    strings.TrimSpace(pressureSeverity),
+		FilterDrifted:             drifted,
+		FilterRevisionBelow:       revisionBelow,
+		FilterLastEventSuccess:    lastEventSuccess,
+		FilterLastEventRemediated: lastEventRemediated,
+		EndpointCount:             len(filtered),
+		PolicyMapEntries:          doc.PolicyMapEntries,
+		PolicyMapCapacity:         doc.PolicyMapCapacity,
+		PressureMax:               doc.PressureMax,
+		PressureEndpoint:          doc.PressureEndpoint,
+		PressureSeverity:          doc.PressureSeverity,
+		PressureEndpoints:         doc.PressureEndpoints,
+		PressureHotspots:          append([]dataplane.PolicyMapPressureHotspot(nil), doc.PressureHotspots...),
+		DriftEndpoints:            doc.DriftEndpoints,
+		DriftMissing:              doc.DriftMissing,
+		DriftExtra:                doc.DriftExtra,
+		DriftChanged:              doc.DriftChanged,
+		PolicyRevisionMax:         doc.PolicyRevisionMax,
+		Statuses:                  filtered,
 	}
 }
 
@@ -5375,7 +5411,19 @@ func (m *agentMetrics) handlePolicyEndpoints(w http.ResponseWriter, r *http.Requ
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
-	statuses := filterPolicyEndpointStatuses(snapshot.Result.PolicyEndpointStatus, endpoint, pressureSeverity, drifted, revisionBelow, nil)
+	lastEventSuccess, err := parseOptionalBoolFilter(r.URL.Query().Get("last_event_success"), "last_event_success")
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	lastEventRemediated, err := parseOptionalBoolFilter(r.URL.Query().Get("last_event_remediated"), "last_event_remediated")
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	statuses := filterPolicyEndpointStatuses(snapshot.Result.PolicyEndpointStatus, endpoint, pressureSeverity, drifted, revisionBelow, lastEventSuccess, lastEventRemediated, nil)
 	if endpoint != "" && len(statuses) == 0 {
 		w.WriteHeader(http.StatusNotFound)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "policy endpoint not found"})
@@ -5389,6 +5437,8 @@ func (m *agentMetrics) handlePolicyEndpoints(w http.ResponseWriter, r *http.Requ
 	output.FilterPressureSeverity = pressureSeverity
 	output.FilterDrifted = drifted
 	output.FilterRevisionBelow = revisionBelow
+	output.FilterLastEventSuccess = lastEventSuccess
+	output.FilterLastEventRemediated = lastEventRemediated
 	output.FrozenEndpoints = m.frozenPolicyEndpointIDs()
 	output.FrozenEndpointExpiry = m.frozenPolicyEndpointExpirations()
 	encoder := json.NewEncoder(w)
@@ -5472,7 +5522,7 @@ func (m *agentMetrics) handlePolicyEndpointRevision(w http.ResponseWriter, r *ht
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": "policy endpoint status is not ready"})
 			return
 		}
-		statuses := filterPolicyEndpointStatuses(snapshot.Result.PolicyEndpointStatus, endpoint, "", nil, 0, nil)
+		statuses := filterPolicyEndpointStatuses(snapshot.Result.PolicyEndpointStatus, endpoint, "", nil, 0, nil, nil, nil)
 		if len(statuses) > 0 {
 			lastStatus = statuses[0]
 			sawEndpoint = true

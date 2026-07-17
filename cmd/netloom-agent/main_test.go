@@ -965,6 +965,8 @@ func TestRunPolicyStatusExportWithStoreReportsFilteredJSON(t *testing.T) {
 			PressurePercent:  98,
 			PressureSeverity: dataplane.PolicyMapPressureCritical,
 			Drift:            dataplane.PolicyMapDrift{Drifted: true, Extra: 1},
+			LastEvent:        dataplane.PolicyUpdateEvent{EndpointID: model.EndpointKey("prod", "pod-b"), Revision: 1, Success: false, Remediated: true, Remediation: string(dataplane.PolicyMapOverflowClear)},
+			HasLastEvent:     true,
 		}},
 	}); err != nil {
 		t.Fatal(err)
@@ -1021,6 +1023,30 @@ func TestRunPolicyStatusExportWithStoreReportsFilteredJSON(t *testing.T) {
 	}
 	if got.FilterRevisionBelow != 7 || got.EndpointCount != 1 || len(got.Statuses) != 1 || got.Statuses[0].EndpointID != model.EndpointKey("prod", "pod-b") {
 		t.Fatalf("revision-below filtered statuses = %+v, want only pod-b below revision 7", got)
+	}
+
+	out.Reset()
+	if err := runPolicyStatusExportWithStore(t.Context(), policyStatusExportOptions{lastEventSuccess: "false"}, &out, store); err != nil {
+		t.Fatal(err)
+	}
+	got = policyStatusOutput{}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("decode last-event-success filtered policy-status-export output: %v\n%s", err, out.String())
+	}
+	if got.FilterLastEventSuccess == nil || *got.FilterLastEventSuccess || got.EndpointCount != 1 || len(got.Statuses) != 1 || got.Statuses[0].EndpointID != model.EndpointKey("prod", "pod-b") {
+		t.Fatalf("last-event-success filtered statuses = %+v, want only failed pod-b", got)
+	}
+
+	out.Reset()
+	if err := runPolicyStatusExportWithStore(t.Context(), policyStatusExportOptions{lastEventRemediated: "true"}, &out, store); err != nil {
+		t.Fatal(err)
+	}
+	got = policyStatusOutput{}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("decode last-event-remediated filtered policy-status-export output: %v\n%s", err, out.String())
+	}
+	if got.FilterLastEventRemediated == nil || !*got.FilterLastEventRemediated || got.EndpointCount != 1 || len(got.Statuses) != 1 || got.Statuses[0].EndpointID != model.EndpointKey("prod", "pod-b") {
+		t.Fatalf("last-event-remediated filtered statuses = %+v, want only remediated pod-b", got)
 	}
 }
 
@@ -3686,6 +3712,8 @@ func TestPolicyEndpointAPIReportsLifecycleStatus(t *testing.T) {
 			PressurePercent:  93,
 			PressureSeverity: dataplane.PolicyMapPressureCritical,
 			Drift:            dataplane.PolicyMapDrift{Drifted: true, Changed: 1},
+			LastEvent:        dataplane.PolicyUpdateEvent{EndpointID: model.EndpointKey("prod", "pod-b"), Revision: 2, Success: false, Remediated: true, Remediation: string(dataplane.PolicyMapOverflowClear)},
+			HasLastEvent:     true,
 		}},
 	}, "ebpf", 25*time.Millisecond)
 
@@ -3756,6 +3784,36 @@ func TestPolicyEndpointAPIReportsLifecycleStatus(t *testing.T) {
 	}
 
 	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/policy/endpoints?last_event_success=false", nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("last-event-success filter status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	got = policyStatusOutput{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode last-event-success policy endpoint API response: %v\n%s", err, recorder.Body.String())
+	}
+	if got.FilterLastEventSuccess == nil || *got.FilterLastEventSuccess || got.EndpointCount != 1 || len(got.Statuses) != 1 || got.Statuses[0].EndpointID != model.EndpointKey("prod", "pod-b") {
+		t.Fatalf("last-event-success filtered statuses = %+v, want failed pod-b", got)
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/policy/endpoints?last_event_remediated=true", nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("last-event-remediated filter status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	got = policyStatusOutput{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode last-event-remediated policy endpoint API response: %v\n%s", err, recorder.Body.String())
+	}
+	if got.FilterLastEventRemediated == nil || !*got.FilterLastEventRemediated || got.EndpointCount != 1 || len(got.Statuses) != 1 || got.Statuses[0].EndpointID != model.EndpointKey("prod", "pod-b") {
+		t.Fatalf("last-event-remediated filtered statuses = %+v, want remediated pod-b", got)
+	}
+
+	recorder = httptest.NewRecorder()
 	request = httptest.NewRequest(http.MethodGet, "/policy/endpoints?drifted=maybe", nil)
 	metrics.handlePolicyEndpoints(recorder, request)
 
@@ -3769,6 +3827,14 @@ func TestPolicyEndpointAPIReportsLifecycleStatus(t *testing.T) {
 
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("invalid revision-below status = %d, want 400; body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/policy/endpoints?last_event_success=maybe", nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("invalid last-event-success status = %d, want 400; body=%s", recorder.Code, recorder.Body.String())
 	}
 }
 
