@@ -197,12 +197,14 @@ type policyStatusOptions struct {
 	node             string
 	endpoint         string
 	pressureSeverity string
+	drifted          string
 }
 
 type policyStatusExportOptions struct {
 	ovsdb            string
 	endpoint         string
 	pressureSeverity string
+	drifted          string
 }
 
 type policyRevisionWaitOptions struct {
@@ -319,6 +321,7 @@ type policyStatusOutput struct {
 	UpdatedAt              time.Time                        `json:"updated_at,omitempty"`
 	FilterEndpoint         string                           `json:"filter_endpoint,omitempty"`
 	FilterPressureSeverity string                           `json:"filter_pressure_severity,omitempty"`
+	FilterDrifted          *bool                            `json:"filter_drifted,omitempty"`
 	EndpointCount          int                              `json:"endpoint_count"`
 	PolicyMapEntries       uint32                           `json:"policy_map_entries"`
 	PolicyMapCapacity      uint32                           `json:"policy_map_capacity"`
@@ -849,6 +852,7 @@ func runPolicyStatus(args []string, stdout io.Writer) error {
 	flags.StringVar(&opts.node, "node", os.Getenv("NETLOOM_NODE_NAME"), "node name")
 	flags.StringVar(&opts.endpoint, "endpoint", "", "optional endpoint key or endpoint ID to include")
 	flags.StringVar(&opts.pressureSeverity, "pressure-severity", "", "optional policy map pressure severity to include: normal, warning, critical, full, or unknown")
+	flags.StringVar(&opts.drifted, "drifted", "", "optional policy map drift filter: true or false")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -880,10 +884,15 @@ func runPolicyStatus(args []string, stdout io.Writer) error {
 	if err := validatePolicyEndpointPressureSeverity(opts.pressureSeverity); err != nil {
 		return err
 	}
-	statuses := filterPolicyEndpointStatuses(result.PolicyEndpointStatus, opts.endpoint, opts.pressureSeverity, state.Endpoints)
+	drifted, err := parseOptionalBoolFilter(opts.drifted, "drifted")
+	if err != nil {
+		return err
+	}
+	statuses := filterPolicyEndpointStatuses(result.PolicyEndpointStatus, opts.endpoint, opts.pressureSeverity, drifted, state.Endpoints)
 	output := policyStatusOutputFromResult(result, storeName, statuses)
 	output.FilterEndpoint = strings.TrimSpace(opts.endpoint)
 	output.FilterPressureSeverity = strings.TrimSpace(opts.pressureSeverity)
+	output.FilterDrifted = drifted
 	encoder := json.NewEncoder(stdout)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(output)
@@ -896,6 +905,7 @@ func runPolicyStatusExport(ctx context.Context, args []string, stdout io.Writer)
 	flags.StringVar(&opts.ovsdb, "ovsdb", os.Getenv("NETLOOM_OVSDB_ENDPOINT"), "Open_vSwitch OVSDB endpoint")
 	flags.StringVar(&opts.endpoint, "endpoint", "", "optional endpoint key or endpoint ID to include")
 	flags.StringVar(&opts.pressureSeverity, "pressure-severity", "", "optional policy map pressure severity to include: normal, warning, critical, full, or unknown")
+	flags.StringVar(&opts.drifted, "drifted", "", "optional policy map drift filter: true or false")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -921,7 +931,11 @@ func runPolicyStatusExportWithStore(ctx context.Context, opts policyStatusExport
 	if err := validatePolicyEndpointPressureSeverity(opts.pressureSeverity); err != nil {
 		return err
 	}
-	output := policyStatusOutputFromDocument(doc, strings.TrimSpace(opts.endpoint), strings.TrimSpace(opts.pressureSeverity))
+	drifted, err := parseOptionalBoolFilter(opts.drifted, "drifted")
+	if err != nil {
+		return err
+	}
+	output := policyStatusOutputFromDocument(doc, strings.TrimSpace(opts.endpoint), strings.TrimSpace(opts.pressureSeverity), drifted)
 	encoder := json.NewEncoder(stdout)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(output)
@@ -973,7 +987,7 @@ func runPolicyRevisionWaitWithStore(ctx context.Context, opts policyRevisionWait
 			return err
 		}
 		lastDoc = doc
-		statuses := filterPolicyEndpointStatuses(doc.Statuses, opts.endpoint, "", nil)
+		statuses := filterPolicyEndpointStatuses(doc.Statuses, opts.endpoint, "", nil, nil)
 		if len(statuses) > 0 {
 			lastStatus = statuses[0]
 			sawEndpoint = true
@@ -1793,10 +1807,10 @@ func loadDesiredStateFromPathOrOVSDB(ctx context.Context, path string, store ope
 	return state, nil
 }
 
-func filterPolicyEndpointStatuses(statuses []dataplane.PolicyEndpointStatus, endpoint, pressureSeverity string, endpoints []model.Endpoint) []dataplane.PolicyEndpointStatus {
+func filterPolicyEndpointStatuses(statuses []dataplane.PolicyEndpointStatus, endpoint, pressureSeverity string, drifted *bool, endpoints []model.Endpoint) []dataplane.PolicyEndpointStatus {
 	endpoint = strings.TrimSpace(endpoint)
 	pressureSeverity = strings.TrimSpace(pressureSeverity)
-	if endpoint == "" && pressureSeverity == "" {
+	if endpoint == "" && pressureSeverity == "" && drifted == nil {
 		return append([]dataplane.PolicyEndpointStatus(nil), statuses...)
 	}
 	keys := map[string]struct{}{endpoint: {}}
@@ -1813,6 +1827,9 @@ func filterPolicyEndpointStatuses(statuses []dataplane.PolicyEndpointStatus, end
 		if pressureSeverity != "" && status.PressureSeverity != pressureSeverity {
 			continue
 		}
+		if drifted != nil && status.Drift.Drifted != *drifted {
+			continue
+		}
 		if endpoint == "" {
 			filtered = append(filtered, status)
 			continue
@@ -1826,6 +1843,18 @@ func filterPolicyEndpointStatuses(statuses []dataplane.PolicyEndpointStatus, end
 		}
 	}
 	return filtered
+}
+
+func parseOptionalBoolFilter(value, name string) (*bool, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, nil
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return nil, fmt.Errorf("invalid %s filter %q", name, value)
+	}
+	return &parsed, nil
 }
 
 func validatePolicyEndpointPressureSeverity(severity string) error {
@@ -1858,8 +1887,8 @@ func policyStatusOutputFromResult(result agent.ReconcileResult, storeName string
 	}
 }
 
-func policyStatusOutputFromDocument(doc policyStatusDocument, endpoint, pressureSeverity string) policyStatusOutput {
-	filtered := filterPolicyEndpointStatuses(doc.Statuses, endpoint, pressureSeverity, nil)
+func policyStatusOutputFromDocument(doc policyStatusDocument, endpoint, pressureSeverity string, drifted *bool) policyStatusOutput {
+	filtered := filterPolicyEndpointStatuses(doc.Statuses, endpoint, pressureSeverity, drifted, nil)
 	return policyStatusOutput{
 		Node:                   doc.Node,
 		Store:                  doc.Store,
@@ -1869,6 +1898,7 @@ func policyStatusOutputFromDocument(doc policyStatusDocument, endpoint, pressure
 		UpdatedAt:              doc.UpdatedAt,
 		FilterEndpoint:         strings.TrimSpace(endpoint),
 		FilterPressureSeverity: strings.TrimSpace(pressureSeverity),
+		FilterDrifted:          drifted,
 		EndpointCount:          len(filtered),
 		PolicyMapEntries:       doc.PolicyMapEntries,
 		PolicyMapCapacity:      doc.PolicyMapCapacity,
@@ -5323,7 +5353,13 @@ func (m *agentMetrics) handlePolicyEndpoints(w http.ResponseWriter, r *http.Requ
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
-	statuses := filterPolicyEndpointStatuses(snapshot.Result.PolicyEndpointStatus, endpoint, pressureSeverity, nil)
+	drifted, err := parseOptionalBoolFilter(r.URL.Query().Get("drifted"), "drifted")
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	statuses := filterPolicyEndpointStatuses(snapshot.Result.PolicyEndpointStatus, endpoint, pressureSeverity, drifted, nil)
 	if endpoint != "" && len(statuses) == 0 {
 		w.WriteHeader(http.StatusNotFound)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "policy endpoint not found"})
@@ -5335,6 +5371,7 @@ func (m *agentMetrics) handlePolicyEndpoints(w http.ResponseWriter, r *http.Requ
 	output.LastReconcileError = snapshot.Error
 	output.FilterEndpoint = endpoint
 	output.FilterPressureSeverity = pressureSeverity
+	output.FilterDrifted = drifted
 	output.FrozenEndpoints = m.frozenPolicyEndpointIDs()
 	output.FrozenEndpointExpiry = m.frozenPolicyEndpointExpirations()
 	encoder := json.NewEncoder(w)
@@ -5418,7 +5455,7 @@ func (m *agentMetrics) handlePolicyEndpointRevision(w http.ResponseWriter, r *ht
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": "policy endpoint status is not ready"})
 			return
 		}
-		statuses := filterPolicyEndpointStatuses(snapshot.Result.PolicyEndpointStatus, endpoint, "", nil)
+		statuses := filterPolicyEndpointStatuses(snapshot.Result.PolicyEndpointStatus, endpoint, "", nil, nil)
 		if len(statuses) > 0 {
 			lastStatus = statuses[0]
 			sawEndpoint = true

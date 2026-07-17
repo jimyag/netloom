@@ -964,6 +964,7 @@ func TestRunPolicyStatusExportWithStoreReportsFilteredJSON(t *testing.T) {
 			Capacity:         64,
 			PressurePercent:  98,
 			PressureSeverity: dataplane.PolicyMapPressureCritical,
+			Drift:            dataplane.PolicyMapDrift{Drifted: true, Extra: 1},
 		}},
 	}); err != nil {
 		t.Fatal(err)
@@ -996,6 +997,18 @@ func TestRunPolicyStatusExportWithStoreReportsFilteredJSON(t *testing.T) {
 	}
 	if got.FilterPressureSeverity != dataplane.PolicyMapPressureCritical || got.EndpointCount != 1 || len(got.Statuses) != 1 || got.Statuses[0].EndpointID != model.EndpointKey("prod", "pod-b") {
 		t.Fatalf("pressure filtered statuses = %+v, want only critical pod-b", got)
+	}
+
+	out.Reset()
+	if err := runPolicyStatusExportWithStore(t.Context(), policyStatusExportOptions{drifted: "true"}, &out, store); err != nil {
+		t.Fatal(err)
+	}
+	got = policyStatusOutput{}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("decode drifted filtered policy-status-export output: %v\n%s", err, out.String())
+	}
+	if got.FilterDrifted == nil || !*got.FilterDrifted || got.EndpointCount != 1 || len(got.Statuses) != 1 || got.Statuses[0].EndpointID != model.EndpointKey("prod", "pod-b") {
+		t.Fatalf("drifted filtered statuses = %+v, want only drifted pod-b", got)
 	}
 }
 
@@ -3660,6 +3673,7 @@ func TestPolicyEndpointAPIReportsLifecycleStatus(t *testing.T) {
 			Capacity:         16,
 			PressurePercent:  93,
 			PressureSeverity: dataplane.PolicyMapPressureCritical,
+			Drift:            dataplane.PolicyMapDrift{Drifted: true, Changed: 1},
 		}},
 	}, "ebpf", 25*time.Millisecond)
 
@@ -3697,6 +3711,29 @@ func TestPolicyEndpointAPIReportsLifecycleStatus(t *testing.T) {
 	}
 	if got.FilterPressureSeverity != dataplane.PolicyMapPressureCritical || got.EndpointCount != 1 || len(got.Statuses) != 1 || got.Statuses[0].EndpointID != model.EndpointKey("prod", "pod-b") {
 		t.Fatalf("critical filtered statuses = %+v, want pod-b", got)
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/policy/endpoints?drifted=true", nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("drifted filter status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	got = policyStatusOutput{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode drifted policy endpoint API response: %v\n%s", err, recorder.Body.String())
+	}
+	if got.FilterDrifted == nil || !*got.FilterDrifted || got.EndpointCount != 1 || len(got.Statuses) != 1 || got.Statuses[0].EndpointID != model.EndpointKey("prod", "pod-b") {
+		t.Fatalf("drifted filtered statuses = %+v, want pod-b", got)
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/policy/endpoints?drifted=maybe", nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("invalid drifted status = %d, want 400; body=%s", recorder.Code, recorder.Body.String())
 	}
 }
 
