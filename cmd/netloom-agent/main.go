@@ -2351,24 +2351,31 @@ func runStateFile(ctx context.Context, path string) error {
 
 func reconcileStateFile(ctx context.Context, path, node, storeName string, reconciler *agent.Reconciler, metrics *agentMetrics, identityGroupFeedCache *control.IdentityGroupObservationCache) error {
 	start := time.Now()
+	runtimeChecks := agent.RunRuntimePreflight()
 	linuxOptions, rolloutStateStore, dnsObservationStore, identityGroupStore, closeLinuxOptions, err := linuxDatapathOptionsWithOVSDBSyncer(ctx)
 	if err != nil {
 		duration := time.Since(start)
 		result := agent.ReconcileResult{Node: node}
 		printReconcileFailure(result, storeName, err, duration)
-		observeAgentReconcileFailure(metrics, result, storeName, err, duration)
+		observeAgentReconcileFailure(metrics, result, storeName, err, duration, runtimeChecks)
 		return err
 	}
 	defer closeLinuxOptions()
 
 	state, err := loadDesiredStateFromPathOrOVSDB(ctx, path, identityGroupStore)
 	if err != nil {
-		observeAgentReconcileFailure(metrics, agent.ReconcileResult{Node: node}, storeName, err, time.Since(start))
+		duration := time.Since(start)
+		result := agent.ReconcileResult{Node: node}
+		syncAgentOVSDBStatus(ctx, identityGroupStore, result, storeName, err, duration, runtimeChecks)
+		observeAgentReconcileFailure(metrics, result, storeName, err, duration, runtimeChecks)
 		return err
 	}
 	state, err = withRuntimeObservationsAtContextCacheStore(ctx, state, time.Now().UTC(), identityGroupFeedCache, dnsObservationStore, identityGroupStore)
 	if err != nil {
-		observeAgentReconcileFailure(metrics, agent.ReconcileResult{Node: node}, storeName, err, time.Since(start))
+		duration := time.Since(start)
+		result := agent.ReconcileResult{Node: node}
+		syncAgentOVSDBStatus(ctx, identityGroupStore, result, storeName, err, duration, runtimeChecks)
+		observeAgentReconcileFailure(metrics, result, storeName, err, duration, runtimeChecks)
 		return err
 	}
 	result, err := reconciler.Reconcile(ctx, state, agent.ReconcileOptions{
@@ -2388,7 +2395,8 @@ func reconcileStateFile(ctx context.Context, path, node, storeName string, recon
 	if err != nil {
 		duration := time.Since(start)
 		printReconcileFailure(result, storeName, err, duration)
-		observeAgentReconcileFailure(metrics, result, storeName, err, duration)
+		syncAgentOVSDBStatus(ctx, identityGroupStore, result, storeName, err, duration, runtimeChecks)
+		observeAgentReconcileFailure(metrics, result, storeName, err, duration, runtimeChecks)
 		return err
 	}
 	var rolloutHistory []agent.NamedPolicyEndpointRollout
@@ -2396,7 +2404,8 @@ func reconcileStateFile(ctx context.Context, path, node, storeName string, recon
 	if err != nil {
 		duration := time.Since(start)
 		printReconcileFailure(result, storeName, err, duration)
-		observeAgentReconcileFailure(metrics, result, storeName, err, duration)
+		syncAgentOVSDBStatus(ctx, identityGroupStore, result, storeName, err, duration, runtimeChecks)
+		observeAgentReconcileFailure(metrics, result, storeName, err, duration, runtimeChecks)
 		return err
 	}
 	if rollouts, err := agent.ApplyPolicyRollouts(ctx, state, agent.ReconcileOptions{
@@ -2408,7 +2417,8 @@ func reconcileStateFile(ctx context.Context, path, node, storeName string, recon
 	}); err != nil {
 		duration := time.Since(start)
 		printReconcileFailure(result, storeName, err, duration)
-		observeAgentReconcileFailure(metrics, result, storeName, err, duration)
+		syncAgentOVSDBStatus(ctx, identityGroupStore, result, storeName, err, duration, runtimeChecks)
+		observeAgentReconcileFailure(metrics, result, storeName, err, duration, runtimeChecks)
 		return err
 	} else {
 		agent.ApplyPolicyRolloutResults(&result, rollouts)
@@ -2416,24 +2426,27 @@ func reconcileStateFile(ctx context.Context, path, node, storeName string, recon
 		if err := savePolicyRolloutResume(ctx, rolloutStateStore, node, storeName, rollouts); err != nil {
 			duration := time.Since(start)
 			printReconcileFailure(result, storeName, err, duration)
-			observeAgentReconcileFailure(metrics, result, storeName, err, duration)
+			syncAgentOVSDBStatus(ctx, identityGroupStore, result, storeName, err, duration, runtimeChecks)
+			observeAgentReconcileFailure(metrics, result, storeName, err, duration, runtimeChecks)
 			return err
 		}
 	}
 	duration := time.Since(start)
 	recordNamedPolicyRolloutHistory(metrics, "desired-state", rolloutHistory, result.Node, storeName, duration)
 	printReconcileResult(result, storeName, duration)
-	observeAgentReconcileResultWithState(metrics, result, storeName, duration, state)
+	syncAgentOVSDBStatus(ctx, identityGroupStore, result, storeName, nil, duration, runtimeChecks)
+	observeAgentReconcileResultWithState(metrics, result, storeName, duration, state, runtimeChecks)
 	return nil
 }
 
 func reconcileStateFileOnce(ctx context.Context, path, node, storeName string, store agent.PolicyStore, hold time.Duration, metrics *agentMetrics, identityGroupFeedCache *control.IdentityGroupObservationCache) error {
+	runtimeChecks := agent.RunRuntimePreflight()
 	linuxOptions, rolloutStateStore, dnsObservationStore, identityGroupStore, closeLinuxOptions, err := linuxDatapathOptionsWithOVSDBSyncer(ctx)
 	if err != nil {
 		start := time.Now()
 		result := agent.ReconcileResult{Node: node}
 		printReconcileFailure(result, storeName, err, time.Since(start))
-		observeAgentReconcileFailure(metrics, result, storeName, err, time.Since(start))
+		observeAgentReconcileFailure(metrics, result, storeName, err, time.Since(start), runtimeChecks)
 		return err
 	}
 	defer closeLinuxOptions()
@@ -2442,28 +2455,29 @@ func reconcileStateFileOnce(ctx context.Context, path, node, storeName string, s
 
 func reconcileStateFileOnceWithRuntimeStores(ctx context.Context, path, node, storeName string, store agent.PolicyStore, hold time.Duration, metrics *agentMetrics, identityGroupFeedCache *control.IdentityGroupObservationCache, linuxOptions *linuxdatapath.Options, rolloutStateStore policyRolloutStateStore, dnsObservationStore dnsObservationStore, identityGroupStore openVSwitchExternalIDStore) error {
 	start := time.Now()
+	runtimeChecks := agent.RunRuntimePreflight()
 	state, err := loadDesiredStateFromPathOrOVSDB(ctx, path, identityGroupStore)
 	if err != nil {
 		result := agent.ReconcileResult{Node: node}
 		duration := time.Since(start)
-		syncAgentOVSDBStatus(ctx, identityGroupStore, result, storeName, err, duration)
-		observeAgentReconcileFailure(metrics, result, storeName, err, duration)
+		syncAgentOVSDBStatus(ctx, identityGroupStore, result, storeName, err, duration, runtimeChecks)
+		observeAgentReconcileFailure(metrics, result, storeName, err, duration, runtimeChecks)
 		return err
 	}
 	if agent.HasActivePolicyRollouts(state, node) && rolloutStateStore == nil {
 		err := errors.New("policy_rollouts require NETLOOM_OVSDB_ENDPOINT for Open_vSwitch rollout state")
 		result := agent.ReconcileResult{Node: node}
 		duration := time.Since(start)
-		syncAgentOVSDBStatus(ctx, identityGroupStore, result, storeName, err, duration)
-		observeAgentReconcileFailure(metrics, result, storeName, err, duration)
+		syncAgentOVSDBStatus(ctx, identityGroupStore, result, storeName, err, duration, runtimeChecks)
+		observeAgentReconcileFailure(metrics, result, storeName, err, duration, runtimeChecks)
 		return err
 	}
 	state, err = withRuntimeObservationsAtContextCacheStore(ctx, state, time.Now().UTC(), identityGroupFeedCache, dnsObservationStore, identityGroupStore)
 	if err != nil {
 		result := agent.ReconcileResult{Node: node}
 		duration := time.Since(start)
-		syncAgentOVSDBStatus(ctx, identityGroupStore, result, storeName, err, duration)
-		observeAgentReconcileFailure(metrics, result, storeName, err, duration)
+		syncAgentOVSDBStatus(ctx, identityGroupStore, result, storeName, err, duration, runtimeChecks)
+		observeAgentReconcileFailure(metrics, result, storeName, err, duration, runtimeChecks)
 		return err
 	}
 	result, err := agent.ReconcileNodeWithOptions(ctx, state, agent.ReconcileOptions{
@@ -2483,8 +2497,8 @@ func reconcileStateFileOnceWithRuntimeStores(ctx context.Context, path, node, st
 	if err != nil {
 		duration := time.Since(start)
 		printReconcileFailure(result, storeName, err, duration)
-		syncAgentOVSDBStatus(ctx, identityGroupStore, result, storeName, err, duration)
-		observeAgentReconcileFailure(metrics, result, storeName, err, duration)
+		syncAgentOVSDBStatus(ctx, identityGroupStore, result, storeName, err, duration, runtimeChecks)
+		observeAgentReconcileFailure(metrics, result, storeName, err, duration, runtimeChecks)
 		return err
 	}
 	var rolloutHistory []agent.NamedPolicyEndpointRollout
@@ -2492,8 +2506,8 @@ func reconcileStateFileOnceWithRuntimeStores(ctx context.Context, path, node, st
 	if err != nil {
 		duration := time.Since(start)
 		printReconcileFailure(result, storeName, err, duration)
-		syncAgentOVSDBStatus(ctx, identityGroupStore, result, storeName, err, duration)
-		observeAgentReconcileFailure(metrics, result, storeName, err, duration)
+		syncAgentOVSDBStatus(ctx, identityGroupStore, result, storeName, err, duration, runtimeChecks)
+		observeAgentReconcileFailure(metrics, result, storeName, err, duration, runtimeChecks)
 		return err
 	}
 	if rollouts, err := agent.ApplyPolicyRollouts(ctx, state, agent.ReconcileOptions{
@@ -2505,8 +2519,8 @@ func reconcileStateFileOnceWithRuntimeStores(ctx context.Context, path, node, st
 	}); err != nil {
 		duration := time.Since(start)
 		printReconcileFailure(result, storeName, err, duration)
-		syncAgentOVSDBStatus(ctx, identityGroupStore, result, storeName, err, duration)
-		observeAgentReconcileFailure(metrics, result, storeName, err, duration)
+		syncAgentOVSDBStatus(ctx, identityGroupStore, result, storeName, err, duration, runtimeChecks)
+		observeAgentReconcileFailure(metrics, result, storeName, err, duration, runtimeChecks)
 		return err
 	} else {
 		agent.ApplyPolicyRolloutResults(&result, rollouts)
@@ -2514,16 +2528,16 @@ func reconcileStateFileOnceWithRuntimeStores(ctx context.Context, path, node, st
 		if err := savePolicyRolloutResume(ctx, rolloutStateStore, node, storeName, rollouts); err != nil {
 			duration := time.Since(start)
 			printReconcileFailure(result, storeName, err, duration)
-			syncAgentOVSDBStatus(ctx, identityGroupStore, result, storeName, err, duration)
-			observeAgentReconcileFailure(metrics, result, storeName, err, duration)
+			syncAgentOVSDBStatus(ctx, identityGroupStore, result, storeName, err, duration, runtimeChecks)
+			observeAgentReconcileFailure(metrics, result, storeName, err, duration, runtimeChecks)
 			return err
 		}
 	}
 	duration := time.Since(start)
 	recordNamedPolicyRolloutHistory(metrics, "desired-state", rolloutHistory, result.Node, storeName, duration)
 	printReconcileResult(result, storeName, duration)
-	syncAgentOVSDBStatus(ctx, identityGroupStore, result, storeName, nil, duration)
-	observeAgentReconcileResultWithState(metrics, result, storeName, duration, state)
+	syncAgentOVSDBStatus(ctx, identityGroupStore, result, storeName, nil, duration, runtimeChecks)
+	observeAgentReconcileResultWithState(metrics, result, storeName, duration, state, runtimeChecks)
 	return nil
 }
 
@@ -2692,68 +2706,73 @@ func printReconcileFailure(result agent.ReconcileResult, storeName string, err e
 }
 
 type agentOVSDBStatus struct {
-	SchemaVersion                 int    `json:"schema_version"`
-	UpdatedAt                     string `json:"updated_at"`
-	Node                          string `json:"node"`
-	Store                         string `json:"store"`
-	Status                        string `json:"status"`
-	Error                         string `json:"error,omitempty"`
-	Endpoints                     int    `json:"endpoints"`
-	Programs                      int    `json:"programs"`
-	Entries                       int    `json:"entries"`
-	PolicyMapEntries              uint32 `json:"policy_map_entries"`
-	PolicyMapCapacity             uint32 `json:"policy_map_capacity"`
-	PolicyMapPressureMax          uint32 `json:"policy_map_pressure_max"`
-	PolicyMapPressureEndpoint     string `json:"policy_map_pressure_endpoint,omitempty"`
-	PolicyPressureMitigated       int    `json:"policy_pressure_mitigated"`
-	PolicyPressureQuarantined     int    `json:"policy_pressure_quarantined"`
-	PolicyRollouts                int    `json:"policy_rollouts"`
-	PolicyRolloutPlanned          int    `json:"policy_rollout_planned"`
-	PolicyRolloutApplied          int    `json:"policy_rollout_applied"`
-	PolicyRolloutSkipped          int    `json:"policy_rollout_skipped"`
-	PolicyRolloutFailed           int    `json:"policy_rollout_failed"`
-	PolicyRolloutRolledBack       int    `json:"policy_rollout_rolled_back"`
-	PolicyRolloutRollbackFailed   int    `json:"policy_rollout_rollback_failed"`
-	PolicyRolloutSLOFailed        int    `json:"policy_rollout_slo_failed"`
-	PolicyRolloutProbeFailed      int    `json:"policy_rollout_probe_failed"`
-	PolicyRolloutPaused           int    `json:"policy_rollout_paused"`
-	PolicyRolloutCancelled        int    `json:"policy_rollout_cancelled"`
-	PolicyMapDriftEndpoints       int    `json:"policy_map_drift_endpoints"`
-	PolicyMapDriftMissing         int    `json:"policy_map_drift_missing"`
-	PolicyMapDriftExtra           int    `json:"policy_map_drift_extra"`
-	PolicyMapDriftChanged         int    `json:"policy_map_drift_changed"`
-	PolicyGCEndpoints             int    `json:"policy_gc_endpoints"`
-	PolicyFailed                  int    `json:"policy_failed"`
-	PolicyRollbacks               int    `json:"policy_rollbacks"`
-	PolicyFailedEndpoint          string `json:"policy_failed_endpoint,omitempty"`
-	PolicyFailedRevision          uint64 `json:"policy_failed_revision,omitempty"`
-	PolicyRevisionMax             uint64 `json:"policy_revision_max"`
-	PolicyLastError               string `json:"policy_last_error,omitempty"`
-	TCX                           string `json:"tcx"`
-	TCXFailed                     int    `json:"tcx_failed"`
-	TCXRollbacks                  int    `json:"tcx_rollbacks"`
-	TCXFailedTarget               string `json:"tcx_failed_target,omitempty"`
-	TCXLastError                  string `json:"tcx_last_error,omitempty"`
-	Datapath                      string `json:"datapath,omitempty"`
-	LocalIPs                      int    `json:"local_ips"`
-	RemoteRoutes                  int    `json:"remote_routes"`
-	PolicyRoutes                  int    `json:"policy_routes"`
-	ProviderNetworks              int    `json:"provider_networks"`
-	ProviderLinks                 int    `json:"provider_links"`
-	ProviderReady                 int    `json:"provider_ready"`
-	ProviderDegraded              int    `json:"provider_degraded"`
-	ProviderIssues                int    `json:"provider_issues"`
-	ProviderInventoryTotal        int    `json:"provider_inventory_total"`
-	ProviderInventoryReady        int    `json:"provider_inventory_ready"`
-	ProviderInventoryDegraded     int    `json:"provider_inventory_degraded"`
-	Cleanup                       bool   `json:"cleanup"`
-	ReconcileDurationMilliseconds int64  `json:"reconcile_duration_ms"`
+	SchemaVersion                 int                  `json:"schema_version"`
+	UpdatedAt                     string               `json:"updated_at"`
+	Node                          string               `json:"node"`
+	Store                         string               `json:"store"`
+	Status                        string               `json:"status"`
+	Error                         string               `json:"error,omitempty"`
+	Endpoints                     int                  `json:"endpoints"`
+	Programs                      int                  `json:"programs"`
+	Entries                       int                  `json:"entries"`
+	PolicyMapEntries              uint32               `json:"policy_map_entries"`
+	PolicyMapCapacity             uint32               `json:"policy_map_capacity"`
+	PolicyMapPressureMax          uint32               `json:"policy_map_pressure_max"`
+	PolicyMapPressureEndpoint     string               `json:"policy_map_pressure_endpoint,omitempty"`
+	PolicyPressureMitigated       int                  `json:"policy_pressure_mitigated"`
+	PolicyPressureQuarantined     int                  `json:"policy_pressure_quarantined"`
+	PolicyRollouts                int                  `json:"policy_rollouts"`
+	PolicyRolloutPlanned          int                  `json:"policy_rollout_planned"`
+	PolicyRolloutApplied          int                  `json:"policy_rollout_applied"`
+	PolicyRolloutSkipped          int                  `json:"policy_rollout_skipped"`
+	PolicyRolloutFailed           int                  `json:"policy_rollout_failed"`
+	PolicyRolloutRolledBack       int                  `json:"policy_rollout_rolled_back"`
+	PolicyRolloutRollbackFailed   int                  `json:"policy_rollout_rollback_failed"`
+	PolicyRolloutSLOFailed        int                  `json:"policy_rollout_slo_failed"`
+	PolicyRolloutProbeFailed      int                  `json:"policy_rollout_probe_failed"`
+	PolicyRolloutPaused           int                  `json:"policy_rollout_paused"`
+	PolicyRolloutCancelled        int                  `json:"policy_rollout_cancelled"`
+	PolicyMapDriftEndpoints       int                  `json:"policy_map_drift_endpoints"`
+	PolicyMapDriftMissing         int                  `json:"policy_map_drift_missing"`
+	PolicyMapDriftExtra           int                  `json:"policy_map_drift_extra"`
+	PolicyMapDriftChanged         int                  `json:"policy_map_drift_changed"`
+	PolicyGCEndpoints             int                  `json:"policy_gc_endpoints"`
+	PolicyFailed                  int                  `json:"policy_failed"`
+	PolicyRollbacks               int                  `json:"policy_rollbacks"`
+	PolicyFailedEndpoint          string               `json:"policy_failed_endpoint,omitempty"`
+	PolicyFailedRevision          uint64               `json:"policy_failed_revision,omitempty"`
+	PolicyRevisionMax             uint64               `json:"policy_revision_max"`
+	PolicyLastError               string               `json:"policy_last_error,omitempty"`
+	TCX                           string               `json:"tcx"`
+	TCXFailed                     int                  `json:"tcx_failed"`
+	TCXRollbacks                  int                  `json:"tcx_rollbacks"`
+	TCXFailedTarget               string               `json:"tcx_failed_target,omitempty"`
+	TCXLastError                  string               `json:"tcx_last_error,omitempty"`
+	RuntimeReady                  bool                 `json:"runtime_ready"`
+	RuntimeFailed                 int                  `json:"runtime_failed"`
+	RuntimeWarned                 int                  `json:"runtime_warned"`
+	Runtime                       []agent.RuntimeCheck `json:"runtime,omitempty"`
+	Datapath                      string               `json:"datapath,omitempty"`
+	LocalIPs                      int                  `json:"local_ips"`
+	RemoteRoutes                  int                  `json:"remote_routes"`
+	PolicyRoutes                  int                  `json:"policy_routes"`
+	ProviderNetworks              int                  `json:"provider_networks"`
+	ProviderLinks                 int                  `json:"provider_links"`
+	ProviderReady                 int                  `json:"provider_ready"`
+	ProviderDegraded              int                  `json:"provider_degraded"`
+	ProviderIssues                int                  `json:"provider_issues"`
+	ProviderInventoryTotal        int                  `json:"provider_inventory_total"`
+	ProviderInventoryReady        int                  `json:"provider_inventory_ready"`
+	ProviderInventoryDegraded     int                  `json:"provider_inventory_degraded"`
+	Cleanup                       bool                 `json:"cleanup"`
+	ReconcileDurationMilliseconds int64                `json:"reconcile_duration_ms"`
 }
 
-func syncAgentOVSDBStatus(ctx context.Context, store openVSwitchExternalIDStore, result agent.ReconcileResult, storeName string, reconcileErr error, duration time.Duration) {
+func syncAgentOVSDBStatus(ctx context.Context, store openVSwitchExternalIDStore, result agent.ReconcileResult, storeName string, reconcileErr error, duration time.Duration, runtimeChecks []agent.RuntimeCheck) {
 	if store == nil {
 		return
 	}
+	runtimeFailed, runtimeWarned := countRuntimeCheckStatuses(runtimeChecks)
 	status := agentOVSDBStatus{
 		SchemaVersion:                 1,
 		UpdatedAt:                     time.Now().UTC().Format(time.RFC3339Nano),
@@ -2796,6 +2815,10 @@ func syncAgentOVSDBStatus(ctx context.Context, store openVSwitchExternalIDStore,
 		TCXRollbacks:                  result.TCXRollbacks,
 		TCXFailedTarget:               result.TCXFailedTarget,
 		TCXLastError:                  result.TCXLastError,
+		RuntimeReady:                  agent.RuntimeChecksReady(runtimeChecks),
+		RuntimeFailed:                 runtimeFailed,
+		RuntimeWarned:                 runtimeWarned,
+		Runtime:                       cloneRuntimeChecks(runtimeChecks),
 		Datapath:                      result.Datapath,
 		LocalIPs:                      result.LocalIPs,
 		RemoteRoutes:                  result.RemoteRoutes,
@@ -2971,6 +2994,25 @@ func formatRuntimeChecks(checks []agent.RuntimeCheck) string {
 	return strings.Join(parts, ";")
 }
 
+func countRuntimeCheckStatuses(checks []agent.RuntimeCheck) (failed, warned int) {
+	for _, check := range checks {
+		switch check.Status {
+		case "fail":
+			failed++
+		case "warn":
+			warned++
+		}
+	}
+	return failed, warned
+}
+
+func cloneRuntimeChecks(checks []agent.RuntimeCheck) []agent.RuntimeCheck {
+	if len(checks) == 0 {
+		return nil
+	}
+	return append([]agent.RuntimeCheck(nil), checks...)
+}
+
 func formatEndpointRuleStats(stats []dataplane.RuleMetrics) string {
 	if len(stats) == 0 {
 		return "none"
@@ -3007,6 +3049,7 @@ type agentMetricsSnapshot struct {
 	Duration time.Duration
 	Success  bool
 	Error    string
+	Runtime  []agent.RuntimeCheck
 }
 
 type agentMetricsTotals struct {
@@ -3837,11 +3880,11 @@ func cloneFrozenPolicyEndpoints(values map[string]time.Time) map[string]time.Tim
 	return out
 }
 
-func observeAgentReconcileResult(metrics *agentMetrics, result agent.ReconcileResult, storeName string, duration time.Duration) {
-	observeAgentReconcileResultWithState(metrics, result, storeName, duration, control.DesiredState{})
+func observeAgentReconcileResult(metrics *agentMetrics, result agent.ReconcileResult, storeName string, duration time.Duration, runtimeChecks ...[]agent.RuntimeCheck) {
+	observeAgentReconcileResultWithState(metrics, result, storeName, duration, control.DesiredState{}, runtimeChecks...)
 }
 
-func observeAgentReconcileResultWithState(metrics *agentMetrics, result agent.ReconcileResult, storeName string, duration time.Duration, state control.DesiredState) {
+func observeAgentReconcileResultWithState(metrics *agentMetrics, result agent.ReconcileResult, storeName string, duration time.Duration, state control.DesiredState, runtimeChecks ...[]agent.RuntimeCheck) {
 	if metrics == nil {
 		return
 	}
@@ -3851,10 +3894,11 @@ func observeAgentReconcileResultWithState(metrics *agentMetrics, result agent.Re
 		State:    cloneDesiredState(state),
 		Duration: duration,
 		Success:  true,
+		Runtime:  firstRuntimeChecks(runtimeChecks),
 	})
 }
 
-func observeAgentReconcileFailure(metrics *agentMetrics, result agent.ReconcileResult, storeName string, err error, duration time.Duration) {
+func observeAgentReconcileFailure(metrics *agentMetrics, result agent.ReconcileResult, storeName string, err error, duration time.Duration, runtimeChecks ...[]agent.RuntimeCheck) {
 	if metrics == nil {
 		return
 	}
@@ -3868,7 +3912,15 @@ func observeAgentReconcileFailure(metrics *agentMetrics, result agent.ReconcileR
 		Duration: duration,
 		Success:  false,
 		Error:    message,
+		Runtime:  firstRuntimeChecks(runtimeChecks),
 	})
+}
+
+func firstRuntimeChecks(values [][]agent.RuntimeCheck) []agent.RuntimeCheck {
+	if len(values) == 0 {
+		return nil
+	}
+	return cloneRuntimeChecks(values[0])
 }
 
 func (m *agentMetrics) observe(snapshot agentMetricsSnapshot) {
@@ -5580,6 +5632,35 @@ func writeAgentMetrics(w ioStringWriter, snapshot agentMetricsSnapshot, totals a
 			"store": snapshot.Store,
 			"error": snapshot.Error,
 		}))
+	}
+	runtimeReady := 1
+	if !agent.RuntimeChecksReady(snapshot.Runtime) {
+		runtimeReady = 0
+	}
+	runtimeFailed, runtimeWarned := countRuntimeCheckStatuses(snapshot.Runtime)
+	writeMetricType(w, "netloom_agent_runtime_ready", "gauge")
+	fmt.Fprintf(w, "netloom_agent_runtime_ready%s %d\n", baseLabels, runtimeReady)
+	writeMetricType(w, "netloom_agent_runtime_failed_checks", "gauge")
+	fmt.Fprintf(w, "netloom_agent_runtime_failed_checks%s %d\n", baseLabels, runtimeFailed)
+	writeMetricType(w, "netloom_agent_runtime_warned_checks", "gauge")
+	fmt.Fprintf(w, "netloom_agent_runtime_warned_checks%s %d\n", baseLabels, runtimeWarned)
+	writeMetricType(w, "netloom_agent_runtime_check_status", "gauge")
+	for _, check := range snapshot.Runtime {
+		value := 0
+		if check.Status == "ok" || check.Status == "skip" {
+			value = 1
+		}
+		required := "false"
+		if check.Required {
+			required = "true"
+		}
+		fmt.Fprintf(w, "netloom_agent_runtime_check_status%s %d\n", prometheusLabels(map[string]string{
+			"node":     result.Node,
+			"store":    snapshot.Store,
+			"check":    check.Name,
+			"status":   check.Status,
+			"required": required,
+		}), value)
 	}
 
 	writeMetricType(w, "netloom_agent_policy_map_entries", "gauge")

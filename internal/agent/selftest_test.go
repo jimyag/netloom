@@ -179,7 +179,7 @@ func TestRunRuntimePreflightReportsRequiredBPFChecks(t *testing.T) {
 		},
 	}
 	checks := runRuntimePreflight(probe)
-	if runtimeChecksReady(checks) {
+	if RuntimeChecksReady(checks) {
 		t.Fatalf("runtime checks = %+v, want required failure", checks)
 	}
 	if !runtimeCheckHas(checks, "bpffs", "fail", true) ||
@@ -208,7 +208,7 @@ func TestRunRuntimePreflightAcceptsEquivalentCapabilities(t *testing.T) {
 		},
 	}
 	checks := runRuntimePreflight(probe)
-	if !runtimeChecksReady(checks) {
+	if !RuntimeChecksReady(checks) {
 		t.Fatalf("runtime checks = %+v, want ready", checks)
 	}
 	if !runtimeCheckHas(checks, "cap_bpf_or_sys_admin", "ok", true) ||

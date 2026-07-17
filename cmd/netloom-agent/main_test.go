@@ -1135,6 +1135,10 @@ func TestRunAgentStatusWithStoreReportsOpenVSwitchStatus(t *testing.T) {
 		PolicyMapEntries:              4,
 		PolicyRolloutApplied:          1,
 		TCX:                           "attached",
+		RuntimeReady:                  true,
+		RuntimeFailed:                 0,
+		RuntimeWarned:                 1,
+		Runtime:                       []agent.RuntimeCheck{{Name: "bpffs", Status: "ok", Required: true, Detail: "/sys/fs/bpf"}, {Name: "ovsdb", Status: "warn", Detail: "not configured"}},
 		Datapath:                      "linux",
 		ProviderReady:                 1,
 		ReconcileDurationMilliseconds: 12,
@@ -1154,7 +1158,7 @@ func TestRunAgentStatusWithStoreReportsOpenVSwitchStatus(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
 		t.Fatalf("decode agent-status output: %v\n%s", err, out.String())
 	}
-	if got.Node != "node-a" || got.Store != "ebpf" || got.Status != "success" || got.PolicyMapEntries != 4 || got.PolicyRolloutApplied != 1 || got.ProviderReady != 1 {
+	if got.Node != "node-a" || got.Store != "ebpf" || got.Status != "success" || got.PolicyMapEntries != 4 || got.PolicyRolloutApplied != 1 || got.ProviderReady != 1 || !got.RuntimeReady || got.RuntimeWarned != 1 || len(got.Runtime) != 2 {
 		t.Fatalf("agent status = %+v, want decoded OVSDB status", got)
 	}
 }
@@ -1636,6 +1640,10 @@ func TestReconcileStateFileOnceAppliesDesiredPolicyRollout(t *testing.T) {
 }
 
 func TestReconcileStateFileOnceWritesAgentStatusToOpenVSwitchExternalID(t *testing.T) {
+	t.Setenv("NETLOOM_POLICY_STORE", "")
+	t.Setenv("NETLOOM_TCX_WORKLOAD", "")
+	t.Setenv("NETLOOM_LINUX_DATAPATH", "")
+	t.Setenv("NETLOOM_PROVIDER_NETWORK_LINKS", "")
 	statePath := writeAgentState(t, control.DesiredState{
 		Endpoints: []model.Endpoint{{
 			ID:             "pod-a",
@@ -1679,6 +1687,9 @@ func TestReconcileStateFileOnceWritesAgentStatusToOpenVSwitchExternalID(t *testi
 	}
 	if status.Status != "success" || status.Node != "node-a" || status.Store != "memory" || status.Endpoints != 1 || status.PolicyMapEntries != 1 {
 		t.Fatalf("agent OVSDB status = %+v, want successful node-a memory reconcile with one policy entry", status)
+	}
+	if !status.RuntimeReady || len(status.Runtime) == 0 {
+		t.Fatalf("agent OVSDB runtime status = ready:%t checks:%+v, want ready runtime preflight checks", status.RuntimeReady, status.Runtime)
 	}
 }
 
@@ -4778,7 +4789,10 @@ func TestAgentMetricsExportsLatestPolicyAndTCXCounters(t *testing.T) {
 				MaxEndpoints: 3,
 			}},
 		}},
-	}, "ebpf", 250*time.Millisecond)
+	}, "ebpf", 250*time.Millisecond, []agent.RuntimeCheck{
+		{Name: "bpffs", Status: "ok", Required: true, Detail: "/sys/fs/bpf"},
+		{Name: "ovsdb", Status: "warn", Detail: "not configured"},
+	})
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/metrics", nil)
@@ -4789,6 +4803,11 @@ func TestAgentMetricsExportsLatestPolicyAndTCXCounters(t *testing.T) {
 		"netloom_agent_reconcile_ready 1",
 		`netloom_agent_reconcile_success{node="node-a",store="ebpf"} 1`,
 		`netloom_agent_reconcile_duration_milliseconds{node="node-a",store="ebpf"} 250`,
+		`netloom_agent_runtime_ready{node="node-a",store="ebpf"} 1`,
+		`netloom_agent_runtime_failed_checks{node="node-a",store="ebpf"} 0`,
+		`netloom_agent_runtime_warned_checks{node="node-a",store="ebpf"} 1`,
+		`netloom_agent_runtime_check_status{check="bpffs",node="node-a",required="true",status="ok",store="ebpf"} 1`,
+		`netloom_agent_runtime_check_status{check="ovsdb",node="node-a",required="false",status="warn",store="ebpf"} 0`,
 		`netloom_agent_policy_map_entries{node="node-a",store="ebpf"} 12`,
 		`netloom_agent_policy_map_pressure_percent{endpoint="prod\x00pod-a",node="node-a",store="ebpf"} 75`,
 		`netloom_agent_policy_pressure_mitigated_endpoints{node="node-a",store="ebpf"} 2`,

@@ -54,7 +54,7 @@ func selftestVPC() string {
 
 func RunSelfTest(ctx context.Context) (SelfTestResult, error) {
 	runtimeChecks := RunRuntimePreflight()
-	runtimeReady := runtimeChecksReady(runtimeChecks)
+	runtimeReady := RuntimeChecksReady(runtimeChecks)
 	if selftestStrictRuntime() && !runtimeReady {
 		return SelfTestResult{}, fmt.Errorf("runtime preflight failed: %s", summarizeRuntimeChecks(runtimeChecks))
 	}
@@ -369,7 +369,7 @@ func parseEffectiveCapabilities(status string) (uint64, bool) {
 	return 0, false
 }
 
-func runtimeChecksReady(checks []RuntimeCheck) bool {
+func RuntimeChecksReady(checks []RuntimeCheck) bool {
 	for _, check := range checks {
 		if check.Required && check.Status == "fail" {
 			return false

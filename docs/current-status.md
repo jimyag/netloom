@@ -22,7 +22,7 @@
 | Desired State | 已实现 | 支持 JSON 文件，也支持存入本机 Open_vSwitch OVSDB `external_ids`。 |
 | 状态和观测 | 已实现 | controller `/status`、agent `/metrics`、policy status、policy explain、route explain、policy rules、policy events、policy entries。 |
 | Rollout / lifecycle | 已实现 | 支持 policy dry-run、batch rollout、approval、ack、finalize、SLO/probe、rollback、quarantine、freeze/unfreeze、freeze TTL 和成功/失败 endpoint action history。 |
-| Runtime selftest | 已实现 | agent 默认 selftest 验证策略编译/评估、stateful conntrack、runtime preflight，并报告 bpffs、memlock、BPF/NET_ADMIN capability、OVSDB/OVN endpoint 状态。 |
+| Runtime selftest/status | 已实现 | agent 默认 selftest 验证策略编译/评估、stateful conntrack、runtime preflight；长运行 reconcile 会把 bpffs、memlock、BPF/NET_ADMIN capability、OVSDB/OVN endpoint 状态写入 `netloom_agent_status` 和 Prometheus metrics。 |
 
 ## 运行入口
 
@@ -64,6 +64,7 @@ desired state 也可以放到 OVSDB：
 NETLOOM_SELFTEST_STRICT_RUNTIME=1 NETLOOM_POLICY_STORE=ebpf NETLOOM_TCX_WORKLOAD=1 ./netloom-agent
 ./netloom-agent policy-status -state /etc/netloom/state.json -node node-a
 ./netloom-agent policy-status-export -ovsdb unix:/var/run/openvswitch/db.sock -endpoint prod/vm-a
+./netloom-agent agent-status -ovsdb unix:/var/run/openvswitch/db.sock
 ./netloom-agent policy-entries -state /etc/netloom/state.json -node node-a -endpoint prod/vm-a
 ./netloom-agent policy-entries-export -ovsdb unix:/var/run/openvswitch/db.sock -endpoint prod/vm-a
 ./netloom-agent policy-explain -state /etc/netloom/state.json -vpc prod -endpoint vm-a -direction ingress -protocol tcp -remote-ip 10.10.1.20 -dest-port 8080
