@@ -1502,6 +1502,15 @@ func (w *LibOVSDBTopologyWriter) syncLoadBalancerHealthChecks(ctx context.Contex
 	if err != nil {
 		return nil, err
 	}
+	lbHealthCheckRefs, err := w.loadBalancerHealthCheckRefs(ctx, lbUUID)
+	if err != nil {
+		return nil, err
+	}
+	referenced, err := w.loadBalancerHealthChecksByUUIDs(ctx, lbHealthCheckRefs)
+	if err != nil {
+		return nil, err
+	}
+	existing = mergeLoadBalancerHealthChecks(existing, referenced)
 	existingByVIP := make(map[string][]ovnnb.LoadBalancerHealthCheck, len(existing))
 	for _, hc := range existing {
 		existingByVIP[hc.Vip] = append(existingByVIP[hc.Vip], hc)
@@ -1509,10 +1518,6 @@ func (w *LibOVSDBTopologyWriter) syncLoadBalancerHealthChecks(ctx context.Contex
 	desiredVIPs := make(map[string]struct{})
 	var ops []ovsdb.Operation
 	lbRow := &ovnnb.LoadBalancer{UUID: lbUUID}
-	lbHealthCheckRefs, err := w.loadBalancerHealthCheckRefs(ctx, lbUUID)
-	if err != nil {
-		return nil, err
-	}
 	if lb.HealthCheck.Enabled {
 		for _, frontend := range frontends {
 			desired := desiredLoadBalancerHealthCheck(lb, frontend)
@@ -2024,6 +2029,41 @@ func (w *LibOVSDBTopologyWriter) healthChecksByLoadBalancerName(ctx context.Cont
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].UUID < rows[j].UUID })
 	return rows, nil
+}
+
+func (w *LibOVSDBTopologyWriter) loadBalancerHealthChecksByUUIDs(ctx context.Context, uuids []string) ([]ovnnb.LoadBalancerHealthCheck, error) {
+	if len(uuids) == 0 {
+		return nil, nil
+	}
+	want := make(map[string]struct{}, len(uuids))
+	for _, uuid := range uuids {
+		want[uuid] = struct{}{}
+	}
+	var rows []ovnnb.LoadBalancerHealthCheck
+	if err := w.client.WhereCache(func(row *ovnnb.LoadBalancerHealthCheck) bool {
+		_, ok := want[row.UUID]
+		return ok
+	}).List(ctx, &rows); err != nil {
+		return nil, fmt.Errorf("list load balancer health checks by UUID from libovsdb cache: %w", err)
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].UUID < rows[j].UUID })
+	return rows, nil
+}
+
+func mergeLoadBalancerHealthChecks(groups ...[]ovnnb.LoadBalancerHealthCheck) []ovnnb.LoadBalancerHealthCheck {
+	seen := make(map[string]struct{})
+	var rows []ovnnb.LoadBalancerHealthCheck
+	for _, group := range groups {
+		for _, row := range group {
+			if _, ok := seen[row.UUID]; ok {
+				continue
+			}
+			seen[row.UUID] = struct{}{}
+			rows = append(rows, row)
+		}
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].UUID < rows[j].UUID })
+	return rows
 }
 
 func (w *LibOVSDBTopologyWriter) logicalSwitchesForLoadBalancer(ctx context.Context, lb model.LoadBalancer) ([]ovnnb.LogicalSwitch, error) {
