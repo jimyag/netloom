@@ -382,13 +382,18 @@ curl -s 'http://127.0.0.1:9092/policy/entries?endpoint=prod/vm-a'
 
 ```bash
 curl -X POST http://127.0.0.1:9092/policy/endpoints/prod/vm-a/freeze
+curl -X POST http://127.0.0.1:9092/policy/endpoints/prod/vm-a/freeze \
+  -d '{"ttl_seconds":600}'
+curl -X POST http://127.0.0.1:9092/policy/endpoints/prod/vm-a/freeze \
+  -d '{"expires_at":"2026-07-17T10:30:00Z"}'
 curl -s http://127.0.0.1:9092/policy/endpoints | jq '.frozen_endpoints'
+curl -s http://127.0.0.1:9092/policy/endpoints | jq '.frozen_endpoint_expiry'
 curl -X POST http://127.0.0.1:9092/policy/endpoints/prod/vm-a/unfreeze
 ```
 
 如果 agent 配置了 `NETLOOM_OVSDB_ENDPOINT`，冻结列表会保存到本机
 `Open_vSwitch.external_ids:netloom_policy_freeze_state`。agent 重启后会从
-这个 key 恢复冻结状态，直到显式执行 `/unfreeze`。
+这个 key 恢复冻结状态，直到显式执行 `/unfreeze` 或冻结过期。
 
 检查本机托管网络对象：
 

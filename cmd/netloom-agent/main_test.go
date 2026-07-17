@@ -2598,16 +2598,23 @@ func TestPolicyEndpointAPIPersistsFreezeStateToOpenVSwitchExternalID(t *testing.
 	}, "memory", time.Millisecond, state)
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/policy/endpoints/prod/pod-a/freeze", nil)
+	request := httptest.NewRequest(http.MethodPost, "/policy/endpoints/prod/pod-a/freeze", bytes.NewBufferString(`{"ttl_seconds":3600}`))
 	metrics.handlePolicyEndpoints(recorder, request)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("freeze status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var freeze policyEndpointActionOutput
+	if err := json.Unmarshal(recorder.Body.Bytes(), &freeze); err != nil {
+		t.Fatalf("decode freeze response: %v\n%s", err, recorder.Body.String())
+	}
+	if freeze.ExpiresAt == nil || freeze.ExpiresAt.IsZero() {
+		t.Fatalf("freeze response = %+v, want expires_at", freeze)
 	}
 	var frozen policyFreezeStateDocument
 	if err := json.Unmarshal([]byte(ovsdb.values[policyFreezeStateKey]), &frozen); err != nil {
 		t.Fatalf("decode freeze state: %v", err)
 	}
-	if !reflect.DeepEqual(frozen.FrozenEndpoints, []string{endpointID}) || frozen.UpdatedAt.IsZero() {
+	if len(frozen.FrozenEndpoints) != 1 || frozen.FrozenEndpoints[0].EndpointID != endpointID || frozen.FrozenEndpoints[0].ExpiresAt.IsZero() || frozen.UpdatedAt.IsZero() {
 		t.Fatalf("freeze state = %+v, want persisted endpoint and updated_at", frozen)
 	}
 
@@ -2639,6 +2646,33 @@ func TestPolicyEndpointAPIPersistsFreezeStateToOpenVSwitchExternalID(t *testing.
 	}
 	if len(unfrozen.FrozenEndpoints) != 0 || unfrozen.UpdatedAt.IsZero() {
 		t.Fatalf("freeze state after unfreeze = %+v, want empty persisted endpoint list", unfrozen)
+	}
+}
+
+func TestPolicyEndpointAPIDropsExpiredFreezeStateFromOpenVSwitchExternalID(t *testing.T) {
+	endpointID := model.EndpointKey("prod", "pod-a")
+	raw, err := json.Marshal(policyFreezeStateDocument{
+		FrozenEndpoints: []policyFreezeStateEntry{{
+			EndpointID: endpointID,
+			ExpiresAt:  time.Now().Add(-time.Minute),
+		}},
+		UpdatedAt: time.Now().Add(-time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ovsdb := &fakeOpenVSwitchExternalIDStore{values: map[string]string{
+		policyFreezeStateKey: string(raw),
+	}}
+	metrics := newAgentMetrics(dataplane.NewInMemoryPolicyStore())
+	if err := configurePolicyFreezeState(t.Context(), metrics, ovsdbPolicyFreezeStateStore{syncer: ovsdb}); err != nil {
+		t.Fatal(err)
+	}
+	if got := metrics.frozenPolicyEndpointIDs(); len(got) != 0 {
+		t.Fatalf("frozen endpoints = %+v, want expired entry dropped", got)
+	}
+	if metrics.policyEndpointFrozen(endpointID) {
+		t.Fatalf("endpoint %s is frozen, want expired freeze ignored", endpointID)
 	}
 }
 

@@ -177,6 +177,7 @@ type policyStatusOutput struct {
 	DriftChanged         int                              `json:"drift_changed"`
 	PolicyRevisionMax    uint64                           `json:"policy_revision_max"`
 	FrozenEndpoints      []string                         `json:"frozen_endpoints,omitempty"`
+	FrozenEndpointExpiry map[string]time.Time             `json:"frozen_endpoint_expiry,omitempty"`
 	Statuses             []dataplane.PolicyEndpointStatus `json:"statuses"`
 }
 
@@ -283,6 +284,7 @@ type policyEndpointActionOutput struct {
 	Unquarantined bool                           `json:"unquarantined,omitempty"`
 	Frozen        bool                           `json:"frozen,omitempty"`
 	Unfrozen      bool                           `json:"unfrozen,omitempty"`
+	ExpiresAt     *time.Time                     `json:"expires_at,omitempty"`
 	Plan          agent.PolicyEndpointPlan       `json:"plan,omitempty"`
 	Rollout       agent.PolicyEndpointRollout    `json:"rollout,omitempty"`
 	EndpointInfo  dataplane.PolicyEndpointStatus `json:"endpoint_status,omitempty"`
@@ -320,8 +322,18 @@ type policyRolloutStateEntry struct {
 }
 
 type policyFreezeStateDocument struct {
-	FrozenEndpoints []string  `json:"frozen_endpoints,omitempty"`
-	UpdatedAt       time.Time `json:"updated_at,omitempty"`
+	FrozenEndpoints []policyFreezeStateEntry `json:"frozen_endpoints,omitempty"`
+	UpdatedAt       time.Time                `json:"updated_at,omitempty"`
+}
+
+type policyFreezeStateEntry struct {
+	EndpointID string    `json:"endpoint_id"`
+	ExpiresAt  time.Time `json:"expires_at,omitempty"`
+}
+
+type policyEndpointFreezeRequest struct {
+	TTLSeconds int64  `json:"ttl_seconds,omitempty"`
+	ExpiresAt  string `json:"expires_at,omitempty"`
 }
 
 type policyRolloutStateStore interface {
@@ -2016,7 +2028,7 @@ type agentMetrics struct {
 	rolloutHistoryStore policyRolloutHistoryStore
 	rolloutHistory      []policyRolloutHistoryEntry
 	freezeStateStore    policyFreezeStateStore
-	frozenEndpoints     map[string]struct{}
+	frozenEndpoints     map[string]time.Time
 }
 
 type agentMetricsSnapshot struct {
@@ -2088,7 +2100,7 @@ func newAgentMetrics(store ...agent.PolicyStore) *agentMetrics {
 	return &agentMetrics{
 		totals:          agentMetricsTotals{DurationBuckets: make([]uint64, len(agentReconcileDurationBuckets))},
 		store:           policyStore,
-		frozenEndpoints: make(map[string]struct{}),
+		frozenEndpoints: make(map[string]time.Time),
 	}
 }
 
@@ -2121,13 +2133,17 @@ func configurePolicyFreezeState(ctx context.Context, metrics *agentMetrics, stor
 	if err != nil {
 		return err
 	}
-	frozen := make(map[string]struct{}, len(doc.FrozenEndpoints))
-	for _, endpointID := range doc.FrozenEndpoints {
-		endpointID = strings.TrimSpace(endpointID)
+	frozen := make(map[string]time.Time, len(doc.FrozenEndpoints))
+	now := time.Now()
+	for _, entry := range doc.FrozenEndpoints {
+		endpointID := strings.TrimSpace(entry.EndpointID)
 		if endpointID == "" {
 			continue
 		}
-		frozen[endpointID] = struct{}{}
+		if !entry.ExpiresAt.IsZero() && !now.Before(entry.ExpiresAt) {
+			continue
+		}
+		frozen[endpointID] = entry.ExpiresAt
 	}
 	metrics.mu.Lock()
 	defer metrics.mu.Unlock()
@@ -2363,7 +2379,7 @@ func (s ovsdbPolicyFreezeStateStore) Load(ctx context.Context) (policyFreezeStat
 	if err := json.Unmarshal([]byte(raw), &doc); err != nil {
 		return doc, fmt.Errorf("decode Open_vSwitch external_ids:%s: %w", policyFreezeStateKey, err)
 	}
-	doc.FrozenEndpoints = uniqueStrings(doc.FrozenEndpoints)
+	doc.FrozenEndpoints = normalizePolicyFreezeStateEntries(doc.FrozenEndpoints, time.Now())
 	return doc, nil
 }
 
@@ -2371,7 +2387,7 @@ func (s ovsdbPolicyFreezeStateStore) Save(ctx context.Context, doc policyFreezeS
 	if s.syncer == nil {
 		return nil
 	}
-	doc.FrozenEndpoints = uniqueStrings(doc.FrozenEndpoints)
+	doc.FrozenEndpoints = normalizePolicyFreezeStateEntries(doc.FrozenEndpoints, time.Now())
 	if doc.UpdatedAt.IsZero() {
 		doc.UpdatedAt = time.Now().UTC()
 	}
@@ -2451,7 +2467,29 @@ func uniqueStrings(values []string) []string {
 	return out
 }
 
-func sortedStringSetKeys(values map[string]struct{}) []string {
+func normalizePolicyFreezeStateEntries(values []policyFreezeStateEntry, now time.Time) []policyFreezeStateEntry {
+	seen := make(map[string]policyFreezeStateEntry, len(values))
+	for _, value := range values {
+		value.EndpointID = strings.TrimSpace(value.EndpointID)
+		if value.EndpointID == "" {
+			continue
+		}
+		if !value.ExpiresAt.IsZero() && !now.Before(value.ExpiresAt) {
+			continue
+		}
+		seen[value.EndpointID] = value
+	}
+	out := make([]policyFreezeStateEntry, 0, len(seen))
+	for _, value := range seen {
+		out = append(out, value)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].EndpointID < out[j].EndpointID
+	})
+	return out
+}
+
+func sortedFrozenPolicyEndpointIDs(values map[string]time.Time) []string {
 	out := make([]string, 0, len(values))
 	for value := range values {
 		out = append(out, value)
@@ -2460,14 +2498,14 @@ func sortedStringSetKeys(values map[string]struct{}) []string {
 	return out
 }
 
-func newStringSet(values []string) map[string]struct{} {
-	out := make(map[string]struct{}, len(values))
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value == "" {
+func cloneFrozenPolicyEndpoints(values map[string]time.Time) map[string]time.Time {
+	out := make(map[string]time.Time, len(values))
+	for endpointID, expiresAt := range values {
+		endpointID = strings.TrimSpace(endpointID)
+		if endpointID == "" {
 			continue
 		}
-		out[value] = struct{}{}
+		out[endpointID] = expiresAt
 	}
 	return out
 }
@@ -2578,6 +2616,7 @@ func (m *agentMetrics) frozenPolicyEndpointsSnapshot() map[string]struct{} {
 	if m == nil {
 		return nil
 	}
+	m.pruneExpiredFrozenPolicyEndpoints(context.Background(), time.Now())
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	if len(m.frozenEndpoints) == 0 {
@@ -2594,17 +2633,44 @@ func (m *agentMetrics) frozenPolicyEndpointIDs() []string {
 	if m == nil {
 		return nil
 	}
+	m.pruneExpiredFrozenPolicyEndpoints(context.Background(), time.Now())
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	out := make([]string, 0, len(m.frozenEndpoints))
-	for endpointID := range m.frozenEndpoints {
-		out = append(out, endpointID)
+	return sortedFrozenPolicyEndpointIDs(m.frozenEndpoints)
+}
+
+func (m *agentMetrics) frozenPolicyEndpointExpirations() map[string]time.Time {
+	if m == nil {
+		return nil
 	}
-	sort.Strings(out)
+	m.pruneExpiredFrozenPolicyEndpoints(context.Background(), time.Now())
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make(map[string]time.Time)
+	for endpointID, expiresAt := range m.frozenEndpoints {
+		if expiresAt.IsZero() {
+			continue
+		}
+		out[endpointID] = expiresAt
+	}
+	if len(out) == 0 {
+		return nil
+	}
 	return out
 }
 
-func (m *agentMetrics) saveFrozenPolicyEndpoints(ctx context.Context, endpoints []string) error {
+func (m *agentMetrics) frozenPolicyStateEntriesLocked() []policyFreezeStateEntry {
+	entries := make([]policyFreezeStateEntry, 0, len(m.frozenEndpoints))
+	for endpointID, expiresAt := range m.frozenEndpoints {
+		entries = append(entries, policyFreezeStateEntry{
+			EndpointID: endpointID,
+			ExpiresAt:  expiresAt,
+		})
+	}
+	return normalizePolicyFreezeStateEntries(entries, time.Now())
+}
+
+func (m *agentMetrics) saveFrozenPolicyEndpoints(ctx context.Context, endpoints []policyFreezeStateEntry) error {
 	if m == nil {
 		return nil
 	}
@@ -2620,43 +2686,68 @@ func (m *agentMetrics) saveFrozenPolicyEndpoints(ctx context.Context, endpoints 
 	})
 }
 
+func (m *agentMetrics) pruneExpiredFrozenPolicyEndpoints(ctx context.Context, now time.Time) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	changed := false
+	for endpointID, expiresAt := range m.frozenEndpoints {
+		if expiresAt.IsZero() || now.Before(expiresAt) {
+			continue
+		}
+		delete(m.frozenEndpoints, endpointID)
+		changed = true
+	}
+	if !changed {
+		m.mu.Unlock()
+		return
+	}
+	next := m.frozenPolicyStateEntriesLocked()
+	m.mu.Unlock()
+	if err := m.saveFrozenPolicyEndpoints(ctx, next); err != nil {
+		log.Printf("persist expired policy freeze cleanup: %v", err)
+	}
+}
+
 func (m *agentMetrics) policyEndpointFrozen(endpointID string) bool {
 	if m == nil {
 		return false
 	}
+	m.pruneExpiredFrozenPolicyEndpoints(context.Background(), time.Now())
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	_, ok := m.frozenEndpoints[endpointID]
 	return ok
 }
 
-func (m *agentMetrics) freezePolicyEndpoint(ctx context.Context, endpoint string) (string, error) {
+func (m *agentMetrics) freezePolicyEndpoint(ctx context.Context, endpoint string, expiresAt time.Time) (string, time.Time, error) {
 	if m == nil {
-		return "", errors.New("policy endpoint actions are not enabled")
+		return "", time.Time{}, errors.New("policy endpoint actions are not enabled")
 	}
 	snapshot, _, ready := m.snapshotValue()
 	if !ready || !snapshot.Success {
-		return "", errors.New("policy endpoint state is not ready")
+		return "", time.Time{}, errors.New("policy endpoint state is not ready")
 	}
 	endpointID, err := resolvePolicyEndpointIDFromSnapshot(endpoint, snapshot)
 	if err != nil {
-		return "", err
+		return "", time.Time{}, err
 	}
 	m.mu.Lock()
-	previous := sortedStringSetKeys(m.frozenEndpoints)
+	previous := cloneFrozenPolicyEndpoints(m.frozenEndpoints)
 	if m.frozenEndpoints == nil {
-		m.frozenEndpoints = make(map[string]struct{})
+		m.frozenEndpoints = make(map[string]time.Time)
 	}
-	m.frozenEndpoints[endpointID] = struct{}{}
-	next := sortedStringSetKeys(m.frozenEndpoints)
+	m.frozenEndpoints[endpointID] = expiresAt
+	next := m.frozenPolicyStateEntriesLocked()
 	m.mu.Unlock()
 	if err := m.saveFrozenPolicyEndpoints(ctx, next); err != nil {
 		m.mu.Lock()
-		m.frozenEndpoints = newStringSet(previous)
+		m.frozenEndpoints = previous
 		m.mu.Unlock()
-		return "", err
+		return "", time.Time{}, err
 	}
-	return endpointID, nil
+	return endpointID, expiresAt, nil
 }
 
 func (m *agentMetrics) unfreezePolicyEndpoint(ctx context.Context, endpoint string) (string, error) {
@@ -2672,13 +2763,13 @@ func (m *agentMetrics) unfreezePolicyEndpoint(ctx context.Context, endpoint stri
 		return "", err
 	}
 	m.mu.Lock()
-	previous := sortedStringSetKeys(m.frozenEndpoints)
+	previous := cloneFrozenPolicyEndpoints(m.frozenEndpoints)
 	delete(m.frozenEndpoints, endpointID)
-	next := sortedStringSetKeys(m.frozenEndpoints)
+	next := m.frozenPolicyStateEntriesLocked()
 	m.mu.Unlock()
 	if err := m.saveFrozenPolicyEndpoints(ctx, next); err != nil {
 		m.mu.Lock()
-		m.frozenEndpoints = newStringSet(previous)
+		m.frozenEndpoints = previous
 		m.mu.Unlock()
 		return "", err
 	}
@@ -3119,6 +3210,7 @@ func (m *agentMetrics) handlePolicyEndpoints(w http.ResponseWriter, r *http.Requ
 	output.LastReconcileSuccess = snapshot.Success
 	output.LastReconcileError = snapshot.Error
 	output.FrozenEndpoints = m.frozenPolicyEndpointIDs()
+	output.FrozenEndpointExpiry = m.frozenPolicyEndpointExpirations()
 	encoder := json.NewEncoder(w)
 	encoder.SetIndent("", "  ")
 	_ = encoder.Encode(output)
@@ -3407,13 +3499,67 @@ func (m *agentMetrics) handlePolicyEndpointPlan(w http.ResponseWriter, r *http.R
 	})
 }
 
+func decodePolicyEndpointFreezeRequest(r *http.Request) (policyEndpointFreezeRequest, error) {
+	var request policyEndpointFreezeRequest
+	if r == nil || r.Body == nil || r.Body == http.NoBody {
+		return request, nil
+	}
+	decoder := json.NewDecoder(r.Body)
+	if err := decoder.Decode(&request); err != nil && !errors.Is(err, io.EOF) {
+		return request, errors.New("invalid freeze request")
+	}
+	return request, nil
+}
+
+func policyFreezeExpiresAt(request policyEndpointFreezeRequest, now time.Time) (time.Time, error) {
+	hasTTL := request.TTLSeconds != 0
+	hasExpiresAt := strings.TrimSpace(request.ExpiresAt) != ""
+	if hasTTL && hasExpiresAt {
+		return time.Time{}, errors.New("freeze request must use ttl_seconds or expires_at, not both")
+	}
+	if hasTTL {
+		if request.TTLSeconds < 0 {
+			return time.Time{}, errors.New("freeze ttl_seconds must be positive")
+		}
+		expiresAt := now.Add(time.Duration(request.TTLSeconds) * time.Second).UTC()
+		if !now.Before(expiresAt) {
+			return time.Time{}, errors.New("freeze ttl_seconds must be positive")
+		}
+		return expiresAt, nil
+	}
+	if hasExpiresAt {
+		expiresAt, err := time.Parse(time.RFC3339, strings.TrimSpace(request.ExpiresAt))
+		if err != nil {
+			return time.Time{}, errors.New("freeze expires_at must use RFC3339")
+		}
+		expiresAt = expiresAt.UTC()
+		if !now.Before(expiresAt) {
+			return time.Time{}, errors.New("freeze expires_at must be in the future")
+		}
+		return expiresAt, nil
+	}
+	return time.Time{}, nil
+}
+
 func (m *agentMetrics) handlePolicyEndpointFreeze(w http.ResponseWriter, r *http.Request, endpoint string) {
 	if endpoint == "" {
 		w.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "missing policy endpoint"})
 		return
 	}
-	endpointID, err := m.freezePolicyEndpoint(r.Context(), endpoint)
+	request, err := decodePolicyEndpointFreezeRequest(r)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	expiresAt, err := policyFreezeExpiresAt(request, time.Now())
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	endpointID, expiresAt, err := m.freezePolicyEndpoint(r.Context(), endpoint, expiresAt)
 	if err != nil {
 		statusCode := http.StatusInternalServerError
 		switch {
@@ -3429,11 +3575,15 @@ func (m *agentMetrics) handlePolicyEndpointFreeze(w http.ResponseWriter, r *http
 		return
 	}
 	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(policyEndpointActionOutput{
+	response := policyEndpointActionOutput{
 		EndpointID: endpointID,
 		Action:     "freeze",
 		Frozen:     true,
-	})
+	}
+	if !expiresAt.IsZero() {
+		response.ExpiresAt = &expiresAt
+	}
+	_ = json.NewEncoder(w).Encode(response)
 }
 
 func (m *agentMetrics) handlePolicyEndpointUnfreeze(w http.ResponseWriter, r *http.Request, endpoint string) {
