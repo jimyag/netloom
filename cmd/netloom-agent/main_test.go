@@ -2505,7 +2505,8 @@ func TestPolicyEndpointAPIRolloutRunsProbe(t *testing.T) {
 		}},
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ready"))
 	}))
 	defer server.Close()
 	store := dataplane.NewInMemoryPolicyStore()
@@ -2514,7 +2515,7 @@ func TestPolicyEndpointAPIRolloutRunsProbe(t *testing.T) {
 		Node: "node-a",
 	}, "memory", time.Millisecond, state)
 
-	body := bytes.NewBufferString(fmt.Sprintf(`{"endpoints":["prod/pod-a"],"batch_size":1,"probes":[{"name":"web-ready","type":"http","url":%q,"expected_status":204,"timeout_ms":1000}]}`, server.URL))
+	body := bytes.NewBufferString(fmt.Sprintf(`{"endpoints":["prod/pod-a"],"batch_size":1,"probes":[{"name":"web-ready","type":"http","url":%q,"expected_status":200,"expected_body_contains":"ready","timeout_ms":1000}]}`, server.URL))
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/policy/endpoints/rollout", body)
 	metrics.handlePolicyEndpoints(recorder, request)
@@ -2529,7 +2530,7 @@ func TestPolicyEndpointAPIRolloutRunsProbe(t *testing.T) {
 	if !got.RolledOut || got.Rollout.ProbeFailed || got.Rollout.Failed != 0 || got.Rollout.Applied != 1 {
 		t.Fatalf("rollout response = %+v, want successful probed rollout", got)
 	}
-	if len(got.Rollout.Probes) != 1 || !got.Rollout.Probes[0].Passed || got.Rollout.Probes[0].StatusCode != http.StatusNoContent {
+	if len(got.Rollout.Probes) != 1 || !got.Rollout.Probes[0].Passed || got.Rollout.Probes[0].StatusCode != http.StatusOK {
 		t.Fatalf("probe results = %+v, want passed HTTP probe", got.Rollout.Probes)
 	}
 }

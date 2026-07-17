@@ -1319,6 +1319,17 @@ func executeHTTPRolloutProbe(ctx context.Context, probe control.PolicyRolloutPro
 		result.Error = fmt.Sprintf("status=%d expected=%d", response.StatusCode, expectedStatus)
 		return result
 	}
+	if expectedBody := strings.TrimSpace(probe.ExpectedBodyContains); expectedBody != "" {
+		body, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+		if err != nil {
+			result.Error = err.Error()
+			return result
+		}
+		if !strings.Contains(string(body), expectedBody) {
+			result.Error = fmt.Sprintf("body missing %q", expectedBody)
+			return result
+		}
+	}
 	result.Passed = true
 	return result
 }

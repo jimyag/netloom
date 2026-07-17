@@ -213,13 +213,14 @@ type PolicyRollout struct {
 }
 
 type PolicyRolloutProbe struct {
-	Name           string `json:"name"`
-	Type           string `json:"type"`
-	URL            string `json:"url,omitempty"`
-	Address        string `json:"address,omitempty"`
-	Method         string `json:"method,omitempty"`
-	ExpectedStatus int    `json:"expected_status,omitempty"`
-	TimeoutMS      uint32 `json:"timeout_ms,omitempty"`
+	Name                 string `json:"name"`
+	Type                 string `json:"type"`
+	URL                  string `json:"url,omitempty"`
+	Address              string `json:"address,omitempty"`
+	Method               string `json:"method,omitempty"`
+	ExpectedStatus       int    `json:"expected_status,omitempty"`
+	ExpectedBodyContains string `json:"expected_body_contains,omitempty"`
+	TimeoutMS            uint32 `json:"timeout_ms,omitempty"`
 }
 
 func (r PolicyRollout) Validate() error {
@@ -326,6 +327,9 @@ func (p PolicyRolloutProbe) Validate(rollout string) error {
 			return fmt.Errorf("policy rollout %q probe %q expected_status must be between 0 and 599", rollout, name)
 		}
 	case "tcp", "tls":
+		if strings.TrimSpace(p.ExpectedBodyContains) != "" {
+			return fmt.Errorf("policy rollout %q probe %q expected_body_contains requires http probe", rollout, name)
+		}
 		if strings.TrimSpace(p.Address) == "" {
 			return fmt.Errorf("policy rollout %q probe %q address is required", rollout, name)
 		}

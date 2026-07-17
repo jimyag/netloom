@@ -1011,6 +1011,23 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 			wantErr: "probe \"probe-a\" is duplicated",
 		},
 		{
+			name: "policy rollout tcp probe rejects body match",
+			mutate: func(state *DesiredState) {
+				state.PolicyRollouts = []PolicyRollout{{
+					Name:      "web-canary",
+					Endpoints: []string{"prod/pod-a"},
+					BatchSize: 1,
+					Probes: []PolicyRolloutProbe{{
+						Name:                 "probe-a",
+						Type:                 "tcp",
+						Address:              "127.0.0.1:80",
+						ExpectedBodyContains: "ready",
+					}},
+				}}
+			},
+			wantErr: "expected_body_contains requires http probe",
+		},
+		{
 			name: "invalid policy rollout pause after batches",
 			mutate: func(state *DesiredState) {
 				state.PolicyRollouts = []PolicyRollout{{

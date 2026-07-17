@@ -81,7 +81,7 @@
 | DNS observer | 已实现 | UDP/TCP proxy, AF_PACKET capture, OVSDB observations | `go test ./cmd/netloom-dns-observer` |
 | Metrics | 已实现 | controller/agent `/metrics` | command tests |
 | OVN health/audit/maintenance | 已实现 | libovsdb health, audit stats, compact/stale hooks | `go test ./cmd/netloom-controller ./internal/ovn` |
-| Policy rollout | 已实现 | rollout request state, approval, ack, finalize, SLO, HTTP/TCP/TLS probes | agent/control tests |
+| Policy rollout | 已实现 | rollout request state, approval, ack, finalize, SLO, HTTP status/body probes, TCP/TLS probes | agent/control tests |
 
 ## 当前缺口
 

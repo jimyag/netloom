@@ -2880,6 +2880,47 @@ func TestRolloutPolicyEndpointsProbeRollsBackFailedCanary(t *testing.T) {
 	}
 }
 
+func TestRolloutPolicyEndpointsProbeRollsBackBodyMismatch(t *testing.T) {
+	state := rolloutPolicyState()
+	store := dataplane.NewInMemoryPolicyStore()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("warming"))
+	}))
+	defer server.Close()
+
+	rollout, err := RolloutPolicyEndpoints(context.Background(), state, ReconcileOptions{
+		Node:  "node-a",
+		Store: store,
+	}, PolicyEndpointRolloutOptions{
+		EndpointIDs: []string{
+			model.EndpointKey("prod", "pod-a"),
+			model.EndpointKey("prod", "pod-b"),
+		},
+		BatchSize: 1,
+		Probes: []control.PolicyRolloutProbe{{
+			Name:                 "web-ready",
+			Type:                 "http",
+			URL:                  server.URL,
+			ExpectedStatus:       http.StatusOK,
+			ExpectedBodyContains: "ready",
+			TimeoutMS:            1000,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rollout.ProbeFailed || rollout.ProbeError == "" || rollout.Failed != 1 || rollout.RolledBack != 1 || rollout.Skipped != 1 {
+		t.Fatalf("rollout = %+v, want body-mismatch probe rollback", rollout)
+	}
+	if len(rollout.Probes) != 1 || rollout.Probes[0].Passed || !strings.Contains(rollout.Probes[0].Error, `body missing "ready"`) {
+		t.Fatalf("probe results = %+v, want failed HTTP body probe", rollout.Probes)
+	}
+	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 0 {
+		t.Fatalf("pod-a entries = %+v, want probe rollback", entries)
+	}
+}
+
 func TestRolloutPolicyEndpointsProbeAcceptsTCP(t *testing.T) {
 	state := rolloutPolicyState()
 	store := dataplane.NewInMemoryPolicyStore()
