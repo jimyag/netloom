@@ -193,7 +193,8 @@ and the frozen endpoint list plus expiry metadata is persisted in local OVS
 `NETLOOM_OVSDB_ENDPOINT` is configured. Successful endpoint lifecycle actions
 are exposed through `GET /policy/endpoints/actions/history` and persisted in
 local OVS `Open_vSwitch.external_ids:netloom_policy_endpoint_action_history`
-when OVSDB is configured. The same endpoint API supports
+when OVSDB is configured; operators can filter the action history by endpoint,
+action, and recent-entry limit. The same endpoint API supports
 operator lifecycle actions: `DELETE /policy/endpoints/{endpoint}` clears an
 endpoint map, `POST /policy/endpoints/{endpoint}/plan` dry-runs the latest
 desired policy and returns add/update/delete/unchanged counts without modifying

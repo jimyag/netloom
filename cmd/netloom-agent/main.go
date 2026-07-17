@@ -297,8 +297,13 @@ type policyRolloutHistoryOutput struct {
 }
 
 type policyActionHistoryOutput struct {
-	Ready   bool                       `json:"ready"`
-	History []policyActionHistoryEntry `json:"history"`
+	Ready          bool                       `json:"ready"`
+	TotalEvents    int                        `json:"total_events"`
+	EventCount     int                        `json:"event_count"`
+	Limit          int                        `json:"limit"`
+	FilterEndpoint string                     `json:"filter_endpoint,omitempty"`
+	FilterAction   string                     `json:"filter_action,omitempty"`
+	History        []policyActionHistoryEntry `json:"history"`
 }
 
 type policyRolloutHistoryEntry struct {
@@ -2281,6 +2286,38 @@ func (m *agentMetrics) policyActionHistory() []policyActionHistoryEntry {
 	return append([]policyActionHistoryEntry(nil), m.actionHistory...)
 }
 
+func filterPolicyActionHistory(history []policyActionHistoryEntry, endpoint, action string) []policyActionHistoryEntry {
+	endpoint = strings.TrimSpace(endpoint)
+	action = strings.TrimSpace(action)
+	candidates := map[string]struct{}{}
+	if endpoint != "" {
+		candidates = policyEndpointCandidates(endpoint)
+	}
+	out := make([]policyActionHistoryEntry, 0, len(history))
+	for _, entry := range history {
+		if action != "" && entry.Action != action {
+			continue
+		}
+		if endpoint != "" {
+			if _, ok := candidates[entry.EndpointID]; !ok {
+				continue
+			}
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+func recentPolicyActionHistory(history []policyActionHistoryEntry, limit int) []policyActionHistoryEntry {
+	if limit == 0 || len(history) == 0 {
+		return nil
+	}
+	if len(history) <= limit {
+		return append([]policyActionHistoryEntry(nil), history...)
+	}
+	return append([]policyActionHistoryEntry(nil), history[len(history)-limit:]...)
+}
+
 func recordNamedPolicyRolloutHistory(metrics *agentMetrics, source string, rollouts []agent.NamedPolicyEndpointRollout, node, store string, duration time.Duration) {
 	for _, rollout := range rollouts {
 		if err := metrics.recordPolicyRolloutHistory(policyRolloutHistoryEntry{
@@ -3379,11 +3416,27 @@ func (m *agentMetrics) handlePolicyActionHistory(w http.ResponseWriter, r *http.
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "method not allowed"})
 		return
 	}
+	limit, err := policyEventsLimitFromRequest(r)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	endpoint := strings.TrimSpace(r.URL.Query().Get("endpoint"))
+	action := strings.TrimSpace(r.URL.Query().Get("action"))
+	history := m.policyActionHistory()
+	filtered := filterPolicyActionHistory(history, endpoint, action)
+	recent := recentPolicyActionHistory(filtered, limit)
 	encoder := json.NewEncoder(w)
 	encoder.SetIndent("", "  ")
 	_ = encoder.Encode(policyActionHistoryOutput{
-		Ready:   true,
-		History: m.policyActionHistory(),
+		Ready:          true,
+		TotalEvents:    len(history),
+		EventCount:     len(recent),
+		Limit:          limit,
+		FilterEndpoint: endpoint,
+		FilterAction:   action,
+		History:        recent,
 	})
 }
 

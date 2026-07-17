@@ -399,12 +399,14 @@ curl -X POST http://127.0.0.1:9092/policy/endpoints/prod/vm-a/unfreeze
 
 ```bash
 curl -s http://127.0.0.1:9092/policy/endpoints/actions/history
+curl -s 'http://127.0.0.1:9092/policy/endpoints/actions/history?endpoint=prod/vm-a&action=freeze&limit=20'
 ovs-vsctl get Open_vSwitch . external_ids:netloom_policy_endpoint_action_history
 ```
 
 如果 agent 配置了 `NETLOOM_OVSDB_ENDPOINT`，`delete`、`regenerate`、
 `freeze`、`unfreeze`、`quarantine`、`unquarantine` 和 `rollback` 成功后会写入
 `Open_vSwitch.external_ids:netloom_policy_endpoint_action_history`，用于节点本地审计。
+API 支持按 `endpoint`、`action` 和 `limit` 查询最近的相关动作。
 
 检查本机托管网络对象：
 
