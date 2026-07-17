@@ -300,7 +300,7 @@ func (w *LibOVSDBTopologyWriter) cleanupUnexpectedLiveOperations(ctx context.Con
 		}
 		ops = append(ops, nextOps...)
 	}
-	staticRoutes, err := w.unexpectedStaticRoutes(ctx, staticRouteExpected)
+	staticRoutes, err := w.unexpectedStaticRoutes(ctx, expected, staticRouteExpected, desired.RouteTables)
 	if err != nil {
 		return nil, CleanupStats{}, err
 	}
@@ -1769,15 +1769,51 @@ func (w *LibOVSDBTopologyWriter) expectedLogicalSwitchPortDHCPRefs(ctx context.C
 	return refs, nil
 }
 
-func (w *LibOVSDBTopologyWriter) unexpectedStaticRoutes(ctx context.Context, expected map[string]struct{}) ([]ovnnb.LogicalRouterStaticRoute, error) {
+func (w *LibOVSDBTopologyWriter) unexpectedStaticRoutes(ctx context.Context, managedExpected map[string]map[string]string, expected map[string]struct{}, desired map[string]model.RouteTable) ([]ovnnb.LogicalRouterStaticRoute, error) {
+	expectedRefs, err := w.expectedRouterStaticRouteRefs(ctx, managedExpected, desired)
+	if err != nil {
+		return nil, err
+	}
 	var rows []ovnnb.LogicalRouterStaticRoute
 	if err := w.client.WhereCache(func(row *ovnnb.LogicalRouterStaticRoute) bool {
+		if _, ok := expectedRefs[row.UUID]; ok {
+			return false
+		}
 		return isNetloomManaged(row.ExternalIDs) && !hasExpectedStaticRoute(row.ExternalIDs, expected)
 	}).List(ctx, &rows); err != nil {
 		return nil, err
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].UUID < rows[j].UUID })
 	return rows, nil
+}
+
+func (w *LibOVSDBTopologyWriter) expectedRouterStaticRouteRefs(ctx context.Context, expected map[string]map[string]string, desired map[string]model.RouteTable) (map[string]struct{}, error) {
+	var routers []ovnnb.LogicalRouter
+	if err := w.client.WhereCache(func(row *ovnnb.LogicalRouter) bool {
+		return !unexpectedManagedRow("Logical_Router", row.UUID, row.ExternalIDs, expected)
+	}).List(ctx, &routers); err != nil {
+		return nil, err
+	}
+	refs := make(map[string]struct{})
+	for _, router := range routers {
+		for _, table := range desired {
+			if logicalRouter(table.VPC) != router.Name {
+				continue
+			}
+			for _, route := range table.Routes {
+				for _, desiredRow := range desiredStaticRouteRows(table, route) {
+					rows, err := w.referencedStaticRoutesForDesired(ctx, router.StaticRoutes, desiredRow)
+					if err != nil {
+						return nil, err
+					}
+					for _, row := range rows {
+						refs[row.UUID] = struct{}{}
+					}
+				}
+			}
+		}
+	}
+	return refs, nil
 }
 
 func (w *LibOVSDBTopologyWriter) unexpectedBFDs(ctx context.Context, expected map[string]struct{}) ([]ovnnb.BFD, error) {

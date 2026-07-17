@@ -292,6 +292,16 @@ func (w *LibOVSDBTopologyWriter) routeTableOperations(ctx context.Context, table
 		key := staticRouteRowKey(route)
 		existingByKey[key] = append(existingByKey[key], route)
 	}
+	for _, route := range table.Routes {
+		for _, desired := range desiredStaticRouteRows(table, route) {
+			referenced, err := w.referencedStaticRoutesForDesired(ctx, router.StaticRoutes, desired)
+			if err != nil {
+				return nil, err
+			}
+			key := staticRouteRowKey(desired)
+			existingByKey[key] = mergeStaticRoutes(existingByKey[key], referenced)
+		}
+	}
 	var ops []ovsdb.Operation
 	desiredKeys := make(map[string]struct{})
 	for _, route := range table.Routes {
@@ -1985,6 +1995,70 @@ func (w *LibOVSDBTopologyWriter) staticRoutesByRouteTable(ctx context.Context, t
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].UUID < rows[j].UUID })
 	return rows, nil
+}
+
+func (w *LibOVSDBTopologyWriter) staticRoutesByUUIDs(ctx context.Context, uuids []string) ([]ovnnb.LogicalRouterStaticRoute, error) {
+	want := make(map[string]struct{}, len(uuids))
+	for _, uuid := range uuids {
+		if uuid == "" {
+			continue
+		}
+		want[uuid] = struct{}{}
+	}
+	if len(want) == 0 {
+		return nil, nil
+	}
+	var rows []ovnnb.LogicalRouterStaticRoute
+	if err := w.client.WhereCache(func(row *ovnnb.LogicalRouterStaticRoute) bool {
+		_, ok := want[row.UUID]
+		return ok
+	}).List(ctx, &rows); err != nil {
+		return nil, fmt.Errorf("list static routes by UUID from libovsdb cache: %w", err)
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].UUID < rows[j].UUID })
+	return rows, nil
+}
+
+func (w *LibOVSDBTopologyWriter) referencedStaticRoutesForDesired(ctx context.Context, uuids []string, desired ovnnb.LogicalRouterStaticRoute) ([]ovnnb.LogicalRouterStaticRoute, error) {
+	rows, err := w.staticRoutesByUUIDs(ctx, uuids)
+	if err != nil {
+		return nil, err
+	}
+	filtered := rows[:0]
+	for _, row := range rows {
+		if staticRouteReferenceMatchesDesired(row, desired) {
+			filtered = append(filtered, row)
+		}
+	}
+	return filtered, nil
+}
+
+func staticRouteReferenceMatchesDesired(row, desired ovnnb.LogicalRouterStaticRoute) bool {
+	if row.ExternalIDs["netloom_vpc"] == desired.ExternalIDs["netloom_vpc"] &&
+		row.ExternalIDs["netloom_route_table"] == desired.ExternalIDs["netloom_route_table"] &&
+		row.ExternalIDs["netloom_route_key"] == desired.ExternalIDs["netloom_route_key"] {
+		return true
+	}
+	return row.IPPrefix == desired.IPPrefix &&
+		row.Nexthop == desired.Nexthop &&
+		stringPointerValueEqual(row.OutputPort, pointerStringValue(desired.OutputPort)) &&
+		staticRoutePolicyPointerValueEqual(row.Policy, desired.Policy)
+}
+
+func mergeStaticRoutes(groups ...[]ovnnb.LogicalRouterStaticRoute) []ovnnb.LogicalRouterStaticRoute {
+	seen := make(map[string]struct{})
+	var rows []ovnnb.LogicalRouterStaticRoute
+	for _, group := range groups {
+		for _, row := range group {
+			if _, ok := seen[row.UUID]; ok {
+				continue
+			}
+			seen[row.UUID] = struct{}{}
+			rows = append(rows, row)
+		}
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].UUID < rows[j].UUID })
+	return rows
 }
 
 func (w *LibOVSDBTopologyWriter) staticRouteBFDByRouteKey(ctx context.Context, vpc, table, routeKey string) ([]ovnnb.BFD, error) {
