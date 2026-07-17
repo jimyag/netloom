@@ -518,6 +518,7 @@ func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, opt
 		})
 	}
 	if rolloutOptions.DryRun {
+		failFrozenDryRunRolloutItems(options, &rollout)
 		return rollout, nil
 	}
 	if rolloutOptions.Cancelled {
@@ -1419,6 +1420,17 @@ func percentUint64(part, total uint64) uint32 {
 type policyEndpointSnapshot struct {
 	entries []dataplane.PolicyMapEntry
 	exists  bool
+}
+
+func failFrozenDryRunRolloutItems(options ReconcileOptions, rollout *PolicyEndpointRollout) {
+	for i := range rollout.Items {
+		if !policyEndpointFrozen(options, rollout.Items[i].EndpointID) {
+			continue
+		}
+		setRolloutItemPhase(&rollout.Items[i], "failed", "policy_frozen")
+		rollout.Items[i].Error = "policy endpoint is frozen"
+		rollout.Failed++
+	}
 }
 
 func snapshotRolloutPolicyEndpoints(ctx context.Context, store PolicyStore, endpointIDs []string) (map[string]policyEndpointSnapshot, error) {

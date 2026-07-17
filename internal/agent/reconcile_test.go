@@ -1543,6 +1543,36 @@ func TestRolloutPolicyEndpointsDryRunPlansWithoutApplying(t *testing.T) {
 	}
 }
 
+func TestRolloutPolicyEndpointsDryRunFailsFrozenEndpointWithoutApplying(t *testing.T) {
+	state := rolloutPolicyState()
+	store := dataplane.NewInMemoryPolicyStore()
+	endpointID := model.EndpointKey("prod", "pod-a")
+
+	rollout, err := RolloutPolicyEndpoints(context.Background(), state, ReconcileOptions{
+		Node:  "node-a",
+		Store: store,
+		FrozenPolicyEndpoints: map[string]struct{}{
+			endpointID: {},
+		},
+	}, PolicyEndpointRolloutOptions{
+		EndpointIDs: []string{endpointID},
+		BatchSize:   1,
+		DryRun:      true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rollout.DryRun || rollout.Applied != 0 || rollout.Failed != 1 || len(rollout.Items) != 1 {
+		t.Fatalf("rollout = %+v, want one failed frozen dry-run item", rollout)
+	}
+	if rollout.Items[0].Phase != "failed" || rollout.Items[0].Reason != "policy_frozen" || !strings.Contains(rollout.Items[0].Error, "frozen") {
+		t.Fatalf("rollout item = %+v, want policy_frozen failure", rollout.Items[0])
+	}
+	if entries := store.Entries(endpointID); len(entries) != 0 {
+		t.Fatalf("frozen dry-run entries = %+v, want no live mutation", entries)
+	}
+}
+
 func TestRolloutPolicyEndpointsFailsFrozenEndpointWithoutApplying(t *testing.T) {
 	state := rolloutPolicyState()
 	store := dataplane.NewInMemoryPolicyStore()
@@ -1653,6 +1683,45 @@ func TestApplyPolicyRolloutsDryRunPlansWithoutApplying(t *testing.T) {
 	}
 	if entries := store.Entries(model.EndpointKey("prod", "pod-b")); len(entries) != 0 {
 		t.Fatalf("pod-b entries = %+v, want no live mutation for desired-state dry-run", entries)
+	}
+}
+
+func TestApplyPolicyRolloutsDryRunFailsFrozenEndpointWithoutApplying(t *testing.T) {
+	state := rolloutPolicyState()
+	endpointID := model.EndpointKey("prod", "pod-a")
+	state.PolicyRollouts = []control.PolicyRollout{{
+		Name:      "web-canary-plan",
+		Node:      "node-a",
+		Endpoints: []string{"prod/pod-a"},
+		BatchSize: 1,
+		DryRun:    true,
+	}}
+	store := dataplane.NewInMemoryPolicyStore()
+
+	rollouts, err := ApplyPolicyRollouts(context.Background(), state, ReconcileOptions{
+		Node:  "node-a",
+		Store: store,
+		FrozenPolicyEndpoints: map[string]struct{}{
+			endpointID: {},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result ReconcileResult
+	ApplyPolicyRolloutResults(&result, rollouts)
+	if result.PolicyRollouts != 1 || result.PolicyRolloutPlanned != 1 || result.PolicyRolloutApplied != 0 || result.PolicyRolloutFailed != 1 {
+		t.Fatalf("rollout summary = %+v rollouts=%+v, want frozen dry-run failure", result, rollouts)
+	}
+	if len(rollouts) != 1 || len(rollouts[0].Rollout.Items) != 1 {
+		t.Fatalf("rollouts = %+v, want one rollout item", rollouts)
+	}
+	item := rollouts[0].Rollout.Items[0]
+	if item.Phase != "failed" || item.Reason != "policy_frozen" {
+		t.Fatalf("dry-run rollout item = %+v, want policy_frozen failure", item)
+	}
+	if entries := store.Entries(endpointID); len(entries) != 0 {
+		t.Fatalf("pod-a entries = %+v, want no live mutation for frozen dry-run", entries)
 	}
 }
 
