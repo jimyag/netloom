@@ -1828,6 +1828,63 @@ func TestRolloutPolicyEndpointsAggregatesPlanRisk(t *testing.T) {
 	}
 }
 
+func TestRolloutPolicyEndpointsPausesBlockingRiskUntilRiskAcknowledged(t *testing.T) {
+	state := rolloutPolicyState()
+	state.SecurityGroups[0].Rules[0].Action = model.ActionReject
+	state.SecurityGroups[0].Rules[0].ID = "reject-http"
+	store := dataplane.NewInMemoryPolicyStore()
+
+	rollout, err := RolloutPolicyEndpoints(context.Background(), state, ReconcileOptions{
+		Node:  "node-a",
+		Store: store,
+	}, PolicyEndpointRolloutOptions{
+		EndpointIDs:     []string{model.EndpointKey("prod", "pod-a")},
+		BatchSize:       1,
+		RiskAckRequired: true,
+		RiskAckRef:      "risk-1234",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rollout.Paused || !rollout.RiskAckPending || !rollout.Risk.BlockingChange || rollout.Applied != 0 || rollout.Skipped != 1 {
+		t.Fatalf("rollout = %+v, want risk ack pause before mutation", rollout)
+	}
+	if rollout.Items[0].Phase != "paused" || rollout.Items[0].Reason != "risk_ack_pending" {
+		t.Fatalf("rollout items = %+v, want risk_ack_pending pause", rollout.Items)
+	}
+	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 0 {
+		t.Fatalf("pod-a entries = %+v, want no mutation before risk ack", entries)
+	}
+}
+
+func TestRolloutPolicyEndpointsAppliesBlockingRiskAfterRiskAcknowledgement(t *testing.T) {
+	state := rolloutPolicyState()
+	state.SecurityGroups[0].Rules[0].Action = model.ActionReject
+	state.SecurityGroups[0].Rules[0].ID = "reject-http"
+	store := dataplane.NewInMemoryPolicyStore()
+
+	rollout, err := RolloutPolicyEndpoints(context.Background(), state, ReconcileOptions{
+		Node:  "node-a",
+		Store: store,
+	}, PolicyEndpointRolloutOptions{
+		EndpointIDs:      []string{model.EndpointKey("prod", "pod-a")},
+		BatchSize:        1,
+		RiskAckRequired:  true,
+		RiskAcknowledged: true,
+		RiskAckRef:       "risk-1234",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rollout.Paused || rollout.RiskAckPending || !rollout.Risk.BlockingChange || !rollout.RiskAcknowledged || rollout.Applied != 1 || rollout.Skipped != 0 {
+		t.Fatalf("rollout = %+v, want risk-acknowledged blocking rollout applied", rollout)
+	}
+	entries := store.Entries(model.EndpointKey("prod", "pod-a"))
+	if len(entries) != 1 || entries[0].Value.Reject == 0 {
+		t.Fatalf("pod-a entries = %+v, want reject policy applied after risk ack", entries)
+	}
+}
+
 func TestRolloutPolicyEndpointsDryRunFailsFrozenEndpointWithoutApplying(t *testing.T) {
 	state := rolloutPolicyState()
 	store := dataplane.NewInMemoryPolicyStore()

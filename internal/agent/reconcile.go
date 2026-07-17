@@ -225,6 +225,9 @@ type PolicyEndpointRolloutOptions struct {
 	Acknowledged              bool
 	AckRef                    string
 	AckExpiresAt              time.Time
+	RiskAckRequired           bool
+	RiskAcknowledged          bool
+	RiskAckRef                string
 	FinalizeRequired          bool
 	Finalized                 bool
 	FinalizeRef               string
@@ -279,6 +282,10 @@ type PolicyEndpointRollout struct {
 	AckExpiresAt              string                      `json:"ack_expires_at,omitempty"`
 	AckExpired                bool                        `json:"ack_expired,omitempty"`
 	AckPending                bool                        `json:"ack_pending,omitempty"`
+	RiskAckRequired           bool                        `json:"risk_ack_required,omitempty"`
+	RiskAcknowledged          bool                        `json:"risk_acknowledged,omitempty"`
+	RiskAckRef                string                      `json:"risk_ack_ref,omitempty"`
+	RiskAckPending            bool                        `json:"risk_ack_pending,omitempty"`
 	FinalizeRequired          bool                        `json:"finalize_required,omitempty"`
 	Finalized                 bool                        `json:"finalized,omitempty"`
 	FinalizeRef               string                      `json:"finalize_ref,omitempty"`
@@ -498,6 +505,9 @@ func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, opt
 		Acknowledged:             rolloutOptions.Acknowledged,
 		AckRef:                   rolloutOptions.AckRef,
 		AckExpiresAt:             rolloutExpiryString(rolloutOptions.AckExpiresAt),
+		RiskAckRequired:          rolloutOptions.RiskAckRequired,
+		RiskAcknowledged:         rolloutOptions.RiskAcknowledged,
+		RiskAckRef:               rolloutOptions.RiskAckRef,
 		FinalizeRequired:         rolloutOptions.FinalizeRequired,
 		Finalized:                rolloutOptions.Finalized,
 		FinalizeRef:              rolloutOptions.FinalizeRef,
@@ -541,6 +551,11 @@ func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, opt
 	if rolloutOptions.DryRun {
 		failFrozenDryRunRolloutItems(options, &rollout)
 		return rollout, nil
+	}
+	if rolloutOptions.RiskAckRequired && rollout.Risk.BlockingChange && !rolloutOptions.RiskAcknowledged {
+		rollout.RiskAckPending = true
+		pauseRolloutItems(&rollout, 0, "risk_ack_pending")
+		return syncPolicyRolloutChangeStatus(ctx, rolloutOptions, endpointIDs, rollout), nil
 	}
 	if rolloutOptions.Cancelled {
 		cancelRolloutItems(&rollout)
@@ -792,6 +807,7 @@ type policyRolloutApprovalCallbackResponse struct {
 type policyRolloutChangeStatusRequest struct {
 	ApprovalRef     string   `json:"approval_ref,omitempty"`
 	AckRef          string   `json:"ack_ref,omitempty"`
+	RiskAckRef      string   `json:"risk_ack_ref,omitempty"`
 	Revision        string   `json:"revision,omitempty"`
 	Status          string   `json:"status"`
 	Endpoints       []string `json:"endpoints"`
@@ -805,6 +821,7 @@ type policyRolloutChangeStatusRequest struct {
 	Cancelled       bool     `json:"cancelled,omitempty"`
 	ApprovalPending bool     `json:"approval_pending,omitempty"`
 	AckPending      bool     `json:"ack_pending,omitempty"`
+	RiskAckPending  bool     `json:"risk_ack_pending,omitempty"`
 	SLOFailed       bool     `json:"slo_failed,omitempty"`
 	ProbeFailed     bool     `json:"probe_failed,omitempty"`
 }
@@ -963,6 +980,7 @@ func postPolicyRolloutChangeStatus(ctx context.Context, options PolicyEndpointRo
 	payload := policyRolloutChangeStatusRequest{
 		ApprovalRef:     rollout.ApprovalRef,
 		AckRef:          rollout.AckRef,
+		RiskAckRef:      rollout.RiskAckRef,
 		Revision:        rollout.Revision,
 		Status:          status,
 		Endpoints:       append([]string(nil), endpointIDs...),
@@ -976,6 +994,7 @@ func postPolicyRolloutChangeStatus(ctx context.Context, options PolicyEndpointRo
 		Cancelled:       rollout.Cancelled,
 		ApprovalPending: rollout.ApprovalPending,
 		AckPending:      rollout.AckPending,
+		RiskAckPending:  rollout.RiskAckPending,
 		SLOFailed:       rollout.SLOFailed,
 		ProbeFailed:     rollout.ProbeFailed,
 	}
@@ -1021,6 +1040,8 @@ func policyRolloutChangeStatus(rollout PolicyEndpointRollout) string {
 	switch {
 	case rollout.Cancelled:
 		return "cancelled"
+	case rollout.RiskAckPending:
+		return "risk_ack_pending"
 	case rollout.AckPending:
 		return "ack_pending"
 	case rollout.FinalizeExpired:
@@ -1571,6 +1592,9 @@ func ApplyPolicyRollouts(ctx context.Context, state control.DesiredState, option
 			Acknowledged:              rollout.Acknowledged,
 			AckRef:                    rollout.AckRef,
 			AckExpiresAt:              ackExpiresAt,
+			RiskAckRequired:           rollout.RiskAckRequired,
+			RiskAcknowledged:          rollout.RiskAcknowledged,
+			RiskAckRef:                rollout.RiskAckRef,
 			FinalizeRequired:          rollout.FinalizeRequired,
 			Finalized:                 rollout.Finalized,
 			FinalizeRef:               rollout.FinalizeRef,

@@ -772,6 +772,9 @@ type policyEndpointRolloutRequest struct {
 	Acknowledged              bool                         `json:"acknowledged,omitempty"`
 	AckRef                    string                       `json:"ack_ref,omitempty"`
 	AckExpiresAt              string                       `json:"ack_expires_at,omitempty"`
+	RiskAckRequired           bool                         `json:"risk_ack_required,omitempty"`
+	RiskAcknowledged          bool                         `json:"risk_acknowledged,omitempty"`
+	RiskAckRef                string                       `json:"risk_ack_ref,omitempty"`
 	FinalizeRequired          bool                         `json:"finalize_required,omitempty"`
 	Finalized                 bool                         `json:"finalized,omitempty"`
 	FinalizeRef               string                       `json:"finalize_ref,omitempty"`
@@ -5045,6 +5048,9 @@ func (m *agentMetrics) rolloutPolicyEndpoints(ctx context.Context, request polic
 		Acknowledged:              request.Acknowledged,
 		AckRef:                    request.AckRef,
 		AckExpiresAt:              ackExpiresAt,
+		RiskAckRequired:           request.RiskAckRequired,
+		RiskAcknowledged:          request.RiskAcknowledged,
+		RiskAckRef:                request.RiskAckRef,
 		FinalizeRequired:          request.FinalizeRequired,
 		Finalized:                 request.Finalized,
 		FinalizeRef:               request.FinalizeRef,
@@ -5708,7 +5714,7 @@ func (m *agentMetrics) handlePolicyEndpointRollout(w http.ResponseWriter, r *htt
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(policyEndpointActionOutput{
 		Action:    "rollout",
-		RolledOut: !rollout.DryRun && rollout.Failed == 0 && !rollout.ApprovalPending && !rollout.AckPending,
+		RolledOut: !rollout.DryRun && rollout.Failed == 0 && !rollout.ApprovalPending && !rollout.AckPending && !rollout.RiskAckPending,
 		Rollout:   policyEndpointRolloutOutputFromRollout(rollout, catalog),
 	})
 }

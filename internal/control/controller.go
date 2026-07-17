@@ -198,6 +198,9 @@ type PolicyRollout struct {
 	Acknowledged              bool                 `json:"acknowledged,omitempty"`
 	AckRef                    string               `json:"ack_ref,omitempty"`
 	AckExpiresAt              string               `json:"ack_expires_at,omitempty"`
+	RiskAckRequired           bool                 `json:"risk_ack_required,omitempty"`
+	RiskAcknowledged          bool                 `json:"risk_acknowledged,omitempty"`
+	RiskAckRef                string               `json:"risk_ack_ref,omitempty"`
 	FinalizeRequired          bool                 `json:"finalize_required,omitempty"`
 	Finalized                 bool                 `json:"finalized,omitempty"`
 	FinalizeRef               string               `json:"finalize_ref,omitempty"`

@@ -4773,6 +4773,77 @@ func TestPolicyEndpointAPIRolloutAppliesMultipleEndpoints(t *testing.T) {
 	}
 }
 
+func TestPolicyEndpointAPIRolloutPausesBlockingRiskUntilAcknowledged(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{
+			{ID: "pod-a", VPC: "prod", Subnet: "apps", IP: netip.MustParseAddr("10.10.0.10"), Node: "node-a", SecurityGroups: []string{"web"}},
+		},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "reject-http",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("172.30.0.0/24"),
+				Ports:      []model.PortRange{{From: 80, To: 80}},
+				Action:     model.ActionReject,
+			}},
+		}},
+	}
+	store := dataplane.NewInMemoryPolicyStore()
+	catalogResult, err := agent.ReconcileNode(context.Background(), state, "node-a", dataplane.NewInMemoryPolicyStore())
+	if err != nil {
+		t.Fatal(err)
+	}
+	metrics := newAgentMetrics(store)
+	observeAgentReconcileResultWithState(metrics, agent.ReconcileResult{
+		Node:              "node-a",
+		PolicyRuleCatalog: catalogResult.PolicyRuleCatalog,
+	}, "memory", time.Millisecond, state)
+
+	body := bytes.NewBufferString(`{"endpoints":["prod/pod-a"],"batch_size":1,"risk_ack_required":true,"risk_ack_ref":"risk-1234"}`)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/policy/endpoints/rollout", body)
+	metrics.handlePolicyEndpoints(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var got policyEndpointActionOutput
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode policy endpoint rollout response: %v\n%s", err, recorder.Body.String())
+	}
+	if got.RolledOut || !got.Rollout.RiskAckRequired || !got.Rollout.RiskAckPending || !got.Rollout.Paused || !got.Rollout.Risk.BlockingChange || got.Rollout.Applied != 0 || got.Rollout.Skipped != 1 {
+		t.Fatalf("rollout response = %+v, want risk-ack paused blocking rollout", got)
+	}
+	if got.Rollout.Items[0].Reason != "risk_ack_pending" {
+		t.Fatalf("rollout items = %+v, want risk_ack_pending reason", got.Rollout.Items)
+	}
+	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 0 {
+		t.Fatalf("pod-a entries = %+v, want no mutation before risk ack", entries)
+	}
+
+	body = bytes.NewBufferString(`{"endpoints":["prod/pod-a"],"batch_size":1,"risk_ack_required":true,"risk_acknowledged":true,"risk_ack_ref":"risk-1234"}`)
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPost, "/policy/endpoints/rollout", body)
+	metrics.handlePolicyEndpoints(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("acknowledged status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	got = policyEndpointActionOutput{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode acknowledged rollout response: %v\n%s", err, recorder.Body.String())
+	}
+	if !got.RolledOut || got.Rollout.RiskAckPending || !got.Rollout.RiskAcknowledged || got.Rollout.Applied != 1 {
+		t.Fatalf("acknowledged rollout response = %+v, want risk-acknowledged apply", got)
+	}
+	entries := store.Entries(model.EndpointKey("prod", "pod-a"))
+	if len(entries) != 1 || entries[0].Value.Reject == 0 {
+		t.Fatalf("pod-a entries = %+v, want reject policy after risk ack", entries)
+	}
+}
+
 func TestPolicyEndpointAPIRolloutPersistsHistory(t *testing.T) {
 	state := control.DesiredState{
 		Endpoints: []model.Endpoint{
