@@ -1068,6 +1068,8 @@ func staleManagedColumnShouldDrift(table, key string) bool {
 		default:
 			return false
 		}
+	case "Load_Balancer_Health_Check":
+		return key == "options"
 	case "DNS":
 		return key == "records" || key == "options"
 	}

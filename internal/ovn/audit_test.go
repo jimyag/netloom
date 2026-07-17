@@ -1743,6 +1743,30 @@ func TestAuditManagedObjectsFromReaderReportsLoadBalancerHealthCheckMetadataDrif
 		}},
 	}
 	reader := fakeManagedOVNReader{rows: map[string][]ManagedOVNRow{
+		"Logical_Router": {
+			{Table: "Logical_Router", UUID: "lr-prod", ExternalIDs: map[string]string{
+				"netloom_owner": "netloom",
+				"netloom_vpc":   "prod",
+			}, Fields: map[string]string{
+				"name":           logicalRouter("prod"),
+				"load_balancers": loadBalancerProtocolName("prod", "api", model.ProtocolTCP),
+			}},
+		},
+		"Load_Balancer": {
+			{Table: "Load_Balancer", UUID: "lb-api", ExternalIDs: map[string]string{
+				"netloom_owner":            "netloom",
+				"netloom_vpc":              "prod",
+				"netloom_load_balancer":    "api",
+				"netloom_protocol":         "tcp",
+				"netloom_session_affinity": "false",
+			}, Fields: map[string]string{
+				"name":              loadBalancerProtocolName("prod", "api", model.ProtocolTCP),
+				"vips":              "10.96.0.10:443=10.10.0.20:8443",
+				"protocol":          "tcp",
+				"selection_fields":  "",
+				"health_check_vips": "10.96.0.10:443",
+			}},
+		},
 		"Load_Balancer_Health_Check": {
 			{Table: "Load_Balancer_Health_Check", UUID: "hc-api", ExternalIDs: map[string]string{
 				"netloom_owner":             "netloom",
@@ -1751,11 +1775,12 @@ func TestAuditManagedObjectsFromReaderReportsLoadBalancerHealthCheckMetadataDrif
 				"netloom_ovn_load_balancer": loadBalancerProtocolName("prod", "api", model.ProtocolUDP),
 			}, Fields: map[string]string{
 				"vip":     "10.96.0.10:443",
-				"options": "failure_count=3,interval=5,success_count=3,timeout=20",
+				"options": "failure_count=3,interval=5,success_count=3,timeout=99",
 			}},
 		},
 	}}
 	desired := topology.State{
+		VPCs: map[string]model.VPC{"prod": {Name: "prod"}},
 		LoadBalancers: map[string]model.LoadBalancer{
 			"prod/api": lb,
 		},
@@ -1765,8 +1790,8 @@ func TestAuditManagedObjectsFromReaderReportsLoadBalancerHealthCheckMetadataDrif
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stats.DriftedManagedRows != 1 || stats.DriftedManagedFields != 1 {
-		t.Fatalf("load balancer health check metadata drift stats = %+v, want one ovn load balancer external_id drift", stats)
+	if stats.DriftedManagedRows != 1 || stats.DriftedManagedFields != 2 {
+		t.Fatalf("load balancer health check metadata drift stats = %+v, want ovn load balancer external_id and options drift", stats)
 	}
 }
 
