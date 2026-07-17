@@ -227,6 +227,65 @@ esac
 	}
 }
 
+func TestAuditManagedObjectsFromNBCTLNormalizesDNSRecords(t *testing.T) {
+	tmp := t.TempDir()
+	binary := filepath.Join(tmp, "ovn-nbctl")
+	script := `#!/bin/sh
+case "$*" in
+  *"find DNS external_ids:netloom_owner=netloom"*) printf 'dns-a,"{netloom_owner=netloom,netloom_dns=desired}","{api.example.com=10.10.0.20 10.10.0.21}",{}\n' ;;
+esac
+`
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	desired := topology.State{
+		DNSRecords: []model.DNSRecord{{
+			Name: "api.example.com",
+			IPs: []netip.Addr{
+				netip.MustParseAddr("10.10.0.21"),
+				netip.MustParseAddr("10.10.0.20"),
+			},
+		}},
+	}
+
+	executor := NewNBCTLExecutor(binary, "--db=unix:/tmp/ovnnb.sock")
+	stats, err := AuditManagedObjectsFromReaderWithDesired(context.Background(), executor, desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.ManagedDNSRecords != 1 || stats.MissingManagedRows != 0 || stats.DriftedManagedRows != 0 || stats.DriftedManagedFields != 0 {
+		t.Fatalf("stats = %+v, want matching DNS records without drift", stats)
+	}
+}
+
+func TestAuditManagedObjectsFromNBCTLReportsDNSRecordDrift(t *testing.T) {
+	tmp := t.TempDir()
+	binary := filepath.Join(tmp, "ovn-nbctl")
+	script := `#!/bin/sh
+case "$*" in
+  *"find DNS external_ids:netloom_owner=netloom"*) printf 'dns-a,"{netloom_owner=netloom,netloom_dns=desired}","{api.example.com=10.10.0.99}",{}\n' ;;
+esac
+`
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	desired := topology.State{
+		DNSRecords: []model.DNSRecord{{
+			Name: "api.example.com",
+			IPs:  []netip.Addr{netip.MustParseAddr("10.10.0.20")},
+		}},
+	}
+
+	executor := NewNBCTLExecutor(binary, "--db=unix:/tmp/ovnnb.sock")
+	stats, err := AuditManagedObjectsFromReaderWithDesired(context.Background(), executor, desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.ManagedDNSRecords != 1 || stats.DriftedManagedRows != 1 || stats.DriftedManagedFields != 1 {
+		t.Fatalf("stats = %+v, want one DNS records field drift", stats)
+	}
+}
+
 func TestAuditManagedRowsCountsDuplicatesAndIncompleteRows(t *testing.T) {
 	rows := []ManagedOVNRow{
 		{Table: "NAT", UUID: "uuid-a", ExternalIDs: map[string]string{"netloom_owner": "netloom", "netloom_vpc": "prod", "netloom_nat": "egress"}},

@@ -1222,7 +1222,7 @@ func normalizeManagedAuditField(column, value string) string {
 		return ""
 	}
 	switch column {
-	case "external_ids", "other_config", "options", "ipv6_ra_configs", "vips":
+	case "external_ids", "other_config", "options", "ipv6_ra_configs", "vips", "records":
 		return mapField(parseOVNMap(value))
 	case "addresses", "port_security", "networks", "nexthops", "selection_fields", "ports", "load_balancers", "dns_records", "load_balancer_group", "health_check", "nat", "policies", "static_routes", "acls", "forwarding_groups", "qos_rules":
 		return stringSliceField(parseOVNList(value))
