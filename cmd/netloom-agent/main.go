@@ -5714,9 +5714,27 @@ func (m *agentMetrics) handlePolicyEndpointRollout(w http.ResponseWriter, r *htt
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(policyEndpointActionOutput{
 		Action:    "rollout",
-		RolledOut: !rollout.DryRun && rollout.Failed == 0 && !rollout.ApprovalPending && !rollout.AckPending && !rollout.RiskAckPending,
+		RolledOut: policyEndpointRolloutComplete(rollout),
 		Rollout:   policyEndpointRolloutOutputFromRollout(rollout, catalog),
 	})
+}
+
+func policyEndpointRolloutComplete(rollout agent.PolicyEndpointRollout) bool {
+	return !rollout.DryRun &&
+		!rollout.Cancelled &&
+		!rollout.Paused &&
+		rollout.Failed == 0 &&
+		rollout.RollbackFailed == 0 &&
+		!rollout.ApprovalPending &&
+		!rollout.ApprovalExpired &&
+		!rollout.AckPending &&
+		!rollout.AckExpired &&
+		!rollout.RiskAckPending &&
+		!rollout.FinalizePending &&
+		!rollout.FinalizeExpired &&
+		!rollout.SLOFailed &&
+		!rollout.ProbeFailed &&
+		rollout.Skipped == 0
 }
 
 func (m *agentMetrics) handlePolicyEndpointPlan(w http.ResponseWriter, r *http.Request, endpoint string) {

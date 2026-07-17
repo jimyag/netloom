@@ -825,6 +825,11 @@ type policyRolloutChangeStatusRequest struct {
 	RiskAcknowledged   bool     `json:"risk_acknowledged,omitempty"`
 	RiskAckPending     bool     `json:"risk_ack_pending,omitempty"`
 	RiskBlockingChange bool     `json:"risk_blocking_change,omitempty"`
+	FinalizeRequired   bool     `json:"finalize_required,omitempty"`
+	Finalized          bool     `json:"finalized,omitempty"`
+	FinalizeRef        string   `json:"finalize_ref,omitempty"`
+	FinalizePending    bool     `json:"finalize_pending,omitempty"`
+	FinalizeExpired    bool     `json:"finalize_expired,omitempty"`
 	SLOFailed          bool     `json:"slo_failed,omitempty"`
 	ProbeFailed        bool     `json:"probe_failed,omitempty"`
 }
@@ -1001,6 +1006,11 @@ func postPolicyRolloutChangeStatus(ctx context.Context, options PolicyEndpointRo
 		RiskAcknowledged:   rollout.RiskAcknowledged,
 		RiskAckPending:     rollout.RiskAckPending,
 		RiskBlockingChange: rollout.Risk.BlockingChange,
+		FinalizeRequired:   rollout.FinalizeRequired,
+		Finalized:          rollout.Finalized,
+		FinalizeRef:        rollout.FinalizeRef,
+		FinalizePending:    rollout.FinalizePending,
+		FinalizeExpired:    rollout.FinalizeExpired,
 		SLOFailed:          rollout.SLOFailed,
 		ProbeFailed:        rollout.ProbeFailed,
 	}

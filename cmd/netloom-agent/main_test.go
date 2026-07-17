@@ -5059,8 +5059,57 @@ func TestPolicyEndpointAPIRolloutPausesAfterBatch(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode policy endpoint rollout response: %v\n%s", err, recorder.Body.String())
 	}
-	if !got.RolledOut || !got.Rollout.Paused || got.Rollout.PausedAfterBatch != 1 || got.Rollout.Applied != 1 || got.Rollout.Skipped != 1 {
+	if got.RolledOut || !got.Rollout.Paused || got.Rollout.PausedAfterBatch != 1 || got.Rollout.Applied != 1 || got.Rollout.Skipped != 1 {
 		t.Fatalf("rollout response = %+v, want paused rollout after first batch", got)
+	}
+}
+
+func TestPolicyEndpointAPIRolloutWaitsForFinalize(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{
+			{ID: "pod-a", VPC: "prod", Subnet: "apps", IP: netip.MustParseAddr("10.10.0.10"), Node: "node-a", SecurityGroups: []string{"web"}},
+			{ID: "pod-b", VPC: "prod", Subnet: "apps", IP: netip.MustParseAddr("10.10.0.11"), Node: "node-a", SecurityGroups: []string{"web"}},
+		},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "allow-http",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("172.30.0.0/24"),
+				Ports:      []model.PortRange{{From: 80, To: 80}},
+				Action:     model.ActionAllow,
+			}},
+		}},
+	}
+	store := dataplane.NewInMemoryPolicyStore()
+	metrics := newAgentMetrics(store)
+	observeAgentReconcileResultWithState(metrics, agent.ReconcileResult{
+		Node: "node-a",
+	}, "memory", time.Millisecond, state)
+
+	body := bytes.NewBufferString(`{"endpoints":["prod/pod-a","prod/pod-b"],"batch_size":1,"finalize_required":true,"finalize_ref":"final-1234"}`)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/policy/endpoints/rollout", body)
+	metrics.handlePolicyEndpoints(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var got policyEndpointActionOutput
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode policy endpoint rollout response: %v\n%s", err, recorder.Body.String())
+	}
+	if got.RolledOut || !got.Rollout.Paused || !got.Rollout.FinalizeRequired || !got.Rollout.FinalizePending || got.Rollout.FinalizeRef != "final-1234" || got.Rollout.Applied != 1 || got.Rollout.Skipped != 1 {
+		t.Fatalf("rollout response = %+v, want finalize-pending rollout after canary", got)
+	}
+	if got.Rollout.Items[1].Reason != "finalize_pending" {
+		t.Fatalf("rollout items = %+v, want finalize_pending remaining endpoint", got.Rollout.Items)
+	}
+	if entries := store.Entries(model.EndpointKey("prod", "pod-b")); len(entries) != 0 {
+		t.Fatalf("pod-b entries = %+v, want no mutation before finalize", entries)
 	}
 }
 
@@ -5161,7 +5210,7 @@ func TestPolicyEndpointAPIRolloutRejectsExpiredApproval(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode expired approval rollout response: %v\n%s", err, recorder.Body.String())
 	}
-	if !got.RolledOut || !got.Rollout.ApprovalExpired || !got.Rollout.Paused || got.Rollout.Applied != 0 || got.Rollout.Skipped != 1 || got.Rollout.Items[0].Reason != "approval_expired" {
+	if got.RolledOut || !got.Rollout.ApprovalExpired || !got.Rollout.Paused || got.Rollout.Applied != 0 || got.Rollout.Skipped != 1 || got.Rollout.Items[0].Reason != "approval_expired" {
 		t.Fatalf("rollout response = %+v, want expired approval pause", got)
 	}
 	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 0 {
@@ -5474,7 +5523,7 @@ func TestPolicyEndpointAPIRolloutUsesPromotionPercent(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode policy endpoint rollout response: %v\n%s", err, recorder.Body.String())
 	}
-	if !got.RolledOut || !got.Rollout.Paused || got.Rollout.PromotionPercent != 34 || got.Rollout.PromotionLimit != 2 || got.Rollout.Applied != 2 || got.Rollout.Skipped != 1 {
+	if got.RolledOut || !got.Rollout.Paused || got.Rollout.PromotionPercent != 34 || got.Rollout.PromotionLimit != 2 || got.Rollout.Applied != 2 || got.Rollout.Skipped != 1 {
 		t.Fatalf("rollout response = %+v, want promotion-limited rollout", got)
 	}
 }

@@ -2856,6 +2856,77 @@ func TestApplyPolicyRolloutsSyncsRiskAckPendingChangeStatus(t *testing.T) {
 	}
 }
 
+func TestApplyPolicyRolloutsSyncsFinalizePendingChangeStatus(t *testing.T) {
+	state := rolloutPolicyState()
+	var statusRequests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		statusRequests++
+		if r.Method != http.MethodPost {
+			t.Fatalf("status method = %s, want POST", r.Method)
+		}
+		var request struct {
+			ApprovalRef      string `json:"approval_ref"`
+			FinalizeRef      string `json:"finalize_ref"`
+			Status           string `json:"status"`
+			FinalizeRequired bool   `json:"finalize_required"`
+			Finalized        bool   `json:"finalized"`
+			FinalizePending  bool   `json:"finalize_pending"`
+			FinalizeExpired  bool   `json:"finalize_expired"`
+			Paused           bool   `json:"paused"`
+			Applied          int    `json:"applied"`
+			Skipped          int    `json:"skipped"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode status request: %v", err)
+		}
+		if request.ApprovalRef != "chg-final" ||
+			request.FinalizeRef != "final-9999" ||
+			request.Status != "finalize_pending" ||
+			!request.FinalizeRequired ||
+			request.Finalized ||
+			!request.FinalizePending ||
+			request.FinalizeExpired ||
+			!request.Paused ||
+			request.Applied != 1 ||
+			request.Skipped != 1 {
+			t.Fatalf("status request = %+v, want finalize pending summary", request)
+		}
+		_, _ = w.Write([]byte(`{"synced":true}`))
+	}))
+	defer server.Close()
+
+	state.PolicyRollouts = []control.PolicyRollout{{
+		Name:             "finalize-status",
+		Node:             "node-a",
+		Endpoints:        []string{"prod/pod-a", "prod/pod-b"},
+		BatchSize:        1,
+		ApprovalRef:      "chg-final",
+		FinalizeRequired: true,
+		FinalizeRef:      "final-9999",
+		ChangeStatusURL:  server.URL,
+	}}
+	store := dataplane.NewInMemoryPolicyStore()
+	rollouts, err := ApplyPolicyRollouts(context.Background(), state, ReconcileOptions{
+		Node:  "node-a",
+		Store: store,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if statusRequests != 1 {
+		t.Fatalf("status requests = %d, want 1", statusRequests)
+	}
+	if len(rollouts) != 1 || !rollouts[0].Rollout.ChangeStatusSynced || !rollouts[0].Rollout.FinalizePending {
+		t.Fatalf("rollouts = %+v, want synced finalize pending rollout", rollouts)
+	}
+	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 1 {
+		t.Fatalf("pod-a entries = %+v, want canary mutation before finalize", entries)
+	}
+	if entries := store.Entries(model.EndpointKey("prod", "pod-b")); len(entries) != 0 {
+		t.Fatalf("pod-b entries = %+v, want no mutation before finalize", entries)
+	}
+}
+
 func TestApplyPolicyRolloutsSyncsCancelledChangeStatus(t *testing.T) {
 	state := rolloutPolicyState()
 	var statusRequests int
