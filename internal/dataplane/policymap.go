@@ -63,15 +63,24 @@ type PolicyMapUsage struct {
 	Capacity   uint32 `json:"capacity"`
 }
 
+type PolicyMapPressureHotspot struct {
+	EndpointID      string `json:"endpoint_id"`
+	Entries         uint32 `json:"entries"`
+	Capacity        uint32 `json:"capacity"`
+	PressurePercent uint32 `json:"pressure_percent"`
+}
+
 type PolicyMapUsageSummary struct {
-	Entries             uint32 `json:"entries"`
-	Capacity            uint32 `json:"capacity"`
-	MaxPressurePercent  uint32 `json:"max_pressure_percent"`
-	MaxPressureEndpoint string `json:"max_pressure_endpoint,omitempty"`
-	PressureEndpoints   int    `json:"pressure_endpoints"`
+	Entries             uint32                     `json:"entries"`
+	Capacity            uint32                     `json:"capacity"`
+	MaxPressurePercent  uint32                     `json:"max_pressure_percent"`
+	MaxPressureEndpoint string                     `json:"max_pressure_endpoint,omitempty"`
+	PressureEndpoints   int                        `json:"pressure_endpoints"`
+	PressureHotspots    []PolicyMapPressureHotspot `json:"pressure_hotspots,omitempty"`
 }
 
 const DefaultPolicyMapPressureThresholdPercent = 80
+const DefaultPolicyMapPressureHotspotLimit = 5
 
 type PolicyMapDrift struct {
 	EndpointID string `json:"endpoint_id"`
@@ -537,6 +546,14 @@ func SummarizePolicyMapUsage(usages []PolicyMapUsage) PolicyMapUsageSummary {
 		summary.Entries += usage.Entries
 		summary.Capacity += usage.Capacity
 		pressure := policyMapPressurePercent(usage)
+		if pressure > 0 {
+			summary.PressureHotspots = append(summary.PressureHotspots, PolicyMapPressureHotspot{
+				EndpointID:      usage.EndpointID,
+				Entries:         usage.Entries,
+				Capacity:        usage.Capacity,
+				PressurePercent: pressure,
+			})
+		}
 		if pressure > summary.MaxPressurePercent || pressure == summary.MaxPressurePercent && pressure > 0 && (summary.MaxPressureEndpoint == "" || usage.EndpointID < summary.MaxPressureEndpoint) {
 			summary.MaxPressurePercent = pressure
 			summary.MaxPressureEndpoint = usage.EndpointID
@@ -545,7 +562,20 @@ func SummarizePolicyMapUsage(usages []PolicyMapUsage) PolicyMapUsageSummary {
 			summary.PressureEndpoints++
 		}
 	}
+	sortPolicyMapPressureHotspots(summary.PressureHotspots)
+	if len(summary.PressureHotspots) > DefaultPolicyMapPressureHotspotLimit {
+		summary.PressureHotspots = summary.PressureHotspots[:DefaultPolicyMapPressureHotspotLimit]
+	}
 	return summary
+}
+
+func sortPolicyMapPressureHotspots(hotspots []PolicyMapPressureHotspot) {
+	slices.SortFunc(hotspots, func(a, b PolicyMapPressureHotspot) int {
+		if a.PressurePercent != b.PressurePercent {
+			return cmp.Compare(b.PressurePercent, a.PressurePercent)
+		}
+		return cmp.Compare(a.EndpointID, b.EndpointID)
+	})
 }
 
 func DiffPolicyMapEntries(endpointID string, desired, live []PolicyMapEntry) PolicyMapDrift {

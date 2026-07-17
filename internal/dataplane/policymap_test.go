@@ -1014,6 +1014,34 @@ func TestSummarizePolicyMapUsageTracksPressure(t *testing.T) {
 	if summary.PressureEndpoints != 1 {
 		t.Fatalf("pressure endpoints = %d, want 1", summary.PressureEndpoints)
 	}
+	wantHotspots := []PolicyMapPressureHotspot{
+		{EndpointID: "b", Entries: 13, Capacity: 16, PressurePercent: 81},
+		{EndpointID: "a", Entries: 12, Capacity: 16, PressurePercent: 75},
+	}
+	if !reflect.DeepEqual(summary.PressureHotspots, wantHotspots) {
+		t.Fatalf("pressure hotspots = %+v, want %+v", summary.PressureHotspots, wantHotspots)
+	}
+}
+
+func TestSummarizePolicyMapUsageCapsPressureHotspots(t *testing.T) {
+	summary := SummarizePolicyMapUsage([]PolicyMapUsage{
+		{EndpointID: "pod-c", Entries: 9, Capacity: 10},
+		{EndpointID: "pod-a", Entries: 9, Capacity: 10},
+		{EndpointID: "pod-b", Entries: 8, Capacity: 10},
+		{EndpointID: "pod-d", Entries: 7, Capacity: 10},
+		{EndpointID: "pod-e", Entries: 6, Capacity: 10},
+		{EndpointID: "pod-f", Entries: 5, Capacity: 10},
+	})
+	want := []PolicyMapPressureHotspot{
+		{EndpointID: "pod-a", Entries: 9, Capacity: 10, PressurePercent: 90},
+		{EndpointID: "pod-c", Entries: 9, Capacity: 10, PressurePercent: 90},
+		{EndpointID: "pod-b", Entries: 8, Capacity: 10, PressurePercent: 80},
+		{EndpointID: "pod-d", Entries: 7, Capacity: 10, PressurePercent: 70},
+		{EndpointID: "pod-e", Entries: 6, Capacity: 10, PressurePercent: 60},
+	}
+	if !reflect.DeepEqual(summary.PressureHotspots, want) {
+		t.Fatalf("pressure hotspots = %+v, want %+v", summary.PressureHotspots, want)
+	}
 }
 
 func TestInMemoryPolicyStoreRollsBackOnFailure(t *testing.T) {

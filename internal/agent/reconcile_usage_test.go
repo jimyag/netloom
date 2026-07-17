@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"net/netip"
+	"reflect"
 	"testing"
 
 	"github.com/jimyag/netloom/internal/control"
@@ -70,6 +71,13 @@ func TestReconcileNodeAggregatesPolicyMapPressureSummary(t *testing.T) {
 	}
 	if result.PolicyMapPressureEndpoints != 0 {
 		t.Fatalf("policy map pressure endpoints = %d, want 0", result.PolicyMapPressureEndpoints)
+	}
+	wantHotspots := []dataplane.PolicyMapPressureHotspot{
+		{EndpointID: model.EndpointKey("prod", "pod-a"), Entries: 12, Capacity: 16, PressurePercent: 75},
+		{EndpointID: model.EndpointKey("prod", "pod-b"), Entries: 8, Capacity: 16, PressurePercent: 50},
+	}
+	if !reflect.DeepEqual(result.PolicyMapPressureHotspots, wantHotspots) {
+		t.Fatalf("policy map pressure hotspots = %+v, want %+v", result.PolicyMapPressureHotspots, wantHotspots)
 	}
 
 	store.usages = []dataplane.PolicyMapUsage{

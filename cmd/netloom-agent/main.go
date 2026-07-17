@@ -282,6 +282,8 @@ type desiredStateExportOptions struct {
 	ovsdb string
 }
 
+type policyMapPressureHotspot = dataplane.PolicyMapPressureHotspot
+
 type policyStatusOutput struct {
 	Node                 string                           `json:"node"`
 	Store                string                           `json:"store"`
@@ -296,6 +298,7 @@ type policyStatusOutput struct {
 	PressureMax          uint32                           `json:"pressure_max"`
 	PressureEndpoint     string                           `json:"pressure_endpoint,omitempty"`
 	PressureEndpoints    int                              `json:"pressure_endpoints"`
+	PressureHotspots     []policyMapPressureHotspot       `json:"pressure_hotspots,omitempty"`
 	DriftEndpoints       int                              `json:"drift_endpoints"`
 	DriftMissing         int                              `json:"drift_missing"`
 	DriftExtra           int                              `json:"drift_extra"`
@@ -318,6 +321,7 @@ type policyStatusDocument struct {
 	PressureMax          uint32                           `json:"pressure_max"`
 	PressureEndpoint     string                           `json:"pressure_endpoint,omitempty"`
 	PressureEndpoints    int                              `json:"pressure_endpoints"`
+	PressureHotspots     []policyMapPressureHotspot       `json:"pressure_hotspots,omitempty"`
 	DriftEndpoints       int                              `json:"drift_endpoints"`
 	DriftMissing         int                              `json:"drift_missing"`
 	DriftExtra           int                              `json:"drift_extra"`
@@ -1612,6 +1616,7 @@ func policyStatusOutputFromResult(result agent.ReconcileResult, storeName string
 		PressureMax:       result.PolicyMapPressureMax,
 		PressureEndpoint:  result.PolicyMapPressureEndpoint,
 		PressureEndpoints: result.PolicyMapPressureEndpoints,
+		PressureHotspots:  append([]dataplane.PolicyMapPressureHotspot(nil), result.PolicyMapPressureHotspots...),
 		DriftEndpoints:    result.PolicyMapDriftEndpoints,
 		DriftMissing:      result.PolicyMapDriftMissing,
 		DriftExtra:        result.PolicyMapDriftExtra,
@@ -1637,6 +1642,7 @@ func policyStatusOutputFromDocument(doc policyStatusDocument, endpoint string) p
 		PressureMax:          doc.PressureMax,
 		PressureEndpoint:     doc.PressureEndpoint,
 		PressureEndpoints:    doc.PressureEndpoints,
+		PressureHotspots:     append([]dataplane.PolicyMapPressureHotspot(nil), doc.PressureHotspots...),
 		DriftEndpoints:       doc.DriftEndpoints,
 		DriftMissing:         doc.DriftMissing,
 		DriftExtra:           doc.DriftExtra,
@@ -1660,6 +1666,7 @@ func policyStatusDocumentFromSnapshot(snapshot agentMetricsSnapshot) policyStatu
 		PressureMax:          snapshot.Result.PolicyMapPressureMax,
 		PressureEndpoint:     snapshot.Result.PolicyMapPressureEndpoint,
 		PressureEndpoints:    snapshot.Result.PolicyMapPressureEndpoints,
+		PressureHotspots:     append([]dataplane.PolicyMapPressureHotspot(nil), snapshot.Result.PolicyMapPressureHotspots...),
 		DriftEndpoints:       snapshot.Result.PolicyMapDriftEndpoints,
 		DriftMissing:         snapshot.Result.PolicyMapDriftMissing,
 		DriftExtra:           snapshot.Result.PolicyMapDriftExtra,
@@ -2724,19 +2731,22 @@ func printReconcileFailure(result agent.ReconcileResult, storeName string, err e
 }
 
 type agentOVSDBStatus struct {
-	SchemaVersion                 int                  `json:"schema_version"`
-	UpdatedAt                     string               `json:"updated_at"`
-	Node                          string               `json:"node"`
-	Store                         string               `json:"store"`
-	Status                        string               `json:"status"`
-	Error                         string               `json:"error,omitempty"`
-	Endpoints                     int                  `json:"endpoints"`
-	Programs                      int                  `json:"programs"`
-	Entries                       int                  `json:"entries"`
-	PolicyMapEntries              uint32               `json:"policy_map_entries"`
-	PolicyMapCapacity             uint32               `json:"policy_map_capacity"`
-	PolicyMapPressureMax          uint32               `json:"policy_map_pressure_max"`
-	PolicyMapPressureEndpoint     string               `json:"policy_map_pressure_endpoint,omitempty"`
+	SchemaVersion             int    `json:"schema_version"`
+	UpdatedAt                 string `json:"updated_at"`
+	Node                      string `json:"node"`
+	Store                     string `json:"store"`
+	Status                    string `json:"status"`
+	Error                     string `json:"error,omitempty"`
+	Endpoints                 int    `json:"endpoints"`
+	Programs                  int    `json:"programs"`
+	Entries                   int    `json:"entries"`
+	PolicyMapEntries          uint32 `json:"policy_map_entries"`
+	PolicyMapCapacity         uint32 `json:"policy_map_capacity"`
+	PolicyMapPressureMax      uint32 `json:"policy_map_pressure_max"`
+	PolicyMapPressureEndpoint string `json:"policy_map_pressure_endpoint,omitempty"`
+
+	PolicyMapPressureHotspots []policyMapPressureHotspot `json:"policy_map_pressure_hotspots,omitempty"`
+
 	PolicyPressureMitigated       int                  `json:"policy_pressure_mitigated"`
 	PolicyPressureQuarantined     int                  `json:"policy_pressure_quarantined"`
 	PolicyRollouts                int                  `json:"policy_rollouts"`
@@ -2804,6 +2814,7 @@ func syncAgentOVSDBStatus(ctx context.Context, store openVSwitchExternalIDStore,
 		PolicyMapCapacity:             result.PolicyMapCapacity,
 		PolicyMapPressureMax:          result.PolicyMapPressureMax,
 		PolicyMapPressureEndpoint:     result.PolicyMapPressureEndpoint,
+		PolicyMapPressureHotspots:     append([]dataplane.PolicyMapPressureHotspot(nil), result.PolicyMapPressureHotspots...),
 		PolicyPressureMitigated:       result.PolicyPressureMitigated,
 		PolicyPressureQuarantined:     result.PolicyPressureQuarantined,
 		PolicyRollouts:                result.PolicyRollouts,
@@ -5730,6 +5741,20 @@ func writeAgentMetrics(w ioStringWriter, snapshot agentMetricsSnapshot, totals a
 		"store":    snapshot.Store,
 		"endpoint": result.PolicyMapPressureEndpoint,
 	}), result.PolicyMapPressureMax)
+	writeMetricType(w, "netloom_agent_policy_map_pressure_hotspot_percent", "gauge")
+	writeMetricType(w, "netloom_agent_policy_map_pressure_hotspot_entries", "gauge")
+	writeMetricType(w, "netloom_agent_policy_map_pressure_hotspot_capacity", "gauge")
+	for i, hotspot := range result.PolicyMapPressureHotspots {
+		labels := prometheusLabels(map[string]string{
+			"node":     result.Node,
+			"store":    snapshot.Store,
+			"endpoint": hotspot.EndpointID,
+			"rank":     strconv.Itoa(i + 1),
+		})
+		fmt.Fprintf(w, "netloom_agent_policy_map_pressure_hotspot_percent%s %d\n", labels, hotspot.PressurePercent)
+		fmt.Fprintf(w, "netloom_agent_policy_map_pressure_hotspot_entries%s %d\n", labels, hotspot.Entries)
+		fmt.Fprintf(w, "netloom_agent_policy_map_pressure_hotspot_capacity%s %d\n", labels, hotspot.Capacity)
+	}
 	writeMetricType(w, "netloom_agent_policy_map_pressure_endpoints", "gauge")
 	fmt.Fprintf(w, "netloom_agent_policy_map_pressure_endpoints%s %d\n", baseLabels, result.PolicyMapPressureEndpoints)
 	writeMetricType(w, "netloom_agent_policy_map_drift_endpoints", "gauge")

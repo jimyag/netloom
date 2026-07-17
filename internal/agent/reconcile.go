@@ -36,6 +36,7 @@ type ReconcileResult struct {
 	PolicyMapPressureMax             uint32
 	PolicyMapPressureEndpoint        string
 	PolicyMapPressureEndpoints       int
+	PolicyMapPressureHotspots        []dataplane.PolicyMapPressureHotspot
 	PolicyPressureMitigated          int
 	PolicyPressureQuarantined        int
 	PolicyPressureQuarantineEndpoint string
@@ -2419,6 +2420,7 @@ func populatePolicyMapUsageResult(ctx context.Context, store PolicyStore, result
 		result.PolicyMapPressureMax = 0
 		result.PolicyMapPressureEndpoint = ""
 		result.PolicyMapPressureEndpoints = 0
+		result.PolicyMapPressureHotspots = nil
 		return nil
 	}
 	usages, err := usageStore.PolicyMapUsage(ctx)
@@ -2431,6 +2433,7 @@ func populatePolicyMapUsageResult(ctx context.Context, store PolicyStore, result
 	result.PolicyMapPressureMax = summary.MaxPressurePercent
 	result.PolicyMapPressureEndpoint = summary.MaxPressureEndpoint
 	result.PolicyMapPressureEndpoints = summary.PressureEndpoints
+	result.PolicyMapPressureHotspots = append(result.PolicyMapPressureHotspots[:0], summary.PressureHotspots...)
 	return nil
 }
 
