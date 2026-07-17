@@ -322,6 +322,7 @@ NETLOOM_AGENT_METRICS_ADDR=:9092 \
 ./netloom-agent identity-groups-export -ovsdb unix:/var/run/openvswitch/db.sock
 ./netloom-agent policy-status-export -ovsdb unix:/var/run/openvswitch/db.sock -endpoint prod/vm-a
 ./netloom-agent policy-revision-wait -ovsdb unix:/var/run/openvswitch/db.sock -endpoint prod/vm-a -revision 3 -timeout 30s
+curl -s 'http://127.0.0.1:9092/policy/endpoints/prod/vm-a/revision?target_revision=3&timeout_ms=30000'
 ./netloom-agent policy-entries-export -ovsdb unix:/var/run/openvswitch/db.sock -endpoint prod/vm-a
 ./netloom-agent policy-rules -ovsdb unix:/var/run/openvswitch/db.sock -endpoint prod/vm-a
 ./netloom-agent policy-events -ovsdb unix:/var/run/openvswitch/db.sock -endpoint prod/vm-a -limit 20
@@ -358,6 +359,8 @@ provider、datapath 和错误状态。
 policy lifecycle、revision、pressure、drift、last event 和 last stats。
 `policy-revision-wait` 会轮询同一个 OVSDB 状态，直到指定 endpoint 的 policy revision
 达到目标值，适合在 rollout、变更审批或自动化验证中确认 eBPF policy map 已经落地。
+agent HTTP API 也提供 `/policy/endpoints/{endpoint}/revision?target_revision=N`，
+用于在线系统直接等待长运行 agent 的最新内存状态；可加 `timeout_ms` 和 `interval_ms`。
 `policy-entries-export` 会解码 `Open_vSwitch.external_ids:netloom_policy_entries`，
 用于在不访问 agent HTTP listener 的情况下审计最近一次 reconcile 写入的 live policy-map
 keys、values、计数器和 remote CIDR。
@@ -377,6 +380,8 @@ keys、values、计数器和 remote CIDR。
   -endpoint prod/vm-a \
   -revision 3 \
   -timeout 30s
+curl -s \
+  'http://127.0.0.1:9092/policy/endpoints/prod/vm-a/revision?target_revision=3&timeout_ms=30000'
 ovs-vsctl get Open_vSwitch . external_ids:netloom_policy_endpoint_status
 ./netloom-agent policy-entries -state /etc/netloom/state.json -node node-a -endpoint prod/vm-a
 ```
@@ -386,6 +391,8 @@ ovs-vsctl get Open_vSwitch . external_ids:netloom_policy_endpoint_status
 快照，更适合线下审计正在运行节点的 eBPF policy map 状态。
 `policy-revision-wait` 不会触发 reconcile，只读取本机 OVSDB 中的 live status，并在目标
 revision 未按时出现时返回错误。
+HTTP revision API 读取长运行 agent 当前内存快照：达到目标 revision 返回 200 和 endpoint
+status，endpoint 不存在返回 404，目标 revision 未按时出现返回 409。
 
 解释一条安全策略判定：
 

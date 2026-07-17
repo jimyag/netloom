@@ -4832,6 +4832,10 @@ func (m *agentMetrics) handlePolicyEndpoints(w http.ResponseWriter, r *http.Requ
 		m.handlePolicyActionHistory(w, r)
 		return
 	}
+	if isPolicyEndpointRevisionRequest(r) {
+		m.handlePolicyEndpointRevision(w, r)
+		return
+	}
 	if r.Method == http.MethodDelete {
 		m.handlePolicyEndpointDelete(w, r)
 		return
@@ -4883,6 +4887,14 @@ func isPolicyActionHistoryRequest(r *http.Request) bool {
 	return strings.Trim(r.URL.Path, "/") == "policy/endpoints/actions/history"
 }
 
+func isPolicyEndpointRevisionRequest(r *http.Request) bool {
+	if r == nil || r.URL == nil {
+		return false
+	}
+	path := strings.Trim(r.URL.Path, "/")
+	return strings.HasPrefix(path, "policy/endpoints/") && strings.HasSuffix(path, "/revision")
+}
+
 func (m *agentMetrics) handlePolicyRolloutHistory(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -4895,6 +4907,92 @@ func (m *agentMetrics) handlePolicyRolloutHistory(w http.ResponseWriter, r *http
 		Ready:   true,
 		History: m.policyRolloutHistory(),
 	})
+}
+
+func (m *agentMetrics) handlePolicyEndpointRevision(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "method not allowed"})
+		return
+	}
+	endpoint := policyEndpointRevisionFromRequest(r)
+	if endpoint == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "missing policy endpoint"})
+		return
+	}
+	targetRevision, err := policyEndpointTargetRevisionFromRequest(r)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	timeout, err := policyEndpointRevisionTimeoutFromRequest(r)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	interval, err := policyEndpointRevisionIntervalFromRequest(r)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	start := time.Now()
+	var lastStatus dataplane.PolicyEndpointStatus
+	var sawEndpoint bool
+	for {
+		snapshot, _, ready := m.snapshotValue()
+		if !ready {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "policy endpoint status is not ready"})
+			return
+		}
+		statuses := filterPolicyEndpointStatuses(snapshot.Result.PolicyEndpointStatus, endpoint, nil)
+		if len(statuses) > 0 {
+			lastStatus = statuses[0]
+			sawEndpoint = true
+			if lastStatus.Revision >= targetRevision {
+				output := policyRevisionWaitOutput{
+					Ready:          true,
+					Node:           snapshot.Result.Node,
+					Store:          snapshot.Store,
+					EndpointID:     lastStatus.EndpointID,
+					TargetRevision: targetRevision,
+					Revision:       lastStatus.Revision,
+					WaitedMS:       time.Since(start).Milliseconds(),
+					Status:         lastStatus,
+				}
+				encoder := json.NewEncoder(w)
+				encoder.SetIndent("", "  ")
+				_ = encoder.Encode(output)
+				return
+			}
+		}
+		if timeout == 0 || time.Since(start) >= timeout {
+			if !sawEndpoint {
+				w.WriteHeader(http.StatusNotFound)
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": "policy endpoint not found"})
+				return
+			}
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("policy endpoint %s revision %d did not reach target revision %d before timeout", lastStatus.EndpointID, lastStatus.Revision, targetRevision)})
+			return
+		}
+		wait := interval
+		remaining := timeout - time.Since(start)
+		if remaining < wait {
+			wait = remaining
+		}
+		timer := time.NewTimer(wait)
+		select {
+		case <-r.Context().Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+	}
 }
 
 func (m *agentMetrics) handlePolicyActionHistory(w http.ResponseWriter, r *http.Request) {
@@ -5503,6 +5601,60 @@ func policyEndpointFromRequest(r *http.Request) string {
 		}
 	}
 	return endpoint
+}
+
+func policyEndpointRevisionFromRequest(r *http.Request) string {
+	endpoint := strings.TrimSpace(r.URL.Query().Get("endpoint"))
+	if strings.HasPrefix(r.URL.Path, "/policy/endpoints/") {
+		pathEndpoint := strings.TrimPrefix(r.URL.Path, "/policy/endpoints/")
+		pathEndpoint = strings.TrimSuffix(pathEndpoint, "/revision")
+		if decoded, err := url.PathUnescape(pathEndpoint); err == nil {
+			pathEndpoint = decoded
+		}
+		if strings.TrimSpace(pathEndpoint) != "" {
+			endpoint = strings.TrimSpace(pathEndpoint)
+		}
+	}
+	return endpoint
+}
+
+func policyEndpointTargetRevisionFromRequest(r *http.Request) (uint64, error) {
+	raw := strings.TrimSpace(r.URL.Query().Get("target_revision"))
+	if raw == "" {
+		raw = strings.TrimSpace(r.URL.Query().Get("revision"))
+	}
+	if raw == "" {
+		return 0, errors.New("missing target_revision")
+	}
+	revision, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil || revision == 0 {
+		return 0, fmt.Errorf("invalid target_revision %q", raw)
+	}
+	return revision, nil
+}
+
+func policyEndpointRevisionTimeoutFromRequest(r *http.Request) (time.Duration, error) {
+	raw := strings.TrimSpace(r.URL.Query().Get("timeout_ms"))
+	if raw == "" {
+		return 0, nil
+	}
+	value, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || value < 0 {
+		return 0, fmt.Errorf("invalid timeout_ms %q", raw)
+	}
+	return time.Duration(value) * time.Millisecond, nil
+}
+
+func policyEndpointRevisionIntervalFromRequest(r *http.Request) (time.Duration, error) {
+	raw := strings.TrimSpace(r.URL.Query().Get("interval_ms"))
+	if raw == "" {
+		return 200 * time.Millisecond, nil
+	}
+	value, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || value <= 0 {
+		return 0, fmt.Errorf("invalid interval_ms %q", raw)
+	}
+	return time.Duration(value) * time.Millisecond, nil
 }
 
 func policyRuleEndpointFromRequest(r *http.Request) string {

@@ -68,6 +68,7 @@ git diff --check
 ./netloom-agent agent-status -ovsdb unix:/var/run/openvswitch/db.sock
 ./netloom-agent policy-status -state /etc/netloom/state.json -node node-a
 ./netloom-agent policy-revision-wait -ovsdb unix:/var/run/openvswitch/db.sock -endpoint prod/vm-a -revision 3 -timeout 30s
+curl -s 'http://127.0.0.1:9092/policy/endpoints/prod/vm-a/revision?target_revision=3&timeout_ms=30000'
 ./netloom-agent policy-explain -state /etc/netloom/state.json -vpc prod -endpoint vm-a -direction ingress -protocol tcp -remote-ip 10.10.0.20 -dest-port 80
 ./netloom-agent route-explain -state /etc/netloom/state.json -vpc prod -source 10.10.0.10 -dest 8.8.8.8 -protocol tcp -dest-port 443
 ```

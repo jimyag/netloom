@@ -3170,6 +3170,84 @@ func TestPolicyEndpointAPIReportsLifecycleStatus(t *testing.T) {
 	}
 }
 
+func TestPolicyEndpointAPIReportsReadyRevision(t *testing.T) {
+	metrics := newAgentMetrics()
+	endpointID := model.EndpointKey("prod", "pod-a")
+	observeAgentReconcileResult(metrics, agent.ReconcileResult{
+		Node:              "node-a",
+		PolicyRevisionMax: 5,
+		PolicyEndpointStatus: []dataplane.PolicyEndpointStatus{{
+			EndpointID:   endpointID,
+			Revision:     5,
+			Entries:      2,
+			LastEvent:    dataplane.PolicyUpdateEvent{EndpointID: endpointID, Revision: 5, Success: true},
+			HasLastEvent: true,
+		}},
+	}, "ebpf", time.Millisecond)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/policy/endpoints/prod/pod-a/revision?target_revision=4", nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var got policyRevisionWaitOutput
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode policy endpoint revision response: %v\n%s", err, recorder.Body.String())
+	}
+	if !got.Ready || got.Node != "node-a" || got.Store != "ebpf" || got.EndpointID != endpointID || got.TargetRevision != 4 || got.Revision != 5 {
+		t.Fatalf("revision output = %+v, want ready pod-a revision 5 for target 4", got)
+	}
+	if got.Status.EndpointID != endpointID || got.Status.Revision != 5 || !got.Status.HasLastEvent {
+		t.Fatalf("revision status = %+v, want persisted endpoint status", got.Status)
+	}
+}
+
+func TestPolicyEndpointAPIReturnsConflictWhenRevisionIsNotReady(t *testing.T) {
+	metrics := newAgentMetrics()
+	endpointID := model.EndpointKey("prod", "pod-a")
+	observeAgentReconcileResult(metrics, agent.ReconcileResult{
+		Node:              "node-a",
+		PolicyRevisionMax: 3,
+		PolicyEndpointStatus: []dataplane.PolicyEndpointStatus{{
+			EndpointID: endpointID,
+			Revision:   3,
+			Entries:    1,
+		}},
+	}, "ebpf", time.Millisecond)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/policy/endpoints/prod/pod-a/revision?target_revision=4", nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "did not reach target revision 4") {
+		t.Fatalf("body = %s, want target revision error", recorder.Body.String())
+	}
+}
+
+func TestPolicyEndpointAPIRevisionRequiresTargetRevision(t *testing.T) {
+	metrics := newAgentMetrics()
+	observeAgentReconcileResult(metrics, agent.ReconcileResult{
+		Node: "node-a",
+		PolicyEndpointStatus: []dataplane.PolicyEndpointStatus{{
+			EndpointID: model.EndpointKey("prod", "pod-a"),
+			Revision:   1,
+		}},
+	}, "memory", time.Millisecond)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/policy/endpoints/prod/pod-a/revision", nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestPolicyEndpointAPIReturnsNotFoundForUnknownEndpoint(t *testing.T) {
 	metrics := newAgentMetrics()
 	observeAgentReconcileResult(metrics, agent.ReconcileResult{
