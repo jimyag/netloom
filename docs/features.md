@@ -77,7 +77,7 @@
 | Desired state in OVSDB | 已实现 | `desired-state-import/export`, `Open_vSwitch.external_ids` | `TestControllerLoadsDesiredStateFromOpenVSwitchExternalID` |
 | Policy explain | 已实现 | `netloom-agent policy-explain` | command tests |
 | Policy status | 已实现 | `netloom-agent policy-status` | command tests |
-| Policy rule observability | 已实现 | agent `/policy/rules` JSON API and Prometheus rule counters | `TestPolicyRulesAPIReportsCatalogAndCounters` |
+| Policy rule observability | 已实现 | agent `/policy/rules` JSON API, Prometheus rule counters, local OVS `netloom_policy_rules` persistence, and `netloom-agent policy-rules` | `TestPolicyRulesAPIReportsCatalogAndCounters`、`TestRunPolicyRulesWithStoreReportsFilteredJSON`、`TestAgentMetricsPersistsPolicyRulesToOpenVSwitchExternalID` |
 | Policy update events | 已实现 | agent `/policy/events` JSON API, local OVS `netloom_policy_events` persistence, and `netloom-agent policy-events` for recent endpoint policy-map update events | `TestPolicyEventsAPIReportsRecentEndpointEvents`、`TestRunPolicyEventsWithStoreReportsFilteredJSON`、`TestAgentMetricsPersistsPolicyEventsToOpenVSwitchExternalID` |
 | Policy map entry inspection | 已实现 | `netloom-agent policy-entries` and agent `/policy/entries/{endpoint}` JSON API for live endpoint policy-map entries | `TestRunPolicyEntriesReportsEndpointMapJSON`、`TestPolicyEntriesAPIReportsEndpointPolicyMapEntries` |
 | Route explain | 已实现 | `netloom-agent route-explain` | command tests |

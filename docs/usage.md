@@ -382,7 +382,16 @@ curl -s http://127.0.0.1:9091/status
 ```bash
 curl -s http://127.0.0.1:9092/policy/rules
 curl -s http://127.0.0.1:9092/policy/rules/prod/vm-a
+netloom-agent policy-rules \
+  -ovsdb unix:/var/run/openvswitch/db.sock \
+  -endpoint prod/vm-a
+ovs-vsctl get Open_vSwitch . external_ids:netloom_policy_rules
 ```
+
+如果 agent 配置了 `NETLOOM_OVSDB_ENDPOINT`，最近一次 reconcile 的 rule catalog 和
+rule counter 合并视图会写入 `Open_vSwitch.external_ids:netloom_policy_rules`。
+`policy-rules` CLI 会从本机 OVSDB 读取同一个 key，适合在没有打开 agent HTTP listener
+时审计 Cilium-style rule counter 和规则来源映射。
 
 查看最近 endpoint policy map 更新事件：
 

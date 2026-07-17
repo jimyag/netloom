@@ -2453,6 +2453,126 @@ func TestPolicyRulesAPIReportsCatalogAndCounters(t *testing.T) {
 	}
 }
 
+func TestRunPolicyRulesWithStoreReportsFilteredJSON(t *testing.T) {
+	store := ovsdbPolicyRulesStore{syncer: &fakeOpenVSwitchExternalIDStore{}}
+	if err := store.Save(t.Context(), policyRulesDocument{
+		Node:                 "node-a",
+		Store:                "ebpf",
+		LastReconcileSuccess: true,
+		UpdatedAt:            time.Date(2026, 7, 17, 1, 2, 3, 0, time.UTC),
+		Rules: []policyRuleOutput{{
+			EndpointID: "prod\x00pod-a",
+			RuleCookie: 42,
+			RuleRef:    "sg/web/allow-http",
+			Packets:    5,
+			Bytes:      640,
+			Allowed:    3,
+			Dropped:    2,
+			DenyDrops:  2,
+		}, {
+			EndpointID: "prod\x00pod-b",
+			RuleCookie: 7,
+			RuleRef:    "sg/db/allow-db",
+			Packets:    9,
+			Bytes:      900,
+			Allowed:    9,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var stdout bytes.Buffer
+	if err := runPolicyRulesWithStore(t.Context(), policyRulesOptions{endpoint: "prod/pod-a"}, &stdout, store); err != nil {
+		t.Fatal(err)
+	}
+	var got policyRulesOutput
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode policy-rules output: %v\n%s", err, stdout.String())
+	}
+	if !got.Ready || !got.LastReconcileSuccess || got.Node != "node-a" || got.Store != "ebpf" || got.FilterEndpoint != "prod/pod-a" {
+		t.Fatalf("policy rules summary = %+v, want ready filtered node-a ebpf", got)
+	}
+	if got.RuleCount != 1 || got.Packets != 5 || got.Bytes != 640 || got.Allowed != 3 || got.Dropped != 2 || got.DenyDrops != 2 {
+		t.Fatalf("policy rules counters = %+v, want pod-a totals", got)
+	}
+	if len(got.Rules) != 1 || got.Rules[0].RuleCookie != 42 || got.Rules[0].RuleRef != "sg/web/allow-http" {
+		t.Fatalf("rules = %+v, want pod-a allow-http rule", got.Rules)
+	}
+}
+
+func TestRunPolicyRulesReadsRealOpenVSwitchOVSDB(t *testing.T) {
+	endpoint, client, cleanup := newTestAgentVSwitchOVSDB(t)
+	defer cleanup()
+	raw, err := json.Marshal(policyRulesDocument{
+		Node:                 "node-a",
+		Store:                "ebpf",
+		LastReconcileSuccess: true,
+		Rules: []policyRuleOutput{{
+			EndpointID: model.EndpointKey("prod", "pod-a"),
+			RuleCookie: 42,
+			RuleRef:    "sg/web/allow-http",
+			Packets:    5,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	insertAgentVSwitchRows(t, t.Context(), client, &vswitch.OpenvSwitch{ExternalIDs: map[string]string{
+		policyRulesKey: string(raw),
+	}})
+	var stdout bytes.Buffer
+	if err := runPolicyRules(t.Context(), []string{"-ovsdb", endpoint}, &stdout); err != nil {
+		t.Fatal(err)
+	}
+	var got policyRulesOutput
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode policy-rules output: %v\n%s", err, stdout.String())
+	}
+	if got.Node != "node-a" || got.Store != "ebpf" || got.RuleCount != 1 || got.Rules[0].EndpointID != model.EndpointKey("prod", "pod-a") {
+		t.Fatalf("policy rules = %+v, want persisted pod-a rule", got)
+	}
+}
+
+func TestAgentMetricsPersistsPolicyRulesToOpenVSwitchExternalID(t *testing.T) {
+	ovsdb := &fakeOpenVSwitchExternalIDStore{}
+	metrics := newAgentMetrics()
+	configurePolicyRulesStore(metrics, ovsdbPolicyRulesStore{syncer: ovsdb})
+	endpointID := model.EndpointKey("prod", "pod-a")
+
+	observeAgentReconcileResult(metrics, agent.ReconcileResult{
+		Node: "node-a",
+		PolicyRuleStats: []dataplane.RuleMetrics{{
+			EndpointID: endpointID,
+			RuleCookie: 42,
+			Packets:    5,
+			Bytes:      640,
+			Allowed:    3,
+		}},
+		PolicyRuleCatalog: []agent.PolicyRuleCatalogEntry{{
+			EndpointID:    endpointID,
+			RuleCookie:    42,
+			RuleRef:       "sg/web/allow-http",
+			VPC:           "prod",
+			SecurityGroup: "web",
+			RuleID:        "allow-http",
+		}},
+	}, "ebpf", time.Millisecond)
+
+	raw := ovsdb.values[policyRulesKey]
+	if raw == "" {
+		t.Fatalf("missing %s external_id", policyRulesKey)
+	}
+	var doc policyRulesDocument
+	if err := json.Unmarshal([]byte(raw), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.Node != "node-a" || doc.Store != "ebpf" || !doc.LastReconcileSuccess {
+		t.Fatalf("policy rules doc = %+v, want successful node-a ebpf snapshot", doc)
+	}
+	if len(doc.Rules) != 1 || doc.Rules[0].EndpointID != endpointID || doc.Rules[0].RuleRef != "sg/web/allow-http" || doc.Rules[0].Packets != 5 {
+		t.Fatalf("policy rules = %+v, want persisted allow-http counters", doc.Rules)
+	}
+}
+
 func TestPolicyExplainAPIUsesLatestReconciledState(t *testing.T) {
 	metrics := newAgentMetrics()
 	state := control.DesiredState{
