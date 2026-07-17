@@ -415,7 +415,11 @@ current rollout if the canary violates the SLO. Long-running agents expose
 rollout history through `/policy/endpoints/rollout/history` and persist it in
 local OVS `Open_vSwitch.external_ids:netloom_policy_rollout_history`; operators
 can read the same audit trail with `netloom-agent policy-rollout-history` and
-filter by source, rollout name, and recent-entry limit. The TCX L4 ACL map value
+filter by source, rollout name, and recent-entry limit. Revision-isolated rollout
+resume state is persisted in
+`Open_vSwitch.external_ids:netloom_policy_rollout_state` and can be inspected
+with `netloom-agent policy-rollout-state` to confirm already-applied endpoints
+and paused or failed rollout state after an agent restart. The TCX L4 ACL map value
 similarly carries the projected rule cookie, log flag, and packet and byte
 counters. IPv4 and IPv6
 TCX programs atomically increment those counters after a successful LPM lookup

@@ -88,7 +88,7 @@
 | Controller status API | 已实现 | controller `/status` JSON API for OVN health/audit/cluster/stale state | `TestControllerStatusAPIExportsLatestOVNStatus` |
 | OVN health/audit/maintenance | 已实现 | libovsdb health, audit stats, compact/stale hooks | `go test ./cmd/netloom-controller ./internal/ovn` |
 | Policy freeze/unfreeze | 已实现 | agent `/policy/endpoints/{endpoint}/freeze` and `/unfreeze`; optional TTL/expiry; persists frozen endpoints in local OVS `netloom_policy_freeze_state` when OVSDB is configured | `TestPolicyEndpointAPIPersistsFreezeStateToOpenVSwitchExternalID`、`TestPolicyEndpointAPIDropsExpiredFreezeStateFromOpenVSwitchExternalID`、`TestReconcileNodeSkipsFrozenPolicyEndpointApply` |
-| Policy rollout | 已实现 | rollout request state, approval, ack, finalize, SLO, HTTP status/body probes, TCP/TLS probes, `/policy/endpoints/rollout/history`, and `netloom-agent policy-rollout-history` | agent/control tests、`TestRunPolicyRolloutHistoryWithStoreReportsFilteredJSON` |
+| Policy rollout | 已实现 | rollout request state, approval, ack, finalize, SLO, HTTP status/body probes, TCP/TLS probes, `/policy/endpoints/rollout/history`, `netloom-agent policy-rollout-history`, and `netloom-agent policy-rollout-state` | agent/control tests、`TestRunPolicyRolloutHistoryWithStoreReportsFilteredJSON`、`TestRunPolicyRolloutStateWithStoreReportsFilteredJSON` |
 
 ## 当前缺口
 

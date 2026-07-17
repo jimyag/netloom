@@ -432,6 +432,19 @@ ovs-vsctl get Open_vSwitch . external_ids:netloom_policy_rollout_history
 `policy-rollout-history` CLI 支持按 `source`、`name` 和 `limit` 查询最近的 rollout，
 用于查看 approval、ack、finalize、SLO/probe、rollback 等 staged policy rollout 结果。
 
+查看 desired-state policy rollout 的恢复状态：
+
+```bash
+netloom-agent policy-rollout-state \
+  -ovsdb unix:/var/run/openvswitch/db.sock \
+  -node node-a
+ovs-vsctl get Open_vSwitch . external_ids:netloom_policy_rollout_state
+```
+
+`policy-rollout-state` CLI 会读取 `Open_vSwitch.external_ids:netloom_policy_rollout_state`，
+支持按 `name` 和 `node` 过滤，用于确认 rollout 断点恢复时哪些 endpoint 已经应用、
+哪些 rollout 处于 paused 或 failed 状态。
+
 检查本机托管网络对象：
 
 ```bash

@@ -985,6 +985,51 @@ func TestRunPolicyRolloutHistoryWithStoreRejectsInvalidLimit(t *testing.T) {
 	}
 }
 
+func TestRunPolicyRolloutStateWithStoreReportsFilteredJSON(t *testing.T) {
+	doc := policyRolloutStateDocument{Rollouts: []policyRolloutStateEntry{
+		{
+			Name:             "canary",
+			Node:             "node-a",
+			Revision:         "rev-a",
+			Store:            "ebpf",
+			UpdatedAt:        time.Now().Add(-time.Minute),
+			AppliedEndpoints: []string{model.EndpointKey("prod", "vm-a")},
+			Paused:           true,
+		},
+		{
+			Name:             "canary",
+			Node:             "node-b",
+			Revision:         "rev-b",
+			Store:            "ebpf",
+			UpdatedAt:        time.Now(),
+			AppliedEndpoints: []string{model.EndpointKey("prod", "vm-b")},
+			Failed:           1,
+		},
+	}}
+	store := ovsdbPolicyRolloutStateStore{syncer: &fakeOpenVSwitchExternalIDStore{}}
+	if err := store.Save(t.Context(), doc); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	err := runPolicyRolloutStateWithStore(t.Context(), policyRolloutStateOptions{
+		name: "canary",
+		node: "node-b",
+	}, &out, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got policyRolloutStateOutput
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("decode policy-rollout-state output: %v\n%s", err, out.String())
+	}
+	if !got.Ready || got.TotalRollouts != 2 || got.RolloutCount != 1 || got.FilterName != "canary" || got.FilterNode != "node-b" {
+		t.Fatalf("output = %+v, want filtered rollout state metadata", got)
+	}
+	if len(got.Rollouts) != 1 || got.Rollouts[0].Revision != "rev-b" || got.Rollouts[0].Failed != 1 || len(got.Rollouts[0].AppliedEndpoints) != 1 || got.Rollouts[0].AppliedEndpoints[0] != model.EndpointKey("prod", "vm-b") {
+		t.Fatalf("rollouts = %+v, want node-b failed rollout state", got.Rollouts)
+	}
+}
+
 func TestRunPolicyExplainReportsSelectorAllow(t *testing.T) {
 	statePath := writePolicyExplainState(t)
 	var stdout bytes.Buffer

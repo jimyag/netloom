@@ -70,6 +70,11 @@ func main() {
 				log.Fatal(err)
 			}
 			return
+		case "policy-rollout-state":
+			if err := runPolicyRolloutState(context.Background(), os.Args[2:], os.Stdout); err != nil {
+				log.Fatal(err)
+			}
+			return
 		case "route-explain":
 			if err := runRouteExplain(os.Args[2:], os.Stdout); err != nil {
 				log.Fatal(err)
@@ -159,6 +164,12 @@ type policyRolloutHistoryOptions struct {
 	source string
 	name   string
 	limit  int
+}
+
+type policyRolloutStateOptions struct {
+	ovsdb string
+	name  string
+	node  string
 }
 
 type routeExplainOptions struct {
@@ -364,6 +375,15 @@ type policyActionHistoryEntry struct {
 
 type policyRolloutStateDocument struct {
 	Rollouts []policyRolloutStateEntry `json:"rollouts"`
+}
+
+type policyRolloutStateOutput struct {
+	Ready         bool                      `json:"ready"`
+	TotalRollouts int                       `json:"total_rollouts"`
+	RolloutCount  int                       `json:"rollout_count"`
+	FilterName    string                    `json:"filter_name,omitempty"`
+	FilterNode    string                    `json:"filter_node,omitempty"`
+	Rollouts      []policyRolloutStateEntry `json:"rollouts"`
 }
 
 type policyRolloutStateEntry struct {
@@ -735,6 +755,51 @@ func runPolicyRolloutHistoryWithStore(ctx context.Context, opts policyRolloutHis
 		FilterSource: source,
 		FilterName:   name,
 		History:      recent,
+	}
+	encoder := json.NewEncoder(stdout)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(output)
+}
+
+func runPolicyRolloutState(ctx context.Context, args []string, stdout io.Writer) error {
+	var opts policyRolloutStateOptions
+	flags := flag.NewFlagSet("netloom-agent policy-rollout-state", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	flags.StringVar(&opts.ovsdb, "ovsdb", os.Getenv("NETLOOM_OVSDB_ENDPOINT"), "Open_vSwitch OVSDB endpoint")
+	flags.StringVar(&opts.name, "name", "", "optional rollout name to include")
+	flags.StringVar(&opts.node, "node", "", "optional rollout node to include")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(opts.ovsdb) == "" {
+		return errors.New("missing -ovsdb or NETLOOM_OVSDB_ENDPOINT")
+	}
+	client, closeStore, err := newOpenVSwitchClient(ctx, opts.ovsdb)
+	if err != nil {
+		return err
+	}
+	defer closeStore()
+	return runPolicyRolloutStateWithStore(ctx, opts, stdout, ovsdbPolicyRolloutStateStore{syncer: linuxdatapath.NewLibOVSDBProviderSyncer(client)})
+}
+
+func runPolicyRolloutStateWithStore(ctx context.Context, opts policyRolloutStateOptions, stdout io.Writer, store policyRolloutStateStore) error {
+	if store == nil {
+		return errors.New("missing policy rollout state store")
+	}
+	doc, err := store.Load(ctx)
+	if err != nil {
+		return err
+	}
+	name := strings.TrimSpace(opts.name)
+	node := strings.TrimSpace(opts.node)
+	rollouts := filterPolicyRolloutState(doc.Rollouts, name, node)
+	output := policyRolloutStateOutput{
+		Ready:         true,
+		TotalRollouts: len(doc.Rollouts),
+		RolloutCount:  len(rollouts),
+		FilterName:    name,
+		FilterNode:    node,
+		Rollouts:      rollouts,
 	}
 	encoder := json.NewEncoder(stdout)
 	encoder.SetIndent("", "  ")
@@ -2391,6 +2456,22 @@ func recentPolicyRolloutHistory(history []policyRolloutHistoryEntry, limit int) 
 		return append([]policyRolloutHistoryEntry(nil), history...)
 	}
 	return append([]policyRolloutHistoryEntry(nil), history[len(history)-limit:]...)
+}
+
+func filterPolicyRolloutState(rollouts []policyRolloutStateEntry, name, node string) []policyRolloutStateEntry {
+	name = strings.TrimSpace(name)
+	node = strings.TrimSpace(node)
+	out := make([]policyRolloutStateEntry, 0, len(rollouts))
+	for _, rollout := range rollouts {
+		if name != "" && rollout.Name != name {
+			continue
+		}
+		if node != "" && rollout.Node != node {
+			continue
+		}
+		out = append(out, rollout)
+	}
+	return out
 }
 
 func trimPolicyActionHistory(history []policyActionHistoryEntry) []policyActionHistoryEntry {

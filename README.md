@@ -117,6 +117,9 @@ Inspect policy state, policy-map entries, and routing decisions:
   -ovsdb unix:/var/run/openvswitch/db.sock \
   -source manual \
   -limit 20
+./netloom-agent policy-rollout-state \
+  -ovsdb unix:/var/run/openvswitch/db.sock \
+  -node node-a
 ./netloom-agent policy-explain \
   -state /etc/netloom/state.json \
   -vpc prod \
