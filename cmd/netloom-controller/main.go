@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -30,6 +32,15 @@ import (
 
 func main() {
 	ctx := context.Background()
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "controller-status":
+			if err := runControllerStatus(ctx, os.Args[2:], os.Stdout); err != nil {
+				log.Fatal(err)
+			}
+			return
+		}
+	}
 	if path, ok := desiredStateRuntimePathFromEnv(); ok {
 		if err := runStateFile(ctx, path); err != nil {
 			log.Fatal(err)
@@ -89,6 +100,45 @@ func runStateFile(ctx context.Context, path string) error {
 	return runReconcileLoop(ctx, interval, failureBackoff, reconcile, func(err error) {
 		log.Printf("netloom-controller reconcile failed: %v", err)
 	})
+}
+
+func runControllerStatus(ctx context.Context, args []string, stdout io.Writer) error {
+	var opts controllerStatusOptions
+	flags := flag.NewFlagSet("netloom-controller controller-status", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	flags.StringVar(&opts.ovsdb, "ovsdb", os.Getenv("NETLOOM_OVSDB_ENDPOINT"), "Open_vSwitch OVSDB endpoint")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(opts.ovsdb) == "" {
+		return errors.New("missing -ovsdb or NETLOOM_OVSDB_ENDPOINT")
+	}
+	client, closeStore, err := newOpenVSwitchClient(ctx, opts.ovsdb)
+	if err != nil {
+		return err
+	}
+	defer closeStore()
+	return runControllerStatusWithStore(ctx, stdout, linuxdatapath.NewLibOVSDBProviderSyncer(client))
+}
+
+func runControllerStatusWithStore(ctx context.Context, stdout io.Writer, store openVSwitchExternalIDReader) error {
+	if store == nil {
+		return errors.New("missing Open_vSwitch external_id store")
+	}
+	raw, ok, err := store.OpenVSwitchExternalID(ctx, controllerOVSDBStatusKey)
+	if err != nil {
+		return err
+	}
+	if !ok || strings.TrimSpace(raw) == "" {
+		return fmt.Errorf("missing Open_vSwitch external_ids:%s", controllerOVSDBStatusKey)
+	}
+	var status controllerOVSDBStatus
+	if err := json.Unmarshal([]byte(raw), &status); err != nil {
+		return fmt.Errorf("decode Open_vSwitch external_ids:%s: %w", controllerOVSDBStatusKey, err)
+	}
+	encoder := json.NewEncoder(stdout)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(status)
 }
 
 type stateFileReconciler struct {
@@ -172,6 +222,10 @@ type ovsdbControlStatusWriter interface {
 
 type openVSwitchExternalIDReader interface {
 	OpenVSwitchExternalID(context.Context, string) (string, bool, error)
+}
+
+type controllerStatusOptions struct {
+	ovsdb string
 }
 
 type ovnMaintenanceResult struct {

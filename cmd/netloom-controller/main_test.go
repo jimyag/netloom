@@ -62,6 +62,53 @@ func TestDesiredStateRuntimePathFromEnvPrefersExplicitStateFile(t *testing.T) {
 	}
 }
 
+func TestRunControllerStatusWithStoreReportsOpenVSwitchStatus(t *testing.T) {
+	status := controllerOVSDBStatus{
+		SchemaVersion:        1,
+		Ready:                true,
+		LastReconcileSuccess: true,
+		UpdatedAt:            time.Now().UTC().Format(time.RFC3339Nano),
+		VPCs:                 1,
+		Subnets:              2,
+		Endpoints:            3,
+		PolicyRoutes:         4,
+		PolicyEntries:        5,
+		OVNHealth:            ovnHealthSnapshot{Status: "ok"},
+		OVNOps:               6,
+		OVNExecuted:          5,
+		OVNAuditStatus:       "ok",
+		OVNStaleAdvisory:     ovnStaleAdvisory{Status: "ok"},
+		OVNMaintenance:       ovnMaintenanceResult{Status: "ok"},
+		ReconcileDurationMS:  12,
+	}
+	raw, err := json.Marshal(status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := fakeOpenVSwitchExternalIDReader{values: map[string]string{
+		controllerOVSDBStatusKey: string(raw),
+	}}
+	var out bytes.Buffer
+	if err := runControllerStatusWithStore(t.Context(), &out, store); err != nil {
+		t.Fatal(err)
+	}
+	var got controllerOVSDBStatus
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("decode controller-status output: %v\n%s", err, out.String())
+	}
+	if !got.Ready || !got.LastReconcileSuccess || got.VPCs != 1 || got.Subnets != 2 || got.Endpoints != 3 || got.PolicyRoutes != 4 || got.OVNHealth.Status != "ok" || got.OVNOps != 6 || got.OVNExecuted != 5 {
+		t.Fatalf("controller status = %+v, want decoded OVSDB status", got)
+	}
+}
+
+func TestRunControllerStatusWithStoreRequiresStatusExternalID(t *testing.T) {
+	var out bytes.Buffer
+	err := runControllerStatusWithStore(t.Context(), &out, fakeOpenVSwitchExternalIDReader{})
+	if err == nil || !strings.Contains(err.Error(), "missing Open_vSwitch external_ids:netloom_controller_status") {
+		t.Fatalf("err = %v, want missing controller status", err)
+	}
+}
+
 func TestControllerWithIdentityGroupObservationsMergesRuntimeGroups(t *testing.T) {
 	store := fakeOpenVSwitchExternalIDReader{
 		values: map[string]string{
