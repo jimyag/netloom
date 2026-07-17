@@ -22,6 +22,20 @@ go test ./...
 go build ./cmd/netloom-controller ./cmd/netloom-agent ./cmd/netloom-dns-observer
 ```
 
+## 前置条件
+
+裸金属节点需要先准备好基础运行环境：
+
+| 组件 | 用途 |
+| --- | --- |
+| OVN Northbound DB | controller 写入 VPC、子网、端口、路由、NAT、LB、DHCP、DNS 等逻辑网络对象。 |
+| Open vSwitch DB | agent 写入 provider bridge、port、interface、QoS、Queue、运行状态和可选 desired state。 |
+| Linux netlink 权限 | agent 创建或清理 netns、veth、地址、路由、RPDB rule 和 provider parent link。 |
+| bpffs / memlock / CAP_BPF | `NETLOOM_POLICY_STORE=ebpf` 和 TCX ACL fast path 需要 BPF map 与程序加载能力。 |
+| provider parent NIC | `NETLOOM_PROVIDER_NETWORK_LINKS` 指向的物理口或上联口，例如 `physnet-a=eth1`。 |
+
+安全组和 ACL 不写 OVN ACL；OVN 负责拓扑和服务对象，eBPF/TCX 负责 endpoint ingress/egress 策略执行。
+
 ## Desired State 示例
 
 保存为 `/etc/netloom/state.json`：
@@ -261,6 +275,14 @@ NETLOOM_AGENT_METRICS_ADDR=:9092 \
 | `NETLOOM_LINUX_DATAPATH_CLEANUP` | 设置为 `1` 时清理本机托管的旧地址、路由和 rule。 |
 | `NETLOOM_AGENT_METRICS_ADDR` | agent Prometheus metrics 监听地址。 |
 
+## 推荐运行顺序
+
+1. 准备 OVN NB 和本机 Open_vSwitch DB socket。
+2. 写好 `/etc/netloom/state.json`，或用 `desired-state-import` 写入本机 OVSDB。
+3. 启动 controller，确认 OVN NB 中生成 logical router、logical switch、port、route、NAT、LB、DHCP/DNS row。
+4. 在每个裸金属节点启动 agent，确认本机 provider bridge、Linux datapath、eBPF policy map 和 TCX attach 状态。
+5. 用 `policy-status`、`policy-explain`、`route-explain` 和 `/metrics` 做功能验证。
+
 ## Desired State 存入 OVSDB
 
 裸金属场景下可以把 desired state 放到本机 Open_vSwitch 数据库，避免 controller/agent 都依赖同一个文件路径。
@@ -317,6 +339,33 @@ ovs-vsctl get Open_vSwitch . external_ids:netloom_agent_status
   -dest 172.16.0.10 \
   -protocol tcp \
   -dest-port 443
+```
+
+查看 Prometheus metrics：
+
+```bash
+curl -s http://127.0.0.1:9091/metrics
+curl -s http://127.0.0.1:9092/metrics
+```
+
+检查本机托管网络对象：
+
+```bash
+ip netns list
+ip link show
+ip rule show
+ovs-vsctl show
+```
+
+如果 e2e 或本地验证异常中断，先打开清理模式重新运行 agent，再检查是否仍有 Netloom 托管对象残留：
+
+```bash
+NETLOOM_STATE_FILE=/etc/netloom/state.json \
+NETLOOM_NODE_NAME=node-a \
+NETLOOM_OVSDB_ENDPOINT=unix:/var/run/openvswitch/db.sock \
+NETLOOM_LINUX_DATAPATH=1 \
+NETLOOM_LINUX_DATAPATH_CLEANUP=1 \
+./netloom-agent
 ```
 
 ## 测试

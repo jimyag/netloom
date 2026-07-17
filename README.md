@@ -37,7 +37,51 @@ go test ./...
 go build ./cmd/netloom-controller ./cmd/netloom-agent ./cmd/netloom-dns-observer
 ```
 
-Run the controller from a desired-state file:
+Create a minimal desired-state file:
+
+```json
+{
+  "vpcs": [{"name": "prod"}],
+  "subnets": [
+    {
+      "name": "apps",
+      "vpc": "prod",
+      "cidr": "10.10.0.0/24",
+      "gateway": "10.10.0.1",
+      "dhcp": {"enabled": true}
+    }
+  ],
+  "endpoints": [
+    {
+      "id": "vm-a",
+      "vpc": "prod",
+      "subnet": "apps",
+      "ip": "10.10.0.10",
+      "mac": "02:00:00:00:00:10",
+      "node": "node-a",
+      "security_groups": ["web"]
+    }
+  ],
+  "security_groups": [
+    {
+      "name": "web",
+      "vpc": "prod",
+      "rules": [
+        {
+          "id": "allow-http",
+          "direction": "ingress",
+          "protocol": "tcp",
+          "remote_entities": ["all"],
+          "ports": [{"from": 80, "to": 80}],
+          "action": "allow"
+        }
+      ]
+    }
+  ]
+}
+```
+
+Run the controller to reconcile OVN Northbound topology:
 
 ```bash
 NETLOOM_STATE_FILE=/etc/netloom/state.json \
@@ -46,7 +90,7 @@ NETLOOM_RECONCILE_INTERVAL_MS=5000 \
 ./netloom-controller
 ```
 
-Run the agent on a bare-metal node:
+Run the agent on a bare-metal node to reconcile Linux, OVS, and eBPF/TCX state:
 
 ```bash
 NETLOOM_STATE_FILE=/etc/netloom/state.json \
@@ -57,6 +101,27 @@ NETLOOM_TCX_WORKLOAD=1 \
 NETLOOM_LINUX_DATAPATH=1 \
 NETLOOM_PROVIDER_NETWORK_LINKS=physnet-a=eth1 \
 ./netloom-agent
+```
+
+Inspect policy and routing decisions without changing datapath state:
+
+```bash
+./netloom-agent policy-status -state /etc/netloom/state.json -node node-a
+./netloom-agent policy-explain \
+  -state /etc/netloom/state.json \
+  -vpc prod \
+  -endpoint vm-a \
+  -direction ingress \
+  -protocol tcp \
+  -remote-ip 10.10.0.20 \
+  -dest-port 80
+./netloom-agent route-explain \
+  -state /etc/netloom/state.json \
+  -vpc prod \
+  -source 10.10.0.10 \
+  -dest 8.8.8.8 \
+  -protocol tcp \
+  -dest-port 443
 ```
 
 Desired state can also be stored in the local Open_vSwitch database:
