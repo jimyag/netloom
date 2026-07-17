@@ -161,6 +161,11 @@ func (e *NBCTLExecutor) ManagedOVNRows(ctx context.Context, table string) ([]Man
 			return nil, err
 		}
 	}
+	if table == "Load_Balancer" {
+		if err := e.enrichNBCTLLoadBalancerReferenceFields(ctx, rows); err != nil {
+			return nil, err
+		}
+	}
 	return rows, nil
 }
 
@@ -184,7 +189,7 @@ func managedAuditNBCTLColumns(table string) []string {
 	case "NAT":
 		columns = append(columns, "type", "external_ip", "logical_ip", "external_port_range", "logical_port", "external_mac", "options", "allowed_ext_ips", "exempted_ext_ips", "gateway_port", "match", "priority")
 	case "Load_Balancer":
-		columns = append(columns, "name", "vips", "protocol", "options", "selection_fields")
+		columns = append(columns, "name", "vips", "protocol", "options", "selection_fields", "health_check")
 	case "Load_Balancer_Health_Check":
 		columns = append(columns, "vip", "options")
 	case "DHCP_Options":
@@ -247,10 +252,24 @@ func (e *NBCTLExecutor) enrichNBCTLLogicalSwitchReferenceFields(ctx context.Cont
 	return nil
 }
 
+func (e *NBCTLExecutor) enrichNBCTLLoadBalancerReferenceFields(ctx context.Context, rows []ManagedOVNRow) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	refs, err := e.managedNBCTLReferenceNames(ctx, "Load_Balancer_Health_Check", "vip")
+	if err != nil {
+		return err
+	}
+	for i := range rows {
+		rows[i].Fields["health_check_vips"] = resolveManagedAuditReferenceField(rows[i].Fields["health_check_vips"], refs)
+	}
+	return nil
+}
+
 func (e *NBCTLExecutor) managedNBCTLReferenceNames(ctx context.Context, table, key string) (map[string]string, error) {
 	columns := []string{"_uuid", "external_ids"}
-	if key == "name" {
-		columns = append(columns, "name")
+	if key == "name" || key == "vip" {
+		columns = append(columns, key)
 	}
 	args := append([]string(nil), e.BaseArgs...)
 	args = append(args,
@@ -277,7 +296,7 @@ func (e *NBCTLExecutor) managedNBCTLReferenceNames(ctx context.Context, table, k
 			continue
 		}
 		var value string
-		if key == "name" {
+		if key == "name" || key == "vip" {
 			if len(values) < 3 {
 				continue
 			}
@@ -1181,6 +1200,9 @@ func managedAuditFieldName(column string) string {
 	if column == "nat" {
 		return "nat_rules"
 	}
+	if column == "health_check" {
+		return "health_check_vips"
+	}
 	return column
 }
 
@@ -1202,7 +1224,7 @@ func normalizeManagedAuditField(column, value string) string {
 	switch column {
 	case "external_ids", "other_config", "options", "ipv6_ra_configs", "vips":
 		return mapField(parseOVNMap(value))
-	case "addresses", "port_security", "networks", "nexthops", "selection_fields", "ports", "load_balancers", "dns_records", "load_balancer_group", "nat", "policies", "static_routes", "acls", "forwarding_groups", "qos_rules":
+	case "addresses", "port_security", "networks", "nexthops", "selection_fields", "ports", "load_balancers", "dns_records", "load_balancer_group", "health_check", "nat", "policies", "static_routes", "acls", "forwarding_groups", "qos_rules":
 		return stringSliceField(parseOVNList(value))
 	case "tag":
 		return strings.Trim(strings.TrimSpace(value), `"`)

@@ -94,6 +94,48 @@ esac
 	}
 }
 
+func TestNBCTLExecutorManagedOVNRowsResolvesLoadBalancerHealthChecks(t *testing.T) {
+	tmp := t.TempDir()
+	logPath := filepath.Join(tmp, "args.log")
+	binary := filepath.Join(tmp, "ovn-nbctl")
+	script := `#!/bin/sh
+printf '%s\n' "$*" >> "` + logPath + `"
+case "$*" in
+  *"--columns=_uuid,external_ids,name,vips,protocol,options,selection_fields,health_check find Load_Balancer external_ids:netloom_owner=netloom"*) printf 'lb-api,"{netloom_owner=netloom,netloom_vpc=prod,netloom_load_balancer=api,netloom_protocol=tcp}",nl_lb_prod_api_tcp,"{10.96.0.10:443=10.10.0.20:8443}",tcp,{},[],[hc-api]\n' ;;
+  *"--columns=_uuid,external_ids,vip find Load_Balancer_Health_Check external_ids:netloom_owner=netloom"*) printf 'hc-api,"{netloom_owner=netloom,netloom_vpc=prod,netloom_load_balancer=api}",10.96.0.10:443\n' ;;
+esac
+`
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	executor := NewNBCTLExecutor(binary, "--db=unix:/tmp/ovnnb.sock")
+	rows, err := executor.ManagedOVNRows(context.Background(), "Load_Balancer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(rows))
+	}
+	row := rows[0]
+	if row.Fields["health_check_vips"] != "10.96.0.10:443" {
+		t.Fatalf("row fields = %+v, want health check UUID resolved to VIP", row.Fields)
+	}
+	logData, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logged := string(logData)
+	for _, expected := range []string{
+		"--columns=_uuid,external_ids,name,vips,protocol,options,selection_fields,health_check",
+		"--columns=_uuid,external_ids,vip find Load_Balancer_Health_Check",
+	} {
+		if !strings.Contains(logged, expected) {
+			t.Fatalf("audit command log missing %q:\n%s", expected, logged)
+		}
+	}
+}
+
 func TestNBCTLExecutorManagedOVNRowsResolvesLogicalRouterReferences(t *testing.T) {
 	tmp := t.TempDir()
 	logPath := filepath.Join(tmp, "args.log")
