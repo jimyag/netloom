@@ -1630,6 +1630,101 @@ func TestPolicyEventsAPIReportsNotReady(t *testing.T) {
 	}
 }
 
+func TestPolicyEntriesAPIReportsNotReady(t *testing.T) {
+	metrics := newAgentMetrics(dataplane.NewInMemoryPolicyStore())
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/policy/entries/prod/pod-a", nil)
+
+	metrics.handlePolicyEntries(recorder, request)
+
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", recorder.Code)
+	}
+	if !strings.Contains(recorder.Body.String(), "not ready") {
+		t.Fatalf("body missing not ready error: %s", recorder.Body.String())
+	}
+}
+
+func TestPolicyEntriesAPIReportsNotEnabled(t *testing.T) {
+	metrics := newAgentMetrics()
+	observeAgentReconcileResultWithState(metrics, agent.ReconcileResult{
+		Node: "node-a",
+	}, "none", time.Millisecond, control.DesiredState{
+		Endpoints: []model.Endpoint{{ID: "pod-a", VPC: "prod", Node: "node-a"}},
+	})
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/policy/entries/prod/pod-a", nil)
+
+	metrics.handlePolicyEntries(recorder, request)
+
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503; body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "not enabled") {
+		t.Fatalf("body missing not enabled error: %s", recorder.Body.String())
+	}
+}
+
+func TestPolicyEntriesAPIReportsEndpointPolicyMapEntries(t *testing.T) {
+	store := dataplane.NewInMemoryPolicyStore()
+	endpointID := model.EndpointKey("prod", "pod-a")
+	entries := []dataplane.PolicyMapEntry{{
+		Key: dataplane.PolicyKey{
+			PrefixLen:      dataplane.StaticPrefixBits,
+			RemoteIdentity: 42,
+			Direction:      dataplane.DirectionIngress,
+			Protocol:       6,
+			DestPortBE:     80,
+		},
+		Value: dataplane.PolicyEntry{
+			Stateful:        1,
+			Log:             1,
+			Precedence:      100,
+			RuleCookie:      7,
+			RequireIdentity: 1,
+			Packets:         3,
+			Bytes:           240,
+		},
+		RemoteCIDR: netip.MustParsePrefix("172.30.0.0/24"),
+	}}
+	if err := store.ReplaceEndpoint(context.Background(), endpointID, entries); err != nil {
+		t.Fatal(err)
+	}
+	metrics := newAgentMetrics(store)
+	observeAgentReconcileResultWithState(metrics, agent.ReconcileResult{
+		Node: "node-a",
+		PolicyEndpointStatus: []dataplane.PolicyEndpointStatus{{
+			EndpointID: endpointID,
+			Revision:   1,
+			Entries:    1,
+		}},
+	}, "memory", time.Millisecond, control.DesiredState{
+		Endpoints: []model.Endpoint{{ID: "pod-a", VPC: "prod", Node: "node-a"}},
+	})
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/policy/entries/prod/pod-a", nil)
+
+	metrics.handlePolicyEntries(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var got policyEntriesOutput
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode policy entries response: %v\n%s", err, recorder.Body.String())
+	}
+	if !got.Ready || got.EndpointID != endpointID || got.EntryCount != 1 || len(got.Entries) != 1 {
+		t.Fatalf("entries output = %+v, want one ready endpoint entry", got)
+	}
+	entry := got.Entries[0]
+	if entry.Key.RemoteIdentity != 42 || entry.Key.Direction != dataplane.DirectionIngress || entry.Key.Protocol != 6 || entry.Value.RuleCookie != 7 {
+		t.Fatalf("entry = %+v, want key/value fields from store", entry)
+	}
+	if entry.RemoteCIDR != "172.30.0.0/24" || entry.Value.Packets != 3 || entry.Value.Bytes != 240 {
+		t.Fatalf("entry counters/cidr = %+v, want remote cidr and counters", entry)
+	}
+}
+
 func TestPolicyExplainAPIReportsNotReady(t *testing.T) {
 	metrics := newAgentMetrics()
 	recorder := httptest.NewRecorder()

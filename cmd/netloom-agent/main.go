@@ -220,6 +220,44 @@ type policyEventsOutput struct {
 	Events               []dataplane.PolicyUpdateEvent `json:"events"`
 }
 
+type policyEntriesOutput struct {
+	Node                 string                 `json:"node"`
+	Store                string                 `json:"store"`
+	Ready                bool                   `json:"ready"`
+	LastReconcileSuccess bool                   `json:"last_reconcile_success"`
+	LastReconcileError   string                 `json:"last_reconcile_error,omitempty"`
+	EndpointID           string                 `json:"endpoint_id"`
+	EntryCount           int                    `json:"entry_count"`
+	Entries              []policyMapEntryOutput `json:"entries"`
+}
+
+type policyMapEntryOutput struct {
+	Key        policyMapKeyOutput   `json:"key"`
+	Value      policyMapValueOutput `json:"value"`
+	RemoteCIDR string               `json:"remote_cidr,omitempty"`
+}
+
+type policyMapKeyOutput struct {
+	PrefixLen      uint32 `json:"prefix_len"`
+	RemoteIdentity uint32 `json:"remote_identity"`
+	Direction      uint8  `json:"direction"`
+	Protocol       uint8  `json:"protocol"`
+	DestPortBE     uint16 `json:"dest_port_be"`
+}
+
+type policyMapValueOutput struct {
+	Deny            uint8  `json:"deny"`
+	L4PrefixLen     uint8  `json:"l4_prefix_len"`
+	Stateful        uint8  `json:"stateful"`
+	Log             uint8  `json:"log"`
+	Precedence      uint32 `json:"precedence"`
+	RuleCookie      uint32 `json:"rule_cookie"`
+	Reject          uint8  `json:"reject"`
+	RequireIdentity uint8  `json:"require_identity"`
+	Packets         uint64 `json:"packets"`
+	Bytes           uint64 `json:"bytes"`
+}
+
 type policyEndpointActionOutput struct {
 	EndpointID    string                         `json:"endpoint_id"`
 	Action        string                         `json:"action"`
@@ -745,6 +783,51 @@ func policyEventsOutputFromSnapshot(snapshot agentMetricsSnapshot, events []data
 		Limit:                limit,
 		Events:               recent,
 	}
+}
+
+func policyEntriesOutputFromSnapshot(snapshot agentMetricsSnapshot, endpointID string, entries []dataplane.PolicyMapEntry) policyEntriesOutput {
+	output := policyEntriesOutput{
+		Node:                 snapshot.Result.Node,
+		Store:                snapshot.Store,
+		Ready:                true,
+		LastReconcileSuccess: snapshot.Success,
+		LastReconcileError:   snapshot.Error,
+		EndpointID:           endpointID,
+		EntryCount:           len(entries),
+		Entries:              make([]policyMapEntryOutput, 0, len(entries)),
+	}
+	for _, entry := range entries {
+		output.Entries = append(output.Entries, policyMapEntryOutputFromEntry(entry))
+	}
+	return output
+}
+
+func policyMapEntryOutputFromEntry(entry dataplane.PolicyMapEntry) policyMapEntryOutput {
+	out := policyMapEntryOutput{
+		Key: policyMapKeyOutput{
+			PrefixLen:      entry.Key.PrefixLen,
+			RemoteIdentity: entry.Key.RemoteIdentity,
+			Direction:      entry.Key.Direction,
+			Protocol:       entry.Key.Protocol,
+			DestPortBE:     entry.Key.DestPortBE,
+		},
+		Value: policyMapValueOutput{
+			Deny:            entry.Value.Deny,
+			L4PrefixLen:     entry.Value.L4PrefixLen,
+			Stateful:        entry.Value.Stateful,
+			Log:             entry.Value.Log,
+			Precedence:      entry.Value.Precedence,
+			RuleCookie:      entry.Value.RuleCookie,
+			Reject:          entry.Value.Reject,
+			RequireIdentity: entry.Value.RequireIdentity,
+			Packets:         entry.Value.Packets,
+			Bytes:           entry.Value.Bytes,
+		},
+	}
+	if entry.RemoteCIDR.IsValid() {
+		out.RemoteCIDR = entry.RemoteCIDR.String()
+	}
+	return out
 }
 
 func filterPolicyUpdateEvents(events []dataplane.PolicyUpdateEvent, endpoint string) []dataplane.PolicyUpdateEvent {
@@ -2670,6 +2753,8 @@ func startAgentMetricsServer(ctx context.Context, addr string, metrics *agentMet
 	mux.HandleFunc("/policy/endpoints/", metrics.handlePolicyEndpoints)
 	mux.HandleFunc("/policy/events", metrics.handlePolicyEvents)
 	mux.HandleFunc("/policy/events/", metrics.handlePolicyEvents)
+	mux.HandleFunc("/policy/entries", metrics.handlePolicyEntries)
+	mux.HandleFunc("/policy/entries/", metrics.handlePolicyEntries)
 	mux.HandleFunc("/policy/rules", metrics.handlePolicyRules)
 	mux.HandleFunc("/policy/rules/", metrics.handlePolicyRules)
 	mux.HandleFunc("/route/explain", metrics.handleRouteExplain)
@@ -2814,6 +2899,42 @@ func (m *agentMetrics) handlePolicyEvents(w http.ResponseWriter, r *http.Request
 	endpoint := policyEventEndpointFromRequest(r)
 	events := eventStore.Events()
 	output := policyEventsOutputFromSnapshot(snapshot, events, endpoint, limit)
+	encoder := json.NewEncoder(w)
+	encoder.SetIndent("", "  ")
+	_ = encoder.Encode(output)
+}
+
+func (m *agentMetrics) handlePolicyEntries(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "method not allowed"})
+		return
+	}
+	snapshot, _, ready := m.snapshotValue()
+	if !ready {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "policy entries are not ready"})
+		return
+	}
+	entryStore, ok := m.store.(agent.PolicyEndpointEntryStore)
+	if !ok {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "policy entries are not enabled"})
+		return
+	}
+	endpoint := policyEntryEndpointFromRequest(r)
+	endpointID, err := resolvePolicyEndpointIDFromSnapshot(endpoint, snapshot)
+	if err != nil {
+		statusCode := http.StatusNotFound
+		if strings.Contains(err.Error(), "missing") {
+			statusCode = http.StatusBadRequest
+		}
+		w.WriteHeader(statusCode)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	output := policyEntriesOutputFromSnapshot(snapshot, endpointID, entryStore.Entries(endpointID))
 	encoder := json.NewEncoder(w)
 	encoder.SetIndent("", "  ")
 	_ = encoder.Encode(output)
@@ -3090,6 +3211,20 @@ func policyEventEndpointFromRequest(r *http.Request) string {
 	endpoint := strings.TrimSpace(r.URL.Query().Get("endpoint"))
 	if strings.HasPrefix(r.URL.Path, "/policy/events/") {
 		pathEndpoint := strings.TrimPrefix(r.URL.Path, "/policy/events/")
+		if decoded, err := url.PathUnescape(pathEndpoint); err == nil {
+			pathEndpoint = decoded
+		}
+		if strings.TrimSpace(pathEndpoint) != "" {
+			endpoint = strings.TrimSpace(pathEndpoint)
+		}
+	}
+	return endpoint
+}
+
+func policyEntryEndpointFromRequest(r *http.Request) string {
+	endpoint := strings.TrimSpace(r.URL.Query().Get("endpoint"))
+	if strings.HasPrefix(r.URL.Path, "/policy/entries/") {
+		pathEndpoint := strings.TrimPrefix(r.URL.Path, "/policy/entries/")
 		if decoded, err := url.PathUnescape(pathEndpoint); err == nil {
 			pathEndpoint = decoded
 		}

@@ -370,6 +370,13 @@ curl -s 'http://127.0.0.1:9092/policy/events?limit=100'
 curl -s 'http://127.0.0.1:9092/policy/events/prod/vm-a?limit=20'
 ```
 
+查看某个 endpoint 当前 live policy map entries：
+
+```bash
+curl -s http://127.0.0.1:9092/policy/entries/prod/vm-a
+curl -s 'http://127.0.0.1:9092/policy/entries?endpoint=prod/vm-a'
+```
+
 检查本机托管网络对象：
 
 ```bash
