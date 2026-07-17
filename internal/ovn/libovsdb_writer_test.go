@@ -2671,6 +2671,14 @@ func TestLibOVSDBTopologyWriterEnsuresNATRules(t *testing.T) {
 	if err := writer.EnsureVPC(ctx, model.VPC{Name: "prod"}); err != nil {
 		t.Fatal(err)
 	}
+	if err := writer.EnsureSubnet(ctx, model.Subnet{
+		Name:    "apps",
+		VPC:     "prod",
+		CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+		Gateway: netip.MustParseAddr("10.10.0.1"),
+	}); err != nil {
+		t.Fatal(err)
+	}
 	for _, rule := range []model.NATRule{{
 		Name:       "egress",
 		VPC:        "prod",
@@ -2730,6 +2738,14 @@ func TestLibOVSDBTopologyWriterEnsuresNATRules(t *testing.T) {
 		err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("prod") }).List(ctx, &routers)
 		return err == nil && len(routers) == 1 && len(routers[0].Nat) == 3
 	})
+	var routerPorts []ovnnb.LogicalRouterPort
+	requireEventually(t, func() bool {
+		routerPorts = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalRouterPort) bool {
+			return row.Name == routerPortName(logicalRouter("prod"), "apps")
+		}).List(ctx, &routerPorts)
+		return err == nil && len(routerPorts) == 1
+	})
 
 	duplicateNAT := &ovnnb.NAT{
 		UUID:       "duplicate_web_nat",
@@ -2784,6 +2800,32 @@ func TestLibOVSDBTopologyWriterEnsuresNATRules(t *testing.T) {
 		}).List(ctx, &nats)
 		return err == nil && len(nats) == 1 && nats[0].LogicalIP == "10.10.0.22" && nats[0].Options["netloom_logical_port_range"] == "444"
 	})
+	nats[0].GatewayPort = &routerPorts[0].UUID
+	nats[0].Match = "ip4.src == 10.10.0.0/24"
+	nats[0].Priority = 100
+	updateStaleOps, err := client.Where(&nats[0]).Update(&nats[0], &nats[0].GatewayPort, &nats[0].Match, &nats[0].Priority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err = client.Transact(ctx, updateStaleOps...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, updateStaleOps); err != nil {
+		t.Fatalf("seed stale NAT column operation errors=%+v: %v", opErrors, err)
+	}
+	requireEventually(t, func() bool {
+		nats = nil
+		err := client.WhereCache(func(row *ovnnb.NAT) bool {
+			return row.ExternalIDs["netloom_vpc"] == "prod" && row.ExternalIDs["netloom_nat"] == "web"
+		}).List(ctx, &nats)
+		return err == nil &&
+			len(nats) == 1 &&
+			nats[0].GatewayPort != nil &&
+			*nats[0].GatewayPort == routerPorts[0].UUID &&
+			nats[0].Match == "ip4.src == 10.10.0.0/24" &&
+			nats[0].Priority == 100
+	})
 	if err := writer.EnsureNATRule(ctx, model.NATRule{
 		Name:       "web",
 		VPC:        "prod",
@@ -2799,6 +2841,9 @@ func TestLibOVSDBTopologyWriterEnsuresNATRules(t *testing.T) {
 			return row.ExternalIDs["netloom_vpc"] == "prod" && row.ExternalIDs["netloom_nat"] == "web"
 		}).List(ctx, &nats)
 		if err != nil || len(nats) != 1 || nats[0].ExternalPortRange != "" || len(nats[0].Options) != 0 {
+			return false
+		}
+		if nats[0].GatewayPort != nil || nats[0].Match != "" || nats[0].Priority != 0 {
 			return false
 		}
 		if _, ok := nats[0].ExternalIDs["netloom_external_port"]; ok {

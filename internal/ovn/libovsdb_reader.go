@@ -199,6 +199,11 @@ func (r *LibOVSDBManagedReader) ManagedOVNRows(ctx context.Context, table string
 				"logical_port":        pointerStringValue(row.LogicalPort),
 				"external_mac":        pointerStringValue(row.ExternalMAC),
 				"options":             mapField(row.Options),
+				"allowed_ext_ips":     pointerStringValue(row.AllowedExtIPs),
+				"exempted_ext_ips":    pointerStringValue(row.ExemptedExtIPs),
+				"gateway_port":        pointerStringValue(row.GatewayPort),
+				"match":               row.Match,
+				"priority":            fmt.Sprint(row.Priority),
 			}
 		}), nil
 	case "Load_Balancer":

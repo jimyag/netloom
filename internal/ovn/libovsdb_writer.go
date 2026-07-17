@@ -623,8 +623,13 @@ func (w *LibOVSDBTopologyWriter) EnsureNATRule(ctx context.Context, rule model.N
 			keep.Options = desired.Options
 			keep.LogicalPort = desired.LogicalPort
 			keep.ExternalMAC = desired.ExternalMAC
+			keep.AllowedExtIPs = desired.AllowedExtIPs
+			keep.ExemptedExtIPs = desired.ExemptedExtIPs
+			keep.GatewayPort = desired.GatewayPort
+			keep.Match = desired.Match
+			keep.Priority = desired.Priority
 			keep.ExternalIDs = nextExternalIDs
-			updateOps, err := w.client.Where(&keep).Update(&keep, &keep.Type, &keep.ExternalIP, &keep.LogicalIP, &keep.ExternalPortRange, &keep.Options, &keep.LogicalPort, &keep.ExternalMAC, &keep.ExternalIDs)
+			updateOps, err := w.client.Where(&keep).Update(&keep, &keep.Type, &keep.ExternalIP, &keep.LogicalIP, &keep.ExternalPortRange, &keep.Options, &keep.LogicalPort, &keep.ExternalMAC, &keep.AllowedExtIPs, &keep.ExemptedExtIPs, &keep.GatewayPort, &keep.Match, &keep.Priority, &keep.ExternalIDs)
 			if err != nil {
 				return fmt.Errorf("update NAT rule %s/%s: %w", rule.VPC, rule.Name, err)
 			}
@@ -2826,6 +2831,11 @@ func natRowChanged(current, desired ovnnb.NAT, nextExternalIDs map[string]string
 		!reflect.DeepEqual(current.Options, desired.Options) ||
 		!stringPointerValueEqual(current.LogicalPort, pointerStringValue(desired.LogicalPort)) ||
 		!stringPointerValueEqual(current.ExternalMAC, pointerStringValue(desired.ExternalMAC)) ||
+		!stringPointerValueEqual(current.AllowedExtIPs, pointerStringValue(desired.AllowedExtIPs)) ||
+		!stringPointerValueEqual(current.ExemptedExtIPs, pointerStringValue(desired.ExemptedExtIPs)) ||
+		!stringPointerValueEqual(current.GatewayPort, pointerStringValue(desired.GatewayPort)) ||
+		current.Match != desired.Match ||
+		current.Priority != desired.Priority ||
 		!reflect.DeepEqual(current.ExternalIDs, nextExternalIDs)
 }
 

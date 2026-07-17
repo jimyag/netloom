@@ -182,7 +182,7 @@ func managedAuditNBCTLColumns(table string) []string {
 	case "BFD":
 		columns = append(columns, "logical_port", "dst_ip", "min_tx", "min_rx", "detect_mult", "options")
 	case "NAT":
-		columns = append(columns, "type", "external_ip", "logical_ip", "external_port_range", "logical_port", "external_mac", "options")
+		columns = append(columns, "type", "external_ip", "logical_ip", "external_port_range", "logical_port", "external_mac", "options", "allowed_ext_ips", "exempted_ext_ips", "gateway_port", "match", "priority")
 	case "Load_Balancer":
 		columns = append(columns, "name", "vips", "protocol", "options", "selection_fields")
 	case "Load_Balancer_Health_Check":
@@ -661,9 +661,14 @@ func expectedManagedAuditColumns(desired topology.State) map[string]map[string]s
 	for _, rule := range desired.NATRules {
 		row := desiredNATRuleRow(rule)
 		fields := map[string]string{
-			"type":        string(row.Type),
-			"external_ip": row.ExternalIP,
-			"logical_ip":  row.LogicalIP,
+			"type":             string(row.Type),
+			"external_ip":      row.ExternalIP,
+			"logical_ip":       row.LogicalIP,
+			"allowed_ext_ips":  "",
+			"exempted_ext_ips": "",
+			"gateway_port":     "",
+			"match":            "",
+			"priority":         "0",
 		}
 		if row.ExternalPortRange != "" {
 			fields["external_port_range"] = row.ExternalPortRange
@@ -906,7 +911,7 @@ func staleManagedColumnShouldDrift(table, key string) bool {
 		}
 	case "NAT":
 		switch key {
-		case "external_port_range", "logical_port", "external_mac", "options":
+		case "external_port_range", "logical_port", "external_mac", "options", "allowed_ext_ips", "exempted_ext_ips", "gateway_port", "match", "priority":
 			return true
 		default:
 			return false

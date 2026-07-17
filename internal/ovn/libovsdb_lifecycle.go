@@ -782,8 +782,13 @@ func (w *LibOVSDBTopologyWriter) repairSteadyStateNATRules(ctx context.Context, 
 			keep.Options = desiredRow.Options
 			keep.LogicalPort = desiredRow.LogicalPort
 			keep.ExternalMAC = desiredRow.ExternalMAC
+			keep.AllowedExtIPs = desiredRow.AllowedExtIPs
+			keep.ExemptedExtIPs = desiredRow.ExemptedExtIPs
+			keep.GatewayPort = desiredRow.GatewayPort
+			keep.Match = desiredRow.Match
+			keep.Priority = desiredRow.Priority
 			keep.ExternalIDs = nextExternalIDs
-			updateOps, err := w.client.Where(&keep).Update(&keep, &keep.Type, &keep.ExternalIP, &keep.LogicalIP, &keep.ExternalPortRange, &keep.Options, &keep.LogicalPort, &keep.ExternalMAC, &keep.ExternalIDs)
+			updateOps, err := w.client.Where(&keep).Update(&keep, &keep.Type, &keep.ExternalIP, &keep.LogicalIP, &keep.ExternalPortRange, &keep.Options, &keep.LogicalPort, &keep.ExternalMAC, &keep.AllowedExtIPs, &keep.ExemptedExtIPs, &keep.GatewayPort, &keep.Match, &keep.Priority, &keep.ExternalIDs)
 			if err != nil {
 				return nil, fmt.Errorf("repair NAT rule %s/%s: %w", rule.VPC, rule.Name, err)
 			}
