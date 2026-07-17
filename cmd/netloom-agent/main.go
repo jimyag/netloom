@@ -236,9 +236,11 @@ type policyActionHistoryOptions struct {
 }
 
 type policyEventsOptions struct {
-	ovsdb    string
-	endpoint string
-	limit    int
+	ovsdb      string
+	endpoint   string
+	success    string
+	remediated string
+	limit      int
 }
 
 type policyRulesOptions struct {
@@ -415,6 +417,8 @@ type policyEventsOutput struct {
 	EventCount           int                           `json:"event_count"`
 	Limit                int                           `json:"limit"`
 	FilterEndpoint       string                        `json:"filter_endpoint,omitempty"`
+	FilterSuccess        *bool                         `json:"filter_success,omitempty"`
+	FilterRemediated     *bool                         `json:"filter_remediated,omitempty"`
 	Events               []dataplane.PolicyUpdateEvent `json:"events"`
 }
 
@@ -1160,6 +1164,8 @@ func runPolicyEvents(ctx context.Context, args []string, stdout io.Writer) error
 	flags.SetOutput(io.Discard)
 	flags.StringVar(&opts.ovsdb, "ovsdb", os.Getenv("NETLOOM_OVSDB_ENDPOINT"), "Open_vSwitch OVSDB endpoint")
 	flags.StringVar(&opts.endpoint, "endpoint", "", "optional endpoint key or endpoint ID to include")
+	flags.StringVar(&opts.success, "success", "", "optional success filter: true or false")
+	flags.StringVar(&opts.remediated, "remediated", "", "optional remediation filter: true or false")
 	flags.IntVar(&opts.limit, "limit", defaultPolicyEventsLimit, "maximum recent policy update events")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -1189,8 +1195,11 @@ func runPolicyEventsWithStore(ctx context.Context, opts policyEventsOptions, std
 	if err != nil {
 		return err
 	}
-	endpoint := strings.TrimSpace(opts.endpoint)
-	filtered := filterPolicyUpdateEvents(doc.Events, endpoint)
+	filter, err := policyUpdateEventFilterFromOptions(opts)
+	if err != nil {
+		return err
+	}
+	filtered := filterPolicyUpdateEvents(doc.Events, filter)
 	recent := recentPolicyUpdateEvents(filtered, opts.limit)
 	output := policyEventsOutput{
 		Node:                 doc.Node,
@@ -1202,7 +1211,9 @@ func runPolicyEventsWithStore(ctx context.Context, opts policyEventsOptions, std
 		TotalEvents:          doc.TotalEvents,
 		EventCount:           len(recent),
 		Limit:                opts.limit,
-		FilterEndpoint:       endpoint,
+		FilterEndpoint:       filter.Endpoint,
+		FilterSuccess:        filter.Success,
+		FilterRemediated:     filter.Remediated,
 		Events:               recent,
 	}
 	encoder := json.NewEncoder(stdout)
@@ -1895,8 +1906,38 @@ const (
 	maxPolicyEventsLimit     = 1000
 )
 
-func policyEventsOutputFromSnapshot(snapshot agentMetricsSnapshot, events []dataplane.PolicyUpdateEvent, endpoint string, limit int) policyEventsOutput {
-	filtered := filterPolicyUpdateEvents(events, endpoint)
+type policyUpdateEventFilter struct {
+	Endpoint   string
+	Success    *bool
+	Remediated *bool
+}
+
+func policyUpdateEventFilterFromOptions(opts policyEventsOptions) (policyUpdateEventFilter, error) {
+	return policyUpdateEventFilterFromValues(opts.endpoint, opts.success, opts.remediated)
+}
+
+func policyUpdateEventFilterFromRequest(r *http.Request, endpoint string) (policyUpdateEventFilter, error) {
+	return policyUpdateEventFilterFromValues(endpoint, r.URL.Query().Get("success"), r.URL.Query().Get("remediated"))
+}
+
+func policyUpdateEventFilterFromValues(endpoint, successRaw, remediatedRaw string) (policyUpdateEventFilter, error) {
+	success, err := policyActionSuccessFromString(successRaw)
+	if err != nil {
+		return policyUpdateEventFilter{}, err
+	}
+	remediated, err := policyActionBoolFilterFromString("remediated", remediatedRaw)
+	if err != nil {
+		return policyUpdateEventFilter{}, err
+	}
+	return policyUpdateEventFilter{
+		Endpoint:   strings.TrimSpace(endpoint),
+		Success:    success,
+		Remediated: remediated,
+	}, nil
+}
+
+func policyEventsOutputFromSnapshot(snapshot agentMetricsSnapshot, events []dataplane.PolicyUpdateEvent, filter policyUpdateEventFilter, limit int) policyEventsOutput {
+	filtered := filterPolicyUpdateEvents(events, filter)
 	recent := recentPolicyUpdateEvents(filtered, limit)
 	return policyEventsOutput{
 		Node:                 snapshot.Result.Node,
@@ -1907,7 +1948,9 @@ func policyEventsOutputFromSnapshot(snapshot agentMetricsSnapshot, events []data
 		TotalEvents:          len(events),
 		EventCount:           len(recent),
 		Limit:                limit,
-		FilterEndpoint:       strings.TrimSpace(endpoint),
+		FilterEndpoint:       filter.Endpoint,
+		FilterSuccess:        filter.Success,
+		FilterRemediated:     filter.Remediated,
 		Events:               recent,
 	}
 }
@@ -2065,16 +2108,22 @@ func policyMapEntryOutputFromEntry(entry dataplane.PolicyMapEntry) policyMapEntr
 	return out
 }
 
-func filterPolicyUpdateEvents(events []dataplane.PolicyUpdateEvent, endpoint string) []dataplane.PolicyUpdateEvent {
-	endpoint = strings.TrimSpace(endpoint)
-	if endpoint == "" {
+func filterPolicyUpdateEvents(events []dataplane.PolicyUpdateEvent, filter policyUpdateEventFilter) []dataplane.PolicyUpdateEvent {
+	if filter.Endpoint == "" && filter.Success == nil && filter.Remediated == nil {
 		return append([]dataplane.PolicyUpdateEvent(nil), events...)
 	}
 	out := make([]dataplane.PolicyUpdateEvent, 0, len(events))
 	for _, event := range events {
-		if policyRuleEndpointMatches(event.EndpointID, endpoint) {
-			out = append(out, event)
+		if filter.Endpoint != "" && !policyRuleEndpointMatches(event.EndpointID, filter.Endpoint) {
+			continue
 		}
+		if filter.Success != nil && event.Success != *filter.Success {
+			continue
+		}
+		if filter.Remediated != nil && event.Remediated != *filter.Remediated {
+			continue
+		}
+		out = append(out, event)
 	}
 	return out
 }
@@ -5235,8 +5284,14 @@ func (m *agentMetrics) handlePolicyEvents(w http.ResponseWriter, r *http.Request
 		return
 	}
 	endpoint := policyEventEndpointFromRequest(r)
+	filter, err := policyUpdateEventFilterFromRequest(r, endpoint)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
 	events := eventStore.Events()
-	output := policyEventsOutputFromSnapshot(snapshot, events, endpoint, limit)
+	output := policyEventsOutputFromSnapshot(snapshot, events, filter, limit)
 	encoder := json.NewEncoder(w)
 	encoder.SetIndent("", "  ")
 	_ = encoder.Encode(output)
@@ -5874,13 +5929,17 @@ func policyActionSuccessFromRequest(r *http.Request) (*bool, error) {
 }
 
 func policyActionSuccessFromString(raw string) (*bool, error) {
+	return policyActionBoolFilterFromString("success", raw)
+}
+
+func policyActionBoolFilterFromString(name, raw string) (*bool, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return nil, nil
 	}
 	value, err := strconv.ParseBool(raw)
 	if err != nil {
-		return nil, fmt.Errorf("invalid success %q", raw)
+		return nil, fmt.Errorf("invalid %s %q", name, raw)
 	}
 	return &value, nil
 }

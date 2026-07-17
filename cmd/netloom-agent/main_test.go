@@ -2614,6 +2614,57 @@ func TestPolicyEventsAPIReportsRecentEndpointEvents(t *testing.T) {
 	}
 }
 
+func TestPolicyEventsAPIFiltersFailedEvents(t *testing.T) {
+	store := dataplane.NewInMemoryPolicyStore()
+	podA := model.EndpointKey("prod", "pod-a")
+	if err := store.ReplaceEndpoint(context.Background(), podA, []dataplane.PolicyMapEntry{{
+		Key:   dataplane.PolicyKey{PrefixLen: dataplane.StaticPrefixBits, Direction: dataplane.DirectionIngress, Protocol: 6, RemoteIdentity: 10},
+		Value: dataplane.PolicyEntry{RuleCookie: 42},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	store.SetFailAfter(1)
+	if err := store.ReplaceEndpoint(context.Background(), podA, []dataplane.PolicyMapEntry{{
+		Key:   dataplane.PolicyKey{PrefixLen: dataplane.StaticPrefixBits, Direction: dataplane.DirectionIngress, Protocol: 6, RemoteIdentity: 11},
+		Value: dataplane.PolicyEntry{RuleCookie: 43},
+	}}); err == nil {
+		t.Fatal("expected failed policy update")
+	}
+	metrics := newAgentMetrics(store)
+	observeAgentReconcileResult(metrics, agent.ReconcileResult{Node: "node-a"}, "memory", time.Millisecond)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/policy/events?success=false", nil)
+	metrics.handlePolicyEvents(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var got policyEventsOutput
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode policy events response: %v\n%s", err, recorder.Body.String())
+	}
+	if got.FilterSuccess == nil || *got.FilterSuccess || got.EventCount != 1 || len(got.Events) != 1 {
+		t.Fatalf("events output = %+v, want one failed event", got)
+	}
+	if got.Events[0].Success || got.Events[0].EndpointID != podA || got.Events[0].Error == "" {
+		t.Fatalf("events = %+v, want failed pod-a event with error", got.Events)
+	}
+}
+
+func TestPolicyEventsAPIRejectsInvalidRemediatedFilter(t *testing.T) {
+	metrics := newAgentMetrics(dataplane.NewInMemoryPolicyStore())
+	observeAgentReconcileResult(metrics, agent.ReconcileResult{Node: "node-a"}, "memory", time.Millisecond)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/policy/events?remediated=maybe", nil)
+	metrics.handlePolicyEvents(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestPolicyEventsAPIReportsNotEnabled(t *testing.T) {
 	metrics := newAgentMetrics()
 	observeAgentReconcileResult(metrics, agent.ReconcileResult{Node: "node-a"}, "custom", time.Millisecond)
@@ -2687,6 +2738,48 @@ func TestRunPolicyEventsWithStoreReportsFilteredJSON(t *testing.T) {
 	}
 	if len(got.Events) != 1 || got.Events[0].Revision != 2 || got.Events[0].Success {
 		t.Fatalf("events = %+v, want latest failed pod-a revision 2", got.Events)
+	}
+}
+
+func TestRunPolicyEventsWithStoreFiltersRemediatedEvents(t *testing.T) {
+	store := ovsdbPolicyEventsStore{syncer: &fakeOpenVSwitchExternalIDStore{}}
+	if err := store.Save(t.Context(), policyEventsDocument{
+		Node:                 "node-a",
+		Store:                "ebpf",
+		LastReconcileSuccess: true,
+		TotalEvents:          3,
+		Events: []dataplane.PolicyUpdateEvent{{
+			EndpointID: model.EndpointKey("prod", "pod-a"),
+			Revision:   1,
+			Success:    true,
+		}, {
+			EndpointID:  model.EndpointKey("prod", "pod-a"),
+			Revision:    2,
+			Success:     true,
+			Remediated:  true,
+			Remediation: "clear",
+		}, {
+			EndpointID: model.EndpointKey("prod", "pod-b"),
+			Revision:   1,
+			Success:    false,
+			Error:      "apply failed",
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var stdout bytes.Buffer
+	if err := runPolicyEventsWithStore(t.Context(), policyEventsOptions{remediated: "true", limit: 10}, &stdout, store); err != nil {
+		t.Fatal(err)
+	}
+	var got policyEventsOutput
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode policy-events output: %v\n%s", err, stdout.String())
+	}
+	if got.FilterRemediated == nil || !*got.FilterRemediated || got.EventCount != 1 || len(got.Events) != 1 {
+		t.Fatalf("policy events summary = %+v, want one remediated event", got)
+	}
+	if !got.Events[0].Remediated || got.Events[0].Remediation != "clear" {
+		t.Fatalf("events = %+v, want clear remediated event", got.Events)
 	}
 }
 

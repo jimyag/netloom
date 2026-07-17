@@ -329,6 +329,8 @@ curl -s 'http://127.0.0.1:9092/policy/endpoints/prod/vm-a/revision?target_revisi
 ./netloom-agent policy-rules -ovsdb unix:/var/run/openvswitch/db.sock -rule-cookie 42
 ./netloom-agent policy-rules -ovsdb unix:/var/run/openvswitch/db.sock -rule-ref sg/web/allow-http
 ./netloom-agent policy-events -ovsdb unix:/var/run/openvswitch/db.sock -endpoint prod/vm-a -limit 20
+./netloom-agent policy-events -ovsdb unix:/var/run/openvswitch/db.sock -success false -limit 20
+./netloom-agent policy-events -ovsdb unix:/var/run/openvswitch/db.sock -remediated true -limit 20
 ovs-vsctl get Open_vSwitch . external_ids:netloom_controller_status
 ovs-vsctl get Open_vSwitch . external_ids:netloom_controller_events
 ovs-vsctl get Open_vSwitch . external_ids:netloom_agent_status
@@ -539,9 +541,15 @@ Open_vSwitch OVSDB 读取同一个 key，适合在没有打开 agent HTTP listen
 ```bash
 curl -s http://127.0.0.1:9092/policy/events
 curl -s 'http://127.0.0.1:9092/policy/events/prod/vm-a?limit=20'
+curl -s 'http://127.0.0.1:9092/policy/events?success=false&limit=20'
+curl -s 'http://127.0.0.1:9092/policy/events?remediated=true&limit=20'
 netloom-agent policy-events \
   -ovsdb unix:/var/run/openvswitch/db.sock \
   -endpoint prod/vm-a \
+  -limit 20
+netloom-agent policy-events \
+  -ovsdb unix:/var/run/openvswitch/db.sock \
+  -success false \
   -limit 20
 ovs-vsctl get Open_vSwitch . external_ids:netloom_policy_events
 ```
@@ -549,7 +557,8 @@ ovs-vsctl get Open_vSwitch . external_ids:netloom_policy_events
 如果 agent 配置了 `NETLOOM_OVSDB_ENDPOINT`，最近的 endpoint policy map 更新事件会写入
 `Open_vSwitch.external_ids:netloom_policy_events`，包括 endpoint、revision、diff stats、
 success/error 和 overflow remediation 信息，用于节点重启后继续审计 Cilium-style policy
-regeneration 结果。
+regeneration 结果。HTTP API 和 CLI 都支持按 endpoint、success 和 remediated 过滤，
+便于直接定位失败更新或自动 remediation 事件。
 
 查看 endpoint policy rollout 历史：
 
