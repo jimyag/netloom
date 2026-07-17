@@ -3329,6 +3329,26 @@ func TestPolicyEndpointAPIRegenerateRequiresReadyDesiredState(t *testing.T) {
 	}
 }
 
+func TestPolicyEndpointAPIPlanRecordsFailureHistory(t *testing.T) {
+	metrics := newAgentMetrics()
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/policy/endpoints/prod/pod-a/plan", nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503; body=%s", recorder.Code, recorder.Body.String())
+	}
+	history := metrics.policyActionHistory()
+	if len(history) != 1 ||
+		history[0].Action != "plan" ||
+		history[0].EndpointID != "prod/pod-a" ||
+		history[0].Success ||
+		!strings.Contains(history[0].Error, "not enabled") {
+		t.Fatalf("action history = %+v, want failed plan audit event", history)
+	}
+}
+
 func TestPolicyEndpointAPIPlansDesiredEndpointPolicyMap(t *testing.T) {
 	endpointID := model.EndpointKey("prod", "pod-a")
 	state := control.DesiredState{
@@ -3405,6 +3425,15 @@ func TestPolicyEndpointAPIPlansDesiredEndpointPolicyMap(t *testing.T) {
 	}
 	if entries := store.Entries(endpointID); len(entries) != 1 || entries[0].RemoteCIDR != oldEntries[0].RemoteCIDR || entries[0].Value.Deny != 1 {
 		t.Fatalf("entries = %+v, want old entries preserved", entries)
+	}
+	history := metrics.policyActionHistory()
+	if len(history) != 1 ||
+		history[0].Action != "plan" ||
+		history[0].EndpointID != endpointID ||
+		!history[0].Success ||
+		history[0].Revision != got.Plan.Stats.Revision ||
+		history[0].Entries != uint32(got.Plan.DesiredEntries) {
+		t.Fatalf("action history = %+v, want successful plan audit event", history)
 	}
 }
 

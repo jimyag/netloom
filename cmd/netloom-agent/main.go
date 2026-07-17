@@ -5058,6 +5058,7 @@ func (m *agentMetrics) handlePolicyEndpointPlan(w http.ResponseWriter, r *http.R
 	}
 	plan, err := m.planPolicyEndpoint(r.Context(), endpoint)
 	if err != nil {
+		m.recordPolicyEndpointActionFailure(r.Context(), "plan", endpoint, err)
 		statusCode := http.StatusInternalServerError
 		switch {
 		case strings.Contains(err.Error(), "not enabled"), strings.Contains(err.Error(), "not ready"):
@@ -5073,6 +5074,12 @@ func (m *agentMetrics) handlePolicyEndpointPlan(w http.ResponseWriter, r *http.R
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
+	m.recordPolicyEndpointAction(r.Context(), policyActionHistoryEntry{
+		Action:     "plan",
+		EndpointID: plan.EndpointID,
+		Revision:   plan.Stats.Revision,
+		Entries:    uint32(plan.DesiredEntries),
+	})
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(policyEndpointActionOutput{
 		EndpointID: plan.EndpointID,
