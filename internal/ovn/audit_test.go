@@ -1118,6 +1118,13 @@ func TestAuditManagedObjectsFromReaderReportsDesiredDrift(t *testing.T) {
 	if stats.MissingManagedRows != 2 {
 		t.Fatalf("missing managed rows = %d, want router and switch ports for subnet", stats.MissingManagedRows)
 	}
+	if got := stats.UnexpectedManagedTableCounts["Logical_Switch"]; got != 1 {
+		t.Fatalf("unexpected table counts = %+v, want one logical switch", stats.UnexpectedManagedTableCounts)
+	}
+	if stats.MissingManagedTableCounts["Logical_Router_Port"] != 1 ||
+		stats.MissingManagedTableCounts["Logical_Switch_Port"] != 1 {
+		t.Fatalf("missing table counts = %+v, want router and switch ports for subnet", stats.MissingManagedTableCounts)
+	}
 }
 
 func TestAuditManagedObjectsFromReaderReportsFieldDrift(t *testing.T) {

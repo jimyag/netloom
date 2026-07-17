@@ -1549,8 +1549,26 @@ func writeControllerMetrics(w metricWriter, snapshot controllerMetricsSnapshot, 
 	fmt.Fprintf(w, "netloom_controller_ovn_live_incomplete_managed_rows%s %d\n", auditLabels, snapshot.OVNAudit.IncompleteManagedRows)
 	writeMetricType(w, "netloom_controller_ovn_live_missing_managed_rows", "gauge")
 	fmt.Fprintf(w, "netloom_controller_ovn_live_missing_managed_rows%s %d\n", auditLabels, snapshot.OVNAudit.MissingManagedRows)
+	writeMetricType(w, "netloom_controller_ovn_live_missing_managed_rows_by_table", "gauge")
+	for _, table := range sortedPositiveCountKeys(snapshot.OVNAudit.MissingManagedTableCounts) {
+		labels := prometheusLabels(map[string]string{
+			"ovn_health": fallbackMetricsLabel(snapshot.OVNHealthStatus, "disabled"),
+			"ovn_audit":  fallbackMetricsLabel(snapshot.OVNAuditStatus, "disabled"),
+			"table":      table,
+		})
+		fmt.Fprintf(w, "netloom_controller_ovn_live_missing_managed_rows_by_table%s %d\n", labels, snapshot.OVNAudit.MissingManagedTableCounts[table])
+	}
 	writeMetricType(w, "netloom_controller_ovn_live_unexpected_managed_rows", "gauge")
 	fmt.Fprintf(w, "netloom_controller_ovn_live_unexpected_managed_rows%s %d\n", auditLabels, snapshot.OVNAudit.UnexpectedManagedRows)
+	writeMetricType(w, "netloom_controller_ovn_live_unexpected_managed_rows_by_table", "gauge")
+	for _, table := range sortedPositiveCountKeys(snapshot.OVNAudit.UnexpectedManagedTableCounts) {
+		labels := prometheusLabels(map[string]string{
+			"ovn_health": fallbackMetricsLabel(snapshot.OVNHealthStatus, "disabled"),
+			"ovn_audit":  fallbackMetricsLabel(snapshot.OVNAuditStatus, "disabled"),
+			"table":      table,
+		})
+		fmt.Fprintf(w, "netloom_controller_ovn_live_unexpected_managed_rows_by_table%s %d\n", labels, snapshot.OVNAudit.UnexpectedManagedTableCounts[table])
+	}
 	writeMetricType(w, "netloom_controller_ovn_live_drifted_managed_rows", "gauge")
 	fmt.Fprintf(w, "netloom_controller_ovn_live_drifted_managed_rows%s %d\n", auditLabels, snapshot.OVNAudit.DriftedManagedRows)
 	writeMetricType(w, "netloom_controller_ovn_live_drifted_managed_fields", "gauge")
@@ -1614,6 +1632,10 @@ func writeControllerFailurePhaseCounters(w metricWriter, totals controllerMetric
 }
 
 func sortedAuditDriftFieldKeys(counts map[string]int) []string {
+	return sortedPositiveCountKeys(counts)
+}
+
+func sortedPositiveCountKeys(counts map[string]int) []string {
 	keys := make([]string, 0, len(counts))
 	for key, count := range counts {
 		if count > 0 {

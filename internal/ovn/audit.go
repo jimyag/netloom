@@ -31,6 +31,8 @@ type AuditStats struct {
 	UnexpectedManagedRows            int
 	DriftedManagedRows               int
 	DriftedManagedFields             int
+	MissingManagedTableCounts        map[string]int `json:"missing_managed_table_counts,omitempty"`
+	UnexpectedManagedTableCounts     map[string]int `json:"unexpected_managed_table_counts,omitempty"`
 	DriftedManagedFieldCounts        map[string]int `json:"drifted_managed_field_counts,omitempty"`
 }
 
@@ -101,6 +103,7 @@ func AuditManagedObjectsFromReaderWithDesired(ctx context.Context, reader Manage
 				}
 			} else if len(expected) > 0 {
 				stats.UnexpectedManagedRows++
+				stats.addUnexpectedManagedTable(table.name)
 			}
 		}
 	}
@@ -108,10 +111,31 @@ func AuditManagedObjectsFromReaderWithDesired(ctx context.Context, reader Manage
 		for identity := range expected {
 			if _, ok := seen[identity]; !ok {
 				stats.MissingManagedRows++
+				stats.addMissingManagedTable(auditIdentityTable(identity))
 			}
 		}
 	}
 	return stats, nil
+}
+
+func (s *AuditStats) addMissingManagedTable(table string) {
+	if table == "" {
+		return
+	}
+	if s.MissingManagedTableCounts == nil {
+		s.MissingManagedTableCounts = make(map[string]int)
+	}
+	s.MissingManagedTableCounts[table]++
+}
+
+func (s *AuditStats) addUnexpectedManagedTable(table string) {
+	if table == "" {
+		return
+	}
+	if s.UnexpectedManagedTableCounts == nil {
+		s.UnexpectedManagedTableCounts = make(map[string]int)
+	}
+	s.UnexpectedManagedTableCounts[table]++
 }
 
 func (s *AuditStats) addDriftedManagedFields(table string, fields []string) {
@@ -124,6 +148,11 @@ func (s *AuditStats) addDriftedManagedFields(table string, fields []string) {
 	for _, field := range fields {
 		s.DriftedManagedFieldCounts[table+"."+field]++
 	}
+}
+
+func auditIdentityTable(identity string) string {
+	table, _, _ := strings.Cut(identity, "\x00")
+	return table
 }
 
 type managedAuditTable struct {
