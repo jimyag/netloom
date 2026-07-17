@@ -642,7 +642,18 @@ func (s *LibOVSDBProviderSyncer) bridgeControllerState(ctx context.Context, brid
 			detail = fmt.Sprintf("connected=%d/%d;%s", connected, len(controllers), detail)
 		}
 	}
+	roleState, roleDetail := controllerRoleState(controllers)
+	if roleDetail != "" {
+		if detail == "" {
+			detail = roleDetail
+		} else {
+			detail += ";" + roleDetail
+		}
+	}
 	if connected == len(controllers) {
+		if roleState != "" {
+			return roleState, detail, nil
+		}
 		return "up", detail, nil
 	}
 	if connected > 0 {
@@ -681,6 +692,38 @@ func controllerStatusDetail(controllers []vswitch.Controller) string {
 	}
 	sort.Strings(parts)
 	return strings.Join(parts, ";")
+}
+
+func controllerRoleState(controllers []vswitch.Controller) (string, string) {
+	if len(controllers) <= 1 {
+		return "", ""
+	}
+	roleCounts := map[string]int{}
+	for _, controller := range controllers {
+		role := strings.ToLower(strings.TrimSpace(controller.Status["role"]))
+		if role == "" {
+			continue
+		}
+		roleCounts[role]++
+	}
+	if len(roleCounts) == 0 {
+		return "", ""
+	}
+	roles := make([]string, 0, len(roleCounts))
+	for role, count := range roleCounts {
+		roles = append(roles, fmt.Sprintf("%s=%d", role, count))
+	}
+	sort.Strings(roles)
+	detail := "role_summary=" + strings.Join(roles, ",")
+	masterCount := roleCounts["master"]
+	switch {
+	case masterCount == 0:
+		return "degraded", detail + ",reason=missing-master"
+	case masterCount > 1:
+		return "degraded", detail + ",reason=multiple-master"
+	default:
+		return "", detail
+	}
 }
 
 func (s *LibOVSDBProviderSyncer) bridgeControllerPath(ctx context.Context, controllerUUIDs []string) ([]string, []string, error) {

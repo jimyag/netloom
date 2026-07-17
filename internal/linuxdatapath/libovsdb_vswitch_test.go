@@ -423,6 +423,45 @@ func TestLibOVSDBProviderSyncerReportsProviderControllerQuorum(t *testing.T) {
 		!strings.Contains(statuses[0].ControllerDetail, "connected=2/2") {
 		t.Fatalf("statuses = %+v, want full controller quorum up", statuses)
 	}
+
+	first = singleControllerByTarget(t, ctx, client, "tcp:192.0.2.10:6653")
+	first.Status = map[string]string{"role": "backup"}
+	firstBackupOps, err := client.Where(first).Update(first, &first.Status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transactVSwitchOps(t, ctx, client, firstBackupOps)
+	statuses, err = syncer.ReadProviderOVSDBStatus(ctx, rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(statuses) != 1 || statuses[0].ControllerState != "degraded" ||
+		!strings.Contains(statuses[0].ControllerDetail, "role_summary=backup=2,reason=missing-master") {
+		t.Fatalf("statuses = %+v, want connected controllers degraded without master", statuses)
+	}
+
+	first = singleControllerByTarget(t, ctx, client, "tcp:192.0.2.10:6653")
+	first.Status = map[string]string{"role": "master"}
+	firstMasterOps, err := client.Where(first).Update(first, &first.Status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transactVSwitchOps(t, ctx, client, firstMasterOps)
+	second = singleControllerByTarget(t, ctx, client, "tcp:192.0.2.11:6653")
+	second.Status = map[string]string{"role": "master"}
+	secondMasterOps, err := client.Where(second).Update(second, &second.Status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transactVSwitchOps(t, ctx, client, secondMasterOps)
+	statuses, err = syncer.ReadProviderOVSDBStatus(ctx, rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(statuses) != 1 || statuses[0].ControllerState != "degraded" ||
+		!strings.Contains(statuses[0].ControllerDetail, "role_summary=master=2,reason=multiple-master") {
+		t.Fatalf("statuses = %+v, want connected controllers degraded with multiple masters", statuses)
+	}
 }
 
 func TestLibOVSDBProviderSyncerCreatesProviderQoS(t *testing.T) {

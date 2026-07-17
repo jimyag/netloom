@@ -41,7 +41,7 @@
 
 | 能力 | 状态 | 实现入口 | 验证 |
 | --- | --- | --- | --- |
-| Provider Network | 已实现 | OVN localnet port + local OVSDB bridge/port/interface | `TestDockerControllerClearsLocalnetTagWhenProviderVLANIsRemoved` |
+| Provider Network | 已实现 | OVN localnet port + local OVSDB bridge/port/interface，包含 OVS Controller 多目标连接和 master 角色健康汇总 | `TestDockerControllerClearsLocalnetTagWhenProviderVLANIsRemoved`、`TestLibOVSDBProviderSyncerReportsProviderControllerQuorum` |
 | VLAN | 已实现 | localnet tag 和本机 provider interface planning | Docker provider VLAN e2e |
 | OVS Bridge/Port/Interface | 已实现 | `internal/linuxdatapath/libovsdb_vswitch.go` | `go test ./internal/linuxdatapath` |
 | QoS / Queue | 已实现 | Open_vSwitch QoS/Queue rows, tenant classification, and expected row refs in drift status | `go test ./internal/linuxdatapath ./internal/ovn` |
