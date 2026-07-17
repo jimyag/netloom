@@ -434,6 +434,11 @@ func (w *LibOVSDBTopologyWriter) policyRouteOperations(ctx context.Context, rout
 		return nil, err
 	}
 	desired := desiredPolicyRouteRow(route)
+	referenced, err := w.referencedPolicyRoutesForDesired(ctx, router.Policies, desired)
+	if err != nil {
+		return nil, err
+	}
+	existing = mergePolicyRoutes(existing, referenced)
 	var ops []ovsdb.Operation
 	if len(existing) == 0 {
 		if !createMissing {
@@ -2045,6 +2050,86 @@ func (w *LibOVSDBTopologyWriter) policyRoutesByName(ctx context.Context, vpc, na
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].UUID < rows[j].UUID })
 	return rows, nil
+}
+
+func (w *LibOVSDBTopologyWriter) policyRoutesByUUIDs(ctx context.Context, uuids []string) ([]ovnnb.LogicalRouterPolicy, error) {
+	want := make(map[string]struct{}, len(uuids))
+	for _, uuid := range uuids {
+		if uuid == "" {
+			continue
+		}
+		want[uuid] = struct{}{}
+	}
+	if len(want) == 0 {
+		return nil, nil
+	}
+	var rows []ovnnb.LogicalRouterPolicy
+	if err := w.client.WhereCache(func(row *ovnnb.LogicalRouterPolicy) bool {
+		_, ok := want[row.UUID]
+		return ok
+	}).List(ctx, &rows); err != nil {
+		return nil, fmt.Errorf("list policy routes by UUID from libovsdb cache: %w", err)
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].UUID < rows[j].UUID })
+	return rows, nil
+}
+
+func (w *LibOVSDBTopologyWriter) referencedPolicyRoutesForDesired(ctx context.Context, uuids []string, desired ovnnb.LogicalRouterPolicy) ([]ovnnb.LogicalRouterPolicy, error) {
+	rows, err := w.policyRoutesByUUIDs(ctx, uuids)
+	if err != nil {
+		return nil, err
+	}
+	filtered := rows[:0]
+	for _, row := range rows {
+		if policyRouteReferenceMatchesDesired(row, desired) {
+			filtered = append(filtered, row)
+		}
+	}
+	return filtered, nil
+}
+
+func policyRouteReferenceMatchesDesired(row, desired ovnnb.LogicalRouterPolicy) bool {
+	if row.ExternalIDs["netloom_vpc"] == desired.ExternalIDs["netloom_vpc"] &&
+		row.ExternalIDs["netloom_policy_route"] == desired.ExternalIDs["netloom_policy_route"] {
+		return true
+	}
+	return row.Priority == desired.Priority &&
+		row.Match == desired.Match &&
+		row.Action == desired.Action &&
+		policyRouteNexthopsMatch(row, desired)
+}
+
+func policyRouteNexthopsMatch(row, desired ovnnb.LogicalRouterPolicy) bool {
+	if stringPointerValueEqual(row.Nexthop, pointerStringValue(desired.Nexthop)) &&
+		reflect.DeepEqual(row.Nexthops, desired.Nexthops) {
+		return true
+	}
+	return reflect.DeepEqual(policyRouteNextHopSet(row), policyRouteNextHopSet(desired))
+}
+
+func policyRouteNextHopSet(row ovnnb.LogicalRouterPolicy) []string {
+	out := append([]string(nil), row.Nexthops...)
+	if row.Nexthop != nil && *row.Nexthop != "" {
+		out = append(out, *row.Nexthop)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func mergePolicyRoutes(groups ...[]ovnnb.LogicalRouterPolicy) []ovnnb.LogicalRouterPolicy {
+	seen := make(map[string]struct{})
+	var rows []ovnnb.LogicalRouterPolicy
+	for _, group := range groups {
+		for _, row := range group {
+			if _, ok := seen[row.UUID]; ok {
+				continue
+			}
+			seen[row.UUID] = struct{}{}
+			rows = append(rows, row)
+		}
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].UUID < rows[j].UUID })
+	return rows
 }
 
 func (w *LibOVSDBTopologyWriter) natRulesByName(ctx context.Context, vpc, name string) ([]ovnnb.NAT, error) {

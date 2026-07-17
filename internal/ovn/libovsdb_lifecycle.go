@@ -324,7 +324,7 @@ func (w *LibOVSDBTopologyWriter) cleanupUnexpectedLiveOperations(ctx context.Con
 		}
 		ops = append(ops, nextOps...)
 	}
-	policyRows, err := w.unexpectedPolicyRoutes(ctx, expected)
+	policyRows, err := w.unexpectedPolicyRoutes(ctx, expected, desired.PolicyRoutes)
 	if err != nil {
 		return nil, CleanupStats{}, err
 	}
@@ -1601,15 +1601,47 @@ func (w *LibOVSDBTopologyWriter) unexpectedLogicalRouterPorts(ctx context.Contex
 	return rows, nil
 }
 
-func (w *LibOVSDBTopologyWriter) unexpectedPolicyRoutes(ctx context.Context, expected map[string]map[string]string) ([]ovnnb.LogicalRouterPolicy, error) {
+func (w *LibOVSDBTopologyWriter) unexpectedPolicyRoutes(ctx context.Context, expected map[string]map[string]string, desired []model.PolicyRoute) ([]ovnnb.LogicalRouterPolicy, error) {
+	expectedRefs, err := w.expectedRouterPolicyRefs(ctx, expected, desired)
+	if err != nil {
+		return nil, err
+	}
 	var rows []ovnnb.LogicalRouterPolicy
 	if err := w.client.WhereCache(func(row *ovnnb.LogicalRouterPolicy) bool {
+		if _, ok := expectedRefs[row.UUID]; ok {
+			return false
+		}
 		return unexpectedManagedRow("Logical_Router_Policy", row.UUID, row.ExternalIDs, expected)
 	}).List(ctx, &rows); err != nil {
 		return nil, err
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].UUID < rows[j].UUID })
 	return rows, nil
+}
+
+func (w *LibOVSDBTopologyWriter) expectedRouterPolicyRefs(ctx context.Context, expected map[string]map[string]string, desired []model.PolicyRoute) (map[string]struct{}, error) {
+	var routers []ovnnb.LogicalRouter
+	if err := w.client.WhereCache(func(row *ovnnb.LogicalRouter) bool {
+		return !unexpectedManagedRow("Logical_Router", row.UUID, row.ExternalIDs, expected)
+	}).List(ctx, &routers); err != nil {
+		return nil, err
+	}
+	refs := make(map[string]struct{})
+	for _, router := range routers {
+		for _, route := range desired {
+			if logicalRouter(route.VPC) != router.Name {
+				continue
+			}
+			rows, err := w.referencedPolicyRoutesForDesired(ctx, router.Policies, desiredPolicyRouteRow(route))
+			if err != nil {
+				return nil, err
+			}
+			for _, row := range rows {
+				refs[row.UUID] = struct{}{}
+			}
+		}
+	}
+	return refs, nil
 }
 
 func (w *LibOVSDBTopologyWriter) unexpectedNATRules(ctx context.Context, expected map[string]map[string]string, desired map[string]model.NATRule) ([]ovnnb.NAT, error) {
