@@ -101,6 +101,11 @@ func main() {
 				log.Fatal(err)
 			}
 			return
+		case "dns-observations-export":
+			if err := runDNSObservationsExport(context.Background(), os.Args[2:], os.Stdout); err != nil {
+				log.Fatal(err)
+			}
+			return
 		case "desired-state-import":
 			if err := runDesiredStateImport(context.Background(), os.Args[2:], os.Stdin, os.Stdout); err != nil {
 				log.Fatal(err)
@@ -215,6 +220,10 @@ type identityGroupsImportOptions struct {
 type identityGroupsExportOptions struct {
 	ovsdb  string
 	source string
+}
+
+type dnsObservationsExportOptions struct {
+	ovsdb string
 }
 
 type desiredStateImportOptions struct {
@@ -1054,6 +1063,46 @@ func identityGroupsExportExternalID(source string) (string, error) {
 	default:
 		return "", fmt.Errorf("unsupported identity groups source %q", source)
 	}
+}
+
+func runDNSObservationsExport(ctx context.Context, args []string, stdout io.Writer) error {
+	var opts dnsObservationsExportOptions
+	flags := flag.NewFlagSet("netloom-agent dns-observations-export", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	flags.StringVar(&opts.ovsdb, "ovsdb", os.Getenv("NETLOOM_OVSDB_ENDPOINT"), "Open_vSwitch OVSDB endpoint")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(opts.ovsdb) == "" {
+		return errors.New("missing -ovsdb or NETLOOM_OVSDB_ENDPOINT")
+	}
+	client, closeStore, err := newOpenVSwitchClient(ctx, opts.ovsdb)
+	if err != nil {
+		return err
+	}
+	defer closeStore()
+	return runDNSObservationsExportWithStore(ctx, stdout, ovsdbDNSObservationStore{syncer: linuxdatapath.NewLibOVSDBProviderSyncer(client)})
+}
+
+func runDNSObservationsExportWithStore(ctx context.Context, stdout io.Writer, store dnsObservationStore) error {
+	if store == nil {
+		return errors.New("missing DNS observation store")
+	}
+	records, err := store.LoadDNSObservations(ctx)
+	if err != nil {
+		return err
+	}
+	raw, err := control.MarshalDNSObservationsJSON(records)
+	if err != nil {
+		return err
+	}
+	var document any
+	if err := json.Unmarshal(raw, &document); err != nil {
+		return err
+	}
+	encoder := json.NewEncoder(stdout)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(document)
 }
 
 func runDesiredStateImport(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) error {

@@ -310,9 +310,11 @@ NETLOOM_AGENT_METRICS_ADDR=:9092 \
 ```bash
 ./netloom-controller controller-status -ovsdb unix:/var/run/openvswitch/db.sock
 ./netloom-agent agent-status -ovsdb unix:/var/run/openvswitch/db.sock
+./netloom-agent dns-observations-export -ovsdb unix:/var/run/openvswitch/db.sock
 ./netloom-agent identity-groups-export -ovsdb unix:/var/run/openvswitch/db.sock
 ovs-vsctl get Open_vSwitch . external_ids:netloom_controller_status
 ovs-vsctl get Open_vSwitch . external_ids:netloom_agent_status
+ovs-vsctl get Open_vSwitch . external_ids:netloom_dns_observations
 ovs-vsctl get Open_vSwitch . external_ids:netloom_identity_groups
 ```
 
@@ -322,6 +324,9 @@ cluster quorum、stale advisory、maintenance 和错误状态。
 `agent-status` CLI 会解码 `Open_vSwitch.external_ids:netloom_agent_status`，
 用于查看最近一次 agent reconcile 的 policy/eBPF rollout、TCX、provider、datapath
 和错误状态。
+`dns-observations-export` 会解码 `Open_vSwitch.external_ids:netloom_dns_observations`，
+用于查看 DNS observer 或外部 DNS feed 当前写入的 FQDN 到 A/AAAA 观测，
+这些记录会参与 `remote_fqdns` egress policy 编译。
 `identity-groups-export` 默认导出 `Open_vSwitch.external_ids:netloom_identity_groups`，
 也就是 agent 根据 desired state、identity group feed 和 endpoint 解析出的当前成员快照；
 如果要查看原始导入或远端 feed 观测，可加 `-source observations` 导出

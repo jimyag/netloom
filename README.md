@@ -109,6 +109,7 @@ Inspect policy state, policy-map entries, and routing decisions:
 ```bash
 ./netloom-controller controller-status -ovsdb unix:/var/run/openvswitch/db.sock
 ./netloom-agent agent-status -ovsdb unix:/var/run/openvswitch/db.sock
+./netloom-agent dns-observations-export -ovsdb unix:/var/run/openvswitch/db.sock
 ./netloom-agent identity-groups-export -ovsdb unix:/var/run/openvswitch/db.sock
 ./netloom-agent policy-status -state /etc/netloom/state.json -node node-a
 ./netloom-agent policy-entries -state /etc/netloom/state.json -node node-a -endpoint prod/vm-a

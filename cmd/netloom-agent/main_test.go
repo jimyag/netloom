@@ -443,6 +443,68 @@ func TestRunIdentityGroupsExportWithStoreRejectsUnknownSource(t *testing.T) {
 	}
 }
 
+func TestRunDNSObservationsExportWithStoreReadsOpenVSwitchExternalID(t *testing.T) {
+	raw, err := control.MarshalDNSObservationsJSON([]model.DNSRecord{{
+		Name:       "api.example.com",
+		IPs:        []netip.Addr{netip.MustParseAddr("203.0.113.10")},
+		TTLSeconds: 60,
+		ObservedAt: time.Date(2026, 7, 17, 1, 2, 3, 0, time.UTC),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := ovsdbDNSObservationStore{syncer: &fakeOpenVSwitchExternalIDStore{values: map[string]string{
+		control.DNSObservationsOpenVSwitchExternalID: string(raw),
+	}}}
+	var stdout bytes.Buffer
+	if err := runDNSObservationsExportWithStore(t.Context(), &stdout, store); err != nil {
+		t.Fatal(err)
+	}
+	records, err := control.LoadDNSObservationsJSON(strings.NewReader(stdout.String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].Name != "api.example.com" || records[0].IPs[0] != netip.MustParseAddr("203.0.113.10") {
+		t.Fatalf("exported DNS observations = %+v, want api.example.com", records)
+	}
+}
+
+func TestRunDNSObservationsExportWithStoreReportsEmptyDocument(t *testing.T) {
+	var stdout bytes.Buffer
+	if err := runDNSObservationsExportWithStore(t.Context(), &stdout, ovsdbDNSObservationStore{syncer: &fakeOpenVSwitchExternalIDStore{}}); err != nil {
+		t.Fatal(err)
+	}
+	records, err := control.LoadDNSObservationsJSON(strings.NewReader(stdout.String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 0 {
+		t.Fatalf("dns records = %+v, want none", records)
+	}
+}
+
+func TestRunDNSObservationsExportReadsRealOpenVSwitchOVSDB(t *testing.T) {
+	endpoint, client, cleanup := newTestAgentVSwitchOVSDB(t)
+	defer cleanup()
+	raw, err := control.MarshalDNSObservationsJSON([]model.DNSRecord{{
+		Name: "api.example.com",
+		IPs:  []netip.Addr{netip.MustParseAddr("203.0.113.10")},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	insertAgentVSwitchRows(t, t.Context(), client, &vswitch.OpenvSwitch{ExternalIDs: map[string]string{
+		control.DNSObservationsOpenVSwitchExternalID: string(raw),
+	}})
+	var stdout bytes.Buffer
+	if err := runDNSObservationsExport(t.Context(), []string{"-ovsdb", endpoint}, &stdout); err != nil {
+		t.Fatal(err)
+	}
+	if got := stdout.String(); !strings.Contains(got, `"name": "api.example.com"`) || !strings.Contains(got, `"203.0.113.10"`) {
+		t.Fatalf("stdout = %s, want api.example.com DNS observation", got)
+	}
+}
+
 func TestRunDesiredStateImportWithStoreWritesOpenVSwitchExternalID(t *testing.T) {
 	store := &fakeOpenVSwitchExternalIDStore{}
 	var stdout bytes.Buffer
