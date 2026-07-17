@@ -716,6 +716,9 @@ func betterMatch(candidate, selected PolicyMapEntry, packet Packet) bool {
 	if candidate.Value.L4PrefixLen != selected.Value.L4PrefixLen {
 		return candidate.Value.L4PrefixLen > selected.Value.L4PrefixLen
 	}
+	if candidateAction, selectedAction := policyActionPrecedence(candidate.Value), policyActionPrecedence(selected.Value); candidateAction != selectedAction {
+		return candidateAction > selectedAction
+	}
 	candidateExact := candidate.Key.RemoteIdentity != 0 && candidate.Key.RemoteIdentity == packet.RemoteIdentity
 	selectedExact := selected.Key.RemoteIdentity != 0 && selected.Key.RemoteIdentity == packet.RemoteIdentity
 	if candidateExact != selectedExact {
@@ -725,6 +728,16 @@ func betterMatch(candidate, selected PolicyMapEntry, packet Packet) bool {
 		return candidateBits > selectedBits
 	}
 	return false
+}
+
+func policyActionPrecedence(value PolicyEntry) int {
+	if value.Reject != 0 {
+		return 2
+	}
+	if value.Deny != 0 {
+		return 1
+	}
+	return 0
 }
 
 func remoteCIDRBits(prefix netip.Prefix) int {

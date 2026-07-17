@@ -120,6 +120,105 @@ func TestEvaluateChoosesDenyPrecedenceOverAllow(t *testing.T) {
 	}
 }
 
+func TestEvaluateChoosesDenyOverAllowAtSamePrecedence(t *testing.T) {
+	allowCookie := stableCookie("allow-identity")
+	denyCookie := stableCookie("deny-cidr")
+	entries := []PolicyMapEntry{
+		{
+			Key: PolicyKey{
+				PrefixLen:      StaticPrefixBits + 24,
+				RemoteIdentity: 100,
+				Direction:      DirectionIngress,
+				Protocol:       6,
+				DestPortBE:     hostToNetwork16(443),
+			},
+			Value: PolicyEntry{
+				L4PrefixLen: 24,
+				Precedence:  100,
+				RuleCookie:  allowCookie,
+			},
+		},
+		{
+			Key: PolicyKey{
+				PrefixLen:  StaticPrefixBits + 24,
+				Direction:  DirectionIngress,
+				Protocol:   6,
+				DestPortBE: hostToNetwork16(443),
+			},
+			RemoteCIDR: netip.MustParsePrefix("10.20.0.55/32"),
+			Value: PolicyEntry{
+				Deny:        1,
+				L4PrefixLen: 24,
+				Precedence:  100,
+				RuleCookie:  denyCookie,
+			},
+		},
+	}
+
+	decision := Evaluate(entries, Packet{
+		RemoteIdentity: 100,
+		RemoteIP:       netip.MustParseAddr("10.20.0.55"),
+		Direction:      DirectionIngress,
+		Protocol:       6,
+		DestPort:       443,
+	})
+	if decision.Verdict != VerdictDrop || decision.Match == nil {
+		t.Fatalf("decision = %+v, want deny match", decision)
+	}
+	if decision.Match.Value.RuleCookie != denyCookie {
+		t.Fatalf("rule cookie = %d, want deny cookie %d", decision.Match.Value.RuleCookie, denyCookie)
+	}
+}
+
+func TestEvaluateKeepsHigherPrecedenceAllowAboveDeny(t *testing.T) {
+	allowCookie := stableCookie("allow-higher-precedence")
+	entries := []PolicyMapEntry{
+		{
+			Key: PolicyKey{
+				PrefixLen:      StaticPrefixBits + 24,
+				RemoteIdentity: 100,
+				Direction:      DirectionIngress,
+				Protocol:       6,
+				DestPortBE:     hostToNetwork16(443),
+			},
+			Value: PolicyEntry{
+				L4PrefixLen: 24,
+				Precedence:  200,
+				RuleCookie:  allowCookie,
+			},
+		},
+		{
+			Key: PolicyKey{
+				PrefixLen:  StaticPrefixBits + 24,
+				Direction:  DirectionIngress,
+				Protocol:   6,
+				DestPortBE: hostToNetwork16(443),
+			},
+			RemoteCIDR: netip.MustParsePrefix("10.20.0.55/32"),
+			Value: PolicyEntry{
+				Deny:        1,
+				L4PrefixLen: 24,
+				Precedence:  100,
+				RuleCookie:  stableCookie("deny-lower-precedence"),
+			},
+		},
+	}
+
+	decision := Evaluate(entries, Packet{
+		RemoteIdentity: 100,
+		RemoteIP:       netip.MustParseAddr("10.20.0.55"),
+		Direction:      DirectionIngress,
+		Protocol:       6,
+		DestPort:       443,
+	})
+	if decision.Verdict != VerdictAllow || decision.Match == nil {
+		t.Fatalf("decision = %+v, want higher-precedence allow", decision)
+	}
+	if decision.Match.Value.RuleCookie != allowCookie {
+		t.Fatalf("rule cookie = %d, want allow cookie %d", decision.Match.Value.RuleCookie, allowCookie)
+	}
+}
+
 func TestEvaluateRequiresRemoteCIDRMatchEvenWhenIdentityMatches(t *testing.T) {
 	entries := []PolicyMapEntry{{
 		Key: PolicyKey{
