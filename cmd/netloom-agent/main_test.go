@@ -1466,6 +1466,16 @@ func TestRunPolicyExplainReportsSelectorAllow(t *testing.T) {
 	if !explanation.Matched || explanation.RuleCookie == 0 {
 		t.Fatalf("explanation = %+v, want matched rule cookie", explanation)
 	}
+	if explanation.MatchedRule == nil {
+		t.Fatalf("matched rule metadata missing from explanation: %+v", explanation)
+	}
+	if explanation.MatchedRule.RuleRef != "prod/web/allow-client-https" ||
+		explanation.MatchedRule.SecurityGroup != "web" ||
+		explanation.MatchedRule.RuleID != "allow-client-https" ||
+		explanation.MatchedRule.Priority != 100 ||
+		explanation.MatchedRule.Action != string(model.ActionAllow) {
+		t.Fatalf("matched rule = %+v, want web/allow-client-https metadata", explanation.MatchedRule)
+	}
 	if explanation.Packet.RemoteIP != netip.MustParseAddr("10.10.0.11") {
 		t.Fatalf("remote IP = %s, want remote endpoint IP", explanation.Packet.RemoteIP)
 	}
@@ -1500,6 +1510,9 @@ func TestRunPolicyExplainReportsNoMatchDrop(t *testing.T) {
 	}
 	if explanation.Matched || explanation.RuleCookie != 0 {
 		t.Fatalf("explanation = %+v, want no matched rule", explanation)
+	}
+	if explanation.MatchedRule != nil {
+		t.Fatalf("matched rule = %+v, want nil for no-match drop", explanation.MatchedRule)
 	}
 }
 
@@ -3376,6 +3389,9 @@ func TestPolicyExplainAPIUsesLatestReconciledState(t *testing.T) {
 	}
 	if !explanation.Matched || explanation.RuleCookie == 0 {
 		t.Fatalf("explanation = %+v, want matched policy rule", explanation)
+	}
+	if explanation.MatchedRule == nil || explanation.MatchedRule.RuleRef != "prod/web/allow-client-https" {
+		t.Fatalf("matched rule = %+v, want prod/web/allow-client-https", explanation.MatchedRule)
 	}
 }
 

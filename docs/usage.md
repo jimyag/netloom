@@ -412,6 +412,11 @@ status，endpoint 不存在返回 404，目标 revision 未按时出现返回 40
   -dest-port 8080
 ```
 
+命中安全组规则时，`policy-explain` 会输出 `matched_rule`，包含 rule cookie、
+rule ref、VPC、安全组名称、规则 ID、tier、priority、direction、protocol、action、
+stateful 和 log 标记。这个字段用于从一次策略判定直接反查到 Cilium-style policy map
+里的规则来源。
+
 解释一条路由判定：
 
 ```bash

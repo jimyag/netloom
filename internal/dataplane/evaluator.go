@@ -58,9 +58,25 @@ type PolicyExplanation struct {
 	Matched          bool
 	Match            PolicyMapEntry
 	RuleCookie       uint32
+	MatchedRule      *PolicyRuleExplanation `json:"matched_rule,omitempty"`
 	Conntrack        bool
 	Established      bool
 	EvaluatedEntries int
+}
+
+type PolicyRuleExplanation struct {
+	RuleCookie    uint32 `json:"rule_cookie"`
+	RuleRef       string `json:"rule_ref,omitempty"`
+	VPC           string `json:"vpc,omitempty"`
+	SecurityGroup string `json:"security_group,omitempty"`
+	RuleID        string `json:"rule_id,omitempty"`
+	Tier          int    `json:"tier"`
+	Priority      int    `json:"priority"`
+	Direction     string `json:"direction,omitempty"`
+	Protocol      string `json:"protocol,omitempty"`
+	Action        string `json:"action,omitempty"`
+	Stateful      bool   `json:"stateful,omitempty"`
+	Log           bool   `json:"log,omitempty"`
 }
 
 type DropReason string

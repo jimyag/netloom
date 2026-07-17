@@ -2408,9 +2408,48 @@ func explainPolicyFromState(state control.DesiredState, opts policyExplainOption
 		return dataplane.PolicyExplanation{}, err
 	}
 	if opts.stateful {
-		return dataplane.ExplainStateful(program.EndpointID, entries, packet, dataplane.NewInMemoryConntrackStore()), nil
+		explanation := dataplane.ExplainStateful(program.EndpointID, entries, packet, dataplane.NewInMemoryConntrackStore())
+		attachMatchedPolicyRule(&explanation, program)
+		return explanation, nil
 	}
-	return dataplane.Explain(program.EndpointID, entries, packet), nil
+	explanation := dataplane.Explain(program.EndpointID, entries, packet)
+	attachMatchedPolicyRule(&explanation, program)
+	return explanation, nil
+}
+
+func attachMatchedPolicyRule(explanation *dataplane.PolicyExplanation, program policy.Program) {
+	if explanation == nil || !explanation.Matched || explanation.RuleCookie == 0 {
+		return
+	}
+	for _, rule := range program.Rules {
+		ref := explainPolicyRuleRef(rule)
+		if ref == "" || dataplane.PolicyRuleCookie(ref) != explanation.RuleCookie {
+			continue
+		}
+		explanation.MatchedRule = &dataplane.PolicyRuleExplanation{
+			RuleCookie:    explanation.RuleCookie,
+			RuleRef:       ref,
+			VPC:           rule.VPC,
+			SecurityGroup: rule.SecurityGroup,
+			RuleID:        rule.ID,
+			Tier:          rule.Tier,
+			Priority:      rule.Priority,
+			Direction:     string(rule.Direction),
+			Protocol:      string(rule.Protocol),
+			Action:        string(rule.Action),
+			Stateful:      rule.Stateful,
+			Log:           rule.Log,
+		}
+		return
+	}
+	explanation.MatchedRule = &dataplane.PolicyRuleExplanation{RuleCookie: explanation.RuleCookie}
+}
+
+func explainPolicyRuleRef(rule policy.Rule) string {
+	if rule.VPC == "" && rule.SecurityGroup == "" {
+		return rule.ID
+	}
+	return strings.Join([]string{rule.VPC, rule.SecurityGroup, rule.ID}, "/")
 }
 
 func securityGroupsForEndpoint(groups []model.SecurityGroup, vpc string) map[string]model.SecurityGroup {
