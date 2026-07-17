@@ -103,10 +103,11 @@ NETLOOM_PROVIDER_NETWORK_LINKS=physnet-a=eth1 \
 ./netloom-agent
 ```
 
-Inspect policy and routing decisions without changing datapath state:
+Inspect policy state, policy-map entries, and routing decisions:
 
 ```bash
 ./netloom-agent policy-status -state /etc/netloom/state.json -node node-a
+./netloom-agent policy-entries -state /etc/netloom/state.json -node node-a -endpoint prod/vm-a
 ./netloom-agent policy-explain \
   -state /etc/netloom/state.json \
   -vpc prod \

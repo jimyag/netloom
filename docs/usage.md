@@ -316,6 +316,7 @@ ovs-vsctl get Open_vSwitch . external_ids:netloom_agent_status
 
 ```bash
 ./netloom-agent policy-status -state /etc/netloom/state.json -node node-a
+./netloom-agent policy-entries -state /etc/netloom/state.json -node node-a -endpoint prod/vm-a
 ```
 
 解释一条安全策略判定：

@@ -804,6 +804,72 @@ func TestRunPolicyStatusReportsEndpointLifecycleJSON(t *testing.T) {
 	}
 }
 
+func TestRunPolicyEntriesReportsEndpointMapJSON(t *testing.T) {
+	statePath := writeAgentState(t, control.DesiredState{
+		VPCs: []model.VPC{{Name: "prod"}},
+		Subnets: []model.Subnet{{
+			Name:    "apps",
+			VPC:     "prod",
+			CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway: netip.MustParseAddr("10.10.0.1"),
+		}},
+		Endpoints: []model.Endpoint{{
+			ID:             "pod-a",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"web"},
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "allow-web",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("172.30.0.0/24"),
+				Ports:      []model.PortRange{{From: 80, To: 80}},
+				Action:     model.ActionAllow,
+			}},
+		}},
+	})
+
+	var out bytes.Buffer
+	if err := runPolicyEntries([]string{"-state", statePath, "-node", "node-a", "-endpoint", "prod/pod-a"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	var got policyEntriesOutput
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("decode policy-entries output: %v\n%s", err, out.String())
+	}
+	if !got.Ready || got.Node != "node-a" || got.Store != "memory" || got.EndpointID != model.EndpointKey("prod", "pod-a") {
+		t.Fatalf("policy entries summary = %+v, want node-a memory pod-a", got)
+	}
+	if got.EntryCount == 0 || len(got.Entries) == 0 {
+		t.Fatalf("entries = %+v, want compiled policy map entries", got.Entries)
+	}
+	found := false
+	for _, entry := range got.Entries {
+		if entry.RemoteCIDR == "172.30.0.0/24" && entry.Key.Direction == dataplane.DirectionIngress && entry.Key.Protocol == 6 {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("entries = %+v, want ingress TCP entry for remote CIDR", got.Entries)
+	}
+}
+
+func TestRunPolicyEntriesRequiresEndpoint(t *testing.T) {
+	var out bytes.Buffer
+	err := runPolicyEntries([]string{"-state", "unused.json", "-node", "node-a"}, &out)
+	if err == nil || !strings.Contains(err.Error(), "missing -endpoint") {
+		t.Fatalf("error = %v, want missing endpoint", err)
+	}
+}
+
 func TestRunPolicyExplainReportsSelectorAllow(t *testing.T) {
 	statePath := writePolicyExplainState(t)
 	var stdout bytes.Buffer

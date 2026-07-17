@@ -53,6 +53,11 @@ func main() {
 				log.Fatal(err)
 			}
 			return
+		case "policy-entries":
+			if err := runPolicyEntries(os.Args[2:], os.Stdout); err != nil {
+				log.Fatal(err)
+			}
+			return
 		case "route-explain":
 			if err := runRouteExplain(os.Args[2:], os.Stdout); err != nil {
 				log.Fatal(err)
@@ -118,6 +123,12 @@ type policyExplainOptions struct {
 }
 
 type policyStatusOptions struct {
+	stateFile string
+	node      string
+	endpoint  string
+}
+
+type policyEntriesOptions struct {
 	stateFile string
 	node      string
 	endpoint  string
@@ -458,6 +469,64 @@ func runPolicyStatus(args []string, stdout io.Writer) error {
 	}
 	statuses := filterPolicyEndpointStatuses(result.PolicyEndpointStatus, opts.endpoint, state.Endpoints)
 	output := policyStatusOutputFromResult(result, storeName, statuses)
+	encoder := json.NewEncoder(stdout)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(output)
+}
+
+func runPolicyEntries(args []string, stdout io.Writer) error {
+	var opts policyEntriesOptions
+	flags := flag.NewFlagSet("netloom-agent policy-entries", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	flags.StringVar(&opts.stateFile, "state", os.Getenv("NETLOOM_STATE_FILE"), "desired-state JSON path")
+	flags.StringVar(&opts.node, "node", os.Getenv("NETLOOM_NODE_NAME"), "node name")
+	flags.StringVar(&opts.endpoint, "endpoint", "", "endpoint key or endpoint ID to inspect")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(opts.endpoint) == "" {
+		return errors.New("missing -endpoint")
+	}
+	if strings.TrimSpace(opts.node) == "" {
+		hostname, err := os.Hostname()
+		if err != nil {
+			return err
+		}
+		opts.node = hostname
+	}
+
+	state, err := loadDesiredStateFromPathOrOVSDB(context.Background(), opts.stateFile, nil)
+	if err != nil {
+		return err
+	}
+	state, err = withRuntimeObservationsContext(context.Background(), state)
+	if err != nil {
+		return err
+	}
+	store, storeName, closeStore := policyStore()
+	defer closeStore()
+	result, err := agent.ReconcileNodeWithOptions(context.Background(), state, agent.ReconcileOptions{
+		Node:  opts.node,
+		Store: store,
+	})
+	if err != nil {
+		return err
+	}
+	entryStore, ok := store.(agent.PolicyEndpointEntryStore)
+	if !ok {
+		return errors.New("policy entries are not enabled")
+	}
+	snapshot := agentMetricsSnapshot{
+		Result:  result,
+		Store:   storeName,
+		State:   state,
+		Success: true,
+	}
+	endpointID, err := resolvePolicyEndpointIDFromSnapshot(opts.endpoint, snapshot)
+	if err != nil {
+		return err
+	}
+	output := policyEntriesOutputFromSnapshot(snapshot, endpointID, entryStore.Entries(endpointID))
 	encoder := json.NewEncoder(stdout)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(output)
