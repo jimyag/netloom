@@ -933,6 +933,131 @@ func TestRunPolicyStatusReportsEndpointLifecycleJSON(t *testing.T) {
 	}
 }
 
+func TestRunPolicyStatusExportWithStoreReportsFilteredJSON(t *testing.T) {
+	store := ovsdbPolicyStatusStore{syncer: &fakeOpenVSwitchExternalIDStore{}}
+	endpointID := model.EndpointKey("prod", "pod-a")
+	if err := store.Save(t.Context(), policyStatusDocument{
+		Node:                 "node-a",
+		Store:                "ebpf",
+		LastReconcileSuccess: true,
+		UpdatedAt:            time.Date(2026, 7, 17, 1, 2, 3, 0, time.UTC),
+		EndpointCount:        2,
+		PolicyMapEntries:     3,
+		PolicyMapCapacity:    64,
+		PressureMax:          5,
+		PressureEndpoint:     endpointID,
+		PolicyRevisionMax:    7,
+		Statuses: []dataplane.PolicyEndpointStatus{{
+			EndpointID:      endpointID,
+			Revision:        7,
+			Entries:         2,
+			Capacity:        64,
+			PressurePercent: 5,
+			LastEvent:       dataplane.PolicyUpdateEvent{EndpointID: endpointID, Revision: 7, Success: true},
+			HasLastEvent:    true,
+		}, {
+			EndpointID: model.EndpointKey("prod", "pod-b"),
+			Revision:   1,
+			Entries:    1,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := runPolicyStatusExportWithStore(t.Context(), policyStatusExportOptions{endpoint: "prod/pod-a"}, &out, store); err != nil {
+		t.Fatal(err)
+	}
+	var got policyStatusOutput
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("decode policy-status-export output: %v\n%s", err, out.String())
+	}
+	if !got.Ready || !got.LastReconcileSuccess || got.Node != "node-a" || got.Store != "ebpf" || got.FilterEndpoint != "prod/pod-a" {
+		t.Fatalf("policy status summary = %+v, want ready filtered node-a ebpf", got)
+	}
+	if got.EndpointCount != 1 || got.PolicyMapEntries != 3 || got.PolicyMapCapacity != 64 || got.PolicyRevisionMax != 7 {
+		t.Fatalf("policy status counters = %+v, want persisted counters and one filtered endpoint", got)
+	}
+	if len(got.Statuses) != 1 || got.Statuses[0].EndpointID != endpointID || got.Statuses[0].Revision != 7 || !got.Statuses[0].HasLastEvent {
+		t.Fatalf("statuses = %+v, want filtered pod-a revision 7 status", got.Statuses)
+	}
+}
+
+func TestRunPolicyStatusExportReadsRealOpenVSwitchOVSDB(t *testing.T) {
+	endpoint, client, cleanup := newTestAgentVSwitchOVSDB(t)
+	defer cleanup()
+	endpointID := model.EndpointKey("prod", "pod-a")
+	raw, err := json.Marshal(policyStatusDocument{
+		Node:                 "node-a",
+		Store:                "ebpf",
+		LastReconcileSuccess: true,
+		EndpointCount:        1,
+		PolicyMapEntries:     1,
+		PolicyRevisionMax:    3,
+		Statuses: []dataplane.PolicyEndpointStatus{{
+			EndpointID: endpointID,
+			Revision:   3,
+			Entries:    1,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	insertAgentVSwitchRows(t, t.Context(), client, &vswitch.OpenvSwitch{ExternalIDs: map[string]string{
+		policyEndpointStatusKey: string(raw),
+	}})
+	var out bytes.Buffer
+	if err := runPolicyStatusExport(t.Context(), []string{"-ovsdb", endpoint}, &out); err != nil {
+		t.Fatal(err)
+	}
+	var got policyStatusOutput
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("decode policy-status-export output: %v\n%s", err, out.String())
+	}
+	if got.Node != "node-a" || got.Store != "ebpf" || got.EndpointCount != 1 || got.Statuses[0].EndpointID != endpointID {
+		t.Fatalf("policy status = %+v, want persisted pod-a status", got)
+	}
+}
+
+func TestAgentMetricsPersistsPolicyEndpointStatusToOpenVSwitchExternalID(t *testing.T) {
+	ovsdb := &fakeOpenVSwitchExternalIDStore{}
+	metrics := newAgentMetrics()
+	configurePolicyStatusStore(metrics, ovsdbPolicyStatusStore{syncer: ovsdb})
+	endpointID := model.EndpointKey("prod", "pod-a")
+
+	observeAgentReconcileResult(metrics, agent.ReconcileResult{
+		Node:                      "node-a",
+		PolicyMapEntries:          2,
+		PolicyMapCapacity:         64,
+		PolicyRevisionMax:         5,
+		PolicyMapPressureMax:      3,
+		PolicyMapPressureEndpoint: endpointID,
+		PolicyEndpointStatus: []dataplane.PolicyEndpointStatus{{
+			EndpointID:      endpointID,
+			Revision:        5,
+			Entries:         2,
+			Capacity:        64,
+			PressurePercent: 3,
+			LastEvent:       dataplane.PolicyUpdateEvent{EndpointID: endpointID, Revision: 5, Success: true},
+			HasLastEvent:    true,
+		}},
+	}, "ebpf", time.Millisecond)
+
+	raw := ovsdb.values[policyEndpointStatusKey]
+	if raw == "" {
+		t.Fatalf("missing %s external_id", policyEndpointStatusKey)
+	}
+	var doc policyStatusDocument
+	if err := json.Unmarshal([]byte(raw), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.Node != "node-a" || doc.Store != "ebpf" || !doc.LastReconcileSuccess || doc.EndpointCount != 1 || doc.PolicyRevisionMax != 5 {
+		t.Fatalf("policy status doc = %+v, want successful node-a ebpf snapshot", doc)
+	}
+	if len(doc.Statuses) != 1 || doc.Statuses[0].EndpointID != endpointID || doc.Statuses[0].Revision != 5 || !doc.Statuses[0].HasLastEvent {
+		t.Fatalf("policy endpoint statuses = %+v, want persisted pod-a status", doc.Statuses)
+	}
+}
+
 func TestRunPolicyEntriesReportsEndpointMapJSON(t *testing.T) {
 	statePath := writeAgentState(t, control.DesiredState{
 		VPCs: []model.VPC{{Name: "prod"}},

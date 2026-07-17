@@ -112,6 +112,9 @@ Inspect policy state, policy-map entries, and routing decisions:
 ./netloom-agent dns-observations-export -ovsdb unix:/var/run/openvswitch/db.sock
 ./netloom-agent identity-groups-export -ovsdb unix:/var/run/openvswitch/db.sock
 ./netloom-agent policy-status -state /etc/netloom/state.json -node node-a
+./netloom-agent policy-status-export \
+  -ovsdb unix:/var/run/openvswitch/db.sock \
+  -endpoint prod/vm-a
 ./netloom-agent policy-entries -state /etc/netloom/state.json -node node-a -endpoint prod/vm-a
 ./netloom-agent policy-entries-export \
   -ovsdb unix:/var/run/openvswitch/db.sock \
@@ -172,9 +175,9 @@ Open_vSwitch `external_ids` when OVSDB sync is enabled:
 
 When the agent is connected to Open_vSwitch OVSDB, it also stores node-local
 runtime audit snapshots in `Open_vSwitch.external_ids`: `netloom_agent_status`,
-`netloom_policy_entries`, `netloom_policy_rules`, `netloom_policy_events`,
-`netloom_policy_freeze_state`, `netloom_policy_rollout_state`, and
-`netloom_policy_endpoint_action_history`.
+`netloom_policy_endpoint_status`, `netloom_policy_entries`,
+`netloom_policy_rules`, `netloom_policy_events`, `netloom_policy_freeze_state`,
+`netloom_policy_rollout_state`, and `netloom_policy_endpoint_action_history`.
 
 ## Documentation
 

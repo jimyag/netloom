@@ -312,6 +312,7 @@ NETLOOM_AGENT_METRICS_ADDR=:9092 \
 ./netloom-agent agent-status -ovsdb unix:/var/run/openvswitch/db.sock
 ./netloom-agent dns-observations-export -ovsdb unix:/var/run/openvswitch/db.sock
 ./netloom-agent identity-groups-export -ovsdb unix:/var/run/openvswitch/db.sock
+./netloom-agent policy-status-export -ovsdb unix:/var/run/openvswitch/db.sock -endpoint prod/vm-a
 ./netloom-agent policy-entries-export -ovsdb unix:/var/run/openvswitch/db.sock -endpoint prod/vm-a
 ./netloom-agent policy-rules -ovsdb unix:/var/run/openvswitch/db.sock -endpoint prod/vm-a
 ./netloom-agent policy-events -ovsdb unix:/var/run/openvswitch/db.sock -endpoint prod/vm-a -limit 20
@@ -319,6 +320,7 @@ ovs-vsctl get Open_vSwitch . external_ids:netloom_controller_status
 ovs-vsctl get Open_vSwitch . external_ids:netloom_agent_status
 ovs-vsctl get Open_vSwitch . external_ids:netloom_dns_observations
 ovs-vsctl get Open_vSwitch . external_ids:netloom_identity_groups
+ovs-vsctl get Open_vSwitch . external_ids:netloom_policy_endpoint_status
 ovs-vsctl get Open_vSwitch . external_ids:netloom_policy_entries
 ovs-vsctl get Open_vSwitch . external_ids:netloom_policy_rules
 ovs-vsctl get Open_vSwitch . external_ids:netloom_policy_events
@@ -337,6 +339,9 @@ cluster quorum、stale advisory、maintenance 和错误状态。
 也就是 agent 根据 desired state、identity group feed 和 endpoint 解析出的当前成员快照；
 如果要查看原始导入或远端 feed 观测，可加 `-source observations` 导出
 `Open_vSwitch.external_ids:netloom_identity_group_observations`。
+`policy-status-export` 会解码 `Open_vSwitch.external_ids:netloom_policy_endpoint_status`，
+用于在不重新 reconcile desired state、不访问 agent HTTP listener 的情况下审计 endpoint
+policy lifecycle、revision、pressure、drift、last event 和 last stats。
 `policy-entries-export` 会解码 `Open_vSwitch.external_ids:netloom_policy_entries`，
 用于在不访问 agent HTTP listener 的情况下审计最近一次 reconcile 写入的 live policy-map
 keys、values、计数器和 remote CIDR。
@@ -348,8 +353,16 @@ keys、values、计数器和 remote CIDR。
 
 ```bash
 ./netloom-agent policy-status -state /etc/netloom/state.json -node node-a
+./netloom-agent policy-status-export \
+  -ovsdb unix:/var/run/openvswitch/db.sock \
+  -endpoint prod/vm-a
+ovs-vsctl get Open_vSwitch . external_ids:netloom_policy_endpoint_status
 ./netloom-agent policy-entries -state /etc/netloom/state.json -node node-a -endpoint prod/vm-a
 ```
+
+`policy-status` 会从 desired state 重新 reconcile 到临时 policy store 后输出状态；
+`policy-status-export` 读取 agent 最近一次真实 reconcile 写入本机 OVSDB 的 lifecycle
+快照，更适合线下审计正在运行节点的 eBPF policy map 状态。
 
 解释一条安全策略判定：
 

@@ -41,6 +41,7 @@ const (
 	policyEventsKey         = "netloom_policy_events"
 	policyRulesKey          = "netloom_policy_rules"
 	policyEntriesKey        = "netloom_policy_entries"
+	policyEndpointStatusKey = "netloom_policy_endpoint_status"
 	policyFreezeStateKey    = "netloom_policy_freeze_state"
 	agentOVSDBStatusKey     = "netloom_agent_status"
 	identityGroupsStateKey  = "netloom_identity_groups"
@@ -56,6 +57,11 @@ func main() {
 			return
 		case "policy-status":
 			if err := runPolicyStatus(os.Args[2:], os.Stdout); err != nil {
+				log.Fatal(err)
+			}
+			return
+		case "policy-status-export":
+			if err := runPolicyStatusExport(context.Background(), os.Args[2:], os.Stdout); err != nil {
 				log.Fatal(err)
 			}
 			return
@@ -184,6 +190,11 @@ type policyStatusOptions struct {
 	endpoint  string
 }
 
+type policyStatusExportOptions struct {
+	ovsdb    string
+	endpoint string
+}
+
 type agentStatusOptions struct {
 	ovsdb string
 }
@@ -275,6 +286,8 @@ type policyStatusOutput struct {
 	Ready                bool                             `json:"ready"`
 	LastReconcileSuccess bool                             `json:"last_reconcile_success"`
 	LastReconcileError   string                           `json:"last_reconcile_error,omitempty"`
+	UpdatedAt            time.Time                        `json:"updated_at,omitempty"`
+	FilterEndpoint       string                           `json:"filter_endpoint,omitempty"`
 	EndpointCount        int                              `json:"endpoint_count"`
 	PolicyMapEntries     uint32                           `json:"policy_map_entries"`
 	PolicyMapCapacity    uint32                           `json:"policy_map_capacity"`
@@ -288,6 +301,26 @@ type policyStatusOutput struct {
 	PolicyRevisionMax    uint64                           `json:"policy_revision_max"`
 	FrozenEndpoints      []string                         `json:"frozen_endpoints,omitempty"`
 	FrozenEndpointExpiry map[string]time.Time             `json:"frozen_endpoint_expiry,omitempty"`
+	Statuses             []dataplane.PolicyEndpointStatus `json:"statuses"`
+}
+
+type policyStatusDocument struct {
+	Node                 string                           `json:"node,omitempty"`
+	Store                string                           `json:"store,omitempty"`
+	LastReconcileSuccess bool                             `json:"last_reconcile_success"`
+	LastReconcileError   string                           `json:"last_reconcile_error,omitempty"`
+	UpdatedAt            time.Time                        `json:"updated_at,omitempty"`
+	EndpointCount        int                              `json:"endpoint_count"`
+	PolicyMapEntries     uint32                           `json:"policy_map_entries"`
+	PolicyMapCapacity    uint32                           `json:"policy_map_capacity"`
+	PressureMax          uint32                           `json:"pressure_max"`
+	PressureEndpoint     string                           `json:"pressure_endpoint,omitempty"`
+	PressureEndpoints    int                              `json:"pressure_endpoints"`
+	DriftEndpoints       int                              `json:"drift_endpoints"`
+	DriftMissing         int                              `json:"drift_missing"`
+	DriftExtra           int                              `json:"drift_extra"`
+	DriftChanged         int                              `json:"drift_changed"`
+	PolicyRevisionMax    uint64                           `json:"policy_revision_max"`
 	Statuses             []dataplane.PolicyEndpointStatus `json:"statuses"`
 }
 
@@ -570,6 +603,11 @@ type policyEventsStore interface {
 	Save(context.Context, policyEventsDocument) error
 }
 
+type policyStatusStore interface {
+	Load(context.Context) (policyStatusDocument, error)
+	Save(context.Context, policyStatusDocument) error
+}
+
 type policyRulesStore interface {
 	Load(context.Context) (policyRulesDocument, error)
 	Save(context.Context, policyRulesDocument) error
@@ -606,6 +644,10 @@ type ovsdbPolicyActionHistoryStore struct {
 }
 
 type ovsdbPolicyEventsStore struct {
+	syncer openVSwitchExternalIDStore
+}
+
+type ovsdbPolicyStatusStore struct {
 	syncer openVSwitchExternalIDStore
 }
 
@@ -744,6 +786,40 @@ func runPolicyStatus(args []string, stdout io.Writer) error {
 	}
 	statuses := filterPolicyEndpointStatuses(result.PolicyEndpointStatus, opts.endpoint, state.Endpoints)
 	output := policyStatusOutputFromResult(result, storeName, statuses)
+	encoder := json.NewEncoder(stdout)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(output)
+}
+
+func runPolicyStatusExport(ctx context.Context, args []string, stdout io.Writer) error {
+	var opts policyStatusExportOptions
+	flags := flag.NewFlagSet("netloom-agent policy-status-export", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	flags.StringVar(&opts.ovsdb, "ovsdb", os.Getenv("NETLOOM_OVSDB_ENDPOINT"), "Open_vSwitch OVSDB endpoint")
+	flags.StringVar(&opts.endpoint, "endpoint", "", "optional endpoint key or endpoint ID to include")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(opts.ovsdb) == "" {
+		return errors.New("missing -ovsdb or NETLOOM_OVSDB_ENDPOINT")
+	}
+	client, closeStore, err := newOpenVSwitchClient(ctx, opts.ovsdb)
+	if err != nil {
+		return err
+	}
+	defer closeStore()
+	return runPolicyStatusExportWithStore(ctx, opts, stdout, ovsdbPolicyStatusStore{syncer: linuxdatapath.NewLibOVSDBProviderSyncer(client)})
+}
+
+func runPolicyStatusExportWithStore(ctx context.Context, opts policyStatusExportOptions, stdout io.Writer, store policyStatusStore) error {
+	if store == nil {
+		return errors.New("missing policy status store")
+	}
+	doc, err := store.Load(ctx)
+	if err != nil {
+		return err
+	}
+	output := policyStatusOutputFromDocument(doc, strings.TrimSpace(opts.endpoint))
 	encoder := json.NewEncoder(stdout)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(output)
@@ -1543,6 +1619,54 @@ func policyStatusOutputFromResult(result agent.ReconcileResult, storeName string
 	}
 }
 
+func policyStatusOutputFromDocument(doc policyStatusDocument, endpoint string) policyStatusOutput {
+	filtered := filterPolicyEndpointStatuses(doc.Statuses, endpoint, nil)
+	return policyStatusOutput{
+		Node:                 doc.Node,
+		Store:                doc.Store,
+		Ready:                true,
+		LastReconcileSuccess: doc.LastReconcileSuccess,
+		LastReconcileError:   doc.LastReconcileError,
+		UpdatedAt:            doc.UpdatedAt,
+		FilterEndpoint:       strings.TrimSpace(endpoint),
+		EndpointCount:        len(filtered),
+		PolicyMapEntries:     doc.PolicyMapEntries,
+		PolicyMapCapacity:    doc.PolicyMapCapacity,
+		PressureMax:          doc.PressureMax,
+		PressureEndpoint:     doc.PressureEndpoint,
+		PressureEndpoints:    doc.PressureEndpoints,
+		DriftEndpoints:       doc.DriftEndpoints,
+		DriftMissing:         doc.DriftMissing,
+		DriftExtra:           doc.DriftExtra,
+		DriftChanged:         doc.DriftChanged,
+		PolicyRevisionMax:    doc.PolicyRevisionMax,
+		Statuses:             filtered,
+	}
+}
+
+func policyStatusDocumentFromSnapshot(snapshot agentMetricsSnapshot) policyStatusDocument {
+	statuses := append([]dataplane.PolicyEndpointStatus(nil), snapshot.Result.PolicyEndpointStatus...)
+	return policyStatusDocument{
+		Node:                 snapshot.Result.Node,
+		Store:                snapshot.Store,
+		LastReconcileSuccess: snapshot.Success,
+		LastReconcileError:   snapshot.Error,
+		UpdatedAt:            time.Now().UTC(),
+		EndpointCount:        len(statuses),
+		PolicyMapEntries:     snapshot.Result.PolicyMapEntries,
+		PolicyMapCapacity:    snapshot.Result.PolicyMapCapacity,
+		PressureMax:          snapshot.Result.PolicyMapPressureMax,
+		PressureEndpoint:     snapshot.Result.PolicyMapPressureEndpoint,
+		PressureEndpoints:    snapshot.Result.PolicyMapPressureEndpoints,
+		DriftEndpoints:       snapshot.Result.PolicyMapDriftEndpoints,
+		DriftMissing:         snapshot.Result.PolicyMapDriftMissing,
+		DriftExtra:           snapshot.Result.PolicyMapDriftExtra,
+		DriftChanged:         snapshot.Result.PolicyMapDriftChanged,
+		PolicyRevisionMax:    snapshot.Result.PolicyRevisionMax,
+		Statuses:             statuses,
+	}
+}
+
 func policyRulesOutputFromResult(result agent.ReconcileResult, storeName, endpoint string) policyRulesOutput {
 	stats := filterPolicyRuleStats(result.PolicyRuleStats, endpoint)
 	catalog := filterPolicyRuleCatalog(result.PolicyRuleCatalog, endpoint)
@@ -2170,6 +2294,12 @@ func runStateFile(ctx context.Context, path string) error {
 	if err := configurePolicyActionHistory(ctx, metrics, actionHistoryStore); err != nil {
 		return err
 	}
+	statusStore, closeStatusStore, err := policyStatusStoreFromEnv(ctx)
+	if err != nil {
+		return err
+	}
+	defer closeStatusStore()
+	configurePolicyStatusStore(metrics, statusStore)
 	eventsStore, closeEventsStore, err := policyEventsStoreFromEnv(ctx)
 	if err != nil {
 		return err
@@ -2842,6 +2972,7 @@ type agentMetrics struct {
 	rolloutHistory      []policyRolloutHistoryEntry
 	actionHistoryStore  policyActionHistoryStore
 	actionHistory       []policyActionHistoryEntry
+	policyStatusStore   policyStatusStore
 	policyEventsStore   policyEventsStore
 	policyRulesStore    policyRulesStore
 	policyEntriesStore  policyEntriesStore
@@ -2956,6 +3087,15 @@ func configurePolicyActionHistory(ctx context.Context, metrics *agentMetrics, st
 	metrics.actionHistoryStore = store
 	metrics.actionHistory = history
 	return nil
+}
+
+func configurePolicyStatusStore(metrics *agentMetrics, store policyStatusStore) {
+	if metrics == nil || store == nil {
+		return
+	}
+	metrics.mu.Lock()
+	defer metrics.mu.Unlock()
+	metrics.policyStatusStore = store
 }
 
 func configurePolicyEventsStore(metrics *agentMetrics, store policyEventsStore) {
@@ -3459,6 +3599,41 @@ func (s ovsdbPolicyActionHistoryStore) Append(ctx context.Context, entry policyA
 	return s.syncer.SetOpenVSwitchExternalID(ctx, policyActionHistoryKey, string(raw))
 }
 
+func (s ovsdbPolicyStatusStore) Load(ctx context.Context) (policyStatusDocument, error) {
+	var doc policyStatusDocument
+	if s.syncer == nil {
+		return doc, nil
+	}
+	raw, ok, err := s.syncer.OpenVSwitchExternalID(ctx, policyEndpointStatusKey)
+	if err != nil {
+		return doc, err
+	}
+	if !ok || strings.TrimSpace(raw) == "" {
+		return doc, nil
+	}
+	if err := json.Unmarshal([]byte(raw), &doc); err != nil {
+		return doc, fmt.Errorf("decode Open_vSwitch external_ids:%s: %w", policyEndpointStatusKey, err)
+	}
+	return doc, nil
+}
+
+func (s ovsdbPolicyStatusStore) Save(ctx context.Context, doc policyStatusDocument) error {
+	if s.syncer == nil {
+		return nil
+	}
+	if doc.UpdatedAt.IsZero() {
+		doc.UpdatedAt = time.Now().UTC()
+	}
+	if doc.EndpointCount < len(doc.Statuses) {
+		doc.EndpointCount = len(doc.Statuses)
+	}
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		return fmt.Errorf("encode Open_vSwitch external_ids:%s: %w", policyEndpointStatusKey, err)
+	}
+	return s.syncer.SetOpenVSwitchExternalID(ctx, policyEndpointStatusKey, string(raw))
+}
+
 func (s ovsdbPolicyEventsStore) Load(ctx context.Context) (policyEventsDocument, error) {
 	var doc policyEventsDocument
 	if s.syncer == nil {
@@ -3684,12 +3859,19 @@ func (m *agentMetrics) observe(snapshot agentMetricsSnapshot) {
 	m.snapshot = snapshot
 	m.totals.observe(snapshot)
 	m.ready = true
+	statusStore := m.policyStatusStore
 	eventStore := m.policyEventsStore
 	rulesStore := m.policyRulesStore
 	entriesStore := m.policyEntriesStore
 	policyStore := m.store
 	events := policyUpdateEventsFromStore(m.store)
 	m.mu.Unlock()
+	if statusStore != nil {
+		doc := policyStatusDocumentFromSnapshot(snapshot)
+		if err := statusStore.Save(context.Background(), doc); err != nil {
+			log.Printf("persist policy endpoint status: %v", err)
+		}
+	}
 	if eventStore != nil {
 		doc := policyEventsDocumentFromSnapshot(snapshot, events)
 		if err := eventStore.Save(context.Background(), doc); err != nil {
@@ -5862,6 +6044,18 @@ func policyActionHistoryStoreFromEnv(ctx context.Context) (policyActionHistorySt
 		return nil, func() {}, err
 	}
 	return ovsdbPolicyActionHistoryStore{syncer: linuxdatapath.NewLibOVSDBProviderSyncer(client)}, closeFn, nil
+}
+
+func policyStatusStoreFromEnv(ctx context.Context) (policyStatusStore, func(), error) {
+	endpoint := strings.TrimSpace(os.Getenv("NETLOOM_OVSDB_ENDPOINT"))
+	if endpoint == "" {
+		return nil, func() {}, nil
+	}
+	client, closeFn, err := newOpenVSwitchClient(ctx, endpoint)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	return ovsdbPolicyStatusStore{syncer: linuxdatapath.NewLibOVSDBProviderSyncer(client)}, closeFn, nil
 }
 
 func policyEventsStoreFromEnv(ctx context.Context) (policyEventsStore, func(), error) {
