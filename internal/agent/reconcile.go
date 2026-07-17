@@ -619,7 +619,11 @@ func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, opt
 			rollout.Items[i] = item
 			continue
 		}
+		resumeRequested := false
 		if _, ok := resumedApplied[item.EndpointID]; ok {
+			resumeRequested = true
+		}
+		if resumeRequested && !item.Plan.Changed {
 			setRolloutItemPhase(&item, "resumed_applied", "resumed_applied")
 			rollout.Applied++
 			rollout.ResumedApplied++
@@ -650,7 +654,11 @@ func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, opt
 			rollbackRolloutPolicyEndpoints(ctx, options.Store, snapshots, applied, &rollout)
 			continue
 		}
-		setRolloutItemPhase(&item, "applied", "")
+		if resumeRequested {
+			setRolloutItemPhase(&item, "applied", "resume_drift_reapplied")
+		} else {
+			setRolloutItemPhase(&item, "applied", "")
+		}
 		rollout.Applied++
 		applied = append(applied, item.EndpointID)
 		if status, ok, err := policyEndpointStatus(ctx, options.Store, item.EndpointID); err != nil {

@@ -1564,10 +1564,8 @@ func TestApplyPolicyRolloutsResumesAppliedEndpoints(t *testing.T) {
 	}}
 	store := dataplane.NewInMemoryPolicyStore()
 	podA := model.EndpointKey("prod", "pod-a")
-	if err := store.ReplaceEndpoint(context.Background(), podA, []dataplane.PolicyMapEntry{{
-		Key:   dataplane.PolicyKey{PrefixLen: dataplane.StaticPrefixBits, Direction: dataplane.DirectionIngress},
-		Value: dataplane.PolicyEntry{Precedence: 100, RuleCookie: 1},
-	}}); err != nil {
+	podADesired := desiredPolicyEntriesForTest(t, state, "node-a", store, podA)
+	if err := store.ReplaceEndpoint(context.Background(), podA, podADesired); err != nil {
 		t.Fatal(err)
 	}
 	seedEvents := len(store.Events())
@@ -1603,6 +1601,54 @@ func TestApplyPolicyRolloutsResumesAppliedEndpoints(t *testing.T) {
 	}
 	if entries := store.Entries(model.EndpointKey("prod", "pod-b")); len(entries) != 1 {
 		t.Fatalf("pod-b entries = %+v, want rollout applied policy", entries)
+	}
+}
+
+func TestApplyPolicyRolloutsReappliesResumedEndpointWhenPolicyDrifts(t *testing.T) {
+	state := rolloutPolicyState()
+	state.PolicyRollouts = []control.PolicyRollout{{
+		Name:      "web-canary",
+		Node:      "node-a",
+		Endpoints: []string{"prod/pod-a"},
+		BatchSize: 1,
+	}}
+	store := dataplane.NewInMemoryPolicyStore()
+	podA := model.EndpointKey("prod", "pod-a")
+	staleEntries := []dataplane.PolicyMapEntry{{
+		Key:   dataplane.PolicyKey{PrefixLen: dataplane.StaticPrefixBits, Direction: dataplane.DirectionIngress},
+		Value: dataplane.PolicyEntry{Precedence: 1, RuleCookie: 99, Deny: 1},
+	}}
+	if err := store.ReplaceEndpoint(context.Background(), podA, staleEntries); err != nil {
+		t.Fatal(err)
+	}
+	seedEvents := len(store.Events())
+
+	rollouts, err := ApplyPolicyRollouts(context.Background(), state, ReconcileOptions{
+		Node:  "node-a",
+		Store: store,
+		PolicyRolloutResume: map[string][]string{
+			"web-canary": {podA},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rollouts) != 1 {
+		t.Fatalf("rollouts = %+v, want one rollout", rollouts)
+	}
+	rollout := rollouts[0].Rollout
+	if rollout.Applied != 1 || rollout.ResumedApplied != 0 || rollout.Skipped != 0 || rollout.Failed != 0 {
+		t.Fatalf("rollout = %+v, want drifted resumed endpoint reapplied", rollout)
+	}
+	if rollout.Items[0].EndpointID != podA || rollout.Items[0].Phase != "applied" || rollout.Items[0].Reason != "resume_drift_reapplied" {
+		t.Fatalf("rollout item = %+v, want applied resume_drift_reapplied", rollout.Items[0])
+	}
+	if got := len(store.Events()) - seedEvents; got != 1 {
+		t.Fatalf("new policy events = %d, want one reapply", got)
+	}
+	desired := desiredPolicyEntriesForTest(t, state, "node-a", store, podA)
+	if entries := store.Entries(podA); !slices.Equal(entries, desired) {
+		t.Fatalf("pod-a entries = %+v, want desired entries %+v", entries, desired)
 	}
 }
 
@@ -2951,6 +2997,19 @@ func rolloutPolicyState() control.DesiredState {
 			}},
 		}},
 	}
+}
+
+func desiredPolicyEntriesForTest(t *testing.T, state control.DesiredState, node string, store PolicyStore, endpointID string) []dataplane.PolicyMapEntry {
+	t.Helper()
+	program, err := compileEndpointPolicyProgram(state, ReconcileOptions{Node: node, Store: store}, endpointID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := dataplane.EncodeProgram(program)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return entries
 }
 
 func TestReconcilerDeletesStaleEndpointPolicy(t *testing.T) {

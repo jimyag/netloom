@@ -125,6 +125,7 @@ func (s *LibOVSDBProviderSyncer) SyncProviderOVSDB(ctx context.Context, rows Pro
 	portsByBridge := make(map[string][]string, len(rows.Bridges))
 	qosUUIDByName := make(map[string]string, len(rows.QoS))
 	desiredQoSSet := make(map[string]string, len(rows.QoS))
+	desiredQoSQueues := make(map[string]map[int]string, len(rows.QoS))
 	queueUUIDByName := make(map[string]string, len(rows.Queues))
 	desiredQueueSet := make(map[string]string, len(rows.Queues))
 	interfaceUUIDByName := make(map[string]string, len(rows.Interfaces))
@@ -195,6 +196,7 @@ func (s *LibOVSDBProviderSyncer) SyncProviderOVSDB(ctx context.Context, rows Pro
 			}
 			qos.Queues = queues
 		}
+		desiredQoSQueues[name] = cloneProviderQueueRefs(qos.Queues)
 		qosUUID, qosOps, err := s.ensureQoS(ctx, qos)
 		if err != nil {
 			return err
@@ -300,6 +302,11 @@ func (s *LibOVSDBProviderSyncer) SyncProviderOVSDB(ctx context.Context, rows Pro
 			return err
 		}
 		ops = append(ops, queueOps...)
+		qosQueueOps, err := s.repairDesiredProviderQoSQueues(ctx, desiredQoSSet, desiredQoSQueues)
+		if err != nil {
+			return err
+		}
+		ops = append(ops, qosQueueOps...)
 		controllerOps, err := s.cleanupStaleProviderControllers(ctx, desiredControllerSet)
 		if err != nil {
 			return err
@@ -1140,6 +1147,33 @@ func (s *LibOVSDBProviderSyncer) cleanupStaleProviderQueues(ctx context.Context,
 	return ops, nil
 }
 
+func (s *LibOVSDBProviderSyncer) repairDesiredProviderQoSQueues(ctx context.Context, desired map[string]string, queuesByName map[string]map[int]string) ([]ovsdb.Operation, error) {
+	var ops []ovsdb.Operation
+	for name, uuid := range desired {
+		qos, ok, err := s.qosByUUID(ctx, uuid)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			continue
+		}
+		queues := queuesByName[name]
+		if queues == nil {
+			queues = map[int]string{}
+		}
+		if reflect.DeepEqual(qos.Queues, queues) {
+			continue
+		}
+		qos.Queues = cloneProviderQueueRefs(queues)
+		updateOps, err := s.client.Where(qos).Update(qos, &qos.Queues)
+		if err != nil {
+			return nil, fmt.Errorf("repair OVS provider QoS %s queues: %w", name, err)
+		}
+		ops = append(ops, updateOps...)
+	}
+	return ops, nil
+}
+
 func (s *LibOVSDBProviderSyncer) cleanupStaleProviderControllers(ctx context.Context, desired map[string]string) ([]ovsdb.Operation, error) {
 	var rows []vswitch.Controller
 	if err := s.client.WhereCache(func(row *vswitch.Controller) bool {
@@ -1535,6 +1569,14 @@ func mergeProviderManagedExternalIDs(base map[string]string, overlay map[string]
 		out[key] = value
 	}
 	for key, value := range overlay {
+		out[key] = value
+	}
+	return out
+}
+
+func cloneProviderQueueRefs(values map[int]string) map[int]string {
+	out := make(map[int]string, len(values))
+	for key, value := range values {
 		out[key] = value
 	}
 	return out
