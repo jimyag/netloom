@@ -193,6 +193,73 @@ esac
 	}
 }
 
+func TestNBCTLExecutorManagedOVNRowsResolvesSwitchPortDHCPOptions(t *testing.T) {
+	tmp := t.TempDir()
+	logPath := filepath.Join(tmp, "args.log")
+	binary := filepath.Join(tmp, "ovn-nbctl")
+	script := `#!/bin/sh
+printf '%s\n' "$*" >> "` + logPath + `"
+case "$*" in
+  *"--columns=_uuid,external_ids,name,type,addresses,port_security,options,tag,enabled,ha_chassis_group,dhcpv4_options,dhcpv6_options find Logical_Switch_Port external_ids:netloom_owner=netloom"*) printf 'lsp-pod-a,"{netloom_owner=netloom,netloom_vpc=prod,netloom_endpoint=prod/pod-a}",nl_lp_prod_pod-a,,02:00:00:00:00:20,,{},[],true,[],dhcp-v4,[]\n' ;;
+  *"--columns=_uuid,external_ids,cidr find DHCP_Options external_ids:netloom_owner=netloom"*) printf 'dhcp-v4,"{netloom_owner=netloom,netloom_dhcp_family=4}",10.10.0.0/24\n' ;;
+esac
+`
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	executor := NewNBCTLExecutor(binary, "--db=unix:/tmp/ovnnb.sock")
+	rows, err := executor.ManagedOVNRows(context.Background(), "Logical_Switch_Port")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(rows))
+	}
+	if rows[0].Fields["dhcpv4_options"] != "4:10.10.0.0/24" || rows[0].Fields["dhcpv6_options"] != "" {
+		t.Fatalf("row fields = %+v, want resolved DHCP option refs", rows[0].Fields)
+	}
+	logData, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logged := string(logData)
+	for _, expected := range []string{
+		"--columns=_uuid,external_ids,name,type,addresses,port_security,options,tag,enabled,ha_chassis_group,dhcpv4_options,dhcpv6_options",
+		"--columns=_uuid,external_ids,cidr find DHCP_Options",
+	} {
+		if !strings.Contains(logged, expected) {
+			t.Fatalf("audit command log missing %q:\n%s", expected, logged)
+		}
+	}
+}
+
+func TestNBCTLExecutorManagedOVNRowsReportsMissingSwitchPortDHCPOptions(t *testing.T) {
+	tmp := t.TempDir()
+	binary := filepath.Join(tmp, "ovn-nbctl")
+	script := `#!/bin/sh
+case "$*" in
+  *"find Logical_Switch_Port external_ids:netloom_owner=netloom"*) printf 'lsp-pod-a,"{netloom_owner=netloom,netloom_vpc=prod,netloom_endpoint=prod/pod-a}",nl_lp_prod_pod-a,,10.10.0.20,,{},[],true,[],[],[]\n' ;;
+  *"find DHCP_Options external_ids:netloom_owner=netloom"*) printf 'dhcp-v4,"{netloom_owner=netloom,netloom_dhcp_family=4}",10.10.0.0/24\n' ;;
+esac
+`
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	executor := NewNBCTLExecutor(binary, "--db=unix:/tmp/ovnnb.sock")
+	rows, err := executor.ManagedOVNRows(context.Background(), "Logical_Switch_Port")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(rows))
+	}
+	if value, ok := rows[0].Fields["dhcpv4_options"]; !ok || value != "" {
+		t.Fatalf("row fields = %+v, want explicit empty DHCPv4 option attachment", rows[0].Fields)
+	}
+}
+
 func TestAuditManagedObjectsFromNBCTLReportsColumnDrift(t *testing.T) {
 	tmp := t.TempDir()
 	binary := filepath.Join(tmp, "ovn-nbctl")

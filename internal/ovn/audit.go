@@ -166,6 +166,11 @@ func (e *NBCTLExecutor) ManagedOVNRows(ctx context.Context, table string) ([]Man
 			return nil, err
 		}
 	}
+	if table == "Logical_Switch_Port" {
+		if err := e.enrichNBCTLLogicalSwitchPortReferenceFields(ctx, rows); err != nil {
+			return nil, err
+		}
+	}
 	return rows, nil
 }
 
@@ -177,7 +182,7 @@ func managedAuditNBCTLColumns(table string) []string {
 	case "Logical_Router":
 		columns = append(columns, "name", "options", "ports", "load_balancers", "load_balancer_group", "nat", "policies", "static_routes", "enabled")
 	case "Logical_Switch_Port":
-		columns = append(columns, "name", "type", "addresses", "port_security", "options", "tag", "enabled", "ha_chassis_group")
+		columns = append(columns, "name", "type", "addresses", "port_security", "options", "tag", "enabled", "ha_chassis_group", "dhcpv4_options", "dhcpv6_options")
 	case "Logical_Router_Port":
 		columns = append(columns, "name", "mac", "networks", "ipv6_ra_configs", "enabled", "options", "gateway_chassis", "ha_chassis_group", "peer")
 	case "Logical_Router_Policy":
@@ -264,6 +269,58 @@ func (e *NBCTLExecutor) enrichNBCTLLoadBalancerReferenceFields(ctx context.Conte
 		rows[i].Fields["health_check_vips"] = resolveManagedAuditReferenceField(rows[i].Fields["health_check_vips"], refs)
 	}
 	return nil
+}
+
+func (e *NBCTLExecutor) enrichNBCTLLogicalSwitchPortReferenceFields(ctx context.Context, rows []ManagedOVNRow) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	refs, err := e.managedNBCTLDHCPOptionsRefs(ctx)
+	if err != nil {
+		return err
+	}
+	for i := range rows {
+		if rows[i].Fields == nil {
+			continue
+		}
+		rows[i].Fields["dhcpv4_options"] = refs[rows[i].Fields["dhcpv4_options"]]
+		rows[i].Fields["dhcpv6_options"] = refs[rows[i].Fields["dhcpv6_options"]]
+	}
+	return nil
+}
+
+func (e *NBCTLExecutor) managedNBCTLDHCPOptionsRefs(ctx context.Context) (map[string]string, error) {
+	args := append([]string(nil), e.BaseArgs...)
+	args = append(args,
+		"--format=csv",
+		"--data=bare",
+		"--no-headings",
+		"--columns=_uuid,external_ids,cidr",
+		"find",
+		"DHCP_Options",
+		"external_ids:netloom_owner=netloom",
+	)
+	output, err := e.outputCommand(ctx, args)
+	if err != nil {
+		return nil, fmt.Errorf("audit managed DHCP_Options references: %w", err)
+	}
+	out := make(map[string]string)
+	for _, row := range splitAuditRows(string(output)) {
+		values, ok := parseAuditCSVRow(row)
+		if !ok || len(values) < 3 {
+			continue
+		}
+		uuid := trimOVNString(values[0])
+		if uuid == "" {
+			continue
+		}
+		externalIDs := parseOVNMap(values[1])
+		ref := dhcpOptionsRef(externalIDs["netloom_dhcp_family"], trimOVNString(values[2]))
+		if ref != "" {
+			out[uuid] = ref
+		}
+	}
+	return out, nil
 }
 
 func (e *NBCTLExecutor) managedNBCTLReferenceNames(ctx context.Context, table, key string) (map[string]string, error) {
