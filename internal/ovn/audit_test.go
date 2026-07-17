@@ -1567,8 +1567,8 @@ func TestAuditManagedObjectsFromReaderReportsDHCPOptionFamilyMetadataDrift(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stats.DriftedManagedRows != 1 || stats.DriftedManagedFields != 1 {
-		t.Fatalf("DHCP option family metadata drift stats = %+v, want one family external_id drift", stats)
+	if stats.DriftedManagedRows != 1 || stats.DriftedManagedFields != 2 {
+		t.Fatalf("DHCP option family metadata drift stats = %+v, want family external_id and options field drift", stats)
 	}
 }
 

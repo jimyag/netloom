@@ -541,9 +541,21 @@ func expectedManagedAuditColumns(desired topology.State) map[string]map[string]s
 		if subnet, ok := desired.Subnets[subnetStateKey(endpoint.VPC, endpoint.Subnet)]; ok && subnet.DHCP.Enabled {
 			if endpoint.IP.Is4() {
 				fields["dhcpv4_options"] = dhcpOptionsRef("4", subnet.CIDR.String())
+				addAuditExpectedColumns(out, "DHCP_Options", expectedEndpointDHCPOptionsColumns(subnet, 4),
+					"netloom_vpc", endpoint.VPC,
+					"netloom_endpoint", endpointExternalID(endpoint.VPC, endpoint.ID),
+					"netloom_subnet", endpoint.Subnet,
+					"netloom_dhcp_family", "4",
+				)
 			}
 			if endpoint.IP.Is6() {
 				fields["dhcpv6_options"] = dhcpOptionsRef("6", subnet.CIDR.String())
+				addAuditExpectedColumns(out, "DHCP_Options", expectedEndpointDHCPOptionsColumns(subnet, 6),
+					"netloom_vpc", endpoint.VPC,
+					"netloom_endpoint", endpointExternalID(endpoint.VPC, endpoint.ID),
+					"netloom_subnet", endpoint.Subnet,
+					"netloom_dhcp_family", "6",
+				)
 			}
 		}
 		addAuditExpectedColumns(out, "Logical_Switch_Port", fields,
@@ -888,6 +900,55 @@ func routerPortIPv6RAConfigsField(subnet model.Subnet) string {
 		return ""
 	}
 	return mapField(map[string]string{"address_mode": "dhcpv6_stateful"})
+}
+
+func expectedEndpointDHCPOptionsColumns(subnet model.Subnet, family int) map[string]string {
+	options := map[string]string{}
+	if family == 4 {
+		options["server_id"] = subnet.Gateway.String()
+		options["server_mac"] = deterministicMAC(subnet)
+		options["router"] = subnet.Gateway.String()
+		leaseTime := subnet.DHCP.LeaseTime
+		if leaseTime == 0 {
+			leaseTime = 3600
+		}
+		options["lease_time"] = fmt.Sprint(leaseTime)
+		if subnet.DHCP.MTU != 0 {
+			options["mtu"] = fmt.Sprint(subnet.DHCP.MTU)
+		}
+		addExpectedDHCPDNSOptions(options, subnet.DHCP, 4)
+	} else {
+		options["server_id"] = deterministicMAC(subnet)
+		addExpectedDHCPDNSOptions(options, subnet.DHCP, 6)
+	}
+	return map[string]string{
+		"cidr":    subnet.CIDR.String(),
+		"options": mapField(options),
+	}
+}
+
+func addExpectedDHCPDNSOptions(options map[string]string, dhcp model.DHCPOptions, family int) {
+	servers := make([]string, 0, len(dhcp.DNSServers))
+	for _, server := range dhcp.DNSServers {
+		if (family == 4 && server.Is4()) || (family == 6 && server.Is6()) {
+			servers = append(servers, server.String())
+		}
+	}
+	if len(servers) > 0 {
+		options["dns_server"] = ovnStringSetValues(servers)
+	}
+	if family == 4 {
+		if dhcp.DomainName != "" {
+			options["domain_name"] = dhcp.DomainName
+		}
+		if len(dhcp.SearchDomains) > 0 {
+			options["domain_search_list"] = ovnStringSetValues(dhcp.SearchDomains)
+		}
+		return
+	}
+	if domains := dhcpv6SearchDomains(dhcp); len(domains) > 0 {
+		options["domain_search"] = strings.Join(domains, ",")
+	}
 }
 
 func mapField(values map[string]string) string {

@@ -1144,6 +1144,99 @@ func TestAuditManagedObjectsReportsDHCPOptionAttachmentDriftFromLibOVSDBReader(t
 	}
 }
 
+func TestAuditManagedObjectsReportsDHCPOptionColumnDriftFromLibOVSDBReader(t *testing.T) {
+	ctx := context.Background()
+	client, closeFn := newTestOVNNBClient(t)
+	defer closeFn()
+
+	if _, err := client.MonitorAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	writer := NewLibOVSDBTopologyWriter(client)
+	subnet := netloommodel.Subnet{
+		Name:    "apps",
+		VPC:     "prod",
+		CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+		Gateway: netip.MustParseAddr("10.10.0.1"),
+		DHCP: netloommodel.DHCPOptions{
+			Enabled:       true,
+			LeaseTime:     1800,
+			MTU:           1450,
+			DNSServers:    []netip.Addr{netip.MustParseAddr("10.96.0.10")},
+			DomainName:    "prod.local",
+			SearchDomains: []string{"svc.prod.local"},
+		},
+	}
+	endpoint := netloommodel.Endpoint{
+		ID:     "pod-a",
+		VPC:    "prod",
+		Subnet: "apps",
+		Node:   "node-a",
+		IP:     netip.MustParseAddr("10.10.0.20"),
+		MAC:    "02:00:00:00:00:20",
+	}
+	if err := writer.EnsureVPC(ctx, netloommodel.VPC{Name: "prod"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureSubnet(ctx, subnet); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureEndpoint(ctx, endpoint); err != nil {
+		t.Fatal(err)
+	}
+	desired := topology.State{
+		VPCs: map[string]netloommodel.VPC{
+			"prod": {Name: "prod"},
+		},
+		Subnets: map[string]netloommodel.Subnet{
+			subnetStateKey("prod", "apps"): subnet,
+		},
+		Endpoints: map[string]netloommodel.Endpoint{
+			"prod/pod-a": endpoint,
+		},
+	}
+	reader := NewLibOVSDBManagedReader(client)
+	requireEventually(t, func() bool {
+		stats, err := AuditManagedObjectsFromReaderWithDesired(ctx, reader, desired)
+		return err == nil && stats.UnexpectedManagedRows == 0 && stats.MissingManagedRows == 0 &&
+			stats.DriftedManagedRows == 0 && stats.DriftedManagedFields == 0
+	})
+
+	var options []ovnnb.DHCPOptions
+	if err := client.WhereCache(func(row *ovnnb.DHCPOptions) bool {
+		return row.ExternalIDs["netloom_vpc"] == "prod" &&
+			row.ExternalIDs["netloom_endpoint"] == endpointExternalID("prod", "pod-a") &&
+			row.ExternalIDs["netloom_dhcp_family"] == "4"
+	}).List(ctx, &options); err != nil {
+		t.Fatal(err)
+	}
+	if len(options) != 1 {
+		t.Fatalf("DHCP options rows = %d, want one IPv4 endpoint row", len(options))
+	}
+	options[0].Options["lease_time"] = "7200"
+	ops, err := client.Where(&options[0]).Update(&options[0], &options[0].Options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := client.Transact(ctx, ops...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, ops); err != nil {
+		t.Fatalf("operation errors=%+v err=%v", opErrors, err)
+	}
+
+	var stats AuditStats
+	requireEventually(t, func() bool {
+		var err error
+		stats, err = AuditManagedObjectsFromReaderWithDesired(ctx, reader, desired)
+		return err == nil && stats.DriftedManagedRows == 1 && stats.DriftedManagedFields == 1
+	})
+	if stats.DriftedManagedRows != 1 || stats.DriftedManagedFields != 1 {
+		t.Fatalf("audit stats = %+v, want one DHCP options column drift", stats)
+	}
+}
+
 func TestAuditManagedObjectsReportsNATParentAttachmentDriftFromLibOVSDBReader(t *testing.T) {
 	ctx := context.Background()
 	client, closeFn := newTestOVNNBClient(t)
