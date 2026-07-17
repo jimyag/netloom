@@ -75,6 +75,11 @@ func main() {
 				log.Fatal(err)
 			}
 			return
+		case "policy-freeze-state":
+			if err := runPolicyFreezeState(context.Background(), os.Args[2:], os.Stdout); err != nil {
+				log.Fatal(err)
+			}
+			return
 		case "route-explain":
 			if err := runRouteExplain(os.Args[2:], os.Stdout); err != nil {
 				log.Fatal(err)
@@ -170,6 +175,11 @@ type policyRolloutStateOptions struct {
 	ovsdb string
 	name  string
 	node  string
+}
+
+type policyFreezeStateOptions struct {
+	ovsdb    string
+	endpoint string
 }
 
 type routeExplainOptions struct {
@@ -400,6 +410,15 @@ type policyRolloutStateEntry struct {
 type policyFreezeStateDocument struct {
 	FrozenEndpoints []policyFreezeStateEntry `json:"frozen_endpoints,omitempty"`
 	UpdatedAt       time.Time                `json:"updated_at,omitempty"`
+}
+
+type policyFreezeStateOutput struct {
+	Ready                 bool                     `json:"ready"`
+	TotalFrozenEndpoints  int                      `json:"total_frozen_endpoints"`
+	ActiveFrozenEndpoints int                      `json:"active_frozen_endpoints"`
+	FilterEndpoint        string                   `json:"filter_endpoint,omitempty"`
+	UpdatedAt             time.Time                `json:"updated_at,omitempty"`
+	FrozenEndpoints       []policyFreezeStateEntry `json:"frozen_endpoints"`
 }
 
 type policyFreezeStateEntry struct {
@@ -800,6 +819,50 @@ func runPolicyRolloutStateWithStore(ctx context.Context, opts policyRolloutState
 		FilterName:    name,
 		FilterNode:    node,
 		Rollouts:      rollouts,
+	}
+	encoder := json.NewEncoder(stdout)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(output)
+}
+
+func runPolicyFreezeState(ctx context.Context, args []string, stdout io.Writer) error {
+	var opts policyFreezeStateOptions
+	flags := flag.NewFlagSet("netloom-agent policy-freeze-state", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	flags.StringVar(&opts.ovsdb, "ovsdb", os.Getenv("NETLOOM_OVSDB_ENDPOINT"), "Open_vSwitch OVSDB endpoint")
+	flags.StringVar(&opts.endpoint, "endpoint", "", "optional endpoint key to include")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(opts.ovsdb) == "" {
+		return errors.New("missing -ovsdb or NETLOOM_OVSDB_ENDPOINT")
+	}
+	client, closeStore, err := newOpenVSwitchClient(ctx, opts.ovsdb)
+	if err != nil {
+		return err
+	}
+	defer closeStore()
+	return runPolicyFreezeStateWithStore(ctx, opts, stdout, ovsdbPolicyFreezeStateStore{syncer: linuxdatapath.NewLibOVSDBProviderSyncer(client)}, time.Now())
+}
+
+func runPolicyFreezeStateWithStore(ctx context.Context, opts policyFreezeStateOptions, stdout io.Writer, store policyFreezeStateStore, now time.Time) error {
+	if store == nil {
+		return errors.New("missing policy freeze state store")
+	}
+	doc, err := store.Load(ctx)
+	if err != nil {
+		return err
+	}
+	active := normalizePolicyFreezeStateEntries(doc.FrozenEndpoints, now)
+	endpoint := strings.TrimSpace(opts.endpoint)
+	filtered := filterPolicyFreezeState(active, endpoint)
+	output := policyFreezeStateOutput{
+		Ready:                 true,
+		TotalFrozenEndpoints:  len(doc.FrozenEndpoints),
+		ActiveFrozenEndpoints: len(active),
+		FilterEndpoint:        endpoint,
+		UpdatedAt:             doc.UpdatedAt,
+		FrozenEndpoints:       filtered,
 	}
 	encoder := json.NewEncoder(stdout)
 	encoder.SetIndent("", "  ")
@@ -2470,6 +2533,21 @@ func filterPolicyRolloutState(rollouts []policyRolloutStateEntry, name, node str
 			continue
 		}
 		out = append(out, rollout)
+	}
+	return out
+}
+
+func filterPolicyFreezeState(entries []policyFreezeStateEntry, endpoint string) []policyFreezeStateEntry {
+	endpoint = strings.TrimSpace(endpoint)
+	if endpoint == "" {
+		return append([]policyFreezeStateEntry(nil), entries...)
+	}
+	candidates := policyEndpointCandidates(endpoint)
+	out := make([]policyFreezeStateEntry, 0, len(entries))
+	for _, entry := range entries {
+		if _, ok := candidates[entry.EndpointID]; ok {
+			out = append(out, entry)
+		}
 	}
 	return out
 }

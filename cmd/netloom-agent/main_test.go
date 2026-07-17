@@ -1030,6 +1030,40 @@ func TestRunPolicyRolloutStateWithStoreReportsFilteredJSON(t *testing.T) {
 	}
 }
 
+func TestRunPolicyFreezeStateWithStoreReportsActiveFrozenEndpoints(t *testing.T) {
+	now := time.Now().UTC()
+	doc := policyFreezeStateDocument{
+		FrozenEndpoints: []policyFreezeStateEntry{
+			{EndpointID: model.EndpointKey("prod", "vm-a"), ExpiresAt: now.Add(time.Hour)},
+			{EndpointID: model.EndpointKey("prod", "vm-b"), ExpiresAt: now.Add(-time.Minute)},
+			{EndpointID: model.EndpointKey("prod", "vm-c")},
+			{EndpointID: model.EndpointKey("prod", "vm-a"), ExpiresAt: now.Add(2 * time.Hour)},
+		},
+		UpdatedAt: now.Add(-time.Minute),
+	}
+	store := ovsdbPolicyFreezeStateStore{syncer: &fakeOpenVSwitchExternalIDStore{}}
+	if err := store.Save(t.Context(), doc); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	err := runPolicyFreezeStateWithStore(t.Context(), policyFreezeStateOptions{
+		endpoint: "prod/vm-a",
+	}, &out, store, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got policyFreezeStateOutput
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("decode policy-freeze-state output: %v\n%s", err, out.String())
+	}
+	if !got.Ready || got.TotalFrozenEndpoints != 2 || got.ActiveFrozenEndpoints != 2 || got.FilterEndpoint != "prod/vm-a" || !got.UpdatedAt.Equal(doc.UpdatedAt) {
+		t.Fatalf("output = %+v, want filtered active freeze metadata", got)
+	}
+	if len(got.FrozenEndpoints) != 1 || got.FrozenEndpoints[0].EndpointID != model.EndpointKey("prod", "vm-a") || !got.FrozenEndpoints[0].ExpiresAt.Equal(now.Add(2*time.Hour)) {
+		t.Fatalf("frozen endpoints = %+v, want latest active vm-a freeze", got.FrozenEndpoints)
+	}
+}
+
 func TestRunPolicyExplainReportsSelectorAllow(t *testing.T) {
 	statePath := writePolicyExplainState(t)
 	var stdout bytes.Buffer
