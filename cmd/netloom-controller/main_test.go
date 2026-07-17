@@ -821,6 +821,21 @@ func TestControllerMetricsReportsNotReadyBeforeFirstReconcile(t *testing.T) {
 	}
 }
 
+func TestControllerStatusAPIReportsNotReadyBeforeFirstReconcile(t *testing.T) {
+	metrics := newControllerMetrics()
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/status", nil)
+
+	metrics.handleStatus(recorder, request)
+
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", recorder.Code)
+	}
+	if !strings.Contains(recorder.Body.String(), "not ready") {
+		t.Fatalf("body missing not-ready error: %s", recorder.Body.String())
+	}
+}
+
 func TestControllerMetricsExportsLatestSuccess(t *testing.T) {
 	metrics := newControllerMetrics()
 	metrics.observe(controllerMetricsSnapshot{
@@ -997,6 +1012,76 @@ func TestControllerMetricsExportsLatestSuccess(t *testing.T) {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("metrics output missing %q:\n%s", expected, output)
 		}
+	}
+}
+
+func TestControllerStatusAPIExportsLatestOVNStatus(t *testing.T) {
+	metrics := newControllerMetrics()
+	metrics.observe(controllerMetricsSnapshot{
+		State: control.DesiredState{
+			VPCs:         []model.VPC{{Name: "prod"}},
+			Subnets:      []model.Subnet{{Name: "apps", VPC: "prod"}},
+			Endpoints:    []model.Endpoint{{ID: "pod-a", VPC: "prod", Subnet: "apps", IP: netip.MustParseAddr("10.10.0.10")}},
+			PolicyRoutes: []model.PolicyRoute{{Name: "via-fw", VPC: "prod"}},
+		},
+		PolicyEntries:                 4,
+		HealthSummary:                 control.LoadBalancerHealthSummary{Checked: 2, Healthy: 1, Unhealthy: 1},
+		OVNHealthStatus:               "ok",
+		OVNHealthLatency:              25 * time.Millisecond,
+		OVNHealthConsecutiveSuccesses: 3,
+		OVNCluster: ovnClusterHealthSnapshot{
+			ActiveEndpoint:      "tcp:10.0.0.2:6641",
+			LeaderEndpoint:      "tcp:10.0.0.2:6641",
+			LeaderProbeStatus:   "ok",
+			ConfiguredEndpoints: 3,
+			Endpoints: []ovnClusterEndpointSnapshot{
+				{Endpoint: "tcp:10.0.0.2:6641", Target: "ovnnb-b.ctl", Role: "leader", Reachable: true, Leader: true},
+				{Endpoint: "tcp:10.0.0.1:6641", Target: "ovnnb-a.ctl", Role: "follower", Reachable: true},
+				{Endpoint: "tcp:10.0.0.3:6641", Target: "ovnnb-c.ctl", Error: "timeout"},
+			},
+		},
+		OVNOps:         9,
+		OVNExecuted:    8,
+		OVNAuditStatus: "ok",
+		OVNAudit: ovn.AuditStats{
+			ManagedLogicalRouters: 1,
+			MissingManagedRows:    2,
+			DriftedManagedRows:    3,
+		},
+		OVNStaleAdvisory: ovnStaleAdvisory{Status: "warning", Burden: 5, Threshold: 4},
+		OVNMaintenance:   ovnMaintenanceResult{Status: "ok", Attempted: 1, Succeeded: 1, Latency: 15 * time.Millisecond},
+		Duration:         125 * time.Millisecond,
+		Success:          true,
+	})
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/status", nil)
+	metrics.handleStatus(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var status controllerOVSDBStatus
+	if err := json.Unmarshal(recorder.Body.Bytes(), &status); err != nil {
+		t.Fatalf("decode controller status: %v\n%s", err, recorder.Body.String())
+	}
+	if !status.Ready || !status.LastReconcileSuccess || status.SchemaVersion != 1 {
+		t.Fatalf("status readiness = %+v, want ready successful schema v1", status)
+	}
+	if status.VPCs != 1 || status.Subnets != 1 || status.Endpoints != 1 || status.PolicyRoutes != 1 || status.PolicyEntries != 4 {
+		t.Fatalf("desired object status = %+v, want latest counts", status)
+	}
+	if status.OVNHealth.Status != "ok" || status.OVNHealth.ConsecutiveSuccesses != 3 || status.OVNOps != 9 || status.OVNExecuted != 8 {
+		t.Fatalf("ovn health/execution = %+v ops=%d executed=%d, want latest values", status.OVNHealth, status.OVNOps, status.OVNExecuted)
+	}
+	if status.OVNHealth.Cluster.QuorumStatus != "degraded" || status.OVNHealth.Cluster.ReachableEndpoints != 2 || status.OVNHealth.Cluster.QuorumSize != 2 || status.OVNHealth.Cluster.LeaderCount != 1 {
+		t.Fatalf("cluster status = %+v, want degraded quorum details", status.OVNHealth.Cluster)
+	}
+	if status.OVNAudit.ManagedLogicalRouters != 1 || status.OVNAudit.MissingManagedRows != 2 || status.OVNAudit.DriftedManagedRows != 3 {
+		t.Fatalf("audit status = %+v, want latest audit counters", status.OVNAudit)
+	}
+	if status.OVNStaleAdvisory.Status != "warning" || status.OVNStaleAdvisory.Burden != 5 || status.OVNMaintenance.Status != "ok" {
+		t.Fatalf("stale/maintenance status = %+v/%+v, want warning and ok", status.OVNStaleAdvisory, status.OVNMaintenance)
 	}
 }
 

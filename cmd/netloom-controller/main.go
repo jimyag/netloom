@@ -641,38 +641,63 @@ func (r *stateFileReconciler) runOVNMaintenance(ctx context.Context, audit ovn.A
 }
 
 type controllerOVSDBStatus struct {
-	SchemaVersion       int                               `json:"schema_version"`
-	UpdatedAt           string                            `json:"updated_at"`
-	VPCs                int                               `json:"vpcs"`
-	Subnets             int                               `json:"subnets"`
-	Endpoints           int                               `json:"endpoints"`
-	RouteTables         int                               `json:"route_tables"`
-	PolicyRoutes        int                               `json:"policy_routes"`
-	Gateways            int                               `json:"gateways"`
-	NATRules            int                               `json:"nat_rules"`
-	LoadBalancers       int                               `json:"load_balancers"`
-	SecurityGroups      int                               `json:"security_groups"`
-	PolicyEntries       int                               `json:"policy_entries"`
-	LBHealth            control.LoadBalancerHealthSummary `json:"lb_health"`
-	OVNHealth           ovnHealthSnapshot                 `json:"ovn_health"`
-	OVNOps              int                               `json:"ovn_ops"`
-	OVNExecuted         int                               `json:"ovn_executed"`
-	OVNAuditStatus      string                            `json:"ovn_audit_status"`
-	OVNAuditError       string                            `json:"ovn_audit_error,omitempty"`
-	OVNAudit            ovn.AuditStats                    `json:"ovn_audit"`
-	OVNStaleAdvisory    ovnStaleAdvisory                  `json:"ovn_stale_advisory"`
-	OVNMaintenance      ovnMaintenanceResult              `json:"ovn_maintenance"`
-	ReconcileDurationMS int64                             `json:"reconcile_duration_ms"`
+	SchemaVersion        int                               `json:"schema_version"`
+	Ready                bool                              `json:"ready"`
+	LastReconcileSuccess bool                              `json:"last_reconcile_success"`
+	LastReconcileError   string                            `json:"last_reconcile_error,omitempty"`
+	LastReconcilePhase   string                            `json:"last_reconcile_phase,omitempty"`
+	UpdatedAt            string                            `json:"updated_at"`
+	VPCs                 int                               `json:"vpcs"`
+	Subnets              int                               `json:"subnets"`
+	Endpoints            int                               `json:"endpoints"`
+	RouteTables          int                               `json:"route_tables"`
+	PolicyRoutes         int                               `json:"policy_routes"`
+	Gateways             int                               `json:"gateways"`
+	NATRules             int                               `json:"nat_rules"`
+	LoadBalancers        int                               `json:"load_balancers"`
+	SecurityGroups       int                               `json:"security_groups"`
+	PolicyEntries        int                               `json:"policy_entries"`
+	LBHealth             control.LoadBalancerHealthSummary `json:"lb_health"`
+	OVNHealth            ovnHealthSnapshot                 `json:"ovn_health"`
+	OVNOps               int                               `json:"ovn_ops"`
+	OVNExecuted          int                               `json:"ovn_executed"`
+	OVNAuditStatus       string                            `json:"ovn_audit_status"`
+	OVNAuditError        string                            `json:"ovn_audit_error,omitempty"`
+	OVNAudit             ovn.AuditStats                    `json:"ovn_audit"`
+	OVNStaleAdvisory     ovnStaleAdvisory                  `json:"ovn_stale_advisory"`
+	OVNMaintenance       ovnMaintenanceResult              `json:"ovn_maintenance"`
+	ReconcileDurationMS  int64                             `json:"reconcile_duration_ms"`
 }
 
 const controllerOVSDBStatusKey = "netloom_controller_status"
 
-func (r *stateFileReconciler) syncOVSDBControlStatus(ctx context.Context, state control.DesiredState, healthSummary control.LoadBalancerHealthSummary, ovnHealth ovnHealthSnapshot, ovnOps, executed int, ovnAuditStatus, ovnAuditError string, ovnAudit ovn.AuditStats, ovnStaleAdvisory ovnStaleAdvisory, ovnMaintenance ovnMaintenanceResult, duration time.Duration) error {
-	if r == nil || r.ovsStatus == nil {
-		return nil
-	}
+func controllerStatusFromSnapshot(snapshot controllerMetricsSnapshot) controllerOVSDBStatus {
+	return controllerStatusFromReconcile(
+		snapshot.State,
+		snapshot.PolicyEntries,
+		snapshot.HealthSummary,
+		ovnHealthSnapshot{
+			Status:               snapshot.OVNHealthStatus,
+			Latency:              snapshot.OVNHealthLatency,
+			ConsecutiveFailures:  snapshot.OVNHealthConsecutiveFailures,
+			ConsecutiveSuccesses: snapshot.OVNHealthConsecutiveSuccesses,
+			Recovering:           snapshot.OVNHealthRecovering,
+			Cluster:              snapshot.OVNCluster,
+		},
+		snapshot.OVNOps,
+		snapshot.OVNExecuted,
+		fallbackMetricsLabel(snapshot.OVNAuditStatus, "disabled"),
+		snapshot.OVNAuditError,
+		snapshot.OVNAudit,
+		snapshot.OVNStaleAdvisory,
+		snapshot.OVNMaintenance,
+		snapshot.Duration,
+	)
+}
+
+func controllerStatusFromReconcile(state control.DesiredState, policyEntries int, healthSummary control.LoadBalancerHealthSummary, ovnHealth ovnHealthSnapshot, ovnOps, executed int, ovnAuditStatus, ovnAuditError string, ovnAudit ovn.AuditStats, ovnStaleAdvisory ovnStaleAdvisory, ovnMaintenance ovnMaintenanceResult, duration time.Duration) controllerOVSDBStatus {
 	ovnHealth.Cluster = summarizeOVNClusterHealth(ovnHealth.Cluster)
-	status := controllerOVSDBStatus{
+	return controllerOVSDBStatus{
 		SchemaVersion:       1,
 		UpdatedAt:           time.Now().UTC().Format(time.RFC3339Nano),
 		VPCs:                len(state.VPCs),
@@ -684,7 +709,7 @@ func (r *stateFileReconciler) syncOVSDBControlStatus(ctx context.Context, state 
 		NATRules:            len(state.NATRules),
 		LoadBalancers:       len(state.LoadBalancers),
 		SecurityGroups:      len(state.SecurityGroups),
-		PolicyEntries:       countPolicyEntries(r.memory),
+		PolicyEntries:       policyEntries,
 		LBHealth:            healthSummary,
 		OVNHealth:           ovnHealth,
 		OVNOps:              ovnOps,
@@ -696,6 +721,13 @@ func (r *stateFileReconciler) syncOVSDBControlStatus(ctx context.Context, state 
 		OVNMaintenance:      ovnMaintenance,
 		ReconcileDurationMS: duration.Milliseconds(),
 	}
+}
+
+func (r *stateFileReconciler) syncOVSDBControlStatus(ctx context.Context, state control.DesiredState, healthSummary control.LoadBalancerHealthSummary, ovnHealth ovnHealthSnapshot, ovnOps, executed int, ovnAuditStatus, ovnAuditError string, ovnAudit ovn.AuditStats, ovnStaleAdvisory ovnStaleAdvisory, ovnMaintenance ovnMaintenanceResult, duration time.Duration) error {
+	if r == nil || r.ovsStatus == nil {
+		return nil
+	}
+	status := controllerStatusFromReconcile(state, countPolicyEntries(r.memory), healthSummary, ovnHealth, ovnOps, executed, ovnAuditStatus, ovnAuditError, ovnAudit, ovnStaleAdvisory, ovnMaintenance, duration)
 	raw, err := json.Marshal(status)
 	if err != nil {
 		return fmt.Errorf("encode Open_vSwitch controller status: %w", err)
@@ -911,6 +943,7 @@ func startControllerMetricsServer(ctx context.Context, addr string, metrics *con
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/metrics", metrics.handleMetrics)
+	mux.HandleFunc("/status", metrics.handleStatus)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok\n"))
@@ -932,6 +965,32 @@ func startControllerMetricsServer(ctx context.Context, addr string, metrics *con
 		defer cancel()
 		_ = server.Shutdown(shutdownCtx)
 	}, nil
+}
+
+func (m *controllerMetrics) handleStatus(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "method not allowed"})
+		return
+	}
+	snapshot, _, ready := m.snapshotValue()
+	if !ready {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ready": false,
+			"error": "controller status is not ready",
+		})
+		return
+	}
+	status := controllerStatusFromSnapshot(snapshot)
+	status.Ready = true
+	status.LastReconcileSuccess = snapshot.Success
+	status.LastReconcileError = snapshot.Error
+	status.LastReconcilePhase = snapshot.Phase
+	encoder := json.NewEncoder(w)
+	encoder.SetIndent("", "  ")
+	_ = encoder.Encode(status)
 }
 
 func (m *controllerMetrics) handleMetrics(w http.ResponseWriter, _ *http.Request) {

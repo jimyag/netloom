@@ -348,6 +348,12 @@ curl -s http://127.0.0.1:9091/metrics
 curl -s http://127.0.0.1:9092/metrics
 ```
 
+查看 controller 最新 OVN 健康、集群、audit 和 stale 状态：
+
+```bash
+curl -s http://127.0.0.1:9091/status
+```
+
 查看最新规则级安全组计数和规则来源：
 
 ```bash

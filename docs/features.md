@@ -82,6 +82,7 @@
 | Identity group import/feed | 已实现 | `identity-groups-import`, remote feed env vars | controller/agent tests |
 | DNS observer | 已实现 | UDP/TCP proxy, AF_PACKET capture, OVSDB observations | `go test ./cmd/netloom-dns-observer` |
 | Metrics | 已实现 | controller/agent `/metrics` | command tests |
+| Controller status API | 已实现 | controller `/status` JSON API for OVN health/audit/cluster/stale state | `TestControllerStatusAPIExportsLatestOVNStatus` |
 | OVN health/audit/maintenance | 已实现 | libovsdb health, audit stats, compact/stale hooks | `go test ./cmd/netloom-controller ./internal/ovn` |
 | Policy rollout | 已实现 | rollout request state, approval, ack, finalize, SLO, HTTP status/body probes, TCP/TLS probes | agent/control tests |
 
