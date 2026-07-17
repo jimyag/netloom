@@ -914,7 +914,7 @@ func (w *LibOVSDBTopologyWriter) repairSteadyStateLoadBalancerParentRefs(ctx con
 }
 
 func (w *LibOVSDBTopologyWriter) repairSteadyStateLoadBalancerHealthCheckRefs(ctx context.Context, lbRow *ovnnb.LoadBalancer, lb model.LoadBalancer, protocol model.Protocol, frontends []model.LoadBalancerFrontend) ([]ovsdb.Operation, error) {
-	hcRows, err := w.healthChecksByLoadBalancerName(ctx, lbRow.Name, lb.VPC, lb.Name)
+	hcRows, err := w.healthChecksForLoadBalancerRow(ctx, lbRow)
 	if err != nil {
 		return nil, err
 	}
@@ -1630,14 +1630,37 @@ func (w *LibOVSDBTopologyWriter) unexpectedLoadBalancers(ctx context.Context, ex
 }
 
 func (w *LibOVSDBTopologyWriter) unexpectedLoadBalancerHealthChecks(ctx context.Context, expected map[string]map[string]string) ([]ovnnb.LoadBalancerHealthCheck, error) {
+	expectedRefs, err := w.expectedLoadBalancerHealthCheckRefs(ctx, expected)
+	if err != nil {
+		return nil, err
+	}
 	var rows []ovnnb.LoadBalancerHealthCheck
 	if err := w.client.WhereCache(func(row *ovnnb.LoadBalancerHealthCheck) bool {
+		if _, ok := expectedRefs[row.UUID]; ok {
+			return false
+		}
 		return unexpectedManagedRow("Load_Balancer_Health_Check", row.UUID, row.ExternalIDs, expected)
 	}).List(ctx, &rows); err != nil {
 		return nil, err
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].UUID < rows[j].UUID })
 	return rows, nil
+}
+
+func (w *LibOVSDBTopologyWriter) expectedLoadBalancerHealthCheckRefs(ctx context.Context, expected map[string]map[string]string) (map[string]struct{}, error) {
+	var lbs []ovnnb.LoadBalancer
+	if err := w.client.WhereCache(func(row *ovnnb.LoadBalancer) bool {
+		return !unexpectedManagedRow("Load_Balancer", row.UUID, row.ExternalIDs, expected)
+	}).List(ctx, &lbs); err != nil {
+		return nil, err
+	}
+	refs := make(map[string]struct{})
+	for _, lb := range lbs {
+		for _, uuid := range lb.HealthCheck {
+			refs[uuid] = struct{}{}
+		}
+	}
+	return refs, nil
 }
 
 func (w *LibOVSDBTopologyWriter) unexpectedDHCPOptions(ctx context.Context, expected map[string]map[string]string) ([]ovnnb.DHCPOptions, error) {
