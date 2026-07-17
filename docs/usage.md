@@ -361,6 +361,13 @@ curl -s http://127.0.0.1:9092/policy/rules
 curl -s http://127.0.0.1:9092/policy/rules/prod/vm-a
 ```
 
+查看最近 endpoint policy map 更新事件：
+
+```bash
+curl -s 'http://127.0.0.1:9092/policy/events?limit=100'
+curl -s 'http://127.0.0.1:9092/policy/events/prod/vm-a?limit=20'
+```
+
 检查本机托管网络对象：
 
 ```bash

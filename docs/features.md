@@ -78,6 +78,7 @@
 | Policy explain | 已实现 | `netloom-agent policy-explain` | command tests |
 | Policy status | 已实现 | `netloom-agent policy-status` | command tests |
 | Policy rule observability | 已实现 | agent `/policy/rules` JSON API and Prometheus rule counters | `TestPolicyRulesAPIReportsCatalogAndCounters` |
+| Policy update events | 已实现 | agent `/policy/events` JSON API for recent endpoint policy-map update events | `TestPolicyEventsAPIReportsRecentEndpointEvents` |
 | Route explain | 已实现 | `netloom-agent route-explain` | command tests |
 | Identity group import/feed | 已实现 | `identity-groups-import`, remote feed env vars | controller/agent tests |
 | DNS observer | 已实现 | UDP/TCP proxy, AF_PACKET capture, OVSDB observations | `go test ./cmd/netloom-dns-observer` |

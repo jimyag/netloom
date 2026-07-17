@@ -208,6 +208,18 @@ type policyRuleOutput struct {
 	Logged        uint64 `json:"logged"`
 }
 
+type policyEventsOutput struct {
+	Node                 string                        `json:"node"`
+	Store                string                        `json:"store"`
+	Ready                bool                          `json:"ready"`
+	LastReconcileSuccess bool                          `json:"last_reconcile_success"`
+	LastReconcileError   string                        `json:"last_reconcile_error,omitempty"`
+	TotalEvents          int                           `json:"total_events"`
+	EventCount           int                           `json:"event_count"`
+	Limit                int                           `json:"limit"`
+	Events               []dataplane.PolicyUpdateEvent `json:"events"`
+}
+
 type policyEndpointActionOutput struct {
 	EndpointID    string                         `json:"endpoint_id"`
 	Action        string                         `json:"action"`
@@ -712,6 +724,51 @@ func policyRulesOutputFromResult(result agent.ReconcileResult, storeName, endpoi
 		output.Logged += rule.Logged
 	}
 	return output
+}
+
+const (
+	defaultPolicyEventsLimit = 100
+	maxPolicyEventsLimit     = 1000
+)
+
+func policyEventsOutputFromSnapshot(snapshot agentMetricsSnapshot, events []dataplane.PolicyUpdateEvent, endpoint string, limit int) policyEventsOutput {
+	filtered := filterPolicyUpdateEvents(events, endpoint)
+	recent := recentPolicyUpdateEvents(filtered, limit)
+	return policyEventsOutput{
+		Node:                 snapshot.Result.Node,
+		Store:                snapshot.Store,
+		Ready:                true,
+		LastReconcileSuccess: snapshot.Success,
+		LastReconcileError:   snapshot.Error,
+		TotalEvents:          len(events),
+		EventCount:           len(recent),
+		Limit:                limit,
+		Events:               recent,
+	}
+}
+
+func filterPolicyUpdateEvents(events []dataplane.PolicyUpdateEvent, endpoint string) []dataplane.PolicyUpdateEvent {
+	endpoint = strings.TrimSpace(endpoint)
+	if endpoint == "" {
+		return append([]dataplane.PolicyUpdateEvent(nil), events...)
+	}
+	out := make([]dataplane.PolicyUpdateEvent, 0, len(events))
+	for _, event := range events {
+		if policyRuleEndpointMatches(event.EndpointID, endpoint) {
+			out = append(out, event)
+		}
+	}
+	return out
+}
+
+func recentPolicyUpdateEvents(events []dataplane.PolicyUpdateEvent, limit int) []dataplane.PolicyUpdateEvent {
+	if limit <= 0 {
+		return nil
+	}
+	if len(events) <= limit {
+		return append([]dataplane.PolicyUpdateEvent(nil), events...)
+	}
+	return append([]dataplane.PolicyUpdateEvent(nil), events[len(events)-limit:]...)
 }
 
 func filterPolicyRuleStats(stats []dataplane.RuleMetrics, endpoint string) []dataplane.RuleMetrics {
@@ -2611,6 +2668,8 @@ func startAgentMetricsServer(ctx context.Context, addr string, metrics *agentMet
 	mux.HandleFunc("/policy/explain", metrics.handlePolicyExplain)
 	mux.HandleFunc("/policy/endpoints", metrics.handlePolicyEndpoints)
 	mux.HandleFunc("/policy/endpoints/", metrics.handlePolicyEndpoints)
+	mux.HandleFunc("/policy/events", metrics.handlePolicyEvents)
+	mux.HandleFunc("/policy/events/", metrics.handlePolicyEvents)
 	mux.HandleFunc("/policy/rules", metrics.handlePolicyRules)
 	mux.HandleFunc("/policy/rules/", metrics.handlePolicyRules)
 	mux.HandleFunc("/route/explain", metrics.handleRouteExplain)
@@ -2722,6 +2781,39 @@ func (m *agentMetrics) handlePolicyRules(w http.ResponseWriter, r *http.Request)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "policy rule metrics not found"})
 		return
 	}
+	encoder := json.NewEncoder(w)
+	encoder.SetIndent("", "  ")
+	_ = encoder.Encode(output)
+}
+
+func (m *agentMetrics) handlePolicyEvents(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "method not allowed"})
+		return
+	}
+	snapshot, _, ready := m.snapshotValue()
+	if !ready {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "policy events are not ready"})
+		return
+	}
+	eventStore, ok := m.store.(agent.PolicyEventStore)
+	if !ok {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "policy events are not enabled"})
+		return
+	}
+	limit, err := policyEventsLimitFromRequest(r)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	endpoint := policyEventEndpointFromRequest(r)
+	events := eventStore.Events()
+	output := policyEventsOutputFromSnapshot(snapshot, events, endpoint, limit)
 	encoder := json.NewEncoder(w)
 	encoder.SetIndent("", "  ")
 	_ = encoder.Encode(output)
@@ -2992,6 +3084,35 @@ func policyRuleEndpointFromRequest(r *http.Request) string {
 		}
 	}
 	return endpoint
+}
+
+func policyEventEndpointFromRequest(r *http.Request) string {
+	endpoint := strings.TrimSpace(r.URL.Query().Get("endpoint"))
+	if strings.HasPrefix(r.URL.Path, "/policy/events/") {
+		pathEndpoint := strings.TrimPrefix(r.URL.Path, "/policy/events/")
+		if decoded, err := url.PathUnescape(pathEndpoint); err == nil {
+			pathEndpoint = decoded
+		}
+		if strings.TrimSpace(pathEndpoint) != "" {
+			endpoint = strings.TrimSpace(pathEndpoint)
+		}
+	}
+	return endpoint
+}
+
+func policyEventsLimitFromRequest(r *http.Request) (int, error) {
+	raw := strings.TrimSpace(r.URL.Query().Get("limit"))
+	if raw == "" {
+		return defaultPolicyEventsLimit, nil
+	}
+	limit, err := strconv.Atoi(raw)
+	if err != nil || limit < 0 {
+		return 0, fmt.Errorf("invalid limit %q", raw)
+	}
+	if limit > maxPolicyEventsLimit {
+		return maxPolicyEventsLimit, nil
+	}
+	return limit, nil
 }
 
 func policyEndpointActionFromRequest(r *http.Request) (string, string) {

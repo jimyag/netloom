@@ -1615,6 +1615,21 @@ func TestPolicyRulesAPIReportsNotReady(t *testing.T) {
 	}
 }
 
+func TestPolicyEventsAPIReportsNotReady(t *testing.T) {
+	metrics := newAgentMetrics(dataplane.NewInMemoryPolicyStore())
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/policy/events", nil)
+
+	metrics.handlePolicyEvents(recorder, request)
+
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", recorder.Code)
+	}
+	if !strings.Contains(recorder.Body.String(), "not ready") {
+		t.Fatalf("body missing not ready error: %s", recorder.Body.String())
+	}
+}
+
 func TestPolicyExplainAPIReportsNotReady(t *testing.T) {
 	metrics := newAgentMetrics()
 	recorder := httptest.NewRecorder()
@@ -1627,6 +1642,111 @@ func TestPolicyExplainAPIReportsNotReady(t *testing.T) {
 	}
 	if !strings.Contains(recorder.Body.String(), "not ready") {
 		t.Fatalf("body missing not ready error: %s", recorder.Body.String())
+	}
+}
+
+func TestPolicyEventsAPIReportsRecentEndpointEvents(t *testing.T) {
+	store := dataplane.NewInMemoryPolicyStore()
+	podA := model.EndpointKey("prod", "pod-a")
+	podB := model.EndpointKey("prod", "pod-b")
+	if err := store.ReplaceEndpoint(context.Background(), podA, []dataplane.PolicyMapEntry{{
+		Key: dataplane.PolicyKey{
+			PrefixLen:      dataplane.StaticPrefixBits,
+			Direction:      dataplane.DirectionIngress,
+			Protocol:       6,
+			RemoteIdentity: 10,
+		},
+		Value: dataplane.PolicyEntry{RuleCookie: 42},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ReplaceEndpoint(context.Background(), podB, []dataplane.PolicyMapEntry{{
+		Key: dataplane.PolicyKey{
+			PrefixLen:      dataplane.StaticPrefixBits,
+			Direction:      dataplane.DirectionEgress,
+			Protocol:       6,
+			RemoteIdentity: 20,
+		},
+		Value: dataplane.PolicyEntry{RuleCookie: 7},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ReplaceEndpoint(context.Background(), podA, []dataplane.PolicyMapEntry{{
+		Key: dataplane.PolicyKey{
+			PrefixLen:      dataplane.StaticPrefixBits,
+			Direction:      dataplane.DirectionIngress,
+			Protocol:       6,
+			RemoteIdentity: 10,
+		},
+		Value: dataplane.PolicyEntry{RuleCookie: 42},
+	}, {
+		Key: dataplane.PolicyKey{
+			PrefixLen:      dataplane.StaticPrefixBits,
+			Direction:      dataplane.DirectionEgress,
+			Protocol:       6,
+			RemoteIdentity: 30,
+		},
+		Value: dataplane.PolicyEntry{RuleCookie: 43},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	metrics := newAgentMetrics(store)
+	observeAgentReconcileResult(metrics, agent.ReconcileResult{Node: "node-a"}, "memory", time.Millisecond)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/policy/events/prod/pod-a?limit=1", nil)
+	metrics.handlePolicyEvents(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var got policyEventsOutput
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode policy events response: %v\n%s", err, recorder.Body.String())
+	}
+	if !got.Ready || !got.LastReconcileSuccess || got.Node != "node-a" || got.Store != "memory" {
+		t.Fatalf("policy events summary = %+v, want ready node-a memory success", got)
+	}
+	if got.TotalEvents != 3 || got.EventCount != 1 || got.Limit != 1 {
+		t.Fatalf("policy event counts = %+v, want total=3 event_count=1 limit=1", got)
+	}
+	if len(got.Events) != 1 || got.Events[0].EndpointID != podA || got.Events[0].Revision != 2 || !got.Events[0].Success {
+		t.Fatalf("events = %+v, want latest successful pod-a revision 2", got.Events)
+	}
+	if got.Events[0].Stats.Added != 1 || got.Events[0].Stats.Unchanged != 1 {
+		t.Fatalf("event stats = %+v, want second pod-a update stats", got.Events[0].Stats)
+	}
+}
+
+func TestPolicyEventsAPIReportsNotEnabled(t *testing.T) {
+	metrics := newAgentMetrics()
+	observeAgentReconcileResult(metrics, agent.ReconcileResult{Node: "node-a"}, "custom", time.Millisecond)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/policy/events", nil)
+	metrics.handlePolicyEvents(recorder, request)
+
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", recorder.Code)
+	}
+	if !strings.Contains(recorder.Body.String(), "not enabled") {
+		t.Fatalf("body missing not enabled error: %s", recorder.Body.String())
+	}
+}
+
+func TestPolicyEventsAPIRejectsInvalidLimit(t *testing.T) {
+	metrics := newAgentMetrics(dataplane.NewInMemoryPolicyStore())
+	observeAgentReconcileResult(metrics, agent.ReconcileResult{Node: "node-a"}, "memory", time.Millisecond)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/policy/events?limit=bad", nil)
+	metrics.handlePolicyEvents(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", recorder.Code)
+	}
+	if !strings.Contains(recorder.Body.String(), "invalid limit") {
+		t.Fatalf("body missing invalid limit error: %s", recorder.Body.String())
 	}
 }
 
