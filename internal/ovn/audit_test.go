@@ -1149,6 +1149,9 @@ func TestAuditManagedObjectsFromReaderReportsFieldDrift(t *testing.T) {
 	if stats.DriftedManagedRows != 1 || stats.DriftedManagedFields != 1 {
 		t.Fatalf("field drift = rows %d fields %d, want one node drift", stats.DriftedManagedRows, stats.DriftedManagedFields)
 	}
+	if got := stats.DriftedManagedFieldCounts["Logical_Switch_Port.external_ids.netloom_node"]; got != 1 {
+		t.Fatalf("field drift counts = %+v, want logical switch port netloom_node drift", stats.DriftedManagedFieldCounts)
+	}
 }
 
 func TestAuditManagedObjectsFromReaderReportsStaleLogicalRouterOptions(t *testing.T) {

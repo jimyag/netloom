@@ -31,6 +31,7 @@ type AuditStats struct {
 	UnexpectedManagedRows            int
 	DriftedManagedRows               int
 	DriftedManagedFields             int
+	DriftedManagedFieldCounts        map[string]int `json:"drifted_managed_field_counts,omitempty"`
 }
 
 type ManagedOVNRow struct {
@@ -89,13 +90,14 @@ func AuditManagedObjectsFromReaderWithDesired(ctx context.Context, reader Manage
 		for _, row := range result.rows {
 			if expectedFields, ok := expected[row.identity]; ok {
 				seen[row.identity] = struct{}{}
-				driftedFields := countManagedFieldDrift(table.name, row.externalIDs, expectedFields)
+				driftedFieldNames := managedFieldDrift(table.name, row.externalIDs, expectedFields)
 				if row.fields != nil {
-					driftedFields += countManagedProvidedFieldDrift(table.name, row.fields, expectedColumns[row.identity])
+					driftedFieldNames = append(driftedFieldNames, managedProvidedFieldDrift(table.name, row.fields, expectedColumns[row.identity])...)
 				}
-				if driftedFields != 0 {
+				if len(driftedFieldNames) != 0 {
 					stats.DriftedManagedRows++
-					stats.DriftedManagedFields += driftedFields
+					stats.DriftedManagedFields += len(driftedFieldNames)
+					stats.addDriftedManagedFields(table.name, driftedFieldNames)
 				}
 			} else if len(expected) > 0 {
 				stats.UnexpectedManagedRows++
@@ -110,6 +112,18 @@ func AuditManagedObjectsFromReaderWithDesired(ctx context.Context, reader Manage
 		}
 	}
 	return stats, nil
+}
+
+func (s *AuditStats) addDriftedManagedFields(table string, fields []string) {
+	if len(fields) == 0 {
+		return
+	}
+	if s.DriftedManagedFieldCounts == nil {
+		s.DriftedManagedFieldCounts = make(map[string]int)
+	}
+	for _, field := range fields {
+		s.DriftedManagedFieldCounts[table+"."+field]++
+	}
 }
 
 type managedAuditTable struct {
@@ -964,13 +978,17 @@ func addAuditExpectedRow(out map[string]map[string]string, table string, keyValu
 }
 
 func countManagedFieldDrift(table string, live, expected map[string]string) int {
+	return len(managedFieldDrift(table, live, expected))
+}
+
+func managedFieldDrift(table string, live, expected map[string]string) []string {
 	if expected == nil {
-		return 0
+		return nil
 	}
-	drift := 0
+	var drift []string
 	for key, value := range expected {
 		if live[key] != value {
-			drift++
+			drift = append(drift, "external_ids."+key)
 		}
 	}
 	for key := range live {
@@ -978,7 +996,7 @@ func countManagedFieldDrift(table string, live, expected map[string]string) int 
 			continue
 		}
 		if _, ok := expected[key]; !ok {
-			drift++
+			drift = append(drift, "external_ids."+key)
 		}
 	}
 	return drift
@@ -1005,14 +1023,18 @@ func staleManagedExternalIDShouldDrift(table, key string) bool {
 }
 
 func countManagedProvidedFieldDrift(table string, live, expected map[string]string) int {
-	drift := 0
+	return len(managedProvidedFieldDrift(table, live, expected))
+}
+
+func managedProvidedFieldDrift(table string, live, expected map[string]string) []string {
+	var drift []string
 	for key, value := range expected {
 		liveValue, ok := live[key]
 		if !ok {
 			continue
 		}
 		if liveValue != value {
-			drift++
+			drift = append(drift, key)
 		}
 	}
 	for key, value := range live {
@@ -1023,7 +1045,7 @@ func countManagedProvidedFieldDrift(table string, live, expected map[string]stri
 			continue
 		}
 		if _, ok := expected[key]; !ok {
-			drift++
+			drift = append(drift, key)
 		}
 	}
 	return drift

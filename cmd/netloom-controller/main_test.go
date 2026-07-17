@@ -1167,6 +1167,9 @@ func TestControllerMetricsExportsLatestSuccess(t *testing.T) {
 			UnexpectedManagedRows:            4,
 			DriftedManagedRows:               5,
 			DriftedManagedFields:             6,
+			DriftedManagedFieldCounts: map[string]int{
+				"Load_Balancer.options": 2,
+			},
 		},
 		OVNStaleAdvisory: ovnStaleAdvisory{
 			Status:    "warning",
@@ -1249,6 +1252,7 @@ func TestControllerMetricsExportsLatestSuccess(t *testing.T) {
 		`netloom_controller_ovn_live_unexpected_managed_rows{ovn_audit="ok",ovn_health="ok"} 4`,
 		`netloom_controller_ovn_live_drifted_managed_rows{ovn_audit="ok",ovn_health="ok"} 5`,
 		`netloom_controller_ovn_live_drifted_managed_fields{ovn_audit="ok",ovn_health="ok"} 6`,
+		`netloom_controller_ovn_live_drifted_managed_field{field="options",ovn_audit="ok",ovn_health="ok",table="Load_Balancer"} 2`,
 		`netloom_controller_ovn_stale_advisory_active{ovn_health="ok",ovn_stale_advisory="warning"} 1`,
 		`netloom_controller_ovn_stale_advisory_burden{ovn_health="ok",ovn_stale_advisory="warning"} 15`,
 		`netloom_controller_ovn_stale_advisory_threshold{ovn_health="ok",ovn_stale_advisory="warning"} 10`,

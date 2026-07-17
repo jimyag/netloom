@@ -1555,6 +1555,17 @@ func writeControllerMetrics(w metricWriter, snapshot controllerMetricsSnapshot, 
 	fmt.Fprintf(w, "netloom_controller_ovn_live_drifted_managed_rows%s %d\n", auditLabels, snapshot.OVNAudit.DriftedManagedRows)
 	writeMetricType(w, "netloom_controller_ovn_live_drifted_managed_fields", "gauge")
 	fmt.Fprintf(w, "netloom_controller_ovn_live_drifted_managed_fields%s %d\n", auditLabels, snapshot.OVNAudit.DriftedManagedFields)
+	writeMetricType(w, "netloom_controller_ovn_live_drifted_managed_field", "gauge")
+	for _, key := range sortedAuditDriftFieldKeys(snapshot.OVNAudit.DriftedManagedFieldCounts) {
+		table, field, _ := strings.Cut(key, ".")
+		labels := prometheusLabels(map[string]string{
+			"ovn_health": fallbackMetricsLabel(snapshot.OVNHealthStatus, "disabled"),
+			"ovn_audit":  fallbackMetricsLabel(snapshot.OVNAuditStatus, "disabled"),
+			"table":      table,
+			"field":      field,
+		})
+		fmt.Fprintf(w, "netloom_controller_ovn_live_drifted_managed_field%s %d\n", labels, snapshot.OVNAudit.DriftedManagedFieldCounts[key])
+	}
 	writeMetricType(w, "netloom_controller_ovn_stale_advisory_active", "gauge")
 	fmt.Fprintf(w, "netloom_controller_ovn_stale_advisory_active%s %d\n", staleAdvisoryLabels, boolMetric(snapshot.OVNStaleAdvisory.Status == "warning"))
 	writeMetricType(w, "netloom_controller_ovn_stale_advisory_burden", "gauge")
@@ -1600,6 +1611,17 @@ func writeControllerFailurePhaseCounters(w metricWriter, totals controllerMetric
 	for _, phase := range phases {
 		writeControllerCounter(w, "netloom_controller_reconcile_failures_by_phase_total", prometheusLabels(map[string]string{"phase": phase}), totals.FailurePhases[phase])
 	}
+}
+
+func sortedAuditDriftFieldKeys(counts map[string]int) []string {
+	keys := make([]string, 0, len(counts))
+	for key, count := range counts {
+		if count > 0 {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 type metricWriter interface {
