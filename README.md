@@ -109,6 +109,10 @@ Inspect policy state, policy-map entries, and routing decisions:
 ```bash
 ./netloom-agent policy-status -state /etc/netloom/state.json -node node-a
 ./netloom-agent policy-entries -state /etc/netloom/state.json -node node-a -endpoint prod/vm-a
+./netloom-agent policy-action-history \
+  -ovsdb unix:/var/run/openvswitch/db.sock \
+  -endpoint prod/vm-a \
+  -success false
 ./netloom-agent policy-explain \
   -state /etc/netloom/state.json \
   -vpc prod \

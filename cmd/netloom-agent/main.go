@@ -60,6 +60,11 @@ func main() {
 				log.Fatal(err)
 			}
 			return
+		case "policy-action-history":
+			if err := runPolicyActionHistory(context.Background(), os.Args[2:], os.Stdout); err != nil {
+				log.Fatal(err)
+			}
+			return
 		case "route-explain":
 			if err := runRouteExplain(os.Args[2:], os.Stdout); err != nil {
 				log.Fatal(err)
@@ -134,6 +139,14 @@ type policyEntriesOptions struct {
 	stateFile string
 	node      string
 	endpoint  string
+}
+
+type policyActionHistoryOptions struct {
+	ovsdb    string
+	endpoint string
+	action   string
+	success  string
+	limit    int
 }
 
 type routeExplainOptions struct {
@@ -592,6 +605,66 @@ func runPolicyEntries(args []string, stdout io.Writer) error {
 		return err
 	}
 	output := policyEntriesOutputFromSnapshot(snapshot, endpointID, entryStore.Entries(endpointID))
+	encoder := json.NewEncoder(stdout)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(output)
+}
+
+func runPolicyActionHistory(ctx context.Context, args []string, stdout io.Writer) error {
+	opts := policyActionHistoryOptions{limit: defaultPolicyEventsLimit}
+	flags := flag.NewFlagSet("netloom-agent policy-action-history", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	flags.StringVar(&opts.ovsdb, "ovsdb", os.Getenv("NETLOOM_OVSDB_ENDPOINT"), "Open_vSwitch OVSDB endpoint")
+	flags.StringVar(&opts.endpoint, "endpoint", "", "optional endpoint key or endpoint ID to include")
+	flags.StringVar(&opts.action, "action", "", "optional lifecycle action to include")
+	flags.StringVar(&opts.success, "success", "", "optional success filter: true or false")
+	flags.IntVar(&opts.limit, "limit", defaultPolicyEventsLimit, "maximum recent action history entries")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(opts.ovsdb) == "" {
+		return errors.New("missing -ovsdb or NETLOOM_OVSDB_ENDPOINT")
+	}
+	client, closeStore, err := newOpenVSwitchClient(ctx, opts.ovsdb)
+	if err != nil {
+		return err
+	}
+	defer closeStore()
+	return runPolicyActionHistoryWithStore(ctx, opts, stdout, ovsdbPolicyActionHistoryStore{syncer: linuxdatapath.NewLibOVSDBProviderSyncer(client)})
+}
+
+func runPolicyActionHistoryWithStore(ctx context.Context, opts policyActionHistoryOptions, stdout io.Writer, store policyActionHistoryStore) error {
+	if store == nil {
+		return errors.New("missing policy action history store")
+	}
+	if opts.limit < 0 {
+		return fmt.Errorf("invalid limit %d", opts.limit)
+	}
+	if opts.limit > maxPolicyEventsLimit {
+		opts.limit = maxPolicyEventsLimit
+	}
+	success, err := policyActionSuccessFromString(opts.success)
+	if err != nil {
+		return err
+	}
+	history, err := store.Load(ctx)
+	if err != nil {
+		return err
+	}
+	endpoint := strings.TrimSpace(opts.endpoint)
+	action := strings.TrimSpace(opts.action)
+	filtered := filterPolicyActionHistory(history, endpoint, action, success)
+	recent := recentPolicyActionHistory(filtered, opts.limit)
+	output := policyActionHistoryOutput{
+		Ready:          true,
+		TotalEvents:    len(history),
+		EventCount:     len(recent),
+		Limit:          opts.limit,
+		FilterEndpoint: endpoint,
+		FilterAction:   action,
+		FilterSuccess:  success,
+		History:        recent,
+	}
 	encoder := json.NewEncoder(stdout)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(output)
@@ -4078,7 +4151,11 @@ func policyEventsLimitFromRequest(r *http.Request) (int, error) {
 }
 
 func policyActionSuccessFromRequest(r *http.Request) (*bool, error) {
-	raw := strings.TrimSpace(r.URL.Query().Get("success"))
+	return policyActionSuccessFromString(r.URL.Query().Get("success"))
+}
+
+func policyActionSuccessFromString(raw string) (*bool, error) {
+	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return nil, nil
 	}

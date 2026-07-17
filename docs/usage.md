@@ -401,6 +401,11 @@ curl -X POST http://127.0.0.1:9092/policy/endpoints/prod/vm-a/unfreeze
 curl -s http://127.0.0.1:9092/policy/endpoints/actions/history
 curl -s 'http://127.0.0.1:9092/policy/endpoints/actions/history?endpoint=prod/vm-a&action=freeze&limit=20'
 curl -s 'http://127.0.0.1:9092/policy/endpoints/actions/history?action=regenerate&success=false'
+netloom-agent policy-action-history \
+  -ovsdb unix:/var/run/openvswitch/db.sock \
+  -endpoint prod/vm-a \
+  -action regenerate \
+  -success false
 ovs-vsctl get Open_vSwitch . external_ids:netloom_policy_endpoint_action_history
 ```
 
@@ -408,7 +413,8 @@ ovs-vsctl get Open_vSwitch . external_ids:netloom_policy_endpoint_action_history
 `freeze`、`unfreeze`、`quarantine`、`unquarantine` 和 `rollback` 的成功或失败
 都会写入 `Open_vSwitch.external_ids:netloom_policy_endpoint_action_history`，用于节点本地审计。
 失败记录包含 `success:false` 和 `error`。API 支持按 `endpoint`、`action`、
-`success` 和 `limit` 查询最近的相关动作。
+`success` 和 `limit` 查询最近的相关动作。`policy-action-history` CLI 会从本机
+Open_vSwitch OVSDB 读取同一个 key，适合在没有打开 agent HTTP listener 时做节点本地审计。
 
 检查本机托管网络对象：
 

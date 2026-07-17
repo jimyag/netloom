@@ -196,7 +196,9 @@ and persisted in local OVS
 `Open_vSwitch.external_ids:netloom_policy_endpoint_action_history` when OVSDB is
 configured; operators can filter the action history by endpoint, action,
 success, and recent-entry limit. Failed entries include `success:false` and an
-`error` string. The same endpoint API supports
+`error` string. `netloom-agent policy-action-history` reads the same local OVSDB
+history for offline node-local audits when the HTTP listener is not exposed. The
+same endpoint API supports
 operator lifecycle actions: `DELETE /policy/endpoints/{endpoint}` clears an
 endpoint map, `POST /policy/endpoints/{endpoint}/plan` dry-runs the latest
 desired policy and returns add/update/delete/unchanged counts without modifying

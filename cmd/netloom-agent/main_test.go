@@ -870,6 +870,54 @@ func TestRunPolicyEntriesRequiresEndpoint(t *testing.T) {
 	}
 }
 
+func TestRunPolicyActionHistoryWithStoreReportsFilteredJSON(t *testing.T) {
+	history := []policyActionHistoryEntry{
+		{ID: "1", Action: "freeze", EndpointID: model.EndpointKey("prod", "vm-a"), Node: "node-a", Store: "ebpf", CompletedAt: time.Now().Add(-3 * time.Minute), Success: true},
+		{ID: "2", Action: "regenerate", EndpointID: model.EndpointKey("prod", "vm-a"), Node: "node-a", Store: "ebpf", CompletedAt: time.Now().Add(-2 * time.Minute), Success: false, Error: "policy endpoint is frozen"},
+		{ID: "3", Action: "regenerate", EndpointID: model.EndpointKey("prod", "vm-b"), Node: "node-a", Store: "ebpf", CompletedAt: time.Now().Add(-time.Minute), Success: true},
+	}
+	raw, err := json.Marshal(history)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := ovsdbPolicyActionHistoryStore{syncer: &fakeOpenVSwitchExternalIDStore{values: map[string]string{
+		policyActionHistoryKey: string(raw),
+	}}}
+	var out bytes.Buffer
+	err = runPolicyActionHistoryWithStore(t.Context(), policyActionHistoryOptions{
+		endpoint: "prod/vm-a",
+		action:   "regenerate",
+		success:  "false",
+		limit:    10,
+	}, &out, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got policyActionHistoryOutput
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("decode policy-action-history output: %v\n%s", err, out.String())
+	}
+	if !got.Ready || got.TotalEvents != 3 || got.EventCount != 1 || got.FilterEndpoint != "prod/vm-a" || got.FilterAction != "regenerate" || got.FilterSuccess == nil || *got.FilterSuccess {
+		t.Fatalf("output = %+v, want failed regenerate filter metadata", got)
+	}
+	if len(got.History) != 1 || got.History[0].ID != "2" || got.History[0].Success || !strings.Contains(got.History[0].Error, "frozen") {
+		t.Fatalf("history = %+v, want failed regenerate action", got.History)
+	}
+}
+
+func TestRunPolicyActionHistoryWithStoreRejectsInvalidFilters(t *testing.T) {
+	var out bytes.Buffer
+	store := ovsdbPolicyActionHistoryStore{syncer: &fakeOpenVSwitchExternalIDStore{}}
+	err := runPolicyActionHistoryWithStore(t.Context(), policyActionHistoryOptions{success: "maybe", limit: 10}, &out, store)
+	if err == nil || !strings.Contains(err.Error(), `invalid success "maybe"`) {
+		t.Fatalf("err = %v, want invalid success", err)
+	}
+	err = runPolicyActionHistoryWithStore(t.Context(), policyActionHistoryOptions{limit: -1}, &out, store)
+	if err == nil || !strings.Contains(err.Error(), "invalid limit -1") {
+		t.Fatalf("err = %v, want invalid limit", err)
+	}
+}
+
 func TestRunPolicyExplainReportsSelectorAllow(t *testing.T) {
 	statePath := writePolicyExplainState(t)
 	var stdout bytes.Buffer
