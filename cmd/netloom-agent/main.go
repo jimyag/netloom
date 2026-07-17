@@ -6535,6 +6535,8 @@ func writeAgentMetrics(w ioStringWriter, snapshot agentMetricsSnapshot, totals a
 	writeMetricType(w, "netloom_agent_policy_endpoint_last_event_updated_entries", "gauge")
 	writeMetricType(w, "netloom_agent_policy_endpoint_last_event_deleted_entries", "gauge")
 	writeMetricType(w, "netloom_agent_policy_endpoint_last_event_unchanged_entries", "gauge")
+	writeMetricType(w, "netloom_agent_policy_endpoint_last_event_rule_cookies", "gauge")
+	writeMetricType(w, "netloom_agent_policy_endpoint_last_event_rule_refs", "gauge")
 	for _, status := range result.PolicyEndpointStatus {
 		labels := prometheusLabels(map[string]string{
 			"node":     result.Node,
@@ -6578,6 +6580,8 @@ func writeAgentMetrics(w ioStringWriter, snapshot agentMetricsSnapshot, totals a
 			fmt.Fprintf(w, "netloom_agent_policy_endpoint_last_event_updated_entries%s %d\n", labels, status.LastEvent.Stats.Updated)
 			fmt.Fprintf(w, "netloom_agent_policy_endpoint_last_event_deleted_entries%s %d\n", labels, status.LastEvent.Stats.Deleted)
 			fmt.Fprintf(w, "netloom_agent_policy_endpoint_last_event_unchanged_entries%s %d\n", labels, status.LastEvent.Stats.Unchanged)
+			fmt.Fprintf(w, "netloom_agent_policy_endpoint_last_event_rule_cookies%s %d\n", labels, len(status.LastEvent.RuleCookies))
+			fmt.Fprintf(w, "netloom_agent_policy_endpoint_last_event_rule_refs%s %d\n", labels, len(status.LastEvent.RuleRefs))
 		}
 		if status.LastSeen == nil || status.LastSeen.IsZero() {
 			continue
