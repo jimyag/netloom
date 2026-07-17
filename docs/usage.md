@@ -470,7 +470,7 @@ curl -X POST http://127.0.0.1:9092/policy/endpoints/prod/vm-a/unfreeze
 `Open_vSwitch.external_ids:netloom_policy_freeze_state`。agent 重启后会从
 这个 key 恢复冻结状态，直到显式执行 `/unfreeze` 或冻结过期。
 冻结状态也会保护对应 endpoint policy map 不被重启 stale cleanup、idle GC
-或 policy-map pressure mitigation 删除。
+或 policy-map pressure mitigation 删除，也不会被自动 pressure quarantine 改写。
 可以直接从本机 OVSDB 查看当前有效冻结状态：
 
 ```bash

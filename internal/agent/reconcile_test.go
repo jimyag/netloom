@@ -980,6 +980,67 @@ func TestReconcileNodeQuarantinesDesiredEndpointWhenPolicyMapPressureRemainsHigh
 	}
 }
 
+func TestReconcileNodeSkipsPressureQuarantineForFrozenEndpoint(t *testing.T) {
+	endpointID := model.EndpointKey("prod", "pod-a")
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:             "pod-a",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"web"},
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "allow-http",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("0.0.0.0/0"),
+				Ports:      []model.PortRange{{From: 80, To: 80}},
+				Action:     model.ActionAllow,
+			}},
+		}},
+	}
+	store := &capacityPolicyStore{
+		InMemoryPolicyStore: dataplane.NewInMemoryPolicyStore(),
+		capacity:            1,
+	}
+	original := dataplane.PolicyMapEntry{
+		Key:   dataplane.PolicyKey{PrefixLen: dataplane.StaticPrefixBits, Direction: dataplane.DirectionIngress, RemoteIdentity: 42},
+		Value: dataplane.PolicyEntry{Precedence: 100},
+	}
+	if err := store.ReplaceEndpoint(context.Background(), endpointID, []dataplane.PolicyMapEntry{original}); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := ReconcileNodeWithOptions(context.Background(), state, ReconcileOptions{
+		Node:                              "node-a",
+		Store:                             store,
+		PolicyPressureMitigationThreshold: 80,
+		PolicyPressureQuarantine:          true,
+		FrozenPolicyEndpoints: map[string]struct{}{
+			endpointID: {},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.PolicyFrozen != 1 {
+		t.Fatalf("policy frozen = %d, want 1", result.PolicyFrozen)
+	}
+	if result.PolicyPressureQuarantined != 0 || result.PolicyPressureQuarantineEndpoint != "" {
+		t.Fatalf("pressure quarantine result = %+v, want no quarantine for frozen endpoint", result)
+	}
+	entries := store.Entries(endpointID)
+	if len(entries) != 1 || entries[0].Key != original.Key || entries[0].Value != original.Value {
+		t.Fatalf("frozen endpoint entries = %+v, want original entry preserved", entries)
+	}
+}
+
 func TestReconcileNodeDoesNotQuarantineBelowQuarantineThreshold(t *testing.T) {
 	endpointID := model.EndpointKey("prod", "pod-a")
 	state := control.DesiredState{

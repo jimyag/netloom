@@ -2345,15 +2345,18 @@ func mitigatePolicyMapPressureResult(ctx context.Context, store PolicyStore, pro
 	if quarantineThreshold == 0 {
 		return nil
 	}
-	return quarantinePolicyMapPressureResult(ctx, store, keep, quarantineThreshold, quarantine, result)
+	return quarantinePolicyMapPressureResult(ctx, store, keep, frozen, quarantineThreshold, quarantine, result)
 }
 
-func quarantinePolicyMapPressureResult(ctx context.Context, store PolicyStore, keep map[string]struct{}, threshold uint32, quarantine bool, result *ReconcileResult) error {
+func quarantinePolicyMapPressureResult(ctx context.Context, store PolicyStore, keep, frozen map[string]struct{}, threshold uint32, quarantine bool, result *ReconcileResult) error {
 	if !quarantine || result == nil || result.PolicyMapPressureMax < threshold || result.PolicyMapPressureEndpoint == "" {
 		return nil
 	}
 	endpointID := result.PolicyMapPressureEndpoint
 	if _, ok := keep[endpointID]; !ok {
+		return nil
+	}
+	if _, ok := frozen[endpointID]; ok {
 		return nil
 	}
 	entries := quarantinePolicyMapEntries()
