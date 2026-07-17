@@ -215,14 +215,16 @@ type agentStatusOptions struct {
 }
 
 type policyEntriesOptions struct {
-	stateFile string
-	node      string
-	endpoint  string
+	stateFile  string
+	node       string
+	endpoint   string
+	ruleCookie string
 }
 
 type policyEntriesExportOptions struct {
-	ovsdb    string
-	endpoint string
+	ovsdb      string
+	endpoint   string
+	ruleCookie string
 }
 
 type policyActionHistoryOptions struct {
@@ -423,6 +425,7 @@ type policyEntriesOutput struct {
 	LastReconcileSuccess bool                   `json:"last_reconcile_success"`
 	LastReconcileError   string                 `json:"last_reconcile_error,omitempty"`
 	EndpointID           string                 `json:"endpoint_id"`
+	FilterRuleCookie     uint32                 `json:"filter_rule_cookie,omitempty"`
 	EntryCount           int                    `json:"entry_count"`
 	Entries              []policyMapEntryOutput `json:"entries"`
 }
@@ -437,6 +440,7 @@ type policyEntriesExportOutput struct {
 	TotalEndpoints       int                           `json:"total_endpoints"`
 	EndpointCount        int                           `json:"endpoint_count"`
 	FilterEndpoint       string                        `json:"filter_endpoint,omitempty"`
+	FilterRuleCookie     uint32                        `json:"filter_rule_cookie,omitempty"`
 	Endpoints            []policyEntriesEndpointOutput `json:"endpoints"`
 }
 
@@ -995,6 +999,7 @@ func runPolicyEntries(args []string, stdout io.Writer) error {
 	flags.StringVar(&opts.stateFile, "state", os.Getenv("NETLOOM_STATE_FILE"), "desired-state JSON path")
 	flags.StringVar(&opts.node, "node", os.Getenv("NETLOOM_NODE_NAME"), "node name")
 	flags.StringVar(&opts.endpoint, "endpoint", "", "endpoint key or endpoint ID to inspect")
+	flags.StringVar(&opts.ruleCookie, "rule-cookie", "", "optional dataplane rule cookie to include")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -1040,7 +1045,11 @@ func runPolicyEntries(args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	output := policyEntriesOutputFromSnapshot(snapshot, endpointID, entryStore.Entries(endpointID))
+	filter, err := policyEntryFilterFromValues("", opts.ruleCookie)
+	if err != nil {
+		return err
+	}
+	output := policyEntriesOutputFromSnapshot(snapshot, endpointID, entryStore.Entries(endpointID), filter)
 	encoder := json.NewEncoder(stdout)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(output)
@@ -1052,6 +1061,7 @@ func runPolicyEntriesExport(ctx context.Context, args []string, stdout io.Writer
 	flags.SetOutput(io.Discard)
 	flags.StringVar(&opts.ovsdb, "ovsdb", os.Getenv("NETLOOM_OVSDB_ENDPOINT"), "Open_vSwitch OVSDB endpoint")
 	flags.StringVar(&opts.endpoint, "endpoint", "", "optional endpoint key or endpoint ID to include")
+	flags.StringVar(&opts.ruleCookie, "rule-cookie", "", "optional dataplane rule cookie to include")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -1074,7 +1084,11 @@ func runPolicyEntriesExportWithStore(ctx context.Context, opts policyEntriesExpo
 	if err != nil {
 		return err
 	}
-	output := policyEntriesExportOutputFromDocument(doc, strings.TrimSpace(opts.endpoint))
+	filter, err := policyEntryFilterFromValues(opts.endpoint, opts.ruleCookie)
+	if err != nil {
+		return err
+	}
+	output := policyEntriesExportOutputFromDocument(doc, filter)
 	encoder := json.NewEncoder(stdout)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(output)
@@ -1898,7 +1912,32 @@ func policyEventsOutputFromSnapshot(snapshot agentMetricsSnapshot, events []data
 	}
 }
 
-func policyEntriesOutputFromSnapshot(snapshot agentMetricsSnapshot, endpointID string, entries []dataplane.PolicyMapEntry) policyEntriesOutput {
+type policyEntryFilter struct {
+	Endpoint   string
+	RuleCookie *uint32
+}
+
+func policyEntryFilterFromRequest(r *http.Request, endpoint string) (policyEntryFilter, error) {
+	return policyEntryFilterFromValues(endpoint, r.URL.Query().Get("rule_cookie"))
+}
+
+func policyEntryFilterFromValues(endpoint, ruleCookie string) (policyEntryFilter, error) {
+	filter := policyEntryFilter{Endpoint: strings.TrimSpace(endpoint)}
+	ruleCookie = strings.TrimSpace(ruleCookie)
+	if ruleCookie == "" {
+		return filter, nil
+	}
+	value, err := strconv.ParseUint(ruleCookie, 10, 32)
+	if err != nil {
+		return filter, fmt.Errorf("invalid rule cookie %q", ruleCookie)
+	}
+	cookie := uint32(value)
+	filter.RuleCookie = &cookie
+	return filter, nil
+}
+
+func policyEntriesOutputFromSnapshot(snapshot agentMetricsSnapshot, endpointID string, entries []dataplane.PolicyMapEntry, filter policyEntryFilter) policyEntriesOutput {
+	entries = filterDataplanePolicyEntries(entries, filter)
 	output := policyEntriesOutput{
 		Node:                 snapshot.Result.Node,
 		Store:                snapshot.Store,
@@ -1906,6 +1945,7 @@ func policyEntriesOutputFromSnapshot(snapshot agentMetricsSnapshot, endpointID s
 		LastReconcileSuccess: snapshot.Success,
 		LastReconcileError:   snapshot.Error,
 		EndpointID:           endpointID,
+		FilterRuleCookie:     filterEntryRuleCookieValue(filter),
 		EntryCount:           len(entries),
 		Entries:              make([]policyMapEntryOutput, 0, len(entries)),
 	}
@@ -1915,8 +1955,8 @@ func policyEntriesOutputFromSnapshot(snapshot agentMetricsSnapshot, endpointID s
 	return output
 }
 
-func policyEntriesExportOutputFromDocument(doc policyEntriesDocument, endpoint string) policyEntriesExportOutput {
-	filtered := filterPolicyEntryEndpoints(doc.Endpoints, endpoint)
+func policyEntriesExportOutputFromDocument(doc policyEntriesDocument, filter policyEntryFilter) policyEntriesExportOutput {
+	filtered := filterPolicyEntryEndpoints(doc.Endpoints, filter)
 	return policyEntriesExportOutput{
 		Node:                 doc.Node,
 		Store:                doc.Store,
@@ -1926,23 +1966,63 @@ func policyEntriesExportOutputFromDocument(doc policyEntriesDocument, endpoint s
 		UpdatedAt:            doc.UpdatedAt,
 		TotalEndpoints:       len(doc.Endpoints),
 		EndpointCount:        len(filtered),
-		FilterEndpoint:       strings.TrimSpace(endpoint),
+		FilterEndpoint:       filter.Endpoint,
+		FilterRuleCookie:     filterEntryRuleCookieValue(filter),
 		Endpoints:            filtered,
 	}
 }
 
-func filterPolicyEntryEndpoints(endpoints []policyEntriesEndpointOutput, endpoint string) []policyEntriesEndpointOutput {
-	endpoint = strings.TrimSpace(endpoint)
-	if endpoint == "" {
+func filterPolicyEntryEndpoints(endpoints []policyEntriesEndpointOutput, filter policyEntryFilter) []policyEntriesEndpointOutput {
+	if filter.Endpoint == "" && filter.RuleCookie == nil {
 		return append([]policyEntriesEndpointOutput(nil), endpoints...)
 	}
 	out := make([]policyEntriesEndpointOutput, 0, len(endpoints))
 	for _, entry := range endpoints {
-		if policyRuleEndpointMatches(entry.EndpointID, endpoint) {
+		if filter.Endpoint != "" && !policyRuleEndpointMatches(entry.EndpointID, filter.Endpoint) {
+			continue
+		}
+		next := entry
+		next.Entries = filterPolicyMapEntryOutputs(entry.Entries, filter)
+		next.EntryCount = len(next.Entries)
+		if filter.RuleCookie != nil && len(next.Entries) == 0 {
+			continue
+		}
+		out = append(out, next)
+	}
+	return out
+}
+
+func filterDataplanePolicyEntries(entries []dataplane.PolicyMapEntry, filter policyEntryFilter) []dataplane.PolicyMapEntry {
+	if filter.RuleCookie == nil {
+		return append([]dataplane.PolicyMapEntry(nil), entries...)
+	}
+	out := make([]dataplane.PolicyMapEntry, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Value.RuleCookie == *filter.RuleCookie {
 			out = append(out, entry)
 		}
 	}
 	return out
+}
+
+func filterPolicyMapEntryOutputs(entries []policyMapEntryOutput, filter policyEntryFilter) []policyMapEntryOutput {
+	if filter.RuleCookie == nil {
+		return append([]policyMapEntryOutput(nil), entries...)
+	}
+	out := make([]policyMapEntryOutput, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Value.RuleCookie == *filter.RuleCookie {
+			out = append(out, entry)
+		}
+	}
+	return out
+}
+
+func filterEntryRuleCookieValue(filter policyEntryFilter) uint32 {
+	if filter.RuleCookie == nil {
+		return 0
+	}
+	return *filter.RuleCookie
 }
 
 func policyEntriesEndpointOutputFromEntries(endpointID string, entries []dataplane.PolicyMapEntry) policyEntriesEndpointOutput {
@@ -5182,6 +5262,12 @@ func (m *agentMetrics) handlePolicyEntries(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	endpoint := policyEntryEndpointFromRequest(r)
+	filter, err := policyEntryFilterFromRequest(r, endpoint)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
 	endpointID, err := resolvePolicyEndpointIDFromSnapshot(endpoint, snapshot)
 	if err != nil {
 		statusCode := http.StatusNotFound
@@ -5192,7 +5278,7 @@ func (m *agentMetrics) handlePolicyEntries(w http.ResponseWriter, r *http.Reques
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
-	output := policyEntriesOutputFromSnapshot(snapshot, endpointID, entryStore.Entries(endpointID))
+	output := policyEntriesOutputFromSnapshot(snapshot, endpointID, entryStore.Entries(endpointID), filter)
 	encoder := json.NewEncoder(w)
 	encoder.SetIndent("", "  ")
 	_ = encoder.Encode(output)

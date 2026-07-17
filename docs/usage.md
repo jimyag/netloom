@@ -324,6 +324,7 @@ NETLOOM_AGENT_METRICS_ADDR=:9092 \
 ./netloom-agent policy-revision-wait -ovsdb unix:/var/run/openvswitch/db.sock -endpoint prod/vm-a -revision 3 -timeout 30s
 curl -s 'http://127.0.0.1:9092/policy/endpoints/prod/vm-a/revision?target_revision=3&timeout_ms=30000'
 ./netloom-agent policy-entries-export -ovsdb unix:/var/run/openvswitch/db.sock -endpoint prod/vm-a
+./netloom-agent policy-entries-export -ovsdb unix:/var/run/openvswitch/db.sock -rule-cookie 42
 ./netloom-agent policy-rules -ovsdb unix:/var/run/openvswitch/db.sock -endpoint prod/vm-a
 ./netloom-agent policy-rules -ovsdb unix:/var/run/openvswitch/db.sock -rule-cookie 42
 ./netloom-agent policy-rules -ovsdb unix:/var/run/openvswitch/db.sock -rule-ref sg/web/allow-http
@@ -465,16 +466,22 @@ curl -s 'http://127.0.0.1:9092/policy/events/prod/vm-a?limit=20'
 
 ```bash
 curl -s http://127.0.0.1:9092/policy/entries/prod/vm-a
+curl -s 'http://127.0.0.1:9092/policy/entries/prod/vm-a?rule_cookie=42'
 curl -s 'http://127.0.0.1:9092/policy/entries?endpoint=prod/vm-a'
 netloom-agent policy-entries-export \
   -ovsdb unix:/var/run/openvswitch/db.sock \
   -endpoint prod/vm-a
+netloom-agent policy-entries-export \
+  -ovsdb unix:/var/run/openvswitch/db.sock \
+  -rule-cookie 42
 ovs-vsctl get Open_vSwitch . external_ids:netloom_policy_entries
 ```
 
 如果 agent 配置了 `NETLOOM_OVSDB_ENDPOINT`，最近一次 reconcile 的 endpoint
 policy-map entries 会写入 `Open_vSwitch.external_ids:netloom_policy_entries`。
 HTTP 接口适合在线排查，`policy-entries-export` 适合从本机 OVSDB 做离线审计。
+两者都支持 `rule_cookie` / `-rule-cookie` 过滤，便于从规则计数器继续定位实际
+policy-map key/value。
 
 临时冻结或恢复某个 endpoint 的 policy map 更新：
 

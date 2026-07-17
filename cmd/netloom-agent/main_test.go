@@ -2447,6 +2447,85 @@ func TestPolicyEntriesAPIReportsEndpointPolicyMapEntries(t *testing.T) {
 	}
 }
 
+func TestPolicyEntriesAPIFiltersEndpointEntriesByRuleCookie(t *testing.T) {
+	store := dataplane.NewInMemoryPolicyStore()
+	endpointID := model.EndpointKey("prod", "pod-a")
+	entries := []dataplane.PolicyMapEntry{{
+		Key: dataplane.PolicyKey{
+			PrefixLen:      dataplane.StaticPrefixBits,
+			RemoteIdentity: 42,
+			Direction:      dataplane.DirectionIngress,
+			Protocol:       6,
+		},
+		Value:      dataplane.PolicyEntry{RuleCookie: 7, Packets: 3},
+		RemoteCIDR: netip.MustParsePrefix("172.30.0.0/24"),
+	}, {
+		Key: dataplane.PolicyKey{
+			PrefixLen:      dataplane.StaticPrefixBits,
+			RemoteIdentity: 43,
+			Direction:      dataplane.DirectionIngress,
+			Protocol:       6,
+		},
+		Value:      dataplane.PolicyEntry{RuleCookie: 42, Packets: 5},
+		RemoteCIDR: netip.MustParsePrefix("172.31.0.0/24"),
+	}}
+	if err := store.ReplaceEndpoint(context.Background(), endpointID, entries); err != nil {
+		t.Fatal(err)
+	}
+	metrics := newAgentMetrics(store)
+	observeAgentReconcileResultWithState(metrics, agent.ReconcileResult{
+		Node: "node-a",
+		PolicyEndpointStatus: []dataplane.PolicyEndpointStatus{{
+			EndpointID: endpointID,
+			Revision:   1,
+			Entries:    2,
+		}},
+	}, "memory", time.Millisecond, control.DesiredState{
+		Endpoints: []model.Endpoint{{ID: "pod-a", VPC: "prod", Node: "node-a"}},
+	})
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/policy/entries/prod/pod-a?rule_cookie=42", nil)
+	metrics.handlePolicyEntries(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var got policyEntriesOutput
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode policy entries response: %v\n%s", err, recorder.Body.String())
+	}
+	if got.FilterRuleCookie != 42 || got.EntryCount != 1 || len(got.Entries) != 1 {
+		t.Fatalf("entries output = %+v, want one cookie 42 entry", got)
+	}
+	if got.Entries[0].Value.RuleCookie != 42 || got.Entries[0].RemoteCIDR != "172.31.0.0/24" {
+		t.Fatalf("entry = %+v, want filtered cookie 42 remote cidr", got.Entries[0])
+	}
+}
+
+func TestPolicyEntriesAPIRejectsInvalidRuleCookie(t *testing.T) {
+	store := dataplane.NewInMemoryPolicyStore()
+	endpointID := model.EndpointKey("prod", "pod-a")
+	metrics := newAgentMetrics(store)
+	observeAgentReconcileResultWithState(metrics, agent.ReconcileResult{
+		Node: "node-a",
+		PolicyEndpointStatus: []dataplane.PolicyEndpointStatus{{
+			EndpointID: endpointID,
+			Revision:   1,
+		}},
+	}, "memory", time.Millisecond, control.DesiredState{
+		Endpoints: []model.Endpoint{{ID: "pod-a", VPC: "prod", Node: "node-a"}},
+	})
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/policy/entries/prod/pod-a?rule_cookie=bad", nil)
+	metrics.handlePolicyEntries(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestPolicyExplainAPIReportsNotReady(t *testing.T) {
 	metrics := newAgentMetrics()
 	recorder := httptest.NewRecorder()
@@ -2731,6 +2810,59 @@ func TestRunPolicyEntriesExportWithStoreReportsFilteredJSON(t *testing.T) {
 	}
 	if len(got.Endpoints) != 1 || got.Endpoints[0].EndpointID != "prod\x00pod-a" || got.Endpoints[0].EntryCount != 1 || got.Endpoints[0].Entries[0].Value.RuleCookie != 42 {
 		t.Fatalf("policy entries = %+v, want filtered pod-a entry", got.Endpoints)
+	}
+}
+
+func TestRunPolicyEntriesExportWithStoreFiltersByRuleCookie(t *testing.T) {
+	store := ovsdbPolicyEntriesStore{syncer: &fakeOpenVSwitchExternalIDStore{}}
+	if err := store.Save(t.Context(), policyEntriesDocument{
+		Node:                 "node-a",
+		Store:                "ebpf",
+		LastReconcileSuccess: true,
+		Endpoints: []policyEntriesEndpointOutput{{
+			EndpointID: "prod\x00pod-a",
+			EntryCount: 2,
+			Entries: []policyMapEntryOutput{{
+				Key: policyMapKeyOutput{
+					PrefixLen:      dataplane.StaticPrefixBits,
+					RemoteIdentity: 10,
+					Direction:      dataplane.DirectionIngress,
+					Protocol:       6,
+				},
+				Value: policyMapValueOutput{RuleCookie: 42, Packets: 5},
+			}, {
+				Key: policyMapKeyOutput{
+					PrefixLen:      dataplane.StaticPrefixBits,
+					RemoteIdentity: 11,
+					Direction:      dataplane.DirectionIngress,
+					Protocol:       6,
+				},
+				Value: policyMapValueOutput{RuleCookie: 7, Packets: 1},
+			}},
+		}, {
+			EndpointID: "prod\x00pod-b",
+			EntryCount: 1,
+			Entries: []policyMapEntryOutput{{
+				Key:   policyMapKeyOutput{PrefixLen: dataplane.StaticPrefixBits, RemoteIdentity: 20, Direction: dataplane.DirectionEgress, Protocol: 17},
+				Value: policyMapValueOutput{RuleCookie: 7, Packets: 9},
+			}},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var stdout bytes.Buffer
+	if err := runPolicyEntriesExportWithStore(t.Context(), policyEntriesExportOptions{ruleCookie: "42"}, &stdout, store); err != nil {
+		t.Fatal(err)
+	}
+	var got policyEntriesExportOutput
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode policy-entries-export output: %v\n%s", err, stdout.String())
+	}
+	if got.FilterRuleCookie != 42 || got.TotalEndpoints != 2 || got.EndpointCount != 1 {
+		t.Fatalf("policy entries summary = %+v, want one endpoint with cookie 42", got)
+	}
+	if len(got.Endpoints) != 1 || got.Endpoints[0].EndpointID != "prod\x00pod-a" || got.Endpoints[0].EntryCount != 1 || got.Endpoints[0].Entries[0].Value.RuleCookie != 42 {
+		t.Fatalf("policy entries = %+v, want only cookie 42 entry", got.Endpoints)
 	}
 }
 
