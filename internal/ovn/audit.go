@@ -174,7 +174,7 @@ func managedAuditNBCTLColumns(table string) []string {
 	case "Logical_Switch_Port":
 		columns = append(columns, "name", "type", "addresses", "port_security", "options", "tag", "enabled", "ha_chassis_group")
 	case "Logical_Router_Port":
-		columns = append(columns, "name", "mac", "networks", "ipv6_ra_configs", "enabled")
+		columns = append(columns, "name", "mac", "networks", "ipv6_ra_configs", "enabled", "options", "gateway_chassis", "ha_chassis_group", "peer")
 	case "Logical_Router_Policy":
 		columns = append(columns, "priority", "match", "action", "nexthop", "nexthops")
 	case "Logical_Router_Static_Route":
@@ -498,10 +498,14 @@ func expectedManagedAuditColumns(desired topology.State) map[string]map[string]s
 	for _, subnet := range desired.Subnets {
 		addAuditExpectedColumns(out, "Logical_Switch", logicalSwitchColumnFields(subnet), "netloom_vpc", subnet.VPC, "netloom_subnet", subnet.Name)
 		addAuditExpectedColumns(out, "Logical_Router_Port", map[string]string{
-			"name":            routerPortName(logicalRouter(subnet.VPC), subnet.Name),
-			"mac":             deterministicMAC(subnet),
-			"networks":        strings.Join([]string{subnet.Gateway.String() + "/" + fmt.Sprint(subnet.CIDR.Bits())}, ","),
-			"ipv6_ra_configs": routerPortIPv6RAConfigsField(subnet),
+			"name":             routerPortName(logicalRouter(subnet.VPC), subnet.Name),
+			"mac":              deterministicMAC(subnet),
+			"networks":         strings.Join([]string{subnet.Gateway.String() + "/" + fmt.Sprint(subnet.CIDR.Bits())}, ","),
+			"ipv6_ra_configs":  routerPortIPv6RAConfigsField(subnet),
+			"options":          "",
+			"gateway_chassis":  "",
+			"ha_chassis_group": "",
+			"peer":             "",
 		}, "netloom_vpc", subnet.VPC, "netloom_subnet", subnet.Name)
 		addAuditExpectedColumns(out, "Logical_Switch_Port", map[string]string{
 			"name":      switchRouterPortName(logicalSwitch(subnet.VPC, subnet.Name), subnet.Name),
@@ -884,8 +888,15 @@ func staleManagedColumnShouldDrift(table, key string) bool {
 		default:
 			return false
 		}
-	case "Logical_Router", "Logical_Router_Port":
-		return key == "enabled" || (table == "Logical_Router" && (key == "options" || key == "load_balancer_group"))
+	case "Logical_Router":
+		return key == "enabled" || key == "options" || key == "load_balancer_group"
+	case "Logical_Router_Port":
+		switch key {
+		case "enabled", "options", "gateway_chassis", "ha_chassis_group", "peer":
+			return true
+		default:
+			return false
+		}
 	case "Logical_Switch_Port":
 		switch key {
 		case "type", "options", "tag", "enabled", "port_security", "ha_chassis_group", "dhcpv4_options", "dhcpv6_options":

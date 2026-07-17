@@ -1073,16 +1073,40 @@ func TestLibOVSDBTopologyWriterCleanupRepairsIPv6RouterPortRADriftInSteadyState(
 		}).List(ctx, &ports)
 		return err == nil && len(ports) == 1 && ports[0].Ipv6RaConfigs["address_mode"] == "dhcpv6_stateful"
 	})
+	staleGatewayChassis := &ovnnb.GatewayChassis{
+		UUID:        ovsdbNamedUUID("stale-router-port-gateway-chassis"),
+		Name:        "stale-router-port-gateway-chassis",
+		ChassisName: "node-old",
+		Priority:    1,
+	}
+	staleHAGroup := &ovnnb.HAChassisGroup{
+		UUID: ovsdbNamedUUID("stale-router-port-ha-group"),
+		Name: "stale-router-port-ha-group",
+	}
+	createGatewayChassisOps, err := client.Create(staleGatewayChassis)
+	if err != nil {
+		t.Fatal(err)
+	}
+	createHAGroupOps, err := client.Create(staleHAGroup)
+	if err != nil {
+		t.Fatal(err)
+	}
 	ports[0].Ipv6RaConfigs = nil
-	updateOps, err := client.Where(&ports[0]).Update(&ports[0], &ports[0].Ipv6RaConfigs)
+	ports[0].Options = map[string]string{"redirect-chassis": "node-old"}
+	ports[0].GatewayChassis = []string{staleGatewayChassis.UUID}
+	ports[0].HaChassisGroup = &staleHAGroup.UUID
+	peer := "transit-old"
+	ports[0].Peer = &peer
+	updateOps, err := client.Where(&ports[0]).Update(&ports[0], &ports[0].Ipv6RaConfigs, &ports[0].Options, &ports[0].GatewayChassis, &ports[0].HaChassisGroup, &ports[0].Peer)
 	if err != nil {
 		t.Fatal(err)
 	}
-	results, err := client.Transact(ctx, updateOps...)
+	seedOps := append(append(createGatewayChassisOps, createHAGroupOps...), updateOps...)
+	results, err := client.Transact(ctx, seedOps...)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if opErrors, err := ovsdb.CheckOperationResults(results, updateOps); err != nil {
+	if opErrors, err := ovsdb.CheckOperationResults(results, seedOps); err != nil {
 		t.Fatalf("seed IPv6 RA drift operation errors=%+v: %v", opErrors, err)
 	}
 	requireEventually(t, func() bool {
@@ -1090,7 +1114,16 @@ func TestLibOVSDBTopologyWriterCleanupRepairsIPv6RouterPortRADriftInSteadyState(
 		err := client.WhereCache(func(row *ovnnb.LogicalRouterPort) bool {
 			return row.Name == routerPortName(logicalRouter("prod"), "apps-v6")
 		}).List(ctx, &ports)
-		return err == nil && len(ports) == 1 && len(ports[0].Ipv6RaConfigs) == 0
+		return err == nil &&
+			len(ports) == 1 &&
+			len(ports[0].Ipv6RaConfigs) == 0 &&
+			ports[0].Options["redirect-chassis"] == "node-old" &&
+			len(ports[0].GatewayChassis) == 1 &&
+			ports[0].GatewayChassis[0] != "" &&
+			ports[0].HaChassisGroup != nil &&
+			*ports[0].HaChassisGroup != "" &&
+			ports[0].Peer != nil &&
+			*ports[0].Peer == "transit-old"
 	})
 
 	if err := writer.CleanupTopology(ctx, state); err != nil {
@@ -1101,7 +1134,13 @@ func TestLibOVSDBTopologyWriterCleanupRepairsIPv6RouterPortRADriftInSteadyState(
 		err := client.WhereCache(func(row *ovnnb.LogicalRouterPort) bool {
 			return row.Name == routerPortName(logicalRouter("prod"), "apps-v6")
 		}).List(ctx, &ports)
-		return err == nil && len(ports) == 1 && ports[0].Ipv6RaConfigs["address_mode"] == "dhcpv6_stateful"
+		return err == nil &&
+			len(ports) == 1 &&
+			ports[0].Ipv6RaConfigs["address_mode"] == "dhcpv6_stateful" &&
+			len(ports[0].Options) == 0 &&
+			len(ports[0].GatewayChassis) == 0 &&
+			ports[0].HaChassisGroup == nil &&
+			ports[0].Peer == nil
 	})
 	stats := writer.LastCleanupStats()
 	if stats.FirstReconcileGC || stats.Operations == 0 {

@@ -124,11 +124,15 @@ func (r *LibOVSDBManagedReader) ManagedOVNRows(ctx context.Context, table string
 		}
 		return managedOVNRowsFromModels(table, rows, func(row ovnnb.LogicalRouterPort) (string, map[string]string, map[string]string) {
 			return row.UUID, row.ExternalIDs, map[string]string{
-				"name":            row.Name,
-				"mac":             row.MAC,
-				"networks":        stringSliceField(row.Networks),
-				"ipv6_ra_configs": mapField(row.Ipv6RaConfigs),
-				"enabled":         boolPointerField(row.Enabled),
+				"name":             row.Name,
+				"mac":              row.MAC,
+				"networks":         stringSliceField(row.Networks),
+				"ipv6_ra_configs":  mapField(row.Ipv6RaConfigs),
+				"enabled":          boolPointerField(row.Enabled),
+				"options":          mapField(row.Options),
+				"gateway_chassis":  stringSliceField(row.GatewayChassis),
+				"ha_chassis_group": pointerStringValue(row.HaChassisGroup),
+				"peer":             pointerStringValue(row.Peer),
 			}
 		}), nil
 	case "Logical_Router_Policy":

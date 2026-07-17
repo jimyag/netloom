@@ -1141,6 +1141,46 @@ func TestAuditManagedObjectsFromReaderReportsDisabledLogicalRouterAndRouterPort(
 	}
 }
 
+func TestAuditManagedObjectsFromReaderReportsStaleLogicalRouterPortColumns(t *testing.T) {
+	subnet := model.Subnet{
+		Name:    "apps",
+		VPC:     "prod",
+		CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+		Gateway: netip.MustParseAddr("10.10.0.1"),
+	}
+	reader := fakeManagedOVNReader{rows: map[string][]ManagedOVNRow{
+		"Logical_Router_Port": {
+			{Table: "Logical_Router_Port", UUID: "lrp-apps", ExternalIDs: map[string]string{
+				"netloom_owner":  "netloom",
+				"netloom_vpc":    "prod",
+				"netloom_subnet": "apps",
+			}, Fields: map[string]string{
+				"name":             routerPortName(logicalRouter("prod"), "apps"),
+				"mac":              deterministicMAC(subnet),
+				"networks":         "10.10.0.1/24",
+				"ipv6_ra_configs":  "",
+				"options":          "redirect-chassis=node-old",
+				"gateway_chassis":  "gc-old",
+				"ha_chassis_group": "ha-old",
+				"peer":             "transit-old",
+			}},
+		},
+	}}
+	desired := topology.State{
+		Subnets: map[string]model.Subnet{
+			subnetStateKey("prod", "apps"): subnet,
+		},
+	}
+
+	stats, err := AuditManagedObjectsFromReaderWithDesired(context.Background(), reader, desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.DriftedManagedRows != 1 || stats.DriftedManagedFields != 4 {
+		t.Fatalf("stale logical router port drift stats = %+v, want options/gateway_chassis/ha_chassis_group/peer drift", stats)
+	}
+}
+
 func TestAuditManagedObjectsFromReaderReportsStaleLoadBalancerColumns(t *testing.T) {
 	lb := model.LoadBalancer{
 		Name: "api",
