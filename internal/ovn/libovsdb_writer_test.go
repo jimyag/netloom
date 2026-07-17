@@ -2322,6 +2322,78 @@ func TestLibOVSDBTopologyWriterKeepsReferencedDuplicatePolicyRoute(t *testing.T)
 	})
 }
 
+func TestLibOVSDBTopologyWriterDetachesPolicyRouteFromUnexpectedRouter(t *testing.T) {
+	ctx := context.Background()
+	client, closeFn := newTestOVNNBClient(t)
+	defer closeFn()
+
+	if _, err := client.MonitorAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	writer := NewLibOVSDBTopologyWriter(client)
+	if err := writer.EnsureVPC(ctx, model.VPC{Name: "prod"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureVPC(ctx, model.VPC{Name: "dev"}); err != nil {
+		t.Fatal(err)
+	}
+	route := model.PolicyRoute{
+		Name:     "via-fw",
+		VPC:      "prod",
+		Priority: 100,
+		Match: model.RouteMatch{
+			Source:      netip.MustParsePrefix("10.10.0.0/24"),
+			Destination: netip.MustParsePrefix("10.30.0.0/24"),
+		},
+		Action: model.RouteAction{Type: model.ActionReroute, NextHops: []netip.Addr{netip.MustParseAddr("10.10.0.254")}},
+	}
+	if err := writer.EnsurePolicyRoute(ctx, route); err != nil {
+		t.Fatal(err)
+	}
+
+	var prodRouters []ovnnb.LogicalRouter
+	var devRouters []ovnnb.LogicalRouter
+	requireEventually(t, func() bool {
+		prodRouters = nil
+		if err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("prod") }).List(ctx, &prodRouters); err != nil || len(prodRouters) != 1 || len(prodRouters[0].Policies) != 1 {
+			return false
+		}
+		devRouters = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("dev") }).List(ctx, &devRouters)
+		return err == nil && len(devRouters) == 1
+	})
+	policyUUID := prodRouters[0].Policies[0]
+	attachOps, err := writer.attachPolicyRoute(&devRouters[0], policyUUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := client.Transact(ctx, attachOps...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, attachOps); err != nil {
+		t.Fatalf("attach policy route to unexpected router operation errors=%+v: %v", opErrors, err)
+	}
+	requireEventually(t, func() bool {
+		devRouters = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("dev") }).List(ctx, &devRouters)
+		return err == nil && len(devRouters) == 1 && len(devRouters[0].Policies) == 1
+	})
+
+	if err := writer.EnsurePolicyRoute(ctx, route); err != nil {
+		t.Fatal(err)
+	}
+	requireEventually(t, func() bool {
+		prodRouters = nil
+		if err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("prod") }).List(ctx, &prodRouters); err != nil || len(prodRouters) != 1 || len(prodRouters[0].Policies) != 1 || prodRouters[0].Policies[0] != policyUUID {
+			return false
+		}
+		devRouters = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("dev") }).List(ctx, &devRouters)
+		return err == nil && len(devRouters) == 1 && len(devRouters[0].Policies) == 0
+	})
+}
+
 func TestLibOVSDBTopologyWriterEnsuresGatewayRouterMetadata(t *testing.T) {
 	ctx := context.Background()
 	client, closeFn := newTestOVNNBClient(t)
