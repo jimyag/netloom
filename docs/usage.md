@@ -544,6 +544,17 @@ eBPF map 或改变 revision。响应里的 `plan` 包含 add/update/delete/uncha
 明细；entry 会带 rule ref、VPC、安全组和规则 ID，适合在 approval、ack 或 rollout
 前审查实际将变化的 policy-map key/value。
 
+分批预览或执行多个 endpoint 的 staged rollout：
+
+```bash
+curl -s -X POST http://127.0.0.1:9092/policy/endpoints/rollout \
+  -d '{"endpoints":["prod/vm-a","prod/vm-b"],"batch_size":1,"dry_run":true}'
+```
+
+rollout 响应里的每个 `items[].plan` 使用和单 endpoint `/plan` 相同的 diff
+结构。`dry_run:true` 只生成每个 endpoint 的 staged 变更计划，不写 live policy map；
+正式 rollout 时同一字段可用于确认每个 batch 实际应用前计划的 add/update/delete 明细。
+
 查看 endpoint policy lifecycle 动作历史：
 
 ```bash

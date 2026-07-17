@@ -2275,10 +2275,16 @@ func policyEndpointFrozen(options ReconcileOptions, endpointID string) bool {
 func catalogPolicyRules(programs []policy.Program) []PolicyRuleCatalogEntry {
 	byKey := make(map[string]PolicyRuleCatalogEntry)
 	for _, program := range programs {
+		metadataByRef := make(map[string]policy.Rule, len(program.Rules))
+		metadataByID := make(map[string]policy.Rule, len(program.Rules))
 		for _, rule := range program.Rules {
 			ref := policyRuleRef(rule)
 			if ref == "" {
 				continue
+			}
+			metadataByRef[ref] = rule
+			if rule.ID != "" {
+				metadataByID[rule.ID] = rule
 			}
 			entry := PolicyRuleCatalogEntry{
 				EndpointID:    program.EndpointID,
@@ -2287,6 +2293,29 @@ func catalogPolicyRules(programs []policy.Program) []PolicyRuleCatalogEntry {
 				VPC:           rule.VPC,
 				SecurityGroup: rule.SecurityGroup,
 				RuleID:        rule.ID,
+			}
+			key := fmt.Sprintf("%s\x00%d", entry.EndpointID, entry.RuleCookie)
+			byKey[key] = entry
+		}
+		for _, mapEntry := range program.MapEntries {
+			ref := strings.TrimSpace(mapEntry.RuleRef)
+			if ref == "" {
+				ref = strings.TrimSpace(mapEntry.RuleID)
+			}
+			if ref == "" {
+				continue
+			}
+			rule := metadataByRef[ref]
+			if rule.ID == "" && mapEntry.RuleID != "" {
+				rule = metadataByID[mapEntry.RuleID]
+			}
+			entry := PolicyRuleCatalogEntry{
+				EndpointID:    program.EndpointID,
+				RuleCookie:    dataplane.PolicyRuleCookie(ref),
+				RuleRef:       ref,
+				VPC:           rule.VPC,
+				SecurityGroup: rule.SecurityGroup,
+				RuleID:        nonEmptyString(rule.ID, mapEntry.RuleID),
 			}
 			key := fmt.Sprintf("%s\x00%d", entry.EndpointID, entry.RuleCookie)
 			byKey[key] = entry

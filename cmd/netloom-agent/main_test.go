@@ -4021,17 +4021,14 @@ func TestPolicyEndpointAPIPlansDesiredEndpointPolicyMap(t *testing.T) {
 		t.Fatal(err)
 	}
 	beforeRevision := store.Revision(endpointID)
+	catalogResult, err := agent.ReconcileNode(context.Background(), state, "node-a", dataplane.NewInMemoryPolicyStore())
+	if err != nil {
+		t.Fatal(err)
+	}
 	metrics := newAgentMetrics(store)
 	observeAgentReconcileResultWithState(metrics, agent.ReconcileResult{
-		Node: "node-a",
-		PolicyRuleCatalog: []agent.PolicyRuleCatalogEntry{{
-			EndpointID:    endpointID,
-			RuleCookie:    dataplane.PolicyRuleCookie("prod/web/allow-http"),
-			RuleRef:       "prod/web/allow-http",
-			VPC:           "prod",
-			SecurityGroup: "web",
-			RuleID:        "allow-http",
-		}},
+		Node:              "node-a",
+		PolicyRuleCatalog: catalogResult.PolicyRuleCatalog,
 		PolicyEndpointStatus: []dataplane.PolicyEndpointStatus{{
 			EndpointID: endpointID,
 			Revision:   beforeRevision,
@@ -4725,9 +4722,14 @@ func TestPolicyEndpointAPIRolloutAppliesMultipleEndpoints(t *testing.T) {
 		}},
 	}
 	store := dataplane.NewInMemoryPolicyStore()
+	catalogResult, err := agent.ReconcileNode(context.Background(), state, "node-a", dataplane.NewInMemoryPolicyStore())
+	if err != nil {
+		t.Fatal(err)
+	}
 	metrics := newAgentMetrics(store)
 	observeAgentReconcileResultWithState(metrics, agent.ReconcileResult{
-		Node: "node-a",
+		Node:              "node-a",
+		PolicyRuleCatalog: catalogResult.PolicyRuleCatalog,
 	}, "memory", time.Millisecond, state)
 
 	body := bytes.NewBufferString(`{"endpoints":["prod/pod-a","prod/pod-b"],"batch_size":1}`)
@@ -4747,6 +4749,9 @@ func TestPolicyEndpointAPIRolloutAppliesMultipleEndpoints(t *testing.T) {
 	}
 	if len(got.Rollout.Items) != 2 || got.Rollout.Items[0].Batch != 1 || got.Rollout.Items[1].Batch != 2 {
 		t.Fatalf("rollout items = %+v, want two staged batches", got.Rollout.Items)
+	}
+	if len(got.Rollout.Items[0].Plan.AddedEntries) != 1 || got.Rollout.Items[0].Plan.AddedEntries[0].RuleRef != "prod/web/allow-http" || got.Rollout.Items[0].Plan.AddedEntries[0].SecurityGroup != "web" {
+		t.Fatalf("first rollout item plan endpoint=%q entries=%+v, want allow-http rule metadata", got.Rollout.Items[0].Plan.EndpointID, got.Rollout.Items[0].Plan.AddedEntries)
 	}
 	for _, endpointID := range []string{model.EndpointKey("prod", "pod-a"), model.EndpointKey("prod", "pod-b")} {
 		if entries := store.Entries(endpointID); len(entries) != 1 {

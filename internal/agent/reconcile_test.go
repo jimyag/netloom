@@ -3694,7 +3694,8 @@ func TestReconcileNodeReportsPolicyRuleCatalog(t *testing.T) {
 			}},
 		}},
 	}
-	result, err := ReconcileNode(context.Background(), state, "node-a", dataplane.NewInMemoryPolicyStore())
+	store := dataplane.NewInMemoryPolicyStore()
+	result, err := ReconcileNode(context.Background(), state, "node-a", store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3709,6 +3710,10 @@ func TestReconcileNodeReportsPolicyRuleCatalog(t *testing.T) {
 		entry.RuleID != "allow-web" ||
 		entry.RuleCookie != dataplane.PolicyRuleCookie("prod/web/allow-web") {
 		t.Fatalf("policy rule catalog entry = %+v, want endpoint-qualified rule reference", entry)
+	}
+	entries := store.Entries(model.EndpointKey("prod", "pod-a"))
+	if len(entries) != 1 || entries[0].Value.RuleCookie != entry.RuleCookie {
+		t.Fatalf("policy map entries = %+v, want catalog cookie %d", entries, entry.RuleCookie)
 	}
 }
 
