@@ -1075,6 +1075,8 @@ func staleManagedExternalIDShouldDrift(table, key string, live map[string]string
 		switch key {
 		case "netloom_role", "netloom_provider_network":
 			return live["netloom_endpoint"] != ""
+		case "netloom_endpoint", "netloom_node":
+			return live["netloom_role"] != "" || live["netloom_provider_network"] != ""
 		default:
 			return false
 		}
@@ -1525,7 +1527,33 @@ func managedAuditIdentityForRow(table, uuid string, externalIDs, fields map[stri
 		}
 		return identity + "\x00" + fields["vip"], true
 	}
+	if table == "Logical_Switch_Port" && fields["name"] != "" {
+		if identity, complete := logicalSwitchPortAuditIdentityForName(fields["name"], externalIDs); complete {
+			return identity, true
+		}
+	}
 	return managedAuditIdentity(table, uuid, externalIDs)
+}
+
+func logicalSwitchPortAuditIdentityForName(name string, externalIDs map[string]string) (string, bool) {
+	vpc := externalIDs["netloom_vpc"]
+	subnet := externalIDs["netloom_subnet"]
+	if vpc != "" && subnet != "" {
+		switchName := logicalSwitch(vpc, subnet)
+		if externalIDs["netloom_role"] == "router" && name == switchRouterPortName(switchName, subnet) {
+			return auditIdentity("Logical_Switch_Port", externalIDs, "netloom_vpc", "netloom_subnet", "netloom_role")
+		}
+		if externalIDs["netloom_provider_network"] != "" && name == localnetPortName(switchName, subnet) {
+			return auditIdentity("Logical_Switch_Port", externalIDs, "netloom_vpc", "netloom_subnet", "netloom_provider_network")
+		}
+	}
+	if endpoint := externalIDs["netloom_endpoint"]; endpoint != "" {
+		endpointVPC, endpointID, ok := strings.Cut(endpoint, "/")
+		if ok && endpointVPC == vpc && name == logicalPort(endpointVPC, endpointID) {
+			return auditIdentity("Logical_Switch_Port", externalIDs, "netloom_vpc", "netloom_endpoint")
+		}
+	}
+	return "", false
 }
 
 func managedAuditIdentity(table, uuid string, externalIDs map[string]string) (string, bool) {

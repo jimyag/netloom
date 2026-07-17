@@ -479,6 +479,65 @@ func TestAuditLogicalSwitchPortIdentityAcceptsRouterAndLocalnetPorts(t *testing.
 	}
 }
 
+func TestAuditManagedObjectsFromReaderReportsStaleRouterAndLocalnetEndpointMetadata(t *testing.T) {
+	subnet := model.Subnet{
+		Name:            "apps",
+		VPC:             "prod",
+		CIDR:            netip.MustParsePrefix("10.10.0.0/24"),
+		Gateway:         netip.MustParseAddr("10.10.0.1"),
+		ProviderNetwork: "physnet-a",
+	}
+	reader := fakeManagedOVNReader{rows: map[string][]ManagedOVNRow{
+		"Logical_Switch_Port": {
+			{Table: "Logical_Switch_Port", UUID: "lsp-router", ExternalIDs: map[string]string{
+				"netloom_owner":    "netloom",
+				"netloom_vpc":      "prod",
+				"netloom_subnet":   "apps",
+				"netloom_role":     "router",
+				"netloom_endpoint": "prod/old-pod",
+				"netloom_node":     "node-a",
+			}, Fields: map[string]string{
+				"name":      switchRouterPortName(logicalSwitch("prod", "apps"), "apps"),
+				"type":      "router",
+				"addresses": deterministicMAC(subnet),
+				"options":   mapField(map[string]string{"router-port": routerPortName(logicalRouter("prod"), "apps")}),
+			}},
+			{Table: "Logical_Switch_Port", UUID: "lsp-localnet", ExternalIDs: map[string]string{
+				"netloom_owner":            "netloom",
+				"netloom_vpc":              "prod",
+				"netloom_subnet":           "apps",
+				"netloom_provider_network": "physnet-a",
+				"netloom_endpoint":         "prod/old-pod",
+				"netloom_node":             "node-a",
+			}, Fields: map[string]string{
+				"name":      localnetPortName(logicalSwitch("prod", "apps"), "apps"),
+				"type":      "localnet",
+				"addresses": "unknown",
+				"options":   mapField(map[string]string{"network_name": "physnet-a"}),
+			}},
+		},
+	}}
+	desired := topology.State{
+		Subnets: map[string]model.Subnet{
+			subnetStateKey("prod", "apps"): subnet,
+		},
+	}
+
+	stats, err := AuditManagedObjectsFromReaderWithDesired(context.Background(), reader, desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.DriftedManagedRows != 2 || stats.DriftedManagedFields != 4 {
+		t.Fatalf("stale router/localnet endpoint metadata drift stats = %+v, want endpoint/node drift on both ports", stats)
+	}
+	if got := stats.DriftedManagedFieldCounts["Logical_Switch_Port.external_ids.netloom_endpoint"]; got != 2 {
+		t.Fatalf("field drift counts = %+v, want stale endpoint metadata drift on router and localnet ports", stats.DriftedManagedFieldCounts)
+	}
+	if got := stats.DriftedManagedFieldCounts["Logical_Switch_Port.external_ids.netloom_node"]; got != 2 {
+		t.Fatalf("field drift counts = %+v, want stale node metadata drift on router and localnet ports", stats.DriftedManagedFieldCounts)
+	}
+}
+
 func TestAuditManagedObjectsScopesSubnetPortsByVPC(t *testing.T) {
 	prodSubnet := model.Subnet{
 		Name:    "apps",
