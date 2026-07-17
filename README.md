@@ -108,6 +108,9 @@ Inspect policy state, policy-map entries, and routing decisions:
 
 ```bash
 ./netloom-controller controller-status -ovsdb unix:/var/run/openvswitch/db.sock
+./netloom-controller controller-events \
+  -ovsdb unix:/var/run/openvswitch/db.sock \
+  -limit 20
 ./netloom-agent agent-status -ovsdb unix:/var/run/openvswitch/db.sock
 ./netloom-agent dns-observations-export -ovsdb unix:/var/run/openvswitch/db.sock
 ./netloom-agent identity-groups-export -ovsdb unix:/var/run/openvswitch/db.sock
@@ -178,6 +181,9 @@ runtime audit snapshots in `Open_vSwitch.external_ids`: `netloom_agent_status`,
 `netloom_policy_endpoint_status`, `netloom_policy_entries`,
 `netloom_policy_rules`, `netloom_policy_events`, `netloom_policy_freeze_state`,
 `netloom_policy_rollout_state`, and `netloom_policy_endpoint_action_history`.
+The controller stores the latest control-plane snapshot in
+`netloom_controller_status` and recent reconcile health/audit events in
+`netloom_controller_events`.
 
 ## Documentation
 

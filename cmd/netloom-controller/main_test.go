@@ -109,6 +109,133 @@ func TestRunControllerStatusWithStoreRequiresStatusExternalID(t *testing.T) {
 	}
 }
 
+func TestRunControllerEventsWithStoreReportsFilteredHistory(t *testing.T) {
+	doc := controllerEventsDocument{
+		UpdatedAt: time.Date(2026, 7, 17, 1, 2, 3, 0, time.UTC),
+		Events: []controllerEventRecord{{
+			ID:               "success-a",
+			CompletedAt:      time.Date(2026, 7, 17, 1, 0, 0, 0, time.UTC),
+			Success:          true,
+			DurationMS:       25,
+			OVNHealth:        "ok",
+			OVNClusterQuorum: "ok",
+			OVNAuditStatus:   "ok",
+		}, {
+			ID:                "failure-a",
+			CompletedAt:       time.Date(2026, 7, 17, 1, 1, 0, 0, time.UTC),
+			Success:           false,
+			Phase:             "ovn_health",
+			Error:             "ovn health check: timeout",
+			DurationMS:        30,
+			OVNHealth:         "error",
+			OVNHealthFailures: 1,
+		}, {
+			ID:          "failure-b",
+			CompletedAt: time.Date(2026, 7, 17, 1, 2, 0, 0, time.UTC),
+			Success:     false,
+			Phase:       "apply",
+			Error:       "apply failed",
+			DurationMS:  40,
+			OVNHealth:   "ok",
+		}},
+	}
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := fakeOpenVSwitchExternalIDReader{values: map[string]string{
+		controllerOVSDBEventsKey: string(raw),
+	}}
+	var out bytes.Buffer
+	if err := runControllerEventsWithStore(t.Context(), controllerEventsOptions{phase: "ovn_health", success: "false", limit: 10}, &out, store); err != nil {
+		t.Fatal(err)
+	}
+	var got controllerEventsOutput
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("decode controller-events output: %v\n%s", err, out.String())
+	}
+	if !got.Ready || got.TotalEvents != 3 || got.EventCount != 1 || got.FilterPhase != "ovn_health" || got.FilterSuccess == nil || *got.FilterSuccess {
+		t.Fatalf("controller events summary = %+v, want one filtered failure", got)
+	}
+	if len(got.Events) != 1 || got.Events[0].ID != "failure-a" || got.Events[0].Error == "" || got.Events[0].OVNHealth != "error" {
+		t.Fatalf("events = %+v, want ovn_health failure", got.Events)
+	}
+}
+
+func TestSyncOVSDBControllerEventAppendsBoundedHistory(t *testing.T) {
+	writer := &recordingOVSDBControlStatusWriter{values: make(map[string]string)}
+	reconciler := &stateFileReconciler{ovsStatus: writer}
+	for i := range 130 {
+		snapshot := controllerMetricsSnapshot{
+			State:            control.DesiredState{VPCs: []model.VPC{{Name: "prod"}}},
+			PolicyEntries:    i,
+			OVNHealthStatus:  "ok",
+			OVNAuditStatus:   "ok",
+			OVNStaleAdvisory: ovnStaleAdvisory{Status: "ok"},
+			OVNMaintenance:   ovnMaintenanceResult{Status: "ok"},
+			Duration:         time.Duration(i) * time.Millisecond,
+			Success:          true,
+		}
+		if err := reconciler.syncOVSDBControllerEvent(t.Context(), snapshot); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if writer.values["netloom_owner"] != "netloom" {
+		t.Fatalf("netloom_owner external_id = %q, want netloom", writer.values["netloom_owner"])
+	}
+	raw := writer.values[controllerOVSDBEventsKey]
+	if raw == "" {
+		t.Fatalf("%s external_id was not written", controllerOVSDBEventsKey)
+	}
+	var doc controllerEventsDocument
+	if err := json.Unmarshal([]byte(raw), &doc); err != nil {
+		t.Fatalf("decode controller events: %v raw=%s", err, raw)
+	}
+	if len(doc.Events) != 128 {
+		t.Fatalf("events = %d, want trimmed 128", len(doc.Events))
+	}
+	if doc.Events[0].PolicyEntries != 2 || doc.Events[len(doc.Events)-1].PolicyEntries != 129 {
+		t.Fatalf("event window = first %+v last %+v, want last 128 events", doc.Events[0], doc.Events[len(doc.Events)-1])
+	}
+	if doc.Events[len(doc.Events)-1].OVNHealth != "ok" || doc.Events[len(doc.Events)-1].OVNAuditStatus != "ok" {
+		t.Fatalf("last event = %+v, want health/audit summary", doc.Events[len(doc.Events)-1])
+	}
+}
+
+func TestObserveReconcileFailurePersistsControllerEvent(t *testing.T) {
+	writer := &recordingOVSDBControlStatusWriter{values: make(map[string]string)}
+	reconciler := &stateFileReconciler{
+		metrics:   newControllerMetrics(),
+		ovsStatus: writer,
+	}
+	reconciler.observeReconcileFailure(
+		t.Context(),
+		"ovn_health",
+		control.DesiredState{VPCs: []model.VPC{{Name: "prod"}}},
+		control.LoadBalancerHealthSummary{},
+		ovnHealthSnapshot{Status: "error", ConsecutiveFailures: 2},
+		0,
+		0,
+		errors.New("ovn health check: timeout"),
+		30*time.Millisecond,
+	)
+	raw := writer.values[controllerOVSDBEventsKey]
+	if raw == "" {
+		t.Fatalf("%s external_id was not written", controllerOVSDBEventsKey)
+	}
+	var doc controllerEventsDocument
+	if err := json.Unmarshal([]byte(raw), &doc); err != nil {
+		t.Fatalf("decode controller events: %v raw=%s", err, raw)
+	}
+	if len(doc.Events) != 1 || doc.Events[0].Success || doc.Events[0].Phase != "ovn_health" || doc.Events[0].OVNHealth != "error" || doc.Events[0].OVNHealthFailures != 2 {
+		t.Fatalf("events = %+v, want persisted ovn health failure", doc.Events)
+	}
+	snapshot, _, ready := reconciler.metrics.snapshotValue()
+	if !ready || snapshot.Success || snapshot.Phase != "ovn_health" {
+		t.Fatalf("metrics snapshot = %+v ready=%t, want failure snapshot", snapshot, ready)
+	}
+}
+
 func TestControllerWithIdentityGroupObservationsMergesRuntimeGroups(t *testing.T) {
 	store := fakeOpenVSwitchExternalIDReader{
 		values: map[string]string{
@@ -1645,6 +1772,11 @@ type fakeOpenVSwitchExternalIDReader struct {
 
 func (r fakeOpenVSwitchExternalIDReader) OpenVSwitchExternalID(_ context.Context, key string) (string, bool, error) {
 	value, ok := r.values[key]
+	return value, ok, nil
+}
+
+func (w *recordingOVSDBControlStatusWriter) OpenVSwitchExternalID(_ context.Context, key string) (string, bool, error) {
+	value, ok := w.values[key]
 	return value, ok, nil
 }
 

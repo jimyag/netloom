@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	libovsdbclient "github.com/ovn-kubernetes/libovsdb/client"
@@ -30,12 +31,19 @@ import (
 	"github.com/jimyag/netloom/internal/topology"
 )
 
+var controllerEventIDSequence atomic.Uint64
+
 func main() {
 	ctx := context.Background()
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "controller-status":
 			if err := runControllerStatus(ctx, os.Args[2:], os.Stdout); err != nil {
+				log.Fatal(err)
+			}
+			return
+		case "controller-events":
+			if err := runControllerEvents(ctx, os.Args[2:], os.Stdout); err != nil {
 				log.Fatal(err)
 			}
 			return
@@ -141,6 +149,63 @@ func runControllerStatusWithStore(ctx context.Context, stdout io.Writer, store o
 	return encoder.Encode(status)
 }
 
+func runControllerEvents(ctx context.Context, args []string, stdout io.Writer) error {
+	opts := controllerEventsOptions{limit: defaultControllerEventsLimit}
+	flags := flag.NewFlagSet("netloom-controller controller-events", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	flags.StringVar(&opts.ovsdb, "ovsdb", os.Getenv("NETLOOM_OVSDB_ENDPOINT"), "Open_vSwitch OVSDB endpoint")
+	flags.StringVar(&opts.phase, "phase", "", "optional reconcile phase to include")
+	flags.StringVar(&opts.success, "success", "", "optional success filter: true or false")
+	flags.IntVar(&opts.limit, "limit", defaultControllerEventsLimit, "maximum recent controller events")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(opts.ovsdb) == "" {
+		return errors.New("missing -ovsdb or NETLOOM_OVSDB_ENDPOINT")
+	}
+	client, closeStore, err := newOpenVSwitchClient(ctx, opts.ovsdb)
+	if err != nil {
+		return err
+	}
+	defer closeStore()
+	return runControllerEventsWithStore(ctx, opts, stdout, linuxdatapath.NewLibOVSDBProviderSyncer(client))
+}
+
+func runControllerEventsWithStore(ctx context.Context, opts controllerEventsOptions, stdout io.Writer, store openVSwitchExternalIDReader) error {
+	if store == nil {
+		return errors.New("missing Open_vSwitch external_id store")
+	}
+	if opts.limit < 0 {
+		return fmt.Errorf("invalid limit %d", opts.limit)
+	}
+	if opts.limit > maxControllerEventsLimit {
+		opts.limit = maxControllerEventsLimit
+	}
+	doc, err := loadControllerEventsDocument(ctx, store)
+	if err != nil {
+		return err
+	}
+	successFilter, err := parseOptionalBool(strings.TrimSpace(opts.success))
+	if err != nil {
+		return err
+	}
+	phase := strings.TrimSpace(opts.phase)
+	filtered := filterControllerEvents(doc.Events, phase, successFilter)
+	recent := recentControllerEvents(filtered, opts.limit)
+	output := controllerEventsOutput{
+		Ready:         true,
+		TotalEvents:   len(doc.Events),
+		EventCount:    len(recent),
+		Limit:         opts.limit,
+		FilterPhase:   phase,
+		FilterSuccess: successFilter,
+		Events:        recent,
+	}
+	encoder := json.NewEncoder(stdout)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(output)
+}
+
 type stateFileReconciler struct {
 	memory                 *control.MemoryBackend
 	executor               ovn.Executor
@@ -217,6 +282,7 @@ type ovnMaintenanceRunner interface {
 }
 
 type ovsdbControlStatusWriter interface {
+	OpenVSwitchExternalID(context.Context, string) (string, bool, error)
 	SetOpenVSwitchExternalID(context.Context, string, string) error
 }
 
@@ -226,6 +292,65 @@ type openVSwitchExternalIDReader interface {
 
 type controllerStatusOptions struct {
 	ovsdb string
+}
+
+type controllerEventsOptions struct {
+	ovsdb   string
+	phase   string
+	success string
+	limit   int
+}
+
+type controllerEventsOutput struct {
+	Ready         bool                    `json:"ready"`
+	TotalEvents   int                     `json:"total_events"`
+	EventCount    int                     `json:"event_count"`
+	Limit         int                     `json:"limit"`
+	FilterPhase   string                  `json:"filter_phase,omitempty"`
+	FilterSuccess *bool                   `json:"filter_success,omitempty"`
+	Events        []controllerEventRecord `json:"events"`
+}
+
+type controllerEventsDocument struct {
+	UpdatedAt time.Time               `json:"updated_at,omitempty"`
+	Events    []controllerEventRecord `json:"events"`
+}
+
+type controllerEventRecord struct {
+	ID                    string    `json:"id"`
+	CompletedAt           time.Time `json:"completed_at"`
+	Success               bool      `json:"success"`
+	Phase                 string    `json:"phase,omitempty"`
+	Error                 string    `json:"error,omitempty"`
+	DurationMS            int64     `json:"duration_ms"`
+	VPCs                  int       `json:"vpcs"`
+	Subnets               int       `json:"subnets"`
+	Endpoints             int       `json:"endpoints"`
+	PolicyRoutes          int       `json:"policy_routes"`
+	LoadBalancers         int       `json:"load_balancers"`
+	PolicyEntries         int       `json:"policy_entries"`
+	OVNHealth             string    `json:"ovn_health,omitempty"`
+	OVNHealthFailures     int       `json:"ovn_health_failures,omitempty"`
+	OVNHealthRecovering   bool      `json:"ovn_health_recovering,omitempty"`
+	OVNClusterQuorum      string    `json:"ovn_cluster_quorum,omitempty"`
+	OVNClusterReachable   int       `json:"ovn_cluster_reachable,omitempty"`
+	OVNClusterQuorumSize  int       `json:"ovn_cluster_quorum_size,omitempty"`
+	OVNClusterLeaderCount int       `json:"ovn_cluster_leader_count,omitempty"`
+	OVNOps                int       `json:"ovn_ops"`
+	OVNExecuted           int       `json:"ovn_executed"`
+	OVNAuditStatus        string    `json:"ovn_audit_status,omitempty"`
+	OVNAuditError         string    `json:"ovn_audit_error,omitempty"`
+	OVNManagedRows        int       `json:"ovn_managed_rows,omitempty"`
+	OVNMissingRows        int       `json:"ovn_missing_rows,omitempty"`
+	OVNUnexpectedRows     int       `json:"ovn_unexpected_rows,omitempty"`
+	OVNDriftedRows        int       `json:"ovn_drifted_rows,omitempty"`
+	OVNDriftedFields      int       `json:"ovn_drifted_fields,omitempty"`
+	OVNStaleStatus        string    `json:"ovn_stale_status,omitempty"`
+	OVNStaleBurden        int       `json:"ovn_stale_burden,omitempty"`
+	OVNMaintenanceStatus  string    `json:"ovn_maintenance_status,omitempty"`
+	OVNMaintenanceError   string    `json:"ovn_maintenance_error,omitempty"`
+	OVNMaintenanceAttempt int       `json:"ovn_maintenance_attempted,omitempty"`
+	OVNMaintenanceFailed  int       `json:"ovn_maintenance_failed,omitempty"`
 }
 
 type ovnMaintenanceResult struct {
@@ -411,28 +536,28 @@ func (r *stateFileReconciler) reconcile(ctx context.Context, path string) error 
 		reconcileErr := fmt.Errorf("ovn health check: %w", ovnHealth.err)
 		duration := time.Since(start)
 		printControllerReconcileFailure("ovn_health", state, control.LoadBalancerHealthSummary{}, ovnHealth.Snapshot, 0, 0, reconcileErr, duration)
-		r.observeReconcileFailure("ovn_health", state, control.LoadBalancerHealthSummary{}, ovnHealth.Snapshot, 0, 0, reconcileErr, duration)
+		r.observeReconcileFailure(ctx, "ovn_health", state, control.LoadBalancerHealthSummary{}, ovnHealth.Snapshot, 0, 0, reconcileErr, duration)
 		return reconcileErr
 	}
 	state, err = loadDesiredStateFromPathOrOVSDB(ctx, path, r.ovsState)
 	if err != nil {
 		duration := time.Since(start)
 		printControllerReconcileFailure("load_state", state, control.LoadBalancerHealthSummary{}, ovnHealth.Snapshot, 0, 0, err, duration)
-		r.observeReconcileFailure("load_state", state, control.LoadBalancerHealthSummary{}, ovnHealth.Snapshot, 0, 0, err, duration)
+		r.observeReconcileFailure(ctx, "load_state", state, control.LoadBalancerHealthSummary{}, ovnHealth.Snapshot, 0, 0, err, duration)
 		return err
 	}
 	state, err = r.withIdentityGroupObservationsContext(ctx, state)
 	if err != nil {
 		duration := time.Since(start)
 		printControllerReconcileFailure("load_state", state, control.LoadBalancerHealthSummary{}, ovnHealth.Snapshot, 0, 0, err, duration)
-		r.observeReconcileFailure("load_state", state, control.LoadBalancerHealthSummary{}, ovnHealth.Snapshot, 0, 0, err, duration)
+		r.observeReconcileFailure(ctx, "load_state", state, control.LoadBalancerHealthSummary{}, ovnHealth.Snapshot, 0, 0, err, duration)
 		return err
 	}
 	healthSummary, err := r.applyLoadBalancerHealthChecks(ctx, &state)
 	if err != nil {
 		duration := time.Since(start)
 		printControllerReconcileFailure("lb_health", state, healthSummary, ovnHealth.Snapshot, 0, 0, err, duration)
-		r.observeReconcileFailure("lb_health", state, healthSummary, ovnHealth.Snapshot, 0, 0, err, duration)
+		r.observeReconcileFailure(ctx, "lb_health", state, healthSummary, ovnHealth.Snapshot, 0, 0, err, duration)
 		return err
 	}
 
@@ -443,7 +568,7 @@ func (r *stateFileReconciler) reconcile(ctx context.Context, path string) error 
 		executed := r.executedOperations() - executedBefore
 		duration := time.Since(start)
 		printControllerReconcileFailure("apply", state, healthSummary, ovnHealth.Snapshot, ovnOps, executed, err, duration)
-		r.observeReconcileFailure("apply", state, healthSummary, ovnHealth.Snapshot, ovnOps, executed, err, duration)
+		r.observeReconcileFailure(ctx, "apply", state, healthSummary, ovnHealth.Snapshot, ovnOps, executed, err, duration)
 		return err
 	}
 
@@ -509,7 +634,7 @@ func (r *stateFileReconciler) reconcile(ctx context.Context, path string) error 
 		formatResultError(ovnMaintenance.Error),
 		duration.Milliseconds(),
 	)
-	r.observeReconcileSuccess(state, healthSummary, ovnHealth.Snapshot, ovnOps, executed, ovnAuditStatus, ovnAuditError, ovnAudit, ovnStaleAdvisory, ovnMaintenance, duration)
+	r.observeReconcileSuccess(ctx, state, healthSummary, ovnHealth.Snapshot, ovnOps, executed, ovnAuditStatus, ovnAuditError, ovnAudit, ovnStaleAdvisory, ovnMaintenance, duration)
 	return nil
 }
 
@@ -588,11 +713,11 @@ func printControllerReconcileFailure(phase string, state control.DesiredState, h
 	)
 }
 
-func (r *stateFileReconciler) observeReconcileSuccess(state control.DesiredState, healthSummary control.LoadBalancerHealthSummary, ovnHealth ovnHealthSnapshot, ovnOps, executed int, ovnAuditStatus, ovnAuditError string, ovnAudit ovn.AuditStats, ovnStaleAdvisory ovnStaleAdvisory, ovnMaintenance ovnMaintenanceResult, duration time.Duration) {
-	if r == nil || r.metrics == nil {
+func (r *stateFileReconciler) observeReconcileSuccess(ctx context.Context, state control.DesiredState, healthSummary control.LoadBalancerHealthSummary, ovnHealth ovnHealthSnapshot, ovnOps, executed int, ovnAuditStatus, ovnAuditError string, ovnAudit ovn.AuditStats, ovnStaleAdvisory ovnStaleAdvisory, ovnMaintenance ovnMaintenanceResult, duration time.Duration) {
+	if r == nil {
 		return
 	}
-	r.metrics.observe(controllerMetricsSnapshot{
+	snapshot := controllerMetricsSnapshot{
 		State:                         state,
 		PolicyEntries:                 countPolicyEntries(r.memory),
 		HealthSummary:                 healthSummary,
@@ -612,11 +737,17 @@ func (r *stateFileReconciler) observeReconcileSuccess(state control.DesiredState
 		OVNMaintenance:                ovnMaintenance,
 		Duration:                      duration,
 		Success:                       true,
-	})
+	}
+	if r.metrics != nil {
+		r.metrics.observe(snapshot)
+	}
+	if err := r.syncOVSDBControllerEvent(ctx, snapshot); err != nil {
+		log.Printf("netloom-controller failed to sync Open_vSwitch controller event: %v", err)
+	}
 }
 
-func (r *stateFileReconciler) observeReconcileFailure(phase string, state control.DesiredState, healthSummary control.LoadBalancerHealthSummary, ovnHealth ovnHealthSnapshot, ovnOps, executed int, err error, duration time.Duration) {
-	if r == nil || r.metrics == nil {
+func (r *stateFileReconciler) observeReconcileFailure(ctx context.Context, phase string, state control.DesiredState, healthSummary control.LoadBalancerHealthSummary, ovnHealth ovnHealthSnapshot, ovnOps, executed int, err error, duration time.Duration) {
+	if r == nil {
 		return
 	}
 	if phase == "" {
@@ -626,7 +757,7 @@ func (r *stateFileReconciler) observeReconcileFailure(phase string, state contro
 	if err != nil {
 		message = err.Error()
 	}
-	r.metrics.observe(controllerMetricsSnapshot{
+	snapshot := controllerMetricsSnapshot{
 		State:                         state,
 		PolicyEntries:                 countDesiredPolicyEntries(state),
 		HealthSummary:                 healthSummary,
@@ -645,7 +776,13 @@ func (r *stateFileReconciler) observeReconcileFailure(phase string, state contro
 		Success:                       false,
 		Phase:                         phase,
 		Error:                         message,
-	})
+	}
+	if r.metrics != nil {
+		r.metrics.observe(snapshot)
+	}
+	if eventErr := r.syncOVSDBControllerEvent(ctx, snapshot); eventErr != nil {
+		log.Printf("netloom-controller failed to sync Open_vSwitch controller event: %v", eventErr)
+	}
 }
 
 func (r *stateFileReconciler) lastOVNCleanupStats() ovn.CleanupStats {
@@ -723,7 +860,12 @@ type controllerOVSDBStatus struct {
 	ReconcileDurationMS  int64                             `json:"reconcile_duration_ms"`
 }
 
-const controllerOVSDBStatusKey = "netloom_controller_status"
+const (
+	controllerOVSDBStatusKey     = "netloom_controller_status"
+	controllerOVSDBEventsKey     = "netloom_controller_events"
+	defaultControllerEventsLimit = 100
+	maxControllerEventsLimit     = 1000
+)
 
 func controllerStatusFromSnapshot(snapshot controllerMetricsSnapshot) controllerOVSDBStatus {
 	return controllerStatusFromReconcile(
@@ -790,6 +932,137 @@ func (r *stateFileReconciler) syncOVSDBControlStatus(ctx context.Context, state 
 		return err
 	}
 	return r.ovsStatus.SetOpenVSwitchExternalID(ctx, controllerOVSDBStatusKey, string(raw))
+}
+
+func (r *stateFileReconciler) syncOVSDBControllerEvent(ctx context.Context, snapshot controllerMetricsSnapshot) error {
+	if r == nil || r.ovsStatus == nil {
+		return nil
+	}
+	return appendOVSDBControllerEvent(ctx, r.ovsStatus, controllerEventFromSnapshot(snapshot))
+}
+
+func controllerEventFromSnapshot(snapshot controllerMetricsSnapshot) controllerEventRecord {
+	completedAt := time.Now().UTC()
+	cluster := summarizeOVNClusterHealth(snapshot.OVNCluster)
+	return controllerEventRecord{
+		ID:                    fmt.Sprintf("%s-%d", completedAt.Format("20060102T150405.000000000Z"), controllerEventIDSequence.Add(1)),
+		CompletedAt:           completedAt,
+		Success:               snapshot.Success,
+		Phase:                 snapshot.Phase,
+		Error:                 snapshot.Error,
+		DurationMS:            snapshot.Duration.Milliseconds(),
+		VPCs:                  len(snapshot.State.VPCs),
+		Subnets:               len(snapshot.State.Subnets),
+		Endpoints:             len(snapshot.State.Endpoints),
+		PolicyRoutes:          len(snapshot.State.PolicyRoutes),
+		LoadBalancers:         len(snapshot.State.LoadBalancers),
+		PolicyEntries:         snapshot.PolicyEntries,
+		OVNHealth:             fallbackMetricsLabel(snapshot.OVNHealthStatus, "disabled"),
+		OVNHealthFailures:     snapshot.OVNHealthConsecutiveFailures,
+		OVNHealthRecovering:   snapshot.OVNHealthRecovering,
+		OVNClusterQuorum:      cluster.QuorumStatus,
+		OVNClusterReachable:   cluster.ReachableEndpoints,
+		OVNClusterQuorumSize:  cluster.QuorumSize,
+		OVNClusterLeaderCount: cluster.LeaderCount,
+		OVNOps:                snapshot.OVNOps,
+		OVNExecuted:           snapshot.OVNExecuted,
+		OVNAuditStatus:        fallbackMetricsLabel(snapshot.OVNAuditStatus, "disabled"),
+		OVNAuditError:         snapshot.OVNAuditError,
+		OVNManagedRows:        snapshot.OVNAudit.TotalManagedObjects(),
+		OVNMissingRows:        snapshot.OVNAudit.MissingManagedRows,
+		OVNUnexpectedRows:     snapshot.OVNAudit.UnexpectedManagedRows,
+		OVNDriftedRows:        snapshot.OVNAudit.DriftedManagedRows,
+		OVNDriftedFields:      snapshot.OVNAudit.DriftedManagedFields,
+		OVNStaleStatus:        snapshot.OVNStaleAdvisory.Status,
+		OVNStaleBurden:        snapshot.OVNStaleAdvisory.Burden,
+		OVNMaintenanceStatus:  snapshot.OVNMaintenance.Status,
+		OVNMaintenanceError:   snapshot.OVNMaintenance.Error,
+		OVNMaintenanceAttempt: snapshot.OVNMaintenance.Attempted,
+		OVNMaintenanceFailed:  snapshot.OVNMaintenance.Failed,
+	}
+}
+
+func loadControllerEventsDocument(ctx context.Context, store openVSwitchExternalIDReader) (controllerEventsDocument, error) {
+	var doc controllerEventsDocument
+	if store == nil {
+		return doc, nil
+	}
+	raw, ok, err := store.OpenVSwitchExternalID(ctx, controllerOVSDBEventsKey)
+	if err != nil {
+		return doc, err
+	}
+	if !ok || strings.TrimSpace(raw) == "" {
+		return doc, nil
+	}
+	if err := json.Unmarshal([]byte(raw), &doc); err != nil {
+		return doc, fmt.Errorf("decode Open_vSwitch external_ids:%s: %w", controllerOVSDBEventsKey, err)
+	}
+	doc.Events = trimControllerEvents(doc.Events)
+	return doc, nil
+}
+
+func appendOVSDBControllerEvent(ctx context.Context, store ovsdbControlStatusWriter, event controllerEventRecord) error {
+	if store == nil {
+		return nil
+	}
+	doc, err := loadControllerEventsDocument(ctx, store)
+	if err != nil {
+		return err
+	}
+	doc.Events = trimControllerEvents(append(doc.Events, event))
+	doc.UpdatedAt = time.Now().UTC()
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		return fmt.Errorf("encode Open_vSwitch controller events: %w", err)
+	}
+	if err := store.SetOpenVSwitchExternalID(ctx, "netloom_owner", "netloom"); err != nil {
+		return err
+	}
+	return store.SetOpenVSwitchExternalID(ctx, controllerOVSDBEventsKey, string(raw))
+}
+
+func trimControllerEvents(events []controllerEventRecord) []controllerEventRecord {
+	const limit = 128
+	if len(events) <= limit {
+		return append([]controllerEventRecord(nil), events...)
+	}
+	return append([]controllerEventRecord(nil), events[len(events)-limit:]...)
+}
+
+func filterControllerEvents(events []controllerEventRecord, phase string, success *bool) []controllerEventRecord {
+	phase = strings.TrimSpace(phase)
+	out := make([]controllerEventRecord, 0, len(events))
+	for _, event := range events {
+		if phase != "" && event.Phase != phase {
+			continue
+		}
+		if success != nil && event.Success != *success {
+			continue
+		}
+		out = append(out, event)
+	}
+	return out
+}
+
+func recentControllerEvents(events []controllerEventRecord, limit int) []controllerEventRecord {
+	if limit <= 0 {
+		return nil
+	}
+	if len(events) <= limit {
+		return append([]controllerEventRecord(nil), events...)
+	}
+	return append([]controllerEventRecord(nil), events[len(events)-limit:]...)
+}
+
+func parseOptionalBool(value string) (*bool, error) {
+	if strings.TrimSpace(value) == "" {
+		return nil, nil
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return nil, fmt.Errorf("invalid success filter %q", value)
+	}
+	return &parsed, nil
 }
 
 type controllerMetrics struct {

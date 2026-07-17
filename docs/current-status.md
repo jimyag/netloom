@@ -67,6 +67,7 @@ desired state 也可以放到 OVSDB：
 ./netloom-agent policy-explain -state /etc/netloom/state.json -vpc prod -endpoint vm-a -direction ingress -protocol tcp -remote-ip 10.10.1.20 -dest-port 8080
 ./netloom-agent route-explain -state /etc/netloom/state.json -vpc prod -source 10.10.0.10 -dest 172.16.0.10 -protocol tcp -dest-port 443
 curl -s http://127.0.0.1:9091/status
+./netloom-controller controller-events -ovsdb unix:/var/run/openvswitch/db.sock -limit 20
 curl -s http://127.0.0.1:9092/metrics
 curl -s http://127.0.0.1:9092/policy/rules
 curl -s 'http://127.0.0.1:9092/policy/events?limit=100'
