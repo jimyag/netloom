@@ -892,6 +892,89 @@ func TestAuditManagedObjectsReportsLoadBalancerParentAttachmentDriftFromLibOVSDB
 	}
 }
 
+func TestAuditManagedObjectsReportsDNSSwitchAttachmentDriftFromLibOVSDBReader(t *testing.T) {
+	ctx := context.Background()
+	client, closeFn := newTestOVNNBClient(t)
+	defer closeFn()
+
+	if _, err := client.MonitorAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	writer := NewLibOVSDBTopologyWriter(client)
+	subnets := []netloommodel.Subnet{{
+		Name:    "apps",
+		VPC:     "prod",
+		CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+		Gateway: netip.MustParseAddr("10.10.0.1"),
+	}, {
+		Name:    "db",
+		VPC:     "prod",
+		CIDR:    netip.MustParsePrefix("10.20.0.0/24"),
+		Gateway: netip.MustParseAddr("10.20.0.1"),
+	}}
+	records := []netloommodel.DNSRecord{{
+		Name: "api.example.com.",
+		IPs:  []netip.Addr{netip.MustParseAddr("203.0.113.10")},
+	}}
+	if err := writer.EnsureVPC(ctx, netloommodel.VPC{Name: "prod"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, subnet := range subnets {
+		if err := writer.EnsureSubnet(ctx, subnet); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.SyncDNSRecords(ctx, subnets, records); err != nil {
+		t.Fatal(err)
+	}
+	desired := topology.State{
+		VPCs: map[string]netloommodel.VPC{
+			"prod": {Name: "prod"},
+		},
+		Subnets: map[string]netloommodel.Subnet{
+			subnetStateKey("prod", "apps"): subnets[0],
+			subnetStateKey("prod", "db"):   subnets[1],
+		},
+		DNSRecords: records,
+	}
+	reader := NewLibOVSDBManagedReader(client)
+	requireEventually(t, func() bool {
+		stats, err := AuditManagedObjectsFromReaderWithDesired(ctx, reader, desired)
+		return err == nil && stats.UnexpectedManagedRows == 0 && stats.MissingManagedRows == 0 &&
+			stats.DriftedManagedRows == 0 && stats.DriftedManagedFields == 0
+	})
+
+	var dnsRows []ovnnb.DNS
+	if err := client.WhereCache(func(row *ovnnb.DNS) bool { return isNetloomManaged(row.ExternalIDs) }).List(ctx, &dnsRows); err != nil {
+		t.Fatal(err)
+	}
+	if len(dnsRows) != 1 {
+		t.Fatalf("DNS rows = %d, want one managed DNS row", len(dnsRows))
+	}
+	dbSwitch := singleLogicalSwitchByName(t, ctx, client, logicalSwitch("prod", "db"))
+	detachOps, err := writer.detachDNSRowFromSwitch(dbSwitch.UUID, dnsRows[0].UUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := client.Transact(ctx, detachOps...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, detachOps); err != nil {
+		t.Fatalf("operation errors=%+v err=%v", opErrors, err)
+	}
+
+	var stats AuditStats
+	requireEventually(t, func() bool {
+		var err error
+		stats, err = AuditManagedObjectsFromReaderWithDesired(ctx, reader, desired)
+		return err == nil && stats.DriftedManagedRows == 1 && stats.DriftedManagedFields == 1
+	})
+	if stats.DriftedManagedRows != 1 || stats.DriftedManagedFields != 1 {
+		t.Fatalf("audit stats = %+v, want one DNS switch attachment drift", stats)
+	}
+}
+
 func TestAuditManagedObjectsReportsRouterAndSwitchPortAttachmentDriftFromLibOVSDBReader(t *testing.T) {
 	ctx := context.Background()
 	client, closeFn := newTestOVNNBClient(t)

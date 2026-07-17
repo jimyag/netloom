@@ -39,12 +39,17 @@ func (r *LibOVSDBManagedReader) ManagedOVNRows(ctx context.Context, table string
 		if err != nil {
 			return nil, err
 		}
+		dnsRecordNames, err := r.dnsRecordNames(ctx)
+		if err != nil {
+			return nil, err
+		}
 		return managedOVNRowsFromModels(table, rows, func(row ovnnb.LogicalSwitch) (string, map[string]string, map[string]string) {
 			return row.UUID, row.ExternalIDs, map[string]string{
 				"name":                row.Name,
 				"other_config":        mapField(row.OtherConfig),
 				"ports":               portNamesField(row.Ports, switchPortNames),
 				"load_balancers":      loadBalancerNamesField(row.LoadBalancer, loadBalancerNames),
+				"dns_records":         dnsRecordNamesField(row.DNSRecords, dnsRecordNames),
 				"acls":                stringSliceField(row.ACLs),
 				"forwarding_groups":   stringSliceField(row.ForwardingGroups),
 				"load_balancer_group": stringSliceField(row.LoadBalancerGroup),
@@ -341,6 +346,18 @@ func (r *LibOVSDBManagedReader) loadBalancerNames(ctx context.Context) (map[stri
 	return out, nil
 }
 
+func (r *LibOVSDBManagedReader) dnsRecordNames(ctx context.Context) (map[string]string, error) {
+	var rows []ovnnb.DNS
+	if err := r.client.WhereCache(func(row *ovnnb.DNS) bool { return row.ExternalIDs["netloom_dns"] != "" }).List(ctx, &rows); err != nil {
+		return nil, err
+	}
+	out := make(map[string]string, len(rows))
+	for _, row := range rows {
+		out[row.UUID] = row.ExternalIDs["netloom_dns"]
+	}
+	return out, nil
+}
+
 func loadBalancerNamesField(uuids []string, nameByUUID map[string]string) string {
 	if len(uuids) == 0 {
 		return ""
@@ -353,6 +370,10 @@ func loadBalancerNamesField(uuids []string, nameByUUID map[string]string) string
 	}
 	sort.Strings(names)
 	return stringSliceField(names)
+}
+
+func dnsRecordNamesField(uuids []string, nameByUUID map[string]string) string {
+	return loadBalancerNamesField(uuids, nameByUUID)
 }
 
 func (r *LibOVSDBManagedReader) natNames(ctx context.Context) (map[string]string, error) {

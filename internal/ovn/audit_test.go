@@ -63,7 +63,7 @@ func TestNBCTLExecutorManagedOVNRowsReadsAuditedColumns(t *testing.T) {
 	script := `#!/bin/sh
 printf '%s\n' "$*" >> "` + logPath + `"
 case "$*" in
-  *"--columns=_uuid,external_ids,name,other_config,acls,forwarding_groups,load_balancer_group,qos_rules find Logical_Switch external_ids:netloom_owner=netloom"*) printf 'ls-a,"{netloom_owner=netloom,netloom_vpc=prod,netloom_subnet=apps}",nl_ls_prod_apps,"{mcast_snoop=false,subnet=10.10.0.0/24}",[],[],[],[]\n' ;;
+  *"--columns=_uuid,external_ids,name,other_config,ports,load_balancers,dns_records,acls,forwarding_groups,load_balancer_group,qos_rules find Logical_Switch external_ids:netloom_owner=netloom"*) printf 'ls-a,"{netloom_owner=netloom,netloom_vpc=prod,netloom_subnet=apps}",nl_ls_prod_apps,"{mcast_snoop=false,subnet=10.10.0.0/24}",[],[],[],[],[],[],[]\n' ;;
 esac
 `
 	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
@@ -89,7 +89,7 @@ esac
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(logData), "--columns=_uuid,external_ids,name,other_config,acls,forwarding_groups,load_balancer_group,qos_rules") {
+	if !strings.Contains(string(logData), "--columns=_uuid,external_ids,name,other_config,ports,load_balancers,dns_records,acls,forwarding_groups,load_balancer_group,qos_rules") {
 		t.Fatalf("audit command did not request switch columns:\n%s", string(logData))
 	}
 }
@@ -180,8 +180,8 @@ esac
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stats.DriftedManagedRows != 1 || stats.DriftedManagedFields != 1 {
-		t.Fatalf("stats = %+v, want one switch name column drift from nbctl rows", stats)
+	if stats.DriftedManagedRows != 1 || stats.DriftedManagedFields != 2 {
+		t.Fatalf("stats = %+v, want switch name and port attachment drift from nbctl rows", stats)
 	}
 }
 

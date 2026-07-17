@@ -156,6 +156,11 @@ func (e *NBCTLExecutor) ManagedOVNRows(ctx context.Context, table string) ([]Man
 			return nil, err
 		}
 	}
+	if table == "Logical_Switch" {
+		if err := e.enrichNBCTLLogicalSwitchReferenceFields(ctx, rows); err != nil {
+			return nil, err
+		}
+	}
 	return rows, nil
 }
 
@@ -163,7 +168,7 @@ func managedAuditNBCTLColumns(table string) []string {
 	columns := []string{"_uuid", "external_ids"}
 	switch table {
 	case "Logical_Switch":
-		columns = append(columns, "name", "other_config", "acls", "forwarding_groups", "load_balancer_group", "qos_rules")
+		columns = append(columns, "name", "other_config", "ports", "load_balancers", "dns_records", "acls", "forwarding_groups", "load_balancer_group", "qos_rules")
 	case "Logical_Router":
 		columns = append(columns, "name", "options", "ports", "load_balancers", "load_balancer_group", "nat", "policies", "static_routes", "enabled")
 	case "Logical_Switch_Port":
@@ -204,6 +209,31 @@ func (e *NBCTLExecutor) enrichNBCTLLogicalRouterReferenceFields(ctx context.Cont
 		{field: "nat_rules", table: "NAT", key: "netloom_nat"},
 		{field: "policies", table: "Logical_Router_Policy", key: "netloom_policy_route"},
 		{field: "static_routes", table: "Logical_Router_Static_Route", key: "netloom_route_key"},
+	}
+	for _, spec := range specs {
+		refs, err := e.managedNBCTLReferenceNames(ctx, spec.table, spec.key)
+		if err != nil {
+			return err
+		}
+		for i := range rows {
+			rows[i].Fields[spec.field] = resolveManagedAuditReferenceField(rows[i].Fields[spec.field], refs)
+		}
+	}
+	return nil
+}
+
+func (e *NBCTLExecutor) enrichNBCTLLogicalSwitchReferenceFields(ctx context.Context, rows []ManagedOVNRow) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	specs := []struct {
+		field string
+		table string
+		key   string
+	}{
+		{field: "ports", table: "Logical_Switch_Port", key: "name"},
+		{field: "load_balancers", table: "Load_Balancer", key: "name"},
+		{field: "dns_records", table: "DNS", key: "netloom_dns"},
 	}
 	for _, spec := range specs {
 		refs, err := e.managedNBCTLReferenceNames(ctx, spec.table, spec.key)
@@ -530,6 +560,13 @@ func expectedManagedAuditColumns(desired topology.State) map[string]map[string]s
 			"load_balancers": stringSetField(names),
 		}, "netloom_vpc", vpc, "netloom_subnet", subnet)
 	}
+	if len(desiredOVNDNSRecords(desired.DNSRecords)) > 0 {
+		for _, subnet := range desired.Subnets {
+			addAuditExpectedColumns(out, "Logical_Switch", map[string]string{
+				"dns_records": "desired",
+			}, "netloom_vpc", subnet.VPC, "netloom_subnet", subnet.Name)
+		}
+	}
 	for _, endpoint := range desired.Endpoints {
 		fields := map[string]string{
 			"name":      logicalPort(endpoint.VPC, endpoint.ID),
@@ -841,7 +878,7 @@ func staleManagedColumnShouldDrift(table, key string) bool {
 	switch table {
 	case "Logical_Switch":
 		switch key {
-		case "acls", "forwarding_groups", "load_balancer_group", "qos_rules":
+		case "acls", "dns_records", "forwarding_groups", "load_balancer_group", "qos_rules":
 			return true
 		default:
 			return false
@@ -1148,7 +1185,7 @@ func normalizeManagedAuditField(column, value string) string {
 	switch column {
 	case "external_ids", "other_config", "options", "ipv6_ra_configs", "vips":
 		return mapField(parseOVNMap(value))
-	case "addresses", "port_security", "networks", "nexthops", "selection_fields", "ports", "load_balancers", "load_balancer_group", "nat", "policies", "static_routes", "acls", "forwarding_groups", "qos_rules":
+	case "addresses", "port_security", "networks", "nexthops", "selection_fields", "ports", "load_balancers", "dns_records", "load_balancer_group", "nat", "policies", "static_routes", "acls", "forwarding_groups", "qos_rules":
 		return stringSliceField(parseOVNList(value))
 	case "tag":
 		return strings.Trim(strings.TrimSpace(value), `"`)
