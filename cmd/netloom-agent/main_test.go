@@ -2857,6 +2857,18 @@ func TestRunPolicyEventsWithStoreReportsFilteredJSON(t *testing.T) {
 	if got.FilterRuleCookie != 42 || got.EventCount != 1 || len(got.Events) != 1 || got.Events[0].Revision != 1 || got.Events[0].EndpointID != model.EndpointKey("prod", "pod-a") {
 		t.Fatalf("rule-cookie filtered events = %+v, want pod-a revision 1", got)
 	}
+
+	stdout.Reset()
+	if err := runPolicyEventsWithStore(t.Context(), policyEventsOptions{ruleRef: "prod/db/allow-db", limit: 10}, &stdout, store); err != nil {
+		t.Fatal(err)
+	}
+	got = policyEventsOutput{}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode rule-ref filtered policy-events output: %v\n%s", err, stdout.String())
+	}
+	if got.FilterRuleRef != "prod/db/allow-db" || got.EventCount != 1 || len(got.Events) != 1 || got.Events[0].Revision != 1 || got.Events[0].EndpointID != model.EndpointKey("prod", "pod-b") {
+		t.Fatalf("rule-ref filtered events = %+v, want pod-b allow-db revision 1", got)
+	}
 }
 
 func TestRunPolicyEventsWithStoreFiltersRemediatedEvents(t *testing.T) {
