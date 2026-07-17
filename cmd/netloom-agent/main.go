@@ -13,6 +13,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -240,6 +241,8 @@ type policyEventsOptions struct {
 	endpoint   string
 	success    string
 	remediated string
+	ruleCookie string
+	ruleRef    string
 	limit      int
 }
 
@@ -419,6 +422,8 @@ type policyEventsOutput struct {
 	FilterEndpoint       string                        `json:"filter_endpoint,omitempty"`
 	FilterSuccess        *bool                         `json:"filter_success,omitempty"`
 	FilterRemediated     *bool                         `json:"filter_remediated,omitempty"`
+	FilterRuleCookie     uint32                        `json:"filter_rule_cookie,omitempty"`
+	FilterRuleRef        string                        `json:"filter_rule_ref,omitempty"`
 	Events               []dataplane.PolicyUpdateEvent `json:"events"`
 }
 
@@ -1166,6 +1171,8 @@ func runPolicyEvents(ctx context.Context, args []string, stdout io.Writer) error
 	flags.StringVar(&opts.endpoint, "endpoint", "", "optional endpoint key or endpoint ID to include")
 	flags.StringVar(&opts.success, "success", "", "optional success filter: true or false")
 	flags.StringVar(&opts.remediated, "remediated", "", "optional remediation filter: true or false")
+	flags.StringVar(&opts.ruleCookie, "rule-cookie", "", "optional dataplane rule cookie to include")
+	flags.StringVar(&opts.ruleRef, "rule-ref", "", "optional policy rule reference to include")
 	flags.IntVar(&opts.limit, "limit", defaultPolicyEventsLimit, "maximum recent policy update events")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -1214,6 +1221,8 @@ func runPolicyEventsWithStore(ctx context.Context, opts policyEventsOptions, std
 		FilterEndpoint:       filter.Endpoint,
 		FilterSuccess:        filter.Success,
 		FilterRemediated:     filter.Remediated,
+		FilterRuleCookie:     filterPolicyUpdateEventRuleCookieValue(filter),
+		FilterRuleRef:        filter.RuleRef,
 		Events:               recent,
 	}
 	encoder := json.NewEncoder(stdout)
@@ -1910,17 +1919,19 @@ type policyUpdateEventFilter struct {
 	Endpoint   string
 	Success    *bool
 	Remediated *bool
+	RuleCookie *uint32
+	RuleRef    string
 }
 
 func policyUpdateEventFilterFromOptions(opts policyEventsOptions) (policyUpdateEventFilter, error) {
-	return policyUpdateEventFilterFromValues(opts.endpoint, opts.success, opts.remediated)
+	return policyUpdateEventFilterFromValues(opts.endpoint, opts.success, opts.remediated, opts.ruleCookie, opts.ruleRef)
 }
 
 func policyUpdateEventFilterFromRequest(r *http.Request, endpoint string) (policyUpdateEventFilter, error) {
-	return policyUpdateEventFilterFromValues(endpoint, r.URL.Query().Get("success"), r.URL.Query().Get("remediated"))
+	return policyUpdateEventFilterFromValues(endpoint, r.URL.Query().Get("success"), r.URL.Query().Get("remediated"), r.URL.Query().Get("rule_cookie"), r.URL.Query().Get("rule_ref"))
 }
 
-func policyUpdateEventFilterFromValues(endpoint, successRaw, remediatedRaw string) (policyUpdateEventFilter, error) {
+func policyUpdateEventFilterFromValues(endpoint, successRaw, remediatedRaw, ruleCookieRaw, ruleRef string) (policyUpdateEventFilter, error) {
 	success, err := policyActionSuccessFromString(successRaw)
 	if err != nil {
 		return policyUpdateEventFilter{}, err
@@ -1929,10 +1940,22 @@ func policyUpdateEventFilterFromValues(endpoint, successRaw, remediatedRaw strin
 	if err != nil {
 		return policyUpdateEventFilter{}, err
 	}
+	ruleCookieRaw = strings.TrimSpace(ruleCookieRaw)
+	var ruleCookie *uint32
+	if ruleCookieRaw != "" {
+		value, err := strconv.ParseUint(ruleCookieRaw, 10, 32)
+		if err != nil {
+			return policyUpdateEventFilter{}, fmt.Errorf("invalid rule cookie %q", ruleCookieRaw)
+		}
+		cookie := uint32(value)
+		ruleCookie = &cookie
+	}
 	return policyUpdateEventFilter{
 		Endpoint:   strings.TrimSpace(endpoint),
 		Success:    success,
 		Remediated: remediated,
+		RuleCookie: ruleCookie,
+		RuleRef:    strings.TrimSpace(ruleRef),
 	}, nil
 }
 
@@ -1952,6 +1975,8 @@ func policyEventsOutputFromSnapshot(snapshot agentMetricsSnapshot, events []data
 		FilterEndpoint:       filter.Endpoint,
 		FilterSuccess:        filter.Success,
 		FilterRemediated:     filter.Remediated,
+		FilterRuleCookie:     filterPolicyUpdateEventRuleCookieValue(filter),
+		FilterRuleRef:        filter.RuleRef,
 		Events:               recent,
 	}
 }
@@ -2110,7 +2135,7 @@ func policyMapEntryOutputFromEntry(entry dataplane.PolicyMapEntry) policyMapEntr
 }
 
 func filterPolicyUpdateEvents(events []dataplane.PolicyUpdateEvent, filter policyUpdateEventFilter) []dataplane.PolicyUpdateEvent {
-	if filter.Endpoint == "" && filter.Success == nil && filter.Remediated == nil {
+	if filter.Endpoint == "" && filter.Success == nil && filter.Remediated == nil && filter.RuleCookie == nil && filter.RuleRef == "" {
 		return append([]dataplane.PolicyUpdateEvent(nil), events...)
 	}
 	out := make([]dataplane.PolicyUpdateEvent, 0, len(events))
@@ -2124,9 +2149,26 @@ func filterPolicyUpdateEvents(events []dataplane.PolicyUpdateEvent, filter polic
 		if filter.Remediated != nil && event.Remediated != *filter.Remediated {
 			continue
 		}
+		if filter.RuleCookie != nil && !policyUpdateEventHasRuleCookie(event, *filter.RuleCookie) {
+			continue
+		}
+		if filter.RuleRef != "" && !slices.Contains(event.RuleRefs, filter.RuleRef) {
+			continue
+		}
 		out = append(out, event)
 	}
 	return out
+}
+
+func filterPolicyUpdateEventRuleCookieValue(filter policyUpdateEventFilter) uint32 {
+	if filter.RuleCookie == nil {
+		return 0
+	}
+	return *filter.RuleCookie
+}
+
+func policyUpdateEventHasRuleCookie(event dataplane.PolicyUpdateEvent, cookie uint32) bool {
+	return slices.Contains(event.RuleCookies, cookie)
 }
 
 func recentPolicyUpdateEvents(events []dataplane.PolicyUpdateEvent, limit int) []dataplane.PolicyUpdateEvent {

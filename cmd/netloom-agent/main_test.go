@@ -2644,6 +2644,21 @@ func TestPolicyEventsAPIReportsRecentEndpointEvents(t *testing.T) {
 	if !slices.Equal(got.Events[0].RuleCookies, []uint32{43}) || !slices.Equal(got.Events[0].RuleRefs, []string{"prod/web/allow-new"}) {
 		t.Fatalf("event rule refs = cookies %v refs %v, want allow-new", got.Events[0].RuleCookies, got.Events[0].RuleRefs)
 	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/policy/events?rule_ref=prod/web/allow-new", nil)
+	metrics.handlePolicyEvents(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	got = policyEventsOutput{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode rule-ref filtered policy events response: %v\n%s", err, recorder.Body.String())
+	}
+	if got.FilterRuleRef != "prod/web/allow-new" || got.EventCount != 1 || len(got.Events) != 1 || got.Events[0].Revision != 2 {
+		t.Fatalf("rule-ref filtered events = %+v, want only allow-new revision 2", got)
+	}
 }
 
 func TestPolicyEventsAPIFiltersFailedEvents(t *testing.T) {
@@ -2697,6 +2712,22 @@ func TestPolicyEventsAPIRejectsInvalidRemediatedFilter(t *testing.T) {
 	}
 }
 
+func TestPolicyEventsAPIRejectsInvalidRuleCookie(t *testing.T) {
+	metrics := newAgentMetrics(dataplane.NewInMemoryPolicyStore())
+	observeAgentReconcileResult(metrics, agent.ReconcileResult{Node: "node-a"}, "memory", time.Millisecond)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/policy/events?rule_cookie=not-a-cookie", nil)
+	metrics.handlePolicyEvents(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", recorder.Code)
+	}
+	if !strings.Contains(recorder.Body.String(), "invalid rule cookie") {
+		t.Fatalf("body missing invalid rule cookie error: %s", recorder.Body.String())
+	}
+}
+
 func TestPolicyEventsAPIReportsNotEnabled(t *testing.T) {
 	metrics := newAgentMetrics()
 	observeAgentReconcileResult(metrics, agent.ReconcileResult{Node: "node-a"}, "custom", time.Millisecond)
@@ -2738,18 +2769,24 @@ func TestRunPolicyEventsWithStoreReportsFilteredJSON(t *testing.T) {
 		UpdatedAt:            time.Date(2026, 7, 17, 1, 2, 3, 0, time.UTC),
 		TotalEvents:          3,
 		Events: []dataplane.PolicyUpdateEvent{{
-			EndpointID: model.EndpointKey("prod", "pod-a"),
-			Revision:   1,
-			Success:    true,
+			EndpointID:  model.EndpointKey("prod", "pod-a"),
+			Revision:    1,
+			RuleCookies: []uint32{42},
+			RuleRefs:    []string{"prod/web/allow-http"},
+			Success:     true,
 		}, {
-			EndpointID: model.EndpointKey("prod", "pod-b"),
-			Revision:   1,
-			Success:    true,
+			EndpointID:  model.EndpointKey("prod", "pod-b"),
+			Revision:    1,
+			RuleCookies: []uint32{43},
+			RuleRefs:    []string{"prod/db/allow-db"},
+			Success:     true,
 		}, {
-			EndpointID: model.EndpointKey("prod", "pod-a"),
-			Revision:   2,
-			Success:    false,
-			Error:      "apply failed",
+			EndpointID:  model.EndpointKey("prod", "pod-a"),
+			Revision:    2,
+			RuleCookies: []uint32{44},
+			RuleRefs:    []string{"prod/web/deny-ssh"},
+			Success:     false,
+			Error:       "apply failed",
 		}},
 	}); err != nil {
 		t.Fatal(err)
@@ -2770,6 +2807,18 @@ func TestRunPolicyEventsWithStoreReportsFilteredJSON(t *testing.T) {
 	}
 	if len(got.Events) != 1 || got.Events[0].Revision != 2 || got.Events[0].Success {
 		t.Fatalf("events = %+v, want latest failed pod-a revision 2", got.Events)
+	}
+
+	stdout.Reset()
+	if err := runPolicyEventsWithStore(t.Context(), policyEventsOptions{ruleCookie: "42", limit: 10}, &stdout, store); err != nil {
+		t.Fatal(err)
+	}
+	got = policyEventsOutput{}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode rule-cookie filtered policy-events output: %v\n%s", err, stdout.String())
+	}
+	if got.FilterRuleCookie != 42 || got.EventCount != 1 || len(got.Events) != 1 || got.Events[0].Revision != 1 || got.Events[0].EndpointID != model.EndpointKey("prod", "pod-a") {
+		t.Fatalf("rule-cookie filtered events = %+v, want pod-a revision 1", got)
 	}
 }
 
