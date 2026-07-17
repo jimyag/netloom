@@ -31,14 +31,36 @@ type Packet struct {
 }
 
 type Decision struct {
-	Action         model.Action
-	NextHop        netip.Addr
-	NextHops       []netip.Addr
-	Gateway        string
-	Translated     netip.Addr
-	TranslatedPort uint16
-	MatchedBy      string
-	Destination    string
+	Action         model.Action          `json:"action"`
+	NextHop        netip.Addr            `json:"next_hop,omitempty"`
+	NextHops       []netip.Addr          `json:"next_hops,omitempty"`
+	Gateway        string                `json:"gateway,omitempty"`
+	Translated     netip.Addr            `json:"translated,omitempty"`
+	TranslatedPort uint16                `json:"translated_port,omitempty"`
+	MatchedBy      string                `json:"matched_by,omitempty"`
+	Destination    string                `json:"destination,omitempty"`
+	PolicyRoute    *PolicyRouteSelection `json:"policy_route,omitempty"`
+	RouteTable     *RouteTableSelection  `json:"route_table,omitempty"`
+}
+
+type PolicyRouteSelection struct {
+	VPC             string           `json:"vpc"`
+	Name            string           `json:"name"`
+	Priority        int              `json:"priority"`
+	Action          model.Action     `json:"action"`
+	Match           model.RouteMatch `json:"match"`
+	NextHops        []netip.Addr     `json:"next_hops,omitempty"`
+	SelectedNextHop netip.Addr       `json:"selected_next_hop,omitempty"`
+	ContinuesTo     string           `json:"continues_to,omitempty"`
+}
+
+type RouteTableSelection struct {
+	VPC             string       `json:"vpc"`
+	Name            string       `json:"name"`
+	Destination     netip.Prefix `json:"destination"`
+	Action          model.Action `json:"action"`
+	NextHops        []netip.Addr `json:"next_hops,omitempty"`
+	SelectedNextHop netip.Addr   `json:"selected_next_hop,omitempty"`
 }
 
 func Resolve(state State, packet Packet) (Decision, error) {
@@ -71,6 +93,10 @@ func Resolve(state State, packet Packet) (Decision, error) {
 		if decision.Action == model.ActionAllow {
 			if routed, ok := resolveRouteTables(state.RouteTables, packet); ok {
 				routed.MatchedBy = decision.MatchedBy
+				routed.PolicyRoute = decision.PolicyRoute
+				if routed.PolicyRoute != nil && routed.RouteTable != nil {
+					routed.PolicyRoute.ContinuesTo = "route-table/" + routed.RouteTable.Name
+				}
 				return applyNATAndGateway(state, packet, routed), nil
 			}
 		}
@@ -279,9 +305,18 @@ func resolvePolicyRoute(routes []model.PolicyRoute, packet Packet) (Decision, bo
 			Action:    route.Action.Type,
 			NextHops:  route.Action.RerouteNextHops(),
 			MatchedBy: "policy-route/" + route.Name,
+			PolicyRoute: &PolicyRouteSelection{
+				VPC:      route.VPC,
+				Name:     route.Name,
+				Priority: route.Priority,
+				Action:   route.Action.Type,
+				Match:    route.Match,
+				NextHops: route.Action.RerouteNextHops(),
+			},
 		}
 		if len(decision.NextHops) > 0 {
 			decision.NextHop = selectECMPNextHop(route.Name, decision.NextHops, packet)
+			decision.PolicyRoute.SelectedNextHop = decision.NextHop
 		}
 		if route.Action.Type == model.ActionDrop {
 			return decision, true
@@ -344,16 +379,33 @@ func resolveRouteTables(tables map[string]model.RouteTable, packet Packet) (Deci
 		return Decision{}, false
 	}
 	if selected.Blackhole {
-		return Decision{Action: model.ActionDrop, MatchedBy: "route-table/" + selectedName}, true
+		return Decision{
+			Action:    model.ActionDrop,
+			MatchedBy: "route-table/" + selectedName,
+			RouteTable: &RouteTableSelection{
+				VPC:         packet.VPC,
+				Name:        selectedName,
+				Destination: selected.Destination,
+				Action:      model.ActionDrop,
+			},
+		}, true
 	}
 	nextHops := selected.RouteNextHops()
 	decision := Decision{
 		Action:    model.ActionReroute,
 		NextHops:  nextHops,
 		MatchedBy: "route-table/" + selectedName,
+		RouteTable: &RouteTableSelection{
+			VPC:         packet.VPC,
+			Name:        selectedName,
+			Destination: selected.Destination,
+			Action:      model.ActionReroute,
+			NextHops:    append([]netip.Addr(nil), nextHops...),
+		},
 	}
 	if len(nextHops) > 0 {
 		decision.NextHop = selectECMPNextHop(selectedName+"/"+selected.Destination.String(), nextHops, packet)
+		decision.RouteTable.SelectedNextHop = decision.NextHop
 	}
 	return decision, true
 }

@@ -1527,6 +1527,15 @@ func TestRunRouteExplainReportsPolicyRouteReroute(t *testing.T) {
 	if decision.Action != model.ActionReroute || decision.MatchedBy != "policy-route/private-via-fw" {
 		t.Fatalf("decision = %+v, want policy-route reroute", decision)
 	}
+	if decision.PolicyRoute == nil {
+		t.Fatalf("policy route selection missing from route explain output: %+v", decision)
+	}
+	if decision.PolicyRoute.Name != "private-via-fw" || decision.PolicyRoute.Priority != 100 || decision.PolicyRoute.Action != model.ActionReroute {
+		t.Fatalf("policy route selection = %+v, want private-via-fw reroute priority 100", decision.PolicyRoute)
+	}
+	if decision.PolicyRoute.SelectedNextHop != netip.MustParseAddr("10.10.0.253") {
+		t.Fatalf("selected policy route next hop = %s, want 10.10.0.253", decision.PolicyRoute.SelectedNextHop)
+	}
 	if decision.NextHop != netip.MustParseAddr("10.10.0.253") || decision.Gateway != "gw-fw" {
 		t.Fatalf("decision = %+v, want firewall next hop and gateway", decision)
 	}

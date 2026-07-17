@@ -621,6 +621,15 @@ func TestResolvePolicyRouteBeatsStaticRoute(t *testing.T) {
 	if decision.MatchedBy != "policy-route/private-via-fw" {
 		t.Fatalf("matched by = %s, want policy route", decision.MatchedBy)
 	}
+	if decision.PolicyRoute == nil {
+		t.Fatalf("policy route selection missing from decision: %+v", decision)
+	}
+	if decision.PolicyRoute.Name != "private-via-fw" || decision.PolicyRoute.Priority != 100 || decision.PolicyRoute.Action != model.ActionReroute {
+		t.Fatalf("policy route selection = %+v, want private-via-fw reroute priority 100", decision.PolicyRoute)
+	}
+	if decision.PolicyRoute.SelectedNextHop != netip.MustParseAddr("10.10.0.253") {
+		t.Fatalf("selected policy route next hop = %s, want 10.10.0.253", decision.PolicyRoute.SelectedNextHop)
+	}
 }
 
 func TestResolvePolicyRouteIsVPCAware(t *testing.T) {
@@ -850,6 +859,12 @@ func TestResolveAllowPolicyRouteContinuesToStaticRoute(t *testing.T) {
 	}
 	if decision.Action != model.ActionReroute || decision.MatchedBy != "policy-route/allow-api" {
 		t.Fatalf("decision = %+v, want allow policy to continue into static route", decision)
+	}
+	if decision.PolicyRoute == nil || decision.PolicyRoute.Name != "allow-api" || decision.PolicyRoute.ContinuesTo != "route-table/main" {
+		t.Fatalf("policy route selection = %+v, want allow-api continuing to route-table/main", decision.PolicyRoute)
+	}
+	if decision.RouteTable == nil || decision.RouteTable.Name != "main" || decision.RouteTable.Destination != netip.MustParsePrefix("198.51.100.0/24") {
+		t.Fatalf("route table selection = %+v, want main 198.51.100.0/24", decision.RouteTable)
 	}
 	if decision.NextHop != netip.MustParseAddr("10.10.0.254") || decision.Gateway != "gw-a" {
 		t.Fatalf("route = next-hop %s gateway %s, want static route via gw-a", decision.NextHop, decision.Gateway)

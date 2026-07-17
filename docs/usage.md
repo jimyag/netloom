@@ -424,6 +424,12 @@ status，endpoint 不存在返回 404，目标 revision 未按时出现返回 40
   -dest-port 443
 ```
 
+`route-explain` 会输出最终 action、选中的 next hop、gateway、NAT/LB 转换结果，
+并在命中策略路由时给出结构化 `policy_route` 字段，包括策略路由名称、VPC、
+priority、action、match、ECMP next hops 和本次流量选中的 next hop。
+如果 allow 类型策略路由继续进入静态路由查找，输出里还会包含 `route_table` 字段，
+用于确认最终命中的路由表、目的前缀和静态路由 next hop。
+
 查看 Prometheus metrics：
 
 ```bash
