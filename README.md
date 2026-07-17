@@ -31,6 +31,19 @@ SecurityGroup and ACL rules are intentionally not implemented with OVN ACL.
 OVN owns topology, routes, NAT, load balancing, DHCP, and DNS; eBPF/TCX owns
 endpoint policy enforcement.
 
+What is not finished is production packaging around that path: multi-node
+deployment guides, certificate/systemd/container manifests, backup and restore,
+upgrade and rollback runbooks, alert rules, and long-duration scale validation.
+
+State is split deliberately:
+
+- Desired network intent can come from a JSON file or from local
+  `Open_vSwitch.external_ids:netloom_desired_state`.
+- OVN Northbound DB stores the actual logical topology and service objects
+  written by the controller.
+- Local Open_vSwitch DB stores provider OVS objects plus agent/controller
+  status, policy observations, and optional desired-state snapshots.
+
 ## Build
 
 ```bash

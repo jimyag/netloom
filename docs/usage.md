@@ -311,6 +311,12 @@ NETLOOM_AGENT_METRICS_ADDR=:9092 \
 ## Desired State 存入 OVSDB
 
 裸金属场景下可以把 desired state 放到本机 Open_vSwitch 数据库，避免 controller/agent 都依赖同一个文件路径。
+这里的 OVSDB 存储只保存 Netloom 的输入意图和运行状态，不替代 OVN Northbound DB：
+
+- `Open_vSwitch.external_ids:netloom_desired_state` 保存 desired state JSON。
+- `Open_vSwitch.external_ids:netloom_desired_state_revision` 保存 JSON 的 SHA256 revision，用于防止读到不完整或不匹配的状态。
+- OVN Northbound DB 仍然是 VPC、子网、端口、路由、NAT、LB、DHCP、DNS 等逻辑网络对象的真实写入目标。
+- 本机 Open_vSwitch DB 还保存 provider bridge/port/interface/QoS/Queue，以及 controller/agent 状态和 policy 观测结果。
 
 导入：
 
