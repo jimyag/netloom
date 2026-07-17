@@ -332,6 +332,11 @@ func (w *LibOVSDBTopologyWriter) routeTableOperations(ctx context.Context, table
 				}
 				ops = append(ops, attachOps...)
 			}
+			detachOps, err := w.detachStaticRouteFromOtherRouters(ctx, router.UUID, keep.UUID)
+			if err != nil {
+				return nil, err
+			}
+			ops = append(ops, detachOps...)
 			bfdOps, bfdUUID, err := w.staticRouteBFDOperations(ctx, table, route.BFD, desired)
 			if err != nil {
 				return nil, err
@@ -1050,6 +1055,29 @@ func (w *LibOVSDBTopologyWriter) attachStaticRoute(router *ovnnb.LogicalRouter, 
 		Mutator: ovsdb.MutateOperationInsert,
 		Value:   []string{routeUUID},
 	})
+}
+
+func (w *LibOVSDBTopologyWriter) detachStaticRouteFromOtherRouters(ctx context.Context, keepRouterUUID, routeUUID string) ([]ovsdb.Operation, error) {
+	var routers []ovnnb.LogicalRouter
+	if err := w.client.WhereCache(func(row *ovnnb.LogicalRouter) bool {
+		return row.UUID != keepRouterUUID && containsString(row.StaticRoutes, routeUUID)
+	}).List(ctx, &routers); err != nil {
+		return nil, fmt.Errorf("list logical routers containing static route %s: %w", routeUUID, err)
+	}
+	sort.Slice(routers, func(i, j int) bool { return routers[i].UUID < routers[j].UUID })
+	var ops []ovsdb.Operation
+	for i := range routers {
+		mutateOps, err := w.client.Where(&routers[i]).Mutate(&routers[i], ovsmodel.Mutation{
+			Field:   &routers[i].StaticRoutes,
+			Mutator: ovsdb.MutateOperationDelete,
+			Value:   []string{routeUUID},
+		})
+		if err != nil {
+			return nil, fmt.Errorf("detach static route %s from unexpected router %s: %w", routeUUID, routers[i].Name, err)
+		}
+		ops = append(ops, mutateOps...)
+	}
+	return ops, nil
 }
 
 func (w *LibOVSDBTopologyWriter) deleteStaticRoute(routerUUID string, route *ovnnb.LogicalRouterStaticRoute) ([]ovsdb.Operation, error) {

@@ -1923,6 +1923,76 @@ func TestLibOVSDBTopologyWriterKeepsReferencedDuplicateStaticRoute(t *testing.T)
 	})
 }
 
+func TestLibOVSDBTopologyWriterDetachesStaticRouteFromUnexpectedRouter(t *testing.T) {
+	ctx := context.Background()
+	client, closeFn := newTestOVNNBClient(t)
+	defer closeFn()
+
+	if _, err := client.MonitorAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	writer := NewLibOVSDBTopologyWriter(client)
+	if err := writer.EnsureVPC(ctx, model.VPC{Name: "prod"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureVPC(ctx, model.VPC{Name: "dev"}); err != nil {
+		t.Fatal(err)
+	}
+	table := model.RouteTable{
+		Name: "main",
+		VPC:  "prod",
+		Routes: []model.Route{{
+			Destination: netip.MustParsePrefix("10.40.0.0/24"),
+			NextHops:    []netip.Addr{netip.MustParseAddr("10.10.0.253")},
+		}},
+	}
+	if err := writer.EnsureRouteTable(ctx, table); err != nil {
+		t.Fatal(err)
+	}
+
+	var prodRouters []ovnnb.LogicalRouter
+	var devRouters []ovnnb.LogicalRouter
+	requireEventually(t, func() bool {
+		prodRouters = nil
+		if err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("prod") }).List(ctx, &prodRouters); err != nil || len(prodRouters) != 1 || len(prodRouters[0].StaticRoutes) != 1 {
+			return false
+		}
+		devRouters = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("dev") }).List(ctx, &devRouters)
+		return err == nil && len(devRouters) == 1
+	})
+	routeUUID := prodRouters[0].StaticRoutes[0]
+	attachOps, err := writer.attachStaticRoute(&devRouters[0], routeUUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := client.Transact(ctx, attachOps...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, attachOps); err != nil {
+		t.Fatalf("attach static route to unexpected router operation errors=%+v: %v", opErrors, err)
+	}
+	requireEventually(t, func() bool {
+		devRouters = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("dev") }).List(ctx, &devRouters)
+		return err == nil && len(devRouters) == 1 && len(devRouters[0].StaticRoutes) == 1
+	})
+
+	if err := writer.EnsureRouteTable(ctx, table); err != nil {
+		t.Fatal(err)
+	}
+	requireEventually(t, func() bool {
+		prodRouters = nil
+		if err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("prod") }).List(ctx, &prodRouters); err != nil || len(prodRouters) != 1 || len(prodRouters[0].StaticRoutes) != 1 || prodRouters[0].StaticRoutes[0] != routeUUID {
+			return false
+		}
+		devRouters = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("dev") }).List(ctx, &devRouters)
+		return err == nil && len(devRouters) == 1 && len(devRouters[0].StaticRoutes) == 0
+	})
+}
+
 func TestLibOVSDBTopologyWriterEnsuresStaticRouteBFD(t *testing.T) {
 	ctx := context.Background()
 	client, closeFn := newTestOVNNBClient(t)
