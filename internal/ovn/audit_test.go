@@ -646,6 +646,45 @@ func TestAuditManagedObjectsFromReaderReportsPolicyRouteActionExternalIDDrift(t 
 	}
 }
 
+func TestAuditManagedObjectsFromReaderReportsPolicyRouteStaleNextHopDrift(t *testing.T) {
+	route := model.PolicyRoute{
+		Name:     "drop-api",
+		VPC:      "prod",
+		Priority: 100,
+		Match: model.RouteMatch{
+			Destination: netip.MustParsePrefix("10.20.0.0/24"),
+		},
+		Action: model.RouteAction{Type: model.ActionDrop},
+	}
+	reader := fakeManagedOVNReader{rows: map[string][]ManagedOVNRow{
+		"Logical_Router_Policy": {
+			{Table: "Logical_Router_Policy", UUID: "policy-drop-api", ExternalIDs: map[string]string{
+				"netloom_owner":        "netloom",
+				"netloom_vpc":          "prod",
+				"netloom_policy_route": "drop-api",
+				"netloom_action":       "drop",
+			}, Fields: map[string]string{
+				"priority": "100",
+				"match":    policyRouteMatch(route.Match),
+				"action":   "drop",
+				"nexthop":  "10.10.0.253",
+			}},
+		},
+	}}
+	desired := topology.State{PolicyRoutes: []model.PolicyRoute{route}}
+
+	stats, err := AuditManagedObjectsFromReaderWithDesired(context.Background(), reader, desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.DriftedManagedRows != 1 || stats.DriftedManagedFields != 1 {
+		t.Fatalf("stats = %+v, want one stale policy route nexthop column drift", stats)
+	}
+	if got := stats.DriftedManagedFieldCounts["Logical_Router_Policy.nexthop"]; got != 1 {
+		t.Fatalf("field drift counts = %+v, want policy route nexthop drift", stats.DriftedManagedFieldCounts)
+	}
+}
+
 func TestAuditManagedObjectsFromReaderReportsLoadBalancerParentAttachmentDrift(t *testing.T) {
 	subnet := model.Subnet{
 		Name:    "apps",

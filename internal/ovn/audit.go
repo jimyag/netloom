@@ -1122,6 +1122,13 @@ func staleManagedColumnShouldDrift(table, key string) bool {
 		default:
 			return false
 		}
+	case "Logical_Router_Policy":
+		switch key {
+		case "nexthop", "nexthops":
+			return true
+		default:
+			return false
+		}
 	case "Logical_Switch_Port":
 		switch key {
 		case "type", "options", "tag", "enabled", "port_security", "ha_chassis_group", "dhcpv4_options", "dhcpv6_options":
