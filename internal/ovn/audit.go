@@ -171,6 +171,11 @@ func (e *NBCTLExecutor) ManagedOVNRows(ctx context.Context, table string) ([]Man
 			return nil, err
 		}
 	}
+	if table == "Logical_Router_Static_Route" {
+		if err := e.enrichNBCTLStaticRouteReferenceFields(ctx, rows); err != nil {
+			return nil, err
+		}
+	}
 	return rows, nil
 }
 
@@ -316,6 +321,61 @@ func (e *NBCTLExecutor) managedNBCTLDHCPOptionsRefs(ctx context.Context) (map[st
 		}
 		externalIDs := parseOVNMap(values[1])
 		ref := dhcpOptionsRef(externalIDs["netloom_dhcp_family"], trimOVNString(values[2]))
+		if ref != "" {
+			out[uuid] = ref
+		}
+	}
+	return out, nil
+}
+
+func (e *NBCTLExecutor) enrichNBCTLStaticRouteReferenceFields(ctx context.Context, rows []ManagedOVNRow) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	refs, err := e.managedNBCTLBFDRefs(ctx)
+	if err != nil {
+		return err
+	}
+	for i := range rows {
+		if rows[i].Fields == nil {
+			continue
+		}
+		rows[i].Fields["bfd"] = refs[rows[i].Fields["bfd"]]
+	}
+	return nil
+}
+
+func (e *NBCTLExecutor) managedNBCTLBFDRefs(ctx context.Context) (map[string]string, error) {
+	args := append([]string(nil), e.BaseArgs...)
+	args = append(args,
+		"--format=csv",
+		"--data=bare",
+		"--no-headings",
+		"--columns=_uuid,external_ids",
+		"find",
+		"BFD",
+		"external_ids:netloom_owner=netloom",
+	)
+	output, err := e.outputCommand(ctx, args)
+	if err != nil {
+		return nil, fmt.Errorf("audit managed BFD references: %w", err)
+	}
+	out := make(map[string]string)
+	for _, row := range splitAuditRows(string(output)) {
+		values, ok := parseAuditCSVRow(row)
+		if !ok || len(values) < 2 {
+			continue
+		}
+		uuid := trimOVNString(values[0])
+		if uuid == "" {
+			continue
+		}
+		externalIDs := parseOVNMap(values[1])
+		ref := staticRouteBFDRef(
+			externalIDs["netloom_vpc"],
+			externalIDs["netloom_route_table"],
+			externalIDs["netloom_route_key"],
+		)
 		if ref != "" {
 			out[uuid] = ref
 		}

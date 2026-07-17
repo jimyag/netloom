@@ -234,6 +234,76 @@ esac
 	}
 }
 
+func TestNBCTLExecutorManagedOVNRowsResolvesStaticRouteBFD(t *testing.T) {
+	tmp := t.TempDir()
+	logPath := filepath.Join(tmp, "args.log")
+	binary := filepath.Join(tmp, "ovn-nbctl")
+	routeKey := staticRouteKey("10.20.0.0/24", "10.10.0.253")
+	bfdRef := staticRouteBFDRef("prod", "main", routeKey)
+	script := `#!/bin/sh
+printf '%s\n' "$*" >> "` + logPath + `"
+case "$*" in
+  *"--columns=_uuid,external_ids,bfd,ip_prefix,nexthop,options,output_port,policy,route_table,selection_fields find Logical_Router_Static_Route external_ids:netloom_owner=netloom"*) printf 'route-main,"{netloom_owner=netloom,netloom_vpc=prod,netloom_route_table=main,netloom_route_key=` + routeKey + `}",bfd-main,10.20.0.0/24,10.10.0.253,{},[],dst-ip,main,[]\n' ;;
+  *"--columns=_uuid,external_ids find BFD external_ids:netloom_owner=netloom"*) printf 'bfd-main,"{netloom_owner=netloom,netloom_vpc=prod,netloom_route_table=main,netloom_route_key=` + routeKey + `,netloom_route_bfd=` + bfdRef + `}"\n' ;;
+esac
+`
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	executor := NewNBCTLExecutor(binary, "--db=unix:/tmp/ovnnb.sock")
+	rows, err := executor.ManagedOVNRows(context.Background(), "Logical_Router_Static_Route")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(rows))
+	}
+	if rows[0].Fields["bfd"] != bfdRef {
+		t.Fatalf("row fields = %+v, want BFD UUID resolved to %q", rows[0].Fields, bfdRef)
+	}
+	logData, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logged := string(logData)
+	for _, expected := range []string{
+		"--columns=_uuid,external_ids,bfd,ip_prefix,nexthop,options,output_port,policy,route_table,selection_fields",
+		"--columns=_uuid,external_ids find BFD",
+	} {
+		if !strings.Contains(logged, expected) {
+			t.Fatalf("audit command log missing %q:\n%s", expected, logged)
+		}
+	}
+}
+
+func TestNBCTLExecutorManagedOVNRowsReportsMissingStaticRouteBFD(t *testing.T) {
+	tmp := t.TempDir()
+	binary := filepath.Join(tmp, "ovn-nbctl")
+	routeKey := staticRouteKey("10.20.0.0/24", "10.10.0.253")
+	script := `#!/bin/sh
+case "$*" in
+  *"find Logical_Router_Static_Route external_ids:netloom_owner=netloom"*) printf 'route-main,"{netloom_owner=netloom,netloom_vpc=prod,netloom_route_table=main,netloom_route_key=` + routeKey + `}",[],10.20.0.0/24,10.10.0.253,{},[],dst-ip,main,[]\n' ;;
+  *"find BFD external_ids:netloom_owner=netloom"*) ;;
+esac
+`
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	executor := NewNBCTLExecutor(binary, "--db=unix:/tmp/ovnnb.sock")
+	rows, err := executor.ManagedOVNRows(context.Background(), "Logical_Router_Static_Route")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(rows))
+	}
+	if value, ok := rows[0].Fields["bfd"]; !ok || value != "" {
+		t.Fatalf("row fields = %+v, want explicit empty BFD attachment", rows[0].Fields)
+	}
+}
+
 func TestNBCTLExecutorManagedOVNRowsReportsMissingSwitchPortDHCPOptions(t *testing.T) {
 	tmp := t.TempDir()
 	binary := filepath.Join(tmp, "ovn-nbctl")
