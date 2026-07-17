@@ -40,6 +40,7 @@ const (
 	policyActionHistoryKey  = "netloom_policy_endpoint_action_history"
 	policyFreezeStateKey    = "netloom_policy_freeze_state"
 	agentOVSDBStatusKey     = "netloom_agent_status"
+	identityGroupsStateKey  = "netloom_identity_groups"
 )
 
 func main() {
@@ -92,6 +93,11 @@ func main() {
 			return
 		case "identity-groups-import":
 			if err := runIdentityGroupsImport(context.Background(), os.Args[2:], os.Stdin, os.Stdout); err != nil {
+				log.Fatal(err)
+			}
+			return
+		case "identity-groups-export":
+			if err := runIdentityGroupsExport(context.Background(), os.Args[2:], os.Stdout); err != nil {
 				log.Fatal(err)
 			}
 			return
@@ -204,6 +210,11 @@ type routeExplainOptions struct {
 type identityGroupsImportOptions struct {
 	inputFile string
 	ovsdb     string
+}
+
+type identityGroupsExportOptions struct {
+	ovsdb  string
+	source string
 }
 
 type desiredStateImportOptions struct {
@@ -988,6 +999,61 @@ func runIdentityGroupsImportWithStore(ctx context.Context, opts identityGroupsIm
 	}
 	_, err = fmt.Fprintf(stdout, "identity_groups=%d external_id=%s\n", len(groups), control.IdentityGroupObservationsOpenVSwitchExternalID)
 	return err
+}
+
+func runIdentityGroupsExport(ctx context.Context, args []string, stdout io.Writer) error {
+	var opts identityGroupsExportOptions
+	flags := flag.NewFlagSet("netloom-agent identity-groups-export", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	flags.StringVar(&opts.ovsdb, "ovsdb", os.Getenv("NETLOOM_OVSDB_ENDPOINT"), "Open_vSwitch OVSDB endpoint")
+	flags.StringVar(&opts.source, "source", "resolved", "identity group source: resolved or observations")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(opts.ovsdb) == "" {
+		return errors.New("missing -ovsdb or NETLOOM_OVSDB_ENDPOINT")
+	}
+	client, closeStore, err := newOpenVSwitchClient(ctx, opts.ovsdb)
+	if err != nil {
+		return err
+	}
+	defer closeStore()
+	return runIdentityGroupsExportWithStore(ctx, opts, stdout, linuxdatapath.NewLibOVSDBProviderSyncer(client))
+}
+
+func runIdentityGroupsExportWithStore(ctx context.Context, opts identityGroupsExportOptions, stdout io.Writer, store openVSwitchExternalIDStore) error {
+	if store == nil {
+		return errors.New("missing Open_vSwitch external_id store")
+	}
+	key, err := identityGroupsExportExternalID(opts.source)
+	if err != nil {
+		return err
+	}
+	raw, ok, err := store.OpenVSwitchExternalID(ctx, key)
+	if err != nil {
+		return err
+	}
+	if !ok || strings.TrimSpace(raw) == "" {
+		return fmt.Errorf("missing Open_vSwitch external_ids:%s", key)
+	}
+	var document any
+	if err := json.Unmarshal([]byte(raw), &document); err != nil {
+		return fmt.Errorf("decode Open_vSwitch external_ids:%s: %w", key, err)
+	}
+	encoder := json.NewEncoder(stdout)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(document)
+}
+
+func identityGroupsExportExternalID(source string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(source)) {
+	case "", "resolved":
+		return identityGroupsStateKey, nil
+	case "observations", "observed":
+		return control.IdentityGroupObservationsOpenVSwitchExternalID, nil
+	default:
+		return "", fmt.Errorf("unsupported identity groups source %q", source)
+	}
 }
 
 func runDesiredStateImport(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) error {

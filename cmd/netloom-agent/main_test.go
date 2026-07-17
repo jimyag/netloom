@@ -376,6 +376,73 @@ func TestRunIdentityGroupsImportWritesRealOpenVSwitchOVSDB(t *testing.T) {
 	}
 }
 
+func TestRunIdentityGroupsExportWithStoreReadsResolvedOpenVSwitchExternalID(t *testing.T) {
+	store := &fakeOpenVSwitchExternalIDStore{values: map[string]string{
+		identityGroupsStateKey: `{"version":1,"groups":[{"vpc":"prod","name":"frontend","resolved_endpoints":[{"id":"pod-a","ip":"10.10.0.10"}]}]}`,
+	}}
+	var stdout bytes.Buffer
+	if err := runIdentityGroupsExportWithStore(t.Context(), identityGroupsExportOptions{}, &stdout, store); err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Version int `json:"version"`
+		Groups  []struct {
+			VPC               string `json:"vpc"`
+			Name              string `json:"name"`
+			ResolvedEndpoints []struct {
+				ID string `json:"id"`
+				IP string `json:"ip"`
+			} `json:"resolved_endpoints"`
+		} `json:"groups"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.Version != 1 || len(doc.Groups) != 1 || doc.Groups[0].Name != "frontend" || doc.Groups[0].ResolvedEndpoints[0].ID != "pod-a" {
+		t.Fatalf("exported identity groups = %+v, want resolved frontend/pod-a", doc)
+	}
+}
+
+func TestRunIdentityGroupsExportWithStoreReadsObservationSource(t *testing.T) {
+	store := &fakeOpenVSwitchExternalIDStore{values: map[string]string{
+		control.IdentityGroupObservationsOpenVSwitchExternalID: `{"identity_groups":[{"name":"frontend","vpc":"prod","source":"cmdb","endpoint_ids":["pod-a"]}]}`,
+	}}
+	var stdout bytes.Buffer
+	if err := runIdentityGroupsExportWithStore(t.Context(), identityGroupsExportOptions{source: "observations"}, &stdout, store); err != nil {
+		t.Fatal(err)
+	}
+	groups, err := control.LoadIdentityGroupObservationsJSON(strings.NewReader(stdout.String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(groups) != 1 || groups[0].Name != "frontend" || groups[0].Source != "cmdb" {
+		t.Fatalf("exported observations = %+v, want frontend cmdb group", groups)
+	}
+}
+
+func TestRunIdentityGroupsExportReadsRealOpenVSwitchOVSDB(t *testing.T) {
+	endpoint, client, cleanup := newTestAgentVSwitchOVSDB(t)
+	defer cleanup()
+	insertAgentVSwitchRows(t, t.Context(), client, &vswitch.OpenvSwitch{ExternalIDs: map[string]string{
+		identityGroupsStateKey: `{"version":1,"groups":[{"vpc":"prod","name":"frontend","resolved_endpoints":[{"id":"pod-a","ip":"10.10.0.10"}]}]}`,
+	}})
+	var stdout bytes.Buffer
+	if err := runIdentityGroupsExport(t.Context(), []string{"-ovsdb", endpoint}, &stdout); err != nil {
+		t.Fatal(err)
+	}
+	if got := stdout.String(); !strings.Contains(got, `"name": "frontend"`) || !strings.Contains(got, `"id": "pod-a"`) {
+		t.Fatalf("stdout = %s, want resolved frontend identity group", got)
+	}
+}
+
+func TestRunIdentityGroupsExportWithStoreRejectsUnknownSource(t *testing.T) {
+	var stdout bytes.Buffer
+	err := runIdentityGroupsExportWithStore(t.Context(), identityGroupsExportOptions{source: "bad"}, &stdout, &fakeOpenVSwitchExternalIDStore{})
+	if err == nil || !strings.Contains(err.Error(), "unsupported identity groups source") {
+		t.Fatalf("err = %v, want unsupported source", err)
+	}
+}
+
 func TestRunDesiredStateImportWithStoreWritesOpenVSwitchExternalID(t *testing.T) {
 	store := &fakeOpenVSwitchExternalIDStore{}
 	var stdout bytes.Buffer

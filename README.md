@@ -109,6 +109,7 @@ Inspect policy state, policy-map entries, and routing decisions:
 ```bash
 ./netloom-controller controller-status -ovsdb unix:/var/run/openvswitch/db.sock
 ./netloom-agent agent-status -ovsdb unix:/var/run/openvswitch/db.sock
+./netloom-agent identity-groups-export -ovsdb unix:/var/run/openvswitch/db.sock
 ./netloom-agent policy-status -state /etc/netloom/state.json -node node-a
 ./netloom-agent policy-entries -state /etc/netloom/state.json -node node-a -endpoint prod/vm-a
 ./netloom-agent policy-action-history \
@@ -147,6 +148,15 @@ Desired state can also be stored in the local Open_vSwitch database:
 ```bash
 ./netloom-agent desired-state-import -ovsdb unix:/var/run/openvswitch/db.sock < /etc/netloom/state.json
 ./netloom-agent desired-state-export -ovsdb unix:/var/run/openvswitch/db.sock
+```
+
+Identity group observations and resolved endpoint membership are also stored in
+Open_vSwitch `external_ids` when OVSDB sync is enabled:
+
+```bash
+./netloom-agent identity-groups-import -ovsdb unix:/var/run/openvswitch/db.sock < /etc/netloom/identity-groups.json
+./netloom-agent identity-groups-export -ovsdb unix:/var/run/openvswitch/db.sock
+./netloom-agent identity-groups-export -ovsdb unix:/var/run/openvswitch/db.sock -source observations
 ```
 
 ## Documentation
