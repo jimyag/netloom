@@ -73,8 +73,8 @@ func TestReconcileNodeAggregatesPolicyMapPressureSummary(t *testing.T) {
 		t.Fatalf("policy map pressure endpoints = %d, want 0", result.PolicyMapPressureEndpoints)
 	}
 	wantHotspots := []dataplane.PolicyMapPressureHotspot{
-		{EndpointID: model.EndpointKey("prod", "pod-a"), Entries: 12, Capacity: 16, PressurePercent: 75},
-		{EndpointID: model.EndpointKey("prod", "pod-b"), Entries: 8, Capacity: 16, PressurePercent: 50},
+		{EndpointID: model.EndpointKey("prod", "pod-a"), Entries: 12, Capacity: 16, PressurePercent: 75, Severity: dataplane.PolicyMapPressureNormal},
+		{EndpointID: model.EndpointKey("prod", "pod-b"), Entries: 8, Capacity: 16, PressurePercent: 50, Severity: dataplane.PolicyMapPressureNormal},
 	}
 	if !reflect.DeepEqual(result.PolicyMapPressureHotspots, wantHotspots) {
 		t.Fatalf("policy map pressure hotspots = %+v, want %+v", result.PolicyMapPressureHotspots, wantHotspots)

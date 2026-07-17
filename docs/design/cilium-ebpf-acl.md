@@ -400,8 +400,8 @@ counters during drift checks so reconcile does not rewrite a healthy map merely
 because datapath counters changed. The same live-vs-desired comparison is
 available as policy-map drift telemetry with missing, extra, and changed entry
 counts. The policy store also exposes endpoint-scoped lifecycle status that
-combines revision, map usage, pressure, drift, last update stats, and the last
-update event; `netloom-agent policy-status` and the long-running
+combines revision, map usage, pressure percent, pressure severity, drift, last
+update stats, and the last update event; `netloom-agent policy-status` and the long-running
 `/policy/endpoints` HTTP API both report that Cilium-style endpoint policy view
 without scraping reconcile logs. The endpoint API also exposes explicit reset,
 dry-run plan, regenerate, quarantine, unquarantine, and multi-endpoint rollout

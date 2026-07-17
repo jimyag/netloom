@@ -68,6 +68,7 @@ type PolicyMapPressureHotspot struct {
 	Entries         uint32 `json:"entries"`
 	Capacity        uint32 `json:"capacity"`
 	PressurePercent uint32 `json:"pressure_percent"`
+	Severity        string `json:"severity"`
 }
 
 type PolicyMapUsageSummary struct {
@@ -75,12 +76,21 @@ type PolicyMapUsageSummary struct {
 	Capacity            uint32                     `json:"capacity"`
 	MaxPressurePercent  uint32                     `json:"max_pressure_percent"`
 	MaxPressureEndpoint string                     `json:"max_pressure_endpoint,omitempty"`
+	MaxPressureSeverity string                     `json:"max_pressure_severity"`
 	PressureEndpoints   int                        `json:"pressure_endpoints"`
 	PressureHotspots    []PolicyMapPressureHotspot `json:"pressure_hotspots,omitempty"`
 }
 
 const DefaultPolicyMapPressureThresholdPercent = 80
 const DefaultPolicyMapPressureHotspotLimit = 5
+
+const (
+	PolicyMapPressureUnknown  = "unknown"
+	PolicyMapPressureNormal   = "normal"
+	PolicyMapPressureWarning  = "warning"
+	PolicyMapPressureCritical = "critical"
+	PolicyMapPressureFull     = "full"
+)
 
 type PolicyMapDrift struct {
 	EndpointID string `json:"endpoint_id"`
@@ -130,15 +140,16 @@ type PolicyUpdateEvent struct {
 }
 
 type PolicyEndpointStatus struct {
-	EndpointID      string            `json:"endpoint_id"`
-	Revision        uint64            `json:"revision"`
-	Entries         uint32            `json:"entries"`
-	Capacity        uint32            `json:"capacity"`
-	PressurePercent uint32            `json:"pressure_percent"`
-	Drift           PolicyMapDrift    `json:"drift"`
-	LastStats       PolicyUpdateStats `json:"last_stats"`
-	LastEvent       PolicyUpdateEvent `json:"last_event"`
-	HasLastEvent    bool              `json:"has_last_event"`
+	EndpointID       string            `json:"endpoint_id"`
+	Revision         uint64            `json:"revision"`
+	Entries          uint32            `json:"entries"`
+	Capacity         uint32            `json:"capacity"`
+	PressurePercent  uint32            `json:"pressure_percent"`
+	PressureSeverity string            `json:"pressure_severity"`
+	Drift            PolicyMapDrift    `json:"drift"`
+	LastStats        PolicyUpdateStats `json:"last_stats"`
+	LastEvent        PolicyUpdateEvent `json:"last_event"`
+	HasLastEvent     bool              `json:"has_last_event"`
 }
 
 type PolicyUpdatePlan struct {
@@ -416,12 +427,13 @@ func (s *InMemoryPolicyStore) PolicyEndpointStatuses(_ context.Context) ([]Polic
 	for _, endpointID := range endpointIDs {
 		entries := s.endpoints[endpointID]
 		status := PolicyEndpointStatus{
-			EndpointID:      endpointID,
-			Revision:        s.revisions[endpointID],
-			Entries:         uint32(len(entries)),
-			Drift:           DiffPolicyMapEntries(endpointID, entries, entries),
-			LastStats:       s.lastStats[endpointID],
-			PressurePercent: policyMapPressurePercent(PolicyMapUsage{EndpointID: endpointID, Entries: uint32(len(entries))}),
+			EndpointID:       endpointID,
+			Revision:         s.revisions[endpointID],
+			Entries:          uint32(len(entries)),
+			Drift:            DiffPolicyMapEntries(endpointID, entries, entries),
+			LastStats:        s.lastStats[endpointID],
+			PressurePercent:  policyMapPressurePercent(PolicyMapUsage{EndpointID: endpointID, Entries: uint32(len(entries))}),
+			PressureSeverity: PolicyMapPressureSeverity(PolicyMapUsage{EndpointID: endpointID, Entries: uint32(len(entries))}),
 		}
 		if event, ok := lastPolicyUpdateEvent(s.events, endpointID); ok {
 			status.LastEvent = event
@@ -585,25 +597,32 @@ func stableCookie(value string) uint32 {
 
 func SummarizePolicyMapUsage(usages []PolicyMapUsage) PolicyMapUsageSummary {
 	var summary PolicyMapUsageSummary
+	summary.MaxPressureSeverity = PolicyMapPressureUnknown
 	for _, usage := range usages {
 		summary.Entries += usage.Entries
 		summary.Capacity += usage.Capacity
 		pressure := policyMapPressurePercent(usage)
+		severity := PolicyMapPressureSeverity(usage)
 		if pressure > 0 {
 			summary.PressureHotspots = append(summary.PressureHotspots, PolicyMapPressureHotspot{
 				EndpointID:      usage.EndpointID,
 				Entries:         usage.Entries,
 				Capacity:        usage.Capacity,
 				PressurePercent: pressure,
+				Severity:        severity,
 			})
 		}
 		if pressure > summary.MaxPressurePercent || pressure == summary.MaxPressurePercent && pressure > 0 && (summary.MaxPressureEndpoint == "" || usage.EndpointID < summary.MaxPressureEndpoint) {
 			summary.MaxPressurePercent = pressure
 			summary.MaxPressureEndpoint = usage.EndpointID
+			summary.MaxPressureSeverity = severity
 		}
 		if pressure >= DefaultPolicyMapPressureThresholdPercent {
 			summary.PressureEndpoints++
 		}
+	}
+	if summary.MaxPressureEndpoint == "" && summary.Capacity > 0 {
+		summary.MaxPressureSeverity = PolicyMapPressureNormal
 	}
 	sortPolicyMapPressureHotspots(summary.PressureHotspots)
 	if len(summary.PressureHotspots) > DefaultPolicyMapPressureHotspotLimit {
@@ -685,6 +704,23 @@ func policyMapPressurePercent(usage PolicyMapUsage) uint32 {
 		return 100
 	}
 	return uint32((uint64(usage.Entries) * 100) / uint64(usage.Capacity))
+}
+
+func PolicyMapPressureSeverity(usage PolicyMapUsage) string {
+	pressure := policyMapPressurePercent(usage)
+	if usage.Capacity == 0 {
+		return PolicyMapPressureUnknown
+	}
+	switch {
+	case pressure >= 100:
+		return PolicyMapPressureFull
+	case pressure >= 90:
+		return PolicyMapPressureCritical
+	case pressure >= DefaultPolicyMapPressureThresholdPercent:
+		return PolicyMapPressureWarning
+	default:
+		return PolicyMapPressureNormal
+	}
 }
 
 func canonicalPolicyMapEntries(entries []PolicyMapEntry) ([]PolicyMapEntry, error) {

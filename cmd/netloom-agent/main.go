@@ -321,6 +321,7 @@ type policyStatusOutput struct {
 	PolicyMapCapacity    uint32                           `json:"policy_map_capacity"`
 	PressureMax          uint32                           `json:"pressure_max"`
 	PressureEndpoint     string                           `json:"pressure_endpoint,omitempty"`
+	PressureSeverity     string                           `json:"pressure_severity"`
 	PressureEndpoints    int                              `json:"pressure_endpoints"`
 	PressureHotspots     []policyMapPressureHotspot       `json:"pressure_hotspots,omitempty"`
 	DriftEndpoints       int                              `json:"drift_endpoints"`
@@ -344,6 +345,7 @@ type policyStatusDocument struct {
 	PolicyMapCapacity    uint32                           `json:"policy_map_capacity"`
 	PressureMax          uint32                           `json:"pressure_max"`
 	PressureEndpoint     string                           `json:"pressure_endpoint,omitempty"`
+	PressureSeverity     string                           `json:"pressure_severity"`
 	PressureEndpoints    int                              `json:"pressure_endpoints"`
 	PressureHotspots     []policyMapPressureHotspot       `json:"pressure_hotspots,omitempty"`
 	DriftEndpoints       int                              `json:"drift_endpoints"`
@@ -1814,6 +1816,7 @@ func policyStatusOutputFromResult(result agent.ReconcileResult, storeName string
 		PolicyMapCapacity: result.PolicyMapCapacity,
 		PressureMax:       result.PolicyMapPressureMax,
 		PressureEndpoint:  result.PolicyMapPressureEndpoint,
+		PressureSeverity:  result.PolicyMapPressureSeverity,
 		PressureEndpoints: result.PolicyMapPressureEndpoints,
 		PressureHotspots:  append([]dataplane.PolicyMapPressureHotspot(nil), result.PolicyMapPressureHotspots...),
 		DriftEndpoints:    result.PolicyMapDriftEndpoints,
@@ -1840,6 +1843,7 @@ func policyStatusOutputFromDocument(doc policyStatusDocument, endpoint string) p
 		PolicyMapCapacity:    doc.PolicyMapCapacity,
 		PressureMax:          doc.PressureMax,
 		PressureEndpoint:     doc.PressureEndpoint,
+		PressureSeverity:     doc.PressureSeverity,
 		PressureEndpoints:    doc.PressureEndpoints,
 		PressureHotspots:     append([]dataplane.PolicyMapPressureHotspot(nil), doc.PressureHotspots...),
 		DriftEndpoints:       doc.DriftEndpoints,
@@ -1864,6 +1868,7 @@ func policyStatusDocumentFromSnapshot(snapshot agentMetricsSnapshot) policyStatu
 		PolicyMapCapacity:    snapshot.Result.PolicyMapCapacity,
 		PressureMax:          snapshot.Result.PolicyMapPressureMax,
 		PressureEndpoint:     snapshot.Result.PolicyMapPressureEndpoint,
+		PressureSeverity:     snapshot.Result.PolicyMapPressureSeverity,
 		PressureEndpoints:    snapshot.Result.PolicyMapPressureEndpoints,
 		PressureHotspots:     append([]dataplane.PolicyMapPressureHotspot(nil), snapshot.Result.PolicyMapPressureHotspots...),
 		DriftEndpoints:       snapshot.Result.PolicyMapDriftEndpoints,
@@ -3255,11 +3260,11 @@ func identityGroupFeedBackoffDuration(env string, fallback time.Duration) time.D
 }
 
 func printReconcileResult(result agent.ReconcileResult, storeName string, duration time.Duration) {
-	fmt.Printf("netloom-agent reconciled node policy node=%s store=%s endpoints=%d programs=%d entries=%d policy_map_entries=%d policy_map_capacity=%d policy_map_pressure_max=%d policy_map_pressure_endpoint=%s policy_map_pressure_endpoints=%d policy_pressure_mitigated=%d policy_pressure_quarantined=%d policy_pressure_quarantine_endpoint=%s policy_rollouts=%d policy_rollout_planned=%d policy_rollout_applied=%d policy_rollout_skipped=%d policy_rollout_failed=%d policy_rollout_rolled_back=%d policy_rollout_rollback_failed=%d policy_rollout_slo_failed=%d policy_rollout_probe_failed=%d policy_rollout_paused=%d policy_rollout_cancelled=%d policy_map_drift_endpoints=%d policy_map_drift_missing=%d policy_map_drift_extra=%d policy_map_drift_changed=%d policy_gc_endpoints=%d policy_added=%d policy_updated=%d policy_deleted=%d policy_unchanged=%d policy_events=%d policy_failed=%d policy_rollbacks=%d policy_failed_endpoint=%s policy_failed_revision=%d policy_revision_max=%d policy_last_error=%s policy_rule_packets=%d policy_rule_bytes=%d policy_rule_allowed=%d policy_rule_dropped=%d policy_rule_rejected=%d policy_rule_logged=%d policy_rule_stats=%s conntrack_expired=%d tcx_eligible=%d tcx_skipped=%d tcx=%s tcx_failed=%d tcx_rollbacks=%d tcx_failed_target=%s tcx_last_error=%s datapath=%s local_ips=%d remote_routes=%d policy_routes=%d provider_networks=%d provider_links=%d provider_ready=%d provider_degraded=%d provider_status=%s provider_network_status=%s provider_issues=%s provider_inventory_total=%d provider_inventory_ready=%d provider_inventory_degraded=%d provider_inventory_status=%s cleanup=%t reconcile_duration_ms=%d\n", result.Node, storeName, result.Endpoints, result.Programs, result.Entries, result.PolicyMapEntries, result.PolicyMapCapacity, result.PolicyMapPressureMax, formatResultValue(result.PolicyMapPressureEndpoint), result.PolicyMapPressureEndpoints, result.PolicyPressureMitigated, result.PolicyPressureQuarantined, formatResultValue(result.PolicyPressureQuarantineEndpoint), result.PolicyRollouts, result.PolicyRolloutPlanned, result.PolicyRolloutApplied, result.PolicyRolloutSkipped, result.PolicyRolloutFailed, result.PolicyRolloutRolledBack, result.PolicyRolloutRollbackFailed, result.PolicyRolloutSLOFailed, result.PolicyRolloutProbeFailed, result.PolicyRolloutPaused, result.PolicyRolloutCancelled, result.PolicyMapDriftEndpoints, result.PolicyMapDriftMissing, result.PolicyMapDriftExtra, result.PolicyMapDriftChanged, result.PolicyGCEndpoints, result.PolicyAdded, result.PolicyUpdated, result.PolicyDeleted, result.PolicyUnchanged, result.PolicyEvents, result.PolicyFailed, result.PolicyRollbacks, formatResultValue(result.PolicyFailedEndpoint), result.PolicyFailedRevision, result.PolicyRevisionMax, formatResultError(result.PolicyLastError), result.PolicyRulePackets, result.PolicyRuleBytes, result.PolicyRuleAllowed, result.PolicyRuleDropped, result.PolicyRuleRejected, result.PolicyRuleLogged, formatEndpointRuleStats(result.PolicyRuleStats), result.ConntrackExpired, result.TCXEligible, result.TCXSkipped, result.TCX, result.TCXFailed, result.TCXRollbacks, formatResultValue(result.TCXFailedTarget), formatResultError(result.TCXLastError), result.Datapath, result.LocalIPs, result.RemoteRoutes, result.PolicyRoutes, result.ProviderNetworks, result.ProviderLinks, result.ProviderReady, result.ProviderDegraded, formatProviderStatus(result.ProviderStatus), formatProviderNetworkStatus(result.ProviderNetworkStatus), formatProviderIssues(result.ProviderIssues), result.ProviderInventoryTotal, result.ProviderInventoryReady, result.ProviderInventoryDegraded, formatProviderInventoryStatus(result.ProviderInventoryStatus), result.Cleanup, duration.Milliseconds())
+	fmt.Printf("netloom-agent reconciled node policy node=%s store=%s endpoints=%d programs=%d entries=%d policy_map_entries=%d policy_map_capacity=%d policy_map_pressure_max=%d policy_map_pressure_endpoint=%s policy_map_pressure_severity=%s policy_map_pressure_endpoints=%d policy_pressure_mitigated=%d policy_pressure_quarantined=%d policy_pressure_quarantine_endpoint=%s policy_rollouts=%d policy_rollout_planned=%d policy_rollout_applied=%d policy_rollout_skipped=%d policy_rollout_failed=%d policy_rollout_rolled_back=%d policy_rollout_rollback_failed=%d policy_rollout_slo_failed=%d policy_rollout_probe_failed=%d policy_rollout_paused=%d policy_rollout_cancelled=%d policy_map_drift_endpoints=%d policy_map_drift_missing=%d policy_map_drift_extra=%d policy_map_drift_changed=%d policy_gc_endpoints=%d policy_added=%d policy_updated=%d policy_deleted=%d policy_unchanged=%d policy_events=%d policy_failed=%d policy_rollbacks=%d policy_failed_endpoint=%s policy_failed_revision=%d policy_revision_max=%d policy_last_error=%s policy_rule_packets=%d policy_rule_bytes=%d policy_rule_allowed=%d policy_rule_dropped=%d policy_rule_rejected=%d policy_rule_logged=%d policy_rule_stats=%s conntrack_expired=%d tcx_eligible=%d tcx_skipped=%d tcx=%s tcx_failed=%d tcx_rollbacks=%d tcx_failed_target=%s tcx_last_error=%s datapath=%s local_ips=%d remote_routes=%d policy_routes=%d provider_networks=%d provider_links=%d provider_ready=%d provider_degraded=%d provider_status=%s provider_network_status=%s provider_issues=%s provider_inventory_total=%d provider_inventory_ready=%d provider_inventory_degraded=%d provider_inventory_status=%s cleanup=%t reconcile_duration_ms=%d\n", result.Node, storeName, result.Endpoints, result.Programs, result.Entries, result.PolicyMapEntries, result.PolicyMapCapacity, result.PolicyMapPressureMax, formatResultValue(result.PolicyMapPressureEndpoint), formatResultValue(result.PolicyMapPressureSeverity), result.PolicyMapPressureEndpoints, result.PolicyPressureMitigated, result.PolicyPressureQuarantined, formatResultValue(result.PolicyPressureQuarantineEndpoint), result.PolicyRollouts, result.PolicyRolloutPlanned, result.PolicyRolloutApplied, result.PolicyRolloutSkipped, result.PolicyRolloutFailed, result.PolicyRolloutRolledBack, result.PolicyRolloutRollbackFailed, result.PolicyRolloutSLOFailed, result.PolicyRolloutProbeFailed, result.PolicyRolloutPaused, result.PolicyRolloutCancelled, result.PolicyMapDriftEndpoints, result.PolicyMapDriftMissing, result.PolicyMapDriftExtra, result.PolicyMapDriftChanged, result.PolicyGCEndpoints, result.PolicyAdded, result.PolicyUpdated, result.PolicyDeleted, result.PolicyUnchanged, result.PolicyEvents, result.PolicyFailed, result.PolicyRollbacks, formatResultValue(result.PolicyFailedEndpoint), result.PolicyFailedRevision, result.PolicyRevisionMax, formatResultError(result.PolicyLastError), result.PolicyRulePackets, result.PolicyRuleBytes, result.PolicyRuleAllowed, result.PolicyRuleDropped, result.PolicyRuleRejected, result.PolicyRuleLogged, formatEndpointRuleStats(result.PolicyRuleStats), result.ConntrackExpired, result.TCXEligible, result.TCXSkipped, result.TCX, result.TCXFailed, result.TCXRollbacks, formatResultValue(result.TCXFailedTarget), formatResultError(result.TCXLastError), result.Datapath, result.LocalIPs, result.RemoteRoutes, result.PolicyRoutes, result.ProviderNetworks, result.ProviderLinks, result.ProviderReady, result.ProviderDegraded, formatProviderStatus(result.ProviderStatus), formatProviderNetworkStatus(result.ProviderNetworkStatus), formatProviderIssues(result.ProviderIssues), result.ProviderInventoryTotal, result.ProviderInventoryReady, result.ProviderInventoryDegraded, formatProviderInventoryStatus(result.ProviderInventoryStatus), result.Cleanup, duration.Milliseconds())
 }
 
 func printReconcileFailure(result agent.ReconcileResult, storeName string, err error, duration time.Duration) {
-	fmt.Printf("netloom-agent reconcile failed node=%s store=%s endpoints=%d programs=%d entries=%d policy_map_entries=%d policy_map_capacity=%d policy_map_pressure_max=%d policy_map_pressure_endpoint=%s policy_map_pressure_endpoints=%d policy_pressure_mitigated=%d policy_pressure_quarantined=%d policy_pressure_quarantine_endpoint=%s policy_rollouts=%d policy_rollout_planned=%d policy_rollout_applied=%d policy_rollout_skipped=%d policy_rollout_failed=%d policy_rollout_rolled_back=%d policy_rollout_rollback_failed=%d policy_rollout_slo_failed=%d policy_rollout_probe_failed=%d policy_rollout_paused=%d policy_rollout_cancelled=%d policy_map_drift_endpoints=%d policy_map_drift_missing=%d policy_map_drift_extra=%d policy_map_drift_changed=%d policy_gc_endpoints=%d policy_added=%d policy_updated=%d policy_deleted=%d policy_unchanged=%d policy_events=%d policy_failed=%d policy_rollbacks=%d policy_failed_endpoint=%s policy_failed_revision=%d policy_revision_max=%d policy_last_error=%s policy_rule_packets=%d policy_rule_bytes=%d policy_rule_allowed=%d policy_rule_dropped=%d policy_rule_rejected=%d policy_rule_logged=%d policy_rule_stats=%s tcx_eligible=%d tcx_skipped=%d tcx=%s tcx_failed=%d tcx_rollbacks=%d tcx_failed_target=%s tcx_last_error=%s provider_networks=%d provider_links=%d provider_ready=%d provider_degraded=%d provider_status=%s provider_network_status=%s provider_issues=%s provider_inventory_total=%d provider_inventory_ready=%d provider_inventory_degraded=%d provider_inventory_status=%s err=%s reconcile_duration_ms=%d\n", result.Node, storeName, result.Endpoints, result.Programs, result.Entries, result.PolicyMapEntries, result.PolicyMapCapacity, result.PolicyMapPressureMax, formatResultValue(result.PolicyMapPressureEndpoint), result.PolicyMapPressureEndpoints, result.PolicyPressureMitigated, result.PolicyPressureQuarantined, formatResultValue(result.PolicyPressureQuarantineEndpoint), result.PolicyRollouts, result.PolicyRolloutPlanned, result.PolicyRolloutApplied, result.PolicyRolloutSkipped, result.PolicyRolloutFailed, result.PolicyRolloutRolledBack, result.PolicyRolloutRollbackFailed, result.PolicyRolloutSLOFailed, result.PolicyRolloutProbeFailed, result.PolicyRolloutPaused, result.PolicyRolloutCancelled, result.PolicyMapDriftEndpoints, result.PolicyMapDriftMissing, result.PolicyMapDriftExtra, result.PolicyMapDriftChanged, result.PolicyGCEndpoints, result.PolicyAdded, result.PolicyUpdated, result.PolicyDeleted, result.PolicyUnchanged, result.PolicyEvents, result.PolicyFailed, result.PolicyRollbacks, formatResultValue(result.PolicyFailedEndpoint), result.PolicyFailedRevision, result.PolicyRevisionMax, formatResultError(result.PolicyLastError), result.PolicyRulePackets, result.PolicyRuleBytes, result.PolicyRuleAllowed, result.PolicyRuleDropped, result.PolicyRuleRejected, result.PolicyRuleLogged, formatEndpointRuleStats(result.PolicyRuleStats), result.TCXEligible, result.TCXSkipped, result.TCX, result.TCXFailed, result.TCXRollbacks, formatResultValue(result.TCXFailedTarget), formatResultError(result.TCXLastError), result.ProviderNetworks, result.ProviderLinks, result.ProviderReady, result.ProviderDegraded, formatProviderStatus(result.ProviderStatus), formatProviderNetworkStatus(result.ProviderNetworkStatus), formatProviderIssues(result.ProviderIssues), result.ProviderInventoryTotal, result.ProviderInventoryReady, result.ProviderInventoryDegraded, formatProviderInventoryStatus(result.ProviderInventoryStatus), formatResultError(fmt.Sprint(err)), duration.Milliseconds())
+	fmt.Printf("netloom-agent reconcile failed node=%s store=%s endpoints=%d programs=%d entries=%d policy_map_entries=%d policy_map_capacity=%d policy_map_pressure_max=%d policy_map_pressure_endpoint=%s policy_map_pressure_severity=%s policy_map_pressure_endpoints=%d policy_pressure_mitigated=%d policy_pressure_quarantined=%d policy_pressure_quarantine_endpoint=%s policy_rollouts=%d policy_rollout_planned=%d policy_rollout_applied=%d policy_rollout_skipped=%d policy_rollout_failed=%d policy_rollout_rolled_back=%d policy_rollout_rollback_failed=%d policy_rollout_slo_failed=%d policy_rollout_probe_failed=%d policy_rollout_paused=%d policy_rollout_cancelled=%d policy_map_drift_endpoints=%d policy_map_drift_missing=%d policy_map_drift_extra=%d policy_map_drift_changed=%d policy_gc_endpoints=%d policy_added=%d policy_updated=%d policy_deleted=%d policy_unchanged=%d policy_events=%d policy_failed=%d policy_rollbacks=%d policy_failed_endpoint=%s policy_failed_revision=%d policy_revision_max=%d policy_last_error=%s policy_rule_packets=%d policy_rule_bytes=%d policy_rule_allowed=%d policy_rule_dropped=%d policy_rule_rejected=%d policy_rule_logged=%d policy_rule_stats=%s tcx_eligible=%d tcx_skipped=%d tcx=%s tcx_failed=%d tcx_rollbacks=%d tcx_failed_target=%s tcx_last_error=%s provider_networks=%d provider_links=%d provider_ready=%d provider_degraded=%d provider_status=%s provider_network_status=%s provider_issues=%s provider_inventory_total=%d provider_inventory_ready=%d provider_inventory_degraded=%d provider_inventory_status=%s err=%s reconcile_duration_ms=%d\n", result.Node, storeName, result.Endpoints, result.Programs, result.Entries, result.PolicyMapEntries, result.PolicyMapCapacity, result.PolicyMapPressureMax, formatResultValue(result.PolicyMapPressureEndpoint), formatResultValue(result.PolicyMapPressureSeverity), result.PolicyMapPressureEndpoints, result.PolicyPressureMitigated, result.PolicyPressureQuarantined, formatResultValue(result.PolicyPressureQuarantineEndpoint), result.PolicyRollouts, result.PolicyRolloutPlanned, result.PolicyRolloutApplied, result.PolicyRolloutSkipped, result.PolicyRolloutFailed, result.PolicyRolloutRolledBack, result.PolicyRolloutRollbackFailed, result.PolicyRolloutSLOFailed, result.PolicyRolloutProbeFailed, result.PolicyRolloutPaused, result.PolicyRolloutCancelled, result.PolicyMapDriftEndpoints, result.PolicyMapDriftMissing, result.PolicyMapDriftExtra, result.PolicyMapDriftChanged, result.PolicyGCEndpoints, result.PolicyAdded, result.PolicyUpdated, result.PolicyDeleted, result.PolicyUnchanged, result.PolicyEvents, result.PolicyFailed, result.PolicyRollbacks, formatResultValue(result.PolicyFailedEndpoint), result.PolicyFailedRevision, result.PolicyRevisionMax, formatResultError(result.PolicyLastError), result.PolicyRulePackets, result.PolicyRuleBytes, result.PolicyRuleAllowed, result.PolicyRuleDropped, result.PolicyRuleRejected, result.PolicyRuleLogged, formatEndpointRuleStats(result.PolicyRuleStats), result.TCXEligible, result.TCXSkipped, result.TCX, result.TCXFailed, result.TCXRollbacks, formatResultValue(result.TCXFailedTarget), formatResultError(result.TCXLastError), result.ProviderNetworks, result.ProviderLinks, result.ProviderReady, result.ProviderDegraded, formatProviderStatus(result.ProviderStatus), formatProviderNetworkStatus(result.ProviderNetworkStatus), formatProviderIssues(result.ProviderIssues), result.ProviderInventoryTotal, result.ProviderInventoryReady, result.ProviderInventoryDegraded, formatProviderInventoryStatus(result.ProviderInventoryStatus), formatResultError(fmt.Sprint(err)), duration.Milliseconds())
 }
 
 type agentOVSDBStatus struct {
@@ -3276,6 +3281,7 @@ type agentOVSDBStatus struct {
 	PolicyMapCapacity         uint32 `json:"policy_map_capacity"`
 	PolicyMapPressureMax      uint32 `json:"policy_map_pressure_max"`
 	PolicyMapPressureEndpoint string `json:"policy_map_pressure_endpoint,omitempty"`
+	PolicyMapPressureSeverity string `json:"policy_map_pressure_severity"`
 
 	PolicyMapPressureHotspots []policyMapPressureHotspot `json:"policy_map_pressure_hotspots,omitempty"`
 
@@ -3346,6 +3352,7 @@ func syncAgentOVSDBStatus(ctx context.Context, store openVSwitchExternalIDStore,
 		PolicyMapCapacity:             result.PolicyMapCapacity,
 		PolicyMapPressureMax:          result.PolicyMapPressureMax,
 		PolicyMapPressureEndpoint:     result.PolicyMapPressureEndpoint,
+		PolicyMapPressureSeverity:     result.PolicyMapPressureSeverity,
 		PolicyMapPressureHotspots:     append([]dataplane.PolicyMapPressureHotspot(nil), result.PolicyMapPressureHotspots...),
 		PolicyPressureMitigated:       result.PolicyPressureMitigated,
 		PolicyPressureQuarantined:     result.PolicyPressureQuarantined,
@@ -6478,9 +6485,17 @@ func writeAgentMetrics(w ioStringWriter, snapshot agentMetricsSnapshot, totals a
 		"store":    snapshot.Store,
 		"endpoint": result.PolicyMapPressureEndpoint,
 	}), result.PolicyMapPressureMax)
+	writeMetricType(w, "netloom_agent_policy_map_pressure_severity", "gauge")
+	fmt.Fprintf(w, "netloom_agent_policy_map_pressure_severity%s 1\n", prometheusLabels(map[string]string{
+		"node":     result.Node,
+		"store":    snapshot.Store,
+		"endpoint": result.PolicyMapPressureEndpoint,
+		"severity": policyMapPressureSeverityLabel(result.PolicyMapPressureSeverity),
+	}))
 	writeMetricType(w, "netloom_agent_policy_map_pressure_hotspot_percent", "gauge")
 	writeMetricType(w, "netloom_agent_policy_map_pressure_hotspot_entries", "gauge")
 	writeMetricType(w, "netloom_agent_policy_map_pressure_hotspot_capacity", "gauge")
+	writeMetricType(w, "netloom_agent_policy_map_pressure_hotspot_severity", "gauge")
 	for i, hotspot := range result.PolicyMapPressureHotspots {
 		labels := prometheusLabels(map[string]string{
 			"node":     result.Node,
@@ -6491,6 +6506,14 @@ func writeAgentMetrics(w ioStringWriter, snapshot agentMetricsSnapshot, totals a
 		fmt.Fprintf(w, "netloom_agent_policy_map_pressure_hotspot_percent%s %d\n", labels, hotspot.PressurePercent)
 		fmt.Fprintf(w, "netloom_agent_policy_map_pressure_hotspot_entries%s %d\n", labels, hotspot.Entries)
 		fmt.Fprintf(w, "netloom_agent_policy_map_pressure_hotspot_capacity%s %d\n", labels, hotspot.Capacity)
+		severityLabels := prometheusLabels(map[string]string{
+			"node":     result.Node,
+			"store":    snapshot.Store,
+			"endpoint": hotspot.EndpointID,
+			"rank":     strconv.Itoa(i + 1),
+			"severity": policyMapPressureSeverityLabel(hotspot.Severity),
+		})
+		fmt.Fprintf(w, "netloom_agent_policy_map_pressure_hotspot_severity%s 1\n", severityLabels)
 	}
 	writeMetricType(w, "netloom_agent_policy_map_pressure_endpoints", "gauge")
 	fmt.Fprintf(w, "netloom_agent_policy_map_pressure_endpoints%s %d\n", baseLabels, result.PolicyMapPressureEndpoints)
@@ -6718,6 +6741,14 @@ func prometheusLabels(labels map[string]string) string {
 		parts = append(parts, key+"="+strconv.Quote(labels[key]))
 	}
 	return "{" + strings.Join(parts, ",") + "}"
+}
+
+func policyMapPressureSeverityLabel(severity string) string {
+	severity = strings.TrimSpace(severity)
+	if severity == "" {
+		return dataplane.PolicyMapPressureUnknown
+	}
+	return severity
 }
 
 func nonNegative(value int) int {

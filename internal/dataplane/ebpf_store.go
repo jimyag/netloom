@@ -726,13 +726,14 @@ func (s *EBPFPolicyStore) PolicyEndpointStatuses(ctx context.Context) ([]PolicyE
 			Capacity:   s.maxEntries,
 		}
 		status := PolicyEndpointStatus{
-			EndpointID:      endpointID,
-			Revision:        s.revisions[endpointID],
-			Entries:         entries,
-			Capacity:        s.maxEntries,
-			PressurePercent: policyMapPressurePercent(usage),
-			Drift:           DiffPolicyMapEntries(endpointID, s.entries[endpointID], live),
-			LastStats:       s.lastStats[endpointID],
+			EndpointID:       endpointID,
+			Revision:         s.revisions[endpointID],
+			Entries:          entries,
+			Capacity:         s.maxEntries,
+			PressurePercent:  policyMapPressurePercent(usage),
+			PressureSeverity: PolicyMapPressureSeverity(usage),
+			Drift:            DiffPolicyMapEntries(endpointID, s.entries[endpointID], live),
+			LastStats:        s.lastStats[endpointID],
 		}
 		if event, ok := lastPolicyUpdateEvent(s.events, endpointID); ok {
 			status.LastEvent = event

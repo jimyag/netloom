@@ -5587,8 +5587,8 @@ func TestPolicyEndpointAPIRolloutUsesPressureAwareBatchSize(t *testing.T) {
 		t.Fatalf("rollout pressure = %+v, want pod-a at 90%%", got.Rollout)
 	}
 	wantHotspots := []dataplane.PolicyMapPressureHotspot{
-		{EndpointID: model.EndpointKey("prod", "pod-a"), Entries: 9, Capacity: 10, PressurePercent: 90},
-		{EndpointID: model.EndpointKey("prod", "pod-b"), Entries: 8, Capacity: 10, PressurePercent: 80},
+		{EndpointID: model.EndpointKey("prod", "pod-a"), Entries: 9, Capacity: 10, PressurePercent: 90, Severity: dataplane.PolicyMapPressureCritical},
+		{EndpointID: model.EndpointKey("prod", "pod-b"), Entries: 8, Capacity: 10, PressurePercent: 80, Severity: dataplane.PolicyMapPressureWarning},
 	}
 	if !reflect.DeepEqual(got.Rollout.PressureHotspots, wantHotspots) {
 		t.Fatalf("rollout pressure hotspots = %+v, want %+v", got.Rollout.PressureHotspots, wantHotspots)
@@ -5638,12 +5638,14 @@ func TestAgentMetricsExportsLatestPolicyAndTCXCounters(t *testing.T) {
 		PolicyMapCapacity:          16,
 		PolicyMapPressureMax:       75,
 		PolicyMapPressureEndpoint:  "prod\x00pod-a",
+		PolicyMapPressureSeverity:  dataplane.PolicyMapPressureNormal,
 		PolicyMapPressureEndpoints: 1,
 		PolicyMapPressureHotspots: []dataplane.PolicyMapPressureHotspot{{
 			EndpointID:      "prod\x00pod-a",
 			Entries:         12,
 			Capacity:        16,
 			PressurePercent: 75,
+			Severity:        dataplane.PolicyMapPressureNormal,
 		}},
 		PolicyPressureMitigated:          2,
 		PolicyPressureQuarantined:        1,
@@ -5720,9 +5722,11 @@ func TestAgentMetricsExportsLatestPolicyAndTCXCounters(t *testing.T) {
 		`netloom_agent_runtime_check_status{check="ovsdb",node="node-a",required="false",status="warn",store="ebpf"} 0`,
 		`netloom_agent_policy_map_entries{node="node-a",store="ebpf"} 12`,
 		`netloom_agent_policy_map_pressure_percent{endpoint="prod\x00pod-a",node="node-a",store="ebpf"} 75`,
+		`netloom_agent_policy_map_pressure_severity{endpoint="prod\x00pod-a",node="node-a",severity="normal",store="ebpf"} 1`,
 		`netloom_agent_policy_map_pressure_hotspot_percent{endpoint="prod\x00pod-a",node="node-a",rank="1",store="ebpf"} 75`,
 		`netloom_agent_policy_map_pressure_hotspot_entries{endpoint="prod\x00pod-a",node="node-a",rank="1",store="ebpf"} 12`,
 		`netloom_agent_policy_map_pressure_hotspot_capacity{endpoint="prod\x00pod-a",node="node-a",rank="1",store="ebpf"} 16`,
+		`netloom_agent_policy_map_pressure_hotspot_severity{endpoint="prod\x00pod-a",node="node-a",rank="1",severity="normal",store="ebpf"} 1`,
 		`netloom_agent_policy_pressure_mitigated_endpoints{node="node-a",store="ebpf"} 2`,
 		`netloom_agent_policy_pressure_mitigated_endpoints_total{node="node-a",store="ebpf"} 2`,
 		`netloom_agent_policy_pressure_quarantined_endpoints{node="node-a",store="ebpf"} 1`,
