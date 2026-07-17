@@ -224,7 +224,7 @@ func TestNBCTLExecutorManagedOVNRowsResolvesSwitchPortDHCPOptions(t *testing.T) 
 	script := `#!/bin/sh
 printf '%s\n' "$*" >> "` + logPath + `"
 case "$*" in
-  *"--columns=_uuid,external_ids,name,type,addresses,port_security,options,tag,enabled,ha_chassis_group,dhcpv4_options,dhcpv6_options find Logical_Switch_Port external_ids:netloom_owner=netloom"*) printf 'lsp-pod-a,"{netloom_owner=netloom,netloom_vpc=prod,netloom_endpoint=prod/pod-a}",nl_lp_prod_pod-a,,02:00:00:00:00:20,,{},[],true,[],dhcp-v4,[]\n' ;;
+  *"--columns=_uuid,external_ids,name,type,addresses,port_security,options,tag,enabled,ha_chassis_group,mirror_rules,dhcpv4_options,dhcpv6_options find Logical_Switch_Port external_ids:netloom_owner=netloom"*) printf 'lsp-pod-a,"{netloom_owner=netloom,netloom_vpc=prod,netloom_endpoint=prod/pod-a}",nl_lp_prod_pod-a,,02:00:00:00:00:20,,{},[],true,[],[],dhcp-v4,[]\n' ;;
   *"--columns=_uuid,external_ids,cidr find DHCP_Options external_ids:netloom_owner=netloom"*) printf 'dhcp-v4,"{netloom_owner=netloom,netloom_dhcp_family=4}",10.10.0.0/24\n' ;;
 esac
 `
@@ -249,7 +249,7 @@ esac
 	}
 	logged := string(logData)
 	for _, expected := range []string{
-		"--columns=_uuid,external_ids,name,type,addresses,port_security,options,tag,enabled,ha_chassis_group,dhcpv4_options,dhcpv6_options",
+		"--columns=_uuid,external_ids,name,type,addresses,port_security,options,tag,enabled,ha_chassis_group,mirror_rules,dhcpv4_options,dhcpv6_options",
 		"--columns=_uuid,external_ids,cidr find DHCP_Options",
 	} {
 		if !strings.Contains(logged, expected) {
@@ -333,7 +333,7 @@ func TestNBCTLExecutorManagedOVNRowsReportsMissingSwitchPortDHCPOptions(t *testi
 	binary := filepath.Join(tmp, "ovn-nbctl")
 	script := `#!/bin/sh
 case "$*" in
-  *"find Logical_Switch_Port external_ids:netloom_owner=netloom"*) printf 'lsp-pod-a,"{netloom_owner=netloom,netloom_vpc=prod,netloom_endpoint=prod/pod-a}",nl_lp_prod_pod-a,,10.10.0.20,,{},[],true,[],[],[]\n' ;;
+  *"find Logical_Switch_Port external_ids:netloom_owner=netloom"*) printf 'lsp-pod-a,"{netloom_owner=netloom,netloom_vpc=prod,netloom_endpoint=prod/pod-a}",nl_lp_prod_pod-a,,10.10.0.20,,{},[],true,[],[],[],[]\n' ;;
   *"find DHCP_Options external_ids:netloom_owner=netloom"*) printf 'dhcp-v4,"{netloom_owner=netloom,netloom_dhcp_family=4}",10.10.0.0/24\n' ;;
 esac
 `
@@ -1356,6 +1356,7 @@ func TestAuditManagedObjectsFromReaderReportsStaleLogicalSwitchPortColumns(t *te
 				"options":          "network_name=physnet-a",
 				"tag":              "100",
 				"ha_chassis_group": "ha-old",
+				"mirror_rules":     "mirror-old",
 				"dhcpv4_options":   "4:10.10.0.0/24",
 			}},
 		},
@@ -1373,14 +1374,17 @@ func TestAuditManagedObjectsFromReaderReportsStaleLogicalSwitchPortColumns(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stats.DriftedManagedRows != 1 || stats.DriftedManagedFields != 7 {
-		t.Fatalf("stale logical switch port column drift stats = %+v, want role/provider/type/options/tag/ha_chassis_group/dhcp drift", stats)
+	if stats.DriftedManagedRows != 1 || stats.DriftedManagedFields != 8 {
+		t.Fatalf("stale logical switch port column drift stats = %+v, want role/provider/type/options/tag/ha_chassis_group/mirror/dhcp drift", stats)
 	}
 	if got := stats.DriftedManagedFieldCounts["Logical_Switch_Port.external_ids.netloom_role"]; got != 1 {
 		t.Fatalf("field drift counts = %+v, want stale endpoint role external_id drift", stats.DriftedManagedFieldCounts)
 	}
 	if got := stats.DriftedManagedFieldCounts["Logical_Switch_Port.external_ids.netloom_provider_network"]; got != 1 {
 		t.Fatalf("field drift counts = %+v, want stale endpoint provider external_id drift", stats.DriftedManagedFieldCounts)
+	}
+	if got := stats.DriftedManagedFieldCounts["Logical_Switch_Port.mirror_rules"]; got != 1 {
+		t.Fatalf("field drift counts = %+v, want stale endpoint mirror_rules drift", stats.DriftedManagedFieldCounts)
 	}
 }
 

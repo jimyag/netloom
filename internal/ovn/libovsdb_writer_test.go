@@ -1593,10 +1593,22 @@ func TestLibOVSDBTopologyWriterRepairsEndpointSwitchPortStaleTypeOptionsAndTag(t
 		UUID: ovsdbNamedUUID("endpoint-stale-ha-group"),
 		Name: "endpoint-stale-ha-group",
 	}
+	staleMirror := &ovnnb.Mirror{
+		UUID:   ovsdbNamedUUID("endpoint-stale-mirror"),
+		Name:   "endpoint-stale-mirror",
+		Filter: ovnnb.MirrorFilterBoth,
+		Type:   ovnnb.MirrorTypeLocal,
+		Sink:   "nl_lp_prod_observer",
+	}
 	createGroupOps, err := client.Create(staleGroup)
 	if err != nil {
 		t.Fatal(err)
 	}
+	createMirrorOps, err := client.Create(staleMirror)
+	if err != nil {
+		t.Fatal(err)
+	}
+	createGroupOps = append(createGroupOps, createMirrorOps...)
 	results, err := client.Transact(ctx, createGroupOps...)
 	if err != nil {
 		t.Fatal(err)
@@ -1610,13 +1622,20 @@ func TestLibOVSDBTopologyWriterRepairsEndpointSwitchPortStaleTypeOptionsAndTag(t
 		err := client.WhereCache(func(row *ovnnb.HAChassisGroup) bool { return row.Name == "endpoint-stale-ha-group" }).List(ctx, &groups)
 		return err == nil && len(groups) == 1
 	})
+	var mirrors []ovnnb.Mirror
+	requireEventually(t, func() bool {
+		mirrors = nil
+		err := client.WhereCache(func(row *ovnnb.Mirror) bool { return row.Name == "endpoint-stale-mirror" }).List(ctx, &mirrors)
+		return err == nil && len(mirrors) == 1
+	})
 	tag := 100
 	port.Type = "localnet"
 	port.Options = map[string]string{"network_name": "physnet-a"}
 	port.Tag = &tag
 	staleHAGroup := groups[0].UUID
 	port.HaChassisGroup = &staleHAGroup
-	updateOps, err := client.Where(&port).Update(&port, &port.Type, &port.Options, &port.Tag, &port.HaChassisGroup)
+	port.MirrorRules = []string{mirrors[0].UUID}
+	updateOps, err := client.Where(&port).Update(&port, &port.Type, &port.Options, &port.Tag, &port.HaChassisGroup, &port.MirrorRules)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1630,7 +1649,7 @@ func TestLibOVSDBTopologyWriterRepairsEndpointSwitchPortStaleTypeOptionsAndTag(t
 	requireEventually(t, func() bool {
 		ports = nil
 		err := client.WhereCache(func(row *ovnnb.LogicalSwitchPort) bool { return row.Name == logicalPort("prod", "pod-a") }).List(ctx, &ports)
-		return err == nil && len(ports) == 1 && ports[0].Type == "localnet" && ports[0].Options["network_name"] == "physnet-a" && ports[0].Tag != nil && *ports[0].Tag == 100 && ports[0].HaChassisGroup != nil && *ports[0].HaChassisGroup == groups[0].UUID
+		return err == nil && len(ports) == 1 && ports[0].Type == "localnet" && ports[0].Options["network_name"] == "physnet-a" && ports[0].Tag != nil && *ports[0].Tag == 100 && ports[0].HaChassisGroup != nil && *ports[0].HaChassisGroup == groups[0].UUID && len(ports[0].MirrorRules) == 1 && ports[0].MirrorRules[0] == mirrors[0].UUID
 	})
 
 	if err := writer.EnsureEndpoint(ctx, endpoint); err != nil {
@@ -1639,7 +1658,7 @@ func TestLibOVSDBTopologyWriterRepairsEndpointSwitchPortStaleTypeOptionsAndTag(t
 	requireEventually(t, func() bool {
 		ports = nil
 		err := client.WhereCache(func(row *ovnnb.LogicalSwitchPort) bool { return row.Name == logicalPort("prod", "pod-a") }).List(ctx, &ports)
-		return err == nil && len(ports) == 1 && ports[0].Type == "" && len(ports[0].Options) == 0 && ports[0].Tag == nil && ports[0].HaChassisGroup == nil
+		return err == nil && len(ports) == 1 && ports[0].Type == "" && len(ports[0].Options) == 0 && ports[0].Tag == nil && ports[0].HaChassisGroup == nil && len(ports[0].MirrorRules) == 0
 	})
 }
 
@@ -1770,10 +1789,22 @@ func TestLibOVSDBTopologyWriterCleanupRepairsEndpointSwitchPortDriftInSteadyStat
 		UUID: ovsdbNamedUUID("cleanup-endpoint-stale-ha-group"),
 		Name: "cleanup-endpoint-stale-ha-group",
 	}
+	staleMirror := &ovnnb.Mirror{
+		UUID:   ovsdbNamedUUID("cleanup-endpoint-stale-mirror"),
+		Name:   "cleanup-endpoint-stale-mirror",
+		Filter: ovnnb.MirrorFilterBoth,
+		Type:   ovnnb.MirrorTypeLocal,
+		Sink:   "nl_lp_prod_observer",
+	}
 	createGroupOps, err := client.Create(staleGroup)
 	if err != nil {
 		t.Fatal(err)
 	}
+	createMirrorOps, err := client.Create(staleMirror)
+	if err != nil {
+		t.Fatal(err)
+	}
+	createGroupOps = append(createGroupOps, createMirrorOps...)
 	results, err := client.Transact(ctx, createGroupOps...)
 	if err != nil {
 		t.Fatal(err)
@@ -1787,6 +1818,12 @@ func TestLibOVSDBTopologyWriterCleanupRepairsEndpointSwitchPortDriftInSteadyStat
 		err := client.WhereCache(func(row *ovnnb.HAChassisGroup) bool { return row.Name == "cleanup-endpoint-stale-ha-group" }).List(ctx, &groups)
 		return err == nil && len(groups) == 1
 	})
+	var mirrors []ovnnb.Mirror
+	requireEventually(t, func() bool {
+		mirrors = nil
+		err := client.WhereCache(func(row *ovnnb.Mirror) bool { return row.Name == "cleanup-endpoint-stale-mirror" }).List(ctx, &mirrors)
+		return err == nil && len(mirrors) == 1
+	})
 	tag := 200
 	port.Type = "localnet"
 	port.Addresses = []string{"unknown"}
@@ -1797,7 +1834,8 @@ func TestLibOVSDBTopologyWriterCleanupRepairsEndpointSwitchPortDriftInSteadyStat
 	port.Enabled = &disabled
 	staleHAGroup := groups[0].UUID
 	port.HaChassisGroup = &staleHAGroup
-	updateOps, err := client.Where(&port).Update(&port, &port.Type, &port.Addresses, &port.PortSecurity, &port.Options, &port.Tag, &port.Enabled, &port.HaChassisGroup)
+	port.MirrorRules = []string{mirrors[0].UUID}
+	updateOps, err := client.Where(&port).Update(&port, &port.Type, &port.Addresses, &port.PortSecurity, &port.Options, &port.Tag, &port.Enabled, &port.HaChassisGroup, &port.MirrorRules)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1821,7 +1859,9 @@ func TestLibOVSDBTopologyWriterCleanupRepairsEndpointSwitchPortDriftInSteadyStat
 			ports[0].Enabled != nil &&
 			!*ports[0].Enabled &&
 			ports[0].HaChassisGroup != nil &&
-			*ports[0].HaChassisGroup == groups[0].UUID
+			*ports[0].HaChassisGroup == groups[0].UUID &&
+			len(ports[0].MirrorRules) == 1 &&
+			ports[0].MirrorRules[0] == mirrors[0].UUID
 	})
 
 	if err := writer.CleanupTopology(ctx, state); err != nil {
@@ -1837,6 +1877,7 @@ func TestLibOVSDBTopologyWriterCleanupRepairsEndpointSwitchPortDriftInSteadyStat
 			ports[0].Tag == nil &&
 			ports[0].Enabled == nil &&
 			ports[0].HaChassisGroup == nil &&
+			len(ports[0].MirrorRules) == 0 &&
 			len(ports[0].Addresses) == 1 &&
 			ports[0].Addresses[0] == "02:00:00:00:00:20 10.10.0.20" &&
 			len(ports[0].PortSecurity) == 1 &&

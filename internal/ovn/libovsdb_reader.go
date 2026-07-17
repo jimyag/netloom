@@ -113,6 +113,7 @@ func (r *LibOVSDBManagedReader) ManagedOVNRows(ctx context.Context, table string
 				"tag":              intPointerField(row.Tag),
 				"enabled":          boolPointerField(row.Enabled),
 				"ha_chassis_group": pointerStringValue(row.HaChassisGroup),
+				"mirror_rules":     stringSliceField(row.MirrorRules),
 				"dhcpv4_options":   dhcpOptionsRefField(row.Dhcpv4Options, dhcpOptions),
 				"dhcpv6_options":   dhcpOptionsRefField(row.Dhcpv6Options, dhcpOptions),
 			}
