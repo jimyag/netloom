@@ -661,7 +661,7 @@ func TestOVNStaleMaintenanceCommandSkipsBelowThreshold(t *testing.T) {
 func TestOVNStaleMaintenanceCommandRunsOnWarning(t *testing.T) {
 	dir := t.TempDir()
 	outputPath := filepath.Join(dir, "env")
-	command := "printf '%s,%s,%s,%s,%s,%s,%s,%s,%s\\n' \"$NETLOOM_OVN_STALE_STATUS\" \"$NETLOOM_OVN_STALE_BURDEN\" \"$NETLOOM_OVN_STALE_THRESHOLD\" \"$NETLOOM_OVN_STALE_MISSING\" \"$NETLOOM_OVN_STALE_UNEXPECTED\" \"$NETLOOM_OVN_STALE_DRIFTED_ROWS\" \"$NETLOOM_OVN_STALE_DRIFTED_FIELDS\" \"$NETLOOM_OVN_STALE_DUPLICATE\" \"$NETLOOM_OVN_STALE_INCOMPLETE\" > " + outputPath
+	command := "printf '%s,%s,%s,%s,%s,%s,%s,%s,%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n' \"$NETLOOM_OVN_STALE_STATUS\" \"$NETLOOM_OVN_STALE_BURDEN\" \"$NETLOOM_OVN_STALE_THRESHOLD\" \"$NETLOOM_OVN_STALE_MISSING\" \"$NETLOOM_OVN_STALE_UNEXPECTED\" \"$NETLOOM_OVN_STALE_DRIFTED_ROWS\" \"$NETLOOM_OVN_STALE_DRIFTED_FIELDS\" \"$NETLOOM_OVN_STALE_DUPLICATE\" \"$NETLOOM_OVN_STALE_INCOMPLETE\" \"$NETLOOM_OVN_STALE_MISSING_TABLES\" \"$NETLOOM_OVN_STALE_UNEXPECTED_TABLES\" \"$NETLOOM_OVN_STALE_DUPLICATE_TABLES\" \"$NETLOOM_OVN_STALE_INCOMPLETE_TABLES\" \"$NETLOOM_OVN_STALE_DRIFT_FIELDS\" > " + outputPath
 	result := ovnStaleMaintenanceCommand{command: command}.RunMaintenance(context.Background(), ovnMaintenanceContext{
 		Audit: ovn.AuditStats{
 			MissingManagedRows:    2,
@@ -670,6 +670,21 @@ func TestOVNStaleMaintenanceCommandRunsOnWarning(t *testing.T) {
 			DriftedManagedFields:  5,
 			DuplicateManagedRows:  6,
 			IncompleteManagedRows: 7,
+			MissingManagedTableCounts: map[string]int{
+				"Logical_Router_Port": 2,
+			},
+			UnexpectedManagedTableCounts: map[string]int{
+				"Logical_Switch": 3,
+			},
+			DuplicateManagedTableCounts: map[string]int{
+				"Logical_Router_Policy": 6,
+			},
+			IncompleteManagedTableCounts: map[string]int{
+				"Load_Balancer": 7,
+			},
+			DriftedManagedFieldCounts: map[string]int{
+				"Load_Balancer.options": 5,
+			},
 		},
 		StaleAdvisory: ovnStaleAdvisory{Status: "warning", Burden: 22, Threshold: 10},
 	})
@@ -680,7 +695,15 @@ func TestOVNStaleMaintenanceCommandRunsOnWarning(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := strings.TrimSpace(string(raw)), "warning,22,10,2,3,4,5,6,7"; got != want {
+	want := strings.Join([]string{
+		"warning,22,10,2,3,4,5,6,7",
+		`{"Logical_Router_Port":2}`,
+		`{"Logical_Switch":3}`,
+		`{"Logical_Router_Policy":6}`,
+		`{"Load_Balancer":7}`,
+		`{"Load_Balancer.options":5}`,
+	}, "\n")
+	if got := strings.TrimSpace(string(raw)); got != want {
 		t.Fatalf("stale maintenance env = %q, want %q", got, want)
 	}
 }

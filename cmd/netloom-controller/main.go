@@ -2758,7 +2758,23 @@ func ovnStaleMaintenanceEnv(input ovnMaintenanceContext) []string {
 		"NETLOOM_OVN_STALE_DRIFTED_FIELDS=" + strconv.Itoa(stats.DriftedManagedFields),
 		"NETLOOM_OVN_STALE_DUPLICATE=" + strconv.Itoa(stats.DuplicateManagedRows),
 		"NETLOOM_OVN_STALE_INCOMPLETE=" + strconv.Itoa(stats.IncompleteManagedRows),
+		"NETLOOM_OVN_STALE_MISSING_TABLES=" + ovnStaleMaintenanceJSON(stats.MissingManagedTableCounts),
+		"NETLOOM_OVN_STALE_UNEXPECTED_TABLES=" + ovnStaleMaintenanceJSON(stats.UnexpectedManagedTableCounts),
+		"NETLOOM_OVN_STALE_DUPLICATE_TABLES=" + ovnStaleMaintenanceJSON(stats.DuplicateManagedTableCounts),
+		"NETLOOM_OVN_STALE_INCOMPLETE_TABLES=" + ovnStaleMaintenanceJSON(stats.IncompleteManagedTableCounts),
+		"NETLOOM_OVN_STALE_DRIFT_FIELDS=" + ovnStaleMaintenanceJSON(stats.DriftedManagedFieldCounts),
 	}
+}
+
+func ovnStaleMaintenanceJSON(counts map[string]int) string {
+	if len(counts) == 0 {
+		return "{}"
+	}
+	raw, err := json.Marshal(counts)
+	if err != nil {
+		return "{}"
+	}
+	return string(raw)
 }
 
 func ovnCompactDuplicateSnapshot(output string) bool {
