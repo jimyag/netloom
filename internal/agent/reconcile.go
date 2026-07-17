@@ -175,6 +175,8 @@ type ReconcileOptions struct {
 	LinuxDatapathApply                func(context.Context, control.DesiredState, linuxdatapath.Options) (linuxdatapath.Result, error)
 }
 
+type PolicyMapPressureHotspot = dataplane.PolicyMapPressureHotspot
+
 type PolicyEndpointPlan struct {
 	EndpointID     string                      `json:"endpoint_id"`
 	CurrentEntries int                         `json:"current_entries"`
@@ -234,6 +236,7 @@ type PolicyEndpointRollout struct {
 	PressureThresholdPercent  uint32                      `json:"pressure_threshold_percent,omitempty"`
 	PressureMaxPercent        uint32                      `json:"pressure_max_percent,omitempty"`
 	PressureEndpoint          string                      `json:"pressure_endpoint,omitempty"`
+	PressureHotspots          []PolicyMapPressureHotspot  `json:"pressure_hotspots,omitempty"`
 	SLOGated                  bool                        `json:"slo_gated,omitempty"`
 	SLODropThresholdPercent   uint32                      `json:"slo_drop_threshold_percent,omitempty"`
 	SLOMinPackets             uint64                      `json:"slo_min_packets,omitempty"`
@@ -465,6 +468,7 @@ func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, opt
 		PressureThresholdPercent: pressure.threshold,
 		PressureMaxPercent:       pressure.maxPercent,
 		PressureEndpoint:         pressure.endpointID,
+		PressureHotspots:         append([]PolicyMapPressureHotspot(nil), pressure.hotspots...),
 		SLOGated:                 rolloutOptions.SLOGated,
 		SLODropThresholdPercent:  rolloutOptions.SLODropThresholdPercent,
 		SLOMinPackets:            rolloutOptions.SLOMinPackets,
@@ -1706,6 +1710,7 @@ type rolloutPressureDecision struct {
 	threshold  uint32
 	maxPercent uint32
 	endpointID string
+	hotspots   []PolicyMapPressureHotspot
 }
 
 func pressureAwareRolloutBatchSize(ctx context.Context, store PolicyStore, requestedBatchSize int, options PolicyEndpointRolloutOptions) (int, rolloutPressureDecision, error) {
@@ -1733,6 +1738,7 @@ func pressureAwareRolloutBatchSize(ctx context.Context, store PolicyStore, reque
 	summary := dataplane.SummarizePolicyMapUsage(usages)
 	decision.maxPercent = summary.MaxPressurePercent
 	decision.endpointID = summary.MaxPressureEndpoint
+	decision.hotspots = append(decision.hotspots[:0], summary.PressureHotspots...)
 	if summary.MaxPressurePercent < threshold {
 		return requestedBatchSize, decision, nil
 	}

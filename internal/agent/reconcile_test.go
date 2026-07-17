@@ -2955,11 +2955,18 @@ func TestRolloutPolicyEndpointsPressureAwareShrinksBatchSize(t *testing.T) {
 	state := rolloutPolicyState()
 	store := &rolloutPressurePolicyStore{
 		InMemoryPolicyStore: dataplane.NewInMemoryPolicyStore(),
-		usage: []dataplane.PolicyMapUsage{{
-			EndpointID: model.EndpointKey("prod", "pod-a"),
-			Entries:    9,
-			Capacity:   10,
-		}},
+		usage: []dataplane.PolicyMapUsage{
+			{
+				EndpointID: model.EndpointKey("prod", "pod-a"),
+				Entries:    9,
+				Capacity:   10,
+			},
+			{
+				EndpointID: model.EndpointKey("prod", "pod-b"),
+				Entries:    8,
+				Capacity:   10,
+			},
+		},
 	}
 
 	rollout, err := RolloutPolicyEndpoints(context.Background(), state, ReconcileOptions{
@@ -2979,6 +2986,15 @@ func TestRolloutPolicyEndpointsPressureAwareShrinksBatchSize(t *testing.T) {
 	}
 	if rollout.PressureMaxPercent != 90 || rollout.PressureEndpoint != model.EndpointKey("prod", "pod-a") || rollout.PressureThresholdPercent != 80 {
 		t.Fatalf("rollout pressure fields = %+v, want max=90 endpoint pod-a threshold 80", rollout)
+	}
+	wantHotspots := []dataplane.PolicyMapPressureHotspot{
+		{EndpointID: model.EndpointKey("prod", "pod-a"), Entries: 9, Capacity: 10, PressurePercent: 90},
+		{EndpointID: model.EndpointKey("prod", "pod-b"), Entries: 8, Capacity: 10, PressurePercent: 80},
+	}
+	if !slices.EqualFunc(rollout.PressureHotspots, wantHotspots, func(a, b dataplane.PolicyMapPressureHotspot) bool {
+		return a == b
+	}) {
+		t.Fatalf("rollout pressure hotspots = %+v, want %+v", rollout.PressureHotspots, wantHotspots)
 	}
 	if len(rollout.Items) != 3 || rollout.Items[0].Batch != 1 || rollout.Items[1].Batch != 2 || rollout.Items[2].Batch != 3 {
 		t.Fatalf("rollout batches = %+v, want one endpoint per batch", rollout.Items)
