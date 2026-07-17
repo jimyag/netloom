@@ -6521,11 +6521,15 @@ func writeAgentMetrics(w ioStringWriter, snapshot agentMetricsSnapshot, totals a
 	writeMetricType(w, "netloom_agent_policy_endpoint_entries", "gauge")
 	writeMetricType(w, "netloom_agent_policy_endpoint_capacity", "gauge")
 	writeMetricType(w, "netloom_agent_policy_endpoint_pressure_percent", "gauge")
+	writeMetricType(w, "netloom_agent_policy_endpoint_pressure_severity", "gauge")
 	writeMetricType(w, "netloom_agent_policy_endpoint_drifted", "gauge")
 	writeMetricType(w, "netloom_agent_policy_endpoint_drift_missing_entries", "gauge")
 	writeMetricType(w, "netloom_agent_policy_endpoint_drift_extra_entries", "gauge")
 	writeMetricType(w, "netloom_agent_policy_endpoint_drift_changed_entries", "gauge")
 	writeMetricType(w, "netloom_agent_policy_endpoint_last_seen_timestamp_seconds", "gauge")
+	writeMetricType(w, "netloom_agent_policy_endpoint_last_event_revision", "gauge")
+	writeMetricType(w, "netloom_agent_policy_endpoint_last_event_success", "gauge")
+	writeMetricType(w, "netloom_agent_policy_endpoint_last_event_remediated", "gauge")
 	for _, status := range result.PolicyEndpointStatus {
 		labels := prometheusLabels(map[string]string{
 			"node":     result.Node,
@@ -6540,10 +6544,29 @@ func writeAgentMetrics(w ioStringWriter, snapshot agentMetricsSnapshot, totals a
 		fmt.Fprintf(w, "netloom_agent_policy_endpoint_entries%s %d\n", labels, status.Entries)
 		fmt.Fprintf(w, "netloom_agent_policy_endpoint_capacity%s %d\n", labels, status.Capacity)
 		fmt.Fprintf(w, "netloom_agent_policy_endpoint_pressure_percent%s %d\n", labels, status.PressurePercent)
+		fmt.Fprintf(w, "netloom_agent_policy_endpoint_pressure_severity%s 1\n", prometheusLabels(map[string]string{
+			"node":     result.Node,
+			"store":    snapshot.Store,
+			"endpoint": status.EndpointID,
+			"severity": policyMapPressureSeverityLabel(status.PressureSeverity),
+		}))
 		fmt.Fprintf(w, "netloom_agent_policy_endpoint_drifted%s %d\n", labels, drifted)
 		fmt.Fprintf(w, "netloom_agent_policy_endpoint_drift_missing_entries%s %d\n", labels, status.Drift.Missing)
 		fmt.Fprintf(w, "netloom_agent_policy_endpoint_drift_extra_entries%s %d\n", labels, status.Drift.Extra)
 		fmt.Fprintf(w, "netloom_agent_policy_endpoint_drift_changed_entries%s %d\n", labels, status.Drift.Changed)
+		if status.HasLastEvent {
+			success := 0
+			if status.LastEvent.Success {
+				success = 1
+			}
+			remediated := 0
+			if status.LastEvent.Remediated {
+				remediated = 1
+			}
+			fmt.Fprintf(w, "netloom_agent_policy_endpoint_last_event_revision%s %d\n", labels, status.LastEvent.Revision)
+			fmt.Fprintf(w, "netloom_agent_policy_endpoint_last_event_success%s %d\n", labels, success)
+			fmt.Fprintf(w, "netloom_agent_policy_endpoint_last_event_remediated%s %d\n", labels, remediated)
+		}
 		if status.LastSeen == nil || status.LastSeen.IsZero() {
 			continue
 		}
