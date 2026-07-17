@@ -300,6 +300,8 @@ func modelProtocolNumber(protocol uint8) (model.Protocol, error) {
 		return model.ProtocolUDP, nil
 	case 1:
 		return model.ProtocolICMP, nil
+	case 132:
+		return model.ProtocolSCTP, nil
 	default:
 		return "", fmt.Errorf("unsupported TCX policy protocol %d", protocol)
 	}

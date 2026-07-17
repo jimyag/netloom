@@ -1098,6 +1098,8 @@ func linuxPolicyRuleProtocolNumber(protocol model.Protocol, family int) int {
 		return unix.IPPROTO_TCP
 	case model.ProtocolUDP:
 		return unix.IPPROTO_UDP
+	case model.ProtocolSCTP:
+		return unix.IPPROTO_SCTP
 	case model.ProtocolICMP:
 		if family == unix.AF_INET6 {
 			return unix.IPPROTO_ICMPV6

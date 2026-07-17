@@ -32,8 +32,8 @@
 | SNAT | 已实现 | OVN `NAT` | Docker controller e2e |
 | DNAT | 已实现 | OVN `NAT` | Docker controller e2e |
 | Floating IP | 已实现 | OVN `dnat_and_snat` | `TestDockerControllerProgramsDistributedGatewayAndFloatingIPs` |
-| Port-mapped NAT | 已实现 | OVN NAT port columns with fallback handling | `TestDockerControllerClearsStaleNATPortMetadata` |
-| Load Balancer | 已实现 | OVN `Load_Balancer` with protocol-specific VIPs | `TestDockerControllerProgramsLoadBalancerSessionAffinity` |
+| Port-mapped NAT | 已实现 | OVN NAT port columns with TCP/UDP/SCTP port mapping | `TestDockerControllerClearsStaleNATPortMetadata` |
+| Load Balancer | 已实现 | OVN `Load_Balancer` with protocol-specific TCP/UDP/SCTP VIPs | `TestDockerControllerProgramsLoadBalancerSessionAffinity` |
 | LB Health Check | 已实现 | OVN `Load_Balancer_Health_Check` | `TestDockerControllerActiveLBHealthProbeConvergesOVNBackends` |
 | Session Affinity | 已实现 | OVN LB options and topology resolver | `TestDesiredStateLoadBalancerSelectionFieldsDriveStableBackendChoice` |
 
@@ -63,6 +63,7 @@
 | Entity rules | 已实现 | `world`, `all`, `cluster`, `host`, `remote-node`, `none` | Docker entity e2e |
 | FQDN rules | 已实现 | DNS observer + policy compiler | Docker policy sources e2e |
 | Named ports | 已实现 | endpoint named ports expansion | Docker named port e2e |
+| SCTP L4 ACL | 已实现 | policy compiler、policy map、TCX IPv4/IPv6 projection | `TestCompileForEndpointEncodesSCTPPorts`、`TestIPv4L4ACLRulesFromProgramProjectsSCTPPort` |
 | ICMP and dual-stack | 已实现 | IPv4/IPv6 ICMP policy entries | Docker dual-stack ICMP e2e |
 | Stateful conntrack | 已实现 | dataplane evaluator/store metadata | Docker stateful conntrack e2e |
 | Reject / Log | 已实现 | policy actions and recorder events | Docker reject/log e2e |

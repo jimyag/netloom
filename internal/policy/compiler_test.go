@@ -572,6 +572,44 @@ func TestCompileForEndpointEncodesICMPTypeAndCode(t *testing.T) {
 	}
 }
 
+func TestCompileForEndpointEncodesSCTPPorts(t *testing.T) {
+	endpoint := model.Endpoint{
+		ID:             "pod-a",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"sctp"},
+	}
+	groups := map[string]model.SecurityGroup{
+		"sctp": {
+			Name: "sctp",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "allow-sctp",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolSCTP,
+				RemoteCIDR: netip.MustParsePrefix("10.20.0.0/24"),
+				Ports:      []model.PortRange{{From: 5000, To: 5000}},
+				Action:     model.ActionAllow,
+			}},
+		},
+	}
+
+	program, err := CompileForEndpoint(endpoint, groups)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(program.MapEntries) != 1 {
+		t.Fatalf("map entries = %d, want 1", len(program.MapEntries))
+	}
+	entry := program.MapEntries[0]
+	if entry.Key.Protocol != model.ProtocolSCTP || entry.Key.DestPort != 5000 || entry.Key.L4PrefixBits != 24 {
+		t.Fatalf("sctp map key = %+v, want protocol/port exact", entry.Key)
+	}
+}
+
 func TestCompileForEndpointResolvesIngressNamedPort(t *testing.T) {
 	endpoint := model.Endpoint{
 		ID:             "pod-a",

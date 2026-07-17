@@ -703,7 +703,7 @@ func appendIPv4L4ACLRulesFromProgram(rules *[]IPv4L4ACLRule, seen map[IPv4L4Key]
 		if err != nil {
 			return fmt.Errorf("rule %s: %w", rule.ID, err)
 		}
-		if protocol != 1 && protocol != 6 && protocol != 17 {
+		if protocol != 1 && protocol != 6 && protocol != 17 && protocol != 132 {
 			continue
 		}
 		if !rule.RemoteCIDR.IsValid() {
@@ -799,7 +799,7 @@ func appendIPv6L4ACLRulesFromProgram(rules *[]IPv6L4ACLRule, seen map[IPv6L4Key]
 		if err != nil {
 			return fmt.Errorf("rule %s: %w", rule.ID, err)
 		}
-		if protocol != 6 && protocol != 17 && protocol != 58 {
+		if protocol != 6 && protocol != 17 && protocol != 58 && protocol != 132 {
 			continue
 		}
 		if !rule.RemoteCIDR.IsValid() {
@@ -1085,7 +1085,7 @@ func validateIPv4L4ACLRuleSupport(rule policy.Rule) error {
 	if err != nil {
 		return err
 	}
-	if protocol != 1 && protocol != 6 && protocol != 17 {
+	if protocol != 1 && protocol != 6 && protocol != 17 && protocol != 132 {
 		return nil
 	}
 	if _, ok := tcxAction(rule.Action); !ok {
@@ -1105,7 +1105,7 @@ func validateIPv6L4ACLRuleSupport(rule policy.Rule) error {
 	if err != nil {
 		return err
 	}
-	if protocol != 6 && protocol != 17 && protocol != 58 {
+	if protocol != 6 && protocol != 17 && protocol != 58 && protocol != 132 {
 		return nil
 	}
 	if _, ok := tcxAction(rule.Action); !ok {

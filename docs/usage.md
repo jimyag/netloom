@@ -8,10 +8,10 @@
 | --- | --- | --- |
 | VPC / Subnet / Endpoint / IPAM | controller + OVN NB | 创建逻辑路由器、逻辑交换机、端口、地址和端口安全。 |
 | DHCP / DNS | OVN NB | 为 endpoint 绑定 DHCP options，并维护 OVN DNS records。 |
-| Gateway / NAT / LoadBalancer | OVN NB | 支持 SNAT、DNAT、Floating IP、OVN LB、健康检查和 subnet 绑定。 |
-| RouteTable / PolicyRoute | OVN NB + Linux datapath | 支持静态路由、ECMP、BFD、reroute/drop 策略路由和本机 RPDB 投影。 |
+| Gateway / NAT / LoadBalancer | OVN NB | 支持 SNAT、DNAT、Floating IP、OVN LB、SCTP/TCP/UDP frontend、健康检查和 subnet 绑定。 |
+| RouteTable / PolicyRoute | OVN NB + Linux datapath | 支持静态路由、ECMP、BFD、reroute/drop 策略路由、本机 RPDB 投影和 SCTP/TCP/UDP 端口匹配。 |
 | Provider Network | OVN localnet + OVSDB | 管理 localnet port、本机 OVS Bridge、Controller、Port、Interface、QoS、Queue。 |
-| SecurityGroup / ACL | eBPF policy map + TCX | 安全组不写 OVN ACL，规则由 eBPF/TCX 执行。 |
+| SecurityGroup / ACL | eBPF policy map + TCX | 安全组不写 OVN ACL，规则由 eBPF/TCX 执行，支持 TCP、UDP、SCTP、ICMP。 |
 | Policy rollout | agent | 支持 dry-run、batch、approval、ack、finalize、SLO、HTTP status/body probe、TCP/TLS probe、rollback、quarantine。 |
 | 运维观测 | OVSDB external_ids + metrics + CLI | 输出 controller/agent 状态、policy status、explain、Prometheus metrics。 |
 

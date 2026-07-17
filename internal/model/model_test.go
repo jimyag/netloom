@@ -1087,7 +1087,7 @@ func TestPolicyRouteMatchValidatesSourcePorts(t *testing.T) {
 	}
 
 	match.Protocol = ProtocolICMP
-	if err := match.Validate(); err == nil || !strings.Contains(err.Error(), "src ports require tcp or udp protocol") {
+	if err := match.Validate(); err == nil || !strings.Contains(err.Error(), "src ports require tcp, udp, or sctp protocol") {
 		t.Fatalf("error = %v, want src port protocol validation", err)
 	}
 
@@ -1301,7 +1301,7 @@ func TestSecurityGroupRulePortsRequireTransportProtocol(t *testing.T) {
 		if err == nil {
 			t.Fatalf("expected %s security group ports to fail", protocol)
 		}
-		if !strings.Contains(err.Error(), "ports require tcp or udp protocol") {
+		if !strings.Contains(err.Error(), "ports require tcp, udp, or sctp protocol") {
 			t.Fatalf("error %q does not mention transport protocol", err)
 		}
 	}
@@ -1437,7 +1437,7 @@ func TestSecurityGroupRuleValidatesNamedPorts(t *testing.T) {
 	}
 
 	rule.Protocol = ProtocolICMP
-	if err := rule.Validate(); err == nil || !strings.Contains(err.Error(), "named ports require tcp or udp protocol") {
+	if err := rule.Validate(); err == nil || !strings.Contains(err.Error(), "named ports require tcp, udp, or sctp protocol") {
 		t.Fatalf("error = %v, want protocol validation", err)
 	}
 
@@ -2091,7 +2091,7 @@ func TestNATRuleValidateKubeOVNStyleNAT(t *testing.T) {
 				ExternalPort: 8443,
 				TargetPort:   8443,
 			},
-			wantErr: "requires tcp or udp protocol",
+			wantErr: "requires tcp, udp, or sctp protocol",
 		},
 		{
 			name: "dnat protocol requires port mapping",
@@ -2142,7 +2142,7 @@ func TestNATRuleValidateKubeOVNStyleNAT(t *testing.T) {
 				ExternalPort: 8443,
 				TargetPort:   443,
 			},
-			wantErr: "requires tcp or udp protocol",
+			wantErr: "requires tcp, udp, or sctp protocol",
 		},
 		{
 			name: "snat family mismatch",
@@ -2609,5 +2609,64 @@ func TestLoadBalancerEffectiveSelectionFields(t *testing.T) {
 				t.Fatalf("fields = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestSCTPProtocolValidatesAcrossSDNResources(t *testing.T) {
+	if err := (NamedPort{Name: "sctp-api", Protocol: ProtocolSCTP, Port: 5000}).Validate(); err != nil {
+		t.Fatalf("sctp named port failed validation: %v", err)
+	}
+	if err := (SecurityGroupRule{
+		ID:         "allow-sctp",
+		Priority:   100,
+		Direction:  DirectionIngress,
+		Protocol:   ProtocolSCTP,
+		RemoteCIDR: netip.MustParsePrefix("10.20.0.0/24"),
+		Ports:      []PortRange{{From: 5000, To: 5000}},
+		Action:     ActionAllow,
+	}).Validate(); err != nil {
+		t.Fatalf("sctp security group rule failed validation: %v", err)
+	}
+	if err := (RouteMatch{
+		Source:      netip.MustParsePrefix("10.10.0.0/24"),
+		Destination: netip.MustParsePrefix("10.20.0.0/24"),
+		Protocol:    ProtocolSCTP,
+		DstPorts:    []PortRange{{From: 5000, To: 5000}},
+	}).Validate(); err != nil {
+		t.Fatalf("sctp policy route match failed validation: %v", err)
+	}
+	if err := (NATRule{
+		Name:         "sctp-dnat",
+		VPC:          "prod",
+		Type:         ActionDNAT,
+		ExternalIP:   netip.MustParseAddr("198.51.100.10"),
+		TargetIP:     netip.MustParseAddr("10.10.0.10"),
+		Protocol:     ProtocolSCTP,
+		ExternalPort: 5000,
+		TargetPort:   5000,
+	}).Validate(); err != nil {
+		t.Fatalf("sctp nat failed validation: %v", err)
+	}
+	if err := (LoadBalancer{
+		Name: "sctp-lb",
+		VPC:  "prod",
+		VIP:  netip.MustParseAddr("10.96.0.10"),
+		Ports: []LoadBalancerPort{{
+			Name:     "sctp-api",
+			Port:     5000,
+			Protocol: ProtocolSCTP,
+			Backends: []LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.10"), Port: 5000}},
+		}},
+	}).Validate(); err != nil {
+		t.Fatalf("sctp load balancer failed validation: %v", err)
+	}
+	if err := (ProviderNetworkTenantQueuePolicy{
+		Tenant:     "prod",
+		QueueID:    10,
+		Protocol:   ProtocolSCTP,
+		Ports:      []PortRange{{From: 5000, To: 5000}},
+		MaxRateBPS: 100000000,
+	}).Validate(); err != nil {
+		t.Fatalf("sctp provider queue failed validation: %v", err)
 	}
 }

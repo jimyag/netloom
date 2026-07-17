@@ -38,6 +38,7 @@ const (
 	ProtocolTCP  Protocol = "tcp"
 	ProtocolUDP  Protocol = "udp"
 	ProtocolICMP Protocol = "icmp"
+	ProtocolSCTP Protocol = "sctp"
 )
 
 const (
@@ -421,7 +422,7 @@ func (q ProviderNetworkTenantQueuePolicy) Validate() error {
 	if q.Tenant == "" {
 		return errors.New("tenant is required")
 	}
-	if q.Protocol != "" && q.Protocol != ProtocolTCP && q.Protocol != ProtocolUDP {
+	if q.Protocol != "" && q.Protocol != ProtocolTCP && q.Protocol != ProtocolUDP && q.Protocol != ProtocolSCTP {
 		return fmt.Errorf("protocol %q is invalid", q.Protocol)
 	}
 	if len(q.Ports) > 0 && q.Protocol == "" {
@@ -1059,11 +1060,11 @@ func (m RouteMatch) Validate() error {
 	if m.Source.IsValid() && m.Destination.IsValid() && m.Source.Addr().Is4() != m.Destination.Addr().Is4() {
 		return errors.New("source and destination prefixes must use the same IP family")
 	}
-	if len(m.SrcPorts) > 0 && m.Protocol != ProtocolTCP && m.Protocol != ProtocolUDP {
-		return errors.New("src ports require tcp or udp protocol")
+	if len(m.SrcPorts) > 0 && m.Protocol != ProtocolTCP && m.Protocol != ProtocolUDP && m.Protocol != ProtocolSCTP {
+		return errors.New("src ports require tcp, udp, or sctp protocol")
 	}
-	if len(m.DstPorts) > 0 && m.Protocol != ProtocolTCP && m.Protocol != ProtocolUDP {
-		return errors.New("dst ports require tcp or udp protocol")
+	if len(m.DstPorts) > 0 && m.Protocol != ProtocolTCP && m.Protocol != ProtocolUDP && m.Protocol != ProtocolSCTP {
+		return errors.New("dst ports require tcp, udp, or sctp protocol")
 	}
 	for i, p := range m.SrcPorts {
 		if err := p.Validate(); err != nil {
@@ -1160,8 +1161,8 @@ func (n NATRule) Validate() error {
 			if n.ExternalPort == 0 || n.TargetPort == 0 {
 				return errors.New("dnat port mapping requires both external and target ports")
 			}
-			if n.Protocol != ProtocolTCP && n.Protocol != ProtocolUDP {
-				return errors.New("dnat port mapping requires tcp or udp protocol")
+			if n.Protocol != ProtocolTCP && n.Protocol != ProtocolUDP && n.Protocol != ProtocolSCTP {
+				return errors.New("dnat port mapping requires tcp, udp, or sctp protocol")
 			}
 		} else if n.Protocol != ProtocolAny {
 			return errors.New("dnat protocol must be any when port mapping is not set")
@@ -1180,8 +1181,8 @@ func (n NATRule) Validate() error {
 			if n.ExternalPort == 0 || n.TargetPort == 0 {
 				return errors.New("dnat_and_snat port mapping requires both external and target ports")
 			}
-			if n.Protocol != ProtocolTCP && n.Protocol != ProtocolUDP {
-				return errors.New("dnat_and_snat port mapping requires tcp or udp protocol")
+			if n.Protocol != ProtocolTCP && n.Protocol != ProtocolUDP && n.Protocol != ProtocolSCTP {
+				return errors.New("dnat_and_snat port mapping requires tcp, udp, or sctp protocol")
 			}
 		} else if n.Protocol != ProtocolAny {
 			return errors.New("dnat_and_snat protocol must be any")
@@ -1242,7 +1243,7 @@ func (l LoadBalancer) Validate() error {
 		if frontend.Port == 0 {
 			return fmt.Errorf("load balancer frontend %d port is required", i)
 		}
-		if frontend.Protocol != ProtocolTCP && frontend.Protocol != ProtocolUDP {
+		if frontend.Protocol != ProtocolTCP && frontend.Protocol != ProtocolUDP && frontend.Protocol != ProtocolSCTP {
 			return fmt.Errorf("unsupported load balancer protocol %q", frontend.Protocol)
 		}
 		if len(frontend.Backends) == 0 {
@@ -1513,11 +1514,11 @@ func (r SecurityGroupRule) Validate() error {
 	if !slices.Contains([]Action{ActionAllow, ActionDrop, ActionReject, ActionLog}, r.Action) {
 		return fmt.Errorf("unsupported security action %q", r.Action)
 	}
-	if len(r.Ports) > 0 && r.Protocol != ProtocolTCP && r.Protocol != ProtocolUDP && !(r.Protocol == ProtocolAny && r.RemoteService != "") {
-		return errors.New("ports require tcp or udp protocol")
+	if len(r.Ports) > 0 && r.Protocol != ProtocolTCP && r.Protocol != ProtocolUDP && r.Protocol != ProtocolSCTP && !(r.Protocol == ProtocolAny && r.RemoteService != "") {
+		return errors.New("ports require tcp, udp, or sctp protocol")
 	}
-	if len(r.NamedPorts) > 0 && r.Protocol != ProtocolTCP && r.Protocol != ProtocolUDP {
-		return errors.New("named ports require tcp or udp protocol")
+	if len(r.NamedPorts) > 0 && r.Protocol != ProtocolTCP && r.Protocol != ProtocolUDP && r.Protocol != ProtocolSCTP {
+		return errors.New("named ports require tcp, udp, or sctp protocol")
 	}
 	if len(r.NamedPorts) > 0 && r.Direction == DirectionEgress && r.RemoteGroup == "" && len(r.RemoteEndpointSelector) == 0 && len(r.RemoteEndpointExprs) == 0 {
 		return errors.New("egress named ports require remote_group or remote_endpoint_selector")
@@ -1787,8 +1788,8 @@ func (p NamedPort) Validate() error {
 	if err := validateNamedPortName(p.Name); err != nil {
 		return err
 	}
-	if p.Protocol != ProtocolTCP && p.Protocol != ProtocolUDP {
-		return errors.New("named port protocol must be tcp or udp")
+	if p.Protocol != ProtocolTCP && p.Protocol != ProtocolUDP && p.Protocol != ProtocolSCTP {
+		return errors.New("named port protocol must be tcp, udp, or sctp")
 	}
 	if p.Port == 0 {
 		return errors.New("named port number must be between 1 and 65535")
@@ -1810,5 +1811,5 @@ func validateNamedPortName(name string) error {
 }
 
 func validProtocol(p Protocol) bool {
-	return slices.Contains([]Protocol{ProtocolAny, ProtocolTCP, ProtocolUDP, ProtocolICMP}, p)
+	return slices.Contains([]Protocol{ProtocolAny, ProtocolTCP, ProtocolUDP, ProtocolICMP, ProtocolSCTP}, p)
 }

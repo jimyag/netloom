@@ -462,8 +462,8 @@ func resolveNamedPorts(staticPorts []model.PortRange, names []string, protocol m
 	if len(names) == 0 {
 		return out, nil
 	}
-	if protocol != model.ProtocolTCP && protocol != model.ProtocolUDP {
-		return nil, fmt.Errorf("named ports require tcp or udp protocol")
+	if protocol != model.ProtocolTCP && protocol != model.ProtocolUDP && protocol != model.ProtocolSCTP {
+		return nil, fmt.Errorf("named ports require tcp, udp, or sctp protocol")
 	}
 	byName := make(map[string]uint16, len(endpoint.NamedPorts))
 	for _, port := range endpoint.NamedPorts {

@@ -85,6 +85,33 @@ func TestEncodeEntryUsesICMPv6ProtocolForIPv6CIDR(t *testing.T) {
 	}
 }
 
+func TestEncodeEntryUsesSCTPProtocolNumber(t *testing.T) {
+	entry := policy.MapEntry{
+		Key: policy.MapKey{
+			Direction:    model.DirectionIngress,
+			Protocol:     model.ProtocolSCTP,
+			DestPort:     5000,
+			L4PrefixBits: 24,
+		},
+		Value: policy.MapValue{
+			Precedence: 100,
+		},
+		RemoteCIDR: netip.MustParsePrefix("10.20.0.0/24"),
+		RuleID:     "allow-sctp",
+	}
+
+	encoded, err := EncodeEntry(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if encoded.Key.Protocol != 132 {
+		t.Fatalf("protocol = %d, want sctp/132", encoded.Key.Protocol)
+	}
+	if encoded.Key.DestPortBE != hostToNetwork16(5000) {
+		t.Fatalf("dest port = %d, want 5000", networkToHost16(encoded.Key.DestPortBE))
+	}
+}
+
 func TestPolicyBackendReplacesEndpointEntries(t *testing.T) {
 	endpoint := model.Endpoint{
 		ID:             "pod-a",

@@ -491,6 +491,8 @@ func protocolNumber(protocol model.Protocol) (uint8, error) {
 		return 17, nil
 	case model.ProtocolICMP:
 		return 1, nil
+	case model.ProtocolSCTP:
+		return 132, nil
 	default:
 		return 0, fmt.Errorf("unsupported protocol %q", protocol)
 	}

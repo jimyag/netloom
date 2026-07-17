@@ -614,6 +614,28 @@ func TestEvaluateMatchesICMPv6TypeAndCode(t *testing.T) {
 	}
 }
 
+func TestEvaluateMatchesSCTPPort(t *testing.T) {
+	entries := []PolicyMapEntry{{
+		Key: PolicyKey{
+			PrefixLen:      StaticPrefixBits + 24,
+			RemoteIdentity: 100,
+			Direction:      DirectionIngress,
+			Protocol:       132,
+			DestPortBE:     hostToNetwork16(5000),
+		},
+		Value: PolicyEntry{Precedence: 100},
+	}}
+
+	allowed := Evaluate(entries, Packet{RemoteIdentity: 100, Direction: DirectionIngress, Protocol: 132, DestPort: 5000})
+	if allowed.Verdict != VerdictAllow {
+		t.Fatalf("sctp decision = %+v, want allow", allowed)
+	}
+	dropped := Evaluate(entries, Packet{RemoteIdentity: 100, Direction: DirectionIngress, Protocol: 132, DestPort: 5001})
+	if dropped.Verdict != VerdictDrop {
+		t.Fatalf("other sctp port decision = %+v, want drop", dropped)
+	}
+}
+
 func TestEvaluateMatchesRemoteCIDRFromPacketIP(t *testing.T) {
 	endpoint := model.Endpoint{
 		ID:             "pod-a",

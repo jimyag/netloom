@@ -533,6 +533,30 @@ func TestIPv4L4ACLRulesFromProgramProjectsICMPDropTypeAndCode(t *testing.T) {
 	}
 }
 
+func TestIPv4L4ACLRulesFromProgramProjectsSCTPPort(t *testing.T) {
+	program := policy.Program{
+		EndpointID: testEndpointA,
+		Rules: []policy.Rule{{
+			ID:         "drop-sctp",
+			Direction:  model.DirectionIngress,
+			Protocol:   model.ProtocolSCTP,
+			RemoteCIDR: netip.MustParsePrefix("172.30.0.0/24"),
+			Ports:      []model.PortRange{{From: 5000, To: 5000}},
+			Action:     model.ActionDrop,
+		}},
+	}
+	rules, err := IPv4L4ACLRulesFromProgram(program)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 1 {
+		t.Fatalf("rules = %d, want 1", len(rules))
+	}
+	if rules[0].Protocol != 132 || rules[0].DestPort != 5000 || rules[0].DestPortPrefixBits != 16 || rules[0].Action != TCXDrop {
+		t.Fatalf("unexpected SCTP rule: %+v", rules[0])
+	}
+}
+
 func TestIPv4L4ACLTCXProgramBypassesICMPFragmentationNeeded(t *testing.T) {
 	instructions := ipv4L4ACLTCXInstructions(1, 26)
 	seenICMPLoad := false
@@ -812,6 +836,30 @@ func TestIPv6L4ACLRulesFromProgramProjectsICMPv6DropTypeAndCode(t *testing.T) {
 	}
 	if rules[0].Protocol != 58 || rules[0].DestPort != 0x8000 || rules[0].DestPortPrefixBits != 16 || rules[0].Action != TCXDrop {
 		t.Fatalf("unexpected ICMPv6 type/code rule: %+v", rules[0])
+	}
+}
+
+func TestIPv6L4ACLRulesFromProgramProjectsSCTPPort(t *testing.T) {
+	program := policy.Program{
+		EndpointID: testEndpointA,
+		Rules: []policy.Rule{{
+			ID:         "drop-sctp-v6",
+			Direction:  model.DirectionIngress,
+			Protocol:   model.ProtocolSCTP,
+			RemoteCIDR: netip.MustParsePrefix("fd00:20::/64"),
+			Ports:      []model.PortRange{{From: 5000, To: 5000}},
+			Action:     model.ActionDrop,
+		}},
+	}
+	rules, err := IPv6L4ACLRulesFromProgram(program)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 1 {
+		t.Fatalf("rules = %d, want 1", len(rules))
+	}
+	if rules[0].Protocol != 132 || rules[0].DestPort != 5000 || rules[0].DestPortPrefixBits != 16 || rules[0].Action != TCXDrop {
+		t.Fatalf("unexpected SCTPv6 rule: %+v", rules[0])
 	}
 }
 
