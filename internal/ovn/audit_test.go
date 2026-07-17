@@ -847,12 +847,13 @@ func TestAuditManagedObjectsFromReaderReportsRouterAndSwitchPortAttachmentDrift(
 				"options":   mapField(map[string]string{"router-port": routerPortName(logicalRouter("prod"), "apps")}),
 			}},
 			{Table: "Logical_Switch_Port", UUID: "lsp-pod-a", ExternalIDs: map[string]string{
-				"netloom_owner":    "netloom",
-				"netloom_vpc":      "prod",
-				"netloom_endpoint": endpointExternalID("prod", "pod-a"),
-				"netloom_node":     "node-a",
-				"netloom_role":     "router",
-				"netloom_subnet":   "apps",
+				"netloom_owner":            "netloom",
+				"netloom_vpc":              "prod",
+				"netloom_endpoint":         endpointExternalID("prod", "pod-a"),
+				"netloom_node":             "node-a",
+				"netloom_role":             "router",
+				"netloom_provider_network": "physnet-a",
+				"netloom_subnet":           "apps",
 			}, Fields: map[string]string{
 				"name":          logicalPort("prod", "pod-a"),
 				"addresses":     endpointAddress(endpoint),
@@ -874,8 +875,8 @@ func TestAuditManagedObjectsFromReaderReportsRouterAndSwitchPortAttachmentDrift(
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stats.DriftedManagedRows != 3 || stats.DriftedManagedFields != 3 {
-		t.Fatalf("router/switch port attachment drift stats = %+v, want router, switch port, and endpoint role drift", stats)
+	if stats.DriftedManagedRows != 3 || stats.DriftedManagedFields != 4 {
+		t.Fatalf("router/switch port attachment drift stats = %+v, want router, switch port, and endpoint role/provider drift", stats)
 	}
 }
 
@@ -1281,12 +1282,13 @@ func TestAuditManagedObjectsFromReaderReportsStaleLogicalSwitchPortColumns(t *te
 	reader := fakeManagedOVNReader{rows: map[string][]ManagedOVNRow{
 		"Logical_Switch_Port": {
 			{Table: "Logical_Switch_Port", UUID: "lsp-pod-a", ExternalIDs: map[string]string{
-				"netloom_owner":    "netloom",
-				"netloom_vpc":      "prod",
-				"netloom_endpoint": endpointExternalID("prod", "pod-a"),
-				"netloom_node":     "node-a",
-				"netloom_role":     "router",
-				"netloom_subnet":   "apps",
+				"netloom_owner":            "netloom",
+				"netloom_vpc":              "prod",
+				"netloom_endpoint":         endpointExternalID("prod", "pod-a"),
+				"netloom_node":             "node-a",
+				"netloom_role":             "router",
+				"netloom_provider_network": "physnet-a",
+				"netloom_subnet":           "apps",
 			}, Fields: map[string]string{
 				"name":             logicalPort("prod", "pod-a"),
 				"addresses":        endpointAddress(endpoint),
@@ -1312,11 +1314,14 @@ func TestAuditManagedObjectsFromReaderReportsStaleLogicalSwitchPortColumns(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stats.DriftedManagedRows != 1 || stats.DriftedManagedFields != 6 {
-		t.Fatalf("stale logical switch port column drift stats = %+v, want role/type/options/tag/ha_chassis_group/dhcp drift", stats)
+	if stats.DriftedManagedRows != 1 || stats.DriftedManagedFields != 7 {
+		t.Fatalf("stale logical switch port column drift stats = %+v, want role/provider/type/options/tag/ha_chassis_group/dhcp drift", stats)
 	}
 	if got := stats.DriftedManagedFieldCounts["Logical_Switch_Port.external_ids.netloom_role"]; got != 1 {
 		t.Fatalf("field drift counts = %+v, want stale endpoint role external_id drift", stats.DriftedManagedFieldCounts)
+	}
+	if got := stats.DriftedManagedFieldCounts["Logical_Switch_Port.external_ids.netloom_provider_network"]; got != 1 {
+		t.Fatalf("field drift counts = %+v, want stale endpoint provider external_id drift", stats.DriftedManagedFieldCounts)
 	}
 }
 

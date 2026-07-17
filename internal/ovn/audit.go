@@ -1072,7 +1072,12 @@ func staleManagedExternalIDShouldDrift(table, key string, live map[string]string
 			return false
 		}
 	case "Logical_Switch_Port":
-		return key == "netloom_role" && live["netloom_endpoint"] != ""
+		switch key {
+		case "netloom_role", "netloom_provider_network":
+			return live["netloom_endpoint"] != ""
+		default:
+			return false
+		}
 	}
 	return false
 }
