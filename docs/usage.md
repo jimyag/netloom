@@ -312,10 +312,16 @@ NETLOOM_AGENT_METRICS_ADDR=:9092 \
 ./netloom-agent agent-status -ovsdb unix:/var/run/openvswitch/db.sock
 ./netloom-agent dns-observations-export -ovsdb unix:/var/run/openvswitch/db.sock
 ./netloom-agent identity-groups-export -ovsdb unix:/var/run/openvswitch/db.sock
+./netloom-agent policy-entries-export -ovsdb unix:/var/run/openvswitch/db.sock -endpoint prod/vm-a
+./netloom-agent policy-rules -ovsdb unix:/var/run/openvswitch/db.sock -endpoint prod/vm-a
+./netloom-agent policy-events -ovsdb unix:/var/run/openvswitch/db.sock -endpoint prod/vm-a -limit 20
 ovs-vsctl get Open_vSwitch . external_ids:netloom_controller_status
 ovs-vsctl get Open_vSwitch . external_ids:netloom_agent_status
 ovs-vsctl get Open_vSwitch . external_ids:netloom_dns_observations
 ovs-vsctl get Open_vSwitch . external_ids:netloom_identity_groups
+ovs-vsctl get Open_vSwitch . external_ids:netloom_policy_entries
+ovs-vsctl get Open_vSwitch . external_ids:netloom_policy_rules
+ovs-vsctl get Open_vSwitch . external_ids:netloom_policy_events
 ```
 
 `controller-status` CLI 会解码 `Open_vSwitch.external_ids:netloom_controller_status`，
@@ -331,6 +337,12 @@ cluster quorum、stale advisory、maintenance 和错误状态。
 也就是 agent 根据 desired state、identity group feed 和 endpoint 解析出的当前成员快照；
 如果要查看原始导入或远端 feed 观测，可加 `-source observations` 导出
 `Open_vSwitch.external_ids:netloom_identity_group_observations`。
+`policy-entries-export` 会解码 `Open_vSwitch.external_ids:netloom_policy_entries`，
+用于在不访问 agent HTTP listener 的情况下审计最近一次 reconcile 写入的 live policy-map
+keys、values、计数器和 remote CIDR。
+`policy-rules` 和 `policy-events` 分别解码 `netloom_policy_rules` 与
+`netloom_policy_events`，用于查看规则来源、规则级 counter 和 endpoint policy-map
+更新事件。
 
 查看安全策略状态：
 
@@ -405,7 +417,15 @@ curl -s 'http://127.0.0.1:9092/policy/events/prod/vm-a?limit=20'
 ```bash
 curl -s http://127.0.0.1:9092/policy/entries/prod/vm-a
 curl -s 'http://127.0.0.1:9092/policy/entries?endpoint=prod/vm-a'
+netloom-agent policy-entries-export \
+  -ovsdb unix:/var/run/openvswitch/db.sock \
+  -endpoint prod/vm-a
+ovs-vsctl get Open_vSwitch . external_ids:netloom_policy_entries
 ```
+
+如果 agent 配置了 `NETLOOM_OVSDB_ENDPOINT`，最近一次 reconcile 的 endpoint
+policy-map entries 会写入 `Open_vSwitch.external_ids:netloom_policy_entries`。
+HTTP 接口适合在线排查，`policy-entries-export` 适合从本机 OVSDB 做离线审计。
 
 临时冻结或恢复某个 endpoint 的 policy map 更新：
 

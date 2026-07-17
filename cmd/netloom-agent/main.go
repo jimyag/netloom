@@ -40,6 +40,7 @@ const (
 	policyActionHistoryKey  = "netloom_policy_endpoint_action_history"
 	policyEventsKey         = "netloom_policy_events"
 	policyRulesKey          = "netloom_policy_rules"
+	policyEntriesKey        = "netloom_policy_entries"
 	policyFreezeStateKey    = "netloom_policy_freeze_state"
 	agentOVSDBStatusKey     = "netloom_agent_status"
 	identityGroupsStateKey  = "netloom_identity_groups"
@@ -65,6 +66,11 @@ func main() {
 			return
 		case "policy-entries":
 			if err := runPolicyEntries(os.Args[2:], os.Stdout); err != nil {
+				log.Fatal(err)
+			}
+			return
+		case "policy-entries-export":
+			if err := runPolicyEntriesExport(context.Background(), os.Args[2:], os.Stdout); err != nil {
 				log.Fatal(err)
 			}
 			return
@@ -186,6 +192,11 @@ type policyEntriesOptions struct {
 	stateFile string
 	node      string
 	endpoint  string
+}
+
+type policyEntriesExportOptions struct {
+	ovsdb    string
+	endpoint string
 }
 
 type policyActionHistoryOptions struct {
@@ -348,6 +359,25 @@ type policyEntriesOutput struct {
 	Entries              []policyMapEntryOutput `json:"entries"`
 }
 
+type policyEntriesExportOutput struct {
+	Node                 string                        `json:"node"`
+	Store                string                        `json:"store"`
+	Ready                bool                          `json:"ready"`
+	LastReconcileSuccess bool                          `json:"last_reconcile_success"`
+	LastReconcileError   string                        `json:"last_reconcile_error,omitempty"`
+	UpdatedAt            time.Time                     `json:"updated_at,omitempty"`
+	TotalEndpoints       int                           `json:"total_endpoints"`
+	EndpointCount        int                           `json:"endpoint_count"`
+	FilterEndpoint       string                        `json:"filter_endpoint,omitempty"`
+	Endpoints            []policyEntriesEndpointOutput `json:"endpoints"`
+}
+
+type policyEntriesEndpointOutput struct {
+	EndpointID string                 `json:"endpoint_id"`
+	EntryCount int                    `json:"entry_count"`
+	Entries    []policyMapEntryOutput `json:"entries"`
+}
+
 type policyMapEntryOutput struct {
 	Key        policyMapKeyOutput   `json:"key"`
 	Value      policyMapValueOutput `json:"value"`
@@ -458,6 +488,15 @@ type policyRulesDocument struct {
 	Rules                []policyRuleOutput `json:"rules"`
 }
 
+type policyEntriesDocument struct {
+	Node                 string                        `json:"node,omitempty"`
+	Store                string                        `json:"store,omitempty"`
+	LastReconcileSuccess bool                          `json:"last_reconcile_success"`
+	LastReconcileError   string                        `json:"last_reconcile_error,omitempty"`
+	UpdatedAt            time.Time                     `json:"updated_at,omitempty"`
+	Endpoints            []policyEntriesEndpointOutput `json:"endpoints"`
+}
+
 type policyRolloutStateDocument struct {
 	Rollouts []policyRolloutStateEntry `json:"rollouts"`
 }
@@ -536,6 +575,11 @@ type policyRulesStore interface {
 	Save(context.Context, policyRulesDocument) error
 }
 
+type policyEntriesStore interface {
+	Load(context.Context) (policyEntriesDocument, error)
+	Save(context.Context, policyEntriesDocument) error
+}
+
 type dnsObservationStore interface {
 	LoadDNSObservations(context.Context) ([]model.DNSRecord, error)
 }
@@ -566,6 +610,10 @@ type ovsdbPolicyEventsStore struct {
 }
 
 type ovsdbPolicyRulesStore struct {
+	syncer openVSwitchExternalIDStore
+}
+
+type ovsdbPolicyEntriesStore struct {
 	syncer openVSwitchExternalIDStore
 }
 
@@ -793,6 +841,40 @@ func runPolicyEntries(args []string, stdout io.Writer) error {
 		return err
 	}
 	output := policyEntriesOutputFromSnapshot(snapshot, endpointID, entryStore.Entries(endpointID))
+	encoder := json.NewEncoder(stdout)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(output)
+}
+
+func runPolicyEntriesExport(ctx context.Context, args []string, stdout io.Writer) error {
+	var opts policyEntriesExportOptions
+	flags := flag.NewFlagSet("netloom-agent policy-entries-export", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	flags.StringVar(&opts.ovsdb, "ovsdb", os.Getenv("NETLOOM_OVSDB_ENDPOINT"), "Open_vSwitch OVSDB endpoint")
+	flags.StringVar(&opts.endpoint, "endpoint", "", "optional endpoint key or endpoint ID to include")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(opts.ovsdb) == "" {
+		return errors.New("missing -ovsdb or NETLOOM_OVSDB_ENDPOINT")
+	}
+	client, closeStore, err := newOpenVSwitchClient(ctx, opts.ovsdb)
+	if err != nil {
+		return err
+	}
+	defer closeStore()
+	return runPolicyEntriesExportWithStore(ctx, opts, stdout, ovsdbPolicyEntriesStore{syncer: linuxdatapath.NewLibOVSDBProviderSyncer(client)})
+}
+
+func runPolicyEntriesExportWithStore(ctx context.Context, opts policyEntriesExportOptions, stdout io.Writer, store policyEntriesStore) error {
+	if store == nil {
+		return errors.New("missing policy entries store")
+	}
+	doc, err := store.Load(ctx)
+	if err != nil {
+		return err
+	}
+	output := policyEntriesExportOutputFromDocument(doc, strings.TrimSpace(opts.endpoint))
 	encoder := json.NewEncoder(stdout)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(output)
@@ -1542,6 +1624,48 @@ func policyEntriesOutputFromSnapshot(snapshot agentMetricsSnapshot, endpointID s
 	return output
 }
 
+func policyEntriesExportOutputFromDocument(doc policyEntriesDocument, endpoint string) policyEntriesExportOutput {
+	filtered := filterPolicyEntryEndpoints(doc.Endpoints, endpoint)
+	return policyEntriesExportOutput{
+		Node:                 doc.Node,
+		Store:                doc.Store,
+		Ready:                true,
+		LastReconcileSuccess: doc.LastReconcileSuccess,
+		LastReconcileError:   doc.LastReconcileError,
+		UpdatedAt:            doc.UpdatedAt,
+		TotalEndpoints:       len(doc.Endpoints),
+		EndpointCount:        len(filtered),
+		FilterEndpoint:       strings.TrimSpace(endpoint),
+		Endpoints:            filtered,
+	}
+}
+
+func filterPolicyEntryEndpoints(endpoints []policyEntriesEndpointOutput, endpoint string) []policyEntriesEndpointOutput {
+	endpoint = strings.TrimSpace(endpoint)
+	if endpoint == "" {
+		return append([]policyEntriesEndpointOutput(nil), endpoints...)
+	}
+	out := make([]policyEntriesEndpointOutput, 0, len(endpoints))
+	for _, entry := range endpoints {
+		if policyRuleEndpointMatches(entry.EndpointID, endpoint) {
+			out = append(out, entry)
+		}
+	}
+	return out
+}
+
+func policyEntriesEndpointOutputFromEntries(endpointID string, entries []dataplane.PolicyMapEntry) policyEntriesEndpointOutput {
+	output := policyEntriesEndpointOutput{
+		EndpointID: endpointID,
+		EntryCount: len(entries),
+		Entries:    make([]policyMapEntryOutput, 0, len(entries)),
+	}
+	for _, entry := range entries {
+		output.Entries = append(output.Entries, policyMapEntryOutputFromEntry(entry))
+	}
+	return output
+}
+
 func policyMapEntryOutputFromEntry(entry dataplane.PolicyMapEntry) policyMapEntryOutput {
 	out := policyMapEntryOutput{
 		Key: policyMapKeyOutput{
@@ -2058,6 +2182,12 @@ func runStateFile(ctx context.Context, path string) error {
 	}
 	defer closeRulesStore()
 	configurePolicyRulesStore(metrics, rulesStore)
+	entriesStore, closeEntriesStore, err := policyEntriesStoreFromEnv(ctx)
+	if err != nil {
+		return err
+	}
+	defer closeEntriesStore()
+	configurePolicyEntriesStore(metrics, entriesStore)
 	freezeStore, closeFreezeStore, err := policyFreezeStateStoreFromEnv(ctx)
 	if err != nil {
 		return err
@@ -2714,6 +2844,7 @@ type agentMetrics struct {
 	actionHistory       []policyActionHistoryEntry
 	policyEventsStore   policyEventsStore
 	policyRulesStore    policyRulesStore
+	policyEntriesStore  policyEntriesStore
 	freezeStateStore    policyFreezeStateStore
 	frozenEndpoints     map[string]time.Time
 }
@@ -2843,6 +2974,15 @@ func configurePolicyRulesStore(metrics *agentMetrics, store policyRulesStore) {
 	metrics.mu.Lock()
 	defer metrics.mu.Unlock()
 	metrics.policyRulesStore = store
+}
+
+func configurePolicyEntriesStore(metrics *agentMetrics, store policyEntriesStore) {
+	if metrics == nil || store == nil {
+		return
+	}
+	metrics.mu.Lock()
+	defer metrics.mu.Unlock()
+	metrics.policyEntriesStore = store
 }
 
 func configurePolicyFreezeState(ctx context.Context, metrics *agentMetrics, store policyFreezeStateStore) error {
@@ -3391,6 +3531,38 @@ func (s ovsdbPolicyRulesStore) Save(ctx context.Context, doc policyRulesDocument
 	return s.syncer.SetOpenVSwitchExternalID(ctx, policyRulesKey, string(raw))
 }
 
+func (s ovsdbPolicyEntriesStore) Load(ctx context.Context) (policyEntriesDocument, error) {
+	var doc policyEntriesDocument
+	if s.syncer == nil {
+		return doc, nil
+	}
+	raw, ok, err := s.syncer.OpenVSwitchExternalID(ctx, policyEntriesKey)
+	if err != nil {
+		return doc, err
+	}
+	if !ok || strings.TrimSpace(raw) == "" {
+		return doc, nil
+	}
+	if err := json.Unmarshal([]byte(raw), &doc); err != nil {
+		return doc, fmt.Errorf("decode Open_vSwitch external_ids:%s: %w", policyEntriesKey, err)
+	}
+	return doc, nil
+}
+
+func (s ovsdbPolicyEntriesStore) Save(ctx context.Context, doc policyEntriesDocument) error {
+	if s.syncer == nil {
+		return nil
+	}
+	if doc.UpdatedAt.IsZero() {
+		doc.UpdatedAt = time.Now().UTC()
+	}
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		return fmt.Errorf("encode Open_vSwitch external_ids:%s: %w", policyEntriesKey, err)
+	}
+	return s.syncer.SetOpenVSwitchExternalID(ctx, policyEntriesKey, string(raw))
+}
+
 func (s ovsdbDNSObservationStore) LoadDNSObservations(ctx context.Context) ([]model.DNSRecord, error) {
 	if s.syncer == nil {
 		return nil, nil
@@ -3514,6 +3686,8 @@ func (m *agentMetrics) observe(snapshot agentMetricsSnapshot) {
 	m.ready = true
 	eventStore := m.policyEventsStore
 	rulesStore := m.policyRulesStore
+	entriesStore := m.policyEntriesStore
+	policyStore := m.store
 	events := policyUpdateEventsFromStore(m.store)
 	m.mu.Unlock()
 	if eventStore != nil {
@@ -3526,6 +3700,16 @@ func (m *agentMetrics) observe(snapshot agentMetricsSnapshot) {
 		doc := policyRulesDocumentFromSnapshot(snapshot)
 		if err := rulesStore.Save(context.Background(), doc); err != nil {
 			log.Printf("persist policy rules: %v", err)
+		}
+	}
+	if entriesStore != nil {
+		doc, ok, err := policyEntriesDocumentFromStore(context.Background(), snapshot, policyStore)
+		if err != nil {
+			log.Printf("build policy entries snapshot: %v", err)
+		} else if ok {
+			if err := entriesStore.Save(context.Background(), doc); err != nil {
+				log.Printf("persist policy entries: %v", err)
+			}
 		}
 	}
 }
@@ -3560,6 +3744,35 @@ func policyRulesDocumentFromSnapshot(snapshot agentMetricsSnapshot) policyRulesD
 		UpdatedAt:            time.Now().UTC(),
 		Rules:                append([]policyRuleOutput(nil), output.Rules...),
 	}
+}
+
+func policyEntriesDocumentFromStore(ctx context.Context, snapshot agentMetricsSnapshot, store agent.PolicyStore) (policyEntriesDocument, bool, error) {
+	var doc policyEntriesDocument
+	inventory, ok := store.(agent.PolicyEndpointInventory)
+	if !ok {
+		return doc, false, nil
+	}
+	entryStore, ok := store.(agent.PolicyEndpointEntryStore)
+	if !ok {
+		return doc, false, nil
+	}
+	endpointIDs, err := inventory.EndpointIDs(ctx)
+	if err != nil {
+		return doc, false, err
+	}
+	sort.Strings(endpointIDs)
+	doc = policyEntriesDocument{
+		Node:                 snapshot.Result.Node,
+		Store:                snapshot.Store,
+		LastReconcileSuccess: snapshot.Success,
+		LastReconcileError:   snapshot.Error,
+		UpdatedAt:            time.Now().UTC(),
+		Endpoints:            make([]policyEntriesEndpointOutput, 0, len(endpointIDs)),
+	}
+	for _, endpointID := range endpointIDs {
+		doc.Endpoints = append(doc.Endpoints, policyEntriesEndpointOutputFromEntries(endpointID, entryStore.Entries(endpointID)))
+	}
+	return doc, true, nil
 }
 
 func (t *agentMetricsTotals) observe(snapshot agentMetricsSnapshot) {
@@ -5673,6 +5886,18 @@ func policyRulesStoreFromEnv(ctx context.Context) (policyRulesStore, func(), err
 		return nil, func() {}, err
 	}
 	return ovsdbPolicyRulesStore{syncer: linuxdatapath.NewLibOVSDBProviderSyncer(client)}, closeFn, nil
+}
+
+func policyEntriesStoreFromEnv(ctx context.Context) (policyEntriesStore, func(), error) {
+	endpoint := strings.TrimSpace(os.Getenv("NETLOOM_OVSDB_ENDPOINT"))
+	if endpoint == "" {
+		return nil, func() {}, nil
+	}
+	client, closeFn, err := newOpenVSwitchClient(ctx, endpoint)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	return ovsdbPolicyEntriesStore{syncer: linuxdatapath.NewLibOVSDBProviderSyncer(client)}, closeFn, nil
 }
 
 func policyFreezeStateStoreFromEnv(ctx context.Context) (policyFreezeStateStore, func(), error) {

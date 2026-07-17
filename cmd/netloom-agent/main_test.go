@@ -2390,6 +2390,131 @@ func TestAgentMetricsPersistsPolicyEventsToOpenVSwitchExternalID(t *testing.T) {
 	}
 }
 
+func TestRunPolicyEntriesExportWithStoreReportsFilteredJSON(t *testing.T) {
+	store := ovsdbPolicyEntriesStore{syncer: &fakeOpenVSwitchExternalIDStore{}}
+	if err := store.Save(t.Context(), policyEntriesDocument{
+		Node:                 "node-a",
+		Store:                "ebpf",
+		LastReconcileSuccess: true,
+		UpdatedAt:            time.Date(2026, 7, 17, 1, 2, 3, 0, time.UTC),
+		Endpoints: []policyEntriesEndpointOutput{{
+			EndpointID: "prod\x00pod-a",
+			EntryCount: 1,
+			Entries: []policyMapEntryOutput{{
+				Key: policyMapKeyOutput{
+					PrefixLen:      dataplane.StaticPrefixBits,
+					RemoteIdentity: 10,
+					Direction:      dataplane.DirectionIngress,
+					Protocol:       6,
+				},
+				Value: policyMapValueOutput{RuleCookie: 42, Packets: 5},
+			}},
+		}, {
+			EndpointID: "prod\x00pod-b",
+			EntryCount: 1,
+			Entries: []policyMapEntryOutput{{
+				Key: policyMapKeyOutput{
+					PrefixLen:      dataplane.StaticPrefixBits,
+					RemoteIdentity: 20,
+					Direction:      dataplane.DirectionEgress,
+					Protocol:       17,
+				},
+				Value: policyMapValueOutput{RuleCookie: 7, Packets: 9},
+			}},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var stdout bytes.Buffer
+	if err := runPolicyEntriesExportWithStore(t.Context(), policyEntriesExportOptions{endpoint: "prod/pod-a"}, &stdout, store); err != nil {
+		t.Fatal(err)
+	}
+	var got policyEntriesExportOutput
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode policy-entries-export output: %v\n%s", err, stdout.String())
+	}
+	if !got.Ready || !got.LastReconcileSuccess || got.Node != "node-a" || got.Store != "ebpf" || got.FilterEndpoint != "prod/pod-a" {
+		t.Fatalf("policy entries summary = %+v, want ready filtered node-a ebpf", got)
+	}
+	if got.TotalEndpoints != 2 || got.EndpointCount != 1 {
+		t.Fatalf("policy entries counts = %+v, want total=2 endpoint_count=1", got)
+	}
+	if len(got.Endpoints) != 1 || got.Endpoints[0].EndpointID != "prod\x00pod-a" || got.Endpoints[0].EntryCount != 1 || got.Endpoints[0].Entries[0].Value.RuleCookie != 42 {
+		t.Fatalf("policy entries = %+v, want filtered pod-a entry", got.Endpoints)
+	}
+}
+
+func TestRunPolicyEntriesExportReadsRealOpenVSwitchOVSDB(t *testing.T) {
+	endpoint, client, cleanup := newTestAgentVSwitchOVSDB(t)
+	defer cleanup()
+	raw, err := json.Marshal(policyEntriesDocument{
+		Node:                 "node-a",
+		Store:                "ebpf",
+		LastReconcileSuccess: true,
+		Endpoints: []policyEntriesEndpointOutput{{
+			EndpointID: model.EndpointKey("prod", "pod-a"),
+			EntryCount: 1,
+			Entries: []policyMapEntryOutput{{
+				Key:   policyMapKeyOutput{PrefixLen: dataplane.StaticPrefixBits, RemoteIdentity: 10, Direction: dataplane.DirectionIngress, Protocol: 6},
+				Value: policyMapValueOutput{RuleCookie: 42},
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	insertAgentVSwitchRows(t, t.Context(), client, &vswitch.OpenvSwitch{ExternalIDs: map[string]string{
+		policyEntriesKey: string(raw),
+	}})
+	var stdout bytes.Buffer
+	if err := runPolicyEntriesExport(t.Context(), []string{"-ovsdb", endpoint}, &stdout); err != nil {
+		t.Fatal(err)
+	}
+	var got policyEntriesExportOutput
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode policy-entries-export output: %v\n%s", err, stdout.String())
+	}
+	if got.Node != "node-a" || got.Store != "ebpf" || got.EndpointCount != 1 || got.Endpoints[0].EndpointID != model.EndpointKey("prod", "pod-a") {
+		t.Fatalf("policy entries = %+v, want persisted pod-a entries", got)
+	}
+}
+
+func TestAgentMetricsPersistsPolicyEntriesToOpenVSwitchExternalID(t *testing.T) {
+	store := dataplane.NewInMemoryPolicyStore()
+	endpointID := model.EndpointKey("prod", "pod-a")
+	if err := store.ReplaceEndpoint(t.Context(), endpointID, []dataplane.PolicyMapEntry{{
+		Key: dataplane.PolicyKey{
+			PrefixLen:      dataplane.StaticPrefixBits,
+			Direction:      dataplane.DirectionIngress,
+			Protocol:       6,
+			RemoteIdentity: 10,
+		},
+		Value: dataplane.PolicyEntry{RuleCookie: 42, Packets: 5},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	ovsdb := &fakeOpenVSwitchExternalIDStore{}
+	metrics := newAgentMetrics(store)
+	configurePolicyEntriesStore(metrics, ovsdbPolicyEntriesStore{syncer: ovsdb})
+
+	observeAgentReconcileResult(metrics, agent.ReconcileResult{Node: "node-a"}, "ebpf", time.Millisecond)
+
+	raw := ovsdb.values[policyEntriesKey]
+	if raw == "" {
+		t.Fatalf("missing %s external_id", policyEntriesKey)
+	}
+	var doc policyEntriesDocument
+	if err := json.Unmarshal([]byte(raw), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.Node != "node-a" || doc.Store != "ebpf" || !doc.LastReconcileSuccess {
+		t.Fatalf("policy entries doc = %+v, want successful node-a ebpf snapshot", doc)
+	}
+	if len(doc.Endpoints) != 1 || doc.Endpoints[0].EndpointID != endpointID || doc.Endpoints[0].EntryCount != 1 || doc.Endpoints[0].Entries[0].Value.RuleCookie != 42 {
+		t.Fatalf("policy entries = %+v, want persisted pod-a entry", doc.Endpoints)
+	}
+}
+
 func TestPolicyRulesAPIReportsCatalogAndCounters(t *testing.T) {
 	metrics := newAgentMetrics()
 	endpointID := model.EndpointKey("prod", "pod-a")
