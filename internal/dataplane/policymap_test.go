@@ -386,7 +386,7 @@ func TestPolicyBackendHonorsLowerSecurityGroupRulePriority(t *testing.T) {
 	}
 }
 
-func TestEncodeProgramRejectsSamePriorityDuplicateKeyConflict(t *testing.T) {
+func TestEncodeProgramChoosesDenyForSamePriorityDuplicateKey(t *testing.T) {
 	program := policy.Program{
 		EndpointID: model.EndpointKey("prod", "pod-a"),
 		MapEntries: []policy.MapEntry{
@@ -415,12 +415,56 @@ func TestEncodeProgramRejectsSamePriorityDuplicateKeyConflict(t *testing.T) {
 		},
 	}
 
-	_, err := EncodeProgram(program)
-	if err == nil {
-		t.Fatal("expected duplicate key conflict to fail")
+	entries, err := EncodeProgram(program)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if got := err.Error(); !strings.Contains(got, "conflicting policy map entries") {
-		t.Fatalf("error = %q, want conflicting policy map entries", got)
+	if len(entries) != 1 {
+		t.Fatalf("entries = %d, want one deduplicated deny entry", len(entries))
+	}
+	if entries[0].Value.Deny != 1 || entries[0].Value.RuleCookie != stableCookie("drop-api") {
+		t.Fatalf("entry = %+v, want drop-api deny to win", entries[0])
+	}
+}
+
+func TestEncodeProgramChoosesRejectForSamePriorityDuplicateKey(t *testing.T) {
+	program := policy.Program{
+		EndpointID: model.EndpointKey("prod", "pod-a"),
+		MapEntries: []policy.MapEntry{
+			{
+				Key: policy.MapKey{
+					RemoteIdentity: 100,
+					Direction:      model.DirectionIngress,
+					Protocol:       model.ProtocolTCP,
+					DestPort:       443,
+					L4PrefixBits:   24,
+				},
+				Value:  policy.MapValue{Deny: true, Precedence: 100},
+				RuleID: "drop-api",
+			},
+			{
+				Key: policy.MapKey{
+					RemoteIdentity: 100,
+					Direction:      model.DirectionIngress,
+					Protocol:       model.ProtocolTCP,
+					DestPort:       443,
+					L4PrefixBits:   24,
+				},
+				Value:  policy.MapValue{Deny: true, Reject: true, Precedence: 100},
+				RuleID: "reject-api",
+			},
+		},
+	}
+
+	entries, err := EncodeProgram(program)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("entries = %d, want one deduplicated reject entry", len(entries))
+	}
+	if entries[0].Value.Deny != 1 || entries[0].Value.Reject != 1 || entries[0].Value.RuleCookie != stableCookie("reject-api") {
+		t.Fatalf("entry = %+v, want reject-api to win", entries[0])
 	}
 }
 

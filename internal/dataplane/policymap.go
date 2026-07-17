@@ -645,6 +645,9 @@ func betterPolicyMapEntry(candidate, selected PolicyMapEntry) bool {
 	if candidate.Value.L4PrefixLen != selected.Value.L4PrefixLen {
 		return candidate.Value.L4PrefixLen > selected.Value.L4PrefixLen
 	}
+	if candidateAction, selectedAction := policyActionPrecedence(candidate.Value), policyActionPrecedence(selected.Value); candidateAction != selectedAction {
+		return candidateAction > selectedAction
+	}
 	return false
 }
 
