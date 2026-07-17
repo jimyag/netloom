@@ -2146,24 +2146,74 @@ func (c *libovsdbClusterConnector) Connect(ctx context.Context) (libovsdbclient.
 	}
 
 	var errs []string
+	attempts := make([]ovnClusterEndpointSnapshot, 0, len(c.endpoints))
 	for offset := 0; offset < len(c.endpoints); offset++ {
 		index := (start + offset) % len(c.endpoints)
 		endpoint := c.endpoints[index]
 		client, closeFn, err := c.dial(ctx, c.owner, endpoint)
 		if err != nil {
 			errs = append(errs, fmt.Sprintf("%s: %v", endpoint, err))
+			attempts = append(attempts, ovnClusterEndpointSnapshot{
+				Endpoint:  endpoint,
+				Status:    "connect_error",
+				Reachable: false,
+				Error:     err.Error(),
+			})
 			continue
 		}
+		attempts = append(attempts, ovnClusterEndpointSnapshot{
+			Endpoint:  endpoint,
+			Status:    "connected",
+			Reachable: true,
+		})
 		c.mu.Lock()
 		if previous != "" && endpoint != previous {
 			c.failovers++
 		}
 		c.current = endpoint
 		c.currentIndex = index
+		c.statuses = mergeOVNClusterConnectStatuses(c.statuses, attempts)
 		c.mu.Unlock()
 		return client, closeFn, nil
 	}
+	c.mu.Lock()
+	c.statuses = mergeOVNClusterConnectStatuses(c.statuses, attempts)
+	c.mu.Unlock()
 	return nil, nil, fmt.Errorf("connect OVN northbound libovsdb endpoints: %s", strings.Join(errs, "; "))
+}
+
+func mergeOVNClusterConnectStatuses(existing, attempts []ovnClusterEndpointSnapshot) []ovnClusterEndpointSnapshot {
+	if len(attempts) == 0 {
+		return append([]ovnClusterEndpointSnapshot(nil), existing...)
+	}
+	merged := append([]ovnClusterEndpointSnapshot(nil), existing...)
+	index := make(map[string]int, len(merged)+len(attempts))
+	for i, endpoint := range merged {
+		index[endpoint.Endpoint] = i
+	}
+	for _, attempt := range attempts {
+		if i, ok := index[attempt.Endpoint]; ok {
+			merged[i] = mergeOVNClusterConnectStatus(merged[i], attempt)
+			continue
+		}
+		index[attempt.Endpoint] = len(merged)
+		merged = append(merged, attempt)
+	}
+	return merged
+}
+
+func mergeOVNClusterConnectStatus(existing, attempt ovnClusterEndpointSnapshot) ovnClusterEndpointSnapshot {
+	existing.Reachable = attempt.Reachable
+	if attempt.Error != "" {
+		existing.Status = attempt.Status
+		existing.Error = attempt.Error
+		return existing
+	}
+	existing.Error = ""
+	if existing.Status == "" || existing.Status == "error" || existing.Status == "connect_error" {
+		existing.Status = attempt.Status
+	}
+	return existing
 }
 
 func (c *libovsdbClusterConnector) probeLeader(ctx context.Context) string {

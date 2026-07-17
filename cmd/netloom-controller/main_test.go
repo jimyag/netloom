@@ -788,11 +788,83 @@ func TestLibOVSDBClusterConnectorReportsLeaderProbeFailure(t *testing.T) {
 	if snapshot.LeaderProbeStatus != "error" || !strings.Contains(snapshot.LeaderProbeError, "cluster status unavailable") {
 		t.Fatalf("leader probe snapshot = %+v, want recorded probe error", snapshot)
 	}
-	if snapshot.QuorumStatus != "lost" || snapshot.ReachableEndpoints != 0 || snapshot.QuorumSize != 2 {
-		t.Fatalf("cluster quorum snapshot = %+v, want lost quorum", snapshot)
+	if snapshot.QuorumStatus != "lost" || snapshot.ReachableEndpoints != 1 || snapshot.QuorumSize != 2 {
+		t.Fatalf("cluster quorum snapshot = %+v, want one connected endpoint without quorum", snapshot)
 	}
-	if len(snapshot.Endpoints) != 1 || snapshot.Endpoints[0].Reachable {
-		t.Fatalf("cluster endpoint statuses = %+v, want unreachable target details", snapshot.Endpoints)
+	if len(snapshot.Endpoints) != 1 || !snapshot.Endpoints[0].Reachable || snapshot.Endpoints[0].Status != "connected" {
+		t.Fatalf("cluster endpoint statuses = %+v, want connected fallback with probe error preserved separately", snapshot.Endpoints)
+	}
+}
+
+func TestLibOVSDBClusterConnectorRecordsConnectAttemptStatus(t *testing.T) {
+	cluster := newLibOVSDBClusterConnector("test", []string{"tcp:a:6641", "tcp:b:6641"}, func(_ context.Context, _ string, endpoint string) (libovsdbclient.Client, func(), error) {
+		if endpoint == "tcp:a:6641" {
+			return nil, nil, errors.New("connection refused")
+		}
+		return nil, func() {}, nil
+	}, nil)
+	if _, _, err := cluster.Connect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := cluster.Snapshot()
+	if snapshot.ActiveEndpoint != "tcp:b:6641" || snapshot.QuorumStatus != "lost" {
+		t.Fatalf("cluster snapshot = %+v, want active fallback with lost quorum from connect status", snapshot)
+	}
+	if len(snapshot.Endpoints) != 2 {
+		t.Fatalf("cluster endpoint statuses = %+v, want failed and connected attempts", snapshot.Endpoints)
+	}
+	if snapshot.Endpoints[0].Endpoint != "tcp:a:6641" || snapshot.Endpoints[0].Status != "connect_error" || snapshot.Endpoints[0].Reachable || !strings.Contains(snapshot.Endpoints[0].Error, "connection refused") {
+		t.Fatalf("failed endpoint status = %+v, want connect_error", snapshot.Endpoints[0])
+	}
+	if snapshot.Endpoints[1].Endpoint != "tcp:b:6641" || snapshot.Endpoints[1].Status != "connected" || !snapshot.Endpoints[1].Reachable || snapshot.Endpoints[1].Error != "" {
+		t.Fatalf("connected endpoint status = %+v, want connected", snapshot.Endpoints[1])
+	}
+}
+
+func TestLibOVSDBClusterConnectorRecordsLeaderConnectFailureBeforeFollowerFallback(t *testing.T) {
+	cluster := newLibOVSDBClusterConnector("test", []string{"tcp:a:6641", "tcp:b:6641"}, func(_ context.Context, _ string, endpoint string) (libovsdbclient.Client, func(), error) {
+		if endpoint == "tcp:b:6641" {
+			return nil, nil, errors.New("leader dial timeout")
+		}
+		return nil, func() {}, nil
+	}, func(context.Context, []string) (ovnClusterProbeResult, error) {
+		return ovnClusterProbeResult{
+			Leader: "tcp:b:6641",
+			Endpoints: []ovnClusterEndpointSnapshot{{
+				Endpoint:  "tcp:a:6641",
+				Target:    "target-a",
+				Role:      "follower",
+				ServerID:  "server-a",
+				LeaderID:  "server-b",
+				Reachable: true,
+			}, {
+				Endpoint:  "tcp:b:6641",
+				Target:    "target-b",
+				Role:      "leader",
+				ServerID:  "server-b",
+				LeaderID:  "self",
+				Reachable: true,
+				Leader:    true,
+			}},
+		}, nil
+	})
+	if _, _, err := cluster.Connect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := cluster.Snapshot()
+	if snapshot.ActiveEndpoint != "tcp:a:6641" || snapshot.LeaderEndpoint != "tcp:b:6641" || snapshot.LeaderPreferred {
+		t.Fatalf("cluster snapshot = %+v, want follower active after leader dial failure", snapshot)
+	}
+	if len(snapshot.Endpoints) != 2 {
+		t.Fatalf("cluster endpoint statuses = %+v, want probed endpoints", snapshot.Endpoints)
+	}
+	leader := snapshot.Endpoints[1]
+	if leader.Endpoint != "tcp:b:6641" || leader.Role != "leader" || leader.Status != "connect_error" || leader.Reachable || !strings.Contains(leader.Error, "leader dial timeout") {
+		t.Fatalf("leader endpoint status = %+v, want leader metadata plus connect_error", leader)
+	}
+	follower := snapshot.Endpoints[0]
+	if follower.Endpoint != "tcp:a:6641" || follower.Role != "follower" || !follower.Reachable || follower.Error != "" {
+		t.Fatalf("follower endpoint status = %+v, want reachable follower metadata", follower)
 	}
 }
 
