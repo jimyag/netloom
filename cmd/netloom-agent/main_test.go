@@ -1693,6 +1693,73 @@ func TestReconcileStateFileOnceWritesAgentStatusToOpenVSwitchExternalID(t *testi
 	}
 }
 
+func TestReconcileStateFileOnceStrictRuntimePreflightFailsClosed(t *testing.T) {
+	t.Setenv("NETLOOM_RUNTIME_PREFLIGHT_STRICT", "1")
+	originalPreflight := runAgentRuntimePreflight
+	runAgentRuntimePreflight = func() []agent.RuntimeCheck {
+		return []agent.RuntimeCheck{{
+			Name:     "bpffs",
+			Status:   "fail",
+			Required: true,
+			Detail:   "/sys/fs/bpf is not bpffs",
+		}, {
+			Name:   "ovsdb",
+			Status: "warn",
+			Detail: "not configured",
+		}}
+	}
+	t.Cleanup(func() {
+		runAgentRuntimePreflight = originalPreflight
+	})
+	statePath := writeAgentState(t, control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:             "pod-a",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"web"},
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "allow-http",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("172.30.0.0/24"),
+				Ports:      []model.PortRange{{From: 80, To: 80}},
+				Action:     model.ActionAllow,
+			}},
+		}},
+	})
+	store := dataplane.NewInMemoryPolicyStore()
+	statusStore := &fakeOpenVSwitchExternalIDStore{}
+	metrics := newAgentMetrics(store)
+
+	err := reconcileStateFileOnceWithRuntimeStores(context.Background(), statePath, "node-a", "memory", store, time.Second, metrics, nil, nil, nil, nil, statusStore)
+	if err == nil || !strings.Contains(err.Error(), "runtime preflight failed") || !strings.Contains(err.Error(), "bpffs=fail") {
+		t.Fatalf("err = %v, want strict runtime preflight failure", err)
+	}
+	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 0 {
+		t.Fatalf("policy entries = %+v, want no mutation after strict runtime preflight failure", entries)
+	}
+	var status agentOVSDBStatus
+	if raw := statusStore.values[agentOVSDBStatusKey]; raw == "" {
+		t.Fatalf("missing %s external_id", agentOVSDBStatusKey)
+	} else if err := json.Unmarshal([]byte(raw), &status); err != nil {
+		t.Fatalf("decode %s: %v", agentOVSDBStatusKey, err)
+	}
+	if status.Status != "error" || status.RuntimeReady || status.RuntimeFailed != 1 || len(status.Runtime) != 2 {
+		t.Fatalf("agent OVSDB status = %+v, want strict runtime preflight error", status)
+	}
+	snapshot, _, ready := metrics.snapshotValue()
+	if !ready || snapshot.Success || !strings.Contains(snapshot.Error, "runtime preflight failed") || agent.RuntimeChecksReady(snapshot.Runtime) {
+		t.Fatalf("metrics snapshot = %+v ready=%t, want runtime preflight failure", snapshot, ready)
+	}
+}
+
 func TestReconcileStateFileOnceResumesPersistedPolicyRolloutState(t *testing.T) {
 	state := control.DesiredState{
 		Endpoints: []model.Endpoint{

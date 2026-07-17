@@ -47,6 +47,8 @@ const (
 	identityGroupsStateKey  = "netloom_identity_groups"
 )
 
+var runAgentRuntimePreflight = agent.RunRuntimePreflight
+
 func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
@@ -2351,7 +2353,7 @@ func runStateFile(ctx context.Context, path string) error {
 
 func reconcileStateFile(ctx context.Context, path, node, storeName string, reconciler *agent.Reconciler, metrics *agentMetrics, identityGroupFeedCache *control.IdentityGroupObservationCache) error {
 	start := time.Now()
-	runtimeChecks := agent.RunRuntimePreflight()
+	runtimeChecks := runAgentRuntimePreflight()
 	linuxOptions, rolloutStateStore, dnsObservationStore, identityGroupStore, closeLinuxOptions, err := linuxDatapathOptionsWithOVSDBSyncer(ctx)
 	if err != nil {
 		duration := time.Since(start)
@@ -2374,6 +2376,14 @@ func reconcileStateFile(ctx context.Context, path, node, storeName string, recon
 	if err != nil {
 		duration := time.Since(start)
 		result := agent.ReconcileResult{Node: node}
+		syncAgentOVSDBStatus(ctx, identityGroupStore, result, storeName, err, duration, runtimeChecks)
+		observeAgentReconcileFailure(metrics, result, storeName, err, duration, runtimeChecks)
+		return err
+	}
+	if err := enforceRuntimePreflight(runtimeChecks); err != nil {
+		duration := time.Since(start)
+		result := agent.ReconcileResult{Node: node}
+		printReconcileFailure(result, storeName, err, duration)
 		syncAgentOVSDBStatus(ctx, identityGroupStore, result, storeName, err, duration, runtimeChecks)
 		observeAgentReconcileFailure(metrics, result, storeName, err, duration, runtimeChecks)
 		return err
@@ -2440,7 +2450,7 @@ func reconcileStateFile(ctx context.Context, path, node, storeName string, recon
 }
 
 func reconcileStateFileOnce(ctx context.Context, path, node, storeName string, store agent.PolicyStore, hold time.Duration, metrics *agentMetrics, identityGroupFeedCache *control.IdentityGroupObservationCache) error {
-	runtimeChecks := agent.RunRuntimePreflight()
+	runtimeChecks := runAgentRuntimePreflight()
 	linuxOptions, rolloutStateStore, dnsObservationStore, identityGroupStore, closeLinuxOptions, err := linuxDatapathOptionsWithOVSDBSyncer(ctx)
 	if err != nil {
 		start := time.Now()
@@ -2455,7 +2465,7 @@ func reconcileStateFileOnce(ctx context.Context, path, node, storeName string, s
 
 func reconcileStateFileOnceWithRuntimeStores(ctx context.Context, path, node, storeName string, store agent.PolicyStore, hold time.Duration, metrics *agentMetrics, identityGroupFeedCache *control.IdentityGroupObservationCache, linuxOptions *linuxdatapath.Options, rolloutStateStore policyRolloutStateStore, dnsObservationStore dnsObservationStore, identityGroupStore openVSwitchExternalIDStore) error {
 	start := time.Now()
-	runtimeChecks := agent.RunRuntimePreflight()
+	runtimeChecks := runAgentRuntimePreflight()
 	state, err := loadDesiredStateFromPathOrOVSDB(ctx, path, identityGroupStore)
 	if err != nil {
 		result := agent.ReconcileResult{Node: node}
@@ -2476,6 +2486,14 @@ func reconcileStateFileOnceWithRuntimeStores(ctx context.Context, path, node, st
 	if err != nil {
 		result := agent.ReconcileResult{Node: node}
 		duration := time.Since(start)
+		syncAgentOVSDBStatus(ctx, identityGroupStore, result, storeName, err, duration, runtimeChecks)
+		observeAgentReconcileFailure(metrics, result, storeName, err, duration, runtimeChecks)
+		return err
+	}
+	if err := enforceRuntimePreflight(runtimeChecks); err != nil {
+		result := agent.ReconcileResult{Node: node}
+		duration := time.Since(start)
+		printReconcileFailure(result, storeName, err, duration)
 		syncAgentOVSDBStatus(ctx, identityGroupStore, result, storeName, err, duration, runtimeChecks)
 		observeAgentReconcileFailure(metrics, result, storeName, err, duration, runtimeChecks)
 		return err
@@ -3004,6 +3022,37 @@ func countRuntimeCheckStatuses(checks []agent.RuntimeCheck) (failed, warned int)
 		}
 	}
 	return failed, warned
+}
+
+func enforceRuntimePreflight(checks []agent.RuntimeCheck) error {
+	if !runtimePreflightStrictEnabled() || agent.RuntimeChecksReady(checks) {
+		return nil
+	}
+	return fmt.Errorf("runtime preflight failed: %s", formatFailedRuntimeChecks(checks))
+}
+
+func runtimePreflightStrictEnabled() bool {
+	raw := strings.TrimSpace(os.Getenv("NETLOOM_RUNTIME_PREFLIGHT_STRICT"))
+	return raw == "1" || strings.EqualFold(raw, "true") || strings.EqualFold(raw, "yes")
+}
+
+func formatFailedRuntimeChecks(checks []agent.RuntimeCheck) string {
+	parts := make([]string, 0, len(checks))
+	for _, check := range checks {
+		if !(check.Required && check.Status == "fail") {
+			continue
+		}
+		detail := strings.TrimSpace(check.Detail)
+		if detail == "" {
+			detail = "-"
+		}
+		parts = append(parts, fmt.Sprintf("%s=%s(%s)", check.Name, check.Status, detail))
+	}
+	if len(parts) == 0 {
+		return "none"
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ",")
 }
 
 func cloneRuntimeChecks(checks []agent.RuntimeCheck) []agent.RuntimeCheck {

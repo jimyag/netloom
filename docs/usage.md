@@ -42,6 +42,8 @@ go build ./cmd/netloom-controller ./cmd/netloom-agent ./cmd/netloom-dns-observer
 selftest 会验证策略编译、stateful conntrack、policy event/counter 路径，并输出 runtime preflight：
 `bpffs`、`memlock`、`cap_bpf_or_sys_admin`、`cap_net_admin`、OVSDB endpoint 和 OVN NB endpoint。
 默认只报告 runtime 问题；设置 `NETLOOM_SELFTEST_STRICT_RUNTIME=1` 后，必要检查失败会让 selftest 直接失败。
+长运行 agent 可以设置 `NETLOOM_RUNTIME_PREFLIGHT_STRICT=1`，在必要 runtime check 失败时
+fail closed，不继续写 policy map、TCX 或本机 datapath，并把失败写入 `netloom_agent_status`。
 
 ## Desired State 示例
 
