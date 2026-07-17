@@ -558,7 +558,8 @@ func DiffPolicyMapEntries(endpointID string, desired, live []PolicyMapEntry) Pol
 			report.Missing++
 			continue
 		}
-		if !policyEntrySemanticsEqual(liveEntry.Value, desiredEntry.Value) {
+		if !policyEntrySemanticsEqual(liveEntry.Value, desiredEntry.Value) ||
+			policyEntryRemoteCIDRDrifted(desiredEntry.RemoteCIDR, liveEntry.RemoteCIDR) {
 			report.Changed++
 		}
 	}
@@ -569,6 +570,13 @@ func DiffPolicyMapEntries(endpointID string, desired, live []PolicyMapEntry) Pol
 	}
 	report.Drifted = report.Missing != 0 || report.Extra != 0 || report.Changed != 0
 	return report
+}
+
+func policyEntryRemoteCIDRDrifted(desired, live netip.Prefix) bool {
+	if !live.IsValid() {
+		return false
+	}
+	return desired != live
 }
 
 func SummarizePolicyMapDrift(reports []PolicyMapDrift) PolicyMapDriftSummary {

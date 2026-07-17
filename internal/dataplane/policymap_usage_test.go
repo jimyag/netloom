@@ -2,6 +2,7 @@ package dataplane
 
 import (
 	"context"
+	"net/netip"
 	"testing"
 
 	"github.com/jimyag/netloom/internal/model"
@@ -106,6 +107,11 @@ func TestDiffPolicyMapEntriesClassifiesDrift(t *testing.T) {
 		Key:   PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 2, Direction: DirectionIngress},
 		Value: PolicyEntry{Precedence: 20, RuleCookie: 2, Deny: 1},
 	}
+	desiredCIDRChanged := PolicyMapEntry{
+		Key:        PolicyKey{PrefixLen: StaticPrefixBits + 32, RemoteIdentity: 5, Direction: DirectionIngress},
+		Value:      PolicyEntry{Precedence: 50, RuleCookie: 5},
+		RemoteCIDR: netip.MustParsePrefix("10.10.0.10/32"),
+	}
 	desiredMissing := PolicyMapEntry{
 		Key:   PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 3, Direction: DirectionIngress},
 		Value: PolicyEntry{Precedence: 30, RuleCookie: 3},
@@ -115,14 +121,31 @@ func TestDiffPolicyMapEntriesClassifiesDrift(t *testing.T) {
 	liveKeepWithCounters.Value.Bytes = 4096
 	liveChanged := desiredChanged
 	liveChanged.Value.Deny = 0
+	liveCIDRChanged := desiredCIDRChanged
+	liveCIDRChanged.RemoteCIDR = netip.MustParsePrefix("10.10.0.11/32")
 	liveExtra := PolicyMapEntry{
 		Key:   PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 4, Direction: DirectionIngress},
 		Value: PolicyEntry{Precedence: 40, RuleCookie: 4},
 	}
 
-	report := DiffPolicyMapEntries("prod/pod-a", []PolicyMapEntry{desiredKeep, desiredChanged, desiredMissing}, []PolicyMapEntry{liveKeepWithCounters, liveChanged, liveExtra})
-	if !report.Drifted || report.Missing != 1 || report.Extra != 1 || report.Changed != 1 {
-		t.Fatalf("drift report = %+v, want one missing, one extra and one changed entry", report)
+	report := DiffPolicyMapEntries("prod/pod-a", []PolicyMapEntry{desiredKeep, desiredChanged, desiredCIDRChanged, desiredMissing}, []PolicyMapEntry{liveKeepWithCounters, liveChanged, liveCIDRChanged, liveExtra})
+	if !report.Drifted || report.Missing != 1 || report.Extra != 1 || report.Changed != 2 {
+		t.Fatalf("drift report = %+v, want one missing, one extra, and two changed entries", report)
+	}
+}
+
+func TestDiffPolicyMapEntriesIgnoresMissingLiveRemoteCIDRMetadata(t *testing.T) {
+	desired := PolicyMapEntry{
+		Key:        PolicyKey{PrefixLen: StaticPrefixBits + 32, RemoteIdentity: 5, Direction: DirectionIngress},
+		Value:      PolicyEntry{Precedence: 50, RuleCookie: 5},
+		RemoteCIDR: netip.MustParsePrefix("10.10.0.10/32"),
+	}
+	live := desired
+	live.RemoteCIDR = netip.Prefix{}
+
+	report := DiffPolicyMapEntries("prod/pod-a", []PolicyMapEntry{desired}, []PolicyMapEntry{live})
+	if report.Drifted || report.Changed != 0 {
+		t.Fatalf("drift report = %+v, want missing eBPF live metadata ignored", report)
 	}
 }
 
