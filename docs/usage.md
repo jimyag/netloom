@@ -555,6 +555,8 @@ curl -s -X POST http://127.0.0.1:9092/policy/endpoints/rollout \
 rollout 响应里的每个 `items[].plan` 使用和单 endpoint `/plan` 相同的 diff
 结构。`dry_run:true` 只生成每个 endpoint 的 staged 变更计划，不写 live policy map；
 正式 rollout 时同一字段可用于确认每个 batch 实际应用前计划的 add/update/delete 明细。
+顶层 `rollout.risk` 会聚合所有 endpoint plan 的阻断风险，便于 approval/ack/finalize
+检查点先看整次变更的风险面。
 
 查看 endpoint policy lifecycle 动作历史：
 

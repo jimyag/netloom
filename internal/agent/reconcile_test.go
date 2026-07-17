@@ -1797,8 +1797,34 @@ func TestRolloutPolicyEndpointsDryRunPlansWithoutApplying(t *testing.T) {
 	if rollout.Items[0].Phase != "planned" || !rollout.Items[0].Plan.Changed || rollout.Items[0].Plan.DesiredEntries != 1 {
 		t.Fatalf("first rollout item = %+v, want planned changed endpoint", rollout.Items[0])
 	}
+	if rollout.Risk.BlockingChange {
+		t.Fatalf("rollout risk = %+v, want non-blocking allow dry-run", rollout.Risk)
+	}
 	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 0 {
 		t.Fatalf("dry-run entries = %+v, want no live mutation", entries)
+	}
+}
+
+func TestRolloutPolicyEndpointsAggregatesPlanRisk(t *testing.T) {
+	state := rolloutPolicyState()
+	state.SecurityGroups[0].Rules[0].Action = model.ActionReject
+	state.SecurityGroups[0].Rules[0].ID = "reject-http"
+	store := dataplane.NewInMemoryPolicyStore()
+
+	rollout, err := RolloutPolicyEndpoints(context.Background(), state, ReconcileOptions{
+		Node:  "node-a",
+		Store: store,
+	}, PolicyEndpointRolloutOptions{
+		DryRun: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rollout.Risk.BlockingChange || rollout.Risk.AddedDenyEntries != 3 || rollout.Risk.AddedRejectEntries != 3 {
+		t.Fatalf("rollout risk = %+v, want three added reject entries", rollout.Risk)
+	}
+	if len(rollout.Items) != 3 || !rollout.Items[0].Plan.Risk.BlockingChange {
+		t.Fatalf("rollout items = %+v, want per-endpoint blocking risk", rollout.Items)
 	}
 }
 

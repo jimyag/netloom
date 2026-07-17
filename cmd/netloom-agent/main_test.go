@@ -4756,6 +4756,9 @@ func TestPolicyEndpointAPIRolloutAppliesMultipleEndpoints(t *testing.T) {
 	if len(got.Rollout.Items[0].Plan.AddedEntries) != 1 || got.Rollout.Items[0].Plan.AddedEntries[0].RuleRef != "prod/web/allow-http" || got.Rollout.Items[0].Plan.AddedEntries[0].SecurityGroup != "web" {
 		t.Fatalf("first rollout item plan endpoint=%q entries=%+v, want allow-http rule metadata", got.Rollout.Items[0].Plan.EndpointID, got.Rollout.Items[0].Plan.AddedEntries)
 	}
+	if got.Rollout.Risk.BlockingChange {
+		t.Fatalf("rollout risk = %+v, want non-blocking allow rollout", got.Rollout.Risk)
+	}
 	if got.Rollout.Items[0].Plan.Risk.BlockingChange {
 		t.Fatalf("first rollout item risk = %+v, want non-blocking allow rollout", got.Rollout.Items[0].Plan.Risk)
 	}

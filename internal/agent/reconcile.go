@@ -307,6 +307,7 @@ type PolicyEndpointRollout struct {
 	Failed                    int                         `json:"failed"`
 	RolledBack                int                         `json:"rolled_back,omitempty"`
 	RollbackFailed            int                         `json:"rollback_failed,omitempty"`
+	Risk                      PolicyEndpointPlanRisk      `json:"risk,omitempty"`
 	Items                     []PolicyEndpointRolloutItem `json:"items"`
 }
 
@@ -529,6 +530,7 @@ func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, opt
 		}
 		prepared = append(prepared, preparedEndpoint{program: program, plan: plan})
 		rollout.Planned++
+		rollout.Risk = mergePolicyEndpointPlanRisk(rollout.Risk, plan.Risk)
 		rollout.Items = append(rollout.Items, PolicyEndpointRolloutItem{
 			EndpointID: endpointID,
 			Batch:      rolloutBatch(i, batchSize),
@@ -1828,6 +1830,16 @@ func policyEndpointPlanRisk(current []dataplane.PolicyMapEntry, plan dataplane.P
 		risk.UpdatedRejectEntries > 0 ||
 		risk.DeletedAllowEntries > 0
 	return risk
+}
+
+func mergePolicyEndpointPlanRisk(left, right PolicyEndpointPlanRisk) PolicyEndpointPlanRisk {
+	left.AddedDenyEntries += right.AddedDenyEntries
+	left.AddedRejectEntries += right.AddedRejectEntries
+	left.UpdatedDenyEntries += right.UpdatedDenyEntries
+	left.UpdatedRejectEntries += right.UpdatedRejectEntries
+	left.DeletedAllowEntries += right.DeletedAllowEntries
+	left.BlockingChange = left.BlockingChange || right.BlockingChange
+	return left
 }
 
 func policyEntryDenies(entry dataplane.PolicyMapEntry) bool {
