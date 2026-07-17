@@ -37,6 +37,7 @@ const (
 	defaultMetadataRoot     = "/var/run/netloom-ebpf-meta/policy"
 	policyRolloutStateKey   = "netloom_policy_rollout_state"
 	policyRolloutHistoryKey = "netloom_policy_rollout_history"
+	policyActionHistoryKey  = "netloom_policy_endpoint_action_history"
 	policyFreezeStateKey    = "netloom_policy_freeze_state"
 	agentOVSDBStatusKey     = "netloom_agent_status"
 )
@@ -295,6 +296,11 @@ type policyRolloutHistoryOutput struct {
 	History []policyRolloutHistoryEntry `json:"history"`
 }
 
+type policyActionHistoryOutput struct {
+	Ready   bool                       `json:"ready"`
+	History []policyActionHistoryEntry `json:"history"`
+}
+
 type policyRolloutHistoryEntry struct {
 	ID          string                      `json:"id"`
 	Source      string                      `json:"source"`
@@ -304,6 +310,18 @@ type policyRolloutHistoryEntry struct {
 	CompletedAt time.Time                   `json:"completed_at"`
 	DurationMS  int64                       `json:"duration_ms,omitempty"`
 	Rollout     agent.PolicyEndpointRollout `json:"rollout"`
+}
+
+type policyActionHistoryEntry struct {
+	ID          string    `json:"id"`
+	Action      string    `json:"action"`
+	EndpointID  string    `json:"endpoint_id"`
+	Node        string    `json:"node,omitempty"`
+	Store       string    `json:"store,omitempty"`
+	CompletedAt time.Time `json:"completed_at"`
+	Revision    uint64    `json:"revision,omitempty"`
+	Entries     uint32    `json:"entries,omitempty"`
+	ExpiresAt   time.Time `json:"expires_at,omitempty"`
 }
 
 type policyRolloutStateDocument struct {
@@ -351,6 +369,11 @@ type policyRolloutHistoryStore interface {
 	Append(context.Context, policyRolloutHistoryEntry) error
 }
 
+type policyActionHistoryStore interface {
+	Load(context.Context) ([]policyActionHistoryEntry, error)
+	Append(context.Context, policyActionHistoryEntry) error
+}
+
 type dnsObservationStore interface {
 	LoadDNSObservations(context.Context) ([]model.DNSRecord, error)
 }
@@ -369,6 +392,10 @@ type ovsdbPolicyFreezeStateStore struct {
 }
 
 type ovsdbPolicyRolloutHistoryStore struct {
+	syncer openVSwitchExternalIDStore
+}
+
+type ovsdbPolicyActionHistoryStore struct {
 	syncer openVSwitchExternalIDStore
 }
 
@@ -1375,6 +1402,14 @@ func runStateFile(ctx context.Context, path string) error {
 	if err := configurePolicyRolloutHistory(ctx, metrics, historyStore); err != nil {
 		return err
 	}
+	actionHistoryStore, closeActionHistoryStore, err := policyActionHistoryStoreFromEnv(ctx)
+	if err != nil {
+		return err
+	}
+	defer closeActionHistoryStore()
+	if err := configurePolicyActionHistory(ctx, metrics, actionHistoryStore); err != nil {
+		return err
+	}
 	freezeStore, closeFreezeStore, err := policyFreezeStateStoreFromEnv(ctx)
 	if err != nil {
 		return err
@@ -2027,6 +2062,8 @@ type agentMetrics struct {
 	store               agent.PolicyStore
 	rolloutHistoryStore policyRolloutHistoryStore
 	rolloutHistory      []policyRolloutHistoryEntry
+	actionHistoryStore  policyActionHistoryStore
+	actionHistory       []policyActionHistoryEntry
 	freezeStateStore    policyFreezeStateStore
 	frozenEndpoints     map[string]time.Time
 }
@@ -2122,6 +2159,24 @@ func configurePolicyRolloutHistory(ctx context.Context, metrics *agentMetrics, s
 	return nil
 }
 
+func configurePolicyActionHistory(ctx context.Context, metrics *agentMetrics, store policyActionHistoryStore) error {
+	if metrics == nil {
+		return nil
+	}
+	if store == nil {
+		return nil
+	}
+	history, err := store.Load(ctx)
+	if err != nil {
+		return err
+	}
+	metrics.mu.Lock()
+	defer metrics.mu.Unlock()
+	metrics.actionHistoryStore = store
+	metrics.actionHistory = history
+	return nil
+}
+
 func configurePolicyFreezeState(ctx context.Context, metrics *agentMetrics, store policyFreezeStateStore) error {
 	if metrics == nil {
 		return nil
@@ -2160,6 +2215,14 @@ func trimPolicyRolloutHistory(history []policyRolloutHistoryEntry) []policyRollo
 	return append([]policyRolloutHistoryEntry(nil), history[len(history)-limit:]...)
 }
 
+func trimPolicyActionHistory(history []policyActionHistoryEntry) []policyActionHistoryEntry {
+	const limit = 256
+	if len(history) <= limit {
+		return append([]policyActionHistoryEntry(nil), history...)
+	}
+	return append([]policyActionHistoryEntry(nil), history[len(history)-limit:]...)
+}
+
 func (m *agentMetrics) recordPolicyRolloutHistory(entry policyRolloutHistoryEntry) error {
 	if m == nil {
 		return nil
@@ -2180,6 +2243,26 @@ func (m *agentMetrics) recordPolicyRolloutHistory(entry policyRolloutHistoryEntr
 	return store.Append(context.Background(), entry)
 }
 
+func (m *agentMetrics) recordPolicyActionHistory(ctx context.Context, entry policyActionHistoryEntry) error {
+	if m == nil {
+		return nil
+	}
+	if entry.ID == "" {
+		entry.ID = strconv.FormatInt(time.Now().UnixNano(), 10)
+	}
+	if entry.CompletedAt.IsZero() {
+		entry.CompletedAt = time.Now().UTC()
+	}
+	m.mu.Lock()
+	m.actionHistory = trimPolicyActionHistory(append(m.actionHistory, entry))
+	store := m.actionHistoryStore
+	m.mu.Unlock()
+	if store == nil {
+		return nil
+	}
+	return store.Append(ctx, entry)
+}
+
 func (m *agentMetrics) policyRolloutHistory() []policyRolloutHistoryEntry {
 	if m == nil {
 		return nil
@@ -2187,6 +2270,15 @@ func (m *agentMetrics) policyRolloutHistory() []policyRolloutHistoryEntry {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return append([]policyRolloutHistoryEntry(nil), m.rolloutHistory...)
+}
+
+func (m *agentMetrics) policyActionHistory() []policyActionHistoryEntry {
+	if m == nil {
+		return nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return append([]policyActionHistoryEntry(nil), m.actionHistory...)
 }
 
 func recordNamedPolicyRolloutHistory(metrics *agentMetrics, source string, rollouts []agent.NamedPolicyEndpointRollout, node, store string, duration time.Duration) {
@@ -2429,6 +2521,39 @@ func (s ovsdbPolicyRolloutHistoryStore) Append(ctx context.Context, entry policy
 		return fmt.Errorf("encode Open_vSwitch external_ids:%s: %w", policyRolloutHistoryKey, err)
 	}
 	return s.syncer.SetOpenVSwitchExternalID(ctx, policyRolloutHistoryKey, string(raw))
+}
+
+func (s ovsdbPolicyActionHistoryStore) Load(ctx context.Context) ([]policyActionHistoryEntry, error) {
+	if s.syncer == nil {
+		return nil, nil
+	}
+	raw, ok, err := s.syncer.OpenVSwitchExternalID(ctx, policyActionHistoryKey)
+	if err != nil {
+		return nil, err
+	}
+	if !ok || strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	var history []policyActionHistoryEntry
+	if err := json.Unmarshal([]byte(raw), &history); err != nil {
+		return nil, fmt.Errorf("decode Open_vSwitch external_ids:%s: %w", policyActionHistoryKey, err)
+	}
+	return trimPolicyActionHistory(history), nil
+}
+
+func (s ovsdbPolicyActionHistoryStore) Append(ctx context.Context, entry policyActionHistoryEntry) error {
+	if s.syncer == nil {
+		return nil
+	}
+	history, err := s.Load(ctx)
+	if err != nil {
+		return err
+	}
+	raw, err := json.Marshal(trimPolicyActionHistory(append(history, entry)))
+	if err != nil {
+		return fmt.Errorf("encode Open_vSwitch external_ids:%s: %w", policyActionHistoryKey, err)
+	}
+	return s.syncer.SetOpenVSwitchExternalID(ctx, policyActionHistoryKey, string(raw))
 }
 
 func (s ovsdbDNSObservationStore) LoadDNSObservations(ctx context.Context) ([]model.DNSRecord, error) {
@@ -3179,6 +3304,10 @@ func (m *agentMetrics) handlePolicyEndpoints(w http.ResponseWriter, r *http.Requ
 		m.handlePolicyRolloutHistory(w, r)
 		return
 	}
+	if isPolicyActionHistoryRequest(r) {
+		m.handlePolicyActionHistory(w, r)
+		return
+	}
 	if r.Method == http.MethodDelete {
 		m.handlePolicyEndpointDelete(w, r)
 		return
@@ -3223,6 +3352,13 @@ func isPolicyRolloutHistoryRequest(r *http.Request) bool {
 	return strings.Trim(r.URL.Path, "/") == "policy/endpoints/rollout/history"
 }
 
+func isPolicyActionHistoryRequest(r *http.Request) bool {
+	if r == nil || r.URL == nil {
+		return false
+	}
+	return strings.Trim(r.URL.Path, "/") == "policy/endpoints/actions/history"
+}
+
 func (m *agentMetrics) handlePolicyRolloutHistory(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -3234,6 +3370,20 @@ func (m *agentMetrics) handlePolicyRolloutHistory(w http.ResponseWriter, r *http
 	_ = encoder.Encode(policyRolloutHistoryOutput{
 		Ready:   true,
 		History: m.policyRolloutHistory(),
+	})
+}
+
+func (m *agentMetrics) handlePolicyActionHistory(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "method not allowed"})
+		return
+	}
+	encoder := json.NewEncoder(w)
+	encoder.SetIndent("", "  ")
+	_ = encoder.Encode(policyActionHistoryOutput{
+		Ready:   true,
+		History: m.policyActionHistory(),
 	})
 }
 
@@ -3358,6 +3508,10 @@ func (m *agentMetrics) handlePolicyEndpointDelete(w http.ResponseWriter, r *http
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
+	m.recordPolicyEndpointAction(r.Context(), policyActionHistoryEntry{
+		Action:     "delete",
+		EndpointID: endpointID,
+	})
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(policyEndpointActionOutput{
 		EndpointID: endpointID,
@@ -3423,6 +3577,12 @@ func (m *agentMetrics) handlePolicyEndpointRegenerate(w http.ResponseWriter, r *
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
+	m.recordPolicyEndpointAction(r.Context(), policyActionHistoryEntry{
+		Action:     "regenerate",
+		EndpointID: status.EndpointID,
+		Revision:   status.Revision,
+		Entries:    status.Entries,
+	})
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(policyEndpointActionOutput{
 		EndpointID:   status.EndpointID,
@@ -3497,6 +3657,24 @@ func (m *agentMetrics) handlePolicyEndpointPlan(w http.ResponseWriter, r *http.R
 		Planned:    true,
 		Plan:       plan,
 	})
+}
+
+func (m *agentMetrics) recordPolicyEndpointAction(ctx context.Context, entry policyActionHistoryEntry) {
+	if m == nil {
+		return
+	}
+	snapshot, _, ready := m.snapshotValue()
+	if ready {
+		if entry.Node == "" {
+			entry.Node = snapshot.Result.Node
+		}
+		if entry.Store == "" {
+			entry.Store = snapshot.Store
+		}
+	}
+	if err := m.recordPolicyActionHistory(ctx, entry); err != nil {
+		log.Printf("record policy endpoint action history: %v", err)
+	}
 }
 
 func decodePolicyEndpointFreezeRequest(r *http.Request) (policyEndpointFreezeRequest, error) {
@@ -3574,6 +3752,11 @@ func (m *agentMetrics) handlePolicyEndpointFreeze(w http.ResponseWriter, r *http
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
+	m.recordPolicyEndpointAction(r.Context(), policyActionHistoryEntry{
+		Action:     "freeze",
+		EndpointID: endpointID,
+		ExpiresAt:  expiresAt,
+	})
 	w.WriteHeader(http.StatusOK)
 	response := policyEndpointActionOutput{
 		EndpointID: endpointID,
@@ -3607,6 +3790,10 @@ func (m *agentMetrics) handlePolicyEndpointUnfreeze(w http.ResponseWriter, r *ht
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
+	m.recordPolicyEndpointAction(r.Context(), policyActionHistoryEntry{
+		Action:     "unfreeze",
+		EndpointID: endpointID,
+	})
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(policyEndpointActionOutput{
 		EndpointID: endpointID,
@@ -3638,6 +3825,12 @@ func (m *agentMetrics) handlePolicyEndpointQuarantine(w http.ResponseWriter, r *
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
+	m.recordPolicyEndpointAction(r.Context(), policyActionHistoryEntry{
+		Action:     "quarantine",
+		EndpointID: status.EndpointID,
+		Revision:   status.Revision,
+		Entries:    status.Entries,
+	})
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(policyEndpointActionOutput{
 		EndpointID:   status.EndpointID,
@@ -3668,6 +3861,12 @@ func (m *agentMetrics) handlePolicyEndpointUnquarantine(w http.ResponseWriter, r
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
+	m.recordPolicyEndpointAction(r.Context(), policyActionHistoryEntry{
+		Action:     "unquarantine",
+		EndpointID: status.EndpointID,
+		Revision:   status.Revision,
+		Entries:    status.Entries,
+	})
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(policyEndpointActionOutput{
 		EndpointID:    status.EndpointID,
@@ -3698,6 +3897,12 @@ func (m *agentMetrics) handlePolicyEndpointRollback(w http.ResponseWriter, r *ht
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
+	m.recordPolicyEndpointAction(r.Context(), policyActionHistoryEntry{
+		Action:     "rollback",
+		EndpointID: status.EndpointID,
+		Revision:   status.Revision,
+		Entries:    status.Entries,
+	})
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(policyEndpointActionOutput{
 		EndpointID:   status.EndpointID,
@@ -4486,6 +4691,18 @@ func policyRolloutHistoryStoreFromEnv(ctx context.Context) (policyRolloutHistory
 		return nil, func() {}, err
 	}
 	return ovsdbPolicyRolloutHistoryStore{syncer: linuxdatapath.NewLibOVSDBProviderSyncer(client)}, closeFn, nil
+}
+
+func policyActionHistoryStoreFromEnv(ctx context.Context) (policyActionHistoryStore, func(), error) {
+	endpoint := strings.TrimSpace(os.Getenv("NETLOOM_OVSDB_ENDPOINT"))
+	if endpoint == "" {
+		return nil, func() {}, nil
+	}
+	client, closeFn, err := newOpenVSwitchClient(ctx, endpoint)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	return ovsdbPolicyActionHistoryStore{syncer: linuxdatapath.NewLibOVSDBProviderSyncer(client)}, closeFn, nil
 }
 
 func policyFreezeStateStoreFromEnv(ctx context.Context) (policyFreezeStateStore, func(), error) {

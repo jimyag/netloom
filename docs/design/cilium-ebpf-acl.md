@@ -190,7 +190,10 @@ skipped by normal reconcile policy-map and TCX updates until explicitly
 unfrozen or until their optional `ttl_seconds` / RFC3339 `expires_at` expires,
 and the frozen endpoint list plus expiry metadata is persisted in local OVS
 `Open_vSwitch.external_ids:netloom_policy_freeze_state` when
-`NETLOOM_OVSDB_ENDPOINT` is configured. The same endpoint API supports
+`NETLOOM_OVSDB_ENDPOINT` is configured. Successful endpoint lifecycle actions
+are exposed through `GET /policy/endpoints/actions/history` and persisted in
+local OVS `Open_vSwitch.external_ids:netloom_policy_endpoint_action_history`
+when OVSDB is configured. The same endpoint API supports
 operator lifecycle actions: `DELETE /policy/endpoints/{endpoint}` clears an
 endpoint map, `POST /policy/endpoints/{endpoint}/plan` dry-runs the latest
 desired policy and returns add/update/delete/unchanged counts without modifying

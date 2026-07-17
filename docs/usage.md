@@ -395,6 +395,17 @@ curl -X POST http://127.0.0.1:9092/policy/endpoints/prod/vm-a/unfreeze
 `Open_vSwitch.external_ids:netloom_policy_freeze_state`。agent 重启后会从
 这个 key 恢复冻结状态，直到显式执行 `/unfreeze` 或冻结过期。
 
+查看 endpoint policy lifecycle 动作历史：
+
+```bash
+curl -s http://127.0.0.1:9092/policy/endpoints/actions/history
+ovs-vsctl get Open_vSwitch . external_ids:netloom_policy_endpoint_action_history
+```
+
+如果 agent 配置了 `NETLOOM_OVSDB_ENDPOINT`，`delete`、`regenerate`、
+`freeze`、`unfreeze`、`quarantine`、`unquarantine` 和 `rollback` 成功后会写入
+`Open_vSwitch.external_ids:netloom_policy_endpoint_action_history`，用于节点本地审计。
+
 检查本机托管网络对象：
 
 ```bash

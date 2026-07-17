@@ -2649,6 +2649,97 @@ func TestPolicyEndpointAPIPersistsFreezeStateToOpenVSwitchExternalID(t *testing.
 	}
 }
 
+func TestPolicyEndpointAPIPersistsActionHistoryToOpenVSwitchExternalID(t *testing.T) {
+	endpointID := model.EndpointKey("prod", "pod-a")
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:             "pod-a",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"web"},
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "allow-http",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("172.30.0.0/24"),
+				Ports:      []model.PortRange{{From: 80, To: 80}},
+				Action:     model.ActionAllow,
+			}},
+		}},
+	}
+	store := dataplane.NewInMemoryPolicyStore()
+	historyOVSDB := &fakeOpenVSwitchExternalIDStore{}
+	freezeOVSDB := &fakeOpenVSwitchExternalIDStore{}
+	metrics := newAgentMetrics(store)
+	if err := configurePolicyActionHistory(t.Context(), metrics, ovsdbPolicyActionHistoryStore{syncer: historyOVSDB}); err != nil {
+		t.Fatal(err)
+	}
+	if err := configurePolicyFreezeState(t.Context(), metrics, ovsdbPolicyFreezeStateStore{syncer: freezeOVSDB}); err != nil {
+		t.Fatal(err)
+	}
+	observeAgentReconcileResultWithState(metrics, agent.ReconcileResult{
+		Node: "node-a",
+		PolicyEndpointStatus: []dataplane.PolicyEndpointStatus{{
+			EndpointID: endpointID,
+			Revision:   1,
+			Entries:    1,
+		}},
+	}, "memory", time.Millisecond, state)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/policy/endpoints/prod/pod-a/freeze", bytes.NewBufferString(`{"ttl_seconds":3600}`))
+	metrics.handlePolicyEndpoints(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("freeze status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPost, "/policy/endpoints/prod/pod-a/unfreeze", nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unfreeze status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	raw := historyOVSDB.values[policyActionHistoryKey]
+	var persisted []policyActionHistoryEntry
+	if err := json.Unmarshal([]byte(raw), &persisted); err != nil {
+		t.Fatalf("decode persisted action history: %v", err)
+	}
+	if len(persisted) != 2 {
+		t.Fatalf("persisted action history entries = %d, want 2: %s", len(persisted), raw)
+	}
+	if persisted[0].Action != "freeze" || persisted[0].EndpointID != endpointID || persisted[0].Node != "node-a" || persisted[0].Store != "memory" || persisted[0].ExpiresAt.IsZero() {
+		t.Fatalf("persisted freeze action = %+v, want audited freeze", persisted[0])
+	}
+	if persisted[1].Action != "unfreeze" || persisted[1].EndpointID != endpointID || persisted[1].Node != "node-a" || persisted[1].Store != "memory" {
+		t.Fatalf("persisted unfreeze action = %+v, want audited unfreeze", persisted[1])
+	}
+
+	reloaded := newAgentMetrics(store)
+	if err := configurePolicyActionHistory(t.Context(), reloaded, ovsdbPolicyActionHistoryStore{syncer: historyOVSDB}); err != nil {
+		t.Fatal(err)
+	}
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/policy/endpoints/actions/history", nil)
+	reloaded.handlePolicyEndpoints(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("history status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var output policyActionHistoryOutput
+	if err := json.Unmarshal(recorder.Body.Bytes(), &output); err != nil {
+		t.Fatalf("decode action history response: %v\n%s", err, recorder.Body.String())
+	}
+	if !output.Ready || len(output.History) != 2 || output.History[0].Action != "freeze" || output.History[1].Action != "unfreeze" {
+		t.Fatalf("action history output = %+v, want reloaded freeze/unfreeze actions", output)
+	}
+}
+
 func TestPolicyEndpointAPIDropsExpiredFreezeStateFromOpenVSwitchExternalID(t *testing.T) {
 	endpointID := model.EndpointKey("prod", "pod-a")
 	raw, err := json.Marshal(policyFreezeStateDocument{
