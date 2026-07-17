@@ -231,6 +231,9 @@ func (e *NBCTLExecutor) enrichNBCTLLogicalRouterReferenceFields(ctx context.Cont
 			return err
 		}
 		for i := range rows {
+			if rows[i].Fields == nil {
+				continue
+			}
 			rows[i].Fields[spec.field] = resolveManagedAuditReferenceField(rows[i].Fields[spec.field], refs)
 		}
 	}
@@ -256,6 +259,9 @@ func (e *NBCTLExecutor) enrichNBCTLLogicalSwitchReferenceFields(ctx context.Cont
 			return err
 		}
 		for i := range rows {
+			if rows[i].Fields == nil {
+				continue
+			}
 			rows[i].Fields[spec.field] = resolveManagedAuditReferenceField(rows[i].Fields[spec.field], refs)
 		}
 	}
@@ -271,6 +277,9 @@ func (e *NBCTLExecutor) enrichNBCTLLoadBalancerReferenceFields(ctx context.Conte
 		return err
 	}
 	for i := range rows {
+		if rows[i].Fields == nil {
+			continue
+		}
 		rows[i].Fields["health_check_vips"] = resolveManagedAuditReferenceField(rows[i].Fields["health_check_vips"], refs)
 	}
 	return nil

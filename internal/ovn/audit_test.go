@@ -136,6 +136,30 @@ esac
 	}
 }
 
+func TestNBCTLExecutorAuditCountsMalformedReferenceRowsWithoutPanic(t *testing.T) {
+	tmp := t.TempDir()
+	binary := filepath.Join(tmp, "ovn-nbctl")
+	script := `#!/bin/sh
+case "$*" in
+  *"find Logical_Router external_ids:netloom_owner=netloom"*) printf '"unterminated-router-row\n' ;;
+  *"find Logical_Switch external_ids:netloom_owner=netloom"*) printf '"unterminated-switch-row\n' ;;
+  *"find Load_Balancer external_ids:netloom_owner=netloom"*) printf '"unterminated-lb-row\n' ;;
+esac
+`
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	executor := NewNBCTLExecutor(binary, "--db=unix:/tmp/ovnnb.sock")
+	stats, err := executor.AuditManagedObjects(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.IncompleteManagedRows != 3 {
+		t.Fatalf("stats = %+v, want malformed reference rows counted as incomplete", stats)
+	}
+}
+
 func TestNBCTLExecutorManagedOVNRowsResolvesLogicalRouterReferences(t *testing.T) {
 	tmp := t.TempDir()
 	logPath := filepath.Join(tmp, "args.log")
