@@ -1608,7 +1608,7 @@ func (w *LibOVSDBTopologyWriter) deleteStaleLoadBalancers(ctx context.Context, r
 		if _, ok := desiredNames[rows[i].Name]; ok {
 			continue
 		}
-		hcRows, err := w.healthChecksByLoadBalancerName(ctx, rows[i].Name, lb.VPC, lb.Name)
+		hcRows, err := w.healthChecksForLoadBalancerRow(ctx, &rows[i])
 		if err != nil {
 			return nil, err
 		}
@@ -2013,6 +2013,18 @@ func (w *LibOVSDBTopologyWriter) loadBalancersByIdentity(ctx context.Context, vp
 
 func (w *LibOVSDBTopologyWriter) healthChecksByLoadBalancer(ctx context.Context, vpc, name string) ([]ovnnb.LoadBalancerHealthCheck, error) {
 	return w.healthChecksByLoadBalancerName(ctx, "", vpc, name)
+}
+
+func (w *LibOVSDBTopologyWriter) healthChecksForLoadBalancerRow(ctx context.Context, lb *ovnnb.LoadBalancer) ([]ovnnb.LoadBalancerHealthCheck, error) {
+	byIdentity, err := w.healthChecksByLoadBalancerName(ctx, lb.Name, lb.ExternalIDs["netloom_vpc"], lb.ExternalIDs["netloom_load_balancer"])
+	if err != nil {
+		return nil, err
+	}
+	byReference, err := w.loadBalancerHealthChecksByUUIDs(ctx, lb.HealthCheck)
+	if err != nil {
+		return nil, err
+	}
+	return mergeLoadBalancerHealthChecks(byIdentity, byReference), nil
 }
 
 func (w *LibOVSDBTopologyWriter) healthChecksByLoadBalancerName(ctx context.Context, ovnLBName, vpc, name string) ([]ovnnb.LoadBalancerHealthCheck, error) {

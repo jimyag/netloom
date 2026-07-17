@@ -1423,7 +1423,7 @@ func (w *LibOVSDBTopologyWriter) deleteLoadBalancerHealthCheckFromParents(hc *ov
 
 func (w *LibOVSDBTopologyWriter) deleteLoadBalancerFromParents(ctx context.Context, lb *ovnnb.LoadBalancer) ([]ovsdb.Operation, error) {
 	var ops []ovsdb.Operation
-	hcRows, err := w.healthChecksByLoadBalancerName(ctx, lb.Name, lb.ExternalIDs["netloom_vpc"], lb.ExternalIDs["netloom_load_balancer"])
+	hcRows, err := w.healthChecksForLoadBalancerRow(ctx, lb)
 	if err != nil {
 		return nil, err
 	}
