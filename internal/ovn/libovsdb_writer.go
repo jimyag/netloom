@@ -566,6 +566,11 @@ func (w *LibOVSDBTopologyWriter) EnsureNATRule(ctx context.Context, rule model.N
 		return err
 	}
 	desired := desiredNATRuleRow(rule)
+	referenced, err := w.referencedNATRulesForDesired(ctx, router.Nat, desired)
+	if err != nil {
+		return err
+	}
+	existing = mergeNATRules(existing, referenced)
 	var ops []ovsdb.Operation
 	if len(existing) == 0 {
 		desired.UUID = ovsdbNamedUUID("nl_nat_" + rule.VPC + "_" + rule.Name)
@@ -2053,6 +2058,70 @@ func (w *LibOVSDBTopologyWriter) natRulesByName(ctx context.Context, vpc, name s
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].UUID < rows[j].UUID })
 	return rows, nil
+}
+
+func (w *LibOVSDBTopologyWriter) natRulesByUUIDs(ctx context.Context, uuids []string) ([]ovnnb.NAT, error) {
+	want := make(map[string]struct{}, len(uuids))
+	for _, uuid := range uuids {
+		if uuid == "" {
+			continue
+		}
+		want[uuid] = struct{}{}
+	}
+	if len(want) == 0 {
+		return nil, nil
+	}
+	var rows []ovnnb.NAT
+	if err := w.client.WhereCache(func(row *ovnnb.NAT) bool {
+		_, ok := want[row.UUID]
+		return ok
+	}).List(ctx, &rows); err != nil {
+		return nil, fmt.Errorf("list NAT rules by UUID from libovsdb cache: %w", err)
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].UUID < rows[j].UUID })
+	return rows, nil
+}
+
+func (w *LibOVSDBTopologyWriter) referencedNATRulesForDesired(ctx context.Context, uuids []string, desired ovnnb.NAT) ([]ovnnb.NAT, error) {
+	rows, err := w.natRulesByUUIDs(ctx, uuids)
+	if err != nil {
+		return nil, err
+	}
+	filtered := rows[:0]
+	for _, row := range rows {
+		if natRuleReferenceMatchesDesired(row, desired) {
+			filtered = append(filtered, row)
+		}
+	}
+	return filtered, nil
+}
+
+func natRuleReferenceMatchesDesired(row, desired ovnnb.NAT) bool {
+	if row.ExternalIDs["netloom_vpc"] == desired.ExternalIDs["netloom_vpc"] &&
+		row.ExternalIDs["netloom_nat"] == desired.ExternalIDs["netloom_nat"] {
+		return true
+	}
+	return row.Type == desired.Type &&
+		row.ExternalIP == desired.ExternalIP &&
+		row.ExternalPortRange == desired.ExternalPortRange &&
+		stringPointerValueEqual(row.LogicalPort, pointerStringValue(desired.LogicalPort)) &&
+		stringPointerValueEqual(row.ExternalMAC, pointerStringValue(desired.ExternalMAC))
+}
+
+func mergeNATRules(groups ...[]ovnnb.NAT) []ovnnb.NAT {
+	seen := make(map[string]struct{})
+	var rows []ovnnb.NAT
+	for _, group := range groups {
+		for _, row := range group {
+			if _, ok := seen[row.UUID]; ok {
+				continue
+			}
+			seen[row.UUID] = struct{}{}
+			rows = append(rows, row)
+		}
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].UUID < rows[j].UUID })
+	return rows
 }
 
 func (w *LibOVSDBTopologyWriter) loadBalancerByName(ctx context.Context, name string) (*ovnnb.LoadBalancer, bool, error) {

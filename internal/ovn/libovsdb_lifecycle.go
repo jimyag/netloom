@@ -336,7 +336,7 @@ func (w *LibOVSDBTopologyWriter) cleanupUnexpectedLiveOperations(ctx context.Con
 		}
 		ops = append(ops, nextOps...)
 	}
-	natRows, err := w.unexpectedNATRules(ctx, expected)
+	natRows, err := w.unexpectedNATRules(ctx, expected, desired.NATRules)
 	if err != nil {
 		return nil, CleanupStats{}, err
 	}
@@ -755,10 +755,15 @@ func (w *LibOVSDBTopologyWriter) repairSteadyStateNATRules(ctx context.Context, 
 		if err != nil {
 			return nil, err
 		}
+		desiredRow := desiredNATRuleRow(rule)
+		referenced, err := w.referencedNATRulesForDesired(ctx, router.Nat, desiredRow)
+		if err != nil {
+			return nil, err
+		}
+		existing = mergeNATRules(existing, referenced)
 		if len(existing) == 0 {
 			continue
 		}
-		desiredRow := desiredNATRuleRow(rule)
 		keepIndex := preferredReferencedRow(router.Nat, existing, func(row ovnnb.NAT) string { return row.UUID })
 		keep := existing[keepIndex]
 		nextExternalIDs := mergeManagedExternalIDs(keep.ExternalIDs, desiredRow.ExternalIDs)
@@ -1607,15 +1612,47 @@ func (w *LibOVSDBTopologyWriter) unexpectedPolicyRoutes(ctx context.Context, exp
 	return rows, nil
 }
 
-func (w *LibOVSDBTopologyWriter) unexpectedNATRules(ctx context.Context, expected map[string]map[string]string) ([]ovnnb.NAT, error) {
+func (w *LibOVSDBTopologyWriter) unexpectedNATRules(ctx context.Context, expected map[string]map[string]string, desired map[string]model.NATRule) ([]ovnnb.NAT, error) {
+	expectedRefs, err := w.expectedRouterNATRefs(ctx, expected, desired)
+	if err != nil {
+		return nil, err
+	}
 	var rows []ovnnb.NAT
 	if err := w.client.WhereCache(func(row *ovnnb.NAT) bool {
+		if _, ok := expectedRefs[row.UUID]; ok {
+			return false
+		}
 		return unexpectedManagedRow("NAT", row.UUID, row.ExternalIDs, expected)
 	}).List(ctx, &rows); err != nil {
 		return nil, err
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].UUID < rows[j].UUID })
 	return rows, nil
+}
+
+func (w *LibOVSDBTopologyWriter) expectedRouterNATRefs(ctx context.Context, expected map[string]map[string]string, desired map[string]model.NATRule) (map[string]struct{}, error) {
+	var routers []ovnnb.LogicalRouter
+	if err := w.client.WhereCache(func(row *ovnnb.LogicalRouter) bool {
+		return !unexpectedManagedRow("Logical_Router", row.UUID, row.ExternalIDs, expected)
+	}).List(ctx, &routers); err != nil {
+		return nil, err
+	}
+	refs := make(map[string]struct{})
+	for _, router := range routers {
+		for _, rule := range desired {
+			if logicalRouter(rule.VPC) != router.Name {
+				continue
+			}
+			rows, err := w.referencedNATRulesForDesired(ctx, router.Nat, desiredNATRuleRow(rule))
+			if err != nil {
+				return nil, err
+			}
+			for _, row := range rows {
+				refs[row.UUID] = struct{}{}
+			}
+		}
+	}
+	return refs, nil
 }
 
 func (w *LibOVSDBTopologyWriter) unexpectedLoadBalancers(ctx context.Context, expected map[string]map[string]string) ([]ovnnb.LoadBalancer, error) {
