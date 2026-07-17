@@ -2,6 +2,8 @@
 
 本文档描述 `netloom` 在裸金属环境中的基本使用方式。当前项目不集成 Kubernetes，也不依赖 Kubernetes CRD；所有网络意图来自 desired state JSON 或写入本机 Open_vSwitch OVSDB 的 desired state。
 
+如果只想快速确认目前实现了哪些能力，先看 [当前实现状态](current-status.md)。如果要查完整能力和测试入口，看 [功能矩阵](features.md)。
+
 ## 能力清单
 
 | 能力 | 实现位置 | 说明 |

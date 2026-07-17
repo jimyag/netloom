@@ -133,6 +133,7 @@ Desired state can also be stored in the local Open_vSwitch database:
 
 ## Documentation
 
+- [Current implementation status](docs/current-status.md)
 - [Feature matrix](docs/features.md)
 - [Usage guide](docs/usage.md)
 - [eBPF ACL design](docs/design/cilium-ebpf-acl.md)
