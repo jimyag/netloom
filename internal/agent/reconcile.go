@@ -1970,13 +1970,13 @@ func (r *Reconciler) Reconcile(ctx context.Context, state control.DesiredState, 
 	if err != nil {
 		return result, err
 	}
-	if err := r.syncPolicyStore(ctx, programs, options.Store); err != nil {
+	if err := r.syncPolicyStore(ctx, programs, options.Store, options.FrozenPolicyEndpoints); err != nil {
 		return result, err
 	}
 	if err := populatePolicyMapUsageResult(ctx, options.Store, &result); err != nil {
 		return result, err
 	}
-	if err := mitigatePolicyMapPressureResult(ctx, options.Store, programs, options.PolicyPressureMitigationThreshold, options.PolicyPressureQuarantineThreshold, options.PolicyPressureQuarantine, &result); err != nil {
+	if err := mitigatePolicyMapPressureResult(ctx, options.Store, programs, options.FrozenPolicyEndpoints, options.PolicyPressureMitigationThreshold, options.PolicyPressureQuarantineThreshold, options.PolicyPressureQuarantine, &result); err != nil {
 		return result, err
 	}
 	if err := populatePolicyMapDriftResult(ctx, options.Store, &result); err != nil {
@@ -2002,14 +2002,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, state control.DesiredState, 
 	return result, nil
 }
 
-func (r *Reconciler) syncPolicyStore(ctx context.Context, programs []policy.Program, store PolicyStore) error {
+func (r *Reconciler) syncPolicyStore(ctx context.Context, programs []policy.Program, store PolicyStore, frozen map[string]struct{}) error {
 	if r == nil || store == nil {
 		return nil
 	}
-	desired := make(map[string]struct{}, len(programs))
-	for _, program := range programs {
-		desired[program.EndpointID] = struct{}{}
-	}
+	desired := policyEndpointKeepSet(programs, frozen)
 	tracked := make(map[string]struct{}, len(r.policyEndpoints))
 	for endpointID := range r.policyEndpoints {
 		tracked[endpointID] = struct{}{}
@@ -2196,7 +2193,7 @@ func prepareReconcile(ctx context.Context, state control.DesiredState, options R
 	if err := populatePolicyMapUsageResult(ctx, options.Store, &result); err != nil {
 		return ReconcileResult{}, nil, nil, err
 	}
-	if err := mitigatePolicyMapPressureResult(ctx, options.Store, localPrograms, options.PolicyPressureMitigationThreshold, options.PolicyPressureQuarantineThreshold, options.PolicyPressureQuarantine, &result); err != nil {
+	if err := mitigatePolicyMapPressureResult(ctx, options.Store, localPrograms, options.FrozenPolicyEndpoints, options.PolicyPressureMitigationThreshold, options.PolicyPressureQuarantineThreshold, options.PolicyPressureQuarantine, &result); err != nil {
 		return ReconcileResult{}, nil, nil, err
 	}
 	if err := populatePolicyMapDriftResult(ctx, options.Store, &result); err != nil {
@@ -2209,7 +2206,7 @@ func prepareReconcile(ctx context.Context, state control.DesiredState, options R
 		return ReconcileResult{}, nil, nil, err
 	}
 	result.PolicyRuleCatalog = catalogPolicyRules(localPrograms)
-	if err := sweepPolicyEndpointsResult(ctx, options.Store, localPrograms, options.PolicyGCMaxIdle, &result); err != nil {
+	if err := sweepPolicyEndpointsResult(ctx, options.Store, localPrograms, options.FrozenPolicyEndpoints, options.PolicyGCMaxIdle, &result); err != nil {
 		return ReconcileResult{}, nil, nil, err
 	}
 	if result.PolicyGCEndpoints != 0 {
@@ -2282,14 +2279,32 @@ func policyRuleRef(rule policy.Rule) string {
 	return strings.Join([]string{rule.VPC, rule.SecurityGroup, rule.ID}, "/")
 }
 
-func mitigatePolicyMapPressureResult(ctx context.Context, store PolicyStore, programs []policy.Program, mitigationThreshold, quarantineThreshold uint32, quarantine bool, result *ReconcileResult) error {
-	if result == nil {
-		return nil
-	}
-	keep := make(map[string]struct{}, len(programs))
+func policyEndpointKeepSet(programs []policy.Program, frozen map[string]struct{}) map[string]struct{} {
+	keep := make(map[string]struct{}, len(programs)+len(frozen))
 	for _, program := range programs {
 		keep[program.EndpointID] = struct{}{}
 	}
+	for endpointID := range frozen {
+		keep[endpointID] = struct{}{}
+	}
+	return keep
+}
+
+func policyEndpointKeepList(programs []policy.Program, frozen map[string]struct{}) []string {
+	keepSet := policyEndpointKeepSet(programs, frozen)
+	keep := make([]string, 0, len(keepSet))
+	for endpointID := range keepSet {
+		keep = append(keep, endpointID)
+	}
+	sort.Strings(keep)
+	return keep
+}
+
+func mitigatePolicyMapPressureResult(ctx context.Context, store PolicyStore, programs []policy.Program, frozen map[string]struct{}, mitigationThreshold, quarantineThreshold uint32, quarantine bool, result *ReconcileResult) error {
+	if result == nil {
+		return nil
+	}
+	keep := policyEndpointKeepSet(programs, frozen)
 
 	if mitigationThreshold > 0 && result.PolicyMapPressureMax >= mitigationThreshold {
 		inventory, ok := store.(PolicyEndpointInventory)
@@ -2343,7 +2358,7 @@ func quarantinePolicyMapPressureResult(ctx context.Context, store PolicyStore, k
 	return populatePolicyMapUsageResult(ctx, store, result)
 }
 
-func sweepPolicyEndpointsResult(ctx context.Context, store PolicyStore, programs []policy.Program, maxIdle time.Duration, result *ReconcileResult) error {
+func sweepPolicyEndpointsResult(ctx context.Context, store PolicyStore, programs []policy.Program, frozen map[string]struct{}, maxIdle time.Duration, result *ReconcileResult) error {
 	if maxIdle <= 0 {
 		return nil
 	}
@@ -2351,10 +2366,7 @@ func sweepPolicyEndpointsResult(ctx context.Context, store PolicyStore, programs
 	if !ok {
 		return nil
 	}
-	keep := make([]string, 0, len(programs))
-	for _, program := range programs {
-		keep = append(keep, program.EndpointID)
-	}
+	keep := policyEndpointKeepList(programs, frozen)
 	swept, err := sweeper.SweepPolicyEndpoints(ctx, keep, maxIdle)
 	if err != nil {
 		return fmt.Errorf("sweep stale policy endpoints: %w", err)

@@ -634,6 +634,46 @@ func TestReconcileNodeSweepsIdlePolicyEndpoints(t *testing.T) {
 	}
 }
 
+func TestReconcileNodeKeepsFrozenPolicyEndpointDuringIdleSweep(t *testing.T) {
+	frozenEndpoint := model.EndpointKey("prod", "pod-z")
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:             "pod-a",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"web"},
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:        "allow-all",
+				Priority:  100,
+				Direction: model.DirectionIngress,
+				Protocol:  model.ProtocolAny,
+				Action:    model.ActionAllow,
+			}},
+		}},
+	}
+	store := &sweepingPolicyStore{}
+	if _, err := ReconcileNodeWithOptions(context.Background(), state, ReconcileOptions{
+		Node:            "node-a",
+		Store:           store,
+		PolicyGCMaxIdle: time.Minute,
+		FrozenPolicyEndpoints: map[string]struct{}{
+			frozenEndpoint: {},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{model.EndpointKey("prod", "pod-a"), frozenEndpoint}
+	if !slices.Equal(store.keep, want) {
+		t.Fatalf("keep set = %v, want %v", store.keep, want)
+	}
+}
+
 func TestReconcileNodeSkipsFrozenPolicyEndpointApply(t *testing.T) {
 	endpointID := model.EndpointKey("prod", "pod-a")
 	state := control.DesiredState{
@@ -805,6 +845,77 @@ func TestReconcileNodeMitigatesPolicyMapPressureByDeletingNonDesiredEndpoints(t 
 	}
 	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) == 0 {
 		t.Fatal("desired endpoint policy was removed")
+	}
+}
+
+func TestReconcileNodeMitigatesPolicyMapPressureKeepsFrozenEndpoint(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:             "pod-a",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"web"},
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:        "allow-all",
+				Priority:  100,
+				Direction: model.DirectionIngress,
+				Protocol:  model.ProtocolAny,
+				Action:    model.ActionAllow,
+			}},
+		}},
+	}
+	staleEndpoint := model.EndpointKey("prod", "stale")
+	frozenEndpoint := model.EndpointKey("prod", "frozen")
+	store := &usagePolicyStore{
+		InMemoryPolicyStore: dataplane.NewInMemoryPolicyStore(),
+		usages: []dataplane.PolicyMapUsage{{
+			EndpointID: model.EndpointKey("prod", "pod-a"),
+			Entries:    1,
+			Capacity:   10,
+		}, {
+			EndpointID: staleEndpoint,
+			Entries:    8,
+			Capacity:   10,
+		}, {
+			EndpointID: frozenEndpoint,
+			Entries:    8,
+			Capacity:   10,
+		}},
+	}
+	for _, endpointID := range []string{staleEndpoint, frozenEndpoint} {
+		if err := store.ReplaceEndpoint(context.Background(), endpointID, []dataplane.PolicyMapEntry{{
+			Key:   dataplane.PolicyKey{PrefixLen: dataplane.StaticPrefixBits, Direction: dataplane.DirectionIngress, RemoteIdentity: 42},
+			Value: dataplane.PolicyEntry{},
+		}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	result, err := ReconcileNodeWithOptions(context.Background(), state, ReconcileOptions{
+		Node:                              "node-a",
+		Store:                             store,
+		PolicyPressureMitigationThreshold: 80,
+		FrozenPolicyEndpoints: map[string]struct{}{
+			frozenEndpoint: {},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.PolicyPressureMitigated != 1 {
+		t.Fatalf("policy pressure mitigated = %d, want 1", result.PolicyPressureMitigated)
+	}
+	if entries := store.Entries(staleEndpoint); len(entries) != 0 {
+		t.Fatalf("stale endpoint entries = %d, want deleted", len(entries))
+	}
+	if entries := store.Entries(frozenEndpoint); len(entries) == 0 {
+		t.Fatal("frozen endpoint policy was removed")
 	}
 }
 
@@ -1035,6 +1146,55 @@ func TestReconcilerDeletesInventoryEndpointsMissingAfterRestart(t *testing.T) {
 	}
 	if !slices.Contains(store.replaces, model.EndpointKey("prod", "live")) {
 		t.Fatalf("live endpoint replace list = %v, want %q", store.replaces, model.EndpointKey("prod", "live"))
+	}
+}
+
+func TestReconcilerKeepsFrozenInventoryEndpointMissingAfterRestart(t *testing.T) {
+	frozenEndpoint := model.EndpointKey("prod", "frozen")
+	store := &inventoryPolicyStore{
+		endpoints: []string{
+			model.EndpointKey("prod", "stale"),
+			frozenEndpoint,
+			model.EndpointKey("prod", "live"),
+		},
+	}
+	reconciler := NewReconciler(store)
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:             "live",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"web"},
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:        "allow-all",
+				Priority:  100,
+				Direction: model.DirectionIngress,
+				Protocol:  model.ProtocolAny,
+				Action:    model.ActionAllow,
+			}},
+		}},
+	}
+
+	if _, err := reconciler.Reconcile(context.Background(), state, ReconcileOptions{
+		Node:  "node-a",
+		Store: store,
+		FrozenPolicyEndpoints: map[string]struct{}{
+			frozenEndpoint: {},
+		},
+	}); err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+	if !slices.Contains(store.deletes, model.EndpointKey("prod", "stale")) {
+		t.Fatalf("delete endpoints = %v, want stale endpoint deleted", store.deletes)
+	}
+	if slices.Contains(store.deletes, frozenEndpoint) {
+		t.Fatalf("frozen endpoint must not be deleted: %v", store.deletes)
 	}
 }
 

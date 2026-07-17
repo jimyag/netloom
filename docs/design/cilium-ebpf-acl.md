@@ -186,7 +186,8 @@ endpoint policy-map keys, values, counters, and remote CIDRs through
 `netloom-agent policy-entries` or the long-running `/policy/entries/{endpoint}`
 API. Long-running agents also support endpoint policy freeze/unfreeze through
 `POST /policy/endpoints/{endpoint}/freeze` and `/unfreeze`; frozen endpoints are
-skipped by normal reconcile policy-map and TCX updates until explicitly
+skipped by normal reconcile policy-map and TCX updates and are kept out of
+restart cleanup, idle GC, and pressure-mitigation deletes until explicitly
 unfrozen or until their optional `ttl_seconds` / RFC3339 `expires_at` expires,
 and the frozen endpoint list plus expiry metadata is persisted in local OVS
 `Open_vSwitch.external_ids:netloom_policy_freeze_state` when
