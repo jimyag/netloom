@@ -67,6 +67,9 @@ func TestInMemoryPolicyStoreReportsEndpointStatuses(t *testing.T) {
 	if status.EndpointID != endpointA || status.Revision != 1 || status.Entries != 1 || status.Capacity != 0 || status.PressurePercent != 0 {
 		t.Fatalf("status = %+v, want endpoint revision and usage", status)
 	}
+	if status.LastSeen == nil || status.LastSeen.IsZero() {
+		t.Fatalf("last_seen is zero in status %+v, want policy update freshness timestamp", status)
+	}
 	if status.Drift.Drifted || status.Drift.Missing != 0 || status.Drift.Extra != 0 || status.Drift.Changed != 0 {
 		t.Fatalf("drift = %+v, want clean in-memory status", status.Drift)
 	}

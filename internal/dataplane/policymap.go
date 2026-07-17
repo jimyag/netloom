@@ -144,6 +144,7 @@ type PolicyEndpointStatus struct {
 	Revision         uint64            `json:"revision"`
 	Entries          uint32            `json:"entries"`
 	Capacity         uint32            `json:"capacity"`
+	LastSeen         *time.Time        `json:"last_seen,omitempty"`
 	PressurePercent  uint32            `json:"pressure_percent"`
 	PressureSeverity string            `json:"pressure_severity"`
 	Drift            PolicyMapDrift    `json:"drift"`
@@ -430,6 +431,7 @@ func (s *InMemoryPolicyStore) PolicyEndpointStatuses(_ context.Context) ([]Polic
 			EndpointID:       endpointID,
 			Revision:         s.revisions[endpointID],
 			Entries:          uint32(len(entries)),
+			LastSeen:         policyEndpointLastSeen(s.lastSeen[endpointID]),
 			Drift:            DiffPolicyMapEntries(endpointID, entries, entries),
 			LastStats:        s.lastStats[endpointID],
 			PressurePercent:  policyMapPressurePercent(PolicyMapUsage{EndpointID: endpointID, Entries: uint32(len(entries))}),
@@ -442,6 +444,13 @@ func (s *InMemoryPolicyStore) PolicyEndpointStatuses(_ context.Context) ([]Polic
 		statuses = append(statuses, status)
 	}
 	return statuses, nil
+}
+
+func policyEndpointLastSeen(t time.Time) *time.Time {
+	if t.IsZero() {
+		return nil
+	}
+	return &t
 }
 
 func (s *InMemoryPolicyStore) policyEndpointIDsLocked() map[string]struct{} {

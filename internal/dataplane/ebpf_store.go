@@ -730,6 +730,7 @@ func (s *EBPFPolicyStore) PolicyEndpointStatuses(ctx context.Context) ([]PolicyE
 			Revision:         s.revisions[endpointID],
 			Entries:          entries,
 			Capacity:         s.maxEntries,
+			LastSeen:         policyEndpointLastSeen(s.policyEndpointLastSeenLocked(endpointID)),
 			PressurePercent:  policyMapPressurePercent(usage),
 			PressureSeverity: PolicyMapPressureSeverity(usage),
 			Drift:            DiffPolicyMapEntries(endpointID, s.entries[endpointID], live),
