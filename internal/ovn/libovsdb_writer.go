@@ -1315,6 +1315,16 @@ func (w *LibOVSDBTopologyWriter) ensureLoadBalancerRow(ctx context.Context, rout
 		}
 		ops = append(ops, attachOps...)
 	}
+	detachRouterOps, err := w.detachLoadBalancerFromOtherRouters(ctx, router.UUID, existing.UUID)
+	if err != nil {
+		return "", nil, err
+	}
+	ops = append(ops, detachRouterOps...)
+	detachSwitchOps, err := w.detachLoadBalancerFromOtherSwitches(ctx, switches, existing.UUID)
+	if err != nil {
+		return "", nil, err
+	}
+	ops = append(ops, detachSwitchOps...)
 	if !reflect.DeepEqual(existing.Vips, desired.Vips) ||
 		!reflect.DeepEqual(existing.Protocol, desired.Protocol) ||
 		!reflect.DeepEqual(existing.SelectionFields, desired.SelectionFields) ||
@@ -1351,6 +1361,25 @@ func (w *LibOVSDBTopologyWriter) detachLoadBalancerFromRouter(routerUUID, lbUUID
 	})
 }
 
+func (w *LibOVSDBTopologyWriter) detachLoadBalancerFromOtherRouters(ctx context.Context, keepRouterUUID, lbUUID string) ([]ovsdb.Operation, error) {
+	var routers []ovnnb.LogicalRouter
+	if err := w.client.WhereCache(func(row *ovnnb.LogicalRouter) bool {
+		return row.UUID != keepRouterUUID && containsString(row.LoadBalancer, lbUUID)
+	}).List(ctx, &routers); err != nil {
+		return nil, fmt.Errorf("list logical routers containing load balancer %s: %w", lbUUID, err)
+	}
+	sort.Slice(routers, func(i, j int) bool { return routers[i].UUID < routers[j].UUID })
+	var ops []ovsdb.Operation
+	for i := range routers {
+		detachOps, err := w.detachLoadBalancerFromRouter(routers[i].UUID, lbUUID)
+		if err != nil {
+			return nil, fmt.Errorf("detach load balancer %s from unexpected router %s: %w", lbUUID, routers[i].Name, err)
+		}
+		ops = append(ops, detachOps...)
+	}
+	return ops, nil
+}
+
 func (w *LibOVSDBTopologyWriter) attachLoadBalancerToSwitch(sw *ovnnb.LogicalSwitch, lbUUID string) ([]ovsdb.Operation, error) {
 	return w.client.Where(sw).Mutate(sw, ovsmodel.Mutation{
 		Field:   &sw.LoadBalancer,
@@ -1366,6 +1395,32 @@ func (w *LibOVSDBTopologyWriter) detachLoadBalancerFromSwitch(switchUUID, lbUUID
 		Mutator: ovsdb.MutateOperationDelete,
 		Value:   []string{lbUUID},
 	})
+}
+
+func (w *LibOVSDBTopologyWriter) detachLoadBalancerFromOtherSwitches(ctx context.Context, keepSwitches []ovnnb.LogicalSwitch, lbUUID string) ([]ovsdb.Operation, error) {
+	keep := make(map[string]struct{}, len(keepSwitches))
+	for _, sw := range keepSwitches {
+		keep[sw.UUID] = struct{}{}
+	}
+	var switches []ovnnb.LogicalSwitch
+	if err := w.client.WhereCache(func(row *ovnnb.LogicalSwitch) bool {
+		if _, ok := keep[row.UUID]; ok {
+			return false
+		}
+		return containsString(row.LoadBalancer, lbUUID)
+	}).List(ctx, &switches); err != nil {
+		return nil, fmt.Errorf("list logical switches containing load balancer %s: %w", lbUUID, err)
+	}
+	sort.Slice(switches, func(i, j int) bool { return switches[i].UUID < switches[j].UUID })
+	var ops []ovsdb.Operation
+	for i := range switches {
+		detachOps, err := w.detachLoadBalancerFromSwitch(switches[i].UUID, lbUUID)
+		if err != nil {
+			return nil, fmt.Errorf("detach load balancer %s from unexpected switch %s: %w", lbUUID, switches[i].Name, err)
+		}
+		ops = append(ops, detachOps...)
+	}
+	return ops, nil
 }
 
 func (w *LibOVSDBTopologyWriter) syncDNSRowSwitchReferences(switches map[string]ovnnb.LogicalSwitch, desiredSwitchNames map[string]struct{}, dnsUUID string) ([]ovsdb.Operation, error) {
