@@ -4024,6 +4024,14 @@ func TestPolicyEndpointAPIPlansDesiredEndpointPolicyMap(t *testing.T) {
 	metrics := newAgentMetrics(store)
 	observeAgentReconcileResultWithState(metrics, agent.ReconcileResult{
 		Node: "node-a",
+		PolicyRuleCatalog: []agent.PolicyRuleCatalogEntry{{
+			EndpointID:    endpointID,
+			RuleCookie:    dataplane.PolicyRuleCookie("prod/web/allow-http"),
+			RuleRef:       "prod/web/allow-http",
+			VPC:           "prod",
+			SecurityGroup: "web",
+			RuleID:        "allow-http",
+		}},
 		PolicyEndpointStatus: []dataplane.PolicyEndpointStatus{{
 			EndpointID: endpointID,
 			Revision:   beforeRevision,
@@ -4047,6 +4055,15 @@ func TestPolicyEndpointAPIPlansDesiredEndpointPolicyMap(t *testing.T) {
 	}
 	if got.Plan.Stats.Added != 1 || got.Plan.Stats.Deleted != 1 || got.Plan.CurrentEntries != 1 || got.Plan.DesiredEntries != 1 {
 		t.Fatalf("plan = %+v, want add/delete counts", got.Plan)
+	}
+	if len(got.Plan.AddedEntries) != 1 || got.Plan.AddedEntries[0].RuleRef != "prod/web/allow-http" || got.Plan.AddedEntries[0].SecurityGroup != "web" || got.Plan.AddedEntries[0].RuleID != "allow-http" {
+		t.Fatalf("added entries = %+v, want desired allow-http rule metadata", got.Plan.AddedEntries)
+	}
+	if len(got.Plan.DeletedEntries) != 1 || got.Plan.DeletedEntries[0].RemoteCIDR != "198.51.100.0/24" || got.Plan.DeletedEntries[0].Value.Deny != 1 {
+		t.Fatalf("deleted entries = %+v, want old deny entry details", got.Plan.DeletedEntries)
+	}
+	if len(got.Plan.UpdatedEntries) != 0 || len(got.Plan.UnchangedEntries) != 0 {
+		t.Fatalf("unexpected updated/unchanged entries in plan: updated=%+v unchanged=%+v", got.Plan.UpdatedEntries, got.Plan.UnchangedEntries)
 	}
 	if revision := store.Revision(endpointID); revision != beforeRevision {
 		t.Fatalf("revision = %d, want unchanged %d", revision, beforeRevision)

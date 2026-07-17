@@ -532,6 +532,18 @@ ovs-vsctl get Open_vSwitch . external_ids:netloom_policy_freeze_state
 `policy-freeze-state` CLI 会去重并过滤已经过期的冻结记录，支持按 `endpoint`
 查询某个 endpoint 当前是否被冻结。
 
+预览某个 endpoint 下一次 policy-map 更新：
+
+```bash
+curl -X POST http://127.0.0.1:9092/policy/endpoints/prod/vm-a/plan
+```
+
+`/plan` 是 dry-run，只读取当前 live policy map 并编译最新 desired state，不会写入
+eBPF map 或改变 revision。响应里的 `plan` 包含 add/update/delete/unchanged 计数，
+以及 `added_entries`、`updated_entries`、`deleted_entries`、`unchanged_entries`
+明细；entry 会带 rule ref、VPC、安全组和规则 ID，适合在 approval、ack 或 rollout
+前审查实际将变化的 policy-map key/value。
+
 查看 endpoint policy lifecycle 动作历史：
 
 ```bash

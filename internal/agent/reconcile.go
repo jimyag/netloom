@@ -178,11 +178,15 @@ type ReconcileOptions struct {
 type PolicyMapPressureHotspot = dataplane.PolicyMapPressureHotspot
 
 type PolicyEndpointPlan struct {
-	EndpointID     string                      `json:"endpoint_id"`
-	CurrentEntries int                         `json:"current_entries"`
-	DesiredEntries int                         `json:"desired_entries"`
-	Stats          dataplane.PolicyUpdateStats `json:"stats"`
-	Changed        bool                        `json:"changed"`
+	EndpointID       string                      `json:"endpoint_id"`
+	CurrentEntries   int                         `json:"current_entries"`
+	DesiredEntries   int                         `json:"desired_entries"`
+	Stats            dataplane.PolicyUpdateStats `json:"stats"`
+	Changed          bool                        `json:"changed"`
+	AddedEntries     []dataplane.PolicyMapEntry  `json:"-"`
+	UpdatedEntries   []dataplane.PolicyMapEntry  `json:"-"`
+	DeletedEntries   []dataplane.PolicyMapEntry  `json:"-"`
+	UnchangedEntries []dataplane.PolicyMapEntry  `json:"-"`
 }
 
 type PolicyEndpointRolloutOptions struct {
@@ -1764,13 +1768,35 @@ func planPolicyEndpointEntries(endpointID string, desired []dataplane.PolicyMapE
 	current := entryStore.Entries(endpointID)
 	plan := dataplane.PlanPolicyUpdate(current, desired)
 	stats := plan.Stats()
+	deletedEntries := policyEntriesForDeletedKeys(current, plan.Delete)
 	return PolicyEndpointPlan{
-		EndpointID:     endpointID,
-		CurrentEntries: len(current),
-		DesiredEntries: len(desired),
-		Stats:          stats,
-		Changed:        stats.Added != 0 || stats.Updated != 0 || stats.Deleted != 0,
+		EndpointID:       endpointID,
+		CurrentEntries:   len(current),
+		DesiredEntries:   len(desired),
+		Stats:            stats,
+		Changed:          stats.Added != 0 || stats.Updated != 0 || stats.Deleted != 0,
+		AddedEntries:     append([]dataplane.PolicyMapEntry(nil), plan.Add...),
+		UpdatedEntries:   append([]dataplane.PolicyMapEntry(nil), plan.Update...),
+		DeletedEntries:   deletedEntries,
+		UnchangedEntries: append([]dataplane.PolicyMapEntry(nil), plan.Unchanged...),
 	}, nil
+}
+
+func policyEntriesForDeletedKeys(current []dataplane.PolicyMapEntry, keys []dataplane.PolicyKey) []dataplane.PolicyMapEntry {
+	if len(current) == 0 || len(keys) == 0 {
+		return nil
+	}
+	byKey := make(map[dataplane.PolicyKey]dataplane.PolicyMapEntry, len(current))
+	for _, entry := range current {
+		byKey[entry.Key] = entry
+	}
+	out := make([]dataplane.PolicyMapEntry, 0, len(keys))
+	for _, key := range keys {
+		if entry, ok := byKey[key]; ok {
+			out = append(out, entry)
+		}
+	}
+	return out
 }
 
 func rolloutPolicyEndpointIDs(state control.DesiredState, options ReconcileOptions, requested []string) ([]string, error) {

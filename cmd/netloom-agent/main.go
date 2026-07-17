@@ -507,9 +507,21 @@ type policyEndpointActionOutput struct {
 	Frozen        bool                           `json:"frozen,omitempty"`
 	Unfrozen      bool                           `json:"unfrozen,omitempty"`
 	ExpiresAt     *time.Time                     `json:"expires_at,omitempty"`
-	Plan          agent.PolicyEndpointPlan       `json:"plan,omitempty"`
+	Plan          policyEndpointPlanOutput       `json:"plan,omitempty"`
 	Rollout       agent.PolicyEndpointRollout    `json:"rollout,omitempty"`
 	EndpointInfo  dataplane.PolicyEndpointStatus `json:"endpoint_status,omitempty"`
+}
+
+type policyEndpointPlanOutput struct {
+	EndpointID       string                      `json:"endpoint_id"`
+	CurrentEntries   int                         `json:"current_entries"`
+	DesiredEntries   int                         `json:"desired_entries"`
+	Stats            dataplane.PolicyUpdateStats `json:"stats"`
+	Changed          bool                        `json:"changed"`
+	AddedEntries     []policyMapEntryOutput      `json:"added_entries,omitempty"`
+	UpdatedEntries   []policyMapEntryOutput      `json:"updated_entries,omitempty"`
+	DeletedEntries   []policyMapEntryOutput      `json:"deleted_entries,omitempty"`
+	UnchangedEntries []policyMapEntryOutput      `json:"unchanged_entries,omitempty"`
 }
 
 type policyRolloutHistoryOutput struct {
@@ -2124,6 +2136,20 @@ func policyMapEntryOutputsFromEntries(endpointID string, entries []dataplane.Pol
 		out = append(out, output)
 	}
 	return out
+}
+
+func policyEndpointPlanOutputFromPlan(plan agent.PolicyEndpointPlan, catalog map[string]agent.PolicyRuleCatalogEntry) policyEndpointPlanOutput {
+	return policyEndpointPlanOutput{
+		EndpointID:       plan.EndpointID,
+		CurrentEntries:   plan.CurrentEntries,
+		DesiredEntries:   plan.DesiredEntries,
+		Stats:            plan.Stats,
+		Changed:          plan.Changed,
+		AddedEntries:     policyMapEntryOutputsFromEntries(plan.EndpointID, plan.AddedEntries, catalog),
+		UpdatedEntries:   policyMapEntryOutputsFromEntries(plan.EndpointID, plan.UpdatedEntries, catalog),
+		DeletedEntries:   policyMapEntryOutputsFromEntries(plan.EndpointID, plan.DeletedEntries, catalog),
+		UnchangedEntries: policyMapEntryOutputsFromEntries(plan.EndpointID, plan.UnchangedEntries, catalog),
+	}
 }
 
 func (o *policyMapEntryOutput) attachPolicyRuleCatalog(entry agent.PolicyRuleCatalogEntry) {
@@ -5677,12 +5703,16 @@ func (m *agentMetrics) handlePolicyEndpointPlan(w http.ResponseWriter, r *http.R
 		Revision:   plan.Stats.Revision,
 		Entries:    uint32(plan.DesiredEntries),
 	})
+	var catalog map[string]agent.PolicyRuleCatalogEntry
+	if snapshot, _, ready := m.snapshotValue(); ready {
+		catalog = policyRuleCatalogByMetricKey(snapshot.Result.PolicyRuleCatalog)
+	}
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(policyEndpointActionOutput{
 		EndpointID: plan.EndpointID,
 		Action:     "plan",
 		Planned:    true,
-		Plan:       plan,
+		Plan:       policyEndpointPlanOutputFromPlan(plan, catalog),
 	})
 }
 
