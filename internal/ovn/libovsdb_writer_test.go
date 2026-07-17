@@ -991,7 +991,9 @@ func TestLibOVSDBTopologyWriterCleanupRepairsSubnetPortAttachmentDriftInSteadySt
 	for i := range switchPorts {
 		switchPorts[i].PortSecurity = []string{"02:00:00:00:00:ff 10.10.0.99"}
 		switchPorts[i].HaChassisGroup = &staleHAGroup.UUID
-		nextOps, err := client.Where(&switchPorts[i]).Update(&switchPorts[i], &switchPorts[i].PortSecurity, &switchPorts[i].HaChassisGroup)
+		switchPorts[i].ExternalIDs["netloom_endpoint"] = "prod/old-pod"
+		switchPorts[i].ExternalIDs["netloom_node"] = "node-a"
+		nextOps, err := client.Where(&switchPorts[i]).Update(&switchPorts[i], &switchPorts[i].PortSecurity, &switchPorts[i].HaChassisGroup, &switchPorts[i].ExternalIDs)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1051,8 +1053,12 @@ func TestLibOVSDBTopologyWriterCleanupRepairsSubnetPortAttachmentDriftInSteadySt
 			containsString(sw.Ports, localnetPorts[0].UUID) &&
 			len(switchRouterPorts[0].PortSecurity) == 0 &&
 			switchRouterPorts[0].HaChassisGroup == nil &&
+			switchRouterPorts[0].ExternalIDs["netloom_endpoint"] == "" &&
+			switchRouterPorts[0].ExternalIDs["netloom_node"] == "" &&
 			len(localnetPorts[0].PortSecurity) == 0 &&
-			localnetPorts[0].HaChassisGroup == nil
+			localnetPorts[0].HaChassisGroup == nil &&
+			localnetPorts[0].ExternalIDs["netloom_endpoint"] == "" &&
+			localnetPorts[0].ExternalIDs["netloom_node"] == ""
 	})
 	stats := writer.LastCleanupStats()
 	if stats.FirstReconcileGC || stats.Operations == 0 {
@@ -1634,6 +1640,83 @@ func TestLibOVSDBTopologyWriterRepairsEndpointSwitchPortStaleTypeOptionsAndTag(t
 		ports = nil
 		err := client.WhereCache(func(row *ovnnb.LogicalSwitchPort) bool { return row.Name == logicalPort("prod", "pod-a") }).List(ctx, &ports)
 		return err == nil && len(ports) == 1 && ports[0].Type == "" && len(ports[0].Options) == 0 && ports[0].Tag == nil && ports[0].HaChassisGroup == nil
+	})
+}
+
+func TestLibOVSDBTopologyWriterRepairsEndpointSwitchPortStaleRoleAndProviderMetadata(t *testing.T) {
+	ctx := context.Background()
+	client, closeFn := newTestOVNNBClient(t)
+	defer closeFn()
+
+	if _, err := client.MonitorAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	writer := NewLibOVSDBTopologyWriter(client)
+	if err := writer.EnsureVPC(ctx, model.VPC{Name: "prod"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureSubnet(ctx, model.Subnet{
+		Name:    "apps",
+		VPC:     "prod",
+		CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+		Gateway: netip.MustParseAddr("10.10.0.1"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	endpoint := model.Endpoint{
+		ID:     "pod-a",
+		VPC:    "prod",
+		Subnet: "apps",
+		IP:     netip.MustParseAddr("10.10.0.20"),
+		MAC:    "02:00:00:00:00:20",
+		Node:   "node-a",
+	}
+	if err := writer.EnsureEndpoint(ctx, endpoint); err != nil {
+		t.Fatal(err)
+	}
+
+	var ports []ovnnb.LogicalSwitchPort
+	requireEventually(t, func() bool {
+		ports = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalSwitchPort) bool { return row.Name == logicalPort("prod", "pod-a") }).List(ctx, &ports)
+		return err == nil && len(ports) == 1
+	})
+	port := ports[0]
+	port.ExternalIDs["netloom_role"] = "router"
+	port.ExternalIDs["netloom_provider_network"] = "physnet-a"
+	updateOps, err := client.Where(&port).Update(&port, &port.ExternalIDs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := client.Transact(ctx, updateOps...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, updateOps); err != nil {
+		t.Fatalf("seed endpoint stale metadata operation errors=%+v: %v", opErrors, err)
+	}
+	requireEventually(t, func() bool {
+		ports = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalSwitchPort) bool { return row.Name == logicalPort("prod", "pod-a") }).List(ctx, &ports)
+		return err == nil &&
+			len(ports) == 1 &&
+			ports[0].ExternalIDs["netloom_role"] == "router" &&
+			ports[0].ExternalIDs["netloom_provider_network"] == "physnet-a"
+	})
+
+	if err := writer.EnsureEndpoint(ctx, endpoint); err != nil {
+		t.Fatal(err)
+	}
+	requireEventually(t, func() bool {
+		ports = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalSwitchPort) bool { return row.Name == logicalPort("prod", "pod-a") }).List(ctx, &ports)
+		return err == nil &&
+			len(ports) == 1 &&
+			ports[0].ExternalIDs["netloom_endpoint"] == endpointExternalID("prod", "pod-a") &&
+			ports[0].ExternalIDs["netloom_node"] == "node-a" &&
+			ports[0].ExternalIDs["netloom_subnet"] == "apps" &&
+			ports[0].ExternalIDs["netloom_role"] == "" &&
+			ports[0].ExternalIDs["netloom_provider_network"] == ""
 	})
 }
 
