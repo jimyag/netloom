@@ -4354,8 +4354,9 @@ func (m *agentMetrics) planPolicyEndpoint(ctx context.Context, endpoint string) 
 		return agent.PolicyEndpointPlan{}, err
 	}
 	return agent.PlanPolicyEndpoint(ctx, snapshot.State, agent.ReconcileOptions{
-		Node:  snapshot.Result.Node,
-		Store: m.store,
+		Node:                  snapshot.Result.Node,
+		Store:                 m.store,
+		FrozenPolicyEndpoints: m.frozenPolicyEndpointsSnapshot(),
 	}, endpointID)
 }
 

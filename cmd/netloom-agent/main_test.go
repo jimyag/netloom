@@ -3515,6 +3515,21 @@ func TestPolicyEndpointAPIFreezesAndUnfreezesEndpointPolicyMap(t *testing.T) {
 	}
 
 	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPost, "/policy/endpoints/prod/pod-a/plan", nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("plan status = %d, want 409; body=%s", recorder.Code, recorder.Body.String())
+	}
+	history := metrics.policyActionHistory()
+	if len(history) < 3 ||
+		history[len(history)-1].Action != "plan" ||
+		history[len(history)-1].EndpointID != endpointID ||
+		history[len(history)-1].Success ||
+		!strings.Contains(history[len(history)-1].Error, "frozen") {
+		t.Fatalf("action history = %+v, want failed frozen plan audit event", history)
+	}
+
+	recorder = httptest.NewRecorder()
 	request = httptest.NewRequest(http.MethodPost, "/policy/endpoints/prod/pod-a/unfreeze", nil)
 	metrics.handlePolicyEndpoints(recorder, request)
 	if recorder.Code != http.StatusOK {

@@ -426,6 +426,9 @@ func PlanPolicyEndpoint(ctx context.Context, state control.DesiredState, options
 	if options.Store == nil {
 		return PolicyEndpointPlan{}, fmt.Errorf("policy store is required")
 	}
+	if policyEndpointFrozen(options, endpointID) {
+		return PolicyEndpointPlan{}, fmt.Errorf("policy endpoint %s is frozen", endpointID)
+	}
 	program, err := compileEndpointPolicyProgram(state, options, endpointID)
 	if err != nil {
 		return PolicyEndpointPlan{}, err
