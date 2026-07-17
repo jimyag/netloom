@@ -37,6 +37,7 @@ const (
 	defaultMetadataRoot     = "/var/run/netloom-ebpf-meta/policy"
 	policyRolloutStateKey   = "netloom_policy_rollout_state"
 	policyRolloutHistoryKey = "netloom_policy_rollout_history"
+	policyFreezeStateKey    = "netloom_policy_freeze_state"
 	agentOVSDBStatusKey     = "netloom_agent_status"
 )
 
@@ -318,9 +319,19 @@ type policyRolloutStateEntry struct {
 	Failed           int       `json:"failed,omitempty"`
 }
 
+type policyFreezeStateDocument struct {
+	FrozenEndpoints []string  `json:"frozen_endpoints,omitempty"`
+	UpdatedAt       time.Time `json:"updated_at,omitempty"`
+}
+
 type policyRolloutStateStore interface {
 	Load(context.Context) (policyRolloutStateDocument, error)
 	Save(context.Context, policyRolloutStateDocument) error
+}
+
+type policyFreezeStateStore interface {
+	Load(context.Context) (policyFreezeStateDocument, error)
+	Save(context.Context, policyFreezeStateDocument) error
 }
 
 type policyRolloutHistoryStore interface {
@@ -338,6 +349,10 @@ type openVSwitchExternalIDStore interface {
 }
 
 type ovsdbPolicyRolloutStateStore struct {
+	syncer openVSwitchExternalIDStore
+}
+
+type ovsdbPolicyFreezeStateStore struct {
 	syncer openVSwitchExternalIDStore
 }
 
@@ -1348,6 +1363,14 @@ func runStateFile(ctx context.Context, path string) error {
 	if err := configurePolicyRolloutHistory(ctx, metrics, historyStore); err != nil {
 		return err
 	}
+	freezeStore, closeFreezeStore, err := policyFreezeStateStoreFromEnv(ctx)
+	if err != nil {
+		return err
+	}
+	defer closeFreezeStore()
+	if err := configurePolicyFreezeState(ctx, metrics, freezeStore); err != nil {
+		return err
+	}
 	if closeMetrics, err := startAgentMetricsServer(ctx, os.Getenv("NETLOOM_AGENT_METRICS_ADDR"), metrics); err != nil {
 		return err
 	} else {
@@ -1992,6 +2015,7 @@ type agentMetrics struct {
 	store               agent.PolicyStore
 	rolloutHistoryStore policyRolloutHistoryStore
 	rolloutHistory      []policyRolloutHistoryEntry
+	freezeStateStore    policyFreezeStateStore
 	frozenEndpoints     map[string]struct{}
 }
 
@@ -2083,6 +2107,32 @@ func configurePolicyRolloutHistory(ctx context.Context, metrics *agentMetrics, s
 	defer metrics.mu.Unlock()
 	metrics.rolloutHistoryStore = store
 	metrics.rolloutHistory = history
+	return nil
+}
+
+func configurePolicyFreezeState(ctx context.Context, metrics *agentMetrics, store policyFreezeStateStore) error {
+	if metrics == nil {
+		return nil
+	}
+	if store == nil {
+		return nil
+	}
+	doc, err := store.Load(ctx)
+	if err != nil {
+		return err
+	}
+	frozen := make(map[string]struct{}, len(doc.FrozenEndpoints))
+	for _, endpointID := range doc.FrozenEndpoints {
+		endpointID = strings.TrimSpace(endpointID)
+		if endpointID == "" {
+			continue
+		}
+		frozen[endpointID] = struct{}{}
+	}
+	metrics.mu.Lock()
+	defer metrics.mu.Unlock()
+	metrics.freezeStateStore = store
+	metrics.frozenEndpoints = frozen
 	return nil
 }
 
@@ -2298,6 +2348,40 @@ func (s ovsdbPolicyRolloutStateStore) Save(ctx context.Context, doc policyRollou
 	return s.syncer.SetOpenVSwitchExternalID(ctx, policyRolloutStateKey, string(raw))
 }
 
+func (s ovsdbPolicyFreezeStateStore) Load(ctx context.Context) (policyFreezeStateDocument, error) {
+	var doc policyFreezeStateDocument
+	if s.syncer == nil {
+		return doc, nil
+	}
+	raw, ok, err := s.syncer.OpenVSwitchExternalID(ctx, policyFreezeStateKey)
+	if err != nil {
+		return doc, err
+	}
+	if !ok || strings.TrimSpace(raw) == "" {
+		return doc, nil
+	}
+	if err := json.Unmarshal([]byte(raw), &doc); err != nil {
+		return doc, fmt.Errorf("decode Open_vSwitch external_ids:%s: %w", policyFreezeStateKey, err)
+	}
+	doc.FrozenEndpoints = uniqueStrings(doc.FrozenEndpoints)
+	return doc, nil
+}
+
+func (s ovsdbPolicyFreezeStateStore) Save(ctx context.Context, doc policyFreezeStateDocument) error {
+	if s.syncer == nil {
+		return nil
+	}
+	doc.FrozenEndpoints = uniqueStrings(doc.FrozenEndpoints)
+	if doc.UpdatedAt.IsZero() {
+		doc.UpdatedAt = time.Now().UTC()
+	}
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		return fmt.Errorf("encode Open_vSwitch external_ids:%s: %w", policyFreezeStateKey, err)
+	}
+	return s.syncer.SetOpenVSwitchExternalID(ctx, policyFreezeStateKey, string(raw))
+}
+
 func (s ovsdbPolicyRolloutHistoryStore) Load(ctx context.Context) ([]policyRolloutHistoryEntry, error) {
 	if s.syncer == nil {
 		return nil, nil
@@ -2364,6 +2448,27 @@ func uniqueStrings(values []string) []string {
 		out = append(out, value)
 	}
 	sort.Strings(out)
+	return out
+}
+
+func sortedStringSetKeys(values map[string]struct{}) []string {
+	out := make([]string, 0, len(values))
+	for value := range values {
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func newStringSet(values []string) map[string]struct{} {
+	out := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		out[value] = struct{}{}
+	}
 	return out
 }
 
@@ -2499,6 +2604,22 @@ func (m *agentMetrics) frozenPolicyEndpointIDs() []string {
 	return out
 }
 
+func (m *agentMetrics) saveFrozenPolicyEndpoints(ctx context.Context, endpoints []string) error {
+	if m == nil {
+		return nil
+	}
+	m.mu.RLock()
+	store := m.freezeStateStore
+	m.mu.RUnlock()
+	if store == nil {
+		return nil
+	}
+	return store.Save(ctx, policyFreezeStateDocument{
+		FrozenEndpoints: endpoints,
+		UpdatedAt:       time.Now().UTC(),
+	})
+}
+
 func (m *agentMetrics) policyEndpointFrozen(endpointID string) bool {
 	if m == nil {
 		return false
@@ -2509,7 +2630,7 @@ func (m *agentMetrics) policyEndpointFrozen(endpointID string) bool {
 	return ok
 }
 
-func (m *agentMetrics) freezePolicyEndpoint(endpoint string) (string, error) {
+func (m *agentMetrics) freezePolicyEndpoint(ctx context.Context, endpoint string) (string, error) {
 	if m == nil {
 		return "", errors.New("policy endpoint actions are not enabled")
 	}
@@ -2522,15 +2643,23 @@ func (m *agentMetrics) freezePolicyEndpoint(endpoint string) (string, error) {
 		return "", err
 	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	previous := sortedStringSetKeys(m.frozenEndpoints)
 	if m.frozenEndpoints == nil {
 		m.frozenEndpoints = make(map[string]struct{})
 	}
 	m.frozenEndpoints[endpointID] = struct{}{}
+	next := sortedStringSetKeys(m.frozenEndpoints)
+	m.mu.Unlock()
+	if err := m.saveFrozenPolicyEndpoints(ctx, next); err != nil {
+		m.mu.Lock()
+		m.frozenEndpoints = newStringSet(previous)
+		m.mu.Unlock()
+		return "", err
+	}
 	return endpointID, nil
 }
 
-func (m *agentMetrics) unfreezePolicyEndpoint(endpoint string) (string, error) {
+func (m *agentMetrics) unfreezePolicyEndpoint(ctx context.Context, endpoint string) (string, error) {
 	if m == nil {
 		return "", errors.New("policy endpoint actions are not enabled")
 	}
@@ -2543,8 +2672,16 @@ func (m *agentMetrics) unfreezePolicyEndpoint(endpoint string) (string, error) {
 		return "", err
 	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	previous := sortedStringSetKeys(m.frozenEndpoints)
 	delete(m.frozenEndpoints, endpointID)
+	next := sortedStringSetKeys(m.frozenEndpoints)
+	m.mu.Unlock()
+	if err := m.saveFrozenPolicyEndpoints(ctx, next); err != nil {
+		m.mu.Lock()
+		m.frozenEndpoints = newStringSet(previous)
+		m.mu.Unlock()
+		return "", err
+	}
 	return endpointID, nil
 }
 
@@ -3276,7 +3413,7 @@ func (m *agentMetrics) handlePolicyEndpointFreeze(w http.ResponseWriter, r *http
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "missing policy endpoint"})
 		return
 	}
-	endpointID, err := m.freezePolicyEndpoint(endpoint)
+	endpointID, err := m.freezePolicyEndpoint(r.Context(), endpoint)
 	if err != nil {
 		statusCode := http.StatusInternalServerError
 		switch {
@@ -3305,7 +3442,7 @@ func (m *agentMetrics) handlePolicyEndpointUnfreeze(w http.ResponseWriter, r *ht
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "missing policy endpoint"})
 		return
 	}
-	endpointID, err := m.unfreezePolicyEndpoint(endpoint)
+	endpointID, err := m.unfreezePolicyEndpoint(r.Context(), endpoint)
 	if err != nil {
 		statusCode := http.StatusInternalServerError
 		switch {
@@ -4199,6 +4336,18 @@ func policyRolloutHistoryStoreFromEnv(ctx context.Context) (policyRolloutHistory
 		return nil, func() {}, err
 	}
 	return ovsdbPolicyRolloutHistoryStore{syncer: linuxdatapath.NewLibOVSDBProviderSyncer(client)}, closeFn, nil
+}
+
+func policyFreezeStateStoreFromEnv(ctx context.Context) (policyFreezeStateStore, func(), error) {
+	endpoint := strings.TrimSpace(os.Getenv("NETLOOM_OVSDB_ENDPOINT"))
+	if endpoint == "" {
+		return nil, func() {}, nil
+	}
+	client, closeFn, err := newOpenVSwitchClient(ctx, endpoint)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	return ovsdbPolicyFreezeStateStore{syncer: linuxdatapath.NewLibOVSDBProviderSyncer(client)}, closeFn, nil
 }
 
 func identityGroupObservationStoreFromEnv(ctx context.Context) (openVSwitchExternalIDStore, func(), error) {

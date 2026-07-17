@@ -386,6 +386,10 @@ curl -s http://127.0.0.1:9092/policy/endpoints | jq '.frozen_endpoints'
 curl -X POST http://127.0.0.1:9092/policy/endpoints/prod/vm-a/unfreeze
 ```
 
+如果 agent 配置了 `NETLOOM_OVSDB_ENDPOINT`，冻结列表会保存到本机
+`Open_vSwitch.external_ids:netloom_policy_freeze_state`。agent 重启后会从
+这个 key 恢复冻结状态，直到显式执行 `/unfreeze`。
+
 检查本机托管网络对象：
 
 ```bash

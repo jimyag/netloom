@@ -2557,6 +2557,91 @@ func TestPolicyEndpointAPIFreezesAndUnfreezesEndpointPolicyMap(t *testing.T) {
 	}
 }
 
+func TestPolicyEndpointAPIPersistsFreezeStateToOpenVSwitchExternalID(t *testing.T) {
+	endpointID := model.EndpointKey("prod", "pod-a")
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:             "pod-a",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"web"},
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "allow-http",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("172.30.0.0/24"),
+				Ports:      []model.PortRange{{From: 80, To: 80}},
+				Action:     model.ActionAllow,
+			}},
+		}},
+	}
+	store := dataplane.NewInMemoryPolicyStore()
+	ovsdb := &fakeOpenVSwitchExternalIDStore{}
+	metrics := newAgentMetrics(store)
+	if err := configurePolicyFreezeState(t.Context(), metrics, ovsdbPolicyFreezeStateStore{syncer: ovsdb}); err != nil {
+		t.Fatal(err)
+	}
+	observeAgentReconcileResultWithState(metrics, agent.ReconcileResult{
+		Node: "node-a",
+		PolicyEndpointStatus: []dataplane.PolicyEndpointStatus{{
+			EndpointID: endpointID,
+			Revision:   1,
+			Entries:    1,
+		}},
+	}, "memory", time.Millisecond, state)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/policy/endpoints/prod/pod-a/freeze", nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("freeze status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var frozen policyFreezeStateDocument
+	if err := json.Unmarshal([]byte(ovsdb.values[policyFreezeStateKey]), &frozen); err != nil {
+		t.Fatalf("decode freeze state: %v", err)
+	}
+	if !reflect.DeepEqual(frozen.FrozenEndpoints, []string{endpointID}) || frozen.UpdatedAt.IsZero() {
+		t.Fatalf("freeze state = %+v, want persisted endpoint and updated_at", frozen)
+	}
+
+	reloaded := newAgentMetrics(store)
+	if err := configurePolicyFreezeState(t.Context(), reloaded, ovsdbPolicyFreezeStateStore{syncer: ovsdb}); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(reloaded.frozenPolicyEndpointIDs(), []string{endpointID}) {
+		t.Fatalf("reloaded frozen endpoints = %+v, want %s", reloaded.frozenPolicyEndpointIDs(), endpointID)
+	}
+
+	observeAgentReconcileResultWithState(reloaded, agent.ReconcileResult{
+		Node: "node-a",
+		PolicyEndpointStatus: []dataplane.PolicyEndpointStatus{{
+			EndpointID: endpointID,
+			Revision:   1,
+			Entries:    1,
+		}},
+	}, "memory", time.Millisecond, state)
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPost, "/policy/endpoints/prod/pod-a/unfreeze", nil)
+	reloaded.handlePolicyEndpoints(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unfreeze status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var unfrozen policyFreezeStateDocument
+	if err := json.Unmarshal([]byte(ovsdb.values[policyFreezeStateKey]), &unfrozen); err != nil {
+		t.Fatalf("decode unfreeze state: %v", err)
+	}
+	if len(unfrozen.FrozenEndpoints) != 0 || unfrozen.UpdatedAt.IsZero() {
+		t.Fatalf("freeze state after unfreeze = %+v, want empty persisted endpoint list", unfrozen)
+	}
+}
+
 func TestPolicyEndpointAPIQuarantinesEndpointPolicyMap(t *testing.T) {
 	endpointID := model.EndpointKey("prod", "pod-a")
 	state := control.DesiredState{
