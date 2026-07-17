@@ -65,6 +65,11 @@ func main() {
 				log.Fatal(err)
 			}
 			return
+		case "policy-rollout-history":
+			if err := runPolicyRolloutHistory(context.Background(), os.Args[2:], os.Stdout); err != nil {
+				log.Fatal(err)
+			}
+			return
 		case "route-explain":
 			if err := runRouteExplain(os.Args[2:], os.Stdout); err != nil {
 				log.Fatal(err)
@@ -147,6 +152,13 @@ type policyActionHistoryOptions struct {
 	action   string
 	success  string
 	limit    int
+}
+
+type policyRolloutHistoryOptions struct {
+	ovsdb  string
+	source string
+	name   string
+	limit  int
 }
 
 type routeExplainOptions struct {
@@ -305,8 +317,13 @@ type policyEndpointActionOutput struct {
 }
 
 type policyRolloutHistoryOutput struct {
-	Ready   bool                        `json:"ready"`
-	History []policyRolloutHistoryEntry `json:"history"`
+	Ready        bool                        `json:"ready"`
+	TotalEvents  int                         `json:"total_events,omitempty"`
+	EventCount   int                         `json:"event_count,omitempty"`
+	Limit        int                         `json:"limit,omitempty"`
+	FilterSource string                      `json:"filter_source,omitempty"`
+	FilterName   string                      `json:"filter_name,omitempty"`
+	History      []policyRolloutHistoryEntry `json:"history"`
 }
 
 type policyActionHistoryOutput struct {
@@ -664,6 +681,60 @@ func runPolicyActionHistoryWithStore(ctx context.Context, opts policyActionHisto
 		FilterAction:   action,
 		FilterSuccess:  success,
 		History:        recent,
+	}
+	encoder := json.NewEncoder(stdout)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(output)
+}
+
+func runPolicyRolloutHistory(ctx context.Context, args []string, stdout io.Writer) error {
+	opts := policyRolloutHistoryOptions{limit: defaultPolicyEventsLimit}
+	flags := flag.NewFlagSet("netloom-agent policy-rollout-history", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	flags.StringVar(&opts.ovsdb, "ovsdb", os.Getenv("NETLOOM_OVSDB_ENDPOINT"), "Open_vSwitch OVSDB endpoint")
+	flags.StringVar(&opts.source, "source", "", "optional rollout history source to include")
+	flags.StringVar(&opts.name, "name", "", "optional rollout name to include")
+	flags.IntVar(&opts.limit, "limit", defaultPolicyEventsLimit, "maximum recent rollout history entries")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(opts.ovsdb) == "" {
+		return errors.New("missing -ovsdb or NETLOOM_OVSDB_ENDPOINT")
+	}
+	client, closeStore, err := newOpenVSwitchClient(ctx, opts.ovsdb)
+	if err != nil {
+		return err
+	}
+	defer closeStore()
+	return runPolicyRolloutHistoryWithStore(ctx, opts, stdout, ovsdbPolicyRolloutHistoryStore{syncer: linuxdatapath.NewLibOVSDBProviderSyncer(client)})
+}
+
+func runPolicyRolloutHistoryWithStore(ctx context.Context, opts policyRolloutHistoryOptions, stdout io.Writer, store policyRolloutHistoryStore) error {
+	if store == nil {
+		return errors.New("missing policy rollout history store")
+	}
+	if opts.limit < 0 {
+		return fmt.Errorf("invalid limit %d", opts.limit)
+	}
+	if opts.limit > maxPolicyEventsLimit {
+		opts.limit = maxPolicyEventsLimit
+	}
+	history, err := store.Load(ctx)
+	if err != nil {
+		return err
+	}
+	source := strings.TrimSpace(opts.source)
+	name := strings.TrimSpace(opts.name)
+	filtered := filterPolicyRolloutHistory(history, source, name)
+	recent := recentPolicyRolloutHistory(filtered, opts.limit)
+	output := policyRolloutHistoryOutput{
+		Ready:        true,
+		TotalEvents:  len(history),
+		EventCount:   len(recent),
+		Limit:        opts.limit,
+		FilterSource: source,
+		FilterName:   name,
+		History:      recent,
 	}
 	encoder := json.NewEncoder(stdout)
 	encoder.SetIndent("", "  ")
@@ -2290,6 +2361,32 @@ func configurePolicyFreezeState(ctx context.Context, metrics *agentMetrics, stor
 
 func trimPolicyRolloutHistory(history []policyRolloutHistoryEntry) []policyRolloutHistoryEntry {
 	const limit = 128
+	if len(history) <= limit {
+		return append([]policyRolloutHistoryEntry(nil), history...)
+	}
+	return append([]policyRolloutHistoryEntry(nil), history[len(history)-limit:]...)
+}
+
+func filterPolicyRolloutHistory(history []policyRolloutHistoryEntry, source, name string) []policyRolloutHistoryEntry {
+	source = strings.TrimSpace(source)
+	name = strings.TrimSpace(name)
+	out := make([]policyRolloutHistoryEntry, 0, len(history))
+	for _, entry := range history {
+		if source != "" && entry.Source != source {
+			continue
+		}
+		if name != "" && entry.Name != name {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+func recentPolicyRolloutHistory(history []policyRolloutHistoryEntry, limit int) []policyRolloutHistoryEntry {
+	if limit == 0 || len(history) == 0 {
+		return nil
+	}
 	if len(history) <= limit {
 		return append([]policyRolloutHistoryEntry(nil), history...)
 	}

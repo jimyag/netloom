@@ -918,6 +918,73 @@ func TestRunPolicyActionHistoryWithStoreRejectsInvalidFilters(t *testing.T) {
 	}
 }
 
+func TestRunPolicyRolloutHistoryWithStoreReportsFilteredJSON(t *testing.T) {
+	history := []policyRolloutHistoryEntry{
+		{
+			ID:          "1",
+			Source:      "manual",
+			Name:        "canary",
+			Node:        "node-a",
+			Store:       "ebpf",
+			CompletedAt: time.Now().Add(-3 * time.Minute),
+			Rollout:     agent.PolicyEndpointRollout{Planned: 1, Applied: 1},
+		},
+		{
+			ID:          "2",
+			Source:      "desired-state",
+			Name:        "nightly",
+			Node:        "node-a",
+			Store:       "ebpf",
+			CompletedAt: time.Now().Add(-2 * time.Minute),
+			Rollout:     agent.PolicyEndpointRollout{Planned: 2, Applied: 1, Failed: 1},
+		},
+		{
+			ID:          "3",
+			Source:      "manual",
+			Name:        "canary",
+			Node:        "node-b",
+			Store:       "ebpf",
+			CompletedAt: time.Now().Add(-time.Minute),
+			Rollout:     agent.PolicyEndpointRollout{Planned: 1, Applied: 1},
+		},
+	}
+	raw, err := json.Marshal(history)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := ovsdbPolicyRolloutHistoryStore{syncer: &fakeOpenVSwitchExternalIDStore{values: map[string]string{
+		policyRolloutHistoryKey: string(raw),
+	}}}
+	var out bytes.Buffer
+	err = runPolicyRolloutHistoryWithStore(t.Context(), policyRolloutHistoryOptions{
+		source: "manual",
+		name:   "canary",
+		limit:  1,
+	}, &out, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got policyRolloutHistoryOutput
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("decode policy-rollout-history output: %v\n%s", err, out.String())
+	}
+	if !got.Ready || got.TotalEvents != 3 || got.EventCount != 1 || got.Limit != 1 || got.FilterSource != "manual" || got.FilterName != "canary" {
+		t.Fatalf("output = %+v, want filtered rollout metadata", got)
+	}
+	if len(got.History) != 1 || got.History[0].ID != "3" || got.History[0].Source != "manual" || got.History[0].Name != "canary" {
+		t.Fatalf("history = %+v, want latest manual canary rollout", got.History)
+	}
+}
+
+func TestRunPolicyRolloutHistoryWithStoreRejectsInvalidLimit(t *testing.T) {
+	var out bytes.Buffer
+	store := ovsdbPolicyRolloutHistoryStore{syncer: &fakeOpenVSwitchExternalIDStore{}}
+	err := runPolicyRolloutHistoryWithStore(t.Context(), policyRolloutHistoryOptions{limit: -1}, &out, store)
+	if err == nil || !strings.Contains(err.Error(), "invalid limit -1") {
+		t.Fatalf("err = %v, want invalid limit", err)
+	}
+}
+
 func TestRunPolicyExplainReportsSelectorAllow(t *testing.T) {
 	statePath := writePolicyExplainState(t)
 	var stdout bytes.Buffer
