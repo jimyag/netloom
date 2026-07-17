@@ -220,12 +220,14 @@ type policyEntriesOptions struct {
 	node       string
 	endpoint   string
 	ruleCookie string
+	ruleRef    string
 }
 
 type policyEntriesExportOptions struct {
 	ovsdb      string
 	endpoint   string
 	ruleCookie string
+	ruleRef    string
 }
 
 type policyActionHistoryOptions struct {
@@ -435,6 +437,7 @@ type policyEntriesOutput struct {
 	LastReconcileError   string                 `json:"last_reconcile_error,omitempty"`
 	EndpointID           string                 `json:"endpoint_id"`
 	FilterRuleCookie     uint32                 `json:"filter_rule_cookie,omitempty"`
+	FilterRuleRef        string                 `json:"filter_rule_ref,omitempty"`
 	EntryCount           int                    `json:"entry_count"`
 	Entries              []policyMapEntryOutput `json:"entries"`
 }
@@ -450,6 +453,7 @@ type policyEntriesExportOutput struct {
 	EndpointCount        int                           `json:"endpoint_count"`
 	FilterEndpoint       string                        `json:"filter_endpoint,omitempty"`
 	FilterRuleCookie     uint32                        `json:"filter_rule_cookie,omitempty"`
+	FilterRuleRef        string                        `json:"filter_rule_ref,omitempty"`
 	Endpoints            []policyEntriesEndpointOutput `json:"endpoints"`
 }
 
@@ -460,9 +464,13 @@ type policyEntriesEndpointOutput struct {
 }
 
 type policyMapEntryOutput struct {
-	Key        policyMapKeyOutput   `json:"key"`
-	Value      policyMapValueOutput `json:"value"`
-	RemoteCIDR string               `json:"remote_cidr,omitempty"`
+	Key           policyMapKeyOutput   `json:"key"`
+	Value         policyMapValueOutput `json:"value"`
+	RemoteCIDR    string               `json:"remote_cidr,omitempty"`
+	RuleRef       string               `json:"rule_ref,omitempty"`
+	VPC           string               `json:"vpc,omitempty"`
+	SecurityGroup string               `json:"security_group,omitempty"`
+	RuleID        string               `json:"rule_id,omitempty"`
 }
 
 type policyMapKeyOutput struct {
@@ -1009,6 +1017,7 @@ func runPolicyEntries(args []string, stdout io.Writer) error {
 	flags.StringVar(&opts.node, "node", os.Getenv("NETLOOM_NODE_NAME"), "node name")
 	flags.StringVar(&opts.endpoint, "endpoint", "", "endpoint key or endpoint ID to inspect")
 	flags.StringVar(&opts.ruleCookie, "rule-cookie", "", "optional dataplane rule cookie to include")
+	flags.StringVar(&opts.ruleRef, "rule-ref", "", "optional policy rule reference to include")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -1054,7 +1063,7 @@ func runPolicyEntries(args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	filter, err := policyEntryFilterFromValues("", opts.ruleCookie)
+	filter, err := policyEntryFilterFromValues("", opts.ruleCookie, opts.ruleRef)
 	if err != nil {
 		return err
 	}
@@ -1071,6 +1080,7 @@ func runPolicyEntriesExport(ctx context.Context, args []string, stdout io.Writer
 	flags.StringVar(&opts.ovsdb, "ovsdb", os.Getenv("NETLOOM_OVSDB_ENDPOINT"), "Open_vSwitch OVSDB endpoint")
 	flags.StringVar(&opts.endpoint, "endpoint", "", "optional endpoint key or endpoint ID to include")
 	flags.StringVar(&opts.ruleCookie, "rule-cookie", "", "optional dataplane rule cookie to include")
+	flags.StringVar(&opts.ruleRef, "rule-ref", "", "optional policy rule reference to include")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -1093,7 +1103,7 @@ func runPolicyEntriesExportWithStore(ctx context.Context, opts policyEntriesExpo
 	if err != nil {
 		return err
 	}
-	filter, err := policyEntryFilterFromValues(opts.endpoint, opts.ruleCookie)
+	filter, err := policyEntryFilterFromValues(opts.endpoint, opts.ruleCookie, opts.ruleRef)
 	if err != nil {
 		return err
 	}
@@ -1984,14 +1994,15 @@ func policyEventsOutputFromSnapshot(snapshot agentMetricsSnapshot, events []data
 type policyEntryFilter struct {
 	Endpoint   string
 	RuleCookie *uint32
+	RuleRef    string
 }
 
 func policyEntryFilterFromRequest(r *http.Request, endpoint string) (policyEntryFilter, error) {
-	return policyEntryFilterFromValues(endpoint, r.URL.Query().Get("rule_cookie"))
+	return policyEntryFilterFromValues(endpoint, r.URL.Query().Get("rule_cookie"), r.URL.Query().Get("rule_ref"))
 }
 
-func policyEntryFilterFromValues(endpoint, ruleCookie string) (policyEntryFilter, error) {
-	filter := policyEntryFilter{Endpoint: strings.TrimSpace(endpoint)}
+func policyEntryFilterFromValues(endpoint, ruleCookie, ruleRef string) (policyEntryFilter, error) {
+	filter := policyEntryFilter{Endpoint: strings.TrimSpace(endpoint), RuleRef: strings.TrimSpace(ruleRef)}
 	ruleCookie = strings.TrimSpace(ruleCookie)
 	if ruleCookie == "" {
 		return filter, nil
@@ -2006,7 +2017,8 @@ func policyEntryFilterFromValues(endpoint, ruleCookie string) (policyEntryFilter
 }
 
 func policyEntriesOutputFromSnapshot(snapshot agentMetricsSnapshot, endpointID string, entries []dataplane.PolicyMapEntry, filter policyEntryFilter) policyEntriesOutput {
-	entries = filterDataplanePolicyEntries(entries, filter)
+	outputEntries := policyMapEntryOutputsFromEntries(endpointID, entries, policyRuleCatalogByMetricKey(snapshot.Result.PolicyRuleCatalog))
+	outputEntries = filterPolicyMapEntryOutputs(outputEntries, filter)
 	output := policyEntriesOutput{
 		Node:                 snapshot.Result.Node,
 		Store:                snapshot.Store,
@@ -2015,11 +2027,9 @@ func policyEntriesOutputFromSnapshot(snapshot agentMetricsSnapshot, endpointID s
 		LastReconcileError:   snapshot.Error,
 		EndpointID:           endpointID,
 		FilterRuleCookie:     filterEntryRuleCookieValue(filter),
-		EntryCount:           len(entries),
-		Entries:              make([]policyMapEntryOutput, 0, len(entries)),
-	}
-	for _, entry := range entries {
-		output.Entries = append(output.Entries, policyMapEntryOutputFromEntry(entry))
+		FilterRuleRef:        filter.RuleRef,
+		EntryCount:           len(outputEntries),
+		Entries:              outputEntries,
 	}
 	return output
 }
@@ -2037,12 +2047,13 @@ func policyEntriesExportOutputFromDocument(doc policyEntriesDocument, filter pol
 		EndpointCount:        len(filtered),
 		FilterEndpoint:       filter.Endpoint,
 		FilterRuleCookie:     filterEntryRuleCookieValue(filter),
+		FilterRuleRef:        filter.RuleRef,
 		Endpoints:            filtered,
 	}
 }
 
 func filterPolicyEntryEndpoints(endpoints []policyEntriesEndpointOutput, filter policyEntryFilter) []policyEntriesEndpointOutput {
-	if filter.Endpoint == "" && filter.RuleCookie == nil {
+	if filter.Endpoint == "" && filter.RuleCookie == nil && filter.RuleRef == "" {
 		return append([]policyEntriesEndpointOutput(nil), endpoints...)
 	}
 	out := make([]policyEntriesEndpointOutput, 0, len(endpoints))
@@ -2053,7 +2064,7 @@ func filterPolicyEntryEndpoints(endpoints []policyEntriesEndpointOutput, filter 
 		next := entry
 		next.Entries = filterPolicyMapEntryOutputs(entry.Entries, filter)
 		next.EntryCount = len(next.Entries)
-		if filter.RuleCookie != nil && len(next.Entries) == 0 {
+		if (filter.RuleCookie != nil || filter.RuleRef != "") && len(next.Entries) == 0 {
 			continue
 		}
 		out = append(out, next)
@@ -2061,28 +2072,19 @@ func filterPolicyEntryEndpoints(endpoints []policyEntriesEndpointOutput, filter 
 	return out
 }
 
-func filterDataplanePolicyEntries(entries []dataplane.PolicyMapEntry, filter policyEntryFilter) []dataplane.PolicyMapEntry {
-	if filter.RuleCookie == nil {
-		return append([]dataplane.PolicyMapEntry(nil), entries...)
-	}
-	out := make([]dataplane.PolicyMapEntry, 0, len(entries))
-	for _, entry := range entries {
-		if entry.Value.RuleCookie == *filter.RuleCookie {
-			out = append(out, entry)
-		}
-	}
-	return out
-}
-
 func filterPolicyMapEntryOutputs(entries []policyMapEntryOutput, filter policyEntryFilter) []policyMapEntryOutput {
-	if filter.RuleCookie == nil {
+	if filter.RuleCookie == nil && filter.RuleRef == "" {
 		return append([]policyMapEntryOutput(nil), entries...)
 	}
 	out := make([]policyMapEntryOutput, 0, len(entries))
 	for _, entry := range entries {
-		if entry.Value.RuleCookie == *filter.RuleCookie {
-			out = append(out, entry)
+		if filter.RuleCookie != nil && entry.Value.RuleCookie != *filter.RuleCookie {
+			continue
 		}
+		if filter.RuleRef != "" && entry.RuleRef != filter.RuleRef {
+			continue
+		}
+		out = append(out, entry)
 	}
 	return out
 }
@@ -2104,6 +2106,34 @@ func policyEntriesEndpointOutputFromEntries(endpointID string, entries []datapla
 		output.Entries = append(output.Entries, policyMapEntryOutputFromEntry(entry))
 	}
 	return output
+}
+
+func policyEntriesEndpointOutputFromOutputs(endpointID string, entries []policyMapEntryOutput) policyEntriesEndpointOutput {
+	return policyEntriesEndpointOutput{
+		EndpointID: endpointID,
+		EntryCount: len(entries),
+		Entries:    entries,
+	}
+}
+
+func policyMapEntryOutputsFromEntries(endpointID string, entries []dataplane.PolicyMapEntry, catalog map[string]agent.PolicyRuleCatalogEntry) []policyMapEntryOutput {
+	out := make([]policyMapEntryOutput, 0, len(entries))
+	for _, entry := range entries {
+		output := policyMapEntryOutputFromEntry(entry)
+		output.attachPolicyRuleCatalog(catalog[policyRuleMetricKey(endpointID, entry.Value.RuleCookie)])
+		out = append(out, output)
+	}
+	return out
+}
+
+func (o *policyMapEntryOutput) attachPolicyRuleCatalog(entry agent.PolicyRuleCatalogEntry) {
+	if o == nil || entry.RuleCookie == 0 {
+		return
+	}
+	o.RuleRef = entry.RuleRef
+	o.VPC = entry.VPC
+	o.SecurityGroup = entry.SecurityGroup
+	o.RuleID = entry.RuleID
 }
 
 func policyMapEntryOutputFromEntry(entry dataplane.PolicyMapEntry) policyMapEntryOutput {
@@ -4521,8 +4551,9 @@ func policyEntriesDocumentFromStore(ctx context.Context, snapshot agentMetricsSn
 		UpdatedAt:            time.Now().UTC(),
 		Endpoints:            make([]policyEntriesEndpointOutput, 0, len(endpointIDs)),
 	}
+	catalog := policyRuleCatalogByMetricKey(snapshot.Result.PolicyRuleCatalog)
 	for _, endpointID := range endpointIDs {
-		doc.Endpoints = append(doc.Endpoints, policyEntriesEndpointOutputFromEntries(endpointID, entryStore.Entries(endpointID)))
+		doc.Endpoints = append(doc.Endpoints, policyEntriesEndpointOutputFromOutputs(endpointID, policyMapEntryOutputsFromEntries(endpointID, entryStore.Entries(endpointID), catalog)))
 	}
 	return doc, true, nil
 }

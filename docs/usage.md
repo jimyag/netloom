@@ -482,6 +482,7 @@ curl -s 'http://127.0.0.1:9092/policy/events/prod/vm-a?limit=20'
 ```bash
 curl -s http://127.0.0.1:9092/policy/entries/prod/vm-a
 curl -s 'http://127.0.0.1:9092/policy/entries/prod/vm-a?rule_cookie=42'
+curl -s 'http://127.0.0.1:9092/policy/entries/prod/vm-a?rule_ref=prod/web/allow-http'
 curl -s 'http://127.0.0.1:9092/policy/entries?endpoint=prod/vm-a'
 netloom-agent policy-entries-export \
   -ovsdb unix:/var/run/openvswitch/db.sock \
@@ -489,14 +490,17 @@ netloom-agent policy-entries-export \
 netloom-agent policy-entries-export \
   -ovsdb unix:/var/run/openvswitch/db.sock \
   -rule-cookie 42
+netloom-agent policy-entries-export \
+  -ovsdb unix:/var/run/openvswitch/db.sock \
+  -rule-ref prod/web/allow-http
 ovs-vsctl get Open_vSwitch . external_ids:netloom_policy_entries
 ```
 
 如果 agent 配置了 `NETLOOM_OVSDB_ENDPOINT`，最近一次 reconcile 的 endpoint
 policy-map entries 会写入 `Open_vSwitch.external_ids:netloom_policy_entries`。
 HTTP 接口适合在线排查，`policy-entries-export` 适合从本机 OVSDB 做离线审计。
-两者都支持 `rule_cookie` / `-rule-cookie` 过滤，便于从规则计数器继续定位实际
-policy-map key/value。
+两者都支持 rule cookie 和 rule ref 过滤，并在 entry 里输出 rule ref、VPC、安全组和规则 ID，
+便于从规则计数器继续定位实际 policy-map key/value。
 
 临时冻结或恢复某个 endpoint 的 policy map 更新：
 

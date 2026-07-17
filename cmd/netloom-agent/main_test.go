@@ -1179,6 +1179,9 @@ func TestRunPolicyEntriesReportsEndpointMapJSON(t *testing.T) {
 	found := false
 	for _, entry := range got.Entries {
 		if entry.RemoteCIDR == "172.30.0.0/24" && entry.Key.Direction == dataplane.DirectionIngress && entry.Key.Protocol == 6 {
+			if entry.RuleRef != "prod/web/allow-web" || entry.SecurityGroup != "web" || entry.RuleID != "allow-web" {
+				t.Fatalf("entry rule metadata = %+v, want prod/web/allow-web", entry)
+			}
 			found = true
 			break
 		}
@@ -2438,6 +2441,14 @@ func TestPolicyEntriesAPIReportsEndpointPolicyMapEntries(t *testing.T) {
 	metrics := newAgentMetrics(store)
 	observeAgentReconcileResultWithState(metrics, agent.ReconcileResult{
 		Node: "node-a",
+		PolicyRuleCatalog: []agent.PolicyRuleCatalogEntry{{
+			EndpointID:    endpointID,
+			RuleCookie:    7,
+			RuleRef:       "prod/web/allow-client",
+			VPC:           "prod",
+			SecurityGroup: "web",
+			RuleID:        "allow-client",
+		}},
 		PolicyEndpointStatus: []dataplane.PolicyEndpointStatus{{
 			EndpointID: endpointID,
 			Revision:   1,
@@ -2467,6 +2478,9 @@ func TestPolicyEntriesAPIReportsEndpointPolicyMapEntries(t *testing.T) {
 	}
 	if entry.RemoteCIDR != "172.30.0.0/24" || entry.Value.Packets != 3 || entry.Value.Bytes != 240 {
 		t.Fatalf("entry counters/cidr = %+v, want remote cidr and counters", entry)
+	}
+	if entry.RuleRef != "prod/web/allow-client" || entry.VPC != "prod" || entry.SecurityGroup != "web" || entry.RuleID != "allow-client" {
+		t.Fatalf("entry rule metadata = %+v, want allow-client catalog", entry)
 	}
 }
 
@@ -2498,6 +2512,14 @@ func TestPolicyEntriesAPIFiltersEndpointEntriesByRuleCookie(t *testing.T) {
 	metrics := newAgentMetrics(store)
 	observeAgentReconcileResultWithState(metrics, agent.ReconcileResult{
 		Node: "node-a",
+		PolicyRuleCatalog: []agent.PolicyRuleCatalogEntry{{
+			EndpointID:    endpointID,
+			RuleCookie:    42,
+			RuleRef:       "prod/web/allow-https",
+			VPC:           "prod",
+			SecurityGroup: "web",
+			RuleID:        "allow-https",
+		}},
 		PolicyEndpointStatus: []dataplane.PolicyEndpointStatus{{
 			EndpointID: endpointID,
 			Revision:   1,
@@ -2523,6 +2545,21 @@ func TestPolicyEntriesAPIFiltersEndpointEntriesByRuleCookie(t *testing.T) {
 	}
 	if got.Entries[0].Value.RuleCookie != 42 || got.Entries[0].RemoteCIDR != "172.31.0.0/24" {
 		t.Fatalf("entry = %+v, want filtered cookie 42 remote cidr", got.Entries[0])
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/policy/entries/prod/pod-a?rule_ref=prod/web/allow-https", nil)
+	metrics.handlePolicyEntries(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	got = policyEntriesOutput{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode rule-ref filtered policy entries response: %v\n%s", err, recorder.Body.String())
+	}
+	if got.FilterRuleRef != "prod/web/allow-https" || got.EntryCount != 1 || len(got.Entries) != 1 || got.Entries[0].RuleRef != "prod/web/allow-https" {
+		t.Fatalf("rule-ref filtered entries = %+v, want allow-https entry", got)
 	}
 }
 
@@ -2956,7 +2993,8 @@ func TestRunPolicyEntriesExportWithStoreReportsFilteredJSON(t *testing.T) {
 					Direction:      dataplane.DirectionIngress,
 					Protocol:       6,
 				},
-				Value: policyMapValueOutput{RuleCookie: 42, Packets: 5},
+				Value:   policyMapValueOutput{RuleCookie: 42, Packets: 5},
+				RuleRef: "prod/web/allow-http",
 			}},
 		}, {
 			EndpointID: "prod\x00pod-b",
@@ -2968,7 +3006,8 @@ func TestRunPolicyEntriesExportWithStoreReportsFilteredJSON(t *testing.T) {
 					Direction:      dataplane.DirectionEgress,
 					Protocol:       17,
 				},
-				Value: policyMapValueOutput{RuleCookie: 7, Packets: 9},
+				Value:   policyMapValueOutput{RuleCookie: 7, Packets: 9},
+				RuleRef: "prod/db/allow-db",
 			}},
 		}},
 	}); err != nil {
@@ -3009,7 +3048,8 @@ func TestRunPolicyEntriesExportWithStoreFiltersByRuleCookie(t *testing.T) {
 					Direction:      dataplane.DirectionIngress,
 					Protocol:       6,
 				},
-				Value: policyMapValueOutput{RuleCookie: 42, Packets: 5},
+				Value:   policyMapValueOutput{RuleCookie: 42, Packets: 5},
+				RuleRef: "prod/web/allow-http",
 			}, {
 				Key: policyMapKeyOutput{
 					PrefixLen:      dataplane.StaticPrefixBits,
@@ -3017,14 +3057,16 @@ func TestRunPolicyEntriesExportWithStoreFiltersByRuleCookie(t *testing.T) {
 					Direction:      dataplane.DirectionIngress,
 					Protocol:       6,
 				},
-				Value: policyMapValueOutput{RuleCookie: 7, Packets: 1},
+				Value:   policyMapValueOutput{RuleCookie: 7, Packets: 1},
+				RuleRef: "prod/web/deny-ssh",
 			}},
 		}, {
 			EndpointID: "prod\x00pod-b",
 			EntryCount: 1,
 			Entries: []policyMapEntryOutput{{
-				Key:   policyMapKeyOutput{PrefixLen: dataplane.StaticPrefixBits, RemoteIdentity: 20, Direction: dataplane.DirectionEgress, Protocol: 17},
-				Value: policyMapValueOutput{RuleCookie: 7, Packets: 9},
+				Key:     policyMapKeyOutput{PrefixLen: dataplane.StaticPrefixBits, RemoteIdentity: 20, Direction: dataplane.DirectionEgress, Protocol: 17},
+				Value:   policyMapValueOutput{RuleCookie: 7, Packets: 9},
+				RuleRef: "prod/db/allow-db",
 			}},
 		}},
 	}); err != nil {
@@ -3043,6 +3085,21 @@ func TestRunPolicyEntriesExportWithStoreFiltersByRuleCookie(t *testing.T) {
 	}
 	if len(got.Endpoints) != 1 || got.Endpoints[0].EndpointID != "prod\x00pod-a" || got.Endpoints[0].EntryCount != 1 || got.Endpoints[0].Entries[0].Value.RuleCookie != 42 {
 		t.Fatalf("policy entries = %+v, want only cookie 42 entry", got.Endpoints)
+	}
+
+	stdout.Reset()
+	if err := runPolicyEntriesExportWithStore(t.Context(), policyEntriesExportOptions{ruleRef: "prod/db/allow-db"}, &stdout, store); err != nil {
+		t.Fatal(err)
+	}
+	got = policyEntriesExportOutput{}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode rule-ref filtered policy-entries-export output: %v\n%s", err, stdout.String())
+	}
+	if got.FilterRuleRef != "prod/db/allow-db" || got.TotalEndpoints != 2 || got.EndpointCount != 1 {
+		t.Fatalf("policy entries summary = %+v, want one endpoint with rule ref", got)
+	}
+	if len(got.Endpoints) != 1 || got.Endpoints[0].EndpointID != "prod\x00pod-b" || got.Endpoints[0].EntryCount != 1 || got.Endpoints[0].Entries[0].RuleRef != "prod/db/allow-db" {
+		t.Fatalf("policy entries = %+v, want only prod/db/allow-db entry", got.Endpoints)
 	}
 }
 
@@ -3099,7 +3156,10 @@ func TestAgentMetricsPersistsPolicyEntriesToOpenVSwitchExternalID(t *testing.T) 
 	metrics := newAgentMetrics(store)
 	configurePolicyEntriesStore(metrics, ovsdbPolicyEntriesStore{syncer: ovsdb})
 
-	observeAgentReconcileResult(metrics, agent.ReconcileResult{Node: "node-a"}, "ebpf", time.Millisecond)
+	observeAgentReconcileResult(metrics, agent.ReconcileResult{
+		Node:              "node-a",
+		PolicyRuleCatalog: []agent.PolicyRuleCatalogEntry{{EndpointID: endpointID, RuleCookie: 42, RuleRef: "prod/web/allow-http", VPC: "prod", SecurityGroup: "web", RuleID: "allow-http"}},
+	}, "ebpf", time.Millisecond)
 
 	raw := ovsdb.values[policyEntriesKey]
 	if raw == "" {
@@ -3114,6 +3174,9 @@ func TestAgentMetricsPersistsPolicyEntriesToOpenVSwitchExternalID(t *testing.T) 
 	}
 	if len(doc.Endpoints) != 1 || doc.Endpoints[0].EndpointID != endpointID || doc.Endpoints[0].EntryCount != 1 || doc.Endpoints[0].Entries[0].Value.RuleCookie != 42 {
 		t.Fatalf("policy entries = %+v, want persisted pod-a entry", doc.Endpoints)
+	}
+	if doc.Endpoints[0].Entries[0].RuleRef != "prod/web/allow-http" || doc.Endpoints[0].Entries[0].SecurityGroup != "web" || doc.Endpoints[0].Entries[0].RuleID != "allow-http" {
+		t.Fatalf("policy entries rule metadata = %+v, want persisted allow-http metadata", doc.Endpoints[0].Entries[0])
 	}
 }
 
