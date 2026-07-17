@@ -32,6 +32,8 @@ policy enforcement.
 See [docs/current-status.md](docs/current-status.md) and
 [docs/features.md](docs/features.md) for the detailed capability matrix and
 remaining production gaps.
+For the shortest runnable path, start with
+[docs/quickstart.md](docs/quickstart.md).
 
 ## Build
 
@@ -132,6 +134,7 @@ Desired state can also be stored in local Open_vSwitch OVSDB:
 
 ## Documentation
 
+- [Quickstart](docs/quickstart.md)
 - [Current implementation status](docs/current-status.md)
 - [Feature matrix](docs/features.md)
 - [Bare-metal usage guide](docs/usage.md)
