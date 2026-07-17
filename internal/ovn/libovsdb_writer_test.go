@@ -778,6 +778,93 @@ func TestLibOVSDBTopologyWriterCleanupRepairsDNSRowAndSwitchDriftInSteadyState(t
 	}
 }
 
+func TestLibOVSDBTopologyWriterCleanupRepairsReferencedDNSRowDriftInSteadyState(t *testing.T) {
+	ctx := context.Background()
+	client, closeFn := newTestOVNNBClient(t)
+	defer closeFn()
+
+	if _, err := client.MonitorAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	writer := NewLibOVSDBTopologyWriter(client)
+	subnet := model.Subnet{
+		Name:    "apps",
+		VPC:     "prod",
+		CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+		Gateway: netip.MustParseAddr("10.10.0.1"),
+	}
+	records := []model.DNSRecord{{
+		Name: "api.example.com",
+		IPs:  []netip.Addr{netip.MustParseAddr("203.0.113.10")},
+	}}
+	state := topology.State{
+		VPCs:       map[string]model.VPC{"prod": {Name: "prod"}},
+		Subnets:    map[string]model.Subnet{subnetStateKey("prod", "apps"): subnet},
+		DNSRecords: records,
+	}
+	if err := writer.CleanupTopology(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureVPC(ctx, state.VPCs["prod"]); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureSubnet(ctx, subnet); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.SyncDNSRecords(ctx, []model.Subnet{subnet}, records); err != nil {
+		t.Fatal(err)
+	}
+
+	var dnsRows []ovnnb.DNS
+	requireEventually(t, func() bool {
+		dnsRows = nil
+		err := client.WhereCache(func(row *ovnnb.DNS) bool { return row.ExternalIDs["netloom_dns"] == "desired" }).List(ctx, &dnsRows)
+		return err == nil && len(dnsRows) == 1
+	})
+	dnsUUID := dnsRows[0].UUID
+	dnsRows[0].Records = map[string]string{"api.example.com": "198.51.100.10"}
+	dnsRows[0].Options = map[string]string{"legacy": "true"}
+	dnsRows[0].ExternalIDs = map[string]string{
+		"netloom_owner": "netloom",
+		"netloom_dns":   "wrong",
+	}
+	updateOps, err := client.Where(&dnsRows[0]).Update(&dnsRows[0], &dnsRows[0].Records, &dnsRows[0].Options, &dnsRows[0].ExternalIDs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := client.Transact(ctx, updateOps...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, updateOps); err != nil {
+		t.Fatalf("seed referenced DNS drift operation errors=%+v: %v", opErrors, err)
+	}
+	requireEventually(t, func() bool {
+		dnsRows = nil
+		err := client.WhereCache(func(row *ovnnb.DNS) bool { return row.UUID == dnsUUID }).List(ctx, &dnsRows)
+		return err == nil && len(dnsRows) == 1 && dnsRows[0].ExternalIDs["netloom_dns"] == "wrong"
+	})
+
+	if err := writer.CleanupTopology(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	requireEventually(t, func() bool {
+		dnsRows = nil
+		if err := client.WhereCache(func(row *ovnnb.DNS) bool { return row.UUID == dnsUUID }).List(ctx, &dnsRows); err != nil || len(dnsRows) != 1 {
+			return false
+		}
+		sw := singleLogicalSwitchByName(t, ctx, client, logicalSwitch("prod", "apps"))
+		return dnsRows[0].ExternalIDs["netloom_dns"] == "desired" &&
+			dnsRows[0].Records["api.example.com"] == "203.0.113.10" &&
+			len(dnsRows[0].Options) == 0 &&
+			containsString(sw.DNSRecords, dnsUUID)
+	})
+	stats := writer.LastCleanupStats()
+	if stats.FirstReconcileGC || stats.Operations == 0 {
+		t.Fatalf("cleanup stats = %+v, want steady-state referenced DNS repair operations", stats)
+	}
+}
+
 func TestLibOVSDBTopologyWriterRepairsSubnetPortReferences(t *testing.T) {
 	ctx := context.Background()
 	client, closeFn := newTestOVNNBClient(t)

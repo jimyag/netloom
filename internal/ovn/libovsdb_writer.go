@@ -734,6 +734,11 @@ func (w *LibOVSDBTopologyWriter) dnsRecordsOperations(ctx context.Context, subne
 	if err != nil {
 		return nil, err
 	}
+	referencedDNS, err := w.dnsRowsReferencedBySwitches(ctx, switches, desiredSwitchNames)
+	if err != nil {
+		return nil, err
+	}
+	existingDNS = mergeDNSRows(existingDNS, referencedDNS)
 	desiredRecords := desiredOVNDNSRecords(records)
 	var ops []ovsdb.Operation
 	if len(desiredRecords) == 0 {
@@ -2082,6 +2087,56 @@ func (w *LibOVSDBTopologyWriter) netloomDNSRows(ctx context.Context) ([]ovnnb.DN
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].UUID < rows[j].UUID })
 	return rows, nil
+}
+
+func (w *LibOVSDBTopologyWriter) dnsRowsReferencedBySwitches(ctx context.Context, switches map[string]ovnnb.LogicalSwitch, switchNames map[string]struct{}) ([]ovnnb.DNS, error) {
+	refs := make([]string, 0)
+	for name := range switchNames {
+		sw, ok := switches[name]
+		if !ok {
+			continue
+		}
+		refs = append(refs, sw.DNSRecords...)
+	}
+	return w.dnsRowsByUUIDs(ctx, refs)
+}
+
+func (w *LibOVSDBTopologyWriter) dnsRowsByUUIDs(ctx context.Context, uuids []string) ([]ovnnb.DNS, error) {
+	want := make(map[string]struct{}, len(uuids))
+	for _, uuid := range uuids {
+		if uuid == "" {
+			continue
+		}
+		want[uuid] = struct{}{}
+	}
+	if len(want) == 0 {
+		return nil, nil
+	}
+	var rows []ovnnb.DNS
+	if err := w.client.WhereCache(func(row *ovnnb.DNS) bool {
+		_, ok := want[row.UUID]
+		return ok
+	}).List(ctx, &rows); err != nil {
+		return nil, fmt.Errorf("list DNS rows by UUID from libovsdb cache: %w", err)
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].UUID < rows[j].UUID })
+	return rows, nil
+}
+
+func mergeDNSRows(groups ...[]ovnnb.DNS) []ovnnb.DNS {
+	seen := make(map[string]struct{})
+	var rows []ovnnb.DNS
+	for _, group := range groups {
+		for _, row := range group {
+			if _, ok := seen[row.UUID]; ok {
+				continue
+			}
+			seen[row.UUID] = struct{}{}
+			rows = append(rows, row)
+		}
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].UUID < rows[j].UUID })
+	return rows
 }
 
 func (w *LibOVSDBTopologyWriter) loadBalancersByIdentity(ctx context.Context, vpc, name string) ([]ovnnb.LoadBalancer, error) {
