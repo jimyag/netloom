@@ -105,15 +105,16 @@ func (r *LibOVSDBManagedReader) ManagedOVNRows(ctx context.Context, table string
 		}
 		return managedOVNRowsFromModels(table, rows, func(row ovnnb.LogicalSwitchPort) (string, map[string]string, map[string]string) {
 			return row.UUID, row.ExternalIDs, map[string]string{
-				"name":           row.Name,
-				"type":           row.Type,
-				"addresses":      stringSliceField(row.Addresses),
-				"port_security":  stringSliceField(row.PortSecurity),
-				"options":        mapField(row.Options),
-				"tag":            intPointerField(row.Tag),
-				"enabled":        boolPointerField(row.Enabled),
-				"dhcpv4_options": dhcpOptionsRefField(row.Dhcpv4Options, dhcpOptions),
-				"dhcpv6_options": dhcpOptionsRefField(row.Dhcpv6Options, dhcpOptions),
+				"name":             row.Name,
+				"type":             row.Type,
+				"addresses":        stringSliceField(row.Addresses),
+				"port_security":    stringSliceField(row.PortSecurity),
+				"options":          mapField(row.Options),
+				"tag":              intPointerField(row.Tag),
+				"enabled":          boolPointerField(row.Enabled),
+				"ha_chassis_group": pointerStringValue(row.HaChassisGroup),
+				"dhcpv4_options":   dhcpOptionsRefField(row.Dhcpv4Options, dhcpOptions),
+				"dhcpv6_options":   dhcpOptionsRefField(row.Dhcpv6Options, dhcpOptions),
 			}
 		}), nil
 	case "Logical_Router_Port":

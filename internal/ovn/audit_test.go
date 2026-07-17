@@ -966,13 +966,14 @@ func TestAuditManagedObjectsFromReaderReportsStaleLogicalSwitchPortColumns(t *te
 				"netloom_node":     "node-a",
 				"netloom_subnet":   "apps",
 			}, Fields: map[string]string{
-				"name":           logicalPort("prod", "pod-a"),
-				"addresses":      endpointAddress(endpoint),
-				"port_security":  endpointAddress(endpoint),
-				"type":           "localnet",
-				"options":        "network_name=physnet-a",
-				"tag":            "100",
-				"dhcpv4_options": "4:10.10.0.0/24",
+				"name":             logicalPort("prod", "pod-a"),
+				"addresses":        endpointAddress(endpoint),
+				"port_security":    endpointAddress(endpoint),
+				"type":             "localnet",
+				"options":          "network_name=physnet-a",
+				"tag":              "100",
+				"ha_chassis_group": "ha-old",
+				"dhcpv4_options":   "4:10.10.0.0/24",
 			}},
 		},
 	}}
@@ -989,8 +990,8 @@ func TestAuditManagedObjectsFromReaderReportsStaleLogicalSwitchPortColumns(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stats.DriftedManagedRows != 1 || stats.DriftedManagedFields != 4 {
-		t.Fatalf("stale logical switch port column drift stats = %+v, want type/options/tag/dhcp drift", stats)
+	if stats.DriftedManagedRows != 1 || stats.DriftedManagedFields != 5 {
+		t.Fatalf("stale logical switch port column drift stats = %+v, want type/options/tag/ha_chassis_group/dhcp drift", stats)
 	}
 }
 

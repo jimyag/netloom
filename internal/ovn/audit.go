@@ -172,7 +172,7 @@ func managedAuditNBCTLColumns(table string) []string {
 	case "Logical_Router":
 		columns = append(columns, "name", "options", "ports", "load_balancers", "load_balancer_group", "nat", "policies", "static_routes", "enabled")
 	case "Logical_Switch_Port":
-		columns = append(columns, "name", "type", "addresses", "port_security", "options", "tag", "enabled")
+		columns = append(columns, "name", "type", "addresses", "port_security", "options", "tag", "enabled", "ha_chassis_group")
 	case "Logical_Router_Port":
 		columns = append(columns, "name", "mac", "networks", "ipv6_ra_configs", "enabled")
 	case "Logical_Router_Policy":
@@ -569,8 +569,9 @@ func expectedManagedAuditColumns(desired topology.State) map[string]map[string]s
 	}
 	for _, endpoint := range desired.Endpoints {
 		fields := map[string]string{
-			"name":      logicalPort(endpoint.VPC, endpoint.ID),
-			"addresses": endpointAddress(endpoint),
+			"name":             logicalPort(endpoint.VPC, endpoint.ID),
+			"addresses":        endpointAddress(endpoint),
+			"ha_chassis_group": "",
 		}
 		if endpoint.NormalizedMAC() != "" {
 			fields["port_security"] = endpointAddress(endpoint)
@@ -887,7 +888,7 @@ func staleManagedColumnShouldDrift(table, key string) bool {
 		return key == "enabled" || (table == "Logical_Router" && (key == "options" || key == "load_balancer_group"))
 	case "Logical_Switch_Port":
 		switch key {
-		case "type", "options", "tag", "enabled", "port_security", "dhcpv4_options", "dhcpv6_options":
+		case "type", "options", "tag", "enabled", "port_security", "ha_chassis_group", "dhcpv4_options", "dhcpv6_options":
 			return true
 		default:
 			return false

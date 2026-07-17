@@ -1519,15 +1519,38 @@ func TestLibOVSDBTopologyWriterRepairsEndpointSwitchPortStaleTypeOptionsAndTag(t
 		return err == nil && len(ports) == 1
 	})
 	port := ports[0]
+	staleGroup := &ovnnb.HAChassisGroup{
+		UUID: ovsdbNamedUUID("endpoint-stale-ha-group"),
+		Name: "endpoint-stale-ha-group",
+	}
+	createGroupOps, err := client.Create(staleGroup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := client.Transact(ctx, createGroupOps...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, createGroupOps); err != nil {
+		t.Fatalf("create stale HA chassis group operation errors=%+v: %v", opErrors, err)
+	}
+	var groups []ovnnb.HAChassisGroup
+	requireEventually(t, func() bool {
+		groups = nil
+		err := client.WhereCache(func(row *ovnnb.HAChassisGroup) bool { return row.Name == "endpoint-stale-ha-group" }).List(ctx, &groups)
+		return err == nil && len(groups) == 1
+	})
 	tag := 100
 	port.Type = "localnet"
 	port.Options = map[string]string{"network_name": "physnet-a"}
 	port.Tag = &tag
-	updateOps, err := client.Where(&port).Update(&port, &port.Type, &port.Options, &port.Tag)
+	staleHAGroup := groups[0].UUID
+	port.HaChassisGroup = &staleHAGroup
+	updateOps, err := client.Where(&port).Update(&port, &port.Type, &port.Options, &port.Tag, &port.HaChassisGroup)
 	if err != nil {
 		t.Fatal(err)
 	}
-	results, err := client.Transact(ctx, updateOps...)
+	results, err = client.Transact(ctx, updateOps...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1537,7 +1560,7 @@ func TestLibOVSDBTopologyWriterRepairsEndpointSwitchPortStaleTypeOptionsAndTag(t
 	requireEventually(t, func() bool {
 		ports = nil
 		err := client.WhereCache(func(row *ovnnb.LogicalSwitchPort) bool { return row.Name == logicalPort("prod", "pod-a") }).List(ctx, &ports)
-		return err == nil && len(ports) == 1 && ports[0].Type == "localnet" && ports[0].Options["network_name"] == "physnet-a" && ports[0].Tag != nil && *ports[0].Tag == 100
+		return err == nil && len(ports) == 1 && ports[0].Type == "localnet" && ports[0].Options["network_name"] == "physnet-a" && ports[0].Tag != nil && *ports[0].Tag == 100 && ports[0].HaChassisGroup != nil && *ports[0].HaChassisGroup == groups[0].UUID
 	})
 
 	if err := writer.EnsureEndpoint(ctx, endpoint); err != nil {
@@ -1546,7 +1569,7 @@ func TestLibOVSDBTopologyWriterRepairsEndpointSwitchPortStaleTypeOptionsAndTag(t
 	requireEventually(t, func() bool {
 		ports = nil
 		err := client.WhereCache(func(row *ovnnb.LogicalSwitchPort) bool { return row.Name == logicalPort("prod", "pod-a") }).List(ctx, &ports)
-		return err == nil && len(ports) == 1 && ports[0].Type == "" && len(ports[0].Options) == 0 && ports[0].Tag == nil
+		return err == nil && len(ports) == 1 && ports[0].Type == "" && len(ports[0].Options) == 0 && ports[0].Tag == nil && ports[0].HaChassisGroup == nil
 	})
 }
 
@@ -1596,6 +1619,27 @@ func TestLibOVSDBTopologyWriterCleanupRepairsEndpointSwitchPortDriftInSteadyStat
 		return err == nil && len(ports) == 1
 	})
 	port := ports[0]
+	staleGroup := &ovnnb.HAChassisGroup{
+		UUID: ovsdbNamedUUID("cleanup-endpoint-stale-ha-group"),
+		Name: "cleanup-endpoint-stale-ha-group",
+	}
+	createGroupOps, err := client.Create(staleGroup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := client.Transact(ctx, createGroupOps...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, createGroupOps); err != nil {
+		t.Fatalf("create stale HA chassis group operation errors=%+v: %v", opErrors, err)
+	}
+	var groups []ovnnb.HAChassisGroup
+	requireEventually(t, func() bool {
+		groups = nil
+		err := client.WhereCache(func(row *ovnnb.HAChassisGroup) bool { return row.Name == "cleanup-endpoint-stale-ha-group" }).List(ctx, &groups)
+		return err == nil && len(groups) == 1
+	})
 	tag := 200
 	port.Type = "localnet"
 	port.Addresses = []string{"unknown"}
@@ -1604,11 +1648,13 @@ func TestLibOVSDBTopologyWriterCleanupRepairsEndpointSwitchPortDriftInSteadyStat
 	port.Tag = &tag
 	disabled := false
 	port.Enabled = &disabled
-	updateOps, err := client.Where(&port).Update(&port, &port.Type, &port.Addresses, &port.PortSecurity, &port.Options, &port.Tag, &port.Enabled)
+	staleHAGroup := groups[0].UUID
+	port.HaChassisGroup = &staleHAGroup
+	updateOps, err := client.Where(&port).Update(&port, &port.Type, &port.Addresses, &port.PortSecurity, &port.Options, &port.Tag, &port.Enabled, &port.HaChassisGroup)
 	if err != nil {
 		t.Fatal(err)
 	}
-	results, err := client.Transact(ctx, updateOps...)
+	results, err = client.Transact(ctx, updateOps...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1626,7 +1672,9 @@ func TestLibOVSDBTopologyWriterCleanupRepairsEndpointSwitchPortDriftInSteadyStat
 			ports[0].Tag != nil &&
 			*ports[0].Tag == 200 &&
 			ports[0].Enabled != nil &&
-			!*ports[0].Enabled
+			!*ports[0].Enabled &&
+			ports[0].HaChassisGroup != nil &&
+			*ports[0].HaChassisGroup == groups[0].UUID
 	})
 
 	if err := writer.CleanupTopology(ctx, state); err != nil {
@@ -1641,6 +1689,7 @@ func TestLibOVSDBTopologyWriterCleanupRepairsEndpointSwitchPortDriftInSteadyStat
 			len(ports[0].Options) == 0 &&
 			ports[0].Tag == nil &&
 			ports[0].Enabled == nil &&
+			ports[0].HaChassisGroup == nil &&
 			len(ports[0].Addresses) == 1 &&
 			ports[0].Addresses[0] == "02:00:00:00:00:20 10.10.0.20" &&
 			len(ports[0].PortSecurity) == 1 &&
