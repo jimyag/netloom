@@ -57,6 +57,35 @@ func TestEncodeEntryUsesCiliumStylePolicyKeyShape(t *testing.T) {
 	}
 }
 
+func TestInMemoryPolicyStoreEventsReportRuleCookies(t *testing.T) {
+	store := NewInMemoryPolicyStore()
+	endpointID := "prod/pod-a"
+	first := PolicyMapEntry{
+		Key:   PolicyKey{PrefixLen: StaticPrefixBits, Direction: DirectionIngress, Protocol: 6, RemoteIdentity: 10},
+		Value: PolicyEntry{RuleCookie: 42},
+	}
+	if err := store.ReplaceEndpoint(context.Background(), endpointID, []PolicyMapEntry{first}); err != nil {
+		t.Fatal(err)
+	}
+	second := PolicyMapEntry{
+		Key:   PolicyKey{PrefixLen: StaticPrefixBits, Direction: DirectionIngress, Protocol: 6, RemoteIdentity: 20},
+		Value: PolicyEntry{RuleCookie: 43},
+	}
+	if err := store.ReplaceEndpoint(context.Background(), endpointID, []PolicyMapEntry{second}); err != nil {
+		t.Fatal(err)
+	}
+	events := store.Events()
+	if len(events) != 2 {
+		t.Fatalf("events = %d, want 2", len(events))
+	}
+	if !slices.Equal(events[0].RuleCookies, []uint32{42}) {
+		t.Fatalf("first event rule cookies = %v, want [42]", events[0].RuleCookies)
+	}
+	if !slices.Equal(events[1].RuleCookies, []uint32{42, 43}) {
+		t.Fatalf("second event rule cookies = %v, want deleted and added rule cookies", events[1].RuleCookies)
+	}
+}
+
 func TestEncodeEntryUsesICMPv6ProtocolForIPv6CIDR(t *testing.T) {
 	icmpType := uint16(128) << 8
 	entry := policy.MapEntry{

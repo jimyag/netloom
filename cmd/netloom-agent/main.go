@@ -1937,6 +1937,7 @@ func policyUpdateEventFilterFromValues(endpoint, successRaw, remediatedRaw strin
 }
 
 func policyEventsOutputFromSnapshot(snapshot agentMetricsSnapshot, events []dataplane.PolicyUpdateEvent, filter policyUpdateEventFilter, limit int) policyEventsOutput {
+	events = enrichPolicyUpdateEvents(events, snapshot.Result.PolicyRuleCatalog)
 	filtered := filterPolicyUpdateEvents(events, filter)
 	recent := recentPolicyUpdateEvents(filtered, limit)
 	return policyEventsOutput{
@@ -2144,6 +2145,55 @@ func trimPolicyUpdateEvents(events []dataplane.PolicyUpdateEvent) []dataplane.Po
 		return append([]dataplane.PolicyUpdateEvent(nil), events...)
 	}
 	return append([]dataplane.PolicyUpdateEvent(nil), events[len(events)-limit:]...)
+}
+
+func enrichPolicyUpdateEvents(events []dataplane.PolicyUpdateEvent, catalog []agent.PolicyRuleCatalogEntry) []dataplane.PolicyUpdateEvent {
+	if len(events) == 0 {
+		return nil
+	}
+	refs := make(map[string]string, len(catalog))
+	for _, entry := range catalog {
+		key := policyRuleMetricKey(entry.EndpointID, entry.RuleCookie)
+		refs[key] = entry.RuleRef
+	}
+	out := make([]dataplane.PolicyUpdateEvent, 0, len(events))
+	for _, event := range events {
+		next := event
+		next.RuleRefs = policyUpdateEventRuleRefs(next, refs)
+		out = append(out, next)
+	}
+	return out
+}
+
+func policyUpdateEventRuleRefs(event dataplane.PolicyUpdateEvent, refs map[string]string) []string {
+	if len(event.RuleCookies) == 0 {
+		return append([]string(nil), event.RuleRefs...)
+	}
+	seen := make(map[string]struct{}, len(event.RuleRefs)+len(event.RuleCookies))
+	out := make([]string, 0, len(event.RuleRefs)+len(event.RuleCookies))
+	for _, ref := range event.RuleRefs {
+		if ref == "" {
+			continue
+		}
+		if _, ok := seen[ref]; ok {
+			continue
+		}
+		seen[ref] = struct{}{}
+		out = append(out, ref)
+	}
+	for _, cookie := range event.RuleCookies {
+		ref := refs[policyRuleMetricKey(event.EndpointID, cookie)]
+		if ref == "" {
+			continue
+		}
+		if _, ok := seen[ref]; ok {
+			continue
+		}
+		seen[ref] = struct{}{}
+		out = append(out, ref)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func filterPolicyRuleOutputs(rules []policyRuleOutput, filter policyRuleFilter) []policyRuleOutput {
@@ -4382,6 +4432,7 @@ func policyUpdateEventsFromStore(store agent.PolicyStore) []dataplane.PolicyUpda
 }
 
 func policyEventsDocumentFromSnapshot(snapshot agentMetricsSnapshot, events []dataplane.PolicyUpdateEvent) policyEventsDocument {
+	events = enrichPolicyUpdateEvents(events, snapshot.Result.PolicyRuleCatalog)
 	return policyEventsDocument{
 		Node:                 snapshot.Result.Node,
 		Store:                snapshot.Store,

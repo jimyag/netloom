@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -2609,7 +2610,13 @@ func TestPolicyEventsAPIReportsRecentEndpointEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 	metrics := newAgentMetrics(store)
-	observeAgentReconcileResult(metrics, agent.ReconcileResult{Node: "node-a"}, "memory", time.Millisecond)
+	observeAgentReconcileResult(metrics, agent.ReconcileResult{
+		Node: "node-a",
+		PolicyRuleCatalog: []agent.PolicyRuleCatalogEntry{
+			{EndpointID: podA, RuleCookie: 42, RuleRef: "prod/web/allow-old", VPC: "prod", SecurityGroup: "web", RuleID: "allow-old"},
+			{EndpointID: podA, RuleCookie: 43, RuleRef: "prod/web/allow-new", VPC: "prod", SecurityGroup: "web", RuleID: "allow-new"},
+		},
+	}, "memory", time.Millisecond)
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/policy/events/prod/pod-a?limit=1", nil)
@@ -2633,6 +2640,9 @@ func TestPolicyEventsAPIReportsRecentEndpointEvents(t *testing.T) {
 	}
 	if got.Events[0].Stats.Added != 1 || got.Events[0].Stats.Unchanged != 1 {
 		t.Fatalf("event stats = %+v, want second pod-a update stats", got.Events[0].Stats)
+	}
+	if !slices.Equal(got.Events[0].RuleCookies, []uint32{43}) || !slices.Equal(got.Events[0].RuleRefs, []string{"prod/web/allow-new"}) {
+		t.Fatalf("event rule refs = cookies %v refs %v, want allow-new", got.Events[0].RuleCookies, got.Events[0].RuleRefs)
 	}
 }
 
@@ -2856,7 +2866,10 @@ func TestAgentMetricsPersistsPolicyEventsToOpenVSwitchExternalID(t *testing.T) {
 	metrics := newAgentMetrics(store)
 	configurePolicyEventsStore(metrics, ovsdbPolicyEventsStore{syncer: ovsdb})
 
-	observeAgentReconcileResult(metrics, agent.ReconcileResult{Node: "node-a"}, "ebpf", time.Millisecond)
+	observeAgentReconcileResult(metrics, agent.ReconcileResult{
+		Node:              "node-a",
+		PolicyRuleCatalog: []agent.PolicyRuleCatalogEntry{{EndpointID: endpointID, RuleCookie: 42, RuleRef: "prod/web/allow-http", VPC: "prod", SecurityGroup: "web", RuleID: "allow-http"}},
+	}, "ebpf", time.Millisecond)
 
 	raw := ovsdb.values[policyEventsKey]
 	if raw == "" {
@@ -2871,6 +2884,9 @@ func TestAgentMetricsPersistsPolicyEventsToOpenVSwitchExternalID(t *testing.T) {
 	}
 	if len(doc.Events) != 1 || doc.Events[0].EndpointID != endpointID || doc.Events[0].Revision != 1 {
 		t.Fatalf("policy events = %+v, want pod-a revision 1", doc.Events)
+	}
+	if !slices.Equal(doc.Events[0].RuleCookies, []uint32{42}) || !slices.Equal(doc.Events[0].RuleRefs, []string{"prod/web/allow-http"}) {
+		t.Fatalf("persisted event rule refs = cookies %v refs %v, want allow-http", doc.Events[0].RuleCookies, doc.Events[0].RuleRefs)
 	}
 }
 

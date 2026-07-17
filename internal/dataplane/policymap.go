@@ -121,6 +121,8 @@ type PolicyUpdateEvent struct {
 	PreviousRevision uint64            `json:"previous_revision"`
 	Revision         uint64            `json:"revision"`
 	Stats            PolicyUpdateStats `json:"stats"`
+	RuleCookies      []uint32          `json:"rule_cookies,omitempty"`
+	RuleRefs         []string          `json:"rule_refs,omitempty"`
 	Success          bool              `json:"success"`
 	Error            string            `json:"error,omitempty"`
 	Remediated       bool              `json:"remediated,omitempty"`
@@ -182,6 +184,7 @@ func (s *InMemoryPolicyStore) ReplaceEndpoint(_ context.Context, endpointID stri
 	defer s.mu.Unlock()
 
 	plan := PlanPolicyUpdate(s.endpoints[endpointID], entries)
+	ruleCookies := policyUpdateRuleCookies(s.endpoints[endpointID], plan)
 	next := append([]PolicyMapEntry(nil), s.endpoints[endpointID]...)
 	previousRevision := s.revisions[endpointID]
 	revision := previousRevision + 1
@@ -192,7 +195,7 @@ func (s *InMemoryPolicyStore) ReplaceEndpoint(_ context.Context, endpointID stri
 			for _, entry := range append(append([]PolicyMapEntry(nil), plan.Add...), plan.Update...) {
 				if s.failAfter > 0 && applied >= s.failAfter {
 					err := fmt.Errorf("in-memory policy update failed after %d operations", applied)
-					s.recordPolicyUpdateFailure(endpointID, previousRevision, revision, plan.Stats(), err)
+					s.recordPolicyUpdateFailure(endpointID, previousRevision, revision, plan.Stats(), policyUpdateRuleCookies(s.endpoints[endpointID], plan), err)
 					return err
 				}
 				next = upsertEntry(next, entry)
@@ -202,7 +205,7 @@ func (s *InMemoryPolicyStore) ReplaceEndpoint(_ context.Context, endpointID stri
 			for _, key := range plan.Delete {
 				if s.failAfter > 0 && applied >= s.failAfter {
 					err := fmt.Errorf("in-memory policy update failed after %d operations", applied)
-					s.recordPolicyUpdateFailure(endpointID, previousRevision, revision, plan.Stats(), err)
+					s.recordPolicyUpdateFailure(endpointID, previousRevision, revision, plan.Stats(), policyUpdateRuleCookies(s.endpoints[endpointID], plan), err)
 					return err
 				}
 				next = deleteEntry(next, key)
@@ -221,21 +224,61 @@ func (s *InMemoryPolicyStore) ReplaceEndpoint(_ context.Context, endpointID stri
 		PreviousRevision: previousRevision,
 		Revision:         revision,
 		Stats:            stats,
+		RuleCookies:      ruleCookies,
 		Success:          true,
 	})
 	return nil
 }
 
-func (s *InMemoryPolicyStore) recordPolicyUpdateFailure(endpointID string, previousRevision, revision uint64, stats PolicyUpdateStats, err error) {
+func (s *InMemoryPolicyStore) recordPolicyUpdateFailure(endpointID string, previousRevision, revision uint64, stats PolicyUpdateStats, ruleCookies []uint32, err error) {
 	stats.Revision = revision
 	s.events = append(s.events, PolicyUpdateEvent{
 		EndpointID:       endpointID,
 		PreviousRevision: previousRevision,
 		Revision:         revision,
 		Stats:            stats,
+		RuleCookies:      ruleCookies,
 		Success:          false,
 		Error:            err.Error(),
 	})
+}
+
+func policyUpdateRuleCookies(oldEntries []PolicyMapEntry, plan PolicyUpdatePlan) []uint32 {
+	cookies := make(map[uint32]struct{})
+	for _, entry := range plan.Add {
+		if entry.Value.RuleCookie != 0 {
+			cookies[entry.Value.RuleCookie] = struct{}{}
+		}
+	}
+	for _, entry := range plan.Update {
+		if entry.Value.RuleCookie != 0 {
+			cookies[entry.Value.RuleCookie] = struct{}{}
+		}
+	}
+	if len(plan.Delete) > 0 {
+		deleted := make(map[PolicyKey]struct{}, len(plan.Delete))
+		for _, key := range plan.Delete {
+			deleted[key] = struct{}{}
+		}
+		for _, entry := range oldEntries {
+			if _, ok := deleted[entry.Key]; ok && entry.Value.RuleCookie != 0 {
+				cookies[entry.Value.RuleCookie] = struct{}{}
+			}
+		}
+	}
+	return sortedPolicyRuleCookies(cookies)
+}
+
+func sortedPolicyRuleCookies(cookies map[uint32]struct{}) []uint32 {
+	if len(cookies) == 0 {
+		return nil
+	}
+	out := make([]uint32, 0, len(cookies))
+	for cookie := range cookies {
+		out = append(out, cookie)
+	}
+	slices.Sort(out)
+	return out
 }
 
 func (s *InMemoryPolicyStore) DeleteEndpoint(_ context.Context, endpointID string) error {

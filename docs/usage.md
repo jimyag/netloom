@@ -567,7 +567,7 @@ ovs-vsctl get Open_vSwitch . external_ids:netloom_policy_events
 
 如果 agent 配置了 `NETLOOM_OVSDB_ENDPOINT`，最近的 endpoint policy map 更新事件会写入
 `Open_vSwitch.external_ids:netloom_policy_events`，包括 endpoint、revision、diff stats、
-success/error 和 overflow remediation 信息，用于节点重启后继续审计 Cilium-style policy
+rule cookies、rule refs、success/error 和 overflow remediation 信息，用于节点重启后继续审计 Cilium-style policy
 regeneration 结果。HTTP API 和 CLI 都支持按 endpoint、success 和 remediated 过滤，
 便于直接定位失败更新或自动 remediation 事件。
 
