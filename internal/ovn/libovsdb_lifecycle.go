@@ -1712,14 +1712,37 @@ func (w *LibOVSDBTopologyWriter) unexpectedStaticRoutes(ctx context.Context, exp
 }
 
 func (w *LibOVSDBTopologyWriter) unexpectedBFDs(ctx context.Context, expected map[string]struct{}) ([]ovnnb.BFD, error) {
+	expectedRefs, err := w.expectedStaticRouteBFDRefs(ctx, expected)
+	if err != nil {
+		return nil, err
+	}
 	var rows []ovnnb.BFD
 	if err := w.client.WhereCache(func(row *ovnnb.BFD) bool {
+		if _, ok := expectedRefs[row.UUID]; ok {
+			return false
+		}
 		return isNetloomManaged(row.ExternalIDs) && !hasExpectedStaticRoute(row.ExternalIDs, expected)
 	}).List(ctx, &rows); err != nil {
 		return nil, err
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].UUID < rows[j].UUID })
 	return rows, nil
+}
+
+func (w *LibOVSDBTopologyWriter) expectedStaticRouteBFDRefs(ctx context.Context, expected map[string]struct{}) (map[string]struct{}, error) {
+	var routes []ovnnb.LogicalRouterStaticRoute
+	if err := w.client.WhereCache(func(row *ovnnb.LogicalRouterStaticRoute) bool {
+		return hasExpectedStaticRoute(row.ExternalIDs, expected)
+	}).List(ctx, &routes); err != nil {
+		return nil, err
+	}
+	refs := make(map[string]struct{})
+	for _, route := range routes {
+		if uuid := pointerStringValue(route.BFD); uuid != "" {
+			refs[uuid] = struct{}{}
+		}
+	}
+	return refs, nil
 }
 
 func (w *LibOVSDBTopologyWriter) staticRoutesByVPCAndDestination(ctx context.Context, vpc, destination string) ([]ovnnb.LogicalRouterStaticRoute, error) {

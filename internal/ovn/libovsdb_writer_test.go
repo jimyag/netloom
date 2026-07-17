@@ -4067,6 +4067,115 @@ func TestLibOVSDBTopologyWriterCleanupRepairsRouteAndPolicyRowDriftInSteadyState
 	}
 }
 
+func TestLibOVSDBTopologyWriterCleanupRepairsReferencedStaticRouteBFDDriftInSteadyState(t *testing.T) {
+	ctx := context.Background()
+	client, closeFn := newTestOVNNBClient(t)
+	defer closeFn()
+
+	if _, err := client.MonitorAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	writer := NewLibOVSDBTopologyWriter(client)
+	routeTable := model.RouteTable{
+		Name: "main",
+		VPC:  "prod",
+		Routes: []model.Route{{
+			Destination: netip.MustParsePrefix("10.20.0.0/24"),
+			NextHops:    []netip.Addr{netip.MustParseAddr("10.10.0.253")},
+			BFD: model.RouteBFD{
+				Enabled:     true,
+				LogicalPort: routerPortName(logicalRouter("prod"), "apps"),
+				MinTx:       300,
+				MinRx:       300,
+				DetectMult:  3,
+			},
+		}},
+	}
+	state := topology.State{
+		VPCs:        map[string]model.VPC{"prod": {Name: "prod"}},
+		RouteTables: map[string]model.RouteTable{"prod/main": routeTable},
+	}
+	if err := writer.CleanupTopology(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureVPC(ctx, state.VPCs["prod"]); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureRouteTable(ctx, routeTable); err != nil {
+		t.Fatal(err)
+	}
+
+	var routes []ovnnb.LogicalRouterStaticRoute
+	var bfds []ovnnb.BFD
+	requireEventually(t, func() bool {
+		routes = nil
+		if err := client.WhereCache(func(row *ovnnb.LogicalRouterStaticRoute) bool {
+			return row.ExternalIDs["netloom_vpc"] == "prod" && row.ExternalIDs["netloom_route_table"] == "main"
+		}).List(ctx, &routes); err != nil || len(routes) != 1 || routes[0].BFD == nil {
+			return false
+		}
+		bfds = nil
+		err := client.WhereCache(func(row *ovnnb.BFD) bool { return row.UUID == *routes[0].BFD }).List(ctx, &bfds)
+		return err == nil && len(bfds) == 1
+	})
+	bfdUUID := bfds[0].UUID
+	driftedMinRx := 100
+	bfds[0].MinRx = &driftedMinRx
+	bfds[0].ExternalIDs = map[string]string{
+		"netloom_owner":       "netloom",
+		"netloom_vpc":         "wrong",
+		"netloom_route_table": "wrong",
+		"netloom_route_key":   "wrong",
+		"netloom_route_bfd":   "wrong",
+	}
+	updateOps, err := client.Where(&bfds[0]).Update(&bfds[0], &bfds[0].MinRx, &bfds[0].ExternalIDs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := client.Transact(ctx, updateOps...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, updateOps); err != nil {
+		t.Fatalf("seed referenced BFD drift operation errors=%+v: %v", opErrors, err)
+	}
+	requireEventually(t, func() bool {
+		bfds = nil
+		err := client.WhereCache(func(row *ovnnb.BFD) bool { return row.UUID == bfdUUID }).List(ctx, &bfds)
+		return err == nil && len(bfds) == 1 && intPointerField(bfds[0].MinRx) == "100" && bfds[0].ExternalIDs["netloom_vpc"] == "wrong"
+	})
+
+	if err := writer.CleanupTopology(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	requireEventually(t, func() bool {
+		routes = nil
+		if err := client.WhereCache(func(row *ovnnb.LogicalRouterStaticRoute) bool {
+			return row.ExternalIDs["netloom_vpc"] == "prod" && row.ExternalIDs["netloom_route_table"] == "main"
+		}).List(ctx, &routes); err != nil || len(routes) != 1 || routes[0].BFD == nil || *routes[0].BFD != bfdUUID {
+			return false
+		}
+		bfds = nil
+		if err := client.WhereCache(func(row *ovnnb.BFD) bool { return row.UUID == bfdUUID }).List(ctx, &bfds); err != nil || len(bfds) != 1 {
+			return false
+		}
+		routeKey := routes[0].ExternalIDs["netloom_route_key"]
+		return bfds[0].LogicalPort == routerPortName(logicalRouter("prod"), "apps") &&
+			bfds[0].DstIP == "10.10.0.253" &&
+			intPointerField(bfds[0].MinTx) == "300" &&
+			intPointerField(bfds[0].MinRx) == "300" &&
+			intPointerField(bfds[0].DetectMult) == "3" &&
+			bfds[0].ExternalIDs["netloom_vpc"] == "prod" &&
+			bfds[0].ExternalIDs["netloom_route_table"] == "main" &&
+			bfds[0].ExternalIDs["netloom_route_key"] == routeKey &&
+			bfds[0].ExternalIDs["netloom_route_bfd"] == staticRouteBFDRef("prod", "main", routeKey)
+	})
+	stats := writer.LastCleanupStats()
+	if stats.FirstReconcileGC || stats.Operations == 0 {
+		t.Fatalf("cleanup stats = %+v, want steady-state referenced BFD repair operations", stats)
+	}
+}
+
 func TestLibOVSDBTopologyWriterCleanupRepairsGatewayRouterDriftInSteadyState(t *testing.T) {
 	ctx := context.Background()
 	client, closeFn := newTestOVNNBClient(t)

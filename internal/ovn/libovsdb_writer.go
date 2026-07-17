@@ -303,7 +303,7 @@ func (w *LibOVSDBTopologyWriter) routeTableOperations(ctx context.Context, table
 				if !createMissing {
 					continue
 				}
-				bfdOps, bfdUUID, err := w.staticRouteBFDOperations(ctx, table, route.BFD, desired)
+				bfdOps, bfdUUID, err := w.staticRouteBFDOperations(ctx, table, route.BFD, desired, "")
 				if err != nil {
 					return nil, err
 				}
@@ -337,7 +337,7 @@ func (w *LibOVSDBTopologyWriter) routeTableOperations(ctx context.Context, table
 				return nil, err
 			}
 			ops = append(ops, detachOps...)
-			bfdOps, bfdUUID, err := w.staticRouteBFDOperations(ctx, table, route.BFD, desired)
+			bfdOps, bfdUUID, err := w.staticRouteBFDOperations(ctx, table, route.BFD, desired, pointerStringValue(keep.BFD))
 			if err != nil {
 				return nil, err
 			}
@@ -1115,7 +1115,7 @@ func (w *LibOVSDBTopologyWriter) deleteStaticRoute(routerUUID string, route *ovn
 	return ops, nil
 }
 
-func (w *LibOVSDBTopologyWriter) staticRouteBFDOperations(ctx context.Context, table model.RouteTable, bfd model.RouteBFD, route ovnnb.LogicalRouterStaticRoute) ([]ovsdb.Operation, *string, error) {
+func (w *LibOVSDBTopologyWriter) staticRouteBFDOperations(ctx context.Context, table model.RouteTable, bfd model.RouteBFD, route ovnnb.LogicalRouterStaticRoute, currentUUID string) ([]ovsdb.Operation, *string, error) {
 	routeKey := staticRouteRowKey(route)
 	if !bfd.Enabled {
 		return nil, nil, nil
@@ -1125,6 +1125,11 @@ func (w *LibOVSDBTopologyWriter) staticRouteBFDOperations(ctx context.Context, t
 	if err != nil {
 		return nil, nil, err
 	}
+	referenced, err := w.bfdsByUUIDs(ctx, []string{currentUUID})
+	if err != nil {
+		return nil, nil, err
+	}
+	rows = mergeBFDs(rows, referenced)
 	var ops []ovsdb.Operation
 	if len(rows) == 0 {
 		desired.UUID = ovsdbNamedUUID("nl_bfd_" + table.VPC + "_" + table.Name + "_" + routeKey)
@@ -1979,6 +1984,44 @@ func (w *LibOVSDBTopologyWriter) staticRouteBFDByRouteKey(ctx context.Context, v
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].UUID < rows[j].UUID })
 	return rows, nil
+}
+
+func (w *LibOVSDBTopologyWriter) bfdsByUUIDs(ctx context.Context, uuids []string) ([]ovnnb.BFD, error) {
+	want := make(map[string]struct{}, len(uuids))
+	for _, uuid := range uuids {
+		if uuid == "" {
+			continue
+		}
+		want[uuid] = struct{}{}
+	}
+	if len(want) == 0 {
+		return nil, nil
+	}
+	var rows []ovnnb.BFD
+	if err := w.client.WhereCache(func(row *ovnnb.BFD) bool {
+		_, ok := want[row.UUID]
+		return ok
+	}).List(ctx, &rows); err != nil {
+		return nil, fmt.Errorf("list BFD rows by UUID from libovsdb cache: %w", err)
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].UUID < rows[j].UUID })
+	return rows, nil
+}
+
+func mergeBFDs(groups ...[]ovnnb.BFD) []ovnnb.BFD {
+	seen := make(map[string]struct{})
+	var rows []ovnnb.BFD
+	for _, group := range groups {
+		for _, row := range group {
+			if _, ok := seen[row.UUID]; ok {
+				continue
+			}
+			seen[row.UUID] = struct{}{}
+			rows = append(rows, row)
+		}
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].UUID < rows[j].UUID })
+	return rows
 }
 
 func (w *LibOVSDBTopologyWriter) policyRoutesByName(ctx context.Context, vpc, name string) ([]ovnnb.LogicalRouterPolicy, error) {
