@@ -979,6 +979,24 @@ func TestLibOVSDBTopologyWriterCleanupRepairsSubnetPortAttachmentDriftInSteadySt
 		return err == nil && len(switchPorts) == 2 && len(sw.Ports) == 2
 	})
 
+	staleHAGroup := &ovnnb.HAChassisGroup{
+		UUID: ovsdbNamedUUID("stale-subnet-switch-port-ha-group"),
+		Name: "stale-subnet-switch-port-ha-group",
+	}
+	createHAGroupOps, err := client.Create(staleHAGroup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var updateSwitchPortOps []ovsdb.Operation
+	for i := range switchPorts {
+		switchPorts[i].PortSecurity = []string{"02:00:00:00:00:ff 10.10.0.99"}
+		switchPorts[i].HaChassisGroup = &staleHAGroup.UUID
+		nextOps, err := client.Where(&switchPorts[i]).Update(&switchPorts[i], &switchPorts[i].PortSecurity, &switchPorts[i].HaChassisGroup)
+		if err != nil {
+			t.Fatal(err)
+		}
+		updateSwitchPortOps = append(updateSwitchPortOps, nextOps...)
+	}
 	routers[0].Ports = nil
 	sw.Ports = nil
 	updateRouter, err := client.Where(&routers[0]).Update(&routers[0], &routers[0].Ports)
@@ -989,7 +1007,9 @@ func TestLibOVSDBTopologyWriterCleanupRepairsSubnetPortAttachmentDriftInSteadySt
 	if err != nil {
 		t.Fatal(err)
 	}
-	ops := append(updateRouter, updateSwitch...)
+	ops := append(createHAGroupOps, updateSwitchPortOps...)
+	ops = append(ops, updateRouter...)
+	ops = append(ops, updateSwitch...)
 	results, err := client.Transact(ctx, ops...)
 	if err != nil {
 		t.Fatal(err)
@@ -1027,7 +1047,12 @@ func TestLibOVSDBTopologyWriterCleanupRepairsSubnetPortAttachmentDriftInSteadySt
 			return false
 		}
 		sw = singleLogicalSwitchByName(t, ctx, client, logicalSwitch("prod", "apps"))
-		return containsString(sw.Ports, switchRouterPorts[0].UUID) && containsString(sw.Ports, localnetPorts[0].UUID)
+		return containsString(sw.Ports, switchRouterPorts[0].UUID) &&
+			containsString(sw.Ports, localnetPorts[0].UUID) &&
+			len(switchRouterPorts[0].PortSecurity) == 0 &&
+			switchRouterPorts[0].HaChassisGroup == nil &&
+			len(localnetPorts[0].PortSecurity) == 0 &&
+			localnetPorts[0].HaChassisGroup == nil
 	})
 	stats := writer.LastCleanupStats()
 	if stats.FirstReconcileGC || stats.Operations == 0 {
