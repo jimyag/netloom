@@ -605,6 +605,10 @@ func TestAuditManagedObjectsFromReaderUsesTypedRows(t *testing.T) {
 	if stats.DuplicateManagedRows != 1 || stats.IncompleteManagedRows != 1 {
 		t.Fatalf("stats = %+v, want duplicate policy and incomplete load balancer", stats)
 	}
+	if stats.DuplicateManagedTableCounts["Logical_Router_Policy"] != 1 ||
+		stats.IncompleteManagedTableCounts["Load_Balancer"] != 1 {
+		t.Fatalf("table counts = duplicate %+v incomplete %+v, want policy duplicate and load balancer incomplete", stats.DuplicateManagedTableCounts, stats.IncompleteManagedTableCounts)
+	}
 }
 
 func TestAuditManagedObjectsFromReaderReportsPolicyRouteActionExternalIDDrift(t *testing.T) {

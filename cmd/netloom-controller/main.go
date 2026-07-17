@@ -1545,8 +1545,26 @@ func writeControllerMetrics(w metricWriter, snapshot controllerMetricsSnapshot, 
 	fmt.Fprintf(w, "netloom_controller_ovn_live_dhcp_options%s %d\n", auditLabels, snapshot.OVNAudit.ManagedDHCPOptions)
 	writeMetricType(w, "netloom_controller_ovn_live_duplicate_managed_rows", "gauge")
 	fmt.Fprintf(w, "netloom_controller_ovn_live_duplicate_managed_rows%s %d\n", auditLabels, snapshot.OVNAudit.DuplicateManagedRows)
+	writeMetricType(w, "netloom_controller_ovn_live_duplicate_managed_rows_by_table", "gauge")
+	for _, table := range sortedPositiveCountKeys(snapshot.OVNAudit.DuplicateManagedTableCounts) {
+		labels := prometheusLabels(map[string]string{
+			"ovn_health": fallbackMetricsLabel(snapshot.OVNHealthStatus, "disabled"),
+			"ovn_audit":  fallbackMetricsLabel(snapshot.OVNAuditStatus, "disabled"),
+			"table":      table,
+		})
+		fmt.Fprintf(w, "netloom_controller_ovn_live_duplicate_managed_rows_by_table%s %d\n", labels, snapshot.OVNAudit.DuplicateManagedTableCounts[table])
+	}
 	writeMetricType(w, "netloom_controller_ovn_live_incomplete_managed_rows", "gauge")
 	fmt.Fprintf(w, "netloom_controller_ovn_live_incomplete_managed_rows%s %d\n", auditLabels, snapshot.OVNAudit.IncompleteManagedRows)
+	writeMetricType(w, "netloom_controller_ovn_live_incomplete_managed_rows_by_table", "gauge")
+	for _, table := range sortedPositiveCountKeys(snapshot.OVNAudit.IncompleteManagedTableCounts) {
+		labels := prometheusLabels(map[string]string{
+			"ovn_health": fallbackMetricsLabel(snapshot.OVNHealthStatus, "disabled"),
+			"ovn_audit":  fallbackMetricsLabel(snapshot.OVNAuditStatus, "disabled"),
+			"table":      table,
+		})
+		fmt.Fprintf(w, "netloom_controller_ovn_live_incomplete_managed_rows_by_table%s %d\n", labels, snapshot.OVNAudit.IncompleteManagedTableCounts[table])
+	}
 	writeMetricType(w, "netloom_controller_ovn_live_missing_managed_rows", "gauge")
 	fmt.Fprintf(w, "netloom_controller_ovn_live_missing_managed_rows%s %d\n", auditLabels, snapshot.OVNAudit.MissingManagedRows)
 	writeMetricType(w, "netloom_controller_ovn_live_missing_managed_rows_by_table", "gauge")

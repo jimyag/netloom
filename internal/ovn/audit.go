@@ -31,6 +31,8 @@ type AuditStats struct {
 	UnexpectedManagedRows            int
 	DriftedManagedRows               int
 	DriftedManagedFields             int
+	DuplicateManagedTableCounts      map[string]int `json:"duplicate_managed_table_counts,omitempty"`
+	IncompleteManagedTableCounts     map[string]int `json:"incomplete_managed_table_counts,omitempty"`
 	MissingManagedTableCounts        map[string]int `json:"missing_managed_table_counts,omitempty"`
 	UnexpectedManagedTableCounts     map[string]int `json:"unexpected_managed_table_counts,omitempty"`
 	DriftedManagedFieldCounts        map[string]int `json:"drifted_managed_field_counts,omitempty"`
@@ -89,6 +91,8 @@ func AuditManagedObjectsFromReaderWithDesired(ctx context.Context, reader Manage
 		table.addCount(&stats, result.count)
 		stats.DuplicateManagedRows += result.duplicates
 		stats.IncompleteManagedRows += result.incomplete
+		stats.addDuplicateManagedTable(table.name, result.duplicates)
+		stats.addIncompleteManagedTable(table.name, result.incomplete)
 		for _, row := range result.rows {
 			if expectedFields, ok := expected[row.identity]; ok {
 				seen[row.identity] = struct{}{}
@@ -116,6 +120,26 @@ func AuditManagedObjectsFromReaderWithDesired(ctx context.Context, reader Manage
 		}
 	}
 	return stats, nil
+}
+
+func (s *AuditStats) addDuplicateManagedTable(table string, count int) {
+	if table == "" || count <= 0 {
+		return
+	}
+	if s.DuplicateManagedTableCounts == nil {
+		s.DuplicateManagedTableCounts = make(map[string]int)
+	}
+	s.DuplicateManagedTableCounts[table] += count
+}
+
+func (s *AuditStats) addIncompleteManagedTable(table string, count int) {
+	if table == "" || count <= 0 {
+		return
+	}
+	if s.IncompleteManagedTableCounts == nil {
+		s.IncompleteManagedTableCounts = make(map[string]int)
+	}
+	s.IncompleteManagedTableCounts[table] += count
 }
 
 func (s *AuditStats) addMissingManagedTable(table string) {

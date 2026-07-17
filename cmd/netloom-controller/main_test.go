@@ -1167,6 +1167,12 @@ func TestControllerMetricsExportsLatestSuccess(t *testing.T) {
 			UnexpectedManagedRows:            4,
 			DriftedManagedRows:               5,
 			DriftedManagedFields:             6,
+			DuplicateManagedTableCounts: map[string]int{
+				"Logical_Router_Policy": 1,
+			},
+			IncompleteManagedTableCounts: map[string]int{
+				"Load_Balancer": 2,
+			},
 			MissingManagedTableCounts: map[string]int{
 				"Logical_Router_Port": 2,
 			},
@@ -1253,7 +1259,9 @@ func TestControllerMetricsExportsLatestSuccess(t *testing.T) {
 		`netloom_controller_ovn_live_nat_rules{ovn_audit="ok",ovn_health="ok"} 1`,
 		`netloom_controller_ovn_live_load_balancer_health_checks{ovn_audit="ok",ovn_health="ok"} 1`,
 		`netloom_controller_ovn_live_duplicate_managed_rows{ovn_audit="ok",ovn_health="ok"} 1`,
+		`netloom_controller_ovn_live_duplicate_managed_rows_by_table{ovn_audit="ok",ovn_health="ok",table="Logical_Router_Policy"} 1`,
 		`netloom_controller_ovn_live_incomplete_managed_rows{ovn_audit="ok",ovn_health="ok"} 2`,
+		`netloom_controller_ovn_live_incomplete_managed_rows_by_table{ovn_audit="ok",ovn_health="ok",table="Load_Balancer"} 2`,
 		`netloom_controller_ovn_live_missing_managed_rows{ovn_audit="ok",ovn_health="ok"} 3`,
 		`netloom_controller_ovn_live_missing_managed_rows_by_table{ovn_audit="ok",ovn_health="ok",table="Logical_Router_Port"} 2`,
 		`netloom_controller_ovn_live_unexpected_managed_rows{ovn_audit="ok",ovn_health="ok"} 4`,
