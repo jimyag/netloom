@@ -183,10 +183,20 @@ type PolicyEndpointPlan struct {
 	DesiredEntries   int                         `json:"desired_entries"`
 	Stats            dataplane.PolicyUpdateStats `json:"stats"`
 	Changed          bool                        `json:"changed"`
+	Risk             PolicyEndpointPlanRisk      `json:"risk,omitempty"`
 	AddedEntries     []dataplane.PolicyMapEntry  `json:"-"`
 	UpdatedEntries   []dataplane.PolicyMapEntry  `json:"-"`
 	DeletedEntries   []dataplane.PolicyMapEntry  `json:"-"`
 	UnchangedEntries []dataplane.PolicyMapEntry  `json:"-"`
+}
+
+type PolicyEndpointPlanRisk struct {
+	BlockingChange       bool `json:"blocking_change,omitempty"`
+	AddedDenyEntries     int  `json:"added_deny_entries,omitempty"`
+	AddedRejectEntries   int  `json:"added_reject_entries,omitempty"`
+	UpdatedDenyEntries   int  `json:"updated_deny_entries,omitempty"`
+	UpdatedRejectEntries int  `json:"updated_reject_entries,omitempty"`
+	DeletedAllowEntries  int  `json:"deleted_allow_entries,omitempty"`
 }
 
 type PolicyEndpointRolloutOptions struct {
@@ -1769,17 +1779,63 @@ func planPolicyEndpointEntries(endpointID string, desired []dataplane.PolicyMapE
 	plan := dataplane.PlanPolicyUpdate(current, desired)
 	stats := plan.Stats()
 	deletedEntries := policyEntriesForDeletedKeys(current, plan.Delete)
+	risk := policyEndpointPlanRisk(current, plan, deletedEntries)
 	return PolicyEndpointPlan{
 		EndpointID:       endpointID,
 		CurrentEntries:   len(current),
 		DesiredEntries:   len(desired),
 		Stats:            stats,
 		Changed:          stats.Added != 0 || stats.Updated != 0 || stats.Deleted != 0,
+		Risk:             risk,
 		AddedEntries:     append([]dataplane.PolicyMapEntry(nil), plan.Add...),
 		UpdatedEntries:   append([]dataplane.PolicyMapEntry(nil), plan.Update...),
 		DeletedEntries:   deletedEntries,
 		UnchangedEntries: append([]dataplane.PolicyMapEntry(nil), plan.Unchanged...),
 	}, nil
+}
+
+func policyEndpointPlanRisk(current []dataplane.PolicyMapEntry, plan dataplane.PolicyUpdatePlan, deletedEntries []dataplane.PolicyMapEntry) PolicyEndpointPlanRisk {
+	byKey := make(map[dataplane.PolicyKey]dataplane.PolicyMapEntry, len(current))
+	for _, entry := range current {
+		byKey[entry.Key] = entry
+	}
+	var risk PolicyEndpointPlanRisk
+	for _, entry := range plan.Add {
+		if policyEntryDenies(entry) {
+			risk.AddedDenyEntries++
+		}
+		if policyEntryRejects(entry) {
+			risk.AddedRejectEntries++
+		}
+	}
+	for _, entry := range plan.Update {
+		old := byKey[entry.Key]
+		if !policyEntryDenies(old) && policyEntryDenies(entry) {
+			risk.UpdatedDenyEntries++
+		}
+		if !policyEntryRejects(old) && policyEntryRejects(entry) {
+			risk.UpdatedRejectEntries++
+		}
+	}
+	for _, entry := range deletedEntries {
+		if !policyEntryDenies(entry) {
+			risk.DeletedAllowEntries++
+		}
+	}
+	risk.BlockingChange = risk.AddedDenyEntries > 0 ||
+		risk.AddedRejectEntries > 0 ||
+		risk.UpdatedDenyEntries > 0 ||
+		risk.UpdatedRejectEntries > 0 ||
+		risk.DeletedAllowEntries > 0
+	return risk
+}
+
+func policyEntryDenies(entry dataplane.PolicyMapEntry) bool {
+	return entry.Value.Deny != 0
+}
+
+func policyEntryRejects(entry dataplane.PolicyMapEntry) bool {
+	return entry.Value.Reject != 0
 }
 
 func policyEntriesForDeletedKeys(current []dataplane.PolicyMapEntry, keys []dataplane.PolicyKey) []dataplane.PolicyMapEntry {

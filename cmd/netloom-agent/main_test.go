@@ -4053,6 +4053,9 @@ func TestPolicyEndpointAPIPlansDesiredEndpointPolicyMap(t *testing.T) {
 	if got.Plan.Stats.Added != 1 || got.Plan.Stats.Deleted != 1 || got.Plan.CurrentEntries != 1 || got.Plan.DesiredEntries != 1 {
 		t.Fatalf("plan = %+v, want add/delete counts", got.Plan)
 	}
+	if got.Plan.Risk.BlockingChange || got.Plan.Risk.AddedDenyEntries != 0 || got.Plan.Risk.DeletedAllowEntries != 0 {
+		t.Fatalf("plan risk = %+v, want no additional blocking risk for allow replacing deny", got.Plan.Risk)
+	}
 	if len(got.Plan.AddedEntries) != 1 || got.Plan.AddedEntries[0].RuleRef != "prod/web/allow-http" || got.Plan.AddedEntries[0].SecurityGroup != "web" || got.Plan.AddedEntries[0].RuleID != "allow-http" {
 		t.Fatalf("added entries = %+v, want desired allow-http rule metadata", got.Plan.AddedEntries)
 	}
@@ -4752,6 +4755,9 @@ func TestPolicyEndpointAPIRolloutAppliesMultipleEndpoints(t *testing.T) {
 	}
 	if len(got.Rollout.Items[0].Plan.AddedEntries) != 1 || got.Rollout.Items[0].Plan.AddedEntries[0].RuleRef != "prod/web/allow-http" || got.Rollout.Items[0].Plan.AddedEntries[0].SecurityGroup != "web" {
 		t.Fatalf("first rollout item plan endpoint=%q entries=%+v, want allow-http rule metadata", got.Rollout.Items[0].Plan.EndpointID, got.Rollout.Items[0].Plan.AddedEntries)
+	}
+	if got.Rollout.Items[0].Plan.Risk.BlockingChange {
+		t.Fatalf("first rollout item risk = %+v, want non-blocking allow rollout", got.Rollout.Items[0].Plan.Risk)
 	}
 	for _, endpointID := range []string{model.EndpointKey("prod", "pod-a"), model.EndpointKey("prod", "pod-b")} {
 		if entries := store.Entries(endpointID); len(entries) != 1 {

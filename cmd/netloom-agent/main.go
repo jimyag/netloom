@@ -513,15 +513,16 @@ type policyEndpointActionOutput struct {
 }
 
 type policyEndpointPlanOutput struct {
-	EndpointID       string                      `json:"endpoint_id"`
-	CurrentEntries   int                         `json:"current_entries"`
-	DesiredEntries   int                         `json:"desired_entries"`
-	Stats            dataplane.PolicyUpdateStats `json:"stats"`
-	Changed          bool                        `json:"changed"`
-	AddedEntries     []policyMapEntryOutput      `json:"added_entries,omitempty"`
-	UpdatedEntries   []policyMapEntryOutput      `json:"updated_entries,omitempty"`
-	DeletedEntries   []policyMapEntryOutput      `json:"deleted_entries,omitempty"`
-	UnchangedEntries []policyMapEntryOutput      `json:"unchanged_entries,omitempty"`
+	EndpointID       string                       `json:"endpoint_id"`
+	CurrentEntries   int                          `json:"current_entries"`
+	DesiredEntries   int                          `json:"desired_entries"`
+	Stats            dataplane.PolicyUpdateStats  `json:"stats"`
+	Changed          bool                         `json:"changed"`
+	Risk             agent.PolicyEndpointPlanRisk `json:"risk,omitempty"`
+	AddedEntries     []policyMapEntryOutput       `json:"added_entries,omitempty"`
+	UpdatedEntries   []policyMapEntryOutput       `json:"updated_entries,omitempty"`
+	DeletedEntries   []policyMapEntryOutput       `json:"deleted_entries,omitempty"`
+	UnchangedEntries []policyMapEntryOutput       `json:"unchanged_entries,omitempty"`
 }
 
 type policyEndpointRolloutOutput struct {
@@ -2160,6 +2161,7 @@ func policyEndpointPlanOutputFromPlan(plan agent.PolicyEndpointPlan, catalog map
 		DesiredEntries:   plan.DesiredEntries,
 		Stats:            plan.Stats,
 		Changed:          plan.Changed,
+		Risk:             plan.Risk,
 		AddedEntries:     policyMapEntryOutputsFromEntries(plan.EndpointID, plan.AddedEntries, catalog),
 		UpdatedEntries:   policyMapEntryOutputsFromEntries(plan.EndpointID, plan.UpdatedEntries, catalog),
 		DeletedEntries:   policyMapEntryOutputsFromEntries(plan.EndpointID, plan.DeletedEntries, catalog),

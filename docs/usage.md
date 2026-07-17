@@ -542,7 +542,8 @@ curl -X POST http://127.0.0.1:9092/policy/endpoints/prod/vm-a/plan
 eBPF map 或改变 revision。响应里的 `plan` 包含 add/update/delete/unchanged 计数，
 以及 `added_entries`、`updated_entries`、`deleted_entries`、`unchanged_entries`
 明细；entry 会带 rule ref、VPC、安全组和规则 ID，适合在 approval、ack 或 rollout
-前审查实际将变化的 policy-map key/value。
+前审查实际将变化的 policy-map key/value。`plan.risk` 会标记新增 deny/reject、
+更新为 deny/reject、删除 allow entry 这类可能扩大阻断面的变化。
 
 分批预览或执行多个 endpoint 的 staged rollout：
 

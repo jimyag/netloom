@@ -429,6 +429,44 @@ func TestPlanPolicyEndpointReportsDiffWithoutApplying(t *testing.T) {
 	}
 }
 
+func TestPlanPolicyEndpointReportsBlockingChangeRisk(t *testing.T) {
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:             "pod-a",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"web"},
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "reject-api",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("172.30.0.0/24"),
+				Ports:      []model.PortRange{{From: 443, To: 443}},
+				Action:     model.ActionReject,
+			}},
+		}},
+	}
+	store := dataplane.NewInMemoryPolicyStore()
+	endpointID := model.EndpointKey("prod", "pod-a")
+	plan, err := PlanPolicyEndpoint(context.Background(), state, ReconcileOptions{
+		Node:  "node-a",
+		Store: store,
+	}, endpointID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.Risk.BlockingChange || plan.Risk.AddedDenyEntries != 1 || plan.Risk.AddedRejectEntries != 1 {
+		t.Fatalf("plan risk = %+v, want one added reject blocking change", plan.Risk)
+	}
+}
+
 func TestQuarantinePolicyEndpointReplacesPolicyWithIngressAndEgressDrops(t *testing.T) {
 	state := control.DesiredState{
 		Endpoints: []model.Endpoint{{
