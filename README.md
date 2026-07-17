@@ -1,48 +1,52 @@
 # netloom
 
-[![Go Report Card](https://goreportcard.com/badge/github.com/jimyag/netloom)](https://goreportcard.com/report/github.com/jimyag/netloom)
-[![codecov](https://codecov.io/gh/jimyag/netloom/branch/main/graph/badge.svg)](https://codecov.io/gh/jimyag/netloom)
-[![License](https://img.shields.io/github/license/jimyag/netloom)](LICENSE)
-[![Release](https://img.shields.io/github/v/release/jimyag/netloom)](https://github.com/jimyag/netloom/releases)
+`netloom` is a bare-metal SDN control plane. It uses OVN/OVSDB for virtual
+network topology and local OVS state, and uses eBPF/TCX for security groups and
+ACL enforcement.
 
-`netloom` 是一个面向裸金属节点的 SDN 控制面。它用 OVN/OVSDB 实现 VPC、子网、网关、NAT、LoadBalancer、Provider Network 和策略路由，用 eBPF/TCX 执行安全组与 ACL。
+It is not a Kubernetes integration. There are no CRDs, no CNI plugin contract,
+and no dependency on kube-apiserver as the source of truth.
 
-项目不集成 Kubernetes，也不把 ACL 放到 OVN ACL 中执行。控制面描述网络意图，OVN/OVSDB 负责虚拟网络和裸金属 OVS 状态，eBPF/TCX 负责安全策略快速路径。
+## What Works
 
-## 当前状态
+The core SDN path is implemented and covered by unit, integration, and Docker
+e2e tests:
 
-核心路径已经实现，并有单元、集成和 Docker e2e 测试覆盖：
+- VPC, subnet, endpoint, IPAM, DHCP, DNS, gateway, NAT, load balancer, route
+  table, and policy route reconciliation.
+- OVN Northbound writes through libovsdb for logical routers, switches, ports,
+  DHCP options, DNS, static routes, BFD, NAT, load balancers, and health checks.
+- Local Open_vSwitch OVSDB writes for provider networks, bridges, controllers,
+  ports, interfaces, QoS, queues, and netloom runtime status.
+- Linux datapath planning for workload netns/veth, addresses, routes, gateway
+  routes, RPDB policy routing, and provider interface selection.
+- Security group compilation into Cilium-style endpoint policy maps.
+- eBPF/TCX ACL datapath for ingress and egress IPv4/IPv6 TCP, UDP, and ICMP.
+- Policy rollout, status, explain, desired-state import/export, DNS observation,
+  health, audit, and Prometheus metrics entry points.
 
-- VPC、Subnet、Endpoint、IPAM、Gateway、NAT、LoadBalancer、DNS、DHCP、RouteTable、PolicyRoute。
-- OVN Northbound libovsdb writer，直接写 Logical Router、Logical Switch、Logical Switch Port、DHCP Options、Static Route、BFD、NAT、Load Balancer、Health Check 和 DNS。
-- 裸金属 agent Linux datapath，支持 netlink/netns 地址、路由、RPDB 策略路由和 Provider Network 本地接口操作。
-- 本机 Open_vSwitch OVSDB 同步，管理 Bridge、Controller、Port、Interface、QoS、Queue 和运行状态 external_ids。
-- SecurityGroup 规则编译为 Cilium 风格 endpoint policy map，支持 CIDR、CIDRGroup、remote group、endpoint selector、service、entity、FQDN、named port、ICMP、stateful conntrack、reject/log/default-deny。
-- eBPF/TCX ACL datapath，支持 IPv4/IPv6、TCP/UDP/ICMP、ingress/egress、workload/node attach、rule counters 和 metrics。
-- Policy rollout、SLO/probe/approval/ack/finalize、pressure mitigation、quarantine、audit history 和 Prometheus metrics。
-- `policy-explain`、`policy-status`、`route-explain`、desired-state import/export 等运维入口。
+See [docs/features.md](docs/features.md) for the detailed capability matrix and
+known gaps.
 
-仍需要继续强化的是生产部署手册、长期运行压测、复杂 OVN/OVS 集群运维剧本和更完整的故障恢复流程。
+## Quick Start
 
-## 快速开始
-
-构建：
+Build and test:
 
 ```bash
+go test ./...
 go build ./cmd/netloom-controller ./cmd/netloom-agent ./cmd/netloom-dns-observer
 ```
 
-使用 JSON desired state 启动 controller：
+Run the controller from a desired-state file:
 
 ```bash
 NETLOOM_STATE_FILE=/etc/netloom/state.json \
 NETLOOM_OVN_LIBOVSDB_ENDPOINT=unix:/var/run/ovn/ovnnb_db.sock \
 NETLOOM_RECONCILE_INTERVAL_MS=5000 \
-NETLOOM_CONTROLLER_METRICS_ADDR=:9091 \
 ./netloom-controller
 ```
 
-在节点上启动 agent：
+Run the agent on a bare-metal node:
 
 ```bash
 NETLOOM_STATE_FILE=/etc/netloom/state.json \
@@ -51,43 +55,35 @@ NETLOOM_OVSDB_ENDPOINT=unix:/var/run/openvswitch/db.sock \
 NETLOOM_POLICY_STORE=ebpf \
 NETLOOM_TCX_WORKLOAD=1 \
 NETLOOM_LINUX_DATAPATH=1 \
-NETLOOM_LINUX_DATAPATH_MODE=netns \
 NETLOOM_PROVIDER_NETWORK_LINKS=physnet-a=eth1 \
-NETLOOM_AGENT_METRICS_ADDR=:9092 \
 ./netloom-agent
 ```
 
-也可以把 desired state 写入本机 OVSDB，之后 controller/agent 通过 `NETLOOM_OVSDB_ENDPOINT` 从 `Open_vSwitch.external_ids` 读取：
+Desired state can also be stored in the local Open_vSwitch database:
 
 ```bash
 ./netloom-agent desired-state-import -ovsdb unix:/var/run/openvswitch/db.sock < /etc/netloom/state.json
 ./netloom-agent desired-state-export -ovsdb unix:/var/run/openvswitch/db.sock
 ```
 
-完整示例和运行说明见 [docs/usage.md](docs/usage.md)。
+## Documentation
 
-## 验证
+- [Feature matrix](docs/features.md)
+- [Usage guide](docs/usage.md)
+- [eBPF ACL design](docs/design/cilium-ebpf-acl.md)
+- [Gap analysis vs Cilium and Kube-OVN](docs/analysis/sdn-gap-vs-cilium-kube-ovn.md)
 
-常规验证：
+## E2E Tests
 
-```bash
-go test ./...
-```
-
-Docker e2e 需要显式打开，并建议按用例拆开跑：
+Docker e2e tests are opt-in and should be run by case group:
 
 ```bash
 NETLOOM_E2E=1 go test ./tests/e2e -run 'TestDocker.*Policy' -count=1
 NETLOOM_E2E=1 go test ./tests/e2e -run 'TestDocker.*Provider' -count=1
+NETLOOM_E2E=1 go test ./tests/e2e -run 'TestDockerControllerReconcileIdempotent' -count=1
 ```
 
-## 文档
-
-- [使用说明](docs/usage.md)
-- [eBPF ACL 设计](docs/design/cilium-ebpf-acl.md)
-- [与 Cilium / Kube-OVN 的差距分析](docs/analysis/sdn-gap-vs-cilium-kube-ovn.md)
-
-## 开发命令
+## Development
 
 ```bash
 task deps
