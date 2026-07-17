@@ -57,6 +57,7 @@ type ReconcileResult struct {
 	PolicyMapDriftChanged            int
 	PolicyEndpointStatus             []dataplane.PolicyEndpointStatus
 	PolicyGCEndpoints                int
+	PolicyFrozen                     int
 	PolicyAdded                      int
 	PolicyUpdated                    int
 	PolicyDeleted                    int
@@ -166,6 +167,7 @@ type ReconcileOptions struct {
 	PolicyPressureQuarantineThreshold uint32
 	PolicyPressureQuarantine          bool
 	DeferPolicyApply                  bool
+	FrozenPolicyEndpoints             map[string]struct{}
 	PolicyRolloutApprovalSecret       string
 	PolicyRolloutResume               map[string][]string
 	LinuxDatapath                     *linuxdatapath.Options
@@ -392,6 +394,9 @@ func ReconcileNodeWithOptions(ctx context.Context, state control.DesiredState, o
 }
 
 func RegeneratePolicyEndpoint(ctx context.Context, state control.DesiredState, options ReconcileOptions, endpointID string) (dataplane.PolicyEndpointStatus, error) {
+	if policyEndpointFrozen(options, endpointID) {
+		return dataplane.PolicyEndpointStatus{}, fmt.Errorf("policy endpoint %s is frozen", endpointID)
+	}
 	program, err := compileEndpointPolicyProgram(state, options, endpointID)
 	if err != nil {
 		return dataplane.PolicyEndpointStatus{}, err
@@ -645,6 +650,14 @@ func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, opt
 					}
 				}
 			}
+			continue
+		}
+		if policyEndpointFrozen(options, item.EndpointID) {
+			setRolloutItemPhase(&item, "failed", "policy_frozen")
+			item.Error = "policy endpoint is frozen"
+			rollout.Failed++
+			rollout.Items[i] = item
+			rollbackRolloutPolicyEndpoints(ctx, options.Store, snapshots, applied, &rollout)
 			continue
 		}
 		if err := backend.ApplyEndpointProgram(ctx, prepared[i].program); err != nil {
@@ -1815,6 +1828,9 @@ func QuarantinePolicyEndpoint(ctx context.Context, state control.DesiredState, o
 	if endpointID == "" {
 		return dataplane.PolicyEndpointStatus{}, fmt.Errorf("policy endpoint is required")
 	}
+	if policyEndpointFrozen(options, endpointID) {
+		return dataplane.PolicyEndpointStatus{}, fmt.Errorf("policy endpoint %s is frozen", endpointID)
+	}
 	if err := validateAgentState(state); err != nil {
 		return dataplane.PolicyEndpointStatus{}, err
 	}
@@ -2098,7 +2114,11 @@ func prepareReconcile(ctx context.Context, state control.DesiredState, options R
 		result.Endpoints++
 		result.Programs++
 		result.Entries += len(program.MapEntries)
-		if !options.DeferPolicyApply {
+		frozen := policyEndpointFrozen(options, program.EndpointID)
+		if frozen {
+			result.PolicyFrozen++
+		}
+		if !options.DeferPolicyApply && !frozen {
 			if err := backend.ApplyEndpointProgram(ctx, program); err != nil {
 				if eventStore != nil {
 					recordPolicyEventsDelta(&result, eventStore.Events(), beforeEvents, program.EndpointID)
@@ -2120,6 +2140,9 @@ func prepareReconcile(ctx context.Context, state control.DesiredState, options R
 			}
 		}
 		localPrograms = append(localPrograms, program)
+		if frozen {
+			continue
+		}
 		if tcxEligibleProgram(program) {
 			result.TCXEligible++
 			tcxPrograms = append(tcxPrograms, program)
@@ -2194,6 +2217,14 @@ func prepareReconcile(ctx context.Context, state control.DesiredState, options R
 		}
 	}
 	return result, targets, localPrograms, nil
+}
+
+func policyEndpointFrozen(options ReconcileOptions, endpointID string) bool {
+	if len(options.FrozenPolicyEndpoints) == 0 {
+		return false
+	}
+	_, ok := options.FrozenPolicyEndpoints[endpointID]
+	return ok
 }
 
 func catalogPolicyRules(programs []policy.Program) []PolicyRuleCatalogEntry {

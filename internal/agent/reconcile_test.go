@@ -634,6 +634,117 @@ func TestReconcileNodeSweepsIdlePolicyEndpoints(t *testing.T) {
 	}
 }
 
+func TestReconcileNodeSkipsFrozenPolicyEndpointApply(t *testing.T) {
+	endpointID := model.EndpointKey("prod", "pod-a")
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:             "pod-a",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"web"},
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "allow-http",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("172.30.0.0/24"),
+				Ports:      []model.PortRange{{From: 80, To: 80}},
+				Action:     model.ActionAllow,
+			}},
+		}},
+	}
+	store := dataplane.NewInMemoryPolicyStore()
+	if _, err := ReconcileNodeWithOptions(context.Background(), state, ReconcileOptions{Node: "node-a", Store: store}); err != nil {
+		t.Fatal(err)
+	}
+	initial := store.Entries(endpointID)
+	if len(initial) == 0 {
+		t.Fatal("initial policy entries were not programmed")
+	}
+
+	state.SecurityGroups[0].Rules[0].RemoteCIDR = netip.MustParsePrefix("198.51.100.0/24")
+	result, err := ReconcileNodeWithOptions(context.Background(), state, ReconcileOptions{
+		Node:  "node-a",
+		Store: store,
+		FrozenPolicyEndpoints: map[string]struct{}{
+			endpointID: {},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.PolicyFrozen != 1 {
+		t.Fatalf("policy frozen = %d, want 1", result.PolicyFrozen)
+	}
+	frozen := store.Entries(endpointID)
+	if !slices.EqualFunc(initial, frozen, func(a, b dataplane.PolicyMapEntry) bool {
+		return a.Key == b.Key && a.Value == b.Value && a.RemoteCIDR == b.RemoteCIDR
+	}) {
+		t.Fatalf("frozen entries changed: before=%+v after=%+v", initial, frozen)
+	}
+
+	if _, err := ReconcileNodeWithOptions(context.Background(), state, ReconcileOptions{Node: "node-a", Store: store}); err != nil {
+		t.Fatal(err)
+	}
+	updated := store.Entries(endpointID)
+	foundUpdatedCIDR := false
+	for _, entry := range updated {
+		if entry.RemoteCIDR == netip.MustParsePrefix("198.51.100.0/24") {
+			foundUpdatedCIDR = true
+			break
+		}
+	}
+	if !foundUpdatedCIDR {
+		t.Fatalf("updated entries = %+v, want new CIDR after unfreezing", updated)
+	}
+}
+
+func TestPolicyEndpointActionsRejectFrozenEndpoint(t *testing.T) {
+	endpointID := model.EndpointKey("prod", "pod-a")
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:             "pod-a",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"web"},
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "allow-http",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("172.30.0.0/24"),
+				Ports:      []model.PortRange{{From: 80, To: 80}},
+				Action:     model.ActionAllow,
+			}},
+		}},
+	}
+	options := ReconcileOptions{
+		Node:  "node-a",
+		Store: dataplane.NewInMemoryPolicyStore(),
+		FrozenPolicyEndpoints: map[string]struct{}{
+			endpointID: {},
+		},
+	}
+	if _, err := RegeneratePolicyEndpoint(context.Background(), state, options, endpointID); err == nil || !strings.Contains(err.Error(), "frozen") {
+		t.Fatalf("regenerate error = %v, want frozen", err)
+	}
+	if _, err := QuarantinePolicyEndpoint(context.Background(), state, options, endpointID); err == nil || !strings.Contains(err.Error(), "frozen") {
+		t.Fatalf("quarantine error = %v, want frozen", err)
+	}
+}
+
 func TestReconcileNodeMitigatesPolicyMapPressureByDeletingNonDesiredEndpoints(t *testing.T) {
 	state := control.DesiredState{
 		Endpoints: []model.Endpoint{{
@@ -1429,6 +1540,35 @@ func TestRolloutPolicyEndpointsDryRunPlansWithoutApplying(t *testing.T) {
 	}
 	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 0 {
 		t.Fatalf("dry-run entries = %+v, want no live mutation", entries)
+	}
+}
+
+func TestRolloutPolicyEndpointsFailsFrozenEndpointWithoutApplying(t *testing.T) {
+	state := rolloutPolicyState()
+	store := dataplane.NewInMemoryPolicyStore()
+	endpointID := model.EndpointKey("prod", "pod-a")
+
+	rollout, err := RolloutPolicyEndpoints(context.Background(), state, ReconcileOptions{
+		Node:  "node-a",
+		Store: store,
+		FrozenPolicyEndpoints: map[string]struct{}{
+			endpointID: {},
+		},
+	}, PolicyEndpointRolloutOptions{
+		EndpointIDs: []string{endpointID},
+		BatchSize:   1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rollout.Applied != 0 || rollout.Failed != 1 || len(rollout.Items) != 1 {
+		t.Fatalf("rollout = %+v, want one failed frozen item", rollout)
+	}
+	if rollout.Items[0].Phase != "failed" || rollout.Items[0].Reason != "policy_frozen" {
+		t.Fatalf("rollout item = %+v, want policy_frozen failure", rollout.Items[0])
+	}
+	if entries := store.Entries(endpointID); len(entries) != 0 {
+		t.Fatalf("frozen rollout entries = %+v, want no live mutation", entries)
 	}
 }
 

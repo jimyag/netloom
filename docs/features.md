@@ -86,6 +86,7 @@
 | Metrics | 已实现 | controller/agent `/metrics` | command tests |
 | Controller status API | 已实现 | controller `/status` JSON API for OVN health/audit/cluster/stale state | `TestControllerStatusAPIExportsLatestOVNStatus` |
 | OVN health/audit/maintenance | 已实现 | libovsdb health, audit stats, compact/stale hooks | `go test ./cmd/netloom-controller ./internal/ovn` |
+| Policy freeze/unfreeze | 已实现 | agent `/policy/endpoints/{endpoint}/freeze` and `/unfreeze` to hold endpoint policy-map updates during normal reconcile | `TestPolicyEndpointAPIFreezesAndUnfreezesEndpointPolicyMap`、`TestReconcileNodeSkipsFrozenPolicyEndpointApply` |
 | Policy rollout | 已实现 | rollout request state, approval, ack, finalize, SLO, HTTP status/body probes, TCP/TLS probes | agent/control tests |
 
 ## 当前缺口

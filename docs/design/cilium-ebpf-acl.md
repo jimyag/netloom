@@ -184,7 +184,10 @@ event data as `netloom-agent policy-status`, and supports filtering with
 `?endpoint=pod-a` or `?endpoint=prod/pod-a`. Operators can inspect compiled
 endpoint policy-map keys, values, counters, and remote CIDRs through
 `netloom-agent policy-entries` or the long-running `/policy/entries/{endpoint}`
-API. The same endpoint API supports
+API. Long-running agents also support endpoint policy freeze/unfreeze through
+`POST /policy/endpoints/{endpoint}/freeze` and `/unfreeze`; frozen endpoints are
+skipped by normal reconcile policy-map and TCX updates until explicitly
+unfrozen. The same endpoint API supports
 operator lifecycle actions: `DELETE /policy/endpoints/{endpoint}` clears an
 endpoint map, `POST /policy/endpoints/{endpoint}/plan` dry-runs the latest
 desired policy and returns add/update/delete/unchanged counts without modifying

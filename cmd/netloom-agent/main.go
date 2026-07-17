@@ -175,6 +175,7 @@ type policyStatusOutput struct {
 	DriftExtra           int                              `json:"drift_extra"`
 	DriftChanged         int                              `json:"drift_changed"`
 	PolicyRevisionMax    uint64                           `json:"policy_revision_max"`
+	FrozenEndpoints      []string                         `json:"frozen_endpoints,omitempty"`
 	Statuses             []dataplane.PolicyEndpointStatus `json:"statuses"`
 }
 
@@ -279,6 +280,8 @@ type policyEndpointActionOutput struct {
 	Regenerated   bool                           `json:"regenerated,omitempty"`
 	Quarantined   bool                           `json:"quarantined,omitempty"`
 	Unquarantined bool                           `json:"unquarantined,omitempty"`
+	Frozen        bool                           `json:"frozen,omitempty"`
+	Unfrozen      bool                           `json:"unfrozen,omitempty"`
 	Plan          agent.PolicyEndpointPlan       `json:"plan,omitempty"`
 	Rollout       agent.PolicyEndpointRollout    `json:"rollout,omitempty"`
 	EndpointInfo  dataplane.PolicyEndpointStatus `json:"endpoint_status,omitempty"`
@@ -1400,6 +1403,7 @@ func reconcileStateFile(ctx context.Context, path, node, storeName string, recon
 		PolicyPressureQuarantineThreshold: policyPressureQuarantineThreshold(),
 		PolicyPressureQuarantine:          policyPressureQuarantine(),
 		DeferPolicyApply:                  agent.HasActivePolicyRollouts(state, node),
+		FrozenPolicyEndpoints:             metrics.frozenPolicyEndpointsSnapshot(),
 		PolicyRolloutApprovalSecret:       policyRolloutApprovalSecret(),
 		LinuxDatapath:                     linuxOptions,
 	})
@@ -1420,6 +1424,7 @@ func reconcileStateFile(ctx context.Context, path, node, storeName string, recon
 	if rollouts, err := agent.ApplyPolicyRollouts(ctx, state, agent.ReconcileOptions{
 		Node:                        node,
 		Store:                       metrics.store,
+		FrozenPolicyEndpoints:       metrics.frozenPolicyEndpointsSnapshot(),
 		PolicyRolloutApprovalSecret: policyRolloutApprovalSecret(),
 		PolicyRolloutResume:         rolloutResume,
 	}); err != nil {
@@ -1516,6 +1521,7 @@ func reconcileStateFileOnceWithRuntimeStores(ctx context.Context, path, node, st
 	if rollouts, err := agent.ApplyPolicyRollouts(ctx, state, agent.ReconcileOptions{
 		Node:                        node,
 		Store:                       store,
+		FrozenPolicyEndpoints:       metrics.frozenPolicyEndpointsSnapshot(),
 		PolicyRolloutApprovalSecret: policyRolloutApprovalSecret(),
 		PolicyRolloutResume:         rolloutResume,
 	}); err != nil {
@@ -1986,6 +1992,7 @@ type agentMetrics struct {
 	store               agent.PolicyStore
 	rolloutHistoryStore policyRolloutHistoryStore
 	rolloutHistory      []policyRolloutHistoryEntry
+	frozenEndpoints     map[string]struct{}
 }
 
 type agentMetricsSnapshot struct {
@@ -2055,8 +2062,9 @@ func newAgentMetrics(store ...agent.PolicyStore) *agentMetrics {
 		policyStore = store[0]
 	}
 	return &agentMetrics{
-		totals: agentMetricsTotals{DurationBuckets: make([]uint64, len(agentReconcileDurationBuckets))},
-		store:  policyStore,
+		totals:          agentMetricsTotals{DurationBuckets: make([]uint64, len(agentReconcileDurationBuckets))},
+		store:           policyStore,
+		frozenEndpoints: make(map[string]struct{}),
 	}
 }
 
@@ -2461,6 +2469,85 @@ func (m *agentMetrics) snapshotValue() (agentMetricsSnapshot, agentMetricsTotals
 	return m.snapshot, cloneAgentMetricsTotals(m.totals), m.ready
 }
 
+func (m *agentMetrics) frozenPolicyEndpointsSnapshot() map[string]struct{} {
+	if m == nil {
+		return nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if len(m.frozenEndpoints) == 0 {
+		return nil
+	}
+	out := make(map[string]struct{}, len(m.frozenEndpoints))
+	for endpointID := range m.frozenEndpoints {
+		out[endpointID] = struct{}{}
+	}
+	return out
+}
+
+func (m *agentMetrics) frozenPolicyEndpointIDs() []string {
+	if m == nil {
+		return nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]string, 0, len(m.frozenEndpoints))
+	for endpointID := range m.frozenEndpoints {
+		out = append(out, endpointID)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func (m *agentMetrics) policyEndpointFrozen(endpointID string) bool {
+	if m == nil {
+		return false
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	_, ok := m.frozenEndpoints[endpointID]
+	return ok
+}
+
+func (m *agentMetrics) freezePolicyEndpoint(endpoint string) (string, error) {
+	if m == nil {
+		return "", errors.New("policy endpoint actions are not enabled")
+	}
+	snapshot, _, ready := m.snapshotValue()
+	if !ready || !snapshot.Success {
+		return "", errors.New("policy endpoint state is not ready")
+	}
+	endpointID, err := resolvePolicyEndpointIDFromSnapshot(endpoint, snapshot)
+	if err != nil {
+		return "", err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.frozenEndpoints == nil {
+		m.frozenEndpoints = make(map[string]struct{})
+	}
+	m.frozenEndpoints[endpointID] = struct{}{}
+	return endpointID, nil
+}
+
+func (m *agentMetrics) unfreezePolicyEndpoint(endpoint string) (string, error) {
+	if m == nil {
+		return "", errors.New("policy endpoint actions are not enabled")
+	}
+	snapshot, _, ready := m.snapshotValue()
+	if !ready || !snapshot.Success {
+		return "", errors.New("policy endpoint state is not ready")
+	}
+	endpointID, err := resolvePolicyEndpointIDFromSnapshot(endpoint, snapshot)
+	if err != nil {
+		return "", err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.frozenEndpoints, endpointID)
+	return endpointID, nil
+}
+
 func (m *agentMetrics) deletePolicyEndpoint(ctx context.Context, endpoint string) (string, error) {
 	if m == nil || m.store == nil {
 		return "", errors.New("policy endpoint actions are not enabled")
@@ -2468,6 +2555,9 @@ func (m *agentMetrics) deletePolicyEndpoint(ctx context.Context, endpoint string
 	endpointID, err := m.resolvePolicyEndpointID(endpoint)
 	if err != nil {
 		return "", err
+	}
+	if m.policyEndpointFrozen(endpointID) {
+		return "", fmt.Errorf("policy endpoint %s is frozen", endpointID)
 	}
 	if err := m.store.DeleteEndpoint(ctx, endpointID); err != nil {
 		return "", err
@@ -2489,8 +2579,9 @@ func (m *agentMetrics) regeneratePolicyEndpoint(ctx context.Context, endpoint st
 		return dataplane.PolicyEndpointStatus{}, err
 	}
 	status, err := agent.RegeneratePolicyEndpoint(ctx, snapshot.State, agent.ReconcileOptions{
-		Node:  snapshot.Result.Node,
-		Store: m.store,
+		Node:                  snapshot.Result.Node,
+		Store:                 m.store,
+		FrozenPolicyEndpoints: m.frozenPolicyEndpointsSnapshot(),
 	}, endpointID)
 	if err != nil {
 		return dataplane.PolicyEndpointStatus{}, err
@@ -2530,8 +2621,9 @@ func (m *agentMetrics) quarantinePolicyEndpoint(ctx context.Context, endpoint st
 		return dataplane.PolicyEndpointStatus{}, err
 	}
 	status, err := agent.QuarantinePolicyEndpoint(ctx, snapshot.State, agent.ReconcileOptions{
-		Node:  snapshot.Result.Node,
-		Store: m.store,
+		Node:                  snapshot.Result.Node,
+		Store:                 m.store,
+		FrozenPolicyEndpoints: m.frozenPolicyEndpointsSnapshot(),
 	}, endpointID)
 	if err != nil {
 		return dataplane.PolicyEndpointStatus{}, err
@@ -2553,8 +2645,9 @@ func (m *agentMetrics) unquarantinePolicyEndpoint(ctx context.Context, endpoint 
 		return dataplane.PolicyEndpointStatus{}, err
 	}
 	status, err := agent.UnquarantinePolicyEndpoint(ctx, snapshot.State, agent.ReconcileOptions{
-		Node:  snapshot.Result.Node,
-		Store: m.store,
+		Node:                  snapshot.Result.Node,
+		Store:                 m.store,
+		FrozenPolicyEndpoints: m.frozenPolicyEndpointsSnapshot(),
 	}, endpointID)
 	if err != nil {
 		return dataplane.PolicyEndpointStatus{}, err
@@ -2576,8 +2669,9 @@ func (m *agentMetrics) rollbackPolicyEndpoint(ctx context.Context, endpoint stri
 		return dataplane.PolicyEndpointStatus{}, err
 	}
 	status, err := agent.RollbackPolicyEndpoint(ctx, snapshot.State, agent.ReconcileOptions{
-		Node:  snapshot.Result.Node,
-		Store: m.store,
+		Node:                  snapshot.Result.Node,
+		Store:                 m.store,
+		FrozenPolicyEndpoints: m.frozenPolicyEndpointsSnapshot(),
 	}, endpointID)
 	if err != nil {
 		return dataplane.PolicyEndpointStatus{}, err
@@ -2630,6 +2724,7 @@ func (m *agentMetrics) rolloutPolicyEndpoints(ctx context.Context, request polic
 		Node:                        snapshot.Result.Node,
 		Store:                       m.store,
 		PolicyTelemetry:             m.storeTelemetry(),
+		FrozenPolicyEndpoints:       m.frozenPolicyEndpointsSnapshot(),
 		PolicyRolloutApprovalSecret: policyRolloutApprovalSecret(),
 	}, agent.PolicyEndpointRolloutOptions{
 		EndpointIDs:               endpoints,
@@ -2886,6 +2981,7 @@ func (m *agentMetrics) handlePolicyEndpoints(w http.ResponseWriter, r *http.Requ
 	output.Ready = true
 	output.LastReconcileSuccess = snapshot.Success
 	output.LastReconcileError = snapshot.Error
+	output.FrozenEndpoints = m.frozenPolicyEndpointIDs()
 	encoder := json.NewEncoder(w)
 	encoder.SetIndent("", "  ")
 	_ = encoder.Encode(output)
@@ -3022,6 +3118,8 @@ func (m *agentMetrics) handlePolicyEndpointDelete(w http.ResponseWriter, r *http
 		switch {
 		case strings.Contains(err.Error(), "not enabled"), strings.Contains(err.Error(), "not ready"):
 			status = http.StatusServiceUnavailable
+		case strings.Contains(err.Error(), "frozen"):
+			status = http.StatusConflict
 		case strings.Contains(err.Error(), "not found"):
 			status = http.StatusNotFound
 		case strings.Contains(err.Error(), "missing"):
@@ -3057,6 +3155,14 @@ func (m *agentMetrics) handlePolicyEndpointRegenerate(w http.ResponseWriter, r *
 		m.handlePolicyEndpointRollback(w, r, endpoint)
 		return
 	}
+	if action == "freeze" {
+		m.handlePolicyEndpointFreeze(w, r, endpoint)
+		return
+	}
+	if action == "unfreeze" {
+		m.handlePolicyEndpointUnfreeze(w, r, endpoint)
+		return
+	}
 	if action == "plan" || action == "dry-run" || action == "preview" {
 		m.handlePolicyEndpointPlan(w, r, endpoint)
 		return
@@ -3077,6 +3183,8 @@ func (m *agentMetrics) handlePolicyEndpointRegenerate(w http.ResponseWriter, r *
 		switch {
 		case strings.Contains(err.Error(), "not enabled"), strings.Contains(err.Error(), "not ready"):
 			statusCode = http.StatusServiceUnavailable
+		case strings.Contains(err.Error(), "frozen"):
+			statusCode = http.StatusConflict
 		case strings.Contains(err.Error(), "not found"):
 			statusCode = http.StatusNotFound
 		case strings.Contains(err.Error(), "missing"), strings.Contains(err.Error(), "required"), strings.Contains(err.Error(), "assigned to node"):
@@ -3111,6 +3219,8 @@ func (m *agentMetrics) handlePolicyEndpointRollout(w http.ResponseWriter, r *htt
 		switch {
 		case strings.Contains(err.Error(), "not enabled"), strings.Contains(err.Error(), "not ready"):
 			statusCode = http.StatusServiceUnavailable
+		case strings.Contains(err.Error(), "frozen"):
+			statusCode = http.StatusConflict
 		case strings.Contains(err.Error(), "not found"):
 			statusCode = http.StatusNotFound
 		case strings.Contains(err.Error(), "missing"), strings.Contains(err.Error(), "required"), strings.Contains(err.Error(), "assigned to node"):
@@ -3140,6 +3250,8 @@ func (m *agentMetrics) handlePolicyEndpointPlan(w http.ResponseWriter, r *http.R
 		switch {
 		case strings.Contains(err.Error(), "not enabled"), strings.Contains(err.Error(), "not ready"):
 			statusCode = http.StatusServiceUnavailable
+		case strings.Contains(err.Error(), "frozen"):
+			statusCode = http.StatusConflict
 		case strings.Contains(err.Error(), "not found"):
 			statusCode = http.StatusNotFound
 		case strings.Contains(err.Error(), "missing"), strings.Contains(err.Error(), "required"), strings.Contains(err.Error(), "assigned to node"):
@@ -3158,6 +3270,64 @@ func (m *agentMetrics) handlePolicyEndpointPlan(w http.ResponseWriter, r *http.R
 	})
 }
 
+func (m *agentMetrics) handlePolicyEndpointFreeze(w http.ResponseWriter, r *http.Request, endpoint string) {
+	if endpoint == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "missing policy endpoint"})
+		return
+	}
+	endpointID, err := m.freezePolicyEndpoint(endpoint)
+	if err != nil {
+		statusCode := http.StatusInternalServerError
+		switch {
+		case strings.Contains(err.Error(), "not enabled"), strings.Contains(err.Error(), "not ready"):
+			statusCode = http.StatusServiceUnavailable
+		case strings.Contains(err.Error(), "not found"):
+			statusCode = http.StatusNotFound
+		case strings.Contains(err.Error(), "missing"), strings.Contains(err.Error(), "required"):
+			statusCode = http.StatusBadRequest
+		}
+		w.WriteHeader(statusCode)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(policyEndpointActionOutput{
+		EndpointID: endpointID,
+		Action:     "freeze",
+		Frozen:     true,
+	})
+}
+
+func (m *agentMetrics) handlePolicyEndpointUnfreeze(w http.ResponseWriter, r *http.Request, endpoint string) {
+	if endpoint == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "missing policy endpoint"})
+		return
+	}
+	endpointID, err := m.unfreezePolicyEndpoint(endpoint)
+	if err != nil {
+		statusCode := http.StatusInternalServerError
+		switch {
+		case strings.Contains(err.Error(), "not enabled"), strings.Contains(err.Error(), "not ready"):
+			statusCode = http.StatusServiceUnavailable
+		case strings.Contains(err.Error(), "not found"):
+			statusCode = http.StatusNotFound
+		case strings.Contains(err.Error(), "missing"), strings.Contains(err.Error(), "required"):
+			statusCode = http.StatusBadRequest
+		}
+		w.WriteHeader(statusCode)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(policyEndpointActionOutput{
+		EndpointID: endpointID,
+		Action:     "unfreeze",
+		Unfrozen:   true,
+	})
+}
+
 func (m *agentMetrics) handlePolicyEndpointQuarantine(w http.ResponseWriter, r *http.Request, endpoint string) {
 	if endpoint == "" {
 		w.WriteHeader(http.StatusBadRequest)
@@ -3170,6 +3340,8 @@ func (m *agentMetrics) handlePolicyEndpointQuarantine(w http.ResponseWriter, r *
 		switch {
 		case strings.Contains(err.Error(), "not enabled"), strings.Contains(err.Error(), "not ready"):
 			statusCode = http.StatusServiceUnavailable
+		case strings.Contains(err.Error(), "frozen"):
+			statusCode = http.StatusConflict
 		case strings.Contains(err.Error(), "not found"):
 			statusCode = http.StatusNotFound
 		case strings.Contains(err.Error(), "missing"), strings.Contains(err.Error(), "required"), strings.Contains(err.Error(), "assigned to node"):
@@ -3328,7 +3500,7 @@ func policyEndpointActionFromRequest(r *http.Request) (string, string) {
 			pathEndpoint = decoded
 		}
 		pathEndpoint = strings.TrimSpace(pathEndpoint)
-		for _, suffix := range []string{"/regenerate", "/reconcile", "/quarantine", "/unquarantine", "/rollback", "/plan", "/dry-run", "/preview", "/rollout"} {
+		for _, suffix := range []string{"/regenerate", "/reconcile", "/quarantine", "/unquarantine", "/rollback", "/freeze", "/unfreeze", "/plan", "/dry-run", "/preview", "/rollout"} {
 			if strings.HasSuffix(pathEndpoint, suffix) {
 				if action == "" {
 					action = strings.TrimPrefix(suffix, "/")

@@ -2465,6 +2465,98 @@ func TestPolicyEndpointAPIPlansDesiredEndpointPolicyMap(t *testing.T) {
 	}
 }
 
+func TestPolicyEndpointAPIFreezesAndUnfreezesEndpointPolicyMap(t *testing.T) {
+	endpointID := model.EndpointKey("prod", "pod-a")
+	state := control.DesiredState{
+		Endpoints: []model.Endpoint{{
+			ID:             "pod-a",
+			VPC:            "prod",
+			Subnet:         "apps",
+			IP:             netip.MustParseAddr("10.10.0.10"),
+			Node:           "node-a",
+			SecurityGroups: []string{"web"},
+		}},
+		SecurityGroups: []model.SecurityGroup{{
+			Name: "web",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:         "allow-http",
+				Priority:   100,
+				Direction:  model.DirectionIngress,
+				Protocol:   model.ProtocolTCP,
+				RemoteCIDR: netip.MustParsePrefix("172.30.0.0/24"),
+				Ports:      []model.PortRange{{From: 80, To: 80}},
+				Action:     model.ActionAllow,
+			}},
+		}},
+	}
+	store := dataplane.NewInMemoryPolicyStore()
+	if _, err := agent.RegeneratePolicyEndpoint(context.Background(), state, agent.ReconcileOptions{
+		Node:  "node-a",
+		Store: store,
+	}, endpointID); err != nil {
+		t.Fatal(err)
+	}
+	metrics := newAgentMetrics(store)
+	observeAgentReconcileResultWithState(metrics, agent.ReconcileResult{
+		Node: "node-a",
+		PolicyEndpointStatus: []dataplane.PolicyEndpointStatus{{
+			EndpointID: endpointID,
+			Revision:   1,
+			Entries:    1,
+		}},
+	}, "memory", time.Millisecond, state)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/policy/endpoints/prod/pod-a/freeze", nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("freeze status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var freeze policyEndpointActionOutput
+	if err := json.Unmarshal(recorder.Body.Bytes(), &freeze); err != nil {
+		t.Fatalf("decode freeze response: %v\n%s", err, recorder.Body.String())
+	}
+	if !freeze.Frozen || freeze.EndpointID != endpointID {
+		t.Fatalf("freeze response = %+v, want frozen endpoint", freeze)
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/policy/endpoints", nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var status policyStatusOutput
+	if err := json.Unmarshal(recorder.Body.Bytes(), &status); err != nil {
+		t.Fatalf("decode policy status response: %v\n%s", err, recorder.Body.String())
+	}
+	if !reflect.DeepEqual(status.FrozenEndpoints, []string{endpointID}) {
+		t.Fatalf("frozen endpoints = %+v, want %s", status.FrozenEndpoints, endpointID)
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPost, "/policy/endpoints/prod/pod-a/regenerate", nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("regenerate status = %d, want 409; body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPost, "/policy/endpoints/prod/pod-a/unfreeze", nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unfreeze status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var unfreeze policyEndpointActionOutput
+	if err := json.Unmarshal(recorder.Body.Bytes(), &unfreeze); err != nil {
+		t.Fatalf("decode unfreeze response: %v\n%s", err, recorder.Body.String())
+	}
+	if !unfreeze.Unfrozen || unfreeze.EndpointID != endpointID {
+		t.Fatalf("unfreeze response = %+v, want unfrozen endpoint", unfreeze)
+	}
+}
+
 func TestPolicyEndpointAPIQuarantinesEndpointPolicyMap(t *testing.T) {
 	endpointID := model.EndpointKey("prod", "pod-a")
 	state := control.DesiredState{
@@ -3415,7 +3507,7 @@ func TestPolicyEndpointAPIRejectsUnsupportedPostAction(t *testing.T) {
 	}, "memory", time.Millisecond)
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/policy/endpoints/prod/pod-a?action=freeze", nil)
+	request := httptest.NewRequest(http.MethodPost, "/policy/endpoints/prod/pod-a?action=suspend", nil)
 	metrics.handlePolicyEndpoints(recorder, request)
 
 	if recorder.Code != http.StatusBadRequest {

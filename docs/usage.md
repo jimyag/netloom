@@ -378,6 +378,14 @@ curl -s http://127.0.0.1:9092/policy/entries/prod/vm-a
 curl -s 'http://127.0.0.1:9092/policy/entries?endpoint=prod/vm-a'
 ```
 
+临时冻结或恢复某个 endpoint 的 policy map 更新：
+
+```bash
+curl -X POST http://127.0.0.1:9092/policy/endpoints/prod/vm-a/freeze
+curl -s http://127.0.0.1:9092/policy/endpoints | jq '.frozen_endpoints'
+curl -X POST http://127.0.0.1:9092/policy/endpoints/prod/vm-a/unfreeze
+```
+
 检查本机托管网络对象：
 
 ```bash
