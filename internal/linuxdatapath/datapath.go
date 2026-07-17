@@ -106,6 +106,8 @@ type ProviderOVSDBStatus struct {
 	VLAN              uint16
 	QoSUUID           string
 	QueueUUIDs        []string
+	ExpectedQoS       string
+	ExpectedQueues    []string
 	ControllerUUIDs   []string
 	ControllerTargets []string
 	BridgeState       string
@@ -928,6 +930,12 @@ func providerOVSDBPathDetail(status ProviderOVSDBStatus) string {
 	}
 	if len(status.QueueUUIDs) > 0 {
 		parts = append(parts, "queues="+strings.Join(status.QueueUUIDs, "+"))
+	}
+	if status.ExpectedQoS != "" {
+		parts = append(parts, "expected_qos="+status.ExpectedQoS)
+	}
+	if len(status.ExpectedQueues) > 0 {
+		parts = append(parts, "expected_queues="+strings.Join(status.ExpectedQueues, "+"))
 	}
 	if len(status.ControllerUUIDs) > 0 {
 		parts = append(parts, "controllers="+strings.Join(status.ControllerUUIDs, "+"))

@@ -44,7 +44,7 @@
 | Provider Network | 已实现 | OVN localnet port + local OVSDB bridge/port/interface | `TestDockerControllerClearsLocalnetTagWhenProviderVLANIsRemoved` |
 | VLAN | 已实现 | localnet tag 和本机 provider interface planning | Docker provider VLAN e2e |
 | OVS Bridge/Port/Interface | 已实现 | `internal/linuxdatapath/libovsdb_vswitch.go` | `go test ./internal/linuxdatapath` |
-| QoS / Queue | 已实现 | Open_vSwitch QoS/Queue rows and tenant classification | `go test ./internal/linuxdatapath ./internal/ovn` |
+| QoS / Queue | 已实现 | Open_vSwitch QoS/Queue rows, tenant classification, and expected row refs in drift status | `go test ./internal/linuxdatapath ./internal/ovn` |
 | Linux netns/veth | 已实现 | `internal/linuxdatapath` netlink backend | `go test ./internal/linuxdatapath` |
 | RPDB policy routing | 已实现 | Linux rule/table projection for policy routes | `TestPlanProgramsLinuxPolicyRoutes` |
 | Cleanup of managed datapath state | 已实现 | `NETLOOM_LINUX_DATAPATH_CLEANUP=1` | `go test ./internal/linuxdatapath` |

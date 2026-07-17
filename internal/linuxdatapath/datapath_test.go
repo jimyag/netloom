@@ -1189,14 +1189,16 @@ func TestProviderOVSDBRuntimeIssuesReportsQoSAndQueueDrift(t *testing.T) {
 		InterfaceState:  "up",
 		QoSState:        "mismatch",
 		QueueState:      "missing",
+		ExpectedQoS:     "qos-nlv-a",
+		ExpectedQueues:  []string{"queue-nlv-a-10"},
 	}}, "node-a")
 	if len(issues) != 2 {
 		t.Fatalf("issues = %+v, want qos and queue drift issues", issues)
 	}
-	if issues[0].Reason != "ovsdb-qos-drift" || issues[0].Detail != "nlv-a:mismatch" {
+	if issues[0].Reason != "ovsdb-qos-drift" || issues[0].Detail != "nlv-a:mismatch:ovsdb_path{expected_qos=qos-nlv-a;expected_queues=queue-nlv-a-10}" {
 		t.Fatalf("qos issue = %+v, want qos drift detail", issues[0])
 	}
-	if issues[1].Reason != "ovsdb-queue-missing" || issues[1].Detail != "nlv-a:missing" {
+	if issues[1].Reason != "ovsdb-queue-missing" || issues[1].Detail != "nlv-a:missing:ovsdb_path{expected_qos=qos-nlv-a;expected_queues=queue-nlv-a-10}" {
 		t.Fatalf("queue issue = %+v, want queue missing detail", issues[1])
 	}
 }

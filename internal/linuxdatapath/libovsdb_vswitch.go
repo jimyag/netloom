@@ -385,6 +385,12 @@ func (s *LibOVSDBProviderSyncer) ReadProviderOVSDBStatus(ctx context.Context, ro
 			QoSState:         "up",
 			QueueState:       "up",
 		}
+		if desiredPort.QOS != nil {
+			status.ExpectedQoS = *desiredPort.QOS
+			if desiredQoS, ok := desiredQoSByName[*desiredPort.QOS]; ok {
+				status.ExpectedQueues = expectedProviderQueueNames(desiredQoS)
+			}
+		}
 		bridge, ok, err := s.bridgeByName(ctx, bridgeName)
 		if err != nil {
 			return nil, err
@@ -471,6 +477,24 @@ func (s *LibOVSDBProviderSyncer) ReadProviderOVSDBStatus(ctx context.Context, ro
 		statuses = append(statuses, status)
 	}
 	return statuses, nil
+}
+
+func expectedProviderQueueNames(qos vswitch.QoS) []string {
+	if len(qos.Queues) == 0 {
+		return nil
+	}
+	queueIDs := make([]int, 0, len(qos.Queues))
+	for queueID := range qos.Queues {
+		queueIDs = append(queueIDs, queueID)
+	}
+	sort.Ints(queueIDs)
+	names := make([]string, 0, len(queueIDs))
+	for _, queueID := range queueIDs {
+		if qos.Queues[queueID] != "" {
+			names = append(names, qos.Queues[queueID])
+		}
+	}
+	return names
 }
 
 func (s *LibOVSDBProviderSyncer) ensureQoS(ctx context.Context, desired vswitch.QoS) (string, []ovsdb.Operation, error) {
@@ -1291,6 +1315,23 @@ func (s *LibOVSDBProviderSyncer) openVSwitch(ctx context.Context) (*vswitch.Open
 	return &rows[0], true, nil
 }
 
+func (s *LibOVSDBProviderSyncer) preferredQoSRowForProviderName(ctx context.Context, name string, rows []vswitch.QoS) *vswitch.QoS {
+	portName := strings.TrimPrefix(name, "qos-")
+	if portName == name || portName == "" {
+		return nil
+	}
+	port, ok, err := s.portByName(ctx, portName)
+	if err != nil || !ok || port.QOS == nil {
+		return nil
+	}
+	for i := range rows {
+		if rows[i].UUID == *port.QOS {
+			return &rows[i]
+		}
+	}
+	return nil
+}
+
 func (s *LibOVSDBProviderSyncer) bridgeByName(ctx context.Context, name string) (*vswitch.Bridge, bool, error) {
 	var rows []vswitch.Bridge
 	if err := s.client.WhereCache(func(row *vswitch.Bridge) bool { return row.Name == name }).List(ctx, &rows); err != nil {
@@ -1301,6 +1342,37 @@ func (s *LibOVSDBProviderSyncer) bridgeByName(ctx context.Context, name string) 
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].UUID < rows[j].UUID })
 	return &rows[0], true, nil
+}
+
+func (s *LibOVSDBProviderSyncer) preferredQueueRowForProviderName(ctx context.Context, name string, rows []vswitch.Queue) *vswitch.Queue {
+	prefix := "queue-"
+	if !strings.HasPrefix(name, prefix) {
+		return nil
+	}
+	rest := strings.TrimPrefix(name, prefix)
+	lastDash := strings.LastIndex(rest, "-")
+	if lastDash <= 0 || lastDash == len(rest)-1 {
+		return nil
+	}
+	portName := rest[:lastDash]
+	queueID, err := strconv.Atoi(rest[lastDash+1:])
+	if err != nil {
+		return nil
+	}
+	qos, ok, err := s.qosByProviderName(ctx, "qos-"+portName)
+	if err != nil || !ok {
+		return nil
+	}
+	queueUUID := qos.Queues[queueID]
+	if queueUUID == "" {
+		return nil
+	}
+	for i := range rows {
+		if rows[i].UUID == queueUUID {
+			return &rows[i]
+		}
+	}
+	return nil
 }
 
 func (s *LibOVSDBProviderSyncer) portByName(ctx context.Context, name string) (*vswitch.Port, bool, error) {
@@ -1349,6 +1421,9 @@ func (s *LibOVSDBProviderSyncer) qosByProviderName(ctx context.Context, name str
 		return nil, false, nil
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].UUID < rows[j].UUID })
+	if preferred := s.preferredQoSRowForProviderName(ctx, name, rows); preferred != nil {
+		return preferred, true, nil
+	}
 	return &rows[0], true, nil
 }
 
@@ -1374,6 +1449,9 @@ func (s *LibOVSDBProviderSyncer) queueByProviderName(ctx context.Context, name s
 		return nil, false, nil
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].UUID < rows[j].UUID })
+	if preferred := s.preferredQueueRowForProviderName(ctx, name, rows); preferred != nil {
+		return preferred, true, nil
+	}
 	return &rows[0], true, nil
 }
 

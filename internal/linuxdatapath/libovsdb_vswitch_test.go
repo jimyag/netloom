@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"os"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -976,6 +977,9 @@ func TestLibOVSDBProviderSyncerReadsProviderQoSDrift(t *testing.T) {
 	if statuses[0].QoSUUID != qos.UUID {
 		t.Fatalf("status QoS UUID = %q, want %q", statuses[0].QoSUUID, qos.UUID)
 	}
+	if statuses[0].ExpectedQoS != "qos-nlv100" {
+		t.Fatalf("status expected QoS = %q, want qos-nlv100", statuses[0].ExpectedQoS)
+	}
 }
 
 func TestLibOVSDBProviderSyncerReadsProviderQueueDrift(t *testing.T) {
@@ -1019,6 +1023,9 @@ func TestLibOVSDBProviderSyncerReadsProviderQueueDrift(t *testing.T) {
 	}
 	if !containsProviderString(statuses[0].QueueUUIDs, queue.UUID) {
 		t.Fatalf("status queue UUIDs = %+v, want %s", statuses[0].QueueUUIDs, queue.UUID)
+	}
+	if statuses[0].ExpectedQoS != "qos-nlv100" || !slices.Equal(statuses[0].ExpectedQueues, []string{"queue-nlv100-10"}) {
+		t.Fatalf("status expected qos/queues = %q/%+v, want qos-nlv100 queue-nlv100-10", statuses[0].ExpectedQoS, statuses[0].ExpectedQueues)
 	}
 }
 
