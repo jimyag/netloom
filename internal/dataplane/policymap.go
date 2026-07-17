@@ -47,6 +47,7 @@ type PolicyMapEntry struct {
 	Key        PolicyKey
 	Value      PolicyEntry
 	RemoteCIDR netip.Prefix
+	RuleRef    string
 }
 
 type PolicyUpdateStats struct {
@@ -198,6 +199,7 @@ func (s *InMemoryPolicyStore) ReplaceEndpoint(_ context.Context, endpointID stri
 
 	plan := PlanPolicyUpdate(s.endpoints[endpointID], entries)
 	ruleCookies := policyUpdateRuleCookies(s.endpoints[endpointID], plan)
+	ruleRefs := policyUpdateRuleRefs(s.endpoints[endpointID], plan)
 	next := append([]PolicyMapEntry(nil), s.endpoints[endpointID]...)
 	previousRevision := s.revisions[endpointID]
 	revision := previousRevision + 1
@@ -208,7 +210,7 @@ func (s *InMemoryPolicyStore) ReplaceEndpoint(_ context.Context, endpointID stri
 			for _, entry := range append(append([]PolicyMapEntry(nil), plan.Add...), plan.Update...) {
 				if s.failAfter > 0 && applied >= s.failAfter {
 					err := fmt.Errorf("in-memory policy update failed after %d operations", applied)
-					s.recordPolicyUpdateFailure(endpointID, previousRevision, revision, plan.Stats(), policyUpdateRuleCookies(s.endpoints[endpointID], plan), err)
+					s.recordPolicyUpdateFailure(endpointID, previousRevision, revision, plan.Stats(), ruleCookies, ruleRefs, err)
 					return err
 				}
 				next = upsertEntry(next, entry)
@@ -218,7 +220,7 @@ func (s *InMemoryPolicyStore) ReplaceEndpoint(_ context.Context, endpointID stri
 			for _, key := range plan.Delete {
 				if s.failAfter > 0 && applied >= s.failAfter {
 					err := fmt.Errorf("in-memory policy update failed after %d operations", applied)
-					s.recordPolicyUpdateFailure(endpointID, previousRevision, revision, plan.Stats(), policyUpdateRuleCookies(s.endpoints[endpointID], plan), err)
+					s.recordPolicyUpdateFailure(endpointID, previousRevision, revision, plan.Stats(), ruleCookies, ruleRefs, err)
 					return err
 				}
 				next = deleteEntry(next, key)
@@ -240,12 +242,13 @@ func (s *InMemoryPolicyStore) ReplaceEndpoint(_ context.Context, endpointID stri
 		OccurredAt:       policyEventOccurredAt(now),
 		Stats:            stats,
 		RuleCookies:      ruleCookies,
+		RuleRefs:         ruleRefs,
 		Success:          true,
 	})
 	return nil
 }
 
-func (s *InMemoryPolicyStore) recordPolicyUpdateFailure(endpointID string, previousRevision, revision uint64, stats PolicyUpdateStats, ruleCookies []uint32, err error) {
+func (s *InMemoryPolicyStore) recordPolicyUpdateFailure(endpointID string, previousRevision, revision uint64, stats PolicyUpdateStats, ruleCookies []uint32, ruleRefs []string, err error) {
 	stats.Revision = revision
 	s.events = append(s.events, PolicyUpdateEvent{
 		EndpointID:       endpointID,
@@ -254,6 +257,7 @@ func (s *InMemoryPolicyStore) recordPolicyUpdateFailure(endpointID string, previ
 		OccurredAt:       policyEventOccurredAt(time.Now()),
 		Stats:            stats,
 		RuleCookies:      ruleCookies,
+		RuleRefs:         ruleRefs,
 		Success:          false,
 		Error:            err.Error(),
 	})
@@ -285,6 +289,33 @@ func policyUpdateRuleCookies(oldEntries []PolicyMapEntry, plan PolicyUpdatePlan)
 	return sortedPolicyRuleCookies(cookies)
 }
 
+func policyUpdateRuleRefs(oldEntries []PolicyMapEntry, plan PolicyUpdatePlan) []string {
+	refs := make(map[string]struct{})
+	add := func(entry PolicyMapEntry) {
+		if entry.RuleRef != "" {
+			refs[entry.RuleRef] = struct{}{}
+		}
+	}
+	for _, entry := range plan.Add {
+		add(entry)
+	}
+	for _, entry := range plan.Update {
+		add(entry)
+	}
+	if len(plan.Delete) > 0 {
+		deleted := make(map[PolicyKey]struct{}, len(plan.Delete))
+		for _, key := range plan.Delete {
+			deleted[key] = struct{}{}
+		}
+		for _, entry := range oldEntries {
+			if _, ok := deleted[entry.Key]; ok {
+				add(entry)
+			}
+		}
+	}
+	return sortedPolicyRuleRefs(refs)
+}
+
 func sortedPolicyRuleCookies(cookies map[uint32]struct{}) []uint32 {
 	if len(cookies) == 0 {
 		return nil
@@ -292,6 +323,18 @@ func sortedPolicyRuleCookies(cookies map[uint32]struct{}) []uint32 {
 	out := make([]uint32, 0, len(cookies))
 	for cookie := range cookies {
 		out = append(out, cookie)
+	}
+	slices.Sort(out)
+	return out
+}
+
+func sortedPolicyRuleRefs(refs map[string]struct{}) []string {
+	if len(refs) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(refs))
+	for ref := range refs {
+		out = append(out, ref)
 	}
 	slices.Sort(out)
 	return out
@@ -534,6 +577,7 @@ func EncodeEntry(entry policy.MapEntry) (PolicyMapEntry, error) {
 			DestPortBE:     hostToNetwork16(entry.Key.DestPort),
 		},
 		RemoteCIDR: entry.RemoteCIDR,
+		RuleRef:    entry.RuleRef,
 		Value: PolicyEntry{
 			Deny:            boolByte(entry.Value.Deny),
 			L4PrefixLen:     entry.Key.L4PrefixBits,

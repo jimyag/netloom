@@ -12,8 +12,9 @@ func TestEBPFPolicyStoreRejectsPolicyMapOverflowBeforeProgramming(t *testing.T) 
 	store := NewEBPFPolicyStore(1)
 	endpointID := model.EndpointKey("prod", "pod-a")
 	oldEntries := []PolicyMapEntry{{
-		Key:   PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 1, Direction: DirectionIngress},
-		Value: PolicyEntry{Precedence: 10},
+		Key:     PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 1, Direction: DirectionIngress},
+		Value:   PolicyEntry{Precedence: 10, RuleCookie: 41},
+		RuleRef: "prod/web/old-allow",
 	}}
 	store.entries[endpointID] = canonicalPolicyEntries(oldEntries)
 	store.revisions[endpointID] = 1
@@ -27,12 +28,14 @@ func TestEBPFPolicyStoreRejectsPolicyMapOverflowBeforeProgramming(t *testing.T) 
 
 	overflow := []PolicyMapEntry{
 		{
-			Key:   PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 2, Direction: DirectionIngress},
-			Value: PolicyEntry{Precedence: 20},
+			Key:     PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 2, Direction: DirectionIngress},
+			Value:   PolicyEntry{Precedence: 20, RuleCookie: 42},
+			RuleRef: "prod/web/allow-http",
 		},
 		{
-			Key:   PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 3, Direction: DirectionIngress},
-			Value: PolicyEntry{Precedence: 30},
+			Key:     PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 3, Direction: DirectionIngress},
+			Value:   PolicyEntry{Precedence: 30, RuleCookie: 43},
+			RuleRef: "prod/web/allow-https",
 		},
 	}
 	err := store.ReplaceEndpoint(context.Background(), endpointID, overflow)
@@ -52,6 +55,13 @@ func TestEBPFPolicyStoreRejectsPolicyMapOverflowBeforeProgramming(t *testing.T) 
 	if got := store.Events(); len(got) != 2 || got[1].Success || !strings.Contains(got[1].Error, "policy map capacity exceeded") {
 		t.Fatalf("events after overflow = %+v, want failed overflow event", got)
 	}
+	event := store.Events()[1]
+	if len(event.RuleRefs) != 3 ||
+		event.RuleRefs[0] != "prod/web/allow-http" ||
+		event.RuleRefs[1] != "prod/web/allow-https" ||
+		event.RuleRefs[2] != "prod/web/old-allow" {
+		t.Fatalf("overflow event rule refs = %v, want old and desired overflowing rule refs", event.RuleRefs)
+	}
 }
 
 func TestEBPFPolicyStoreClearsPolicyMapOverflowWhenConfigured(t *testing.T) {
@@ -61,8 +71,9 @@ func TestEBPFPolicyStoreClearsPolicyMapOverflowWhenConfigured(t *testing.T) {
 	})
 	endpointID := model.EndpointKey("prod", "pod-a")
 	oldEntries := []PolicyMapEntry{{
-		Key:   PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 1, Direction: DirectionIngress},
-		Value: PolicyEntry{Precedence: 10},
+		Key:     PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 1, Direction: DirectionIngress},
+		Value:   PolicyEntry{Precedence: 10, RuleCookie: 41},
+		RuleRef: "prod/web/old-allow",
 	}}
 	store.entries[endpointID] = canonicalPolicyEntries(oldEntries)
 	store.revisions[endpointID] = 1
@@ -70,12 +81,14 @@ func TestEBPFPolicyStoreClearsPolicyMapOverflowWhenConfigured(t *testing.T) {
 
 	overflow := []PolicyMapEntry{
 		{
-			Key:   PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 2, Direction: DirectionIngress},
-			Value: PolicyEntry{Precedence: 20},
+			Key:     PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 2, Direction: DirectionIngress},
+			Value:   PolicyEntry{Precedence: 20, RuleCookie: 42},
+			RuleRef: "prod/web/allow-http",
 		},
 		{
-			Key:   PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 3, Direction: DirectionIngress},
-			Value: PolicyEntry{Precedence: 30},
+			Key:     PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 3, Direction: DirectionIngress},
+			Value:   PolicyEntry{Precedence: 30, RuleCookie: 43},
+			RuleRef: "prod/web/allow-https",
 		},
 	}
 	if err := store.ReplaceEndpoint(context.Background(), endpointID, overflow); err != nil {
@@ -104,6 +117,9 @@ func TestEBPFPolicyStoreClearsPolicyMapOverflowWhenConfigured(t *testing.T) {
 	events := store.Events()
 	if len(events) != 1 || !events[0].Success || !events[0].Remediated || events[0].Remediation != string(PolicyMapOverflowClear) {
 		t.Fatalf("events after overflow remediation = %+v, want successful clear remediation event", events)
+	}
+	if len(events[0].RuleRefs) != 1 || events[0].RuleRefs[0] != "prod/web/old-allow" {
+		t.Fatalf("overflow remediation rule refs = %v, want cleared old rule ref", events[0].RuleRefs)
 	}
 	if events[0].OccurredAt == nil || events[0].OccurredAt.IsZero() {
 		t.Fatalf("overflow remediation event occurred_at is zero in %+v, want timestamped remediation event", events[0])

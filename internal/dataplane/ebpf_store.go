@@ -109,20 +109,21 @@ func (s *EBPFPolicyStore) ReplaceEndpoint(ctx context.Context, endpointID string
 	}
 	plan := PlanPolicyUpdate(s.entries[endpointID], entries)
 	ruleCookies := policyUpdateRuleCookies(s.entries[endpointID], plan)
+	ruleRefs := policyUpdateRuleRefs(s.entries[endpointID], plan)
 	previousRevision := s.revisions[endpointID]
 	revision := previousRevision + 1
 	if err := s.validatePolicyMapCapacity(endpointID, entries); err != nil {
 		if s.overflow == PolicyMapOverflowClear {
 			return s.clearEndpointPolicyAfterOverflowLocked(ctx, endpointID, previousRevision, revision, err)
 		}
-		s.recordPolicyUpdateFailure(endpointID, previousRevision, revision, plan.Stats(), ruleCookies, err)
+		s.recordPolicyUpdateFailure(endpointID, previousRevision, revision, plan.Stats(), ruleCookies, ruleRefs, err)
 		return err
 	}
 
 	next, err := s.preparePolicyMapLocked(ctx, endpointID, entries, s.entries[endpointID], plan)
 	if err != nil {
 		err = fmt.Errorf("prepare eBPF policy map for endpoint %s: %w", endpointID, err)
-		s.recordPolicyUpdateFailure(endpointID, previousRevision, revision, plan.Stats(), ruleCookies, err)
+		s.recordPolicyUpdateFailure(endpointID, previousRevision, revision, plan.Stats(), ruleCookies, ruleRefs, err)
 		return err
 	}
 
@@ -142,6 +143,7 @@ func (s *EBPFPolicyStore) ReplaceEndpoint(ctx context.Context, endpointID string
 		OccurredAt:       policyEventOccurredAt(now),
 		Stats:            stats,
 		RuleCookies:      ruleCookies,
+		RuleRefs:         ruleRefs,
 		Success:          true,
 	})
 	if old != nil && old != next {
@@ -163,7 +165,7 @@ func (s *EBPFPolicyStore) clearEndpointPolicyAfterOverflowLocked(ctx context.Con
 		next, err := s.preparePolicyMapLocked(ctx, endpointID, nil, oldEntries, clearPlan)
 		if err != nil {
 			err = fmt.Errorf("clear eBPF policy map after overflow for endpoint %s: %w", endpointID, err)
-			s.recordPolicyUpdateFailure(endpointID, previousRevision, revision, clearPlan.Stats(), policyUpdateRuleCookies(oldEntries, clearPlan), err)
+			s.recordPolicyUpdateFailure(endpointID, previousRevision, revision, clearPlan.Stats(), policyUpdateRuleCookies(oldEntries, clearPlan), policyUpdateRuleRefs(oldEntries, clearPlan), err)
 			return err
 		}
 		s.maps[endpointID] = next
@@ -185,6 +187,7 @@ func (s *EBPFPolicyStore) clearEndpointPolicyAfterOverflowLocked(ctx context.Con
 		OccurredAt:       policyEventOccurredAt(now),
 		Stats:            stats,
 		RuleCookies:      policyUpdateRuleCookies(oldEntries, clearPlan),
+		RuleRefs:         policyUpdateRuleRefs(oldEntries, clearPlan),
 		Success:          true,
 		Remediated:       true,
 		Remediation:      string(PolicyMapOverflowClear),
@@ -527,7 +530,7 @@ func (s *EBPFPolicyStore) ensurePinRoot() error {
 	return nil
 }
 
-func (s *EBPFPolicyStore) recordPolicyUpdateFailure(endpointID string, previousRevision, revision uint64, stats PolicyUpdateStats, ruleCookies []uint32, err error) {
+func (s *EBPFPolicyStore) recordPolicyUpdateFailure(endpointID string, previousRevision, revision uint64, stats PolicyUpdateStats, ruleCookies []uint32, ruleRefs []string, err error) {
 	stats.Revision = revision
 	s.events = append(s.events, PolicyUpdateEvent{
 		EndpointID:       endpointID,
@@ -536,6 +539,7 @@ func (s *EBPFPolicyStore) recordPolicyUpdateFailure(endpointID string, previousR
 		OccurredAt:       policyEventOccurredAt(time.Now()),
 		Stats:            stats,
 		RuleCookies:      ruleCookies,
+		RuleRefs:         ruleRefs,
 		Success:          false,
 		Error:            err.Error(),
 	})

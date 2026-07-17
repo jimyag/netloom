@@ -31,6 +31,7 @@ func TestEncodeEntryUsesCiliumStylePolicyKeyShape(t *testing.T) {
 		},
 		RemoteCIDR: netip.MustParsePrefix("10.20.0.0/16"),
 		RuleID:     "allow-https",
+		RuleRef:    "prod/web/allow-https",
 	}
 
 	encoded, err := EncodeEntry(entry)
@@ -55,21 +56,26 @@ func TestEncodeEntryUsesCiliumStylePolicyKeyShape(t *testing.T) {
 	if encoded.Value.RuleCookie == 0 {
 		t.Fatal("rule cookie should be stable and non-zero")
 	}
+	if encoded.RuleRef != "prod/web/allow-https" {
+		t.Fatalf("rule ref = %q, want source policy rule ref", encoded.RuleRef)
+	}
 }
 
-func TestInMemoryPolicyStoreEventsReportRuleCookies(t *testing.T) {
+func TestInMemoryPolicyStoreEventsReportRuleCookiesAndRefs(t *testing.T) {
 	store := NewInMemoryPolicyStore()
 	endpointID := "prod/pod-a"
 	first := PolicyMapEntry{
-		Key:   PolicyKey{PrefixLen: StaticPrefixBits, Direction: DirectionIngress, Protocol: 6, RemoteIdentity: 10},
-		Value: PolicyEntry{RuleCookie: 42},
+		Key:     PolicyKey{PrefixLen: StaticPrefixBits, Direction: DirectionIngress, Protocol: 6, RemoteIdentity: 10},
+		Value:   PolicyEntry{RuleCookie: 42},
+		RuleRef: "prod/web/allow-http",
 	}
 	if err := store.ReplaceEndpoint(context.Background(), endpointID, []PolicyMapEntry{first}); err != nil {
 		t.Fatal(err)
 	}
 	second := PolicyMapEntry{
-		Key:   PolicyKey{PrefixLen: StaticPrefixBits, Direction: DirectionIngress, Protocol: 6, RemoteIdentity: 20},
-		Value: PolicyEntry{RuleCookie: 43},
+		Key:     PolicyKey{PrefixLen: StaticPrefixBits, Direction: DirectionIngress, Protocol: 6, RemoteIdentity: 20},
+		Value:   PolicyEntry{RuleCookie: 43},
+		RuleRef: "prod/web/allow-https",
 	}
 	if err := store.ReplaceEndpoint(context.Background(), endpointID, []PolicyMapEntry{second}); err != nil {
 		t.Fatal(err)
@@ -81,8 +87,14 @@ func TestInMemoryPolicyStoreEventsReportRuleCookies(t *testing.T) {
 	if !slices.Equal(events[0].RuleCookies, []uint32{42}) {
 		t.Fatalf("first event rule cookies = %v, want [42]", events[0].RuleCookies)
 	}
+	if !slices.Equal(events[0].RuleRefs, []string{"prod/web/allow-http"}) {
+		t.Fatalf("first event rule refs = %v, want allow-http", events[0].RuleRefs)
+	}
 	if !slices.Equal(events[1].RuleCookies, []uint32{42, 43}) {
 		t.Fatalf("second event rule cookies = %v, want deleted and added rule cookies", events[1].RuleCookies)
+	}
+	if !slices.Equal(events[1].RuleRefs, []string{"prod/web/allow-http", "prod/web/allow-https"}) {
+		t.Fatalf("second event rule refs = %v, want deleted and added rule refs", events[1].RuleRefs)
 	}
 }
 
