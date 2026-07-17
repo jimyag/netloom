@@ -1010,6 +1010,18 @@ func TestRunPolicyStatusExportWithStoreReportsFilteredJSON(t *testing.T) {
 	if got.FilterDrifted == nil || !*got.FilterDrifted || got.EndpointCount != 1 || len(got.Statuses) != 1 || got.Statuses[0].EndpointID != model.EndpointKey("prod", "pod-b") {
 		t.Fatalf("drifted filtered statuses = %+v, want only drifted pod-b", got)
 	}
+
+	out.Reset()
+	if err := runPolicyStatusExportWithStore(t.Context(), policyStatusExportOptions{revisionBelow: 7}, &out, store); err != nil {
+		t.Fatal(err)
+	}
+	got = policyStatusOutput{}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("decode revision-below filtered policy-status-export output: %v\n%s", err, out.String())
+	}
+	if got.FilterRevisionBelow != 7 || got.EndpointCount != 1 || len(got.Statuses) != 1 || got.Statuses[0].EndpointID != model.EndpointKey("prod", "pod-b") {
+		t.Fatalf("revision-below filtered statuses = %+v, want only pod-b below revision 7", got)
+	}
 }
 
 func TestRunPolicyRevisionWaitWithStoreReportsReadyRevision(t *testing.T) {
@@ -3729,11 +3741,34 @@ func TestPolicyEndpointAPIReportsLifecycleStatus(t *testing.T) {
 	}
 
 	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/policy/endpoints?revision_below=3", nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("revision-below filter status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	got = policyStatusOutput{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode revision-below policy endpoint API response: %v\n%s", err, recorder.Body.String())
+	}
+	if got.FilterRevisionBelow != 3 || got.EndpointCount != 1 || len(got.Statuses) != 1 || got.Statuses[0].EndpointID != model.EndpointKey("prod", "pod-b") {
+		t.Fatalf("revision-below filtered statuses = %+v, want pod-b below revision 3", got)
+	}
+
+	recorder = httptest.NewRecorder()
 	request = httptest.NewRequest(http.MethodGet, "/policy/endpoints?drifted=maybe", nil)
 	metrics.handlePolicyEndpoints(recorder, request)
 
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("invalid drifted status = %d, want 400; body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/policy/endpoints?revision_below=bad", nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("invalid revision-below status = %d, want 400; body=%s", recorder.Code, recorder.Body.String())
 	}
 }
 
