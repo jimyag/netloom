@@ -2724,6 +2724,75 @@ func TestLibOVSDBTopologyWriterKeepsReferencedDuplicateNATRule(t *testing.T) {
 	})
 }
 
+func TestLibOVSDBTopologyWriterDetachesNATRuleFromUnexpectedRouter(t *testing.T) {
+	ctx := context.Background()
+	client, closeFn := newTestOVNNBClient(t)
+	defer closeFn()
+
+	if _, err := client.MonitorAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	writer := NewLibOVSDBTopologyWriter(client)
+	if err := writer.EnsureVPC(ctx, model.VPC{Name: "prod"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureVPC(ctx, model.VPC{Name: "dev"}); err != nil {
+		t.Fatal(err)
+	}
+	rule := model.NATRule{
+		Name:       "egress",
+		VPC:        "prod",
+		Type:       model.ActionSNAT,
+		MatchCIDR:  netip.MustParsePrefix("10.10.0.0/24"),
+		ExternalIP: netip.MustParseAddr("198.51.100.10"),
+	}
+	if err := writer.EnsureNATRule(ctx, rule); err != nil {
+		t.Fatal(err)
+	}
+
+	var prodRouters []ovnnb.LogicalRouter
+	var devRouters []ovnnb.LogicalRouter
+	requireEventually(t, func() bool {
+		prodRouters = nil
+		if err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("prod") }).List(ctx, &prodRouters); err != nil || len(prodRouters) != 1 || len(prodRouters[0].Nat) != 1 {
+			return false
+		}
+		devRouters = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("dev") }).List(ctx, &devRouters)
+		return err == nil && len(devRouters) == 1
+	})
+	natUUID := prodRouters[0].Nat[0]
+	attachOps, err := writer.attachNATRule(&devRouters[0], natUUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := client.Transact(ctx, attachOps...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, attachOps); err != nil {
+		t.Fatalf("attach NAT rule to unexpected router operation errors=%+v: %v", opErrors, err)
+	}
+	requireEventually(t, func() bool {
+		devRouters = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("dev") }).List(ctx, &devRouters)
+		return err == nil && len(devRouters) == 1 && len(devRouters[0].Nat) == 1
+	})
+
+	if err := writer.EnsureNATRule(ctx, rule); err != nil {
+		t.Fatal(err)
+	}
+	requireEventually(t, func() bool {
+		prodRouters = nil
+		if err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("prod") }).List(ctx, &prodRouters); err != nil || len(prodRouters) != 1 || len(prodRouters[0].Nat) != 1 || prodRouters[0].Nat[0] != natUUID {
+			return false
+		}
+		devRouters = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("dev") }).List(ctx, &devRouters)
+		return err == nil && len(devRouters) == 1 && len(devRouters[0].Nat) == 0
+	})
+}
+
 func TestLibOVSDBTopologyWriterEnsuresLoadBalancerAndHealthChecks(t *testing.T) {
 	ctx := context.Background()
 	client, closeFn := newTestOVNNBClient(t)

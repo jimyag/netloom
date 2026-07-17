@@ -590,6 +590,11 @@ func (w *LibOVSDBTopologyWriter) EnsureNATRule(ctx context.Context, rule model.N
 			}
 			ops = append(ops, attachOps...)
 		}
+		detachOps, err := w.detachNATRuleFromOtherRouters(ctx, router.UUID, keep.UUID)
+		if err != nil {
+			return err
+		}
+		ops = append(ops, detachOps...)
 		if natRowChanged(keep, desired, nextExternalIDs) {
 			keep.Type = desired.Type
 			keep.ExternalIP = desired.ExternalIP
@@ -1222,6 +1227,29 @@ func (w *LibOVSDBTopologyWriter) attachNATRule(router *ovnnb.LogicalRouter, natU
 		Mutator: ovsdb.MutateOperationInsert,
 		Value:   []string{natUUID},
 	})
+}
+
+func (w *LibOVSDBTopologyWriter) detachNATRuleFromOtherRouters(ctx context.Context, keepRouterUUID, natUUID string) ([]ovsdb.Operation, error) {
+	var routers []ovnnb.LogicalRouter
+	if err := w.client.WhereCache(func(row *ovnnb.LogicalRouter) bool {
+		return row.UUID != keepRouterUUID && containsString(row.Nat, natUUID)
+	}).List(ctx, &routers); err != nil {
+		return nil, fmt.Errorf("list logical routers containing NAT rule %s: %w", natUUID, err)
+	}
+	sort.Slice(routers, func(i, j int) bool { return routers[i].UUID < routers[j].UUID })
+	var ops []ovsdb.Operation
+	for i := range routers {
+		mutateOps, err := w.client.Where(&routers[i]).Mutate(&routers[i], ovsmodel.Mutation{
+			Field:   &routers[i].Nat,
+			Mutator: ovsdb.MutateOperationDelete,
+			Value:   []string{natUUID},
+		})
+		if err != nil {
+			return nil, fmt.Errorf("detach NAT rule %s from unexpected router %s: %w", natUUID, routers[i].Name, err)
+		}
+		ops = append(ops, mutateOps...)
+	}
+	return ops, nil
 }
 
 func (w *LibOVSDBTopologyWriter) deleteNATRule(routerUUID string, nat *ovnnb.NAT) ([]ovsdb.Operation, error) {
