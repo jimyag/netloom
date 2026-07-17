@@ -412,6 +412,8 @@ ovs-vsctl get Open_vSwitch . external_ids:netloom_policy_endpoint_status
 `policy-status` 会从 desired state 重新 reconcile 到临时 policy store 后输出状态；
 `policy-status-export` 读取 agent 最近一次真实 reconcile 写入本机 OVSDB 的 lifecycle
 快照，更适合线下审计正在运行节点的 eBPF policy map 状态。
+正常状态下，单个 endpoint 应能看到当前 `revision`、policy-map `entries`、容量压力、
+drift 结果、最近一次策略更新时间 `last_seen`，以及最近一次更新事件和统计计数。
 `policy-revision-wait` 不会触发 reconcile，只读取本机 OVSDB 中的 live status，并在目标
 revision 未按时出现时返回错误。
 HTTP revision API 读取长运行 agent 当前内存快照：达到目标 revision 返回 200 和 endpoint
