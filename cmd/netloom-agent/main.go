@@ -167,6 +167,47 @@ type policyStatusOutput struct {
 	Statuses             []dataplane.PolicyEndpointStatus `json:"statuses"`
 }
 
+type policyRulesOutput struct {
+	Node                 string             `json:"node"`
+	Store                string             `json:"store"`
+	Ready                bool               `json:"ready"`
+	LastReconcileSuccess bool               `json:"last_reconcile_success"`
+	LastReconcileError   string             `json:"last_reconcile_error,omitempty"`
+	RuleCount            int                `json:"rule_count"`
+	Packets              uint64             `json:"packets"`
+	Bytes                uint64             `json:"bytes"`
+	Allowed              uint64             `json:"allowed"`
+	Dropped              uint64             `json:"dropped"`
+	Rejected             uint64             `json:"rejected"`
+	NoMatchDrops         uint64             `json:"no_match_drops"`
+	DenyDrops            uint64             `json:"deny_drops"`
+	RejectDrops          uint64             `json:"reject_drops"`
+	Conntrack            uint64             `json:"conntrack"`
+	Established          uint64             `json:"established"`
+	Logged               uint64             `json:"logged"`
+	Rules                []policyRuleOutput `json:"rules"`
+}
+
+type policyRuleOutput struct {
+	EndpointID    string `json:"endpoint_id"`
+	RuleCookie    uint32 `json:"rule_cookie"`
+	RuleRef       string `json:"rule_ref,omitempty"`
+	VPC           string `json:"vpc,omitempty"`
+	SecurityGroup string `json:"security_group,omitempty"`
+	RuleID        string `json:"rule_id,omitempty"`
+	Packets       uint64 `json:"packets"`
+	Bytes         uint64 `json:"bytes"`
+	Allowed       uint64 `json:"allowed"`
+	Dropped       uint64 `json:"dropped"`
+	Rejected      uint64 `json:"rejected"`
+	NoMatchDrops  uint64 `json:"no_match_drops"`
+	DenyDrops     uint64 `json:"deny_drops"`
+	RejectDrops   uint64 `json:"reject_drops"`
+	Conntrack     uint64 `json:"conntrack"`
+	Established   uint64 `json:"established"`
+	Logged        uint64 `json:"logged"`
+}
+
 type policyEndpointActionOutput struct {
 	EndpointID    string                         `json:"endpoint_id"`
 	Action        string                         `json:"action"`
@@ -645,6 +686,114 @@ func policyStatusOutputFromResult(result agent.ReconcileResult, storeName string
 		PolicyRevisionMax: result.PolicyRevisionMax,
 		Statuses:          statuses,
 	}
+}
+
+func policyRulesOutputFromResult(result agent.ReconcileResult, storeName, endpoint string) policyRulesOutput {
+	stats := filterPolicyRuleStats(result.PolicyRuleStats, endpoint)
+	catalog := filterPolicyRuleCatalog(result.PolicyRuleCatalog, endpoint)
+	rules := mergePolicyRuleStatsAndCatalog(stats, catalog)
+	output := policyRulesOutput{
+		Node:      result.Node,
+		Store:     storeName,
+		RuleCount: len(rules),
+		Rules:     rules,
+	}
+	for _, rule := range rules {
+		output.Packets += rule.Packets
+		output.Bytes += rule.Bytes
+		output.Allowed += rule.Allowed
+		output.Dropped += rule.Dropped
+		output.Rejected += rule.Rejected
+		output.NoMatchDrops += rule.NoMatchDrops
+		output.DenyDrops += rule.DenyDrops
+		output.RejectDrops += rule.RejectDrops
+		output.Conntrack += rule.Conntrack
+		output.Established += rule.Established
+		output.Logged += rule.Logged
+	}
+	return output
+}
+
+func filterPolicyRuleStats(stats []dataplane.RuleMetrics, endpoint string) []dataplane.RuleMetrics {
+	endpoint = strings.TrimSpace(endpoint)
+	if endpoint == "" {
+		return append([]dataplane.RuleMetrics(nil), stats...)
+	}
+	out := make([]dataplane.RuleMetrics, 0, len(stats))
+	for _, stat := range stats {
+		if policyRuleEndpointMatches(stat.EndpointID, endpoint) {
+			out = append(out, stat)
+		}
+	}
+	return out
+}
+
+func filterPolicyRuleCatalog(catalog []agent.PolicyRuleCatalogEntry, endpoint string) []agent.PolicyRuleCatalogEntry {
+	endpoint = strings.TrimSpace(endpoint)
+	if endpoint == "" {
+		return append([]agent.PolicyRuleCatalogEntry(nil), catalog...)
+	}
+	out := make([]agent.PolicyRuleCatalogEntry, 0, len(catalog))
+	for _, entry := range catalog {
+		if policyRuleEndpointMatches(entry.EndpointID, endpoint) {
+			out = append(out, entry)
+		}
+	}
+	return out
+}
+
+func policyRuleEndpointMatches(endpointID, endpoint string) bool {
+	if endpointID == endpoint {
+		return true
+	}
+	if vpc, id, ok := strings.Cut(endpointID, "\x00"); ok {
+		return id == endpoint || vpc+"/"+id == endpoint
+	}
+	return false
+}
+
+func mergePolicyRuleStatsAndCatalog(stats []dataplane.RuleMetrics, catalog []agent.PolicyRuleCatalogEntry) []policyRuleOutput {
+	byKey := make(map[string]policyRuleOutput, len(stats)+len(catalog))
+	for _, entry := range catalog {
+		key := policyRuleMetricKey(entry.EndpointID, entry.RuleCookie)
+		rule := byKey[key]
+		rule.EndpointID = entry.EndpointID
+		rule.RuleCookie = entry.RuleCookie
+		rule.RuleRef = entry.RuleRef
+		rule.VPC = entry.VPC
+		rule.SecurityGroup = entry.SecurityGroup
+		rule.RuleID = entry.RuleID
+		byKey[key] = rule
+	}
+	for _, stat := range stats {
+		key := policyRuleMetricKey(stat.EndpointID, stat.RuleCookie)
+		rule := byKey[key]
+		rule.EndpointID = stat.EndpointID
+		rule.RuleCookie = stat.RuleCookie
+		rule.Packets = stat.Packets
+		rule.Bytes = stat.Bytes
+		rule.Allowed = stat.Allowed
+		rule.Dropped = stat.Dropped
+		rule.Rejected = stat.Rejected
+		rule.NoMatchDrops = stat.NoMatchDrops
+		rule.DenyDrops = stat.DenyDrops
+		rule.RejectDrops = stat.RejectDrops
+		rule.Conntrack = stat.Conntrack
+		rule.Established = stat.Established
+		rule.Logged = stat.Logged
+		byKey[key] = rule
+	}
+	out := make([]policyRuleOutput, 0, len(byKey))
+	for _, rule := range byKey {
+		out = append(out, rule)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].EndpointID != out[j].EndpointID {
+			return out[i].EndpointID < out[j].EndpointID
+		}
+		return out[i].RuleCookie < out[j].RuleCookie
+	})
+	return out
 }
 
 func explainRouteFromState(state control.DesiredState, opts routeExplainOptions) (topology.Decision, error) {
@@ -2462,6 +2611,8 @@ func startAgentMetricsServer(ctx context.Context, addr string, metrics *agentMet
 	mux.HandleFunc("/policy/explain", metrics.handlePolicyExplain)
 	mux.HandleFunc("/policy/endpoints", metrics.handlePolicyEndpoints)
 	mux.HandleFunc("/policy/endpoints/", metrics.handlePolicyEndpoints)
+	mux.HandleFunc("/policy/rules", metrics.handlePolicyRules)
+	mux.HandleFunc("/policy/rules/", metrics.handlePolicyRules)
 	mux.HandleFunc("/route/explain", metrics.handleRouteExplain)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -2546,6 +2697,34 @@ func (m *agentMetrics) handlePolicyRolloutHistory(w http.ResponseWriter, r *http
 		Ready:   true,
 		History: m.policyRolloutHistory(),
 	})
+}
+
+func (m *agentMetrics) handlePolicyRules(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "method not allowed"})
+		return
+	}
+	endpoint := policyRuleEndpointFromRequest(r)
+	snapshot, _, ready := m.snapshotValue()
+	if !ready {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "policy rule metrics are not ready"})
+		return
+	}
+	output := policyRulesOutputFromResult(snapshot.Result, snapshot.Store, endpoint)
+	output.Ready = true
+	output.LastReconcileSuccess = snapshot.Success
+	output.LastReconcileError = snapshot.Error
+	if endpoint != "" && len(output.Rules) == 0 {
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "policy rule metrics not found"})
+		return
+	}
+	encoder := json.NewEncoder(w)
+	encoder.SetIndent("", "  ")
+	_ = encoder.Encode(output)
 }
 
 func (m *agentMetrics) handlePolicyEndpointDelete(w http.ResponseWriter, r *http.Request) {
@@ -2791,6 +2970,20 @@ func policyEndpointFromRequest(r *http.Request) string {
 	endpoint := strings.TrimSpace(r.URL.Query().Get("endpoint"))
 	if strings.HasPrefix(r.URL.Path, "/policy/endpoints/") {
 		pathEndpoint := strings.TrimPrefix(r.URL.Path, "/policy/endpoints/")
+		if decoded, err := url.PathUnescape(pathEndpoint); err == nil {
+			pathEndpoint = decoded
+		}
+		if strings.TrimSpace(pathEndpoint) != "" {
+			endpoint = strings.TrimSpace(pathEndpoint)
+		}
+	}
+	return endpoint
+}
+
+func policyRuleEndpointFromRequest(r *http.Request) string {
+	endpoint := strings.TrimSpace(r.URL.Query().Get("endpoint"))
+	if strings.HasPrefix(r.URL.Path, "/policy/rules/") {
+		pathEndpoint := strings.TrimPrefix(r.URL.Path, "/policy/rules/")
 		if decoded, err := url.PathUnescape(pathEndpoint); err == nil {
 			pathEndpoint = decoded
 		}

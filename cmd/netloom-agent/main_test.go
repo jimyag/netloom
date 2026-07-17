@@ -1600,6 +1600,21 @@ func TestPolicyEndpointAPIReportsNotReady(t *testing.T) {
 	}
 }
 
+func TestPolicyRulesAPIReportsNotReady(t *testing.T) {
+	metrics := newAgentMetrics()
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/policy/rules", nil)
+
+	metrics.handlePolicyRules(recorder, request)
+
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", recorder.Code)
+	}
+	if !strings.Contains(recorder.Body.String(), "not ready") {
+		t.Fatalf("body missing not ready error: %s", recorder.Body.String())
+	}
+}
+
 func TestPolicyExplainAPIReportsNotReady(t *testing.T) {
 	metrics := newAgentMetrics()
 	recorder := httptest.NewRecorder()
@@ -1612,6 +1627,69 @@ func TestPolicyExplainAPIReportsNotReady(t *testing.T) {
 	}
 	if !strings.Contains(recorder.Body.String(), "not ready") {
 		t.Fatalf("body missing not ready error: %s", recorder.Body.String())
+	}
+}
+
+func TestPolicyRulesAPIReportsCatalogAndCounters(t *testing.T) {
+	metrics := newAgentMetrics()
+	endpointID := model.EndpointKey("prod", "pod-a")
+	observeAgentReconcileResult(metrics, agent.ReconcileResult{
+		Node: "node-a",
+		PolicyRuleStats: []dataplane.RuleMetrics{{
+			EndpointID: endpointID,
+			RuleCookie: 42,
+			Packets:    5,
+			Bytes:      640,
+			Allowed:    3,
+			Dropped:    2,
+			DenyDrops:  2,
+			Logged:     1,
+		}},
+		PolicyRuleCatalog: []agent.PolicyRuleCatalogEntry{
+			{
+				EndpointID:    endpointID,
+				RuleCookie:    42,
+				RuleRef:       "sg/web/allow-http",
+				VPC:           "prod",
+				SecurityGroup: "web",
+				RuleID:        "allow-http",
+			},
+			{
+				EndpointID:    endpointID,
+				RuleCookie:    43,
+				RuleRef:       "sg/web/allow-https",
+				VPC:           "prod",
+				SecurityGroup: "web",
+				RuleID:        "allow-https",
+			},
+		},
+	}, "ebpf", time.Millisecond)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/policy/rules/prod/pod-a", nil)
+	metrics.handlePolicyRules(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var got policyRulesOutput
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode policy rules response: %v\n%s", err, recorder.Body.String())
+	}
+	if !got.Ready || !got.LastReconcileSuccess || got.Node != "node-a" || got.Store != "ebpf" {
+		t.Fatalf("policy rules summary = %+v, want ready node-a ebpf success", got)
+	}
+	if got.RuleCount != 2 || got.Packets != 5 || got.Bytes != 640 || got.Allowed != 3 || got.Dropped != 2 || got.DenyDrops != 2 || got.Logged != 1 {
+		t.Fatalf("policy rules counters = %+v, want merged totals", got)
+	}
+	if len(got.Rules) != 2 {
+		t.Fatalf("rules = %+v, want two entries", got.Rules)
+	}
+	if got.Rules[0].EndpointID != endpointID || got.Rules[0].RuleCookie != 42 || got.Rules[0].RuleRef != "sg/web/allow-http" || got.Rules[0].Packets != 5 {
+		t.Fatalf("first rule = %+v, want catalog and counters for cookie 42", got.Rules[0])
+	}
+	if got.Rules[1].EndpointID != endpointID || got.Rules[1].RuleCookie != 43 || got.Rules[1].RuleRef != "sg/web/allow-https" || got.Rules[1].Packets != 0 {
+		t.Fatalf("second rule = %+v, want catalog-only zero counter for cookie 43", got.Rules[1])
 	}
 }
 

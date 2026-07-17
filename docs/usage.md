@@ -348,6 +348,13 @@ curl -s http://127.0.0.1:9091/metrics
 curl -s http://127.0.0.1:9092/metrics
 ```
 
+查看最新规则级安全组计数和规则来源：
+
+```bash
+curl -s http://127.0.0.1:9092/policy/rules
+curl -s http://127.0.0.1:9092/policy/rules/prod/vm-a
+```
+
 检查本机托管网络对象：
 
 ```bash
