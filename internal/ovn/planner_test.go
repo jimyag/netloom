@@ -790,6 +790,12 @@ func TestPlannerSplitsMultiProtocolLoadBalancerOperations(t *testing.T) {
 				Protocol: model.ProtocolUDP,
 				Backends: []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.10"), Port: 5353}},
 			},
+			{
+				Name:     "sctp-api",
+				Port:     5000,
+				Protocol: model.ProtocolSCTP,
+				Backends: []model.LoadBalancerBackend{{IP: netip.MustParseAddr("10.10.0.10"), Port: 5001}},
+			},
 		},
 		Subnets:     []string{"apps"},
 		HealthCheck: model.LoadBalancerHealthCheck{Enabled: true},
@@ -799,12 +805,16 @@ func TestPlannerSplitsMultiProtocolLoadBalancerOperations(t *testing.T) {
 	}
 	joined := stringify(planner.Operations())
 	for _, expected := range []string{
+		"--may-exist lb-add nl_lb_prod_web_sctp 10.96.0.10:5000 10.10.0.10:5001 sctp",
 		"--may-exist lb-add nl_lb_prod_web_tcp 10.96.0.10:80 10.10.0.10:8080 tcp",
 		"--may-exist lb-add nl_lb_prod_web_udp 10.96.0.10:53 10.10.0.10:5353 udp",
+		"--may-exist lr-lb-add nl_lr_prod nl_lb_prod_web_sctp",
 		"--may-exist lr-lb-add nl_lr_prod nl_lb_prod_web_tcp",
 		"--may-exist lr-lb-add nl_lr_prod nl_lb_prod_web_udp",
+		"--may-exist ls-lb-add nl_ls_prod_apps nl_lb_prod_web_sctp",
 		"--may-exist ls-lb-add nl_ls_prod_apps nl_lb_prod_web_tcp",
 		"--may-exist ls-lb-add nl_ls_prod_apps nl_lb_prod_web_udp",
+		"ensure-load-balancer-health-check nl_lb_prod_web_sctp web prod vip=\"10.96.0.10:5000\"",
 		"ensure-load-balancer-health-check nl_lb_prod_web_tcp web prod vip=\"10.96.0.10:80\"",
 		"ensure-load-balancer-health-check nl_lb_prod_web_udp web prod vip=\"10.96.0.10:53\"",
 	} {
@@ -1037,6 +1047,36 @@ func TestPlannerBuildsPolicyRouteSourceAndDestinationPortMatch(t *testing.T) {
 	}
 	if strings.Contains(joined, "tcp.dst == 443 && (tcp.dst >= 8443") {
 		t.Fatalf("alternative destination ports must be ORed, not ANDed:\n%s", joined)
+	}
+}
+
+func TestPlannerBuildsSCTPPolicyRoutePortMatch(t *testing.T) {
+	planner := ovn.NewPlanner()
+	err := planner.EnsurePolicyRoute(context.Background(), model.PolicyRoute{
+		Name:     "sctp-fw",
+		VPC:      "prod",
+		Priority: 130,
+		Match: model.RouteMatch{
+			Source:      netip.MustParsePrefix("10.10.0.0/24"),
+			Destination: netip.MustParsePrefix("198.51.100.0/24"),
+			Protocol:    model.ProtocolSCTP,
+			DstPorts:    []model.PortRange{{From: 5000, To: 5001}},
+		},
+		Action: model.RouteAction{Type: model.ActionReroute, NextHops: []netip.Addr{netip.MustParseAddr("10.10.0.253")}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := stringify(planner.Operations())
+	for _, expected := range []string{
+		"lr-policy-add nl_lr_prod 130",
+		"sctp",
+		"(sctp.dst >= 5000 && sctp.dst <= 5001)",
+		"sync-policy-route-nexthop prod sctp-fw 130 (sctp.dst >= 5000 && sctp.dst <= 5001) && ip4.dst == 198.51.100.0/24 && ip4.src == 10.10.0.0/24 && sctp 10.10.0.253",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("SCTP policy route operation missing %q:\n%s", expected, joined)
+		}
 	}
 }
 
@@ -1302,6 +1342,16 @@ func TestPlannerBuildsKubeOVNStyleNATOperations(t *testing.T) {
 			LogicalPort:  "nl_lp_pod-dns",
 			ExternalMAC:  "0a:58:0a:0a:00:10",
 		},
+		{
+			Name:         "sctp-api",
+			VPC:          "prod",
+			Type:         model.ActionDNAT,
+			ExternalIP:   netip.MustParseAddr("198.51.100.44"),
+			TargetIP:     netip.MustParseAddr("10.10.0.17"),
+			Protocol:     model.ProtocolSCTP,
+			ExternalPort: 5000,
+			TargetPort:   5001,
+		},
 	} {
 		if err := planner.EnsureNATRule(context.Background(), rule); err != nil {
 			t.Fatal(err)
@@ -1334,6 +1384,10 @@ func TestPlannerBuildsKubeOVNStyleNATOperations(t *testing.T) {
 		"external_mac=0a:58:0a:0a:00:10",
 		"external_ids:netloom_nat=distributed-fip-translate",
 		"add logical_router nl_lr_prod nat @nl_nat_prod_distributed_hfip_htranslate",
+		"gc-nat-rule sctp-api prod",
+		"--id=@nl_nat_prod_sctp_hapi create NAT type=dnat external_ip=198.51.100.44 logical_ip=10.10.0.17 external_port_range=5000 logical_port_range=5001 protocol=sctp",
+		"external_ids:netloom_nat=sctp-api",
+		"add logical_router nl_lr_prod nat @nl_nat_prod_sctp_hapi",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("OVN operations missing %q:\n%s", expected, joined)

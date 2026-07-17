@@ -693,6 +693,11 @@ func TestControllerAllowsNATAndLoadBalancerSamePortDifferentProtocol(t *testing.
 	if err := NewController(NewMemoryBackend(), NewMemoryBackend()).Reconcile(context.Background(), state); err != nil {
 		t.Fatal(err)
 	}
+
+	state.LoadBalancers[0].Ports[0].Protocol = model.ProtocolSCTP
+	if err := NewController(NewMemoryBackend(), NewMemoryBackend()).Reconcile(context.Background(), state); err != nil {
+		t.Fatalf("SCTP load balancer should not conflict with UDP NAT on same VIP port: %v", err)
+	}
 }
 
 func TestControllerAllowsRemoteServiceAnyProtocolExplicitPort(t *testing.T) {
@@ -702,6 +707,22 @@ func TestControllerAllowsRemoteServiceAnyProtocolExplicitPort(t *testing.T) {
 	state.SecurityGroups[0].Rules[0].Protocol = model.ProtocolAny
 	state.SecurityGroups[0].Rules[0].RemoteService = "web"
 	state.SecurityGroups[0].Rules[0].Ports = []model.PortRange{{From: 80, To: 80}}
+
+	if err := NewController(NewMemoryBackend(), NewMemoryBackend()).Reconcile(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestControllerAllowsRemoteServiceSCTPProtocol(t *testing.T) {
+	state := validObjectGraphState()
+	state.LoadBalancers[0].Ports[0].Protocol = model.ProtocolSCTP
+	state.LoadBalancers[0].Ports[0].Port = 5000
+	state.LoadBalancers[0].Ports[0].Backends[0].Port = 5001
+	state.SecurityGroups[0].Rules[0].RemoteCIDR = netip.Prefix{}
+	state.SecurityGroups[0].Rules[0].Direction = model.DirectionEgress
+	state.SecurityGroups[0].Rules[0].Protocol = model.ProtocolSCTP
+	state.SecurityGroups[0].Rules[0].RemoteService = "web"
+	state.SecurityGroups[0].Rules[0].Ports = []model.PortRange{{From: 5000, To: 5000}}
 
 	if err := NewController(NewMemoryBackend(), NewMemoryBackend()).Reconcile(context.Background(), state); err != nil {
 		t.Fatal(err)

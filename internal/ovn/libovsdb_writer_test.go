@@ -2701,6 +2701,56 @@ func TestLibOVSDBTopologyWriterEnsuresNATRules(t *testing.T) {
 	})
 }
 
+func TestLibOVSDBTopologyWriterEnsuresSCTPPortMappedNATRule(t *testing.T) {
+	ctx := context.Background()
+	client, closeFn := newTestOVNNBClient(t)
+	defer closeFn()
+
+	if _, err := client.MonitorAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	writer := NewLibOVSDBTopologyWriter(client)
+	if err := writer.EnsureVPC(ctx, model.VPC{Name: "prod"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureNATRule(ctx, model.NATRule{
+		Name:         "sctp-api",
+		VPC:          "prod",
+		Type:         model.ActionDNAT,
+		ExternalIP:   netip.MustParseAddr("198.51.100.90"),
+		TargetIP:     netip.MustParseAddr("10.10.0.20"),
+		Protocol:     model.ProtocolSCTP,
+		ExternalPort: 5000,
+		TargetPort:   5001,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var nats []ovnnb.NAT
+	requireEventually(t, func() bool {
+		nats = nil
+		err := client.WhereCache(func(row *ovnnb.NAT) bool {
+			return row.ExternalIDs["netloom_vpc"] == "prod" && row.ExternalIDs["netloom_nat"] == "sctp-api"
+		}).List(ctx, &nats)
+		return err == nil && len(nats) == 1
+	})
+	if nats[0].Type != ovnnb.NATTypeDNAT ||
+		nats[0].ExternalIP != "198.51.100.90" ||
+		nats[0].LogicalIP != "10.10.0.20" ||
+		nats[0].ExternalPortRange != "5000" ||
+		nats[0].Options["netloom_logical_port_range"] != "5001" ||
+		nats[0].Options["netloom_protocol"] != "sctp" ||
+		nats[0].ExternalIDs["netloom_protocol"] != "sctp" {
+		t.Fatalf("sctp nat row = %+v, want port translation metadata", nats[0])
+	}
+	var routers []ovnnb.LogicalRouter
+	requireEventually(t, func() bool {
+		routers = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("prod") }).List(ctx, &routers)
+		return err == nil && len(routers) == 1 && len(routers[0].Nat) == 1
+	})
+}
+
 func TestLibOVSDBTopologyWriterKeepsReferencedDuplicateNATRule(t *testing.T) {
 	ctx := context.Background()
 	client, closeFn := newTestOVNNBClient(t)
@@ -2998,6 +3048,57 @@ func TestLibOVSDBTopologyWriterEnsuresLoadBalancerAndHealthChecks(t *testing.T) 
 			return row.ExternalIDs["netloom_vpc"] == "prod" && row.ExternalIDs["netloom_load_balancer"] == "api"
 		}).List(ctx, &lbs)
 		return err == nil && len(lbs) == 1 && lbs[0].ExternalIDs["netloom_protocol"] == "tcp" && len(lbs[0].HealthCheck) == 0
+	})
+}
+
+func TestLibOVSDBTopologyWriterEnsuresSCTPLoadBalancer(t *testing.T) {
+	ctx := context.Background()
+	client, closeFn := newTestOVNNBClient(t)
+	defer closeFn()
+
+	if _, err := client.MonitorAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	writer := NewLibOVSDBTopologyWriter(client)
+	if err := writer.EnsureVPC(ctx, model.VPC{Name: "prod"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureLoadBalancer(ctx, model.LoadBalancer{
+		Name: "api",
+		VPC:  "prod",
+		VIP:  netip.MustParseAddr("10.96.0.20"),
+		Ports: []model.LoadBalancerPort{{
+			Port:     5000,
+			Protocol: model.ProtocolSCTP,
+			Backends: []model.LoadBalancerBackend{{
+				IP:   netip.MustParseAddr("10.10.0.20"),
+				Port: 5001,
+			}},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var lbs []ovnnb.LoadBalancer
+	requireEventually(t, func() bool {
+		lbs = nil
+		err := client.WhereCache(func(row *ovnnb.LoadBalancer) bool {
+			return row.ExternalIDs["netloom_vpc"] == "prod" && row.ExternalIDs["netloom_load_balancer"] == "api"
+		}).List(ctx, &lbs)
+		return err == nil && len(lbs) == 1
+	})
+	if lbs[0].Name != loadBalancerProtocolName("prod", "api", model.ProtocolSCTP) ||
+		lbs[0].Protocol == nil ||
+		*lbs[0].Protocol != ovnnb.LoadBalancerProtocolSCTP ||
+		lbs[0].Vips["10.96.0.20:5000"] != "10.10.0.20:5001" ||
+		lbs[0].ExternalIDs["netloom_protocol"] != "sctp" {
+		t.Fatalf("sctp load balancer = %+v, want protocol, vip, and metadata", lbs[0])
+	}
+	var routers []ovnnb.LogicalRouter
+	requireEventually(t, func() bool {
+		routers = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("prod") }).List(ctx, &routers)
+		return err == nil && len(routers) == 1 && len(routers[0].LoadBalancer) == 1
 	})
 }
 
