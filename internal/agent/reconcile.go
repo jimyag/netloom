@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -1281,6 +1282,8 @@ func executeRolloutProbe(ctx context.Context, probe control.PolicyRolloutProbe) 
 		return executeHTTPRolloutProbe(probeCtx, probe)
 	case "tcp":
 		return executeTCPRolloutProbe(probeCtx, probe)
+	case "tls":
+		return executeTLSRolloutProbe(probeCtx, probe)
 	default:
 		return PolicyEndpointProbeResult{Name: probe.Name, Type: probe.Type, Passed: false, Error: "unsupported probe type"}
 	}
@@ -1333,6 +1336,31 @@ func executeTCPRolloutProbe(ctx context.Context, probe control.PolicyRolloutProb
 		return result
 	}
 	_ = conn.Close()
+	result.Passed = true
+	return result
+}
+
+func executeTLSRolloutProbe(ctx context.Context, probe control.PolicyRolloutProbe) PolicyEndpointProbeResult {
+	result := PolicyEndpointProbeResult{
+		Name:   probe.Name,
+		Type:   "tls",
+		Target: probe.Address,
+	}
+	var dialer net.Dialer
+	rawConn, err := dialer.DialContext(ctx, "tcp", probe.Address)
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+	defer rawConn.Close()
+	tlsConn := tls.Client(rawConn, &tls.Config{
+		InsecureSkipVerify: true,
+		MinVersion:         tls.VersionTLS12,
+	})
+	if err := tlsConn.HandshakeContext(ctx); err != nil {
+		result.Error = err.Error()
+		return result
+	}
 	result.Passed = true
 	return result
 }

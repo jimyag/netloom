@@ -325,7 +325,7 @@ func (p PolicyRolloutProbe) Validate(rollout string) error {
 		if p.ExpectedStatus < 0 || p.ExpectedStatus > 599 {
 			return fmt.Errorf("policy rollout %q probe %q expected_status must be between 0 and 599", rollout, name)
 		}
-	case "tcp":
+	case "tcp", "tls":
 		if strings.TrimSpace(p.Address) == "" {
 			return fmt.Errorf("policy rollout %q probe %q address is required", rollout, name)
 		}
@@ -334,7 +334,7 @@ func (p PolicyRolloutProbe) Validate(rollout string) error {
 			return fmt.Errorf("policy rollout %q probe %q address must be host:port", rollout, name)
 		}
 	default:
-		return fmt.Errorf("policy rollout %q probe %q type must be http or tcp", rollout, name)
+		return fmt.Errorf("policy rollout %q probe %q type must be http, tcp, or tls", rollout, name)
 	}
 	return nil
 }

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -2919,6 +2921,42 @@ func TestRolloutPolicyEndpointsProbeAcceptsTCP(t *testing.T) {
 	}
 	if len(rollout.Probes) != 1 || !rollout.Probes[0].Passed || rollout.Probes[0].Type != "tcp" {
 		t.Fatalf("probe results = %+v, want passed TCP probe", rollout.Probes)
+	}
+}
+
+func TestRolloutPolicyEndpointsProbeAcceptsTLS(t *testing.T) {
+	state := rolloutPolicyState()
+	store := dataplane.NewInMemoryPolicyStore()
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	server.Config.ErrorLog = log.New(io.Discard, "", 0)
+	server.StartTLS()
+	defer server.Close()
+
+	rollout, err := RolloutPolicyEndpoints(context.Background(), state, ReconcileOptions{
+		Node:  "node-a",
+		Store: store,
+	}, PolicyEndpointRolloutOptions{
+		EndpointIDs: []string{
+			model.EndpointKey("prod", "pod-a"),
+		},
+		BatchSize: 1,
+		Probes: []control.PolicyRolloutProbe{{
+			Name:      "tls-ready",
+			Type:      "tls",
+			Address:   server.Listener.Addr().String(),
+			TimeoutMS: 1000,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rollout.ProbeFailed || rollout.Failed != 0 || rollout.Applied != 1 || rollout.RolledBack != 0 {
+		t.Fatalf("rollout = %+v, want successful TLS probe", rollout)
+	}
+	if len(rollout.Probes) != 1 || !rollout.Probes[0].Passed || rollout.Probes[0].Type != "tls" || rollout.Probes[0].Target != server.Listener.Addr().String() {
+		t.Fatalf("probe results = %+v, want passed TLS probe", rollout.Probes)
 	}
 }
 

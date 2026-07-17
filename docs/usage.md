@@ -12,7 +12,7 @@
 | RouteTable / PolicyRoute | OVN NB + Linux datapath | 支持静态路由、ECMP、BFD、reroute/drop 策略路由和本机 RPDB 投影。 |
 | Provider Network | OVN localnet + OVSDB | 管理 localnet port、本机 OVS Bridge、Controller、Port、Interface、QoS、Queue。 |
 | SecurityGroup / ACL | eBPF policy map + TCX | 安全组不写 OVN ACL，规则由 eBPF/TCX 执行。 |
-| Policy rollout | agent | 支持 dry-run、batch、approval、ack、finalize、SLO/probe、rollback、quarantine。 |
+| Policy rollout | agent | 支持 dry-run、batch、approval、ack、finalize、SLO、HTTP/TCP/TLS probe、rollback、quarantine。 |
 | 运维观测 | OVSDB external_ids + metrics + CLI | 输出 controller/agent 状态、policy status、explain、Prometheus metrics。 |
 
 ## 构建

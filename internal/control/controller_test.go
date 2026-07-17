@@ -993,7 +993,7 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 					}},
 				}}
 			},
-			wantErr: "type must be http or tcp",
+			wantErr: "type must be http, tcp, or tls",
 		},
 		{
 			name: "duplicate policy rollout probe",
