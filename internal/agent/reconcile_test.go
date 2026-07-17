@@ -3307,8 +3307,8 @@ func TestRolloutPolicyEndpointsPressureAwareShrinksBatchSize(t *testing.T) {
 	if !rollout.PressureAware || !rollout.PressureAdjusted || rollout.RequestedBatchSize != 3 || rollout.BatchSize != 1 {
 		t.Fatalf("rollout = %+v, want pressure adjusted batch 1 from requested 3", rollout)
 	}
-	if rollout.PressureMaxPercent != 90 || rollout.PressureEndpoint != model.EndpointKey("prod", "pod-a") || rollout.PressureThresholdPercent != 80 {
-		t.Fatalf("rollout pressure fields = %+v, want max=90 endpoint pod-a threshold 80", rollout)
+	if rollout.PressureMaxPercent != 90 || rollout.PressureEndpoint != model.EndpointKey("prod", "pod-a") || rollout.PressureThresholdPercent != 80 || rollout.PressureSeverity != dataplane.PolicyMapPressureCritical {
+		t.Fatalf("rollout pressure fields = %+v, want max=90 endpoint pod-a threshold 80 severity critical", rollout)
 	}
 	wantHotspots := []dataplane.PolicyMapPressureHotspot{
 		{EndpointID: model.EndpointKey("prod", "pod-a"), Entries: 9, Capacity: 10, PressurePercent: 90, Severity: dataplane.PolicyMapPressureCritical},
@@ -3347,8 +3347,8 @@ func TestRolloutPolicyEndpointsPressureAwareKeepsBatchBelowThreshold(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rollout.PressureAdjusted || rollout.BatchSize != 3 || rollout.PressureMaxPercent != 40 {
-		t.Fatalf("rollout = %+v, want unchanged batch below pressure threshold", rollout)
+	if rollout.PressureAdjusted || rollout.BatchSize != 3 || rollout.PressureMaxPercent != 40 || rollout.PressureSeverity != dataplane.PolicyMapPressureNormal {
+		t.Fatalf("rollout = %+v, want unchanged batch below pressure threshold with normal severity", rollout)
 	}
 	if len(rollout.Items) != 3 || rollout.Items[0].Batch != 1 || rollout.Items[1].Batch != 1 || rollout.Items[2].Batch != 1 {
 		t.Fatalf("rollout batches = %+v, want original batch size 3", rollout.Items)

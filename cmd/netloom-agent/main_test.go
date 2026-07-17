@@ -5583,8 +5583,8 @@ func TestPolicyEndpointAPIRolloutUsesPressureAwareBatchSize(t *testing.T) {
 	if !got.Rollout.PressureAware || !got.Rollout.PressureAdjusted || got.Rollout.RequestedBatchSize != 2 || got.Rollout.BatchSize != 1 {
 		t.Fatalf("rollout = %+v, want pressure-aware batch shrink from 2 to 1", got.Rollout)
 	}
-	if got.Rollout.PressureMaxPercent != 90 || got.Rollout.PressureEndpoint != model.EndpointKey("prod", "pod-a") {
-		t.Fatalf("rollout pressure = %+v, want pod-a at 90%%", got.Rollout)
+	if got.Rollout.PressureMaxPercent != 90 || got.Rollout.PressureEndpoint != model.EndpointKey("prod", "pod-a") || got.Rollout.PressureSeverity != dataplane.PolicyMapPressureCritical {
+		t.Fatalf("rollout pressure = %+v, want pod-a at 90%% severity critical", got.Rollout)
 	}
 	wantHotspots := []dataplane.PolicyMapPressureHotspot{
 		{EndpointID: model.EndpointKey("prod", "pod-a"), Entries: 9, Capacity: 10, PressurePercent: 90, Severity: dataplane.PolicyMapPressureCritical},

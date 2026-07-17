@@ -179,8 +179,8 @@ overflow reason. Since the userspace evaluator and TCX policy model both drop
 traffic when no policy entry matches, this avoids preserving stale allows after
 a failed oversized update. Long-running agents expose the latest endpoint policy
 lifecycle view at `/policy/endpoints` on the existing metrics HTTP listener;
-the response includes the same revision, drift, pressure, last stats, and last
-event data as `netloom-agent policy-status`, and supports filtering with
+the response includes the same revision, drift, pressure percent, pressure
+severity, last stats, and last event data as `netloom-agent policy-status`, and supports filtering with
 `?endpoint=pod-a` or `?endpoint=prod/pod-a`. Operators can inspect compiled
 endpoint policy-map keys, values, counters, and remote CIDRs through
 `netloom-agent policy-entries` or the long-running `/policy/entries/{endpoint}`
@@ -406,7 +406,8 @@ update stats, and the last update event; `netloom-agent policy-status` and the l
 without scraping reconcile logs. The endpoint API also exposes explicit reset,
 dry-run plan, regenerate, quarantine, unquarantine, and multi-endpoint rollout
 actions for scoped remediation and staged policy rollout. Rollout requests plan
-all requested endpoints first, support dry-run and configurable batch size, apply
+all requested endpoints first, support dry-run, pressure-aware batch sizing with
+pressure severity reporting, and configurable batch size, apply
 endpoint maps through the same policy backend path as reconcile, and stop on the
 first failed endpoint while reporting later endpoints as skipped. Approval-gated
 rollouts can carry `approval_ref` so an external change request or approval
