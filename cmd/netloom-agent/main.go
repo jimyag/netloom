@@ -154,7 +154,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Printf("netloom-agent ready for node policy and dataplane reconciliation endpoint=%s entries=%d allow=%s deny=%s policy_allowed=%d policy_dropped=%d policy_conntrack=%d policy_established=%d policy_logged=%d rule_stats=%s rule_catalog=%s drop_events=%d policy_events=%d trace_events=%d tcx=%s\n", result.EndpointID, result.Entries, result.Allowed, result.Denied, result.PolicyStats.Allowed, result.PolicyStats.Dropped, result.PolicyStats.Conntrack, result.PolicyStats.Established, result.PolicyStats.Logged, formatRuleStats(result.RuleStats), formatRuleCatalog(result.RuleCatalog), result.DropEvents, result.PolicyEvents, result.TraceEvents, result.TCX)
+	fmt.Printf("netloom-agent ready for node policy and datapath reconciliation endpoint=%s entries=%d allow=%s deny=%s policy_allowed=%d policy_dropped=%d policy_conntrack=%d policy_established=%d policy_logged=%d rule_stats=%s rule_catalog=%s drop_events=%d policy_events=%d trace_events=%d tcx=%s runtime_ready=%t runtime=%s\n", result.EndpointID, result.Entries, result.Allowed, result.Denied, result.PolicyStats.Allowed, result.PolicyStats.Dropped, result.PolicyStats.Conntrack, result.PolicyStats.Established, result.PolicyStats.Logged, formatRuleStats(result.RuleStats), formatRuleCatalog(result.RuleCatalog), result.DropEvents, result.PolicyEvents, result.TraceEvents, result.TCX, result.RuntimeReady, formatRuntimeChecks(result.Runtime))
 }
 
 func desiredStateRuntimePathFromEnv() (string, bool) {
@@ -2948,6 +2948,26 @@ func formatRuleCatalog(catalog []agent.PolicyRuleCatalogEntry) string {
 	for _, entry := range catalog {
 		parts = append(parts, fmt.Sprintf("%d:%s", entry.RuleCookie, entry.RuleRef))
 	}
+	return strings.Join(parts, ";")
+}
+
+func formatRuntimeChecks(checks []agent.RuntimeCheck) string {
+	if len(checks) == 0 {
+		return "none"
+	}
+	parts := make([]string, 0, len(checks))
+	for _, check := range checks {
+		required := "optional"
+		if check.Required {
+			required = "required"
+		}
+		detail := strings.NewReplacer(",", "_", ";", "_", " ", "_").Replace(strings.TrimSpace(check.Detail))
+		if detail == "" {
+			detail = "-"
+		}
+		parts = append(parts, fmt.Sprintf("%s:%s:%s:%s", check.Name, check.Status, required, detail))
+	}
+	sort.Strings(parts)
 	return strings.Join(parts, ";")
 }
 

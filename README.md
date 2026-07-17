@@ -107,6 +107,7 @@ NETLOOM_PROVIDER_NETWORK_LINKS=physnet-a=eth1 \
 Inspect policy state, policy-map entries, and routing decisions:
 
 ```bash
+NETLOOM_SELFTEST_STRICT_RUNTIME=1 NETLOOM_POLICY_STORE=ebpf NETLOOM_TCX_WORKLOAD=1 ./netloom-agent
 ./netloom-controller controller-status -ovsdb unix:/var/run/openvswitch/db.sock
 ./netloom-controller controller-events \
   -ovsdb unix:/var/run/openvswitch/db.sock \

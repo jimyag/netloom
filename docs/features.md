@@ -85,6 +85,7 @@
 | Identity group import/feed/export | 已实现 | `identity-groups-import`, `identity-groups-export`, remote feed env vars, `Open_vSwitch.external_ids:netloom_identity_groups` resolved membership snapshot | controller/agent tests、`TestRunIdentityGroupsExportWithStoreReadsResolvedOpenVSwitchExternalID`、`TestRunIdentityGroupsExportReadsRealOpenVSwitchOVSDB` |
 | DNS observer | 已实现 | UDP/TCP proxy, AF_PACKET capture, OVSDB observations, `netloom-agent dns-observations-export` for local observation audit | `go test ./cmd/netloom-dns-observer`、`TestRunDNSObservationsExportWithStoreReadsOpenVSwitchExternalID`、`TestRunDNSObservationsExportReadsRealOpenVSwitchOVSDB` |
 | Metrics | 已实现 | controller/agent `/metrics` | command tests |
+| Agent runtime selftest | 已实现 | 默认 `netloom-agent` selftest reports policy compile/evaluate, stateful conntrack, TCX status, bpffs, memlock, BPF/NET_ADMIN capabilities, and configured OVSDB/OVN endpoints; `NETLOOM_SELFTEST_STRICT_RUNTIME=1` makes required runtime failures fatal | `TestRunSelfTestCompilesAndEvaluatesPolicy`、`TestRunRuntimePreflightReportsRequiredBPFChecks`、`TestRunRuntimePreflightAcceptsEquivalentCapabilities` |
 | Agent status CLI | 已实现 | `netloom-agent agent-status` reads local OVS `netloom_agent_status` | `TestRunAgentStatusWithStoreReportsOpenVSwitchStatus` |
 | Controller status API/CLI | 已实现 | controller `/status` JSON API, `netloom-controller controller-status`, local OVS `netloom_controller_events` persistence, and `netloom-controller controller-events` for OVN health/audit/cluster/stale reconcile history | `TestControllerStatusAPIExportsLatestOVNStatus`、`TestRunControllerStatusWithStoreReportsOpenVSwitchStatus`、`TestRunControllerEventsWithStoreReportsFilteredHistory`、`TestObserveReconcileFailurePersistsControllerEvent` |
 | OVN health/audit/maintenance | 已实现 | libovsdb health, audit stats, compact/stale hooks | `go test ./cmd/netloom-controller ./internal/ovn` |
@@ -99,7 +100,7 @@
 - 备份恢复手册：OVN NB/SB、Open_vSwitch DB、desired state 和 policy rollout state 的恢复流程。
 - 长周期压测：大量 VPC、子网、endpoint、安全组、policy route、LB 和 provider queue 的容量边界。
 - 故障剧本：OVN leader failover、OVSDB reconnect、TCX attach 失败、provider parent interface 变化、BPF map pressure。
-- 权限和运行时清单：最小 Linux capability、bpffs、memlock、OVS/OVN socket 权限和容器化运行约束。
+- 容器化运行清单：systemd/container unit 中的 capability、mount、rlimit、socket 权限模板。
 
 ## 推荐验证命令
 

@@ -8,6 +8,7 @@ import (
 
 	"github.com/jimyag/netloom/internal/dataplane"
 	"github.com/jimyag/netloom/internal/model"
+	"golang.org/x/sys/unix"
 )
 
 func TestRunSelfTestCompilesAndEvaluatesPolicy(t *testing.T) {
@@ -68,6 +69,9 @@ func TestRunSelfTestCompilesAndEvaluatesPolicy(t *testing.T) {
 	}
 	if result.TCX != "not-requested" {
 		t.Fatalf("tcx status = %s, want not-requested", result.TCX)
+	}
+	if len(result.Runtime) == 0 {
+		t.Fatal("expected runtime preflight checks")
 	}
 }
 
@@ -155,4 +159,79 @@ func TestTCXSelfTestPortAllowsICMPWithoutDport(t *testing.T) {
 	if port != nil {
 		t.Fatalf("port = %d, want nil", *port)
 	}
+}
+
+func TestRunRuntimePreflightReportsRequiredBPFChecks(t *testing.T) {
+	t.Setenv("NETLOOM_POLICY_STORE", "ebpf")
+	t.Setenv("NETLOOM_BPF_FS_ROOT", "/not-bpffs")
+	probe := runtimeProbe{
+		statfs: func(_ string, fs *unix.Statfs_t) error {
+			fs.Type = 0
+			return nil
+		},
+		getrlimit: func(_ int, limit *unix.Rlimit) error {
+			limit.Cur = 1024
+			limit.Max = 2048
+			return nil
+		},
+		readFile: func(_ string) ([]byte, error) {
+			return []byte("CapEff:\t0000000000000000\n"), nil
+		},
+	}
+	checks := runRuntimePreflight(probe)
+	if runtimeChecksReady(checks) {
+		t.Fatalf("runtime checks = %+v, want required failure", checks)
+	}
+	if !runtimeCheckHas(checks, "bpffs", "fail", true) ||
+		!runtimeCheckHas(checks, "memlock", "fail", true) ||
+		!runtimeCheckHas(checks, "cap_bpf_or_sys_admin", "fail", true) {
+		t.Fatalf("runtime checks = %+v, want required BPF failures", checks)
+	}
+}
+
+func TestRunRuntimePreflightAcceptsEquivalentCapabilities(t *testing.T) {
+	t.Setenv("NETLOOM_POLICY_STORE", "ebpf")
+	t.Setenv("NETLOOM_TCX_WORKLOAD", "1")
+	probe := runtimeProbe{
+		statfs: func(_ string, fs *unix.Statfs_t) error {
+			fs.Type = unix.BPF_FS_MAGIC
+			return nil
+		},
+		getrlimit: func(_ int, limit *unix.Rlimit) error {
+			limit.Cur = unix.RLIM_INFINITY
+			limit.Max = unix.RLIM_INFINITY
+			return nil
+		},
+		readFile: func(_ string) ([]byte, error) {
+			// CAP_SYS_ADMIN and CAP_NET_ADMIN are enough for older kernels that do not expose CAP_BPF.
+			return []byte("CapEff:\t0000000000201000\n"), nil
+		},
+	}
+	checks := runRuntimePreflight(probe)
+	if !runtimeChecksReady(checks) {
+		t.Fatalf("runtime checks = %+v, want ready", checks)
+	}
+	if !runtimeCheckHas(checks, "cap_bpf_or_sys_admin", "ok", true) ||
+		!runtimeCheckHas(checks, "cap_net_admin", "ok", true) {
+		t.Fatalf("runtime checks = %+v, want capability checks ok", checks)
+	}
+}
+
+func TestParseEffectiveCapabilities(t *testing.T) {
+	caps, ok := parseEffectiveCapabilities("Name:\tnetloom\nCapEff:\t0000008000201000\n")
+	if !ok {
+		t.Fatal("expected CapEff to parse")
+	}
+	if caps&(uint64(1)<<39) == 0 || caps&(uint64(1)<<12) == 0 {
+		t.Fatalf("capabilities = 0x%x, want CAP_BPF and CAP_NET_ADMIN", caps)
+	}
+}
+
+func runtimeCheckHas(checks []RuntimeCheck, name, status string, required bool) bool {
+	for _, check := range checks {
+		if check.Name == name && check.Status == status && check.Required == required {
+			return true
+		}
+	}
+	return false
 }

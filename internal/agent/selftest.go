@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/netip"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/jimyag/netloom/internal/dataplane"
 	"github.com/jimyag/netloom/internal/model"
 	"github.com/jimyag/netloom/internal/policy"
+	"golang.org/x/sys/unix"
 )
 
 type SelfTestResult struct {
@@ -26,6 +28,21 @@ type SelfTestResult struct {
 	PolicyEvents int
 	TraceEvents  int
 	TCX          string
+	RuntimeReady bool
+	Runtime      []RuntimeCheck
+}
+
+type RuntimeCheck struct {
+	Name     string
+	Status   string
+	Required bool
+	Detail   string
+}
+
+type runtimeProbe struct {
+	statfs    func(string, *unix.Statfs_t) error
+	getrlimit func(int, *unix.Rlimit) error
+	readFile  func(string) ([]byte, error)
 }
 
 func selftestVPC() string {
@@ -36,6 +53,12 @@ func selftestVPC() string {
 }
 
 func RunSelfTest(ctx context.Context) (SelfTestResult, error) {
+	runtimeChecks := RunRuntimePreflight()
+	runtimeReady := runtimeChecksReady(runtimeChecks)
+	if selftestStrictRuntime() && !runtimeReady {
+		return SelfTestResult{}, fmt.Errorf("runtime preflight failed: %s", summarizeRuntimeChecks(runtimeChecks))
+	}
+
 	vpc := selftestVPC()
 	endpoint := model.Endpoint{
 		ID:             "selftest-pod",
@@ -216,7 +239,173 @@ func RunSelfTest(ctx context.Context) (SelfTestResult, error) {
 		PolicyEvents: len(recorder.PolicyEvents()),
 		TraceEvents:  len(recorder.TraceEvents()),
 		TCX:          tcxStatus,
+		RuntimeReady: runtimeReady,
+		Runtime:      runtimeChecks,
 	}, nil
+}
+
+func RunRuntimePreflight() []RuntimeCheck {
+	return runRuntimePreflight(runtimeProbe{
+		statfs:    unix.Statfs,
+		getrlimit: unix.Getrlimit,
+		readFile:  os.ReadFile,
+	})
+}
+
+func runRuntimePreflight(probe runtimeProbe) []RuntimeCheck {
+	checks := []RuntimeCheck{
+		{
+			Name:     "kernel",
+			Status:   "ok",
+			Required: true,
+			Detail:   runtime.GOOS + "/" + runtime.GOARCH,
+		},
+	}
+	requiresBPF := envEnabled("NETLOOM_TCX_WORKLOAD") || strings.EqualFold(strings.TrimSpace(os.Getenv("NETLOOM_POLICY_STORE")), "ebpf") || strings.TrimSpace(os.Getenv("NETLOOM_TCX_SELFTEST_IFACE")) != ""
+	requiresNetAdmin := envEnabled("NETLOOM_LINUX_DATAPATH") || envEnabled("NETLOOM_TCX_WORKLOAD") || strings.TrimSpace(os.Getenv("NETLOOM_PROVIDER_NETWORK_LINKS")) != ""
+
+	checks = append(checks, bpffsRuntimeCheck(probe, requiresBPF))
+	checks = append(checks, memlockRuntimeCheck(probe, requiresBPF))
+	checks = append(checks, capabilityRuntimeCheck(probe, "cap_bpf_or_sys_admin", requiresBPF, 39, 21))
+	checks = append(checks, capabilityRuntimeCheck(probe, "cap_net_admin", requiresNetAdmin, 12))
+	checks = append(checks, socketRuntimeCheck("ovsdb", strings.TrimSpace(os.Getenv("NETLOOM_OVSDB_ENDPOINT")), false))
+	checks = append(checks, socketRuntimeCheck("ovn_nb", strings.TrimSpace(os.Getenv("NETLOOM_OVN_LIBOVSDB_ENDPOINT")), false))
+	return checks
+}
+
+func bpffsRuntimeCheck(probe runtimeProbe, required bool) RuntimeCheck {
+	path := strings.TrimSpace(os.Getenv("NETLOOM_BPF_FS_ROOT"))
+	if path == "" {
+		path = "/sys/fs/bpf"
+	}
+	check := RuntimeCheck{Name: "bpffs", Required: required}
+	var fs unix.Statfs_t
+	if err := probe.statfs(path, &fs); err != nil {
+		check.Status = runtimeCheckStatus(required)
+		check.Detail = fmt.Sprintf("%s: %v", path, err)
+		return check
+	}
+	if fs.Type != unix.BPF_FS_MAGIC {
+		check.Status = runtimeCheckStatus(required)
+		check.Detail = fmt.Sprintf("%s is not bpffs", path)
+		return check
+	}
+	check.Status = "ok"
+	check.Detail = path
+	return check
+}
+
+func memlockRuntimeCheck(probe runtimeProbe, required bool) RuntimeCheck {
+	check := RuntimeCheck{Name: "memlock", Required: required}
+	var limit unix.Rlimit
+	if err := probe.getrlimit(unix.RLIMIT_MEMLOCK, &limit); err != nil {
+		check.Status = runtimeCheckStatus(required)
+		check.Detail = err.Error()
+		return check
+	}
+	if limit.Cur == unix.RLIM_INFINITY {
+		check.Status = "ok"
+		check.Detail = "unlimited"
+		return check
+	}
+	if required && limit.Cur < 64*1024*1024 {
+		check.Status = "fail"
+		check.Detail = fmt.Sprintf("current=%d hard=%d need>=67108864 or unlimited", limit.Cur, limit.Max)
+		return check
+	}
+	check.Status = "ok"
+	check.Detail = fmt.Sprintf("current=%d hard=%d", limit.Cur, limit.Max)
+	return check
+}
+
+func capabilityRuntimeCheck(probe runtimeProbe, name string, required bool, caps ...uint) RuntimeCheck {
+	check := RuntimeCheck{Name: name, Required: required}
+	raw, err := probe.readFile("/proc/self/status")
+	if err != nil {
+		check.Status = runtimeCheckStatus(required)
+		check.Detail = err.Error()
+		return check
+	}
+	effective, ok := parseEffectiveCapabilities(string(raw))
+	if !ok {
+		check.Status = runtimeCheckStatus(required)
+		check.Detail = "CapEff not found"
+		return check
+	}
+	for _, cap := range caps {
+		if effective&(uint64(1)<<cap) != 0 {
+			check.Status = "ok"
+			check.Detail = fmt.Sprintf("CapEff=0x%x", effective)
+			return check
+		}
+	}
+	check.Status = runtimeCheckStatus(required)
+	check.Detail = fmt.Sprintf("CapEff=0x%x missing %v", effective, caps)
+	return check
+}
+
+func socketRuntimeCheck(name, endpoint string, required bool) RuntimeCheck {
+	check := RuntimeCheck{Name: name, Required: required}
+	if endpoint == "" {
+		check.Status = "skip"
+		check.Detail = "not configured"
+		return check
+	}
+	check.Status = "ok"
+	check.Detail = endpoint
+	return check
+}
+
+func parseEffectiveCapabilities(status string) (uint64, bool) {
+	for _, line := range strings.Split(status, "\n") {
+		if value, ok := strings.CutPrefix(line, "CapEff:"); ok {
+			parsed, err := strconv.ParseUint(strings.TrimSpace(value), 16, 64)
+			if err != nil {
+				return 0, false
+			}
+			return parsed, true
+		}
+	}
+	return 0, false
+}
+
+func runtimeChecksReady(checks []RuntimeCheck) bool {
+	for _, check := range checks {
+		if check.Required && check.Status == "fail" {
+			return false
+		}
+	}
+	return true
+}
+
+func runtimeCheckStatus(required bool) string {
+	if required {
+		return "fail"
+	}
+	return "warn"
+}
+
+func summarizeRuntimeChecks(checks []RuntimeCheck) string {
+	parts := make([]string, 0, len(checks))
+	for _, check := range checks {
+		if check.Status == "ok" || check.Status == "skip" {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s=%s(%s)", check.Name, check.Status, check.Detail))
+	}
+	if len(parts) == 0 {
+		return "ok"
+	}
+	return strings.Join(parts, ",")
+}
+
+func selftestStrictRuntime() bool {
+	return envEnabled("NETLOOM_SELFTEST_STRICT_RUNTIME")
+}
+
+func envEnabled(key string) bool {
+	value := strings.TrimSpace(os.Getenv(key))
+	return value == "1" || strings.EqualFold(value, "true") || strings.EqualFold(value, "yes")
 }
 
 func tcxSelfTestProtocol() (uint8, bool, error) {

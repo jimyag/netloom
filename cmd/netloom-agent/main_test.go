@@ -2109,6 +2109,22 @@ func TestFormatRuleCatalogIncludesCookieAndReference(t *testing.T) {
 	}
 }
 
+func TestFormatRuntimeChecks(t *testing.T) {
+	formatted := formatRuntimeChecks([]agent.RuntimeCheck{{
+		Name:     "bpffs",
+		Status:   "ok",
+		Required: true,
+		Detail:   "/sys/fs/bpf",
+	}, {
+		Name:   "ovsdb",
+		Status: "skip",
+		Detail: "not configured",
+	}})
+	if formatted != "bpffs:ok:required:/sys/fs/bpf;ovsdb:skip:optional:not_configured" {
+		t.Fatalf("formatted runtime checks = %q", formatted)
+	}
+}
+
 func TestFormatEndpointRuleStatsIncludesEndpointAndCounters(t *testing.T) {
 	formatted := formatEndpointRuleStats([]dataplane.RuleMetrics{
 		{

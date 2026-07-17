@@ -22,6 +22,7 @@
 | Desired State | 已实现 | 支持 JSON 文件，也支持存入本机 Open_vSwitch OVSDB `external_ids`。 |
 | 状态和观测 | 已实现 | controller `/status`、agent `/metrics`、policy status、policy explain、route explain、policy rules、policy events、policy entries。 |
 | Rollout / lifecycle | 已实现 | 支持 policy dry-run、batch rollout、approval、ack、finalize、SLO/probe、rollback、quarantine、freeze/unfreeze、freeze TTL 和成功/失败 endpoint action history。 |
+| Runtime selftest | 已实现 | agent 默认 selftest 验证策略编译/评估、stateful conntrack、runtime preflight，并报告 bpffs、memlock、BPF/NET_ADMIN capability、OVSDB/OVN endpoint 状态。 |
 
 ## 运行入口
 
@@ -60,6 +61,7 @@ desired state 也可以放到 OVSDB：
 建议先用下面的命令确认 desired state、策略、policy map 和路由逻辑：
 
 ```bash
+NETLOOM_SELFTEST_STRICT_RUNTIME=1 NETLOOM_POLICY_STORE=ebpf NETLOOM_TCX_WORKLOAD=1 ./netloom-agent
 ./netloom-agent policy-status -state /etc/netloom/state.json -node node-a
 ./netloom-agent policy-status-export -ovsdb unix:/var/run/openvswitch/db.sock -endpoint prod/vm-a
 ./netloom-agent policy-entries -state /etc/netloom/state.json -node node-a -endpoint prod/vm-a
@@ -97,7 +99,7 @@ NETLOOM_E2E=1 go test ./tests/e2e -run 'TestDockerLinuxPolicyRouting' -count=1
 - 备份恢复：OVN NB/SB、Open_vSwitch DB、desired state、rollout state 的备份和恢复流程。
 - 容量压测：大量 VPC、子网、endpoint、安全组、policy route、LB、provider queue 的规模边界。
 - 故障剧本：OVN leader failover、OVSDB reconnect、TCX attach 失败、provider parent interface 变化、BPF map pressure。
-- 权限清单：最小 Linux capability、bpffs、memlock、OVS/OVN socket 权限和容器化运行约束。
+- 容器化运行清单：systemd/container unit 中的 capability、mount、rlimit、socket 权限模板。
 - 发布流程：版本号、配置迁移策略、灰度升级和回滚手册。
 
 ## 边界
