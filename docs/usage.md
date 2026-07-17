@@ -292,6 +292,22 @@ NETLOOM_AGENT_METRICS_ADDR=:9092 \
 4. 在每个裸金属节点启动 agent，确认本机 provider bridge、Linux datapath、eBPF policy map 和 TCX attach 状态。
 5. 用 `policy-status`、`policy-explain`、`route-explain` 和 `/metrics` 做功能验证。
 
+## 最小验收清单
+
+下面这组检查用于判断主路径是否已经跑通。它不替代 e2e，但适合作为裸金属节点上的人工验收步骤。
+
+| 能力 | 验收方式 | 预期结果 |
+| --- | --- | --- |
+| VPC / Subnet / Endpoint | `controller-status`、OVN NB logical router/switch/port | desired state 中的 VPC、子网和 endpoint 都被写入 OVN。 |
+| DHCP / DNS | `controller-events`、OVN NB `DHCP_Options`/`DNS` | endpoint 绑定 DHCP options，DNS records 没有 drift。 |
+| Gateway / NAT / LB | `controller-status`、OVN NB router NAT/LB rows | SNAT、DNAT/Floating IP、LB VIP 和 health check 与 desired state 一致。 |
+| RouteTable / PolicyRoute | `route-explain`、OVN router static route/policy rows | 普通路由、ECMP/BFD 和策略路由选择结果符合预期。 |
+| Provider Network | `agent-status`、Open_vSwitch bridge/port/interface/qos/queue | 本机 provider bridge、VLAN、QoS/Queue 和 controller 连接状态正常。 |
+| Linux datapath | `agent-status`、`ip netns`、`ip rule`、`ip route` | 工作负载 netns/veth、地址、路由和 RPDB rule 被正确创建。 |
+| SecurityGroup / ACL | `policy-status`、`policy-entries`、`policy-explain` | endpoint policy map 已生成，TCX 规则判定与安全组规则一致。 |
+| Rollout / lifecycle | `policy-rollout-state`、`policy-action-history` | rollout、freeze、quarantine、rollback 等动作有明确状态和历史记录。 |
+| 观测和持久化 | `/metrics`、Open_vSwitch `external_ids` | controller/agent 状态、policy events、rules、entries 和 metrics 可查询。 |
+
 ## Desired State 存入 OVSDB
 
 裸金属场景下可以把 desired state 放到本机 Open_vSwitch 数据库，避免 controller/agent 都依赖同一个文件路径。
