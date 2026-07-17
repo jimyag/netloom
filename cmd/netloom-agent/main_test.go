@@ -949,17 +949,21 @@ func TestRunPolicyStatusExportWithStoreReportsFilteredJSON(t *testing.T) {
 		PressureEndpoint:     endpointID,
 		PolicyRevisionMax:    7,
 		Statuses: []dataplane.PolicyEndpointStatus{{
-			EndpointID:      endpointID,
-			Revision:        7,
-			Entries:         2,
-			Capacity:        64,
-			PressurePercent: 5,
-			LastEvent:       dataplane.PolicyUpdateEvent{EndpointID: endpointID, Revision: 7, Success: true},
-			HasLastEvent:    true,
+			EndpointID:       endpointID,
+			Revision:         7,
+			Entries:          2,
+			Capacity:         64,
+			PressurePercent:  5,
+			PressureSeverity: dataplane.PolicyMapPressureNormal,
+			LastEvent:        dataplane.PolicyUpdateEvent{EndpointID: endpointID, Revision: 7, Success: true},
+			HasLastEvent:     true,
 		}, {
-			EndpointID: model.EndpointKey("prod", "pod-b"),
-			Revision:   1,
-			Entries:    1,
+			EndpointID:       model.EndpointKey("prod", "pod-b"),
+			Revision:         1,
+			Entries:          63,
+			Capacity:         64,
+			PressurePercent:  98,
+			PressureSeverity: dataplane.PolicyMapPressureCritical,
 		}},
 	}); err != nil {
 		t.Fatal(err)
@@ -980,6 +984,18 @@ func TestRunPolicyStatusExportWithStoreReportsFilteredJSON(t *testing.T) {
 	}
 	if len(got.Statuses) != 1 || got.Statuses[0].EndpointID != endpointID || got.Statuses[0].Revision != 7 || !got.Statuses[0].HasLastEvent {
 		t.Fatalf("statuses = %+v, want filtered pod-a revision 7 status", got.Statuses)
+	}
+
+	out.Reset()
+	if err := runPolicyStatusExportWithStore(t.Context(), policyStatusExportOptions{pressureSeverity: dataplane.PolicyMapPressureCritical}, &out, store); err != nil {
+		t.Fatal(err)
+	}
+	got = policyStatusOutput{}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("decode pressure-severity filtered policy-status-export output: %v\n%s", err, out.String())
+	}
+	if got.FilterPressureSeverity != dataplane.PolicyMapPressureCritical || got.EndpointCount != 1 || len(got.Statuses) != 1 || got.Statuses[0].EndpointID != model.EndpointKey("prod", "pod-b") {
+		t.Fatalf("pressure filtered statuses = %+v, want only critical pod-b", got)
 	}
 }
 
@@ -3624,18 +3640,26 @@ func TestPolicyEndpointAPIReportsLifecycleStatus(t *testing.T) {
 		PolicyMapPressureEndpoint: endpointID,
 		PolicyRevisionMax:         3,
 		PolicyEndpointStatus: []dataplane.PolicyEndpointStatus{{
-			EndpointID:      endpointID,
-			Revision:        3,
-			Entries:         1,
-			Capacity:        16,
-			PressurePercent: 6,
-			LastStats:       dataplane.PolicyUpdateStats{Revision: 3, Added: 1},
+			EndpointID:       endpointID,
+			Revision:         3,
+			Entries:          1,
+			Capacity:         16,
+			PressurePercent:  6,
+			PressureSeverity: dataplane.PolicyMapPressureNormal,
+			LastStats:        dataplane.PolicyUpdateStats{Revision: 3, Added: 1},
 			LastEvent: dataplane.PolicyUpdateEvent{
 				EndpointID: endpointID,
 				Revision:   3,
 				Success:    true,
 			},
 			HasLastEvent: true,
+		}, {
+			EndpointID:       model.EndpointKey("prod", "pod-b"),
+			Revision:         2,
+			Entries:          15,
+			Capacity:         16,
+			PressurePercent:  93,
+			PressureSeverity: dataplane.PolicyMapPressureCritical,
 		}},
 	}, "ebpf", 25*time.Millisecond)
 
@@ -3658,6 +3682,21 @@ func TestPolicyEndpointAPIReportsLifecycleStatus(t *testing.T) {
 	}
 	if len(got.Statuses) != 1 || got.Statuses[0].EndpointID != endpointID || got.Statuses[0].Revision != 3 {
 		t.Fatalf("policy endpoint API statuses = %+v, want pod-a revision 3", got.Statuses)
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/policy/endpoints?pressure_severity=critical", nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("critical filter status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	got = policyStatusOutput{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode critical policy endpoint API response: %v\n%s", err, recorder.Body.String())
+	}
+	if got.FilterPressureSeverity != dataplane.PolicyMapPressureCritical || got.EndpointCount != 1 || len(got.Statuses) != 1 || got.Statuses[0].EndpointID != model.EndpointKey("prod", "pod-b") {
+		t.Fatalf("critical filtered statuses = %+v, want pod-b", got)
 	}
 }
 
