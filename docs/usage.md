@@ -562,6 +562,9 @@ desired-state `policy_rollouts[]` 中设置 `risk_ack_required:true`。当 `roll
 为 true 且没有 `risk_acknowledged:true` 时，live rollout 会以 `risk_ack_pending` 暂停，
 不会写入 live policy map；确认后带上 `risk_acknowledged:true` 和可选 `risk_ack_ref`
 重新提交即可继续。
+如果配置了 `change_status_url`，agent 会把 `risk_ack_required`、`risk_acknowledged`、
+`risk_ack_pending`、`risk_ack_ref` 和 `risk_blocking_change` 一起同步给外部变更系统，
+便于变更单区分普通暂停和需要人工确认的高风险 eBPF policy-map 变更。
 
 查看 endpoint policy lifecycle 动作历史：
 

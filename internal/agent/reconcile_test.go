@@ -2786,6 +2786,76 @@ func TestApplyPolicyRolloutsSyncsAckPendingChangeStatus(t *testing.T) {
 	}
 }
 
+func TestApplyPolicyRolloutsSyncsRiskAckPendingChangeStatus(t *testing.T) {
+	state := rolloutPolicyState()
+	state.SecurityGroups[0].Rules[0].Action = model.ActionReject
+	state.SecurityGroups[0].Rules[0].ID = "reject-http"
+	var statusRequests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		statusRequests++
+		if r.Method != http.MethodPost {
+			t.Fatalf("status method = %s, want POST", r.Method)
+		}
+		var request struct {
+			ApprovalRef        string `json:"approval_ref"`
+			RiskAckRef         string `json:"risk_ack_ref"`
+			Status             string `json:"status"`
+			RiskAckRequired    bool   `json:"risk_ack_required"`
+			RiskAcknowledged   bool   `json:"risk_acknowledged"`
+			RiskAckPending     bool   `json:"risk_ack_pending"`
+			RiskBlockingChange bool   `json:"risk_blocking_change"`
+			Paused             bool   `json:"paused"`
+			Applied            int    `json:"applied"`
+			Skipped            int    `json:"skipped"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode status request: %v", err)
+		}
+		if request.ApprovalRef != "chg-risk" ||
+			request.RiskAckRef != "risk-9999" ||
+			request.Status != "risk_ack_pending" ||
+			!request.RiskAckRequired ||
+			request.RiskAcknowledged ||
+			!request.RiskAckPending ||
+			!request.RiskBlockingChange ||
+			!request.Paused ||
+			request.Applied != 0 ||
+			request.Skipped != 1 {
+			t.Fatalf("status request = %+v, want risk ack pending summary", request)
+		}
+		_, _ = w.Write([]byte(`{"synced":true}`))
+	}))
+	defer server.Close()
+
+	state.PolicyRollouts = []control.PolicyRollout{{
+		Name:            "risk-ack-status",
+		Node:            "node-a",
+		Endpoints:       []string{"prod/pod-a"},
+		BatchSize:       1,
+		ApprovalRef:     "chg-risk",
+		RiskAckRequired: true,
+		RiskAckRef:      "risk-9999",
+		ChangeStatusURL: server.URL,
+	}}
+	store := dataplane.NewInMemoryPolicyStore()
+	rollouts, err := ApplyPolicyRollouts(context.Background(), state, ReconcileOptions{
+		Node:  "node-a",
+		Store: store,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if statusRequests != 1 {
+		t.Fatalf("status requests = %d, want 1", statusRequests)
+	}
+	if len(rollouts) != 1 || !rollouts[0].Rollout.ChangeStatusSynced || !rollouts[0].Rollout.RiskAckPending || !rollouts[0].Rollout.Risk.BlockingChange {
+		t.Fatalf("rollouts = %+v, want synced risk ack pending rollout", rollouts)
+	}
+	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 0 {
+		t.Fatalf("pod-a entries = %+v, want no mutation before risk ack", entries)
+	}
+}
+
 func TestApplyPolicyRolloutsSyncsCancelledChangeStatus(t *testing.T) {
 	state := rolloutPolicyState()
 	var statusRequests int

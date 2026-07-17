@@ -805,25 +805,28 @@ type policyRolloutApprovalCallbackResponse struct {
 }
 
 type policyRolloutChangeStatusRequest struct {
-	ApprovalRef     string   `json:"approval_ref,omitempty"`
-	AckRef          string   `json:"ack_ref,omitempty"`
-	RiskAckRef      string   `json:"risk_ack_ref,omitempty"`
-	Revision        string   `json:"revision,omitempty"`
-	Status          string   `json:"status"`
-	Endpoints       []string `json:"endpoints"`
-	Planned         int      `json:"planned"`
-	Applied         int      `json:"applied"`
-	Skipped         int      `json:"skipped"`
-	Failed          int      `json:"failed"`
-	RolledBack      int      `json:"rolled_back,omitempty"`
-	RollbackFailed  int      `json:"rollback_failed,omitempty"`
-	Paused          bool     `json:"paused,omitempty"`
-	Cancelled       bool     `json:"cancelled,omitempty"`
-	ApprovalPending bool     `json:"approval_pending,omitempty"`
-	AckPending      bool     `json:"ack_pending,omitempty"`
-	RiskAckPending  bool     `json:"risk_ack_pending,omitempty"`
-	SLOFailed       bool     `json:"slo_failed,omitempty"`
-	ProbeFailed     bool     `json:"probe_failed,omitempty"`
+	ApprovalRef        string   `json:"approval_ref,omitempty"`
+	AckRef             string   `json:"ack_ref,omitempty"`
+	RiskAckRef         string   `json:"risk_ack_ref,omitempty"`
+	Revision           string   `json:"revision,omitempty"`
+	Status             string   `json:"status"`
+	Endpoints          []string `json:"endpoints"`
+	Planned            int      `json:"planned"`
+	Applied            int      `json:"applied"`
+	Skipped            int      `json:"skipped"`
+	Failed             int      `json:"failed"`
+	RolledBack         int      `json:"rolled_back,omitempty"`
+	RollbackFailed     int      `json:"rollback_failed,omitempty"`
+	Paused             bool     `json:"paused,omitempty"`
+	Cancelled          bool     `json:"cancelled,omitempty"`
+	ApprovalPending    bool     `json:"approval_pending,omitempty"`
+	AckPending         bool     `json:"ack_pending,omitempty"`
+	RiskAckRequired    bool     `json:"risk_ack_required,omitempty"`
+	RiskAcknowledged   bool     `json:"risk_acknowledged,omitempty"`
+	RiskAckPending     bool     `json:"risk_ack_pending,omitempty"`
+	RiskBlockingChange bool     `json:"risk_blocking_change,omitempty"`
+	SLOFailed          bool     `json:"slo_failed,omitempty"`
+	ProbeFailed        bool     `json:"probe_failed,omitempty"`
 }
 
 type policyRolloutChangeStatusResponse struct {
@@ -978,25 +981,28 @@ func postPolicyRolloutChangeStatus(ctx context.Context, options PolicyEndpointRo
 	defer cancel()
 	status := policyRolloutChangeStatus(rollout)
 	payload := policyRolloutChangeStatusRequest{
-		ApprovalRef:     rollout.ApprovalRef,
-		AckRef:          rollout.AckRef,
-		RiskAckRef:      rollout.RiskAckRef,
-		Revision:        rollout.Revision,
-		Status:          status,
-		Endpoints:       append([]string(nil), endpointIDs...),
-		Planned:         rollout.Planned,
-		Applied:         rollout.Applied,
-		Skipped:         rollout.Skipped,
-		Failed:          rollout.Failed,
-		RolledBack:      rollout.RolledBack,
-		RollbackFailed:  rollout.RollbackFailed,
-		Paused:          rollout.Paused,
-		Cancelled:       rollout.Cancelled,
-		ApprovalPending: rollout.ApprovalPending,
-		AckPending:      rollout.AckPending,
-		RiskAckPending:  rollout.RiskAckPending,
-		SLOFailed:       rollout.SLOFailed,
-		ProbeFailed:     rollout.ProbeFailed,
+		ApprovalRef:        rollout.ApprovalRef,
+		AckRef:             rollout.AckRef,
+		RiskAckRef:         rollout.RiskAckRef,
+		Revision:           rollout.Revision,
+		Status:             status,
+		Endpoints:          append([]string(nil), endpointIDs...),
+		Planned:            rollout.Planned,
+		Applied:            rollout.Applied,
+		Skipped:            rollout.Skipped,
+		Failed:             rollout.Failed,
+		RolledBack:         rollout.RolledBack,
+		RollbackFailed:     rollout.RollbackFailed,
+		Paused:             rollout.Paused,
+		Cancelled:          rollout.Cancelled,
+		ApprovalPending:    rollout.ApprovalPending,
+		AckPending:         rollout.AckPending,
+		RiskAckRequired:    rollout.RiskAckRequired,
+		RiskAcknowledged:   rollout.RiskAcknowledged,
+		RiskAckPending:     rollout.RiskAckPending,
+		RiskBlockingChange: rollout.Risk.BlockingChange,
+		SLOFailed:          rollout.SLOFailed,
+		ProbeFailed:        rollout.ProbeFailed,
 	}
 	sort.Strings(payload.Endpoints)
 	raw, err := json.Marshal(payload)
