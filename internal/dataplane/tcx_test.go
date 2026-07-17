@@ -1334,7 +1334,41 @@ func TestIPv4L4ACLRulesFromProgramsKeepsHigherPrecedenceDuplicateKey(t *testing.
 	}
 }
 
-func TestIPv4L4ACLRulesFromProgramRejectsSamePrecedenceDropRejectConflict(t *testing.T) {
+func TestIPv4L4ACLRulesFromProgramChoosesDropForSamePrecedenceAllowConflict(t *testing.T) {
+	program := policy.Program{
+		EndpointID: testEndpointA,
+		EndpointIP: netip.MustParseAddr("10.10.0.10"),
+		Rules: []policy.Rule{{
+			ID:         "allow-web",
+			Priority:   100,
+			Direction:  model.DirectionIngress,
+			Protocol:   model.ProtocolTCP,
+			RemoteCIDR: netip.MustParsePrefix("172.30.0.11/32"),
+			Ports:      []model.PortRange{{From: 8080, To: 8080}},
+			Action:     model.ActionAllow,
+		}, {
+			ID:         "drop-web",
+			Priority:   100,
+			Direction:  model.DirectionIngress,
+			Protocol:   model.ProtocolTCP,
+			RemoteCIDR: netip.MustParsePrefix("172.30.0.11/32"),
+			Ports:      []model.PortRange{{From: 8080, To: 8080}},
+			Action:     model.ActionDrop,
+		}},
+	}
+	rules, err := IPv4L4ACLRulesFromProgram(program)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 1 || rules[0].Action != TCXDrop || rules[0].Reject {
+		t.Fatalf("rules = %+v, want one drop rule", rules)
+	}
+	if rules[0].RuleCookie != stableCookie("drop-web") {
+		t.Fatalf("rule cookie = %d, want drop-web cookie", rules[0].RuleCookie)
+	}
+}
+
+func TestIPv4L4ACLRulesFromProgramChoosesRejectForSamePrecedenceDropConflict(t *testing.T) {
 	program := policy.Program{
 		EndpointID: testEndpointA,
 		EndpointIP: netip.MustParseAddr("10.10.0.10"),
@@ -1356,9 +1390,15 @@ func TestIPv4L4ACLRulesFromProgramRejectsSamePrecedenceDropRejectConflict(t *tes
 			Action:     model.ActionReject,
 		}},
 	}
-	_, err := IPv4L4ACLRulesFromProgram(program)
-	if err == nil || !strings.Contains(err.Error(), "conflicting TCX ACL reject actions") {
-		t.Fatalf("error = %v, want drop/reject conflict", err)
+	rules, err := IPv4L4ACLRulesFromProgram(program)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 1 || rules[0].Action != TCXDrop || !rules[0].Reject {
+		t.Fatalf("rules = %+v, want one reject rule", rules)
+	}
+	if rules[0].RuleCookie != stableCookie("reject-web") {
+		t.Fatalf("rule cookie = %d, want reject-web cookie", rules[0].RuleCookie)
 	}
 }
 
@@ -1529,7 +1569,41 @@ func TestIPv6L4ACLRulesFromProgramsKeepsHigherPrecedenceDuplicateKey(t *testing.
 	}
 }
 
-func TestIPv6L4ACLRulesFromProgramRejectsSamePrecedenceDropRejectConflict(t *testing.T) {
+func TestIPv6L4ACLRulesFromProgramChoosesDropForSamePrecedenceAllowConflict(t *testing.T) {
+	program := policy.Program{
+		EndpointID: testEndpointA,
+		EndpointIP: netip.MustParseAddr("fd00:10::10"),
+		Rules: []policy.Rule{{
+			ID:         "allow-v6-web",
+			Priority:   100,
+			Direction:  model.DirectionIngress,
+			Protocol:   model.ProtocolTCP,
+			RemoteCIDR: netip.MustParsePrefix("fd00:10::11/128"),
+			Ports:      []model.PortRange{{From: 8080, To: 8080}},
+			Action:     model.ActionAllow,
+		}, {
+			ID:         "drop-v6-web",
+			Priority:   100,
+			Direction:  model.DirectionIngress,
+			Protocol:   model.ProtocolTCP,
+			RemoteCIDR: netip.MustParsePrefix("fd00:10::11/128"),
+			Ports:      []model.PortRange{{From: 8080, To: 8080}},
+			Action:     model.ActionDrop,
+		}},
+	}
+	rules, err := IPv6L4ACLRulesFromProgram(program)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 1 || rules[0].Action != TCXDrop || rules[0].Reject {
+		t.Fatalf("rules = %+v, want one drop rule", rules)
+	}
+	if rules[0].RuleCookie != stableCookie("drop-v6-web") {
+		t.Fatalf("rule cookie = %d, want drop-v6-web cookie", rules[0].RuleCookie)
+	}
+}
+
+func TestIPv6L4ACLRulesFromProgramChoosesRejectForSamePrecedenceDropConflict(t *testing.T) {
 	program := policy.Program{
 		EndpointID: testEndpointA,
 		EndpointIP: netip.MustParseAddr("fd00:10::10"),
@@ -1551,9 +1625,15 @@ func TestIPv6L4ACLRulesFromProgramRejectsSamePrecedenceDropRejectConflict(t *tes
 			Action:     model.ActionReject,
 		}},
 	}
-	_, err := IPv6L4ACLRulesFromProgram(program)
-	if err == nil || !strings.Contains(err.Error(), "conflicting TCX ACL reject actions") {
-		t.Fatalf("error = %v, want drop/reject conflict", err)
+	rules, err := IPv6L4ACLRulesFromProgram(program)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 1 || rules[0].Action != TCXDrop || !rules[0].Reject {
+		t.Fatalf("rules = %+v, want one reject rule", rules)
+	}
+	if rules[0].RuleCookie != stableCookie("reject-v6-web") {
+		t.Fatalf("rule cookie = %d, want reject-v6-web cookie", rules[0].RuleCookie)
 	}
 }
 

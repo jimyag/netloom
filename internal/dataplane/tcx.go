@@ -898,21 +898,13 @@ func appendIPv4ProjectedRule(rules *[]IPv4L4ACLRule, seen map[IPv4L4Key]int32, c
 	for i, existing := range current {
 		existingKey := ipv4L4RuleKey(existing.LocalCIDR, existing.SourceCIDR, existing.Protocol, existing.DestPort, existing.DestPortPrefixBits)
 		candidateKey := ipv4L4RuleKey(candidate.LocalCIDR, candidate.SourceCIDR, candidate.Protocol, candidate.DestPort, candidate.DestPortPrefixBits)
-		if existingKey == candidateKey &&
-			existing.Precedence == candidate.Precedence && existing.Action != candidate.Action {
-			return fmt.Errorf("conflicting TCX ACL actions for identical match key")
-		}
-		if existingKey == candidateKey &&
-			existing.Precedence == candidate.Precedence && existing.Action == candidate.Action && existing.Reject != candidate.Reject {
-			return fmt.Errorf("conflicting TCX ACL reject actions for identical match key")
-		}
-		if existingKey == candidateKey &&
-			existing.Precedence == candidate.Precedence && existing.Action == candidate.Action && existing.RuleCookie != candidate.RuleCookie {
-			return fmt.Errorf("conflicting TCX ACL rule cookies for identical match key")
-		}
-		if existingKey == candidateKey && existing.Precedence == candidate.Precedence && existing.Action == candidate.Action {
-			current[i].Log = existing.Log || candidate.Log
-			current[i].Reject = existing.Reject || candidate.Reject
+		if existingKey == candidateKey && existing.Precedence == candidate.Precedence {
+			merged, err := mergeIPv4TCXRule(existing, candidate)
+			if err != nil {
+				return err
+			}
+			current[i] = merged
+			seen[existingKey] = merged.Action
 			*rules = append(out, current[i:]...)
 			return nil
 		}
@@ -937,21 +929,13 @@ func appendIPv6ProjectedRule(rules *[]IPv6L4ACLRule, seen map[IPv6L4Key]int32, c
 	for i, existing := range current {
 		existingKey := ipv6L4RuleKey(existing.LocalCIDR, existing.SourceCIDR, existing.Protocol, existing.DestPort, existing.DestPortPrefixBits)
 		candidateKey := ipv6L4RuleKey(candidate.LocalCIDR, candidate.SourceCIDR, candidate.Protocol, candidate.DestPort, candidate.DestPortPrefixBits)
-		if existingKey == candidateKey &&
-			existing.Precedence == candidate.Precedence && existing.Action != candidate.Action {
-			return fmt.Errorf("conflicting TCX ACL actions for identical match key")
-		}
-		if existingKey == candidateKey &&
-			existing.Precedence == candidate.Precedence && existing.Action == candidate.Action && existing.Reject != candidate.Reject {
-			return fmt.Errorf("conflicting TCX ACL reject actions for identical match key")
-		}
-		if existingKey == candidateKey &&
-			existing.Precedence == candidate.Precedence && existing.Action == candidate.Action && existing.RuleCookie != candidate.RuleCookie {
-			return fmt.Errorf("conflicting TCX ACL rule cookies for identical match key")
-		}
-		if existingKey == candidateKey && existing.Precedence == candidate.Precedence && existing.Action == candidate.Action {
-			current[i].Log = existing.Log || candidate.Log
-			current[i].Reject = existing.Reject || candidate.Reject
+		if existingKey == candidateKey && existing.Precedence == candidate.Precedence {
+			merged, err := mergeIPv6TCXRule(existing, candidate)
+			if err != nil {
+				return err
+			}
+			current[i] = merged
+			seen[existingKey] = merged.Action
 			*rules = append(out, current[i:]...)
 			return nil
 		}
@@ -968,6 +952,48 @@ func appendIPv6ProjectedRule(rules *[]IPv6L4ACLRule, seen map[IPv6L4Key]int32, c
 	*rules = append(out, candidate)
 	seen[ipv6L4RuleKey(candidate.LocalCIDR, candidate.SourceCIDR, candidate.Protocol, candidate.DestPort, candidate.DestPortPrefixBits)] = candidate.Action
 	return nil
+}
+
+func mergeIPv4TCXRule(existing, candidate IPv4L4ACLRule) (IPv4L4ACLRule, error) {
+	if existing.Action == candidate.Action && existing.Reject == candidate.Reject {
+		if existing.RuleCookie != candidate.RuleCookie {
+			return IPv4L4ACLRule{}, fmt.Errorf("conflicting TCX ACL rule cookies for identical match key")
+		}
+		existing.Log = existing.Log || candidate.Log
+		return existing, nil
+	}
+	if tcxACLActionPrecedence(candidate.Action, candidate.Reject) > tcxACLActionPrecedence(existing.Action, existing.Reject) {
+		candidate.Log = candidate.Log || existing.Log
+		return candidate, nil
+	}
+	existing.Log = existing.Log || candidate.Log
+	return existing, nil
+}
+
+func mergeIPv6TCXRule(existing, candidate IPv6L4ACLRule) (IPv6L4ACLRule, error) {
+	if existing.Action == candidate.Action && existing.Reject == candidate.Reject {
+		if existing.RuleCookie != candidate.RuleCookie {
+			return IPv6L4ACLRule{}, fmt.Errorf("conflicting TCX ACL rule cookies for identical match key")
+		}
+		existing.Log = existing.Log || candidate.Log
+		return existing, nil
+	}
+	if tcxACLActionPrecedence(candidate.Action, candidate.Reject) > tcxACLActionPrecedence(existing.Action, existing.Reject) {
+		candidate.Log = candidate.Log || existing.Log
+		return candidate, nil
+	}
+	existing.Log = existing.Log || candidate.Log
+	return existing, nil
+}
+
+func tcxACLActionPrecedence(action int32, reject bool) int {
+	if action == TCXDrop && reject {
+		return 2
+	}
+	if action == TCXDrop {
+		return 1
+	}
+	return 0
 }
 
 func ipv4RuleCovers(candidate, selected IPv4L4ACLRule) bool {
