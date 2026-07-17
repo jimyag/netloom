@@ -201,6 +201,8 @@ type policyStatusOptions struct {
 	revisionBelow       uint64
 	lastEventSuccess    string
 	lastEventRemediated string
+	lastEventRuleCookie string
+	lastEventRuleRef    string
 }
 
 type policyStatusExportOptions struct {
@@ -211,6 +213,8 @@ type policyStatusExportOptions struct {
 	revisionBelow       uint64
 	lastEventSuccess    string
 	lastEventRemediated string
+	lastEventRuleCookie string
+	lastEventRuleRef    string
 }
 
 type policyRevisionWaitOptions struct {
@@ -331,6 +335,8 @@ type policyStatusOutput struct {
 	FilterRevisionBelow       uint64                           `json:"filter_revision_below,omitempty"`
 	FilterLastEventSuccess    *bool                            `json:"filter_last_event_success,omitempty"`
 	FilterLastEventRemediated *bool                            `json:"filter_last_event_remediated,omitempty"`
+	FilterLastEventRuleCookie uint32                           `json:"filter_last_event_rule_cookie,omitempty"`
+	FilterLastEventRuleRef    string                           `json:"filter_last_event_rule_ref,omitempty"`
 	EndpointCount             int                              `json:"endpoint_count"`
 	PolicyMapEntries          uint32                           `json:"policy_map_entries"`
 	PolicyMapCapacity         uint32                           `json:"policy_map_capacity"`
@@ -865,6 +871,8 @@ func runPolicyStatus(args []string, stdout io.Writer) error {
 	flags.Uint64Var(&opts.revisionBelow, "revision-below", 0, "optional policy revision threshold; include endpoints below this revision")
 	flags.StringVar(&opts.lastEventSuccess, "last-event-success", "", "optional last policy update event success filter: true or false")
 	flags.StringVar(&opts.lastEventRemediated, "last-event-remediated", "", "optional last policy update event remediation filter: true or false")
+	flags.StringVar(&opts.lastEventRuleCookie, "last-event-rule-cookie", "", "optional dataplane rule cookie in the last policy update event")
+	flags.StringVar(&opts.lastEventRuleRef, "last-event-rule-ref", "", "optional policy rule reference in the last policy update event")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -908,7 +916,11 @@ func runPolicyStatus(args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	statuses := filterPolicyEndpointStatuses(result.PolicyEndpointStatus, opts.endpoint, opts.pressureSeverity, drifted, opts.revisionBelow, lastEventSuccess, lastEventRemediated, state.Endpoints)
+	lastEventRuleCookie, err := parseOptionalUint32Filter(opts.lastEventRuleCookie, "last-event-rule-cookie")
+	if err != nil {
+		return err
+	}
+	statuses := filterPolicyEndpointStatuses(result.PolicyEndpointStatus, opts.endpoint, opts.pressureSeverity, drifted, opts.revisionBelow, lastEventSuccess, lastEventRemediated, lastEventRuleCookie, opts.lastEventRuleRef, state.Endpoints)
 	output := policyStatusOutputFromResult(result, storeName, statuses)
 	output.FilterEndpoint = strings.TrimSpace(opts.endpoint)
 	output.FilterPressureSeverity = strings.TrimSpace(opts.pressureSeverity)
@@ -916,6 +928,8 @@ func runPolicyStatus(args []string, stdout io.Writer) error {
 	output.FilterRevisionBelow = opts.revisionBelow
 	output.FilterLastEventSuccess = lastEventSuccess
 	output.FilterLastEventRemediated = lastEventRemediated
+	output.FilterLastEventRuleCookie = optionalUint32Value(lastEventRuleCookie)
+	output.FilterLastEventRuleRef = strings.TrimSpace(opts.lastEventRuleRef)
 	encoder := json.NewEncoder(stdout)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(output)
@@ -932,6 +946,8 @@ func runPolicyStatusExport(ctx context.Context, args []string, stdout io.Writer)
 	flags.Uint64Var(&opts.revisionBelow, "revision-below", 0, "optional policy revision threshold; include endpoints below this revision")
 	flags.StringVar(&opts.lastEventSuccess, "last-event-success", "", "optional last policy update event success filter: true or false")
 	flags.StringVar(&opts.lastEventRemediated, "last-event-remediated", "", "optional last policy update event remediation filter: true or false")
+	flags.StringVar(&opts.lastEventRuleCookie, "last-event-rule-cookie", "", "optional dataplane rule cookie in the last policy update event")
+	flags.StringVar(&opts.lastEventRuleRef, "last-event-rule-ref", "", "optional policy rule reference in the last policy update event")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -969,7 +985,11 @@ func runPolicyStatusExportWithStore(ctx context.Context, opts policyStatusExport
 	if err != nil {
 		return err
 	}
-	output := policyStatusOutputFromDocument(doc, strings.TrimSpace(opts.endpoint), strings.TrimSpace(opts.pressureSeverity), drifted, opts.revisionBelow, lastEventSuccess, lastEventRemediated)
+	lastEventRuleCookie, err := parseOptionalUint32Filter(opts.lastEventRuleCookie, "last-event-rule-cookie")
+	if err != nil {
+		return err
+	}
+	output := policyStatusOutputFromDocument(doc, strings.TrimSpace(opts.endpoint), strings.TrimSpace(opts.pressureSeverity), drifted, opts.revisionBelow, lastEventSuccess, lastEventRemediated, lastEventRuleCookie, strings.TrimSpace(opts.lastEventRuleRef))
 	encoder := json.NewEncoder(stdout)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(output)
@@ -1021,7 +1041,7 @@ func runPolicyRevisionWaitWithStore(ctx context.Context, opts policyRevisionWait
 			return err
 		}
 		lastDoc = doc
-		statuses := filterPolicyEndpointStatuses(doc.Statuses, opts.endpoint, "", nil, 0, nil, nil, nil)
+		statuses := filterPolicyEndpointStatuses(doc.Statuses, opts.endpoint, "", nil, 0, nil, nil, nil, "", nil)
 		if len(statuses) > 0 {
 			lastStatus = statuses[0]
 			sawEndpoint = true
@@ -1841,10 +1861,11 @@ func loadDesiredStateFromPathOrOVSDB(ctx context.Context, path string, store ope
 	return state, nil
 }
 
-func filterPolicyEndpointStatuses(statuses []dataplane.PolicyEndpointStatus, endpoint, pressureSeverity string, drifted *bool, revisionBelow uint64, lastEventSuccess, lastEventRemediated *bool, endpoints []model.Endpoint) []dataplane.PolicyEndpointStatus {
+func filterPolicyEndpointStatuses(statuses []dataplane.PolicyEndpointStatus, endpoint, pressureSeverity string, drifted *bool, revisionBelow uint64, lastEventSuccess, lastEventRemediated *bool, lastEventRuleCookie *uint32, lastEventRuleRef string, endpoints []model.Endpoint) []dataplane.PolicyEndpointStatus {
 	endpoint = strings.TrimSpace(endpoint)
 	pressureSeverity = strings.TrimSpace(pressureSeverity)
-	if endpoint == "" && pressureSeverity == "" && drifted == nil && revisionBelow == 0 && lastEventSuccess == nil && lastEventRemediated == nil {
+	lastEventRuleRef = strings.TrimSpace(lastEventRuleRef)
+	if endpoint == "" && pressureSeverity == "" && drifted == nil && revisionBelow == 0 && lastEventSuccess == nil && lastEventRemediated == nil && lastEventRuleCookie == nil && lastEventRuleRef == "" {
 		return append([]dataplane.PolicyEndpointStatus(nil), statuses...)
 	}
 	keys := map[string]struct{}{endpoint: {}}
@@ -1873,6 +1894,12 @@ func filterPolicyEndpointStatuses(statuses []dataplane.PolicyEndpointStatus, end
 		if lastEventRemediated != nil && (!status.HasLastEvent || status.LastEvent.Remediated != *lastEventRemediated) {
 			continue
 		}
+		if lastEventRuleCookie != nil && (!status.HasLastEvent || !policyUpdateEventHasRuleCookie(status.LastEvent, *lastEventRuleCookie)) {
+			continue
+		}
+		if lastEventRuleRef != "" && (!status.HasLastEvent || !slices.Contains(status.LastEvent.RuleRefs, lastEventRuleRef)) {
+			continue
+		}
 		if endpoint == "" {
 			filtered = append(filtered, status)
 			continue
@@ -1898,6 +1925,26 @@ func parseOptionalBoolFilter(value, name string) (*bool, error) {
 		return nil, fmt.Errorf("invalid %s filter %q", name, value)
 	}
 	return &parsed, nil
+}
+
+func parseOptionalUint32Filter(value, name string) (*uint32, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, nil
+	}
+	parsed, err := strconv.ParseUint(value, 10, 32)
+	if err != nil {
+		return nil, fmt.Errorf("invalid %s %q", name, value)
+	}
+	cookie := uint32(parsed)
+	return &cookie, nil
+}
+
+func optionalUint32Value(value *uint32) uint32 {
+	if value == nil {
+		return 0
+	}
+	return *value
 }
 
 func validatePolicyEndpointPressureSeverity(severity string) error {
@@ -1930,8 +1977,8 @@ func policyStatusOutputFromResult(result agent.ReconcileResult, storeName string
 	}
 }
 
-func policyStatusOutputFromDocument(doc policyStatusDocument, endpoint, pressureSeverity string, drifted *bool, revisionBelow uint64, lastEventSuccess, lastEventRemediated *bool) policyStatusOutput {
-	filtered := filterPolicyEndpointStatuses(doc.Statuses, endpoint, pressureSeverity, drifted, revisionBelow, lastEventSuccess, lastEventRemediated, nil)
+func policyStatusOutputFromDocument(doc policyStatusDocument, endpoint, pressureSeverity string, drifted *bool, revisionBelow uint64, lastEventSuccess, lastEventRemediated *bool, lastEventRuleCookie *uint32, lastEventRuleRef string) policyStatusOutput {
+	filtered := filterPolicyEndpointStatuses(doc.Statuses, endpoint, pressureSeverity, drifted, revisionBelow, lastEventSuccess, lastEventRemediated, lastEventRuleCookie, lastEventRuleRef, nil)
 	return policyStatusOutput{
 		Node:                      doc.Node,
 		Store:                     doc.Store,
@@ -1945,6 +1992,8 @@ func policyStatusOutputFromDocument(doc policyStatusDocument, endpoint, pressure
 		FilterRevisionBelow:       revisionBelow,
 		FilterLastEventSuccess:    lastEventSuccess,
 		FilterLastEventRemediated: lastEventRemediated,
+		FilterLastEventRuleCookie: optionalUint32Value(lastEventRuleCookie),
+		FilterLastEventRuleRef:    strings.TrimSpace(lastEventRuleRef),
 		EndpointCount:             len(filtered),
 		PolicyMapEntries:          doc.PolicyMapEntries,
 		PolicyMapCapacity:         doc.PolicyMapCapacity,
@@ -5423,7 +5472,14 @@ func (m *agentMetrics) handlePolicyEndpoints(w http.ResponseWriter, r *http.Requ
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
-	statuses := filterPolicyEndpointStatuses(snapshot.Result.PolicyEndpointStatus, endpoint, pressureSeverity, drifted, revisionBelow, lastEventSuccess, lastEventRemediated, nil)
+	lastEventRuleCookie, err := parseOptionalUint32Filter(r.URL.Query().Get("last_event_rule_cookie"), "last_event_rule_cookie")
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	lastEventRuleRef := strings.TrimSpace(r.URL.Query().Get("last_event_rule_ref"))
+	statuses := filterPolicyEndpointStatuses(snapshot.Result.PolicyEndpointStatus, endpoint, pressureSeverity, drifted, revisionBelow, lastEventSuccess, lastEventRemediated, lastEventRuleCookie, lastEventRuleRef, nil)
 	if endpoint != "" && len(statuses) == 0 {
 		w.WriteHeader(http.StatusNotFound)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "policy endpoint not found"})
@@ -5439,6 +5495,8 @@ func (m *agentMetrics) handlePolicyEndpoints(w http.ResponseWriter, r *http.Requ
 	output.FilterRevisionBelow = revisionBelow
 	output.FilterLastEventSuccess = lastEventSuccess
 	output.FilterLastEventRemediated = lastEventRemediated
+	output.FilterLastEventRuleCookie = optionalUint32Value(lastEventRuleCookie)
+	output.FilterLastEventRuleRef = lastEventRuleRef
 	output.FrozenEndpoints = m.frozenPolicyEndpointIDs()
 	output.FrozenEndpointExpiry = m.frozenPolicyEndpointExpirations()
 	encoder := json.NewEncoder(w)
@@ -5522,7 +5580,7 @@ func (m *agentMetrics) handlePolicyEndpointRevision(w http.ResponseWriter, r *ht
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": "policy endpoint status is not ready"})
 			return
 		}
-		statuses := filterPolicyEndpointStatuses(snapshot.Result.PolicyEndpointStatus, endpoint, "", nil, 0, nil, nil, nil)
+		statuses := filterPolicyEndpointStatuses(snapshot.Result.PolicyEndpointStatus, endpoint, "", nil, 0, nil, nil, nil, "", nil)
 		if len(statuses) > 0 {
 			lastStatus = statuses[0]
 			sawEndpoint = true

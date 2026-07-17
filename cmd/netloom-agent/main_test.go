@@ -965,7 +965,7 @@ func TestRunPolicyStatusExportWithStoreReportsFilteredJSON(t *testing.T) {
 			PressurePercent:  98,
 			PressureSeverity: dataplane.PolicyMapPressureCritical,
 			Drift:            dataplane.PolicyMapDrift{Drifted: true, Extra: 1},
-			LastEvent:        dataplane.PolicyUpdateEvent{EndpointID: model.EndpointKey("prod", "pod-b"), Revision: 1, Success: false, Remediated: true, Remediation: string(dataplane.PolicyMapOverflowClear)},
+			LastEvent:        dataplane.PolicyUpdateEvent{EndpointID: model.EndpointKey("prod", "pod-b"), Revision: 1, RuleCookies: []uint32{43}, RuleRefs: []string{"prod/db/allow-db"}, Success: false, Remediated: true, Remediation: string(dataplane.PolicyMapOverflowClear)},
 			HasLastEvent:     true,
 		}},
 	}); err != nil {
@@ -1047,6 +1047,30 @@ func TestRunPolicyStatusExportWithStoreReportsFilteredJSON(t *testing.T) {
 	}
 	if got.FilterLastEventRemediated == nil || !*got.FilterLastEventRemediated || got.EndpointCount != 1 || len(got.Statuses) != 1 || got.Statuses[0].EndpointID != model.EndpointKey("prod", "pod-b") {
 		t.Fatalf("last-event-remediated filtered statuses = %+v, want only remediated pod-b", got)
+	}
+
+	out.Reset()
+	if err := runPolicyStatusExportWithStore(t.Context(), policyStatusExportOptions{lastEventRuleCookie: "43"}, &out, store); err != nil {
+		t.Fatal(err)
+	}
+	got = policyStatusOutput{}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("decode last-event-rule-cookie filtered policy-status-export output: %v\n%s", err, out.String())
+	}
+	if got.FilterLastEventRuleCookie != 43 || got.EndpointCount != 1 || len(got.Statuses) != 1 || got.Statuses[0].EndpointID != model.EndpointKey("prod", "pod-b") {
+		t.Fatalf("last-event-rule-cookie filtered statuses = %+v, want only pod-b with cookie 43", got)
+	}
+
+	out.Reset()
+	if err := runPolicyStatusExportWithStore(t.Context(), policyStatusExportOptions{lastEventRuleRef: "prod/db/allow-db"}, &out, store); err != nil {
+		t.Fatal(err)
+	}
+	got = policyStatusOutput{}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("decode last-event-rule-ref filtered policy-status-export output: %v\n%s", err, out.String())
+	}
+	if got.FilterLastEventRuleRef != "prod/db/allow-db" || got.EndpointCount != 1 || len(got.Statuses) != 1 || got.Statuses[0].EndpointID != model.EndpointKey("prod", "pod-b") {
+		t.Fatalf("last-event-rule-ref filtered statuses = %+v, want only pod-b with allow-db ref", got)
 	}
 }
 
@@ -3712,7 +3736,7 @@ func TestPolicyEndpointAPIReportsLifecycleStatus(t *testing.T) {
 			PressurePercent:  93,
 			PressureSeverity: dataplane.PolicyMapPressureCritical,
 			Drift:            dataplane.PolicyMapDrift{Drifted: true, Changed: 1},
-			LastEvent:        dataplane.PolicyUpdateEvent{EndpointID: model.EndpointKey("prod", "pod-b"), Revision: 2, Success: false, Remediated: true, Remediation: string(dataplane.PolicyMapOverflowClear)},
+			LastEvent:        dataplane.PolicyUpdateEvent{EndpointID: model.EndpointKey("prod", "pod-b"), Revision: 2, RuleCookies: []uint32{43}, RuleRefs: []string{"prod/db/allow-db"}, Success: false, Remediated: true, Remediation: string(dataplane.PolicyMapOverflowClear)},
 			HasLastEvent:     true,
 		}},
 	}, "ebpf", 25*time.Millisecond)
@@ -3814,6 +3838,36 @@ func TestPolicyEndpointAPIReportsLifecycleStatus(t *testing.T) {
 	}
 
 	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/policy/endpoints?last_event_rule_cookie=43", nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("last-event-rule-cookie filter status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	got = policyStatusOutput{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode last-event-rule-cookie policy endpoint API response: %v\n%s", err, recorder.Body.String())
+	}
+	if got.FilterLastEventRuleCookie != 43 || got.EndpointCount != 1 || len(got.Statuses) != 1 || got.Statuses[0].EndpointID != model.EndpointKey("prod", "pod-b") {
+		t.Fatalf("last-event-rule-cookie filtered statuses = %+v, want pod-b with cookie 43", got)
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/policy/endpoints?last_event_rule_ref=prod/db/allow-db", nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("last-event-rule-ref filter status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	got = policyStatusOutput{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode last-event-rule-ref policy endpoint API response: %v\n%s", err, recorder.Body.String())
+	}
+	if got.FilterLastEventRuleRef != "prod/db/allow-db" || got.EndpointCount != 1 || len(got.Statuses) != 1 || got.Statuses[0].EndpointID != model.EndpointKey("prod", "pod-b") {
+		t.Fatalf("last-event-rule-ref filtered statuses = %+v, want pod-b with allow-db ref", got)
+	}
+
+	recorder = httptest.NewRecorder()
 	request = httptest.NewRequest(http.MethodGet, "/policy/endpoints?drifted=maybe", nil)
 	metrics.handlePolicyEndpoints(recorder, request)
 
@@ -3835,6 +3889,14 @@ func TestPolicyEndpointAPIReportsLifecycleStatus(t *testing.T) {
 
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("invalid last-event-success status = %d, want 400; body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/policy/endpoints?last_event_rule_cookie=bad", nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("invalid last-event-rule-cookie status = %d, want 400; body=%s", recorder.Code, recorder.Body.String())
 	}
 }
 
