@@ -321,6 +321,7 @@ NETLOOM_AGENT_METRICS_ADDR=:9092 \
 ./netloom-agent dns-observations-export -ovsdb unix:/var/run/openvswitch/db.sock
 ./netloom-agent identity-groups-export -ovsdb unix:/var/run/openvswitch/db.sock
 ./netloom-agent policy-status-export -ovsdb unix:/var/run/openvswitch/db.sock -endpoint prod/vm-a
+./netloom-agent policy-revision-wait -ovsdb unix:/var/run/openvswitch/db.sock -endpoint prod/vm-a -revision 3 -timeout 30s
 ./netloom-agent policy-entries-export -ovsdb unix:/var/run/openvswitch/db.sock -endpoint prod/vm-a
 ./netloom-agent policy-rules -ovsdb unix:/var/run/openvswitch/db.sock -endpoint prod/vm-a
 ./netloom-agent policy-events -ovsdb unix:/var/run/openvswitch/db.sock -endpoint prod/vm-a -limit 20
@@ -355,6 +356,8 @@ provider、datapath 和错误状态。
 `policy-status-export` 会解码 `Open_vSwitch.external_ids:netloom_policy_endpoint_status`，
 用于在不重新 reconcile desired state、不访问 agent HTTP listener 的情况下审计 endpoint
 policy lifecycle、revision、pressure、drift、last event 和 last stats。
+`policy-revision-wait` 会轮询同一个 OVSDB 状态，直到指定 endpoint 的 policy revision
+达到目标值，适合在 rollout、变更审批或自动化验证中确认 eBPF policy map 已经落地。
 `policy-entries-export` 会解码 `Open_vSwitch.external_ids:netloom_policy_entries`，
 用于在不访问 agent HTTP listener 的情况下审计最近一次 reconcile 写入的 live policy-map
 keys、values、计数器和 remote CIDR。
@@ -369,6 +372,11 @@ keys、values、计数器和 remote CIDR。
 ./netloom-agent policy-status-export \
   -ovsdb unix:/var/run/openvswitch/db.sock \
   -endpoint prod/vm-a
+./netloom-agent policy-revision-wait \
+  -ovsdb unix:/var/run/openvswitch/db.sock \
+  -endpoint prod/vm-a \
+  -revision 3 \
+  -timeout 30s
 ovs-vsctl get Open_vSwitch . external_ids:netloom_policy_endpoint_status
 ./netloom-agent policy-entries -state /etc/netloom/state.json -node node-a -endpoint prod/vm-a
 ```
@@ -376,6 +384,8 @@ ovs-vsctl get Open_vSwitch . external_ids:netloom_policy_endpoint_status
 `policy-status` 会从 desired state 重新 reconcile 到临时 policy store 后输出状态；
 `policy-status-export` 读取 agent 最近一次真实 reconcile 写入本机 OVSDB 的 lifecycle
 快照，更适合线下审计正在运行节点的 eBPF policy map 状态。
+`policy-revision-wait` 不会触发 reconcile，只读取本机 OVSDB 中的 live status，并在目标
+revision 未按时出现时返回错误。
 
 解释一条安全策略判定：
 

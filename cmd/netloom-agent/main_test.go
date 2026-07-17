@@ -982,6 +982,77 @@ func TestRunPolicyStatusExportWithStoreReportsFilteredJSON(t *testing.T) {
 	}
 }
 
+func TestRunPolicyRevisionWaitWithStoreReportsReadyRevision(t *testing.T) {
+	store := ovsdbPolicyStatusStore{syncer: &fakeOpenVSwitchExternalIDStore{}}
+	endpointID := model.EndpointKey("prod", "pod-a")
+	if err := store.Save(t.Context(), policyStatusDocument{
+		Node:                 "node-a",
+		Store:                "ebpf",
+		LastReconcileSuccess: true,
+		UpdatedAt:            time.Date(2026, 7, 17, 1, 2, 3, 0, time.UTC),
+		PolicyRevisionMax:    9,
+		Statuses: []dataplane.PolicyEndpointStatus{{
+			EndpointID:   endpointID,
+			Revision:     9,
+			Entries:      2,
+			LastEvent:    dataplane.PolicyUpdateEvent{EndpointID: endpointID, Revision: 9, Success: true},
+			HasLastEvent: true,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	if err := runPolicyRevisionWaitWithStore(t.Context(), policyRevisionWaitOptions{
+		endpoint:       "prod/pod-a",
+		targetRevision: 7,
+		timeout:        0,
+	}, &out, store); err != nil {
+		t.Fatal(err)
+	}
+	var got policyRevisionWaitOutput
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("decode policy-revision-wait output: %v\n%s", err, out.String())
+	}
+	if !got.Ready || got.Node != "node-a" || got.Store != "ebpf" || got.EndpointID != endpointID || got.TargetRevision != 7 || got.Revision != 9 {
+		t.Fatalf("policy revision wait = %+v, want ready pod-a revision 9 for target 7", got)
+	}
+	if got.Status.EndpointID != endpointID || got.Status.Revision != 9 || !got.Status.HasLastEvent {
+		t.Fatalf("policy revision wait status = %+v, want persisted endpoint status", got.Status)
+	}
+}
+
+func TestRunPolicyRevisionWaitWithStoreTimesOutBeforeTargetRevision(t *testing.T) {
+	store := ovsdbPolicyStatusStore{syncer: &fakeOpenVSwitchExternalIDStore{}}
+	endpointID := model.EndpointKey("prod", "pod-a")
+	if err := store.Save(t.Context(), policyStatusDocument{
+		Node:              "node-a",
+		Store:             "ebpf",
+		UpdatedAt:         time.Date(2026, 7, 17, 1, 2, 3, 0, time.UTC),
+		PolicyRevisionMax: 3,
+		Statuses: []dataplane.PolicyEndpointStatus{{
+			EndpointID: endpointID,
+			Revision:   3,
+			Entries:    1,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	err := runPolicyRevisionWaitWithStore(t.Context(), policyRevisionWaitOptions{
+		endpoint:       "prod/pod-a",
+		targetRevision: 4,
+		timeout:        0,
+	}, &out, store)
+	if err == nil || !strings.Contains(err.Error(), "did not reach target revision 4") {
+		t.Fatalf("error = %v, want target revision timeout", err)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("output = %s, want no success JSON", out.String())
+	}
+}
+
 func TestRunPolicyStatusExportReadsRealOpenVSwitchOVSDB(t *testing.T) {
 	endpoint, client, cleanup := newTestAgentVSwitchOVSDB(t)
 	defer cleanup()

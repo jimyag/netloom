@@ -67,6 +67,11 @@ func main() {
 				log.Fatal(err)
 			}
 			return
+		case "policy-revision-wait":
+			if err := runPolicyRevisionWait(context.Background(), os.Args[2:], os.Stdout); err != nil {
+				log.Fatal(err)
+			}
+			return
 		case "agent-status":
 			if err := runAgentStatus(context.Background(), os.Args[2:], os.Stdout); err != nil {
 				log.Fatal(err)
@@ -195,6 +200,14 @@ type policyStatusOptions struct {
 type policyStatusExportOptions struct {
 	ovsdb    string
 	endpoint string
+}
+
+type policyRevisionWaitOptions struct {
+	ovsdb          string
+	endpoint       string
+	targetRevision uint64
+	timeout        time.Duration
+	interval       time.Duration
 }
 
 type agentStatusOptions struct {
@@ -328,6 +341,18 @@ type policyStatusDocument struct {
 	DriftChanged         int                              `json:"drift_changed"`
 	PolicyRevisionMax    uint64                           `json:"policy_revision_max"`
 	Statuses             []dataplane.PolicyEndpointStatus `json:"statuses"`
+}
+
+type policyRevisionWaitOutput struct {
+	Ready          bool                           `json:"ready"`
+	Node           string                         `json:"node,omitempty"`
+	Store          string                         `json:"store,omitempty"`
+	EndpointID     string                         `json:"endpoint_id"`
+	TargetRevision uint64                         `json:"target_revision"`
+	Revision       uint64                         `json:"revision"`
+	UpdatedAt      time.Time                      `json:"updated_at,omitempty"`
+	WaitedMS       int64                          `json:"waited_ms"`
+	Status         dataplane.PolicyEndpointStatus `json:"status"`
 }
 
 type policyRulesOutput struct {
@@ -829,6 +854,95 @@ func runPolicyStatusExportWithStore(ctx context.Context, opts policyStatusExport
 	encoder := json.NewEncoder(stdout)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(output)
+}
+
+func runPolicyRevisionWait(ctx context.Context, args []string, stdout io.Writer) error {
+	var opts policyRevisionWaitOptions
+	flags := flag.NewFlagSet("netloom-agent policy-revision-wait", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	flags.StringVar(&opts.ovsdb, "ovsdb", os.Getenv("NETLOOM_OVSDB_ENDPOINT"), "Open_vSwitch OVSDB endpoint")
+	flags.StringVar(&opts.endpoint, "endpoint", "", "endpoint key or endpoint ID to wait for")
+	flags.Uint64Var(&opts.targetRevision, "revision", 0, "minimum policy revision that must be applied")
+	flags.DurationVar(&opts.timeout, "timeout", 30*time.Second, "maximum time to wait; 0 checks once")
+	flags.DurationVar(&opts.interval, "interval", time.Second, "poll interval while waiting")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(opts.ovsdb) == "" {
+		return errors.New("missing -ovsdb or NETLOOM_OVSDB_ENDPOINT")
+	}
+	client, closeStore, err := newOpenVSwitchClient(ctx, opts.ovsdb)
+	if err != nil {
+		return err
+	}
+	defer closeStore()
+	return runPolicyRevisionWaitWithStore(ctx, opts, stdout, ovsdbPolicyStatusStore{syncer: linuxdatapath.NewLibOVSDBProviderSyncer(client)})
+}
+
+func runPolicyRevisionWaitWithStore(ctx context.Context, opts policyRevisionWaitOptions, stdout io.Writer, store policyStatusStore) error {
+	if store == nil {
+		return errors.New("missing policy status store")
+	}
+	if strings.TrimSpace(opts.endpoint) == "" {
+		return errors.New("missing -endpoint")
+	}
+	if opts.targetRevision == 0 {
+		return errors.New("missing -revision")
+	}
+	if opts.interval <= 0 {
+		opts.interval = time.Second
+	}
+	start := time.Now()
+	var lastStatus dataplane.PolicyEndpointStatus
+	var lastDoc policyStatusDocument
+	var sawEndpoint bool
+	for {
+		doc, err := store.Load(ctx)
+		if err != nil {
+			return err
+		}
+		lastDoc = doc
+		statuses := filterPolicyEndpointStatuses(doc.Statuses, opts.endpoint, nil)
+		if len(statuses) > 0 {
+			lastStatus = statuses[0]
+			sawEndpoint = true
+			if lastStatus.Revision >= opts.targetRevision {
+				output := policyRevisionWaitOutput{
+					Ready:          true,
+					Node:           doc.Node,
+					Store:          doc.Store,
+					EndpointID:     lastStatus.EndpointID,
+					TargetRevision: opts.targetRevision,
+					Revision:       lastStatus.Revision,
+					UpdatedAt:      doc.UpdatedAt,
+					WaitedMS:       time.Since(start).Milliseconds(),
+					Status:         lastStatus,
+				}
+				encoder := json.NewEncoder(stdout)
+				encoder.SetIndent("", "  ")
+				return encoder.Encode(output)
+			}
+		}
+		if opts.timeout == 0 || time.Since(start) >= opts.timeout {
+			if !sawEndpoint {
+				return fmt.Errorf("policy endpoint %q not found before revision %d", opts.endpoint, opts.targetRevision)
+			}
+			return fmt.Errorf("policy endpoint %s revision %d did not reach target revision %d before timeout; last status updated at %s",
+				lastStatus.EndpointID, lastStatus.Revision, opts.targetRevision, lastDoc.UpdatedAt.Format(time.RFC3339Nano))
+		}
+		wait := opts.interval
+		remaining := opts.timeout - time.Since(start)
+		if remaining < wait {
+			wait = remaining
+		}
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
 }
 
 func runAgentStatus(ctx context.Context, args []string, stdout io.Writer) error {
