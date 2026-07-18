@@ -88,14 +88,16 @@ func (w *LibOVSDBTopologyWriter) logicalRouterConfigOperations(existing, desired
 	if reflect.DeepEqual(existing.ExternalIDs, nextExternalIDs) &&
 		equalBoolPointers(existing.Enabled, desired.Enabled) &&
 		reflect.DeepEqual(existing.Options, nextOptions) &&
+		existing.Copp == nil &&
 		len(existing.LoadBalancerGroup) == 0 {
 		return nil, nil
 	}
 	existing.ExternalIDs = nextExternalIDs
 	existing.Enabled = desired.Enabled
 	existing.Options = nextOptions
+	existing.Copp = nil
 	existing.LoadBalancerGroup = nil
-	ops, err := w.client.Where(existing).Update(existing, &existing.ExternalIDs, &existing.Enabled, &existing.Options, &existing.LoadBalancerGroup)
+	ops, err := w.client.Where(existing).Update(existing, &existing.ExternalIDs, &existing.Enabled, &existing.Options, &existing.Copp, &existing.LoadBalancerGroup)
 	if err != nil {
 		return nil, fmt.Errorf("update logical router %s external IDs: %w", existing.Name, err)
 	}
@@ -163,6 +165,7 @@ func (w *LibOVSDBTopologyWriter) logicalSwitchConfigOperations(existing, desired
 	nextOtherConfig := replaceLogicalSwitchIPAMConfig(existing.OtherConfig, desired.OtherConfig)
 	if reflect.DeepEqual(existing.ExternalIDs, nextExternalIDs) &&
 		reflect.DeepEqual(existing.OtherConfig, nextOtherConfig) &&
+		existing.Copp == nil &&
 		len(existing.ACLs) == 0 &&
 		len(existing.ForwardingGroups) == 0 &&
 		len(existing.LoadBalancerGroup) == 0 &&
@@ -171,11 +174,12 @@ func (w *LibOVSDBTopologyWriter) logicalSwitchConfigOperations(existing, desired
 	}
 	existing.ExternalIDs = nextExternalIDs
 	existing.OtherConfig = nextOtherConfig
+	existing.Copp = nil
 	existing.ACLs = nil
 	existing.ForwardingGroups = nil
 	existing.LoadBalancerGroup = nil
 	existing.QOSRules = nil
-	updateOps, err := w.client.Where(existing).Update(existing, &existing.ExternalIDs, &existing.OtherConfig, &existing.ACLs, &existing.ForwardingGroups, &existing.LoadBalancerGroup, &existing.QOSRules)
+	updateOps, err := w.client.Where(existing).Update(existing, &existing.ExternalIDs, &existing.OtherConfig, &existing.Copp, &existing.ACLs, &existing.ForwardingGroups, &existing.LoadBalancerGroup, &existing.QOSRules)
 	if err != nil {
 		return nil, fmt.Errorf("update logical switch %s: %w", existing.Name, err)
 	}

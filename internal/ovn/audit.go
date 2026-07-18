@@ -250,9 +250,9 @@ func managedAuditNBCTLColumns(table string) []string {
 	columns := []string{"_uuid", "external_ids"}
 	switch table {
 	case "Logical_Switch":
-		columns = append(columns, "name", "other_config", "ports", "load_balancers", "dns_records", "acls", "forwarding_groups", "load_balancer_group", "qos_rules")
+		columns = append(columns, "name", "other_config", "ports", "load_balancers", "dns_records", "copp", "acls", "forwarding_groups", "load_balancer_group", "qos_rules")
 	case "Logical_Router":
-		columns = append(columns, "name", "options", "ports", "load_balancers", "load_balancer_group", "nat", "policies", "static_routes", "enabled")
+		columns = append(columns, "name", "options", "ports", "load_balancers", "load_balancer_group", "nat", "policies", "static_routes", "copp", "enabled")
 	case "Logical_Switch_Port":
 		columns = append(columns, "name", "type", "addresses", "port_security", "options", "tag", "tag_request", "enabled", "ha_chassis_group", "mirror_rules", "parent_name", "peer", "dhcpv4_options", "dhcpv6_options")
 	case "Logical_Router_Port":
@@ -1117,13 +1117,13 @@ func staleManagedColumnShouldDrift(table, key string) bool {
 	switch table {
 	case "Logical_Switch":
 		switch key {
-		case "acls", "dns_records", "forwarding_groups", "load_balancer_group", "qos_rules":
+		case "copp", "acls", "dns_records", "forwarding_groups", "load_balancer_group", "qos_rules":
 			return true
 		default:
 			return false
 		}
 	case "Logical_Router":
-		return key == "enabled" || key == "options" || key == "load_balancer_group"
+		return key == "enabled" || key == "options" || key == "load_balancer_group" || key == "copp"
 	case "Logical_Router_Port":
 		switch key {
 		case "enabled", "options", "gateway_chassis", "ha_chassis_group", "peer":

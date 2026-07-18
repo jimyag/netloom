@@ -50,6 +50,7 @@ func (r *LibOVSDBManagedReader) ManagedOVNRows(ctx context.Context, table string
 				"ports":               portNamesField(row.Ports, switchPortNames),
 				"load_balancers":      loadBalancerNamesField(row.LoadBalancer, loadBalancerNames),
 				"dns_records":         dnsRecordNamesField(row.DNSRecords, dnsRecordNames),
+				"copp":                pointerStringValue(row.Copp),
 				"acls":                stringSliceField(row.ACLs),
 				"forwarding_groups":   stringSliceField(row.ForwardingGroups),
 				"load_balancer_group": stringSliceField(row.LoadBalancerGroup),
@@ -91,6 +92,7 @@ func (r *LibOVSDBManagedReader) ManagedOVNRows(ctx context.Context, table string
 				"nat_rules":           natNamesField(row.Nat, natNames),
 				"policies":            policyNamesField(row.Policies, policyNames),
 				"static_routes":       staticRouteKeysField(row.StaticRoutes, staticRouteKeys),
+				"copp":                pointerStringValue(row.Copp),
 				"enabled":             boolPointerField(row.Enabled),
 			}
 		}), nil

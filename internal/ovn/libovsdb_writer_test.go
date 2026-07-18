@@ -64,26 +64,41 @@ func TestLibOVSDBTopologyWriterClearsStaleVPCLogicalRouterOptions(t *testing.T) 
 		UUID: ovsdbNamedUUID("stale-router-lbg"),
 		Name: "stale-router-lbg",
 	}
+	staleCopp := &ovnnb.Copp{
+		UUID: ovsdbNamedUUID("stale-router-copp"),
+		Name: "stale-router-copp",
+	}
 	createGroupOps, err := client.Create(staleGroup)
 	if err != nil {
 		t.Fatal(err)
 	}
-	results, err := client.Transact(ctx, createGroupOps...)
+	createCoppOps, err := client.Create(staleCopp)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if opErrors, err := ovsdb.CheckOperationResults(results, createGroupOps); err != nil {
+	results, err := client.Transact(ctx, append(createGroupOps, createCoppOps...)...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	createOps := append(createGroupOps, createCoppOps...)
+	if opErrors, err := ovsdb.CheckOperationResults(results, createOps); err != nil {
 		t.Fatalf("create stale router load balancer group operation errors=%+v: %v", opErrors, err)
 	}
 	var groups []ovnnb.LoadBalancerGroup
+	var copps []ovnnb.Copp
 	requireEventually(t, func() bool {
 		groups = nil
-		err := client.WhereCache(func(row *ovnnb.LoadBalancerGroup) bool { return row.Name == "stale-router-lbg" }).List(ctx, &groups)
-		return err == nil && len(groups) == 1
+		if err := client.WhereCache(func(row *ovnnb.LoadBalancerGroup) bool { return row.Name == "stale-router-lbg" }).List(ctx, &groups); err != nil || len(groups) != 1 {
+			return false
+		}
+		copps = nil
+		err := client.WhereCache(func(row *ovnnb.Copp) bool { return row.Name == "stale-router-copp" }).List(ctx, &copps)
+		return err == nil && len(copps) == 1
 	})
 	routers[0].Options = map[string]string{"chassis": "node-old"}
+	routers[0].Copp = &copps[0].UUID
 	routers[0].LoadBalancerGroup = []string{groups[0].UUID}
-	ops, err := client.Where(&routers[0]).Update(&routers[0], &routers[0].Options, &routers[0].LoadBalancerGroup)
+	ops, err := client.Where(&routers[0]).Update(&routers[0], &routers[0].Options, &routers[0].Copp, &routers[0].LoadBalancerGroup)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +112,7 @@ func TestLibOVSDBTopologyWriterClearsStaleVPCLogicalRouterOptions(t *testing.T) 
 	requireEventually(t, func() bool {
 		routers = nil
 		err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("prod") }).List(ctx, &routers)
-		return err == nil && len(routers) == 1 && routers[0].Options["chassis"] == "node-old" && len(routers[0].LoadBalancerGroup) == 1
+		return err == nil && len(routers) == 1 && routers[0].Options["chassis"] == "node-old" && routers[0].Copp != nil && *routers[0].Copp == copps[0].UUID && len(routers[0].LoadBalancerGroup) == 1
 	})
 
 	if err := writer.EnsureVPC(ctx, model.VPC{Name: "prod"}); err != nil {
@@ -106,7 +121,7 @@ func TestLibOVSDBTopologyWriterClearsStaleVPCLogicalRouterOptions(t *testing.T) 
 	requireEventually(t, func() bool {
 		routers = nil
 		err := client.WhereCache(func(row *ovnnb.LogicalRouter) bool { return row.Name == logicalRouter("prod") }).List(ctx, &routers)
-		return err == nil && len(routers) == 1 && len(routers[0].Options) == 0 && len(routers[0].LoadBalancerGroup) == 0
+		return err == nil && len(routers) == 1 && len(routers[0].Options) == 0 && routers[0].Copp == nil && len(routers[0].LoadBalancerGroup) == 0
 	})
 }
 
@@ -252,25 +267,40 @@ func TestLibOVSDBTopologyWriterEnsuresSubnetLogicalSwitch(t *testing.T) {
 		UUID: ovsdbNamedUUID("stale-lbg"),
 		Name: "stale-lbg",
 	}
+	staleCopp := &ovnnb.Copp{
+		UUID: ovsdbNamedUUID("stale-switch-copp"),
+		Name: "stale-switch-copp",
+	}
 	createGroupOps, err := client.Create(staleGroup)
 	if err != nil {
 		t.Fatal(err)
 	}
-	results, err := client.Transact(ctx, createGroupOps...)
+	createCoppOps, err := client.Create(staleCopp)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if opErrors, err := ovsdb.CheckOperationResults(results, createGroupOps); err != nil {
+	createOps := append(createGroupOps, createCoppOps...)
+	results, err := client.Transact(ctx, createOps...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, createOps); err != nil {
 		t.Fatalf("create stale load balancer group operation errors=%+v: %v", opErrors, err)
 	}
 	var groups []ovnnb.LoadBalancerGroup
+	var copps []ovnnb.Copp
 	requireEventually(t, func() bool {
 		groups = nil
-		err := client.WhereCache(func(row *ovnnb.LoadBalancerGroup) bool { return row.Name == "stale-lbg" }).List(ctx, &groups)
-		return err == nil && len(groups) == 1
+		if err := client.WhereCache(func(row *ovnnb.LoadBalancerGroup) bool { return row.Name == "stale-lbg" }).List(ctx, &groups); err != nil || len(groups) != 1 {
+			return false
+		}
+		copps = nil
+		err := client.WhereCache(func(row *ovnnb.Copp) bool { return row.Name == "stale-switch-copp" }).List(ctx, &copps)
+		return err == nil && len(copps) == 1
 	})
+	sw.Copp = &copps[0].UUID
 	sw.LoadBalancerGroup = []string{groups[0].UUID}
-	updateSwitchOps, err := client.Where(&sw).Update(&sw, &sw.LoadBalancerGroup)
+	updateSwitchOps, err := client.Where(&sw).Update(&sw, &sw.Copp, &sw.LoadBalancerGroup)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -284,7 +314,7 @@ func TestLibOVSDBTopologyWriterEnsuresSubnetLogicalSwitch(t *testing.T) {
 	requireEventually(t, func() bool {
 		switches = nil
 		err := client.WhereCache(func(row *ovnnb.LogicalSwitch) bool { return row.Name == logicalSwitch("prod", "apps") }).List(ctx, &switches)
-		return err == nil && len(switches) == 1 && len(switches[0].LoadBalancerGroup) == 1
+		return err == nil && len(switches) == 1 && switches[0].Copp != nil && *switches[0].Copp == copps[0].UUID && len(switches[0].LoadBalancerGroup) == 1
 	})
 	if err := writer.EnsureSubnet(ctx, model.Subnet{
 		Name:         "apps",
@@ -298,7 +328,7 @@ func TestLibOVSDBTopologyWriterEnsuresSubnetLogicalSwitch(t *testing.T) {
 	requireEventually(t, func() bool {
 		switches = nil
 		err := client.WhereCache(func(row *ovnnb.LogicalSwitch) bool { return row.Name == logicalSwitch("prod", "apps") }).List(ctx, &switches)
-		return err == nil && len(switches) == 1 && len(switches[0].LoadBalancerGroup) == 0
+		return err == nil && len(switches) == 1 && switches[0].Copp == nil && len(switches[0].LoadBalancerGroup) == 0
 	})
 	var routerPorts []ovnnb.LogicalRouterPort
 	requireEventually(t, func() bool {
