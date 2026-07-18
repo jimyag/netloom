@@ -481,6 +481,11 @@ func (w *LibOVSDBTopologyWriter) policyRouteOperations(ctx context.Context, rout
 			return nil, err
 		}
 		ops = append(ops, detachOps...)
+		clearOptionsOps, err := w.clearPolicyRouteOptions(&keep)
+		if err != nil {
+			return nil, err
+		}
+		ops = append(ops, clearOptionsOps...)
 		clearBFDOps, err := w.clearPolicyRouteBFDSessions(&keep)
 		if err != nil {
 			return nil, err
@@ -489,16 +494,20 @@ func (w *LibOVSDBTopologyWriter) policyRouteOperations(ctx context.Context, rout
 		if keep.Priority != desired.Priority ||
 			keep.Match != desired.Match ||
 			keep.Action != desired.Action ||
+			!stringPointerValueEqual(keep.Chain, pointerStringValue(desired.Chain)) ||
+			!stringPointerValueEqual(keep.JumpChain, pointerStringValue(desired.JumpChain)) ||
 			!stringPointerValueEqual(keep.Nexthop, pointerStringValue(desired.Nexthop)) ||
 			!reflect.DeepEqual(keep.Nexthops, desired.Nexthops) ||
 			!reflect.DeepEqual(keep.ExternalIDs, nextExternalIDs) {
 			keep.Priority = desired.Priority
 			keep.Match = desired.Match
 			keep.Action = desired.Action
+			keep.Chain = desired.Chain
+			keep.JumpChain = desired.JumpChain
 			keep.Nexthop = desired.Nexthop
 			keep.Nexthops = desired.Nexthops
 			keep.ExternalIDs = nextExternalIDs
-			updateOps, err := w.client.Where(&keep).Update(&keep, &keep.Priority, &keep.Match, &keep.Action, &keep.Nexthop, &keep.Nexthops, &keep.ExternalIDs)
+			updateOps, err := w.client.Where(&keep).Update(&keep, &keep.Priority, &keep.Match, &keep.Action, &keep.Chain, &keep.JumpChain, &keep.Nexthop, &keep.Nexthops, &keep.ExternalIDs)
 			if err != nil {
 				return nil, fmt.Errorf("update policy route %s/%s: %w", route.VPC, route.Name, err)
 			}
@@ -516,6 +525,23 @@ func (w *LibOVSDBTopologyWriter) policyRouteOperations(ctx context.Context, rout
 		}
 	}
 	return ops, nil
+}
+
+func (w *LibOVSDBTopologyWriter) clearPolicyRouteOptions(policy *ovnnb.LogicalRouterPolicy) ([]ovsdb.Operation, error) {
+	if len(policy.Options) == 0 {
+		return nil, nil
+	}
+	staleOptions := cloneStringMap(policy.Options)
+	mutateOps, err := w.client.Where(policy).Mutate(policy, ovsmodel.Mutation{
+		Field:   &policy.Options,
+		Mutator: ovsdb.MutateOperationDelete,
+		Value:   staleOptions,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("clear policy route %s options: %w", policy.UUID, err)
+	}
+	policy.Options = nil
+	return mutateOps, nil
 }
 
 func (w *LibOVSDBTopologyWriter) clearPolicyRouteBFDSessions(policy *ovnnb.LogicalRouterPolicy) ([]ovsdb.Operation, error) {

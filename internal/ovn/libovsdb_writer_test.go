@@ -2644,6 +2644,78 @@ func TestLibOVSDBTopologyWriterClearsPolicyRouteStaleBFDSessions(t *testing.T) {
 	})
 }
 
+func TestLibOVSDBTopologyWriterClearsPolicyRouteStaleSemanticColumns(t *testing.T) {
+	ctx := context.Background()
+	client, closeFn := newTestOVNNBClient(t)
+	defer closeFn()
+
+	if _, err := client.MonitorAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	writer := NewLibOVSDBTopologyWriter(client)
+	if err := writer.EnsureVPC(ctx, model.VPC{Name: "prod"}); err != nil {
+		t.Fatal(err)
+	}
+	route := model.PolicyRoute{
+		Name:     "egress",
+		VPC:      "prod",
+		Priority: 100,
+		Match: model.RouteMatch{
+			Destination: netip.MustParsePrefix("10.20.0.0/24"),
+		},
+		Action: model.RouteAction{Type: model.ActionDrop},
+	}
+	if err := writer.EnsurePolicyRoute(ctx, route); err != nil {
+		t.Fatal(err)
+	}
+
+	var policies []ovnnb.LogicalRouterPolicy
+	requireEventually(t, func() bool {
+		policies = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalRouterPolicy) bool {
+			return row.ExternalIDs["netloom_vpc"] == "prod" && row.ExternalIDs["netloom_policy_route"] == "egress"
+		}).List(ctx, &policies)
+		return err == nil && len(policies) == 1
+	})
+	policyUUID := policies[0].UUID
+	chain := "stale-chain"
+	jumpChain := "stale-jump-chain"
+	policies[0].Options = map[string]string{"pkt_mark": "1"}
+	policies[0].Chain = &chain
+	policies[0].JumpChain = &jumpChain
+	updateOps, err := client.Where(&policies[0]).Update(&policies[0], &policies[0].Options, &policies[0].Chain, &policies[0].JumpChain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := client.Transact(ctx, updateOps...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, updateOps); err != nil {
+		t.Fatalf("seed stale policy route semantic columns operation errors=%+v: %v", opErrors, err)
+	}
+	requireEventually(t, func() bool {
+		policies = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalRouterPolicy) bool { return row.UUID == policyUUID }).List(ctx, &policies)
+		return err == nil && len(policies) == 1 &&
+			policies[0].Options["pkt_mark"] == "1" &&
+			policies[0].Chain != nil && *policies[0].Chain == chain &&
+			policies[0].JumpChain != nil && *policies[0].JumpChain == jumpChain
+	})
+
+	if err := writer.EnsurePolicyRoute(ctx, route); err != nil {
+		t.Fatal(err)
+	}
+	requireEventually(t, func() bool {
+		policies = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalRouterPolicy) bool { return row.UUID == policyUUID }).List(ctx, &policies)
+		return err == nil && len(policies) == 1 &&
+			len(policies[0].Options) == 0 &&
+			policies[0].Chain == nil &&
+			policies[0].JumpChain == nil
+	})
+}
+
 func TestLibOVSDBTopologyWriterKeepsReferencedDuplicatePolicyRoute(t *testing.T) {
 	ctx := context.Background()
 	client, closeFn := newTestOVNNBClient(t)
