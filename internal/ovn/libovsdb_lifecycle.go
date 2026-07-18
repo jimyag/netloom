@@ -839,6 +839,11 @@ func (w *LibOVSDBTopologyWriter) repairSteadyStateLoadBalancers(ctx context.Cont
 			ops = append(ops, parentOps...)
 			nextExternalIDs := mergeManagedExternalIDs(existing.ExternalIDs, desiredRow.ExternalIDs)
 			nextOptions := replaceManagedLoadBalancerOptions(existing.Options, desiredRow.Options)
+			clearMappingOps, err := w.clearLoadBalancerIPPortMappings(existing)
+			if err != nil {
+				return nil, err
+			}
+			ops = append(ops, clearMappingOps...)
 			if !reflect.DeepEqual(existing.Vips, desiredRow.Vips) ||
 				!reflect.DeepEqual(existing.Protocol, desiredRow.Protocol) ||
 				!reflect.DeepEqual(existing.SelectionFields, desiredRow.SelectionFields) ||

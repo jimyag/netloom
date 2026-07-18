@@ -1382,6 +1382,11 @@ func (w *LibOVSDBTopologyWriter) ensureLoadBalancerRow(ctx context.Context, rout
 		return "", nil, err
 	}
 	ops = append(ops, detachSwitchOps...)
+	clearMappingOps, err := w.clearLoadBalancerIPPortMappings(existing)
+	if err != nil {
+		return "", nil, err
+	}
+	ops = append(ops, clearMappingOps...)
 	if !reflect.DeepEqual(existing.Vips, desired.Vips) ||
 		!reflect.DeepEqual(existing.Protocol, desired.Protocol) ||
 		!reflect.DeepEqual(existing.SelectionFields, desired.SelectionFields) ||
@@ -1399,6 +1404,23 @@ func (w *LibOVSDBTopologyWriter) ensureLoadBalancerRow(ctx context.Context, rout
 		ops = append(ops, updateOps...)
 	}
 	return existing.UUID, ops, nil
+}
+
+func (w *LibOVSDBTopologyWriter) clearLoadBalancerIPPortMappings(lb *ovnnb.LoadBalancer) ([]ovsdb.Operation, error) {
+	if len(lb.IPPortMappings) == 0 {
+		return nil, nil
+	}
+	staleMappings := cloneStringMap(lb.IPPortMappings)
+	mutateOps, err := w.client.Where(lb).Mutate(lb, ovsmodel.Mutation{
+		Field:   &lb.IPPortMappings,
+		Mutator: ovsdb.MutateOperationDelete,
+		Value:   staleMappings,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("clear load balancer %s ip_port_mappings: %w", lb.Name, err)
+	}
+	lb.IPPortMappings = nil
+	return mutateOps, nil
 }
 
 func (w *LibOVSDBTopologyWriter) attachLoadBalancerToRouter(router *ovnnb.LogicalRouter, lbUUID string) ([]ovsdb.Operation, error) {

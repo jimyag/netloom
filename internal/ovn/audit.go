@@ -266,7 +266,7 @@ func managedAuditNBCTLColumns(table string) []string {
 	case "NAT":
 		columns = append(columns, "type", "external_ip", "logical_ip", "external_port_range", "logical_port", "external_mac", "options", "allowed_ext_ips", "exempted_ext_ips", "gateway_port", "match", "priority")
 	case "Load_Balancer":
-		columns = append(columns, "name", "vips", "protocol", "options", "selection_fields", "health_check")
+		columns = append(columns, "name", "vips", "protocol", "options", "ip_port_mappings", "selection_fields", "health_check")
 	case "Load_Balancer_Health_Check":
 		columns = append(columns, "vip", "options")
 	case "DHCP_Options":
@@ -1154,7 +1154,7 @@ func staleManagedColumnShouldDrift(table, key string) bool {
 		}
 	case "Load_Balancer":
 		switch key {
-		case "options", "health_check_vips":
+		case "options", "ip_port_mappings", "health_check_vips":
 			return true
 		default:
 			return false

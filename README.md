@@ -18,6 +18,9 @@ The main SDN path is implemented:
 - OVN Northbound writes through libovsdb for routers, switches, ports, DHCP,
   DNS, static routes, BFD, policy routes, NAT, load balancers, and health
   checks.
+- OVN live audit and steady-state repair for managed topology drift, including
+  stale endpoint port semantics, NAT stale columns, load balancer parent refs,
+  health checks, and stale `ip_port_mappings`.
 - Local Open vSwitch writes for provider bridges, controllers, ports,
   interfaces, VLAN, QoS, queues, desired state, and runtime status.
 - Linux datapath planning for netns/veth, addresses, routes, gateway routes,
@@ -31,7 +34,7 @@ SecurityGroup and ACL rules are intentionally not implemented with OVN ACL.
 OVN owns topology, routes, NAT, load balancing, DHCP, and DNS; eBPF/TCX owns
 endpoint policy enforcement.
 
-What is not finished is production packaging around that path: multi-node
+The remaining work is mostly productization around that path: multi-node
 deployment guides, certificate/systemd/container manifests, backup and restore,
 upgrade and rollback runbooks, alert rules, and long-duration scale validation.
 

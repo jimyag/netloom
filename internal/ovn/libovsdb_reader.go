@@ -229,6 +229,7 @@ func (r *LibOVSDBManagedReader) ManagedOVNRows(ctx context.Context, table string
 				"vips":              mapField(row.Vips),
 				"protocol":          protocol,
 				"options":           mapField(row.Options),
+				"ip_port_mappings":  mapField(row.IPPortMappings),
 				"selection_fields":  selectionFieldsField(row.SelectionFields),
 				"health_check_vips": healthCheckVIPsField(row.HealthCheck, healthCheckVIPs),
 			}

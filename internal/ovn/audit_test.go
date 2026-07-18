@@ -101,7 +101,7 @@ func TestNBCTLExecutorManagedOVNRowsResolvesLoadBalancerHealthChecks(t *testing.
 	script := `#!/bin/sh
 printf '%s\n' "$*" >> "` + logPath + `"
 case "$*" in
-  *"--columns=_uuid,external_ids,name,vips,protocol,options,selection_fields,health_check find Load_Balancer external_ids:netloom_owner=netloom"*) printf 'lb-api,"{netloom_owner=netloom,netloom_vpc=prod,netloom_load_balancer=api,netloom_protocol=tcp}",nl_lb_prod_api_tcp,"{10.96.0.10:443=10.10.0.20:8443}",tcp,{},[],[hc-api]\n' ;;
+  *"--columns=_uuid,external_ids,name,vips,protocol,options,ip_port_mappings,selection_fields,health_check find Load_Balancer external_ids:netloom_owner=netloom"*) printf 'lb-api,"{netloom_owner=netloom,netloom_vpc=prod,netloom_load_balancer=api,netloom_protocol=tcp}",nl_lb_prod_api_tcp,"{10.96.0.10:443=10.10.0.20:8443}",tcp,{},{},[],[hc-api]\n' ;;
   *"--columns=_uuid,external_ids,vip find Load_Balancer_Health_Check external_ids:netloom_owner=netloom"*) printf 'hc-api,"{netloom_owner=netloom,netloom_vpc=prod,netloom_load_balancer=api}",10.96.0.10:443\n' ;;
 esac
 `
@@ -121,13 +121,16 @@ esac
 	if row.Fields["health_check_vips"] != "10.96.0.10:443" {
 		t.Fatalf("row fields = %+v, want health check UUID resolved to VIP", row.Fields)
 	}
+	if row.Fields["ip_port_mappings"] != "{}" {
+		t.Fatalf("row fields = %+v, want empty ip_port_mappings field", row.Fields)
+	}
 	logData, err := os.ReadFile(logPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	logged := string(logData)
 	for _, expected := range []string{
-		"--columns=_uuid,external_ids,name,vips,protocol,options,selection_fields,health_check",
+		"--columns=_uuid,external_ids,name,vips,protocol,options,ip_port_mappings,selection_fields,health_check",
 		"--columns=_uuid,external_ids,vip find Load_Balancer_Health_Check",
 	} {
 		if !strings.Contains(logged, expected) {
@@ -1614,6 +1617,7 @@ func TestAuditManagedObjectsFromReaderReportsStaleLoadBalancerColumns(t *testing
 				"protocol":          "tcp",
 				"selection_fields":  "",
 				"options":           "affinity_timeout=7200",
+				"ip_port_mappings":  "10.96.0.10=10.10.0.20",
 				"health_check_vips": "10.96.0.10:443",
 			}},
 		},
@@ -1628,8 +1632,11 @@ func TestAuditManagedObjectsFromReaderReportsStaleLoadBalancerColumns(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stats.DriftedManagedRows != 1 || stats.DriftedManagedFields != 2 {
-		t.Fatalf("stale load balancer column drift stats = %+v, want options and health check attachment drift", stats)
+	if stats.DriftedManagedRows != 1 || stats.DriftedManagedFields != 3 {
+		t.Fatalf("stale load balancer column drift stats = %+v, want options, ip_port_mappings, and health check attachment drift", stats)
+	}
+	if got := stats.DriftedManagedFieldCounts["Load_Balancer.ip_port_mappings"]; got != 1 {
+		t.Fatalf("field drift counts = %+v, want stale ip_port_mappings drift", stats.DriftedManagedFieldCounts)
 	}
 }
 

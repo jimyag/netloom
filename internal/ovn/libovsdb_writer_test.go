@@ -5230,7 +5230,8 @@ func TestLibOVSDBTopologyWriterCleanupRepairsLoadBalancerColumnDriftInSteadyStat
 		"affinity_timeout": "7200",
 		"external_owner":   "keep",
 	}
-	updateOps, err := client.Where(existing).Update(existing, &existing.Vips, &existing.Protocol, &existing.SelectionFields, &existing.ExternalIDs, &existing.Options)
+	existing.IPPortMappings = map[string]string{"10.96.0.99": "10.10.0.99"}
+	updateOps, err := client.Where(existing).Update(existing, &existing.Vips, &existing.Protocol, &existing.SelectionFields, &existing.ExternalIDs, &existing.Options, &existing.IPPortMappings)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -5250,13 +5251,14 @@ func TestLibOVSDBTopologyWriterCleanupRepairsLoadBalancerColumnDriftInSteadyStat
 			*drifted.Protocol == ovnnb.LoadBalancerProtocolUDP &&
 			len(drifted.SelectionFields) == 0 &&
 			drifted.ExternalIDs["netloom_session_affinity"] == "false" &&
-			drifted.Options["affinity_timeout"] == "7200"
+			drifted.Options["affinity_timeout"] == "7200" &&
+			drifted.IPPortMappings["10.96.0.99"] == "10.10.0.99"
 	})
 
 	if err := writer.CleanupTopology(ctx, state); err != nil {
 		t.Fatal(err)
 	}
-	requireEventually(t, func() bool {
+	if !eventually(func() bool {
 		repaired, ok, err := writer.loadBalancerByName(ctx, existing.Name)
 		if err != nil || !ok {
 			return false
@@ -5269,8 +5271,12 @@ func TestLibOVSDBTopologyWriterCleanupRepairsLoadBalancerColumnDriftInSteadyStat
 			reflect.DeepEqual(repaired.SelectionFields, want.SelectionFields) &&
 			repaired.ExternalIDs["netloom_session_affinity"] == "true" &&
 			repaired.Options["affinity_timeout"] == "10800" &&
-			repaired.Options["external_owner"] == "keep"
-	})
+			repaired.Options["external_owner"] == "keep" &&
+			len(repaired.IPPortMappings) == 0
+	}) {
+		repaired, ok, err := writer.loadBalancerByName(ctx, existing.Name)
+		t.Fatalf("repaired load balancer ok=%t err=%v row=%+v", ok, err, repaired)
+	}
 }
 
 func TestLibOVSDBTopologyWriterCleanupRepairsLoadBalancerHealthCheckAttachmentInSteadyState(t *testing.T) {

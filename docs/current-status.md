@@ -24,7 +24,7 @@ Provider Network、Linux datapath、eBPF/TCX ACL、状态观测和 policy lifecy
 | RouteTable | 已实现 | 支持静态路由、ECMP、BFD 和最小变更更新。 |
 | PolicyRoute | 已实现 | 支持 reroute、drop、reject、L4 match，并投影到 OVN LRP 和 Linux RPDB。 |
 | NAT | 已实现 | 支持 SNAT、DNAT、Floating IP 和端口映射。 |
-| LoadBalancer | 已实现 | 支持 TCP、UDP、SCTP VIP、backend、session affinity、health check。 |
+| LoadBalancer | 已实现 | 支持 TCP、UDP、SCTP VIP、backend、session affinity、health check，并审计/修复 stale parent refs、health-check refs 和 `ip_port_mappings`。 |
 | Provider Network | 已实现 | 支持 OVN localnet、本机 OVS Bridge/Controller/Port/Interface、QoS、Queue。 |
 | SecurityGroup | 已实现 | 编译成 Cilium 风格 endpoint policy map。 |
 | ACL 执行 | 已实现 | 由 eBPF/TCX 执行 ingress/egress TCP、UDP、SCTP、ICMP，安全组不写 OVN ACL。 |
