@@ -481,6 +481,11 @@ func (w *LibOVSDBTopologyWriter) policyRouteOperations(ctx context.Context, rout
 			return nil, err
 		}
 		ops = append(ops, detachOps...)
+		clearBFDOps, err := w.clearPolicyRouteBFDSessions(&keep)
+		if err != nil {
+			return nil, err
+		}
+		ops = append(ops, clearBFDOps...)
 		if keep.Priority != desired.Priority ||
 			keep.Match != desired.Match ||
 			keep.Action != desired.Action ||
@@ -511,6 +516,23 @@ func (w *LibOVSDBTopologyWriter) policyRouteOperations(ctx context.Context, rout
 		}
 	}
 	return ops, nil
+}
+
+func (w *LibOVSDBTopologyWriter) clearPolicyRouteBFDSessions(policy *ovnnb.LogicalRouterPolicy) ([]ovsdb.Operation, error) {
+	if len(policy.BFDSessions) == 0 {
+		return nil, nil
+	}
+	staleSessions := append([]string(nil), policy.BFDSessions...)
+	mutateOps, err := w.client.Where(policy).Mutate(policy, ovsmodel.Mutation{
+		Field:   &policy.BFDSessions,
+		Mutator: ovsdb.MutateOperationDelete,
+		Value:   staleSessions,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("clear policy route %s bfd_sessions: %w", policy.UUID, err)
+	}
+	policy.BFDSessions = nil
+	return mutateOps, nil
 }
 
 func (w *LibOVSDBTopologyWriter) EnsureGateway(ctx context.Context, gateway model.Gateway) error {

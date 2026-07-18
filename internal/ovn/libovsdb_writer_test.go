@@ -2548,6 +2548,102 @@ func TestLibOVSDBTopologyWriterEnsuresPolicyRouteByName(t *testing.T) {
 	})
 }
 
+func TestLibOVSDBTopologyWriterClearsPolicyRouteStaleBFDSessions(t *testing.T) {
+	ctx := context.Background()
+	client, closeFn := newTestOVNNBClient(t)
+	defer closeFn()
+
+	if _, err := client.MonitorAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	writer := NewLibOVSDBTopologyWriter(client)
+	if err := writer.EnsureVPC(ctx, model.VPC{Name: "prod"}); err != nil {
+		t.Fatal(err)
+	}
+	route := model.PolicyRoute{
+		Name:     "egress",
+		VPC:      "prod",
+		Priority: 100,
+		Match: model.RouteMatch{
+			Destination: netip.MustParsePrefix("10.20.0.0/24"),
+		},
+		Action: model.RouteAction{Type: model.ActionDrop},
+	}
+	if err := writer.EnsurePolicyRoute(ctx, route); err != nil {
+		t.Fatal(err)
+	}
+
+	var policies []ovnnb.LogicalRouterPolicy
+	requireEventually(t, func() bool {
+		policies = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalRouterPolicy) bool {
+			return row.ExternalIDs["netloom_vpc"] == "prod" && row.ExternalIDs["netloom_policy_route"] == "egress"
+		}).List(ctx, &policies)
+		return err == nil && len(policies) == 1
+	})
+	policyUUID := policies[0].UUID
+	minTx := 300
+	minRx := 300
+	detectMult := 3
+	staleBFD := &ovnnb.BFD{
+		UUID:        ovsdbNamedUUID("stale-policy-bfd"),
+		LogicalPort: routerPortName(logicalRouter("prod"), "apps"),
+		DstIP:       "10.10.0.253",
+		MinTx:       &minTx,
+		MinRx:       &minRx,
+		DetectMult:  &detectMult,
+		ExternalIDs: map[string]string{"external_owner": "test", "external_id": "stale-policy-bfd"},
+	}
+	createOps, err := client.Create(staleBFD)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := client.Transact(ctx, createOps...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, createOps); err != nil {
+		t.Fatalf("seed stale BFD operation errors=%+v: %v", opErrors, err)
+	}
+	var bfds []ovnnb.BFD
+	requireEventually(t, func() bool {
+		bfds = nil
+		err := client.WhereCache(func(row *ovnnb.BFD) bool {
+			return row.ExternalIDs["external_id"] == "stale-policy-bfd"
+		}).List(ctx, &bfds)
+		return err == nil && len(bfds) == 1
+	})
+	insertOps, err := client.Where(&policies[0]).Mutate(&policies[0], ovsmodel.Mutation{
+		Field:   &policies[0].BFDSessions,
+		Mutator: ovsdb.MutateOperationInsert,
+		Value:   []string{bfds[0].UUID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err = client.Transact(ctx, insertOps...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, insertOps); err != nil {
+		t.Fatalf("seed stale policy route BFD session operation errors=%+v: %v", opErrors, err)
+	}
+	requireEventually(t, func() bool {
+		policies = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalRouterPolicy) bool { return row.UUID == policyUUID }).List(ctx, &policies)
+		return err == nil && len(policies) == 1 && len(policies[0].BFDSessions) == 1 && policies[0].BFDSessions[0] == bfds[0].UUID
+	})
+
+	if err := writer.EnsurePolicyRoute(ctx, route); err != nil {
+		t.Fatal(err)
+	}
+	requireEventually(t, func() bool {
+		policies = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalRouterPolicy) bool { return row.UUID == policyUUID }).List(ctx, &policies)
+		return err == nil && len(policies) == 1 && len(policies[0].BFDSessions) == 0
+	})
+}
+
 func TestLibOVSDBTopologyWriterKeepsReferencedDuplicatePolicyRoute(t *testing.T) {
 	ctx := context.Background()
 	client, closeFn := newTestOVNNBClient(t)

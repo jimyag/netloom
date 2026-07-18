@@ -146,11 +146,12 @@ func (r *LibOVSDBManagedReader) ManagedOVNRows(ctx context.Context, table string
 		}
 		return managedOVNRowsFromModels(table, rows, func(row ovnnb.LogicalRouterPolicy) (string, map[string]string, map[string]string) {
 			return row.UUID, row.ExternalIDs, map[string]string{
-				"priority": fmt.Sprint(row.Priority),
-				"match":    row.Match,
-				"action":   string(row.Action),
-				"nexthop":  pointerStringValue(row.Nexthop),
-				"nexthops": stringSliceField(row.Nexthops),
+				"priority":     fmt.Sprint(row.Priority),
+				"match":        row.Match,
+				"action":       string(row.Action),
+				"nexthop":      pointerStringValue(row.Nexthop),
+				"nexthops":     stringSliceField(row.Nexthops),
+				"bfd_sessions": stringSliceField(row.BFDSessions),
 			}
 		}), nil
 	case "Logical_Router_Static_Route":

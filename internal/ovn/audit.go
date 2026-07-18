@@ -258,7 +258,7 @@ func managedAuditNBCTLColumns(table string) []string {
 	case "Logical_Router_Port":
 		columns = append(columns, "name", "mac", "networks", "ipv6_ra_configs", "enabled", "options", "gateway_chassis", "ha_chassis_group", "peer")
 	case "Logical_Router_Policy":
-		columns = append(columns, "priority", "match", "action", "nexthop", "nexthops")
+		columns = append(columns, "priority", "match", "action", "nexthop", "nexthops", "bfd_sessions")
 	case "Logical_Router_Static_Route":
 		columns = append(columns, "bfd", "ip_prefix", "nexthop", "options", "output_port", "policy", "route_table", "selection_fields")
 	case "BFD":
@@ -1133,7 +1133,7 @@ func staleManagedColumnShouldDrift(table, key string) bool {
 		}
 	case "Logical_Router_Policy":
 		switch key {
-		case "nexthop", "nexthops":
+		case "nexthop", "nexthops", "bfd_sessions":
 			return true
 		default:
 			return false
