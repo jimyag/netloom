@@ -256,7 +256,7 @@ func managedAuditNBCTLColumns(table string) []string {
 	case "Logical_Switch_Port":
 		columns = append(columns, "name", "type", "addresses", "port_security", "options", "tag", "tag_request", "enabled", "ha_chassis_group", "mirror_rules", "parent_name", "peer", "dhcpv4_options", "dhcpv6_options")
 	case "Logical_Router_Port":
-		columns = append(columns, "name", "mac", "networks", "ipv6_ra_configs", "enabled", "options", "gateway_chassis", "ha_chassis_group", "peer")
+		columns = append(columns, "name", "mac", "networks", "ipv6_ra_configs", "dhcp_relay", "ipv6_prefix", "enabled", "options", "gateway_chassis", "ha_chassis_group", "peer")
 	case "Logical_Router_Policy":
 		columns = append(columns, "priority", "match", "action", "options", "chain", "jump_chain", "nexthop", "nexthops", "bfd_sessions")
 	case "Logical_Router_Static_Route":
@@ -714,6 +714,8 @@ func expectedManagedAuditColumns(desired topology.State) map[string]map[string]s
 			"mac":              deterministicMAC(subnet),
 			"networks":         strings.Join([]string{subnet.Gateway.String() + "/" + fmt.Sprint(subnet.CIDR.Bits())}, ","),
 			"ipv6_ra_configs":  routerPortIPv6RAConfigsField(subnet),
+			"dhcp_relay":       "",
+			"ipv6_prefix":      "",
 			"options":          "",
 			"gateway_chassis":  "",
 			"ha_chassis_group": "",
@@ -1126,7 +1128,7 @@ func staleManagedColumnShouldDrift(table, key string) bool {
 		return key == "enabled" || key == "options" || key == "load_balancer_group" || key == "copp"
 	case "Logical_Router_Port":
 		switch key {
-		case "enabled", "options", "gateway_chassis", "ha_chassis_group", "peer":
+		case "dhcp_relay", "ipv6_prefix", "enabled", "options", "gateway_chassis", "ha_chassis_group", "peer":
 			return true
 		default:
 			return false

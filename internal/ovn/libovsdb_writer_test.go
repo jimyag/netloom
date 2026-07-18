@@ -1144,6 +1144,12 @@ func TestLibOVSDBTopologyWriterCleanupRepairsIPv6RouterPortRADriftInSteadyState(
 		UUID: ovsdbNamedUUID("stale-router-port-ha-group"),
 		Name: "stale-router-port-ha-group",
 	}
+	relayServers := "fd00:10::53"
+	staleDHCPRelay := &ovnnb.DHCPRelay{
+		UUID:    ovsdbNamedUUID("stale-router-port-dhcp-relay"),
+		Name:    "stale-router-port-dhcp-relay",
+		Servers: &relayServers,
+	}
 	createGatewayChassisOps, err := client.Create(staleGatewayChassis)
 	if err != nil {
 		t.Fatal(err)
@@ -1152,17 +1158,23 @@ func TestLibOVSDBTopologyWriterCleanupRepairsIPv6RouterPortRADriftInSteadyState(
 	if err != nil {
 		t.Fatal(err)
 	}
+	createDHCPRelayOps, err := client.Create(staleDHCPRelay)
+	if err != nil {
+		t.Fatal(err)
+	}
 	ports[0].Ipv6RaConfigs = nil
+	ports[0].DhcpRelay = &staleDHCPRelay.UUID
+	ports[0].Ipv6Prefix = []string{"fd00:stale::/64"}
 	ports[0].Options = map[string]string{"redirect-chassis": "node-old"}
 	ports[0].GatewayChassis = []string{staleGatewayChassis.UUID}
 	ports[0].HaChassisGroup = &staleHAGroup.UUID
 	peer := "transit-old"
 	ports[0].Peer = &peer
-	updateOps, err := client.Where(&ports[0]).Update(&ports[0], &ports[0].Ipv6RaConfigs, &ports[0].Options, &ports[0].GatewayChassis, &ports[0].HaChassisGroup, &ports[0].Peer)
+	updateOps, err := client.Where(&ports[0]).Update(&ports[0], &ports[0].Ipv6RaConfigs, &ports[0].DhcpRelay, &ports[0].Ipv6Prefix, &ports[0].Options, &ports[0].GatewayChassis, &ports[0].HaChassisGroup, &ports[0].Peer)
 	if err != nil {
 		t.Fatal(err)
 	}
-	seedOps := append(append(createGatewayChassisOps, createHAGroupOps...), updateOps...)
+	seedOps := append(append(append(createGatewayChassisOps, createHAGroupOps...), createDHCPRelayOps...), updateOps...)
 	results, err := client.Transact(ctx, seedOps...)
 	if err != nil {
 		t.Fatal(err)
@@ -1178,6 +1190,10 @@ func TestLibOVSDBTopologyWriterCleanupRepairsIPv6RouterPortRADriftInSteadyState(
 		return err == nil &&
 			len(ports) == 1 &&
 			len(ports[0].Ipv6RaConfigs) == 0 &&
+			ports[0].DhcpRelay != nil &&
+			*ports[0].DhcpRelay != "" &&
+			len(ports[0].Ipv6Prefix) == 1 &&
+			ports[0].Ipv6Prefix[0] == "fd00:stale::/64" &&
 			ports[0].Options["redirect-chassis"] == "node-old" &&
 			len(ports[0].GatewayChassis) == 1 &&
 			ports[0].GatewayChassis[0] != "" &&
@@ -1198,6 +1214,8 @@ func TestLibOVSDBTopologyWriterCleanupRepairsIPv6RouterPortRADriftInSteadyState(
 		return err == nil &&
 			len(ports) == 1 &&
 			ports[0].Ipv6RaConfigs["address_mode"] == "dhcpv6_stateful" &&
+			ports[0].DhcpRelay == nil &&
+			len(ports[0].Ipv6Prefix) == 0 &&
 			len(ports[0].Options) == 0 &&
 			len(ports[0].GatewayChassis) == 0 &&
 			ports[0].HaChassisGroup == nil &&

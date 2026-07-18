@@ -1651,6 +1651,8 @@ func TestAuditManagedObjectsFromReaderReportsStaleLogicalRouterPortColumns(t *te
 				"mac":              deterministicMAC(subnet),
 				"networks":         "10.10.0.1/24",
 				"ipv6_ra_configs":  "",
+				"dhcp_relay":       "relay-old",
+				"ipv6_prefix":      "fd00:stale::/64",
 				"options":          "redirect-chassis=node-old",
 				"gateway_chassis":  "gc-old",
 				"ha_chassis_group": "ha-old",
@@ -1668,8 +1670,8 @@ func TestAuditManagedObjectsFromReaderReportsStaleLogicalRouterPortColumns(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stats.DriftedManagedRows != 1 || stats.DriftedManagedFields != 4 {
-		t.Fatalf("stale logical router port drift stats = %+v, want options/gateway_chassis/ha_chassis_group/peer drift", stats)
+	if stats.DriftedManagedRows != 1 || stats.DriftedManagedFields != 6 {
+		t.Fatalf("stale logical router port drift stats = %+v, want dhcp_relay/ipv6_prefix/options/gateway_chassis/ha_chassis_group/peer drift", stats)
 	}
 }
 

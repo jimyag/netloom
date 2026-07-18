@@ -987,6 +987,8 @@ func (w *LibOVSDBTopologyWriter) ensureLogicalRouterPort(ctx context.Context, ro
 		reflect.DeepEqual(existing.Ipv6RaConfigs, nextIPv6RAConfigs) &&
 		equalBoolPointers(existing.Enabled, desired.Enabled) &&
 		reflect.DeepEqual(existing.Options, desired.Options) &&
+		pointerStringValue(existing.DhcpRelay) == pointerStringValue(desired.DhcpRelay) &&
+		reflect.DeepEqual(existing.Ipv6Prefix, desired.Ipv6Prefix) &&
 		reflect.DeepEqual(existing.GatewayChassis, desired.GatewayChassis) &&
 		pointerStringValue(existing.HaChassisGroup) == pointerStringValue(desired.HaChassisGroup) &&
 		pointerStringValue(existing.Peer) == pointerStringValue(desired.Peer) {
@@ -998,10 +1000,12 @@ func (w *LibOVSDBTopologyWriter) ensureLogicalRouterPort(ctx context.Context, ro
 	existing.Ipv6RaConfigs = nextIPv6RAConfigs
 	existing.Enabled = desired.Enabled
 	existing.Options = desired.Options
+	existing.DhcpRelay = desired.DhcpRelay
+	existing.Ipv6Prefix = desired.Ipv6Prefix
 	existing.GatewayChassis = desired.GatewayChassis
 	existing.HaChassisGroup = desired.HaChassisGroup
 	existing.Peer = desired.Peer
-	updateOps, err := w.client.Where(existing).Update(existing, &existing.MAC, &existing.Networks, &existing.ExternalIDs, &existing.Ipv6RaConfigs, &existing.Enabled, &existing.Options, &existing.GatewayChassis, &existing.HaChassisGroup, &existing.Peer)
+	updateOps, err := w.client.Where(existing).Update(existing, &existing.MAC, &existing.Networks, &existing.ExternalIDs, &existing.Ipv6RaConfigs, &existing.Enabled, &existing.Options, &existing.DhcpRelay, &existing.Ipv6Prefix, &existing.GatewayChassis, &existing.HaChassisGroup, &existing.Peer)
 	if err != nil {
 		return "", nil, fmt.Errorf("update logical router port %s: %w", desired.Name, err)
 	}

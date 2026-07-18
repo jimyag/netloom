@@ -20,9 +20,10 @@ Implemented control-plane features:
   logical switch ports, DHCP options, DNS records, static routes, BFD sessions,
   logical router policies, NAT, load balancers, and health checks.
 - OVN live audit and steady-state repair for managed topology drift, including
-  stale endpoint port semantics, policy-route semantic columns and BFD refs,
-  NAT stale columns, load-balancer parent refs, health-check refs, stale
-  `ip_port_mappings`, and stale router/switch CoPP refs.
+  stale subnet router-port DHCP relay and IPv6 prefix refs, endpoint port
+  semantics, policy-route semantic columns and BFD refs, NAT stale columns,
+  load-balancer parent refs, health-check refs, stale `ip_port_mappings`, and
+  stale router/switch CoPP refs.
 - Desired state from a JSON file or from local
   `Open_vSwitch.external_ids:netloom_desired_state`.
 

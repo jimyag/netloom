@@ -134,6 +134,8 @@ func (r *LibOVSDBManagedReader) ManagedOVNRows(ctx context.Context, table string
 				"mac":              row.MAC,
 				"networks":         stringSliceField(row.Networks),
 				"ipv6_ra_configs":  mapField(row.Ipv6RaConfigs),
+				"dhcp_relay":       pointerStringValue(row.DhcpRelay),
+				"ipv6_prefix":      stringSliceField(row.Ipv6Prefix),
 				"enabled":          boolPointerField(row.Enabled),
 				"options":          mapField(row.Options),
 				"gateway_chassis":  stringSliceField(row.GatewayChassis),
