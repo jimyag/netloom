@@ -1629,13 +1629,19 @@ func TestLibOVSDBTopologyWriterRepairsEndpointSwitchPortStaleTypeOptionsAndTag(t
 		return err == nil && len(mirrors) == 1
 	})
 	tag := 100
+	tagRequest := 4094
+	parentName := "stale-parent"
+	peer := "stale-router-peer"
 	port.Type = "localnet"
 	port.Options = map[string]string{"network_name": "physnet-a"}
 	port.Tag = &tag
+	port.TagRequest = &tagRequest
 	staleHAGroup := groups[0].UUID
 	port.HaChassisGroup = &staleHAGroup
 	port.MirrorRules = []string{mirrors[0].UUID}
-	updateOps, err := client.Where(&port).Update(&port, &port.Type, &port.Options, &port.Tag, &port.HaChassisGroup, &port.MirrorRules)
+	port.ParentName = &parentName
+	port.Peer = &peer
+	updateOps, err := client.Where(&port).Update(&port, &port.Type, &port.Options, &port.Tag, &port.TagRequest, &port.HaChassisGroup, &port.MirrorRules, &port.ParentName, &port.Peer)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1649,7 +1655,7 @@ func TestLibOVSDBTopologyWriterRepairsEndpointSwitchPortStaleTypeOptionsAndTag(t
 	requireEventually(t, func() bool {
 		ports = nil
 		err := client.WhereCache(func(row *ovnnb.LogicalSwitchPort) bool { return row.Name == logicalPort("prod", "pod-a") }).List(ctx, &ports)
-		return err == nil && len(ports) == 1 && ports[0].Type == "localnet" && ports[0].Options["network_name"] == "physnet-a" && ports[0].Tag != nil && *ports[0].Tag == 100 && ports[0].HaChassisGroup != nil && *ports[0].HaChassisGroup == groups[0].UUID && len(ports[0].MirrorRules) == 1 && ports[0].MirrorRules[0] == mirrors[0].UUID
+		return err == nil && len(ports) == 1 && ports[0].Type == "localnet" && ports[0].Options["network_name"] == "physnet-a" && ports[0].Tag != nil && *ports[0].Tag == 100 && ports[0].TagRequest != nil && *ports[0].TagRequest == 4094 && ports[0].HaChassisGroup != nil && *ports[0].HaChassisGroup == groups[0].UUID && len(ports[0].MirrorRules) == 1 && ports[0].MirrorRules[0] == mirrors[0].UUID && ports[0].ParentName != nil && *ports[0].ParentName == "stale-parent" && ports[0].Peer != nil && *ports[0].Peer == "stale-router-peer"
 	})
 
 	if err := writer.EnsureEndpoint(ctx, endpoint); err != nil {
@@ -1658,7 +1664,7 @@ func TestLibOVSDBTopologyWriterRepairsEndpointSwitchPortStaleTypeOptionsAndTag(t
 	requireEventually(t, func() bool {
 		ports = nil
 		err := client.WhereCache(func(row *ovnnb.LogicalSwitchPort) bool { return row.Name == logicalPort("prod", "pod-a") }).List(ctx, &ports)
-		return err == nil && len(ports) == 1 && ports[0].Type == "" && len(ports[0].Options) == 0 && ports[0].Tag == nil && ports[0].HaChassisGroup == nil && len(ports[0].MirrorRules) == 0
+		return err == nil && len(ports) == 1 && ports[0].Type == "" && len(ports[0].Options) == 0 && ports[0].Tag == nil && ports[0].TagRequest == nil && ports[0].HaChassisGroup == nil && len(ports[0].MirrorRules) == 0 && ports[0].ParentName == nil && ports[0].Peer == nil
 	})
 }
 
@@ -1825,17 +1831,23 @@ func TestLibOVSDBTopologyWriterCleanupRepairsEndpointSwitchPortDriftInSteadyStat
 		return err == nil && len(mirrors) == 1
 	})
 	tag := 200
+	tagRequest := 4094
+	parentName := "cleanup-stale-parent"
+	peer := "cleanup-stale-router-peer"
 	port.Type = "localnet"
 	port.Addresses = []string{"unknown"}
 	port.PortSecurity = nil
 	port.Options = map[string]string{"network_name": "physnet-a"}
 	port.Tag = &tag
+	port.TagRequest = &tagRequest
 	disabled := false
 	port.Enabled = &disabled
 	staleHAGroup := groups[0].UUID
 	port.HaChassisGroup = &staleHAGroup
 	port.MirrorRules = []string{mirrors[0].UUID}
-	updateOps, err := client.Where(&port).Update(&port, &port.Type, &port.Addresses, &port.PortSecurity, &port.Options, &port.Tag, &port.Enabled, &port.HaChassisGroup, &port.MirrorRules)
+	port.ParentName = &parentName
+	port.Peer = &peer
+	updateOps, err := client.Where(&port).Update(&port, &port.Type, &port.Addresses, &port.PortSecurity, &port.Options, &port.Tag, &port.TagRequest, &port.Enabled, &port.HaChassisGroup, &port.MirrorRules, &port.ParentName, &port.Peer)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1856,12 +1868,18 @@ func TestLibOVSDBTopologyWriterCleanupRepairsEndpointSwitchPortDriftInSteadyStat
 			ports[0].Options["network_name"] == "physnet-a" &&
 			ports[0].Tag != nil &&
 			*ports[0].Tag == 200 &&
+			ports[0].TagRequest != nil &&
+			*ports[0].TagRequest == 4094 &&
 			ports[0].Enabled != nil &&
 			!*ports[0].Enabled &&
 			ports[0].HaChassisGroup != nil &&
 			*ports[0].HaChassisGroup == groups[0].UUID &&
 			len(ports[0].MirrorRules) == 1 &&
-			ports[0].MirrorRules[0] == mirrors[0].UUID
+			ports[0].MirrorRules[0] == mirrors[0].UUID &&
+			ports[0].ParentName != nil &&
+			*ports[0].ParentName == "cleanup-stale-parent" &&
+			ports[0].Peer != nil &&
+			*ports[0].Peer == "cleanup-stale-router-peer"
 	})
 
 	if err := writer.CleanupTopology(ctx, state); err != nil {
@@ -1875,9 +1893,12 @@ func TestLibOVSDBTopologyWriterCleanupRepairsEndpointSwitchPortDriftInSteadyStat
 			ports[0].Type == "" &&
 			len(ports[0].Options) == 0 &&
 			ports[0].Tag == nil &&
+			ports[0].TagRequest == nil &&
 			ports[0].Enabled == nil &&
 			ports[0].HaChassisGroup == nil &&
 			len(ports[0].MirrorRules) == 0 &&
+			ports[0].ParentName == nil &&
+			ports[0].Peer == nil &&
 			len(ports[0].Addresses) == 1 &&
 			ports[0].Addresses[0] == "02:00:00:00:00:20 10.10.0.20" &&
 			len(ports[0].PortSecurity) == 1 &&

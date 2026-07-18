@@ -1066,9 +1066,12 @@ func (w *LibOVSDBTopologyWriter) ensureEndpointSwitchPort(ctx context.Context, s
 		existing.Type == desired.Type &&
 		reflect.DeepEqual(existing.Options, desired.Options) &&
 		equalIntPointers(existing.Tag, desired.Tag) &&
+		equalIntPointers(existing.TagRequest, desired.TagRequest) &&
 		equalBoolPointers(existing.Enabled, desired.Enabled) &&
 		pointerStringValue(existing.HaChassisGroup) == pointerStringValue(desired.HaChassisGroup) &&
-		len(existing.MirrorRules) == 0 {
+		len(existing.MirrorRules) == 0 &&
+		pointerStringValue(existing.ParentName) == pointerStringValue(desired.ParentName) &&
+		pointerStringValue(existing.Peer) == pointerStringValue(desired.Peer) {
 		return existing.UUID, ops, nil
 	}
 	existing.Addresses = desired.Addresses
@@ -1077,10 +1080,13 @@ func (w *LibOVSDBTopologyWriter) ensureEndpointSwitchPort(ctx context.Context, s
 	existing.Type = desired.Type
 	existing.Options = desired.Options
 	existing.Tag = desired.Tag
+	existing.TagRequest = desired.TagRequest
 	existing.Enabled = desired.Enabled
 	existing.HaChassisGroup = desired.HaChassisGroup
 	existing.MirrorRules = nil
-	updateOps, err := w.client.Where(existing).Update(existing, &existing.Addresses, &existing.PortSecurity, &existing.ExternalIDs, &existing.Type, &existing.Options, &existing.Tag, &existing.Enabled, &existing.HaChassisGroup, &existing.MirrorRules)
+	existing.ParentName = desired.ParentName
+	existing.Peer = desired.Peer
+	updateOps, err := w.client.Where(existing).Update(existing, &existing.Addresses, &existing.PortSecurity, &existing.ExternalIDs, &existing.Type, &existing.Options, &existing.Tag, &existing.TagRequest, &existing.Enabled, &existing.HaChassisGroup, &existing.MirrorRules, &existing.ParentName, &existing.Peer)
 	if err != nil {
 		return "", nil, fmt.Errorf("update endpoint logical switch port %s: %w", desired.Name, err)
 	}

@@ -254,7 +254,7 @@ func managedAuditNBCTLColumns(table string) []string {
 	case "Logical_Router":
 		columns = append(columns, "name", "options", "ports", "load_balancers", "load_balancer_group", "nat", "policies", "static_routes", "enabled")
 	case "Logical_Switch_Port":
-		columns = append(columns, "name", "type", "addresses", "port_security", "options", "tag", "enabled", "ha_chassis_group", "mirror_rules", "dhcpv4_options", "dhcpv6_options")
+		columns = append(columns, "name", "type", "addresses", "port_security", "options", "tag", "tag_request", "enabled", "ha_chassis_group", "mirror_rules", "parent_name", "peer", "dhcpv4_options", "dhcpv6_options")
 	case "Logical_Router_Port":
 		columns = append(columns, "name", "mac", "networks", "ipv6_ra_configs", "enabled", "options", "gateway_chassis", "ha_chassis_group", "peer")
 	case "Logical_Router_Policy":
@@ -1140,7 +1140,7 @@ func staleManagedColumnShouldDrift(table, key string) bool {
 		}
 	case "Logical_Switch_Port":
 		switch key {
-		case "type", "options", "tag", "enabled", "port_security", "ha_chassis_group", "mirror_rules", "dhcpv4_options", "dhcpv6_options":
+		case "type", "options", "tag", "tag_request", "enabled", "port_security", "ha_chassis_group", "mirror_rules", "parent_name", "peer", "dhcpv4_options", "dhcpv6_options":
 			return true
 		default:
 			return false

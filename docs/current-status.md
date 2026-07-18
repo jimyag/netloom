@@ -19,7 +19,7 @@ Provider Network、Linux datapath、eBPF/TCX ACL、状态观测和 policy lifecy
 | --- | --- | --- |
 | VPC | 已实现 | 对应 OVN Logical Router。 |
 | Subnet | 已实现 | 对应 OVN Logical Switch、router port、localnet port、VLAN、DHCP options。 |
-| Endpoint | 已实现 | 对应 OVN Logical Switch Port、地址、port security、DHCP attachment，并清理普通 endpoint 端口上的 stale mirror rules。 |
+| Endpoint | 已实现 | 对应 OVN Logical Switch Port、地址、port security、DHCP attachment，并清理普通 endpoint 端口上的 nested/router/mirror/VLAN-request stale 语义列。 |
 | Gateway | 已实现 | 支持普通 gateway 和 distributed gateway 元数据。 |
 | RouteTable | 已实现 | 支持静态路由、ECMP、BFD 和最小变更更新。 |
 | PolicyRoute | 已实现 | 支持 reroute、drop、reject、L4 match，并投影到 OVN LRP 和 Linux RPDB。 |
