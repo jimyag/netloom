@@ -1000,6 +1000,7 @@ func expectedManagedAuditColumns(desired topology.State) map[string]map[string]s
 	if records := desiredOVNDNSRecords(desired.DNSRecords); len(records) > 0 {
 		addAuditExpectedColumns(out, "DNS", map[string]string{
 			"records": mapField(records),
+			"options": "",
 		}, "netloom_dns", "desired")
 	}
 	return out

@@ -542,6 +542,68 @@ esac
 	}
 }
 
+func TestAuditManagedObjectsFromReaderReportsDNSOptionsDrift(t *testing.T) {
+	reader := fakeManagedOVNReader{rows: map[string][]ManagedOVNRow{
+		"DNS": {
+			{Table: "DNS", UUID: "dns-a", ExternalIDs: map[string]string{
+				"netloom_owner": "netloom",
+				"netloom_dns":   "desired",
+			}, Fields: map[string]string{
+				"records": "api.example.com=10.10.0.20",
+				"options": "legacy=true",
+			}},
+		},
+	}}
+	desired := topology.State{
+		DNSRecords: []model.DNSRecord{{
+			Name: "api.example.com",
+			IPs:  []netip.Addr{netip.MustParseAddr("10.10.0.20")},
+		}},
+	}
+
+	stats, err := AuditManagedObjectsFromReaderWithDesired(context.Background(), reader, desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.ManagedDNSRecords != 1 || stats.DriftedManagedRows != 1 || stats.DriftedManagedFields != 1 {
+		t.Fatalf("stats = %+v, want one DNS options field drift", stats)
+	}
+	if got := stats.DriftedManagedFieldCounts["DNS.options"]; got != 1 {
+		t.Fatalf("field drift counts = %+v, want DNS options drift", stats.DriftedManagedFieldCounts)
+	}
+}
+
+func TestAuditManagedObjectsFromNBCTLReportsDNSOptionsDrift(t *testing.T) {
+	tmp := t.TempDir()
+	binary := filepath.Join(tmp, "ovn-nbctl")
+	script := `#!/bin/sh
+case "$*" in
+  *"find DNS external_ids:netloom_owner=netloom"*) printf 'dns-a,"{netloom_owner=netloom,netloom_dns=desired}","{api.example.com=10.10.0.20}","{legacy=true}"\n' ;;
+esac
+`
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	desired := topology.State{
+		DNSRecords: []model.DNSRecord{{
+			Name: "api.example.com",
+			IPs:  []netip.Addr{netip.MustParseAddr("10.10.0.20")},
+		}},
+	}
+
+	executor := NewNBCTLExecutor(binary, "--db=unix:/tmp/ovnnb.sock")
+	stats, err := AuditManagedObjectsFromReaderWithDesired(context.Background(), executor, desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.ManagedDNSRecords != 1 || stats.DriftedManagedRows != 1 || stats.DriftedManagedFields != 1 {
+		t.Fatalf("stats = %+v, want one DNS options field drift", stats)
+	}
+	if got := stats.DriftedManagedFieldCounts["DNS.options"]; got != 1 {
+		t.Fatalf("field drift counts = %+v, want DNS options drift", stats.DriftedManagedFieldCounts)
+	}
+}
+
 func TestAuditManagedRowsCountsDuplicatesAndIncompleteRows(t *testing.T) {
 	rows := []ManagedOVNRow{
 		{Table: "NAT", UUID: "uuid-a", ExternalIDs: map[string]string{"netloom_owner": "netloom", "netloom_vpc": "prod", "netloom_nat": "egress"}},
