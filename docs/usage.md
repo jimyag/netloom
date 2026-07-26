@@ -343,6 +343,7 @@ NETLOOM_AGENT_METRICS_ADDR=:9092 \
 ./netloom-agent dns-observations-export -ovsdb unix:/var/run/openvswitch/db.sock
 ./netloom-agent identity-groups-export -ovsdb unix:/var/run/openvswitch/db.sock
 ./netloom-agent policy-status-export -ovsdb unix:/var/run/openvswitch/db.sock -endpoint prod/vm-a
+./netloom-agent policy-status-export -ovsdb unix:/var/run/openvswitch/db.sock -last-event-direction egress -last-event-action drop
 ./netloom-agent policy-revision-wait -ovsdb unix:/var/run/openvswitch/db.sock -endpoint prod/vm-a -revision 3 -timeout 30s
 curl -s 'http://127.0.0.1:9092/policy/endpoints/prod/vm-a/revision?target_revision=3&timeout_ms=30000'
 ./netloom-agent policy-entries-export -ovsdb unix:/var/run/openvswitch/db.sock -endpoint prod/vm-a
@@ -406,11 +407,17 @@ keys、values、计数器和 remote CIDR。
 ./netloom-agent policy-status-export \
   -ovsdb unix:/var/run/openvswitch/db.sock \
   -endpoint prod/vm-a
+./netloom-agent policy-status-export \
+  -ovsdb unix:/var/run/openvswitch/db.sock \
+  -last-event-direction egress \
+  -last-event-action drop
 ./netloom-agent policy-revision-wait \
   -ovsdb unix:/var/run/openvswitch/db.sock \
   -endpoint prod/vm-a \
   -revision 3 \
   -timeout 30s
+curl -s \
+  'http://127.0.0.1:9092/policy/endpoints?last_event_direction=egress&last_event_action=drop'
 curl -s \
   'http://127.0.0.1:9092/policy/endpoints/prod/vm-a/revision?target_revision=3&timeout_ms=30000'
 ovs-vsctl get Open_vSwitch . external_ids:netloom_policy_endpoint_status
@@ -422,6 +429,9 @@ ovs-vsctl get Open_vSwitch . external_ids:netloom_policy_endpoint_status
 快照，更适合线下审计正在运行节点的 eBPF policy map 状态。
 正常状态下，单个 endpoint 应能看到当前 `revision`、policy-map `entries`、容量压力、
 drift 结果、最近一次策略更新时间 `last_seen`，以及最近一次更新事件和统计计数。
+HTTP API 和 `policy-status-export` 支持用 last-event success、remediated、rule cookie、
+rule ref、direction 和 action 过滤 endpoint，适合直接找出最近一次因特定 ingress/egress
+allow/drop/reject/log 规则更新过的 endpoint。
 `policy-revision-wait` 不会触发 reconcile，只读取本机 OVSDB 中的 live status，并在目标
 revision 未按时出现时返回错误。
 HTTP revision API 读取长运行 agent 当前内存快照：达到目标 revision 返回 200 和 endpoint
