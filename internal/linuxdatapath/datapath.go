@@ -171,6 +171,7 @@ const (
 	linuxMainRouteTable         = 254
 	linuxPolicyRuleProtocolID   = 186
 	linuxRemoteRouteProtocolID  = 187
+	linuxPolicyRouteTableMax    = 1<<31 - 1
 	providerLinkPrefix          = "nlv"
 	providerQueueFlowCookie     = uint64(0x4e51000000000000)
 	providerQueueFlowCookieMask = uint64(0xffff000000000000)
@@ -238,6 +239,19 @@ func datapathBackend(backend string) string {
 	return backend
 }
 
+func validatePolicyTableRange(base, size int) error {
+	if base <= 0 {
+		return fmt.Errorf("policy route table base must be positive, got %d", base)
+	}
+	if size <= 0 {
+		return fmt.Errorf("policy route table size must be positive, got %d", size)
+	}
+	if base > linuxPolicyRouteTableMax-size+1 {
+		return fmt.Errorf("policy route table range exceeds maximum: base=%d size=%d max=%d", base, size, linuxPolicyRouteTableMax)
+	}
+	return nil
+}
+
 func discoverProviderInventory() ([]ProviderInterface, error) {
 	interfaces, err := listSystemInterfaces()
 	if err != nil {
@@ -285,6 +299,9 @@ func Plan(ctx context.Context, state control.DesiredState, options Options) ([]O
 	policyTableSize := options.PolicyTableSize
 	if policyTableSize == 0 {
 		policyTableSize = 1024
+	}
+	if err := validatePolicyTableRange(policyTableBase, policyTableSize); err != nil {
+		return nil, Result{}, err
 	}
 
 	result := Result{Device: localDevice, Mode: mode, CleanupPlanned: options.CleanupStale}
@@ -1469,6 +1486,9 @@ func planProviderNetworkLinkCleanup(specs []providerNetworkLinkSpec) Operation {
 }
 
 func planPolicyRoutes(state control.DesiredState, node, device string, tableBase, tableSize int, cleanup bool) ([]Operation, int, error) {
+	if err := validatePolicyTableRange(tableBase, tableSize); err != nil {
+		return nil, 0, err
+	}
 	localVPCs := localVPCSet(state.Endpoints, node)
 	routes := append([]model.PolicyRoute(nil), state.PolicyRoutes...)
 	sortPolicyRoutes(routes)

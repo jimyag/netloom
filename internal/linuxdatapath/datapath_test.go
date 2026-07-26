@@ -3013,6 +3013,40 @@ func TestManagedPolicyTableRange(t *testing.T) {
 	}
 }
 
+func TestValidatePolicyTableRangeRejectsInvalidBounds(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		base int
+		size int
+	}{
+		{name: "zero base", base: 0, size: 64},
+		{name: "negative base", base: -1, size: 64},
+		{name: "zero size", base: 22000, size: 0},
+		{name: "negative size", base: 22000, size: -1},
+		{name: "overflow", base: linuxPolicyRouteTableMax, size: 2},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := validatePolicyTableRange(tt.base, tt.size); err == nil {
+				t.Fatalf("expected policy table range base=%d size=%d to fail", tt.base, tt.size)
+			}
+		})
+	}
+	if err := validatePolicyTableRange(22000, 64); err != nil {
+		t.Fatalf("valid policy table range rejected: %v", err)
+	}
+}
+
+func TestPlanRejectsInvalidPolicyTableRange(t *testing.T) {
+	_, _, err := Plan(context.Background(), control.DesiredState{}, Options{
+		Node:            "node-a",
+		PolicyTableBase: 22000,
+		PolicyTableSize: -1,
+	})
+	if err == nil {
+		t.Fatal("expected invalid policy table range to fail")
+	}
+}
+
 func TestNetlinkPolicyRuleCleanupCoversIPv4AndIPv6(t *testing.T) {
 	families := netlinkPolicyRuleFamilies()
 	if !reflect.DeepEqual(families, []int{unix.AF_INET, unix.AF_INET6}) {
@@ -3140,6 +3174,15 @@ func TestAllocatePolicyRouteTablesRejectsExhaustedRange(t *testing.T) {
 	}, Options{PolicyTableBase: 22000, PolicyTableSize: 1})
 	if err == nil {
 		t.Fatal("expected exhausted policy table range to fail")
+	}
+}
+
+func TestAllocatePolicyRouteTablesRejectsInvalidRange(t *testing.T) {
+	_, err := allocatePolicyRouteTables([]model.PolicyRoute{
+		testReroutePolicyRoute("web", 200),
+	}, Options{PolicyTableBase: 22000, PolicyTableSize: -1})
+	if err == nil {
+		t.Fatal("expected invalid policy table range to fail")
 	}
 }
 
@@ -3565,6 +3608,13 @@ func TestNormalizeOptionsDefaultsNetlinkSettings(t *testing.T) {
 	}
 	if result.Device != "lo" || result.Mode != "local" {
 		t.Fatalf("unexpected result defaults: %+v", result)
+	}
+}
+
+func TestNormalizeOptionsRejectsInvalidPolicyTableRange(t *testing.T) {
+	_, _, err := normalizeOptions(Options{Node: "node-a", PolicyTableBase: 22000, PolicyTableSize: -1})
+	if err == nil {
+		t.Fatal("expected invalid policy table range to fail")
 	}
 }
 

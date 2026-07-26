@@ -273,6 +273,9 @@ func normalizeOptions(options Options) (Options, Result, error) {
 	if options.PolicyTableSize == 0 {
 		options.PolicyTableSize = 1024
 	}
+	if err := validatePolicyTableRange(options.PolicyTableBase, options.PolicyTableSize); err != nil {
+		return Options{}, Result{}, err
+	}
 	return options, Result{Device: options.LocalDevice, Mode: options.Mode}, nil
 }
 
@@ -374,6 +377,9 @@ func sortPolicyRoutes(routes []model.PolicyRoute) {
 }
 
 func allocatePolicyRouteTables(routes []model.PolicyRoute, options Options) (map[string]int, error) {
+	if err := validatePolicyTableRange(options.PolicyTableBase, options.PolicyTableSize); err != nil {
+		return nil, err
+	}
 	out := make(map[string]int)
 	used := make(map[int]string)
 	for _, route := range routes {
@@ -487,6 +493,9 @@ func netlinkPolicyRuleFamilies() []int {
 }
 
 func managedPolicyTable(table int, options Options) bool {
+	if err := validatePolicyTableRange(options.PolicyTableBase, options.PolicyTableSize); err != nil {
+		return false
+	}
 	return table >= options.PolicyTableBase && table < options.PolicyTableBase+options.PolicyTableSize
 }
 
@@ -945,6 +954,9 @@ func cleanupStalePolicyRouteTables(root *netlink.Handle, desired map[int]*netlin
 }
 
 func managedPolicyTables(options Options) []int {
+	if err := validatePolicyTableRange(options.PolicyTableBase, options.PolicyTableSize); err != nil {
+		return nil
+	}
 	tables := make([]int, 0, options.PolicyTableSize)
 	for table := options.PolicyTableBase; table < options.PolicyTableBase+options.PolicyTableSize; table++ {
 		tables = append(tables, table)
