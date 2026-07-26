@@ -357,6 +357,7 @@ curl -s 'http://127.0.0.1:9092/policy/endpoints/prod/vm-a/revision?target_revisi
 ./netloom-agent policy-events -ovsdb unix:/var/run/openvswitch/db.sock -remediated true -limit 20
 ./netloom-agent policy-events -ovsdb unix:/var/run/openvswitch/db.sock -rule-cookie 42 -limit 20
 ./netloom-agent policy-events -ovsdb unix:/var/run/openvswitch/db.sock -rule-ref prod/web/allow-http -limit 20
+./netloom-agent policy-events -ovsdb unix:/var/run/openvswitch/db.sock -capacity-hotspot-rule-ref prod/web/allow-http -limit 20
 ./netloom-agent policy-events -ovsdb unix:/var/run/openvswitch/db.sock -direction egress -action drop -limit 20
 ovs-vsctl get Open_vSwitch . external_ids:netloom_controller_status
 ovs-vsctl get Open_vSwitch . external_ids:netloom_controller_events
@@ -690,6 +691,7 @@ curl -s 'http://127.0.0.1:9092/policy/events?success=false&limit=20'
 curl -s 'http://127.0.0.1:9092/policy/events?remediated=true&limit=20'
 curl -s 'http://127.0.0.1:9092/policy/events?rule_cookie=42&limit=20'
 curl -s 'http://127.0.0.1:9092/policy/events?rule_ref=prod/web/allow-http&limit=20'
+curl -s 'http://127.0.0.1:9092/policy/events?capacity_hotspot_rule_ref=prod/web/allow-http&limit=20'
 curl -s 'http://127.0.0.1:9092/policy/events?direction=egress&action=drop&limit=20'
 netloom-agent policy-events \
   -ovsdb unix:/var/run/openvswitch/db.sock \

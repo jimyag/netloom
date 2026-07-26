@@ -260,15 +260,16 @@ type policyActionHistoryOptions struct {
 }
 
 type policyEventsOptions struct {
-	ovsdb      string
-	endpoint   string
-	success    string
-	remediated string
-	ruleCookie string
-	ruleRef    string
-	direction  string
-	action     string
-	limit      int
+	ovsdb                  string
+	endpoint               string
+	success                string
+	remediated             string
+	ruleCookie             string
+	ruleRef                string
+	capacityHotspotRuleRef string
+	direction              string
+	action                 string
+	limit                  int
 }
 
 type policyRulesOptions struct {
@@ -456,23 +457,24 @@ type policyRuleOutput struct {
 }
 
 type policyEventsOutput struct {
-	Node                 string                        `json:"node"`
-	Store                string                        `json:"store"`
-	Ready                bool                          `json:"ready"`
-	LastReconcileSuccess bool                          `json:"last_reconcile_success"`
-	LastReconcileError   string                        `json:"last_reconcile_error,omitempty"`
-	UpdatedAt            time.Time                     `json:"updated_at,omitempty"`
-	TotalEvents          int                           `json:"total_events"`
-	EventCount           int                           `json:"event_count"`
-	Limit                int                           `json:"limit"`
-	FilterEndpoint       string                        `json:"filter_endpoint,omitempty"`
-	FilterSuccess        *bool                         `json:"filter_success,omitempty"`
-	FilterRemediated     *bool                         `json:"filter_remediated,omitempty"`
-	FilterRuleCookie     uint32                        `json:"filter_rule_cookie,omitempty"`
-	FilterRuleRef        string                        `json:"filter_rule_ref,omitempty"`
-	FilterDirection      model.Direction               `json:"filter_direction,omitempty"`
-	FilterAction         model.Action                  `json:"filter_action,omitempty"`
-	Events               []dataplane.PolicyUpdateEvent `json:"events"`
+	Node                         string                        `json:"node"`
+	Store                        string                        `json:"store"`
+	Ready                        bool                          `json:"ready"`
+	LastReconcileSuccess         bool                          `json:"last_reconcile_success"`
+	LastReconcileError           string                        `json:"last_reconcile_error,omitempty"`
+	UpdatedAt                    time.Time                     `json:"updated_at,omitempty"`
+	TotalEvents                  int                           `json:"total_events"`
+	EventCount                   int                           `json:"event_count"`
+	Limit                        int                           `json:"limit"`
+	FilterEndpoint               string                        `json:"filter_endpoint,omitempty"`
+	FilterSuccess                *bool                         `json:"filter_success,omitempty"`
+	FilterRemediated             *bool                         `json:"filter_remediated,omitempty"`
+	FilterRuleCookie             uint32                        `json:"filter_rule_cookie,omitempty"`
+	FilterRuleRef                string                        `json:"filter_rule_ref,omitempty"`
+	FilterCapacityHotspotRuleRef string                        `json:"filter_capacity_hotspot_rule_ref,omitempty"`
+	FilterDirection              model.Direction               `json:"filter_direction,omitempty"`
+	FilterAction                 model.Action                  `json:"filter_action,omitempty"`
+	Events                       []dataplane.PolicyUpdateEvent `json:"events"`
 }
 
 type policyEntriesOutput struct {
@@ -1350,6 +1352,7 @@ func runPolicyEvents(ctx context.Context, args []string, stdout io.Writer) error
 	flags.StringVar(&opts.remediated, "remediated", "", "optional remediation filter: true or false")
 	flags.StringVar(&opts.ruleCookie, "rule-cookie", "", "optional dataplane rule cookie to include")
 	flags.StringVar(&opts.ruleRef, "rule-ref", "", "optional policy rule reference to include")
+	flags.StringVar(&opts.capacityHotspotRuleRef, "capacity-hotspot-rule-ref", "", "optional policy map capacity hotspot rule reference to include")
 	flags.StringVar(&opts.direction, "direction", "", "optional policy rule direction to include: ingress or egress")
 	flags.StringVar(&opts.action, "action", "", "optional policy rule action to include: allow, drop, reject, or log")
 	flags.IntVar(&opts.limit, "limit", defaultPolicyEventsLimit, "maximum recent policy update events")
@@ -1388,23 +1391,24 @@ func runPolicyEventsWithStore(ctx context.Context, opts policyEventsOptions, std
 	filtered := filterPolicyUpdateEvents(doc.Events, filter)
 	recent := recentPolicyUpdateEvents(filtered, opts.limit)
 	output := policyEventsOutput{
-		Node:                 doc.Node,
-		Store:                doc.Store,
-		Ready:                true,
-		LastReconcileSuccess: doc.LastReconcileSuccess,
-		LastReconcileError:   doc.LastReconcileError,
-		UpdatedAt:            doc.UpdatedAt,
-		TotalEvents:          doc.TotalEvents,
-		EventCount:           len(recent),
-		Limit:                opts.limit,
-		FilterEndpoint:       filter.Endpoint,
-		FilterSuccess:        filter.Success,
-		FilterRemediated:     filter.Remediated,
-		FilterRuleCookie:     filterPolicyUpdateEventRuleCookieValue(filter),
-		FilterRuleRef:        filter.RuleRef,
-		FilterDirection:      filter.Direction,
-		FilterAction:         filter.Action,
-		Events:               recent,
+		Node:                         doc.Node,
+		Store:                        doc.Store,
+		Ready:                        true,
+		LastReconcileSuccess:         doc.LastReconcileSuccess,
+		LastReconcileError:           doc.LastReconcileError,
+		UpdatedAt:                    doc.UpdatedAt,
+		TotalEvents:                  doc.TotalEvents,
+		EventCount:                   len(recent),
+		Limit:                        opts.limit,
+		FilterEndpoint:               filter.Endpoint,
+		FilterSuccess:                filter.Success,
+		FilterRemediated:             filter.Remediated,
+		FilterRuleCookie:             filterPolicyUpdateEventRuleCookieValue(filter),
+		FilterRuleRef:                filter.RuleRef,
+		FilterCapacityHotspotRuleRef: filter.CapacityHotspotRuleRef,
+		FilterDirection:              filter.Direction,
+		FilterAction:                 filter.Action,
+		Events:                       recent,
 	}
 	encoder := json.NewEncoder(stdout)
 	encoder.SetIndent("", "  ")
@@ -2262,24 +2266,25 @@ const (
 )
 
 type policyUpdateEventFilter struct {
-	Endpoint   string
-	Success    *bool
-	Remediated *bool
-	RuleCookie *uint32
-	RuleRef    string
-	Direction  model.Direction
-	Action     model.Action
+	Endpoint               string
+	Success                *bool
+	Remediated             *bool
+	RuleCookie             *uint32
+	RuleRef                string
+	CapacityHotspotRuleRef string
+	Direction              model.Direction
+	Action                 model.Action
 }
 
 func policyUpdateEventFilterFromOptions(opts policyEventsOptions) (policyUpdateEventFilter, error) {
-	return policyUpdateEventFilterFromValues(opts.endpoint, opts.success, opts.remediated, opts.ruleCookie, opts.ruleRef, opts.direction, opts.action)
+	return policyUpdateEventFilterFromValues(opts.endpoint, opts.success, opts.remediated, opts.ruleCookie, opts.ruleRef, opts.capacityHotspotRuleRef, opts.direction, opts.action)
 }
 
 func policyUpdateEventFilterFromRequest(r *http.Request, endpoint string) (policyUpdateEventFilter, error) {
-	return policyUpdateEventFilterFromValues(endpoint, r.URL.Query().Get("success"), r.URL.Query().Get("remediated"), r.URL.Query().Get("rule_cookie"), r.URL.Query().Get("rule_ref"), r.URL.Query().Get("direction"), r.URL.Query().Get("action"))
+	return policyUpdateEventFilterFromValues(endpoint, r.URL.Query().Get("success"), r.URL.Query().Get("remediated"), r.URL.Query().Get("rule_cookie"), r.URL.Query().Get("rule_ref"), r.URL.Query().Get("capacity_hotspot_rule_ref"), r.URL.Query().Get("direction"), r.URL.Query().Get("action"))
 }
 
-func policyUpdateEventFilterFromValues(endpoint, successRaw, remediatedRaw, ruleCookieRaw, ruleRef, direction, action string) (policyUpdateEventFilter, error) {
+func policyUpdateEventFilterFromValues(endpoint, successRaw, remediatedRaw, ruleCookieRaw, ruleRef, capacityHotspotRuleRef, direction, action string) (policyUpdateEventFilter, error) {
 	success, err := policyActionSuccessFromString(successRaw)
 	if err != nil {
 		return policyUpdateEventFilter{}, err
@@ -2317,13 +2322,14 @@ func policyUpdateEventFilterFromValues(endpoint, successRaw, remediatedRaw, rule
 		return policyUpdateEventFilter{}, fmt.Errorf("invalid action %q", action)
 	}
 	return policyUpdateEventFilter{
-		Endpoint:   strings.TrimSpace(endpoint),
-		Success:    success,
-		Remediated: remediated,
-		RuleCookie: ruleCookie,
-		RuleRef:    strings.TrimSpace(ruleRef),
-		Direction:  filterDirection,
-		Action:     filterAction,
+		Endpoint:               strings.TrimSpace(endpoint),
+		Success:                success,
+		Remediated:             remediated,
+		RuleCookie:             ruleCookie,
+		RuleRef:                strings.TrimSpace(ruleRef),
+		CapacityHotspotRuleRef: strings.TrimSpace(capacityHotspotRuleRef),
+		Direction:              filterDirection,
+		Action:                 filterAction,
 	}, nil
 }
 
@@ -2332,22 +2338,23 @@ func policyEventsOutputFromSnapshot(snapshot agentMetricsSnapshot, events []data
 	filtered := filterPolicyUpdateEvents(events, filter)
 	recent := recentPolicyUpdateEvents(filtered, limit)
 	return policyEventsOutput{
-		Node:                 snapshot.Result.Node,
-		Store:                snapshot.Store,
-		Ready:                true,
-		LastReconcileSuccess: snapshot.Success,
-		LastReconcileError:   snapshot.Error,
-		TotalEvents:          len(events),
-		EventCount:           len(recent),
-		Limit:                limit,
-		FilterEndpoint:       filter.Endpoint,
-		FilterSuccess:        filter.Success,
-		FilterRemediated:     filter.Remediated,
-		FilterRuleCookie:     filterPolicyUpdateEventRuleCookieValue(filter),
-		FilterRuleRef:        filter.RuleRef,
-		FilterDirection:      filter.Direction,
-		FilterAction:         filter.Action,
-		Events:               recent,
+		Node:                         snapshot.Result.Node,
+		Store:                        snapshot.Store,
+		Ready:                        true,
+		LastReconcileSuccess:         snapshot.Success,
+		LastReconcileError:           snapshot.Error,
+		TotalEvents:                  len(events),
+		EventCount:                   len(recent),
+		Limit:                        limit,
+		FilterEndpoint:               filter.Endpoint,
+		FilterSuccess:                filter.Success,
+		FilterRemediated:             filter.Remediated,
+		FilterRuleCookie:             filterPolicyUpdateEventRuleCookieValue(filter),
+		FilterRuleRef:                filter.RuleRef,
+		FilterCapacityHotspotRuleRef: filter.CapacityHotspotRuleRef,
+		FilterDirection:              filter.Direction,
+		FilterAction:                 filter.Action,
+		Events:                       recent,
 	}
 }
 
@@ -2579,6 +2586,9 @@ func filterPolicyUpdateEvents(events []dataplane.PolicyUpdateEvent, filter polic
 		if filter.RuleRef != "" && !slices.Contains(event.RuleRefs, filter.RuleRef) {
 			continue
 		}
+		if filter.CapacityHotspotRuleRef != "" && !policyUpdateEventHasCapacityHotspotRuleRef(event, filter.CapacityHotspotRuleRef) {
+			continue
+		}
 		if filter.Direction != "" && !slices.Contains(event.RuleDirections, string(filter.Direction)) {
 			continue
 		}
@@ -2596,6 +2606,7 @@ func policyUpdateEventFilterActive(filter policyUpdateEventFilter) bool {
 		filter.Remediated != nil ||
 		filter.RuleCookie != nil ||
 		filter.RuleRef != "" ||
+		filter.CapacityHotspotRuleRef != "" ||
 		filter.Direction != "" ||
 		filter.Action != ""
 }
@@ -2609,6 +2620,15 @@ func filterPolicyUpdateEventRuleCookieValue(filter policyUpdateEventFilter) uint
 
 func policyUpdateEventHasRuleCookie(event dataplane.PolicyUpdateEvent, cookie uint32) bool {
 	return slices.Contains(event.RuleCookies, cookie)
+}
+
+func policyUpdateEventHasCapacityHotspotRuleRef(event dataplane.PolicyUpdateEvent, ruleRef string) bool {
+	for _, hotspot := range event.CapacityHotspots {
+		if hotspot.RuleRef == ruleRef {
+			return true
+		}
+	}
+	return false
 }
 
 func recentPolicyUpdateEvents(events []dataplane.PolicyUpdateEvent, limit int) []dataplane.PolicyUpdateEvent {

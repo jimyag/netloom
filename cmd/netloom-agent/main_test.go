@@ -3021,6 +3021,43 @@ func TestPolicyEventsAPIFiltersFailedEvents(t *testing.T) {
 	}
 }
 
+func TestPolicyEventsAPIFiltersByCapacityHotspotRuleRef(t *testing.T) {
+	store := dataplane.NewEBPFPolicyStore(1)
+	podA := model.EndpointKey("prod", "pod-a")
+	err := store.ReplaceEndpoint(context.Background(), podA, []dataplane.PolicyMapEntry{{
+		Key:     dataplane.PolicyKey{PrefixLen: dataplane.StaticPrefixBits, Direction: dataplane.DirectionIngress, Protocol: 6, RemoteIdentity: 10},
+		Value:   dataplane.PolicyEntry{RuleCookie: 42},
+		RuleRef: "prod/web/allow-api",
+	}, {
+		Key:     dataplane.PolicyKey{PrefixLen: dataplane.StaticPrefixBits, Direction: dataplane.DirectionIngress, Protocol: 6, RemoteIdentity: 11},
+		Value:   dataplane.PolicyEntry{RuleCookie: 43},
+		RuleRef: "prod/web/allow-db",
+	}})
+	if err == nil || !strings.Contains(err.Error(), "policy map capacity exceeded") {
+		t.Fatalf("ReplaceEndpoint() error = %v, want capacity exceeded", err)
+	}
+	metrics := newAgentMetrics(store)
+	observeAgentReconcileResult(metrics, agent.ReconcileResult{Node: "node-a"}, "ebpf", time.Millisecond)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/policy/events?capacity_hotspot_rule_ref=prod/web/allow-db", nil)
+	metrics.handlePolicyEvents(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var got policyEventsOutput
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode policy events response: %v\n%s", err, recorder.Body.String())
+	}
+	if got.FilterCapacityHotspotRuleRef != "prod/web/allow-db" || got.EventCount != 1 || len(got.Events) != 1 {
+		t.Fatalf("capacity-hotspot filtered events = %+v, want one allow-db overflow event", got)
+	}
+	if !policyUpdateEventHasCapacityHotspotRuleRef(got.Events[0], "prod/web/allow-db") {
+		t.Fatalf("event capacity hotspots = %+v, want allow-db hotspot", got.Events[0].CapacityHotspots)
+	}
+}
+
 func TestPolicyEventsAPIRejectsInvalidRemediatedFilter(t *testing.T) {
 	metrics := newAgentMetrics(dataplane.NewInMemoryPolicyStore())
 	observeAgentReconcileResult(metrics, agent.ReconcileResult{Node: "node-a"}, "memory", time.Millisecond)
@@ -3186,6 +3223,18 @@ func TestRunPolicyEventsWithStoreReportsFilteredJSON(t *testing.T) {
 	}
 	if got.FilterRuleRef != "prod/db/allow-db" || got.EventCount != 1 || len(got.Events) != 1 || got.Events[0].Revision != 1 || got.Events[0].EndpointID != model.EndpointKey("prod", "pod-b") {
 		t.Fatalf("rule-ref filtered events = %+v, want pod-b allow-db revision 1", got)
+	}
+
+	stdout.Reset()
+	if err := runPolicyEventsWithStore(t.Context(), policyEventsOptions{capacityHotspotRuleRef: "prod/web/deny-ssh", limit: 10}, &stdout, store); err != nil {
+		t.Fatal(err)
+	}
+	got = policyEventsOutput{}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode capacity-hotspot filtered policy-events output: %v\n%s", err, stdout.String())
+	}
+	if got.FilterCapacityHotspotRuleRef != "prod/web/deny-ssh" || got.EventCount != 1 || len(got.Events) != 1 || got.Events[0].Revision != 2 {
+		t.Fatalf("capacity-hotspot filtered events = %+v, want pod-a deny-ssh revision 2", got)
 	}
 }
 
