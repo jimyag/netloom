@@ -665,9 +665,6 @@ func validateObjectGraph(state DesiredState) error {
 	if err := validateProviderNetworkNodeInterfaceClaims(providerNetworks); err != nil {
 		return err
 	}
-	if err := validateProviderTenantQueueSubnetConflicts(providerNetworks); err != nil {
-		return err
-	}
 
 	subnets := make(map[string]model.Subnet, len(state.Subnets))
 	for _, subnet := range state.Subnets {
@@ -841,10 +838,13 @@ func validateObjectGraph(state DesiredState) error {
 	if err := validateIdentityGroupEndpointReferences(identityGroups, endpoints); err != nil {
 		return err
 	}
-	if err := validateProviderTenantQueueIdentityGroupConflicts(providerNetworks, identityGroups, endpoints); err != nil {
+	if err := validateProviderTenantQueueSubnetConflicts(providerNetworks, subnets); err != nil {
 		return err
 	}
-	if err := validateProviderTenantQueueEndpointConflicts(providerNetworks, identityGroups, endpoints); err != nil {
+	if err := validateProviderTenantQueueIdentityGroupConflicts(providerNetworks, identityGroups, endpoints, subnets); err != nil {
+		return err
+	}
+	if err := validateProviderTenantQueueEndpointConflicts(providerNetworks, identityGroups, endpoints, subnets); err != nil {
 		return err
 	}
 	if err := validateSecurityGroupNamedPortReferences(state.SecurityGroups, state.Endpoints, securityGroups); err != nil {
@@ -1194,14 +1194,15 @@ func validateIdentityGroupEndpointReferences(groups map[string]model.IdentityGro
 	return nil
 }
 
-func validateProviderTenantQueueIdentityGroupConflicts(providerNetworks map[string]model.ProviderNetwork, groups map[string]model.IdentityGroup, endpoints map[string]model.Endpoint) error {
+func validateProviderTenantQueueIdentityGroupConflicts(providerNetworks map[string]model.ProviderNetwork, groups map[string]model.IdentityGroup, endpoints map[string]model.Endpoint, subnets map[string]model.Subnet) error {
 	for _, providerNetwork := range providerNetworks {
 		for i := range providerNetwork.TenantQueues {
 			left := providerNetwork.TenantQueues[i]
 			if len(left.IdentityGroups) == 0 {
 				continue
 			}
-			leftEndpoints := providerTenantQueueIdentityGroupEndpoints(left, groups, endpoints)
+			leftScope := providerTenantQueueEndpointScope(providerNetwork.Name, left.Tenant, subnets, endpoints)
+			leftEndpoints := providerTenantQueueIdentityGroupEndpoints(left, groups, endpoints, leftScope)
 			if len(leftEndpoints) == 0 {
 				continue
 			}
@@ -1217,7 +1218,8 @@ func validateProviderTenantQueueIdentityGroupConflicts(providerNetworks map[stri
 				if !protocolsMayOverlap(left.Protocol, right.Protocol) || !portRangesMayOverlap(left.Ports, right.Ports) {
 					continue
 				}
-				if endpointKey, ok := firstSharedEndpointKey(leftEndpoints, providerTenantQueueIdentityGroupEndpoints(right, groups, endpoints)); ok {
+				rightScope := providerTenantQueueEndpointScope(providerNetwork.Name, right.Tenant, subnets, endpoints)
+				if endpointKey, ok := firstSharedEndpointKey(leftEndpoints, providerTenantQueueIdentityGroupEndpoints(right, groups, endpoints, rightScope)); ok {
 					endpoint := endpoints[endpointKey]
 					return fmt.Errorf("provider network %q tenant %q identity group queues %d and %d both match endpoint %q", providerNetwork.Name, left.Tenant, left.QueueID, right.QueueID, endpoint.ID)
 				}
@@ -1227,7 +1229,7 @@ func validateProviderTenantQueueIdentityGroupConflicts(providerNetworks map[stri
 	return nil
 }
 
-func validateProviderTenantQueueSubnetConflicts(providerNetworks map[string]model.ProviderNetwork) error {
+func validateProviderTenantQueueSubnetConflicts(providerNetworks map[string]model.ProviderNetwork, subnets map[string]model.Subnet) error {
 	names := make([]string, 0, len(providerNetworks))
 	for name := range providerNetworks {
 		names = append(names, name)
@@ -1238,6 +1240,9 @@ func validateProviderTenantQueueSubnetConflicts(providerNetworks map[string]mode
 		for i := range providerNetwork.TenantQueues {
 			left := providerNetwork.TenantQueues[i]
 			if !providerTenantQueuePolicySubnetScoped(left) {
+				continue
+			}
+			if !providerTenantHasProviderSubnet(providerNetwork.Name, left.Tenant, subnets) {
 				continue
 			}
 			for j := i + 1; j < len(providerNetwork.TenantQueues); j++ {
@@ -1259,7 +1264,7 @@ func validateProviderTenantQueueSubnetConflicts(providerNetworks map[string]mode
 	return nil
 }
 
-func validateProviderTenantQueueEndpointConflicts(providerNetworks map[string]model.ProviderNetwork, groups map[string]model.IdentityGroup, endpoints map[string]model.Endpoint) error {
+func validateProviderTenantQueueEndpointConflicts(providerNetworks map[string]model.ProviderNetwork, groups map[string]model.IdentityGroup, endpoints map[string]model.Endpoint, subnets map[string]model.Subnet) error {
 	names := make([]string, 0, len(providerNetworks))
 	for name := range providerNetworks {
 		names = append(names, name)
@@ -1272,7 +1277,8 @@ func validateProviderTenantQueueEndpointConflicts(providerNetworks map[string]mo
 			if providerTenantQueuePolicySubnetScoped(left) {
 				continue
 			}
-			leftEndpoints := providerTenantQueueMatchingEndpoints(left, groups, endpoints)
+			leftScope := providerTenantQueueEndpointScope(providerNetwork.Name, left.Tenant, subnets, endpoints)
+			leftEndpoints := providerTenantQueueMatchingEndpoints(left, groups, endpoints, leftScope)
 			if len(leftEndpoints) == 0 {
 				continue
 			}
@@ -1288,7 +1294,8 @@ func validateProviderTenantQueueEndpointConflicts(providerNetworks map[string]mo
 				if !protocolsMayOverlap(left.Protocol, right.Protocol) || !portRangesMayOverlap(left.Ports, right.Ports) {
 					continue
 				}
-				if endpointKey, ok := firstSharedEndpointKey(leftEndpoints, providerTenantQueueMatchingEndpoints(right, groups, endpoints)); ok {
+				rightScope := providerTenantQueueEndpointScope(providerNetwork.Name, right.Tenant, subnets, endpoints)
+				if endpointKey, ok := firstSharedEndpointKey(leftEndpoints, providerTenantQueueMatchingEndpoints(right, groups, endpoints, rightScope)); ok {
 					endpoint := endpoints[endpointKey]
 					return fmt.Errorf("provider network %q tenant %q endpoint queues %d and %d conflict on endpoint %q priority %d overlapping protocol/ports", providerNetwork.Name, left.Tenant, left.QueueID, right.QueueID, endpoint.ID, priority)
 				}
@@ -1298,9 +1305,12 @@ func validateProviderTenantQueueEndpointConflicts(providerNetworks map[string]mo
 	return nil
 }
 
-func providerTenantQueueMatchingEndpoints(queue model.ProviderNetworkTenantQueuePolicy, groups map[string]model.IdentityGroup, endpoints map[string]model.Endpoint) map[string]struct{} {
+func providerTenantQueueMatchingEndpoints(queue model.ProviderNetworkTenantQueuePolicy, groups map[string]model.IdentityGroup, endpoints map[string]model.Endpoint, scope map[string]struct{}) map[string]struct{} {
 	out := make(map[string]struct{})
 	for key, endpoint := range endpoints {
+		if _, ok := scope[key]; !ok {
+			continue
+		}
 		if endpoint.VPC != queue.Tenant {
 			continue
 		}
@@ -1310,6 +1320,30 @@ func providerTenantQueueMatchingEndpoints(queue model.ProviderNetworkTenantQueue
 		out[key] = struct{}{}
 	}
 	return out
+}
+
+func providerTenantQueueEndpointScope(providerNetwork, tenant string, subnets map[string]model.Subnet, endpoints map[string]model.Endpoint) map[string]struct{} {
+	out := make(map[string]struct{})
+	for key, endpoint := range endpoints {
+		if endpoint.VPC != tenant {
+			continue
+		}
+		subnet, ok := subnets[subnetKey(endpoint.VPC, endpoint.Subnet)]
+		if !ok || subnet.ProviderNetwork != providerNetwork || subnet.VLAN == 0 {
+			continue
+		}
+		out[key] = struct{}{}
+	}
+	return out
+}
+
+func providerTenantHasProviderSubnet(providerNetwork, tenant string, subnets map[string]model.Subnet) bool {
+	for _, subnet := range subnets {
+		if subnet.VPC == tenant && subnet.ProviderNetwork == providerNetwork && subnet.VLAN != 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func providerTenantQueueMatchesEndpoint(queue model.ProviderNetworkTenantQueuePolicy, groups map[string]model.IdentityGroup, endpoint model.Endpoint) bool {
@@ -1402,7 +1436,7 @@ func providerNodeInterfaces(node model.ProviderNetworkNode) []string {
 	return append([]string(nil), node.Interfaces...)
 }
 
-func providerTenantQueueIdentityGroupEndpoints(queue model.ProviderNetworkTenantQueuePolicy, groups map[string]model.IdentityGroup, endpoints map[string]model.Endpoint) map[string]struct{} {
+func providerTenantQueueIdentityGroupEndpoints(queue model.ProviderNetworkTenantQueuePolicy, groups map[string]model.IdentityGroup, endpoints map[string]model.Endpoint, scope map[string]struct{}) map[string]struct{} {
 	out := make(map[string]struct{})
 	for _, groupName := range queue.IdentityGroups {
 		group, ok := groups[identityGroupKey(queue.Tenant, groupName)]
@@ -1410,6 +1444,9 @@ func providerTenantQueueIdentityGroupEndpoints(queue model.ProviderNetworkTenant
 			continue
 		}
 		for key, endpoint := range endpoints {
+			if _, ok := scope[key]; !ok {
+				continue
+			}
 			if identityGroupMatchesEndpoint(group, endpoint) {
 				out[key] = struct{}{}
 			}

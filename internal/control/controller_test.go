@@ -751,6 +751,8 @@ func TestControllerAllowsRemoteServiceSCTPProtocol(t *testing.T) {
 
 func TestControllerAllowsProviderIdentityGroupQueuesWithDifferentSpecificity(t *testing.T) {
 	state := validObjectGraphState()
+	state.Subnets[0].ProviderNetwork = "physnet-a"
+	state.Subnets[0].VLAN = 100
 	state.IdentityGroups = []model.IdentityGroup{{
 		Name:        "frontend-api",
 		VPC:         "prod",
@@ -779,6 +781,48 @@ func TestControllerAllowsProviderIdentityGroupQueuesWithDifferentSpecificity(t *
 			Ports:          []model.PortRange{{From: 443, To: 443}},
 			IdentityGroups: []string{"payments-api"},
 			MaxRateBPS:     250000000,
+		}},
+	}}
+
+	if err := NewController(NewMemoryBackend(), NewMemoryBackend()).Reconcile(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestControllerAllowsProviderQueueSelectorsOutsideProviderSubnet(t *testing.T) {
+	state := validObjectGraphState()
+	state.Endpoints[0].Labels = model.Labels{"app": "web", "tier": "frontend"}
+	state.IdentityGroups = []model.IdentityGroup{{
+		Name:        "frontend-api",
+		VPC:         "prod",
+		EndpointIDs: []string{"pod-a"},
+	}, {
+		Name:        "payments-api",
+		VPC:         "prod",
+		EndpointIDs: []string{"pod-a"},
+	}}
+	state.ProviderNetworks = []model.ProviderNetwork{{
+		Name: "physnet-a",
+		Nodes: []model.ProviderNetworkNode{{
+			Node:      "node-a",
+			Interface: "eth1",
+		}},
+		TenantQueues: []model.ProviderNetworkTenantQueuePolicy{{
+			Tenant:           "prod",
+			QueueID:          10,
+			Protocol:         model.ProtocolTCP,
+			Ports:            []model.PortRange{{From: 443, To: 443}},
+			EndpointSelector: model.Labels{"app": "web"},
+			IdentityGroups:   []string{"frontend-api"},
+			MaxRateBPS:       500000000,
+		}, {
+			Tenant:           "prod",
+			QueueID:          11,
+			Protocol:         model.ProtocolTCP,
+			Ports:            []model.PortRange{{From: 443, To: 443}},
+			EndpointSelector: model.Labels{"tier": "frontend"},
+			IdentityGroups:   []string{"payments-api"},
+			MaxRateBPS:       250000000,
 		}},
 	}}
 
@@ -910,6 +954,8 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 		{
 			name: "provider identity group queue conflict",
 			mutate: func(state *DesiredState) {
+				state.Subnets[0].ProviderNetwork = "physnet-a"
+				state.Subnets[0].VLAN = 100
 				state.IdentityGroups = []model.IdentityGroup{{
 					Name:        "frontend-api",
 					VPC:         "prod",
@@ -947,6 +993,8 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 		{
 			name: "provider subnet queue conflict",
 			mutate: func(state *DesiredState) {
+				state.Subnets[0].ProviderNetwork = "physnet-a"
+				state.Subnets[0].VLAN = 100
 				state.ProviderNetworks = []model.ProviderNetwork{{
 					Name: "physnet-a",
 					Nodes: []model.ProviderNetworkNode{{
@@ -973,6 +1021,8 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 		{
 			name: "provider endpoint selector queue conflict",
 			mutate: func(state *DesiredState) {
+				state.Subnets[0].ProviderNetwork = "physnet-a"
+				state.Subnets[0].VLAN = 100
 				state.Endpoints[0].Labels = model.Labels{"app": "web", "tier": "frontend"}
 				state.ProviderNetworks = []model.ProviderNetwork{{
 					Name: "physnet-a",
