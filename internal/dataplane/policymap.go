@@ -216,12 +216,18 @@ func (s *InMemoryPolicyStore) ReplaceEndpoint(_ context.Context, endpointID stri
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	plan := PlanPolicyUpdate(s.endpoints[endpointID], entries)
+	desired, err := canonicalPolicyMapEntries(entries)
+	previousRevision := s.revisions[endpointID]
+	revision := previousRevision + 1
+	if err != nil {
+		err = fmt.Errorf("canonicalize policy map entries for endpoint %s: %w", endpointID, err)
+		s.recordPolicyUpdateFailure(endpointID, previousRevision, revision, PolicyUpdateStats{}, nil, nil, err)
+		return err
+	}
+	plan := PlanPolicyUpdate(s.endpoints[endpointID], desired)
 	ruleCookies := policyUpdateRuleCookies(s.endpoints[endpointID], plan)
 	ruleRefs := policyUpdateRuleRefs(s.endpoints[endpointID], plan)
 	next := append([]PolicyMapEntry(nil), s.endpoints[endpointID]...)
-	previousRevision := s.revisions[endpointID]
-	revision := previousRevision + 1
 	applied := 0
 	for _, step := range policyUpdateSequence(len(s.endpoints[endpointID]), plan, 0, false) {
 		switch step {

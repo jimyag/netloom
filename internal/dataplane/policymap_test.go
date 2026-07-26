@@ -927,6 +927,46 @@ func TestInMemoryPolicyStoreAppliesIncrementalStats(t *testing.T) {
 	}
 }
 
+func TestInMemoryPolicyStoreRejectsConflictingDuplicateDesiredEntries(t *testing.T) {
+	store := NewInMemoryPolicyStore()
+	endpointID := model.EndpointKey("prod", "pod-a")
+	oldEntry := PolicyMapEntry{
+		Key:     PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 1, Direction: DirectionIngress},
+		Value:   PolicyEntry{Precedence: 10, RuleCookie: 41},
+		RuleRef: "prod/web/old",
+	}
+	if err := store.ReplaceEndpoint(context.Background(), endpointID, []PolicyMapEntry{oldEntry}); err != nil {
+		t.Fatal(err)
+	}
+	conflict := []PolicyMapEntry{
+		{
+			Key:     oldEntry.Key,
+			Value:   PolicyEntry{Deny: 1, Precedence: 20, RuleCookie: 42},
+			RuleRef: "prod/web/allow",
+		},
+		{
+			Key:     oldEntry.Key,
+			Value:   PolicyEntry{Deny: 1, Precedence: 20, RuleCookie: 43},
+			RuleRef: "prod/web/drop",
+		},
+	}
+	err := store.ReplaceEndpoint(context.Background(), endpointID, conflict)
+	if err == nil || !strings.Contains(err.Error(), "conflicting policy map entries for identical key") {
+		t.Fatalf("error = %v, want duplicate key conflict", err)
+	}
+	if revision := store.Revision(endpointID); revision != 1 {
+		t.Fatalf("revision after rejected duplicate desired entries = %d, want 1", revision)
+	}
+	entries := store.Entries(endpointID)
+	if len(entries) != 1 || entries[0].Value.RuleCookie != 41 {
+		t.Fatalf("entries after rejected duplicate desired entries = %+v, want old entry preserved", entries)
+	}
+	events := store.Events()
+	if len(events) != 2 || events[1].Success || events[1].PreviousRevision != 1 || events[1].Revision != 2 {
+		t.Fatalf("events after rejected duplicate desired entries = %+v, want failed revision 1 to 2 event", events)
+	}
+}
+
 func TestInMemoryPolicyStoreDeletesEndpoint(t *testing.T) {
 	store := NewInMemoryPolicyStore()
 	entries := []PolicyMapEntry{{

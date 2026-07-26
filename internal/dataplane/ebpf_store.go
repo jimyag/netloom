@@ -107,23 +107,29 @@ func (s *EBPFPolicyStore) ReplaceEndpoint(ctx context.Context, endpointID string
 	if endpointID == "" {
 		return fmt.Errorf("endpoint id is required")
 	}
-	plan := PlanPolicyUpdate(s.entries[endpointID], entries)
-	ruleCookies := policyUpdateRuleCookies(s.entries[endpointID], plan)
-	ruleRefs := policyUpdateRuleRefs(s.entries[endpointID], plan)
+	desired, err := canonicalPolicyMapEntries(entries)
 	previousRevision := s.revisions[endpointID]
 	revision := previousRevision + 1
-	if err := s.validatePolicyMapCapacity(endpointID, entries); err != nil {
+	if err != nil {
+		err = fmt.Errorf("canonicalize policy map entries for endpoint %s: %w", endpointID, err)
+		s.recordPolicyUpdateFailure(endpointID, previousRevision, revision, PolicyUpdateStats{}, nil, nil, entries, err)
+		return err
+	}
+	plan := PlanPolicyUpdate(s.entries[endpointID], desired)
+	ruleCookies := policyUpdateRuleCookies(s.entries[endpointID], plan)
+	ruleRefs := policyUpdateRuleRefs(s.entries[endpointID], plan)
+	if err := s.validatePolicyMapCapacity(endpointID, desired); err != nil {
 		if s.overflow == PolicyMapOverflowClear {
-			return s.clearEndpointPolicyAfterOverflowLocked(ctx, endpointID, previousRevision, revision, entries, err)
+			return s.clearEndpointPolicyAfterOverflowLocked(ctx, endpointID, previousRevision, revision, desired, err)
 		}
-		s.recordPolicyUpdateFailure(endpointID, previousRevision, revision, plan.Stats(), ruleCookies, ruleRefs, entries, err)
+		s.recordPolicyUpdateFailure(endpointID, previousRevision, revision, plan.Stats(), ruleCookies, ruleRefs, desired, err)
 		return err
 	}
 
-	next, err := s.preparePolicyMapLocked(ctx, endpointID, entries, s.entries[endpointID], plan)
+	next, err := s.preparePolicyMapLocked(ctx, endpointID, desired, s.entries[endpointID], plan)
 	if err != nil {
 		err = fmt.Errorf("prepare eBPF policy map for endpoint %s: %w", endpointID, err)
-		s.recordPolicyUpdateFailure(endpointID, previousRevision, revision, plan.Stats(), ruleCookies, ruleRefs, entries, err)
+		s.recordPolicyUpdateFailure(endpointID, previousRevision, revision, plan.Stats(), ruleCookies, ruleRefs, desired, err)
 		return err
 	}
 
@@ -132,7 +138,7 @@ func (s *EBPFPolicyStore) ReplaceEndpoint(ctx context.Context, endpointID string
 	stats.Revision = revision
 	now := time.Now()
 	s.maps[endpointID] = next
-	s.entries[endpointID] = canonicalPolicyEntries(entries)
+	s.entries[endpointID] = desired
 	s.revisions[endpointID] = revision
 	s.lastStats[endpointID] = stats
 	s.lastSeen[endpointID] = now
@@ -146,7 +152,7 @@ func (s *EBPFPolicyStore) ReplaceEndpoint(ctx context.Context, endpointID string
 		RuleRefs:         ruleRefs,
 		Success:          true,
 	})
-	attachPolicyUpdateEventPressure(&s.events[len(s.events)-1], len(entries), s.maxEntries)
+	attachPolicyUpdateEventPressure(&s.events[len(s.events)-1], len(desired), s.maxEntries)
 	if old != nil && old != next {
 		old.Close()
 	}

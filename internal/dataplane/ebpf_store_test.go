@@ -100,6 +100,46 @@ func TestEBPFPolicyStoreDeleteEndpointRecordsPolicyUpdateEvent(t *testing.T) {
 	}
 }
 
+func TestEBPFPolicyStoreRejectsConflictingDuplicateDesiredEntries(t *testing.T) {
+	store := NewEBPFPolicyStore(16)
+	endpointID := model.EndpointKey("prod", "pod-a")
+	oldEntry := PolicyMapEntry{
+		Key:     PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 7, Direction: DirectionIngress},
+		Value:   PolicyEntry{Precedence: 10, RuleCookie: 99},
+		RuleRef: "prod/web/old",
+	}
+	store.entries[endpointID] = []PolicyMapEntry{oldEntry}
+	store.revisions[endpointID] = 5
+
+	conflict := []PolicyMapEntry{
+		{
+			Key:     oldEntry.Key,
+			Value:   PolicyEntry{Deny: 1, Precedence: 20, RuleCookie: 100},
+			RuleRef: "prod/web/allow",
+		},
+		{
+			Key:     oldEntry.Key,
+			Value:   PolicyEntry{Deny: 1, Precedence: 20, RuleCookie: 101},
+			RuleRef: "prod/web/drop",
+		},
+	}
+	err := store.ReplaceEndpoint(context.Background(), endpointID, conflict)
+	if err == nil || !strings.Contains(err.Error(), "conflicting policy map entries for identical key") {
+		t.Fatalf("error = %v, want duplicate key conflict", err)
+	}
+	if revision := store.Revision(endpointID); revision != 5 {
+		t.Fatalf("revision after rejected duplicate desired entries = %d, want 5", revision)
+	}
+	entries := store.Entries(endpointID)
+	if len(entries) != 1 || entries[0].Value.RuleCookie != 99 {
+		t.Fatalf("entries after rejected duplicate desired entries = %+v, want old entry preserved", entries)
+	}
+	events := store.Events()
+	if len(events) != 1 || events[0].Success || events[0].PreviousRevision != 5 || events[0].Revision != 6 {
+		t.Fatalf("events after rejected duplicate desired entries = %+v, want failed revision 5 to 6 event", events)
+	}
+}
+
 func TestEBPFPolicyStorePrivileged(t *testing.T) {
 	requireEBPFTest(t)
 	endpointID := model.EndpointKey("prod", "pod-a")
