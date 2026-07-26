@@ -70,6 +70,9 @@ func TestEBPFPolicyStoreRejectsPolicyMapOverflowBeforeProgramming(t *testing.T) 
 		event.CapacityHotspots[1] != (PolicyMapCapacityHotspot{RuleRef: "prod/web/allow-https", Entries: 1}) {
 		t.Fatalf("overflow event capacity hotspots = %+v, want desired overflowing rule hotspots", event.CapacityHotspots)
 	}
+	if event.PolicyMapEntries != 2 || event.PolicyMapCapacity != 1 || event.PolicyMapPressurePercent != 100 || event.PolicyMapPressureSeverity != PolicyMapPressureFull || event.PolicyMapRecommendedCapacity != 3 {
+		t.Fatalf("overflow event pressure = entries %d capacity %d percent %d severity %q recommended %d, want full pressure for desired oversized map", event.PolicyMapEntries, event.PolicyMapCapacity, event.PolicyMapPressurePercent, event.PolicyMapPressureSeverity, event.PolicyMapRecommendedCapacity)
+	}
 }
 
 func TestEBPFPolicyStoreClearsPolicyMapOverflowWhenConfigured(t *testing.T) {
@@ -139,6 +142,9 @@ func TestEBPFPolicyStoreClearsPolicyMapOverflowWhenConfigured(t *testing.T) {
 		events[0].CapacityHotspots[0] != (PolicyMapCapacityHotspot{RuleRef: "prod/web/allow-http", Entries: 1}) ||
 		events[0].CapacityHotspots[1] != (PolicyMapCapacityHotspot{RuleRef: "prod/web/allow-https", Entries: 1}) {
 		t.Fatalf("overflow remediation capacity hotspots = %+v, want original desired overflowing rule hotspots", events[0].CapacityHotspots)
+	}
+	if events[0].PolicyMapEntries != 2 || events[0].PolicyMapCapacity != 1 || events[0].PolicyMapPressurePercent != 100 || events[0].PolicyMapPressureSeverity != PolicyMapPressureFull || events[0].PolicyMapRecommendedCapacity != 3 {
+		t.Fatalf("overflow remediation pressure = entries %d capacity %d percent %d severity %q recommended %d, want original oversized desired map pressure", events[0].PolicyMapEntries, events[0].PolicyMapCapacity, events[0].PolicyMapPressurePercent, events[0].PolicyMapPressureSeverity, events[0].PolicyMapRecommendedCapacity)
 	}
 }
 

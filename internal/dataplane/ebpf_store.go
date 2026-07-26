@@ -114,16 +114,16 @@ func (s *EBPFPolicyStore) ReplaceEndpoint(ctx context.Context, endpointID string
 	revision := previousRevision + 1
 	if err := s.validatePolicyMapCapacity(endpointID, entries); err != nil {
 		if s.overflow == PolicyMapOverflowClear {
-			return s.clearEndpointPolicyAfterOverflowLocked(ctx, endpointID, previousRevision, revision, err)
+			return s.clearEndpointPolicyAfterOverflowLocked(ctx, endpointID, previousRevision, revision, entries, err)
 		}
-		s.recordPolicyUpdateFailure(endpointID, previousRevision, revision, plan.Stats(), ruleCookies, ruleRefs, err)
+		s.recordPolicyUpdateFailure(endpointID, previousRevision, revision, plan.Stats(), ruleCookies, ruleRefs, entries, err)
 		return err
 	}
 
 	next, err := s.preparePolicyMapLocked(ctx, endpointID, entries, s.entries[endpointID], plan)
 	if err != nil {
 		err = fmt.Errorf("prepare eBPF policy map for endpoint %s: %w", endpointID, err)
-		s.recordPolicyUpdateFailure(endpointID, previousRevision, revision, plan.Stats(), ruleCookies, ruleRefs, err)
+		s.recordPolicyUpdateFailure(endpointID, previousRevision, revision, plan.Stats(), ruleCookies, ruleRefs, entries, err)
 		return err
 	}
 
@@ -146,6 +146,7 @@ func (s *EBPFPolicyStore) ReplaceEndpoint(ctx context.Context, endpointID string
 		RuleRefs:         ruleRefs,
 		Success:          true,
 	})
+	attachPolicyUpdateEventPressure(&s.events[len(s.events)-1], len(entries), s.maxEntries)
 	if old != nil && old != next {
 		old.Close()
 	}
@@ -157,7 +158,7 @@ func (s *EBPFPolicyStore) ReplaceEndpoint(ctx context.Context, endpointID string
 	return nil
 }
 
-func (s *EBPFPolicyStore) clearEndpointPolicyAfterOverflowLocked(ctx context.Context, endpointID string, previousRevision, revision uint64, overflowErr error) error {
+func (s *EBPFPolicyStore) clearEndpointPolicyAfterOverflowLocked(ctx context.Context, endpointID string, previousRevision, revision uint64, overflowEntries []PolicyMapEntry, overflowErr error) error {
 	oldEntries := s.entries[endpointID]
 	clearPlan := PlanPolicyUpdate(oldEntries, nil)
 	oldMap := s.maps[endpointID]
@@ -165,7 +166,7 @@ func (s *EBPFPolicyStore) clearEndpointPolicyAfterOverflowLocked(ctx context.Con
 		next, err := s.preparePolicyMapLocked(ctx, endpointID, nil, oldEntries, clearPlan)
 		if err != nil {
 			err = fmt.Errorf("clear eBPF policy map after overflow for endpoint %s: %w", endpointID, err)
-			s.recordPolicyUpdateFailure(endpointID, previousRevision, revision, clearPlan.Stats(), policyUpdateRuleCookies(oldEntries, clearPlan), policyUpdateRuleRefs(oldEntries, clearPlan), err)
+			s.recordPolicyUpdateFailure(endpointID, previousRevision, revision, clearPlan.Stats(), policyUpdateRuleCookies(oldEntries, clearPlan), policyUpdateRuleRefs(oldEntries, clearPlan), nil, err)
 			return err
 		}
 		s.maps[endpointID] = next
@@ -194,6 +195,7 @@ func (s *EBPFPolicyStore) clearEndpointPolicyAfterOverflowLocked(ctx context.Con
 		Remediation:      string(PolicyMapOverflowClear),
 		Error:            overflowErr.Error(),
 	})
+	attachPolicyUpdateEventPressure(&s.events[len(s.events)-1], len(overflowEntries), s.maxEntries)
 	if s.pinRoot != "" {
 		if err := s.writeMapMetadata(s.pinnedPolicyMapMetadataPath(endpointID), endpointID); err != nil {
 			return err
@@ -531,7 +533,7 @@ func (s *EBPFPolicyStore) ensurePinRoot() error {
 	return nil
 }
 
-func (s *EBPFPolicyStore) recordPolicyUpdateFailure(endpointID string, previousRevision, revision uint64, stats PolicyUpdateStats, ruleCookies []uint32, ruleRefs []string, err error) {
+func (s *EBPFPolicyStore) recordPolicyUpdateFailure(endpointID string, previousRevision, revision uint64, stats PolicyUpdateStats, ruleCookies []uint32, ruleRefs []string, desiredEntries []PolicyMapEntry, err error) {
 	stats.Revision = revision
 	s.events = append(s.events, PolicyUpdateEvent{
 		EndpointID:       endpointID,
@@ -545,6 +547,7 @@ func (s *EBPFPolicyStore) recordPolicyUpdateFailure(endpointID string, previousR
 		Success:          false,
 		Error:            err.Error(),
 	})
+	attachPolicyUpdateEventPressure(&s.events[len(s.events)-1], len(desiredEntries), s.maxEntries)
 }
 
 func (s *EBPFPolicyStore) DeleteEndpoint(ctx context.Context, endpointID string) error {

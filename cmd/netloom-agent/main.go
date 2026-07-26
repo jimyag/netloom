@@ -272,6 +272,7 @@ type policyEventsOptions struct {
 	remediated             string
 	remediation            string
 	errorContains          string
+	pressureSeverity       string
 	ruleCookie             string
 	ruleRef                string
 	capacityHotspotRuleRef string
@@ -482,6 +483,7 @@ type policyEventsOutput struct {
 	FilterRemediated             *bool                         `json:"filter_remediated,omitempty"`
 	FilterRemediation            string                        `json:"filter_remediation,omitempty"`
 	FilterErrorContains          string                        `json:"filter_error_contains,omitempty"`
+	FilterPressureSeverity       string                        `json:"filter_pressure_severity,omitempty"`
 	FilterRuleCookie             uint32                        `json:"filter_rule_cookie,omitempty"`
 	FilterRuleRef                string                        `json:"filter_rule_ref,omitempty"`
 	FilterCapacityHotspotRuleRef string                        `json:"filter_capacity_hotspot_rule_ref,omitempty"`
@@ -1374,6 +1376,7 @@ func runPolicyEvents(ctx context.Context, args []string, stdout io.Writer) error
 	flags.StringVar(&opts.remediated, "remediated", "", "optional remediation filter: true or false")
 	flags.StringVar(&opts.remediation, "remediation", "", "optional remediation action to include")
 	flags.StringVar(&opts.errorContains, "error-contains", "", "optional policy update error substring to include")
+	flags.StringVar(&opts.pressureSeverity, "pressure-severity", "", "optional policy map pressure severity to include: normal, warning, critical, full, or unknown")
 	flags.StringVar(&opts.ruleCookie, "rule-cookie", "", "optional dataplane rule cookie to include")
 	flags.StringVar(&opts.ruleRef, "rule-ref", "", "optional policy rule reference to include")
 	flags.StringVar(&opts.capacityHotspotRuleRef, "capacity-hotspot-rule-ref", "", "optional policy map capacity hotspot rule reference to include")
@@ -1429,6 +1432,7 @@ func runPolicyEventsWithStore(ctx context.Context, opts policyEventsOptions, std
 		FilterRemediated:             filter.Remediated,
 		FilterRemediation:            filter.Remediation,
 		FilterErrorContains:          filter.ErrorContains,
+		FilterPressureSeverity:       filter.PressureSeverity,
 		FilterRuleCookie:             filterPolicyUpdateEventRuleCookieValue(filter),
 		FilterRuleRef:                filter.RuleRef,
 		FilterCapacityHotspotRuleRef: filter.CapacityHotspotRuleRef,
@@ -2312,6 +2316,7 @@ type policyUpdateEventFilter struct {
 	Remediated             *bool
 	Remediation            string
 	ErrorContains          string
+	PressureSeverity       string
 	RuleCookie             *uint32
 	RuleRef                string
 	CapacityHotspotRuleRef string
@@ -2320,20 +2325,24 @@ type policyUpdateEventFilter struct {
 }
 
 func policyUpdateEventFilterFromOptions(opts policyEventsOptions) (policyUpdateEventFilter, error) {
-	return policyUpdateEventFilterFromValues(opts.endpoint, opts.success, opts.remediated, opts.remediation, opts.errorContains, opts.ruleCookie, opts.ruleRef, opts.capacityHotspotRuleRef, opts.direction, opts.action)
+	return policyUpdateEventFilterFromValues(opts.endpoint, opts.success, opts.remediated, opts.remediation, opts.errorContains, opts.pressureSeverity, opts.ruleCookie, opts.ruleRef, opts.capacityHotspotRuleRef, opts.direction, opts.action)
 }
 
 func policyUpdateEventFilterFromRequest(r *http.Request, endpoint string) (policyUpdateEventFilter, error) {
-	return policyUpdateEventFilterFromValues(endpoint, r.URL.Query().Get("success"), r.URL.Query().Get("remediated"), r.URL.Query().Get("remediation"), r.URL.Query().Get("error_contains"), r.URL.Query().Get("rule_cookie"), r.URL.Query().Get("rule_ref"), r.URL.Query().Get("capacity_hotspot_rule_ref"), r.URL.Query().Get("direction"), r.URL.Query().Get("action"))
+	return policyUpdateEventFilterFromValues(endpoint, r.URL.Query().Get("success"), r.URL.Query().Get("remediated"), r.URL.Query().Get("remediation"), r.URL.Query().Get("error_contains"), r.URL.Query().Get("pressure_severity"), r.URL.Query().Get("rule_cookie"), r.URL.Query().Get("rule_ref"), r.URL.Query().Get("capacity_hotspot_rule_ref"), r.URL.Query().Get("direction"), r.URL.Query().Get("action"))
 }
 
-func policyUpdateEventFilterFromValues(endpoint, successRaw, remediatedRaw, remediation, errorContains, ruleCookieRaw, ruleRef, capacityHotspotRuleRef, direction, action string) (policyUpdateEventFilter, error) {
+func policyUpdateEventFilterFromValues(endpoint, successRaw, remediatedRaw, remediation, errorContains, pressureSeverity, ruleCookieRaw, ruleRef, capacityHotspotRuleRef, direction, action string) (policyUpdateEventFilter, error) {
 	success, err := policyActionSuccessFromString(successRaw)
 	if err != nil {
 		return policyUpdateEventFilter{}, err
 	}
 	remediated, err := policyActionBoolFilterFromString("remediated", remediatedRaw)
 	if err != nil {
+		return policyUpdateEventFilter{}, err
+	}
+	pressureSeverity = strings.TrimSpace(pressureSeverity)
+	if err := validatePolicyEndpointPressureSeverity(pressureSeverity); err != nil {
 		return policyUpdateEventFilter{}, err
 	}
 	ruleCookieRaw = strings.TrimSpace(ruleCookieRaw)
@@ -2370,6 +2379,7 @@ func policyUpdateEventFilterFromValues(endpoint, successRaw, remediatedRaw, reme
 		Remediated:             remediated,
 		Remediation:            strings.TrimSpace(remediation),
 		ErrorContains:          strings.TrimSpace(errorContains),
+		PressureSeverity:       pressureSeverity,
 		RuleCookie:             ruleCookie,
 		RuleRef:                strings.TrimSpace(ruleRef),
 		CapacityHotspotRuleRef: strings.TrimSpace(capacityHotspotRuleRef),
@@ -2396,6 +2406,7 @@ func policyEventsOutputFromSnapshot(snapshot agentMetricsSnapshot, events []data
 		FilterRemediated:             filter.Remediated,
 		FilterRemediation:            filter.Remediation,
 		FilterErrorContains:          filter.ErrorContains,
+		FilterPressureSeverity:       filter.PressureSeverity,
 		FilterRuleCookie:             filterPolicyUpdateEventRuleCookieValue(filter),
 		FilterRuleRef:                filter.RuleRef,
 		FilterCapacityHotspotRuleRef: filter.CapacityHotspotRuleRef,
@@ -2633,6 +2644,9 @@ func filterPolicyUpdateEvents(events []dataplane.PolicyUpdateEvent, filter polic
 		if filter.ErrorContains != "" && !strings.Contains(event.Error, filter.ErrorContains) {
 			continue
 		}
+		if filter.PressureSeverity != "" && event.PolicyMapPressureSeverity != filter.PressureSeverity {
+			continue
+		}
 		if filter.RuleCookie != nil && !policyUpdateEventHasRuleCookie(event, *filter.RuleCookie) {
 			continue
 		}
@@ -2659,6 +2673,7 @@ func policyUpdateEventFilterActive(filter policyUpdateEventFilter) bool {
 		filter.Remediated != nil ||
 		filter.Remediation != "" ||
 		filter.ErrorContains != "" ||
+		filter.PressureSeverity != "" ||
 		filter.RuleCookie != nil ||
 		filter.RuleRef != "" ||
 		filter.CapacityHotspotRuleRef != "" ||

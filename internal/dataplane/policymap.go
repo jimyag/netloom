@@ -137,20 +137,25 @@ func ParsePolicyMapOverflowAction(value string) (PolicyMapOverflowAction, error)
 }
 
 type PolicyUpdateEvent struct {
-	EndpointID       string                     `json:"endpoint_id"`
-	PreviousRevision uint64                     `json:"previous_revision"`
-	Revision         uint64                     `json:"revision"`
-	OccurredAt       *time.Time                 `json:"occurred_at,omitempty"`
-	Stats            PolicyUpdateStats          `json:"stats"`
-	RuleCookies      []uint32                   `json:"rule_cookies,omitempty"`
-	RuleRefs         []string                   `json:"rule_refs,omitempty"`
-	CapacityHotspots []PolicyMapCapacityHotspot `json:"capacity_hotspots,omitempty"`
-	RuleDirections   []string                   `json:"rule_directions,omitempty"`
-	RuleActions      []string                   `json:"rule_actions,omitempty"`
-	Success          bool                       `json:"success"`
-	Error            string                     `json:"error,omitempty"`
-	Remediated       bool                       `json:"remediated,omitempty"`
-	Remediation      string                     `json:"remediation,omitempty"`
+	EndpointID                   string                     `json:"endpoint_id"`
+	PreviousRevision             uint64                     `json:"previous_revision"`
+	Revision                     uint64                     `json:"revision"`
+	OccurredAt                   *time.Time                 `json:"occurred_at,omitempty"`
+	Stats                        PolicyUpdateStats          `json:"stats"`
+	RuleCookies                  []uint32                   `json:"rule_cookies,omitempty"`
+	RuleRefs                     []string                   `json:"rule_refs,omitempty"`
+	CapacityHotspots             []PolicyMapCapacityHotspot `json:"capacity_hotspots,omitempty"`
+	PolicyMapEntries             uint32                     `json:"policy_map_entries,omitempty"`
+	PolicyMapCapacity            uint32                     `json:"policy_map_capacity,omitempty"`
+	PolicyMapPressurePercent     uint32                     `json:"policy_map_pressure_percent,omitempty"`
+	PolicyMapPressureSeverity    string                     `json:"policy_map_pressure_severity,omitempty"`
+	PolicyMapRecommendedCapacity uint32                     `json:"policy_map_recommended_capacity,omitempty"`
+	RuleDirections               []string                   `json:"rule_directions,omitempty"`
+	RuleActions                  []string                   `json:"rule_actions,omitempty"`
+	Success                      bool                       `json:"success"`
+	Error                        string                     `json:"error,omitempty"`
+	Remediated                   bool                       `json:"remediated,omitempty"`
+	Remediation                  string                     `json:"remediation,omitempty"`
 }
 
 type PolicyEndpointStatus struct {
@@ -822,6 +827,18 @@ func PolicyMapPressureSeverity(usage PolicyMapUsage) string {
 	default:
 		return PolicyMapPressureNormal
 	}
+}
+
+func attachPolicyUpdateEventPressure(event *PolicyUpdateEvent, entries int, capacity uint32) {
+	if event == nil || capacity == 0 {
+		return
+	}
+	usage := PolicyMapUsage{Entries: uint32(entries), Capacity: capacity}
+	event.PolicyMapEntries = usage.Entries
+	event.PolicyMapCapacity = usage.Capacity
+	event.PolicyMapPressurePercent = policyMapPressurePercent(usage)
+	event.PolicyMapPressureSeverity = PolicyMapPressureSeverity(usage)
+	event.PolicyMapRecommendedCapacity = PolicyMapRecommendedCapacity(usage)
 }
 
 func canonicalPolicyMapEntries(entries []PolicyMapEntry) ([]PolicyMapEntry, error) {
