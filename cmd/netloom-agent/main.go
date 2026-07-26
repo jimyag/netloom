@@ -230,6 +230,7 @@ type policyStatusOptions struct {
 	lastEventRuleRef                string
 	lastEventCapacityHotspotRuleRef string
 	lastEventRemediation            string
+	lastEventFailureReason          string
 	lastEventErrorContains          string
 	lastEventOccurredAfter          string
 	lastEventOccurredBefore         string
@@ -252,6 +253,7 @@ type policyStatusExportOptions struct {
 	lastEventRuleRef                string
 	lastEventCapacityHotspotRuleRef string
 	lastEventRemediation            string
+	lastEventFailureReason          string
 	lastEventErrorContains          string
 	lastEventOccurredAfter          string
 	lastEventOccurredBefore         string
@@ -454,6 +456,7 @@ type policyStatusOutput struct {
 	FilterLastEventRuleRef                string                           `json:"filter_last_event_rule_ref,omitempty"`
 	FilterLastEventCapacityHotspotRuleRef string                           `json:"filter_last_event_capacity_hotspot_rule_ref,omitempty"`
 	FilterLastEventRemediation            string                           `json:"filter_last_event_remediation,omitempty"`
+	FilterLastEventFailureReason          string                           `json:"filter_last_event_failure_reason,omitempty"`
 	FilterLastEventErrorContains          string                           `json:"filter_last_event_error_contains,omitempty"`
 	FilterLastEventOccurredAfter          *time.Time                       `json:"filter_last_event_occurred_after,omitempty"`
 	FilterLastEventOccurredBefore         *time.Time                       `json:"filter_last_event_occurred_before,omitempty"`
@@ -1104,6 +1107,7 @@ func runPolicyStatus(args []string, stdout io.Writer) error {
 	flags.StringVar(&opts.lastEventRuleRef, "last-event-rule-ref", "", "optional policy rule reference in the last policy update event")
 	flags.StringVar(&opts.lastEventCapacityHotspotRuleRef, "last-event-capacity-hotspot-rule-ref", "", "optional capacity hotspot rule reference in the last policy update event")
 	flags.StringVar(&opts.lastEventRemediation, "last-event-remediation", "", "optional remediation action in the last policy update event")
+	flags.StringVar(&opts.lastEventFailureReason, "last-event-failure-reason", "", "optional failure reason in the last policy update event: canonicalization_failed, capacity_exceeded, or apply_failed")
 	flags.StringVar(&opts.lastEventErrorContains, "last-event-error-contains", "", "optional error substring in the last policy update event")
 	flags.StringVar(&opts.lastEventOccurredAfter, "last-event-occurred-after", "", "optional RFC3339 timestamp; include endpoints whose last policy update event occurred at or after this time")
 	flags.StringVar(&opts.lastEventOccurredBefore, "last-event-occurred-before", "", "optional RFC3339 timestamp; include endpoints whose last policy update event occurred before this time")
@@ -1169,6 +1173,10 @@ func runPolicyStatus(args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
+	lastEventFailureReason, err := parsePolicyUpdateFailureReasonFilter(opts.lastEventFailureReason, "last-event-failure-reason")
+	if err != nil {
+		return err
+	}
 	lastEventOccurredAfter, err := parseOptionalTimeFilter(opts.lastEventOccurredAfter, "last-event-occurred-after")
 	if err != nil {
 		return err
@@ -1186,7 +1194,7 @@ func runPolicyStatus(args []string, stdout io.Writer) error {
 		return err
 	}
 	statuses := enrichPolicyEndpointStatuses(result.PolicyEndpointStatus, result.PolicyRuleCatalog)
-	statuses = filterPolicyEndpointStatuses(statuses, opts.endpoint, opts.pressureSeverity, pressureMinPercent, recommendedCapacityMin, lastSeenBefore, drifted, opts.revisionBelow, lastEventSuccess, lastEventRemediated, lastEventRuleCookie, opts.lastEventRuleRef, opts.lastEventCapacityHotspotRuleRef, opts.lastEventRemediation, opts.lastEventErrorContains, lastEventOccurredAfter, lastEventOccurredBefore, lastEventDirection, lastEventAction, state.Endpoints)
+	statuses = filterPolicyEndpointStatuses(statuses, opts.endpoint, opts.pressureSeverity, pressureMinPercent, recommendedCapacityMin, lastSeenBefore, drifted, opts.revisionBelow, lastEventSuccess, lastEventRemediated, lastEventRuleCookie, opts.lastEventRuleRef, opts.lastEventCapacityHotspotRuleRef, opts.lastEventRemediation, lastEventFailureReason, opts.lastEventErrorContains, lastEventOccurredAfter, lastEventOccurredBefore, lastEventDirection, lastEventAction, state.Endpoints)
 	output := policyStatusOutputFromResult(result, storeName, statuses)
 	output.FilterEndpoint = strings.TrimSpace(opts.endpoint)
 	output.FilterPressureSeverity = strings.TrimSpace(opts.pressureSeverity)
@@ -1201,6 +1209,7 @@ func runPolicyStatus(args []string, stdout io.Writer) error {
 	output.FilterLastEventRuleRef = strings.TrimSpace(opts.lastEventRuleRef)
 	output.FilterLastEventCapacityHotspotRuleRef = strings.TrimSpace(opts.lastEventCapacityHotspotRuleRef)
 	output.FilterLastEventRemediation = strings.TrimSpace(opts.lastEventRemediation)
+	output.FilterLastEventFailureReason = lastEventFailureReason
 	output.FilterLastEventErrorContains = strings.TrimSpace(opts.lastEventErrorContains)
 	output.FilterLastEventOccurredAfter = lastEventOccurredAfter
 	output.FilterLastEventOccurredBefore = lastEventOccurredBefore
@@ -1229,6 +1238,7 @@ func runPolicyStatusExport(ctx context.Context, args []string, stdout io.Writer)
 	flags.StringVar(&opts.lastEventRuleRef, "last-event-rule-ref", "", "optional policy rule reference in the last policy update event")
 	flags.StringVar(&opts.lastEventCapacityHotspotRuleRef, "last-event-capacity-hotspot-rule-ref", "", "optional capacity hotspot rule reference in the last policy update event")
 	flags.StringVar(&opts.lastEventRemediation, "last-event-remediation", "", "optional remediation action in the last policy update event")
+	flags.StringVar(&opts.lastEventFailureReason, "last-event-failure-reason", "", "optional failure reason in the last policy update event: canonicalization_failed, capacity_exceeded, or apply_failed")
 	flags.StringVar(&opts.lastEventErrorContains, "last-event-error-contains", "", "optional error substring in the last policy update event")
 	flags.StringVar(&opts.lastEventOccurredAfter, "last-event-occurred-after", "", "optional RFC3339 timestamp; include endpoints whose last policy update event occurred at or after this time")
 	flags.StringVar(&opts.lastEventOccurredBefore, "last-event-occurred-before", "", "optional RFC3339 timestamp; include endpoints whose last policy update event occurred before this time")
@@ -1287,6 +1297,10 @@ func runPolicyStatusExportWithStore(ctx context.Context, opts policyStatusExport
 	if err != nil {
 		return err
 	}
+	lastEventFailureReason, err := parsePolicyUpdateFailureReasonFilter(opts.lastEventFailureReason, "last-event-failure-reason")
+	if err != nil {
+		return err
+	}
 	lastEventOccurredAfter, err := parseOptionalTimeFilter(opts.lastEventOccurredAfter, "last-event-occurred-after")
 	if err != nil {
 		return err
@@ -1303,7 +1317,7 @@ func runPolicyStatusExportWithStore(ctx context.Context, opts policyStatusExport
 	if err != nil {
 		return err
 	}
-	output := policyStatusOutputFromDocument(doc, strings.TrimSpace(opts.endpoint), strings.TrimSpace(opts.pressureSeverity), pressureMinPercent, recommendedCapacityMin, lastSeenBefore, drifted, opts.revisionBelow, lastEventSuccess, lastEventRemediated, lastEventRuleCookie, strings.TrimSpace(opts.lastEventRuleRef), strings.TrimSpace(opts.lastEventCapacityHotspotRuleRef), strings.TrimSpace(opts.lastEventRemediation), strings.TrimSpace(opts.lastEventErrorContains), lastEventOccurredAfter, lastEventOccurredBefore, lastEventDirection, lastEventAction)
+	output := policyStatusOutputFromDocument(doc, strings.TrimSpace(opts.endpoint), strings.TrimSpace(opts.pressureSeverity), pressureMinPercent, recommendedCapacityMin, lastSeenBefore, drifted, opts.revisionBelow, lastEventSuccess, lastEventRemediated, lastEventRuleCookie, strings.TrimSpace(opts.lastEventRuleRef), strings.TrimSpace(opts.lastEventCapacityHotspotRuleRef), strings.TrimSpace(opts.lastEventRemediation), lastEventFailureReason, strings.TrimSpace(opts.lastEventErrorContains), lastEventOccurredAfter, lastEventOccurredBefore, lastEventDirection, lastEventAction)
 	encoder := json.NewEncoder(stdout)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(output)
@@ -1355,7 +1369,7 @@ func runPolicyRevisionWaitWithStore(ctx context.Context, opts policyRevisionWait
 			return err
 		}
 		lastDoc = doc
-		statuses := filterPolicyEndpointStatuses(doc.Statuses, opts.endpoint, "", nil, nil, nil, nil, 0, nil, nil, nil, "", "", "", "", nil, nil, "", "", nil)
+		statuses := filterPolicyEndpointStatuses(doc.Statuses, opts.endpoint, "", nil, nil, nil, nil, 0, nil, nil, nil, "", "", "", "", "", nil, nil, "", "", nil)
 		if len(statuses) > 0 {
 			lastStatus = statuses[0]
 			sawEndpoint = true
@@ -2522,14 +2536,15 @@ func loadDesiredStateFromPathOrOVSDB(ctx context.Context, path string, store ope
 	return state, nil
 }
 
-func filterPolicyEndpointStatuses(statuses []dataplane.PolicyEndpointStatus, endpoint, pressureSeverity string, pressureMinPercent, recommendedCapacityMin *uint32, lastSeenBefore *time.Time, drifted *bool, revisionBelow uint64, lastEventSuccess, lastEventRemediated *bool, lastEventRuleCookie *uint32, lastEventRuleRef, lastEventCapacityHotspotRuleRef, lastEventRemediation, lastEventErrorContains string, lastEventOccurredAfter, lastEventOccurredBefore *time.Time, lastEventDirection model.Direction, lastEventAction model.Action, endpoints []model.Endpoint) []dataplane.PolicyEndpointStatus {
+func filterPolicyEndpointStatuses(statuses []dataplane.PolicyEndpointStatus, endpoint, pressureSeverity string, pressureMinPercent, recommendedCapacityMin *uint32, lastSeenBefore *time.Time, drifted *bool, revisionBelow uint64, lastEventSuccess, lastEventRemediated *bool, lastEventRuleCookie *uint32, lastEventRuleRef, lastEventCapacityHotspotRuleRef, lastEventRemediation, lastEventFailureReason, lastEventErrorContains string, lastEventOccurredAfter, lastEventOccurredBefore *time.Time, lastEventDirection model.Direction, lastEventAction model.Action, endpoints []model.Endpoint) []dataplane.PolicyEndpointStatus {
 	endpoint = strings.TrimSpace(endpoint)
 	pressureSeverity = strings.TrimSpace(pressureSeverity)
 	lastEventRuleRef = strings.TrimSpace(lastEventRuleRef)
 	lastEventCapacityHotspotRuleRef = strings.TrimSpace(lastEventCapacityHotspotRuleRef)
 	lastEventRemediation = strings.TrimSpace(lastEventRemediation)
+	lastEventFailureReason = strings.TrimSpace(lastEventFailureReason)
 	lastEventErrorContains = strings.TrimSpace(lastEventErrorContains)
-	if endpoint == "" && pressureSeverity == "" && pressureMinPercent == nil && recommendedCapacityMin == nil && lastSeenBefore == nil && drifted == nil && revisionBelow == 0 && lastEventSuccess == nil && lastEventRemediated == nil && lastEventRuleCookie == nil && lastEventRuleRef == "" && lastEventCapacityHotspotRuleRef == "" && lastEventRemediation == "" && lastEventErrorContains == "" && lastEventOccurredAfter == nil && lastEventOccurredBefore == nil && lastEventDirection == "" && lastEventAction == "" {
+	if endpoint == "" && pressureSeverity == "" && pressureMinPercent == nil && recommendedCapacityMin == nil && lastSeenBefore == nil && drifted == nil && revisionBelow == 0 && lastEventSuccess == nil && lastEventRemediated == nil && lastEventRuleCookie == nil && lastEventRuleRef == "" && lastEventCapacityHotspotRuleRef == "" && lastEventRemediation == "" && lastEventFailureReason == "" && lastEventErrorContains == "" && lastEventOccurredAfter == nil && lastEventOccurredBefore == nil && lastEventDirection == "" && lastEventAction == "" {
 		return append([]dataplane.PolicyEndpointStatus(nil), statuses...)
 	}
 	keys := map[string]struct{}{endpoint: {}}
@@ -2582,6 +2597,9 @@ func filterPolicyEndpointStatuses(statuses []dataplane.PolicyEndpointStatus, end
 			continue
 		}
 		if lastEventRemediation != "" && (!status.HasLastEvent || status.LastEvent.Remediation != lastEventRemediation) {
+			continue
+		}
+		if lastEventFailureReason != "" && (!status.HasLastEvent || status.LastEvent.FailureReason != lastEventFailureReason) {
 			continue
 		}
 		if lastEventErrorContains != "" && (!status.HasLastEvent || !strings.Contains(status.LastEvent.Error, lastEventErrorContains)) {
@@ -2690,6 +2708,19 @@ func parsePolicyRuleActionFilter(value, name string) (model.Action, error) {
 	}
 }
 
+func parsePolicyUpdateFailureReasonFilter(value, name string) (string, error) {
+	value = strings.TrimSpace(value)
+	switch value {
+	case "",
+		dataplane.PolicyUpdateFailureCanonicalization,
+		dataplane.PolicyUpdateFailureCapacityExceeded,
+		dataplane.PolicyUpdateFailureApplyFailed:
+		return value, nil
+	default:
+		return "", fmt.Errorf("invalid %s %q", name, value)
+	}
+}
+
 func optionalUint32Value(value *uint32) uint32 {
 	if value == nil {
 		return 0
@@ -2729,8 +2760,8 @@ func policyStatusOutputFromResult(result agent.ReconcileResult, storeName string
 	}
 }
 
-func policyStatusOutputFromDocument(doc policyStatusDocument, endpoint, pressureSeverity string, pressureMinPercent, recommendedCapacityMin *uint32, lastSeenBefore *time.Time, drifted *bool, revisionBelow uint64, lastEventSuccess, lastEventRemediated *bool, lastEventRuleCookie *uint32, lastEventRuleRef, lastEventCapacityHotspotRuleRef, lastEventRemediation, lastEventErrorContains string, lastEventOccurredAfter, lastEventOccurredBefore *time.Time, lastEventDirection model.Direction, lastEventAction model.Action) policyStatusOutput {
-	filtered := filterPolicyEndpointStatuses(doc.Statuses, endpoint, pressureSeverity, pressureMinPercent, recommendedCapacityMin, lastSeenBefore, drifted, revisionBelow, lastEventSuccess, lastEventRemediated, lastEventRuleCookie, lastEventRuleRef, lastEventCapacityHotspotRuleRef, lastEventRemediation, lastEventErrorContains, lastEventOccurredAfter, lastEventOccurredBefore, lastEventDirection, lastEventAction, nil)
+func policyStatusOutputFromDocument(doc policyStatusDocument, endpoint, pressureSeverity string, pressureMinPercent, recommendedCapacityMin *uint32, lastSeenBefore *time.Time, drifted *bool, revisionBelow uint64, lastEventSuccess, lastEventRemediated *bool, lastEventRuleCookie *uint32, lastEventRuleRef, lastEventCapacityHotspotRuleRef, lastEventRemediation, lastEventFailureReason, lastEventErrorContains string, lastEventOccurredAfter, lastEventOccurredBefore *time.Time, lastEventDirection model.Direction, lastEventAction model.Action) policyStatusOutput {
+	filtered := filterPolicyEndpointStatuses(doc.Statuses, endpoint, pressureSeverity, pressureMinPercent, recommendedCapacityMin, lastSeenBefore, drifted, revisionBelow, lastEventSuccess, lastEventRemediated, lastEventRuleCookie, lastEventRuleRef, lastEventCapacityHotspotRuleRef, lastEventRemediation, lastEventFailureReason, lastEventErrorContains, lastEventOccurredAfter, lastEventOccurredBefore, lastEventDirection, lastEventAction, nil)
 	return policyStatusOutput{
 		Node:                                  doc.Node,
 		Store:                                 doc.Store,
@@ -2751,6 +2782,7 @@ func policyStatusOutputFromDocument(doc policyStatusDocument, endpoint, pressure
 		FilterLastEventRuleRef:                strings.TrimSpace(lastEventRuleRef),
 		FilterLastEventCapacityHotspotRuleRef: strings.TrimSpace(lastEventCapacityHotspotRuleRef),
 		FilterLastEventRemediation:            strings.TrimSpace(lastEventRemediation),
+		FilterLastEventFailureReason:          strings.TrimSpace(lastEventFailureReason),
 		FilterLastEventErrorContains:          strings.TrimSpace(lastEventErrorContains),
 		FilterLastEventOccurredAfter:          lastEventOccurredAfter,
 		FilterLastEventOccurredBefore:         lastEventOccurredBefore,
@@ -2943,14 +2975,9 @@ func policyUpdateEventFilterFromValues(endpoint, successRaw, remediatedRaw, reme
 	if err != nil {
 		return policyUpdateEventFilter{}, err
 	}
-	failureReason = strings.TrimSpace(failureReason)
-	switch failureReason {
-	case "",
-		dataplane.PolicyUpdateFailureCanonicalization,
-		dataplane.PolicyUpdateFailureCapacityExceeded,
-		dataplane.PolicyUpdateFailureApplyFailed:
-	default:
-		return policyUpdateEventFilter{}, fmt.Errorf("invalid failure reason %q", failureReason)
+	failureReason, err = parsePolicyUpdateFailureReasonFilter(failureReason, "failure reason")
+	if err != nil {
+		return policyUpdateEventFilter{}, err
 	}
 	pressureSeverity = strings.TrimSpace(pressureSeverity)
 	if err := validatePolicyEndpointPressureSeverity(pressureSeverity); err != nil {
@@ -6976,6 +7003,12 @@ func (m *agentMetrics) handlePolicyEndpoints(w http.ResponseWriter, r *http.Requ
 	lastEventRuleRef := strings.TrimSpace(r.URL.Query().Get("last_event_rule_ref"))
 	lastEventCapacityHotspotRuleRef := strings.TrimSpace(r.URL.Query().Get("last_event_capacity_hotspot_rule_ref"))
 	lastEventRemediation := strings.TrimSpace(r.URL.Query().Get("last_event_remediation"))
+	lastEventFailureReason, err := parsePolicyUpdateFailureReasonFilter(r.URL.Query().Get("last_event_failure_reason"), "last_event_failure_reason")
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
 	lastEventErrorContains := strings.TrimSpace(r.URL.Query().Get("last_event_error_contains"))
 	lastEventOccurredAfter, err := parseOptionalTimeFilter(r.URL.Query().Get("last_event_occurred_after"), "last_event_occurred_after")
 	if err != nil {
@@ -7002,7 +7035,7 @@ func (m *agentMetrics) handlePolicyEndpoints(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	statuses := enrichPolicyEndpointStatuses(snapshot.Result.PolicyEndpointStatus, snapshot.Result.PolicyRuleCatalog)
-	statuses = filterPolicyEndpointStatuses(statuses, endpoint, pressureSeverity, pressureMinPercent, recommendedCapacityMin, lastSeenBefore, drifted, revisionBelow, lastEventSuccess, lastEventRemediated, lastEventRuleCookie, lastEventRuleRef, lastEventCapacityHotspotRuleRef, lastEventRemediation, lastEventErrorContains, lastEventOccurredAfter, lastEventOccurredBefore, lastEventDirection, lastEventAction, nil)
+	statuses = filterPolicyEndpointStatuses(statuses, endpoint, pressureSeverity, pressureMinPercent, recommendedCapacityMin, lastSeenBefore, drifted, revisionBelow, lastEventSuccess, lastEventRemediated, lastEventRuleCookie, lastEventRuleRef, lastEventCapacityHotspotRuleRef, lastEventRemediation, lastEventFailureReason, lastEventErrorContains, lastEventOccurredAfter, lastEventOccurredBefore, lastEventDirection, lastEventAction, nil)
 	if endpoint != "" && len(statuses) == 0 {
 		w.WriteHeader(http.StatusNotFound)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "policy endpoint not found"})
@@ -7025,6 +7058,7 @@ func (m *agentMetrics) handlePolicyEndpoints(w http.ResponseWriter, r *http.Requ
 	output.FilterLastEventRuleRef = lastEventRuleRef
 	output.FilterLastEventCapacityHotspotRuleRef = lastEventCapacityHotspotRuleRef
 	output.FilterLastEventRemediation = lastEventRemediation
+	output.FilterLastEventFailureReason = lastEventFailureReason
 	output.FilterLastEventErrorContains = lastEventErrorContains
 	output.FilterLastEventOccurredAfter = lastEventOccurredAfter
 	output.FilterLastEventOccurredBefore = lastEventOccurredBefore
@@ -7324,7 +7358,7 @@ func (m *agentMetrics) handlePolicyEndpointRevision(w http.ResponseWriter, r *ht
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": "policy endpoint status is not ready"})
 			return
 		}
-		statuses := filterPolicyEndpointStatuses(snapshot.Result.PolicyEndpointStatus, endpoint, "", nil, nil, nil, nil, 0, nil, nil, nil, "", "", "", "", nil, nil, "", "", nil)
+		statuses := filterPolicyEndpointStatuses(snapshot.Result.PolicyEndpointStatus, endpoint, "", nil, nil, nil, nil, 0, nil, nil, nil, "", "", "", "", "", nil, nil, "", "", nil)
 		if len(statuses) > 0 {
 			lastStatus = statuses[0]
 			sawEndpoint = true

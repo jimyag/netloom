@@ -1023,7 +1023,7 @@ func TestRunPolicyStatusExportWithStoreReportsFilteredJSON(t *testing.T) {
 			PressurePercent:  98,
 			PressureSeverity: dataplane.PolicyMapPressureCritical,
 			Drift:            dataplane.PolicyMapDrift{Drifted: true, Extra: 1},
-			LastEvent:        dataplane.PolicyUpdateEvent{EndpointID: model.EndpointKey("prod", "pod-b"), Revision: 1, RuleCookies: []uint32{43}, RuleRefs: []string{"prod/db/allow-db"}, CapacityHotspots: []dataplane.PolicyMapCapacityHotspot{{RuleRef: "prod/db/allow-db", Entries: 42}}, RuleDirections: []string{"egress"}, RuleActions: []string{"drop"}, Success: false, Error: "policy map capacity exceeded for endpoint prod/pod-b", Remediated: true, Remediation: string(dataplane.PolicyMapOverflowClear), OccurredAt: &podBLastEvent},
+			LastEvent:        dataplane.PolicyUpdateEvent{EndpointID: model.EndpointKey("prod", "pod-b"), Revision: 1, RuleCookies: []uint32{43}, RuleRefs: []string{"prod/db/allow-db"}, CapacityHotspots: []dataplane.PolicyMapCapacityHotspot{{RuleRef: "prod/db/allow-db", Entries: 42}}, RuleDirections: []string{"egress"}, RuleActions: []string{"drop"}, Success: false, FailureReason: dataplane.PolicyUpdateFailureCapacityExceeded, Error: "policy map capacity exceeded for endpoint prod/pod-b", Remediated: true, Remediation: string(dataplane.PolicyMapOverflowClear), OccurredAt: &podBLastEvent},
 			HasLastEvent:     true,
 		}},
 	}); err != nil {
@@ -1189,6 +1189,18 @@ func TestRunPolicyStatusExportWithStoreReportsFilteredJSON(t *testing.T) {
 	}
 	if got.FilterLastEventRemediation != string(dataplane.PolicyMapOverflowClear) || got.EndpointCount != 1 || len(got.Statuses) != 1 || got.Statuses[0].EndpointID != model.EndpointKey("prod", "pod-b") {
 		t.Fatalf("last-event-remediation filtered statuses = %+v, want only clear-remediated pod-b", got)
+	}
+
+	out.Reset()
+	if err := runPolicyStatusExportWithStore(t.Context(), policyStatusExportOptions{lastEventFailureReason: dataplane.PolicyUpdateFailureCapacityExceeded}, &out, store); err != nil {
+		t.Fatal(err)
+	}
+	got = policyStatusOutput{}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("decode last-event-failure-reason filtered policy-status-export output: %v\n%s", err, out.String())
+	}
+	if got.FilterLastEventFailureReason != dataplane.PolicyUpdateFailureCapacityExceeded || got.EndpointCount != 1 || len(got.Statuses) != 1 || got.Statuses[0].EndpointID != model.EndpointKey("prod", "pod-b") {
+		t.Fatalf("last-event-failure-reason filtered statuses = %+v, want only capacity-failed pod-b", got)
 	}
 
 	out.Reset()
@@ -5514,7 +5526,7 @@ func TestPolicyEndpointAPIReportsLifecycleStatus(t *testing.T) {
 			PressurePercent:  93,
 			PressureSeverity: dataplane.PolicyMapPressureCritical,
 			Drift:            dataplane.PolicyMapDrift{Drifted: true, Changed: 1},
-			LastEvent:        dataplane.PolicyUpdateEvent{EndpointID: model.EndpointKey("prod", "pod-b"), Revision: 2, RuleCookies: []uint32{43}, RuleRefs: []string{"prod/db/allow-db"}, CapacityHotspots: []dataplane.PolicyMapCapacityHotspot{{RuleRef: "prod/db/allow-db", Entries: 42}}, RuleDirections: []string{"egress"}, RuleActions: []string{"drop"}, Success: false, Error: "policy map capacity exceeded for endpoint prod/pod-b", Remediated: true, Remediation: string(dataplane.PolicyMapOverflowClear), OccurredAt: &podBLastEvent},
+			LastEvent:        dataplane.PolicyUpdateEvent{EndpointID: model.EndpointKey("prod", "pod-b"), Revision: 2, RuleCookies: []uint32{43}, RuleRefs: []string{"prod/db/allow-db"}, CapacityHotspots: []dataplane.PolicyMapCapacityHotspot{{RuleRef: "prod/db/allow-db", Entries: 42}}, RuleDirections: []string{"egress"}, RuleActions: []string{"drop"}, Success: false, FailureReason: dataplane.PolicyUpdateFailureCapacityExceeded, Error: "policy map capacity exceeded for endpoint prod/pod-b", Remediated: true, Remediation: string(dataplane.PolicyMapOverflowClear), OccurredAt: &podBLastEvent},
 			HasLastEvent:     true,
 		}},
 	}, "ebpf", 25*time.Millisecond)
@@ -5743,6 +5755,21 @@ func TestPolicyEndpointAPIReportsLifecycleStatus(t *testing.T) {
 	}
 
 	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/policy/endpoints?last_event_failure_reason=capacity_exceeded", nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("last-event-failure-reason filter status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	got = policyStatusOutput{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode last-event-failure-reason policy endpoint API response: %v\n%s", err, recorder.Body.String())
+	}
+	if got.FilterLastEventFailureReason != dataplane.PolicyUpdateFailureCapacityExceeded || got.EndpointCount != 1 || len(got.Statuses) != 1 || got.Statuses[0].EndpointID != model.EndpointKey("prod", "pod-b") {
+		t.Fatalf("last-event-failure-reason filtered statuses = %+v, want pod-b with capacity failure", got)
+	}
+
+	recorder = httptest.NewRecorder()
 	request = httptest.NewRequest(http.MethodGet, "/policy/endpoints?last_event_error_contains=capacity%20exceeded", nil)
 	metrics.handlePolicyEndpoints(recorder, request)
 
@@ -5832,6 +5859,17 @@ func TestPolicyEndpointAPIReportsLifecycleStatus(t *testing.T) {
 
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("invalid last-event-rule-cookie status = %d, want 400; body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/policy/endpoints?last_event_failure_reason=overflow", nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("invalid last-event-failure-reason status = %d, want 400; body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "invalid last_event_failure_reason") {
+		t.Fatalf("body missing invalid last_event_failure_reason error: %s", recorder.Body.String())
 	}
 
 	recorder = httptest.NewRecorder()
