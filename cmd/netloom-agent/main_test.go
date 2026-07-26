@@ -1612,6 +1612,10 @@ func TestRunPolicyActionHistoryWithStoreRejectsInvalidFilters(t *testing.T) {
 }
 
 func TestRunPolicyRolloutHistoryWithStoreReportsFilteredJSON(t *testing.T) {
+	firstCompleted := time.Date(2026, 7, 19, 1, 0, 0, 0, time.UTC)
+	secondCompleted := time.Date(2026, 7, 19, 1, 10, 0, 0, time.UTC)
+	thirdCompleted := time.Date(2026, 7, 19, 1, 20, 0, 0, time.UTC)
+	completedCutoff := time.Date(2026, 7, 19, 1, 15, 0, 0, time.UTC)
 	history := []policyRolloutHistoryEntry{
 		{
 			ID:          "1",
@@ -1619,7 +1623,7 @@ func TestRunPolicyRolloutHistoryWithStoreReportsFilteredJSON(t *testing.T) {
 			Name:        "canary",
 			Node:        "node-a",
 			Store:       "ebpf",
-			CompletedAt: time.Now().Add(-3 * time.Minute),
+			CompletedAt: firstCompleted,
 			Rollout:     agent.PolicyEndpointRollout{Planned: 1, Applied: 1},
 		},
 		{
@@ -1628,7 +1632,7 @@ func TestRunPolicyRolloutHistoryWithStoreReportsFilteredJSON(t *testing.T) {
 			Name:        "nightly",
 			Node:        "node-a",
 			Store:       "ebpf",
-			CompletedAt: time.Now().Add(-2 * time.Minute),
+			CompletedAt: secondCompleted,
 			Rollout:     agent.PolicyEndpointRollout{Planned: 2, Applied: 1, Failed: 1},
 		},
 		{
@@ -1637,7 +1641,7 @@ func TestRunPolicyRolloutHistoryWithStoreReportsFilteredJSON(t *testing.T) {
 			Name:        "canary",
 			Node:        "node-b",
 			Store:       "ebpf",
-			CompletedAt: time.Now().Add(-time.Minute),
+			CompletedAt: thirdCompleted,
 			Rollout:     agent.PolicyEndpointRollout{Planned: 1, Applied: 1},
 		},
 	}
@@ -1667,6 +1671,32 @@ func TestRunPolicyRolloutHistoryWithStoreReportsFilteredJSON(t *testing.T) {
 	if len(got.History) != 1 || got.History[0].ID != "3" || got.History[0].Source != "manual" || got.History[0].Name != "canary" {
 		t.Fatalf("history = %+v, want latest manual canary rollout", got.History)
 	}
+
+	out.Reset()
+	err = runPolicyRolloutHistoryWithStore(t.Context(), policyRolloutHistoryOptions{completedAfter: completedCutoff.Format(time.RFC3339), limit: 10}, &out, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = policyRolloutHistoryOutput{}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("decode completed-after policy-rollout-history output: %v\n%s", err, out.String())
+	}
+	if got.FilterCompletedAfter == nil || !got.FilterCompletedAfter.Equal(completedCutoff) || got.EventCount != 1 || len(got.History) != 1 || got.History[0].ID != "3" {
+		t.Fatalf("completed-after rollout history = %+v, want only latest rollout after cutoff", got)
+	}
+
+	out.Reset()
+	err = runPolicyRolloutHistoryWithStore(t.Context(), policyRolloutHistoryOptions{completedBefore: completedCutoff.Format(time.RFC3339), limit: 10}, &out, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = policyRolloutHistoryOutput{}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("decode completed-before policy-rollout-history output: %v\n%s", err, out.String())
+	}
+	if got.FilterCompletedBefore == nil || !got.FilterCompletedBefore.Equal(completedCutoff) || got.EventCount != 2 || len(got.History) != 2 {
+		t.Fatalf("completed-before rollout history = %+v, want two rollouts before cutoff", got)
+	}
 }
 
 func TestRunPolicyRolloutHistoryWithStoreRejectsInvalidLimit(t *testing.T) {
@@ -1675,6 +1705,87 @@ func TestRunPolicyRolloutHistoryWithStoreRejectsInvalidLimit(t *testing.T) {
 	err := runPolicyRolloutHistoryWithStore(t.Context(), policyRolloutHistoryOptions{limit: -1}, &out, store)
 	if err == nil || !strings.Contains(err.Error(), "invalid limit -1") {
 		t.Fatalf("err = %v, want invalid limit", err)
+	}
+	err = runPolicyRolloutHistoryWithStore(t.Context(), policyRolloutHistoryOptions{completedBefore: "bad", limit: 10}, &out, store)
+	if err == nil || !strings.Contains(err.Error(), "invalid completed-before") {
+		t.Fatalf("err = %v, want invalid completed-before", err)
+	}
+}
+
+func TestPolicyEndpointAPIRolloutHistoryFilters(t *testing.T) {
+	firstCompleted := time.Date(2026, 7, 19, 1, 0, 0, 0, time.UTC)
+	secondCompleted := time.Date(2026, 7, 19, 1, 10, 0, 0, time.UTC)
+	thirdCompleted := time.Date(2026, 7, 19, 1, 20, 0, 0, time.UTC)
+	completedCutoff := time.Date(2026, 7, 19, 1, 15, 0, 0, time.UTC)
+	history := []policyRolloutHistoryEntry{
+		{ID: "1", Source: "manual", Name: "canary", Node: "node-a", Store: "memory", CompletedAt: firstCompleted, Rollout: agent.PolicyEndpointRollout{Planned: 1, Applied: 1}},
+		{ID: "2", Source: "desired-state", Name: "nightly", Node: "node-a", Store: "memory", CompletedAt: secondCompleted, Rollout: agent.PolicyEndpointRollout{Planned: 2, Applied: 1, Failed: 1}},
+		{ID: "3", Source: "manual", Name: "canary", Node: "node-b", Store: "memory", CompletedAt: thirdCompleted, Rollout: agent.PolicyEndpointRollout{Planned: 1, Applied: 1}},
+	}
+	raw, err := json.Marshal(history)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metrics := newAgentMetrics(dataplane.NewInMemoryPolicyStore())
+	if err := configurePolicyRolloutHistory(t.Context(), metrics, ovsdbPolicyRolloutHistoryStore{syncer: &fakeOpenVSwitchExternalIDStore{values: map[string]string{
+		policyRolloutHistoryKey: string(raw),
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/policy/endpoints/rollout/history?source=manual&name=canary&limit=1", nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("rollout history status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var output policyRolloutHistoryOutput
+	if err := json.Unmarshal(recorder.Body.Bytes(), &output); err != nil {
+		t.Fatalf("decode rollout history response: %v\n%s", err, recorder.Body.String())
+	}
+	if !output.Ready || output.TotalEvents != 3 || output.EventCount != 1 || output.Limit != 1 || output.FilterSource != "manual" || output.FilterName != "canary" {
+		t.Fatalf("rollout history output = %+v, want filtered manual canary metadata", output)
+	}
+	if len(output.History) != 1 || output.History[0].ID != "3" {
+		t.Fatalf("rollout history = %+v, want latest manual canary rollout", output.History)
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/policy/endpoints/rollout/history?completed_after="+url.QueryEscape(completedCutoff.Format(time.RFC3339)), nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("completed-after rollout history status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	output = policyRolloutHistoryOutput{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &output); err != nil {
+		t.Fatalf("decode completed-after rollout history response: %v\n%s", err, recorder.Body.String())
+	}
+	if output.FilterCompletedAfter == nil || !output.FilterCompletedAfter.Equal(completedCutoff) || output.EventCount != 1 || len(output.History) != 1 || output.History[0].ID != "3" {
+		t.Fatalf("completed-after rollout history = %+v, want only rollout after cutoff", output)
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/policy/endpoints/rollout/history?completed_before="+url.QueryEscape(completedCutoff.Format(time.RFC3339)), nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("completed-before rollout history status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	output = policyRolloutHistoryOutput{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &output); err != nil {
+		t.Fatalf("decode completed-before rollout history response: %v\n%s", err, recorder.Body.String())
+	}
+	if output.FilterCompletedBefore == nil || !output.FilterCompletedBefore.Equal(completedCutoff) || output.EventCount != 2 || len(output.History) != 2 {
+		t.Fatalf("completed-before rollout history = %+v, want two rollouts before cutoff", output)
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/policy/endpoints/rollout/history?completed_before=bad", nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("invalid completed-before status = %d, want 400; body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "invalid completed_before") {
+		t.Fatalf("body missing invalid completed_before error: %s", recorder.Body.String())
 	}
 }
 

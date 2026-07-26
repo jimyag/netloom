@@ -307,10 +307,12 @@ type policyRulesOptions struct {
 }
 
 type policyRolloutHistoryOptions struct {
-	ovsdb  string
-	source string
-	name   string
-	limit  int
+	ovsdb           string
+	source          string
+	name            string
+	completedAfter  string
+	completedBefore string
+	limit           int
 }
 
 type policyRolloutStateOptions struct {
@@ -629,13 +631,15 @@ type policyEndpointRolloutItemOutput struct {
 }
 
 type policyRolloutHistoryOutput struct {
-	Ready        bool                        `json:"ready"`
-	TotalEvents  int                         `json:"total_events,omitempty"`
-	EventCount   int                         `json:"event_count,omitempty"`
-	Limit        int                         `json:"limit,omitempty"`
-	FilterSource string                      `json:"filter_source,omitempty"`
-	FilterName   string                      `json:"filter_name,omitempty"`
-	History      []policyRolloutHistoryEntry `json:"history"`
+	Ready                 bool                        `json:"ready"`
+	TotalEvents           int                         `json:"total_events,omitempty"`
+	EventCount            int                         `json:"event_count,omitempty"`
+	Limit                 int                         `json:"limit,omitempty"`
+	FilterSource          string                      `json:"filter_source,omitempty"`
+	FilterName            string                      `json:"filter_name,omitempty"`
+	FilterCompletedAfter  *time.Time                  `json:"filter_completed_after,omitempty"`
+	FilterCompletedBefore *time.Time                  `json:"filter_completed_before,omitempty"`
+	History               []policyRolloutHistoryEntry `json:"history"`
 }
 
 type policyActionHistoryOutput struct {
@@ -1596,6 +1600,8 @@ func runPolicyRolloutHistory(ctx context.Context, args []string, stdout io.Write
 	flags.StringVar(&opts.ovsdb, "ovsdb", os.Getenv("NETLOOM_OVSDB_ENDPOINT"), "Open_vSwitch OVSDB endpoint")
 	flags.StringVar(&opts.source, "source", "", "optional rollout history source to include")
 	flags.StringVar(&opts.name, "name", "", "optional rollout name to include")
+	flags.StringVar(&opts.completedAfter, "completed-after", "", "optional RFC3339 timestamp; include rollouts completed at or after this time")
+	flags.StringVar(&opts.completedBefore, "completed-before", "", "optional RFC3339 timestamp; include rollouts completed before this time")
 	flags.IntVar(&opts.limit, "limit", defaultPolicyEventsLimit, "maximum recent rollout history entries")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -1625,18 +1631,28 @@ func runPolicyRolloutHistoryWithStore(ctx context.Context, opts policyRolloutHis
 	if err != nil {
 		return err
 	}
+	completedAfter, err := parseOptionalTimeFilter(opts.completedAfter, "completed-after")
+	if err != nil {
+		return err
+	}
+	completedBefore, err := parseOptionalTimeFilter(opts.completedBefore, "completed-before")
+	if err != nil {
+		return err
+	}
 	source := strings.TrimSpace(opts.source)
 	name := strings.TrimSpace(opts.name)
-	filtered := filterPolicyRolloutHistory(history, source, name)
+	filtered := filterPolicyRolloutHistory(history, source, name, completedAfter, completedBefore)
 	recent := recentPolicyRolloutHistory(filtered, opts.limit)
 	output := policyRolloutHistoryOutput{
-		Ready:        true,
-		TotalEvents:  len(history),
-		EventCount:   len(recent),
-		Limit:        opts.limit,
-		FilterSource: source,
-		FilterName:   name,
-		History:      recent,
+		Ready:                 true,
+		TotalEvents:           len(history),
+		EventCount:            len(recent),
+		Limit:                 opts.limit,
+		FilterSource:          source,
+		FilterName:            name,
+		FilterCompletedAfter:  completedAfter,
+		FilterCompletedBefore: completedBefore,
+		History:               recent,
 	}
 	encoder := json.NewEncoder(stdout)
 	encoder.SetIndent("", "  ")
@@ -4598,7 +4614,7 @@ func trimPolicyRolloutHistory(history []policyRolloutHistoryEntry) []policyRollo
 	return append([]policyRolloutHistoryEntry(nil), history[len(history)-limit:]...)
 }
 
-func filterPolicyRolloutHistory(history []policyRolloutHistoryEntry, source, name string) []policyRolloutHistoryEntry {
+func filterPolicyRolloutHistory(history []policyRolloutHistoryEntry, source, name string, completedAfter, completedBefore *time.Time) []policyRolloutHistoryEntry {
 	source = strings.TrimSpace(source)
 	name = strings.TrimSpace(name)
 	out := make([]policyRolloutHistoryEntry, 0, len(history))
@@ -4607,6 +4623,12 @@ func filterPolicyRolloutHistory(history []policyRolloutHistoryEntry, source, nam
 			continue
 		}
 		if name != "" && entry.Name != name {
+			continue
+		}
+		if completedAfter != nil && entry.CompletedAt.Before(*completedAfter) {
+			continue
+		}
+		if completedBefore != nil && !entry.CompletedAt.Before(*completedBefore) {
 			continue
 		}
 		out = append(out, entry)
@@ -6238,11 +6260,41 @@ func (m *agentMetrics) handlePolicyRolloutHistory(w http.ResponseWriter, r *http
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "method not allowed"})
 		return
 	}
+	limit, err := policyEventsLimitFromRequest(r)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	source := strings.TrimSpace(r.URL.Query().Get("source"))
+	name := strings.TrimSpace(r.URL.Query().Get("name"))
+	completedAfter, err := parseOptionalTimeFilter(r.URL.Query().Get("completed_after"), "completed_after")
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	completedBefore, err := parseOptionalTimeFilter(r.URL.Query().Get("completed_before"), "completed_before")
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	history := m.policyRolloutHistory()
+	filtered := filterPolicyRolloutHistory(history, source, name, completedAfter, completedBefore)
+	recent := recentPolicyRolloutHistory(filtered, limit)
 	encoder := json.NewEncoder(w)
 	encoder.SetIndent("", "  ")
 	_ = encoder.Encode(policyRolloutHistoryOutput{
-		Ready:   true,
-		History: m.policyRolloutHistory(),
+		Ready:                 true,
+		TotalEvents:           len(history),
+		EventCount:            len(recent),
+		Limit:                 limit,
+		FilterSource:          source,
+		FilterName:            name,
+		FilterCompletedAfter:  completedAfter,
+		FilterCompletedBefore: completedBefore,
+		History:               recent,
 	})
 }
 
