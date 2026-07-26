@@ -66,7 +66,7 @@
 | SCTP L4 ACL | 已实现 | policy compiler、policy map、TCX IPv4/IPv6 projection | `TestCompileForEndpointEncodesSCTPPorts`、`TestIPv4L4ACLRulesFromProgramProjectsSCTPPort` |
 | ICMP and dual-stack | 已实现 | IPv4/IPv6 ICMP policy entries | Docker dual-stack ICMP e2e |
 | Stateful conntrack | 已实现 | dataplane evaluator/store metadata | Docker stateful conntrack e2e |
-| Reject / Log | 已实现 | policy actions and recorder events | Docker reject/log e2e |
+| Reject / Log | 已实现 | policy actions and recorder drop/log/trace events with rule cookie and rule ref attribution | Docker reject/log e2e、`TestPolicyRecorderTracksMetricsAndDropEvents`、`TestPolicyRecorderTracksLoggedPolicyEvents`、`TestPolicyRecorderTracksTraceEvents` |
 | Default deny/default allow | 已实现 | security group defaults | Docker default allow/egress e2e |
 
 ## 运维和状态管理

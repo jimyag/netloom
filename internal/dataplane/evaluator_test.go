@@ -1247,6 +1247,7 @@ func TestPolicyRecorderTracksMetricsAndDropEvents(t *testing.T) {
 				Precedence:  100,
 				RuleCookie:  99,
 			},
+			RuleRef: "prod/web/deny-client",
 		},
 	}
 	recorder := NewPolicyRecorder()
@@ -1264,8 +1265,8 @@ func TestPolicyRecorderTracksMetricsAndDropEvents(t *testing.T) {
 	if len(events) != 2 {
 		t.Fatalf("drop events = %d, want 2", len(events))
 	}
-	if events[0].Reason != DropReasonPolicyDeny || events[0].RuleCookie != 99 || events[0].RemoteIP != netip.MustParseAddr("10.20.0.20") {
-		t.Fatalf("first event = %+v, want policy deny with cookie 99", events[0])
+	if events[0].Reason != DropReasonPolicyDeny || events[0].RuleCookie != 99 || events[0].RuleRef != "prod/web/deny-client" || events[0].RemoteIP != netip.MustParseAddr("10.20.0.20") {
+		t.Fatalf("first event = %+v, want policy deny with rule metadata", events[0])
 	}
 	if events[1].Reason != DropReasonNoMatch || events[1].RuleCookie != 0 || events[1].RemoteIP != netip.MustParseAddr("10.20.0.30") {
 		t.Fatalf("second event = %+v, want no-match", events[1])
@@ -1288,6 +1289,7 @@ func TestPolicyRecorderTracksLoggedPolicyEvents(t *testing.T) {
 				Precedence:  100,
 				RuleCookie:  42,
 			},
+			RuleRef: "prod/web/allow-https",
 		},
 		{
 			Key: PolicyKey{
@@ -1304,6 +1306,7 @@ func TestPolicyRecorderTracksLoggedPolicyEvents(t *testing.T) {
 				Precedence:  100,
 				RuleCookie:  99,
 			},
+			RuleRef: "prod/web/drop-admin",
 		},
 	}
 	recorder := NewPolicyRecorder()
@@ -1321,11 +1324,11 @@ func TestPolicyRecorderTracksLoggedPolicyEvents(t *testing.T) {
 	if len(events) != 2 {
 		t.Fatalf("policy events = %d, want 2", len(events))
 	}
-	if events[0].Verdict != VerdictAllow || events[0].RuleCookie != 42 || events[0].DestPort != 443 || events[0].RemoteIP != netip.MustParseAddr("10.30.0.10") {
-		t.Fatalf("first event = %+v, want logged allow", events[0])
+	if events[0].Verdict != VerdictAllow || events[0].RuleCookie != 42 || events[0].RuleRef != "prod/web/allow-https" || events[0].DestPort != 443 || events[0].RemoteIP != netip.MustParseAddr("10.30.0.10") {
+		t.Fatalf("first event = %+v, want logged allow with rule metadata", events[0])
 	}
-	if events[1].Verdict != VerdictDrop || events[1].RuleCookie != 99 || events[1].DestPort != 8443 || events[1].RemoteIP != netip.MustParseAddr("10.30.0.20") {
-		t.Fatalf("second event = %+v, want logged drop", events[1])
+	if events[1].Verdict != VerdictDrop || events[1].RuleCookie != 99 || events[1].RuleRef != "prod/web/drop-admin" || events[1].DestPort != 8443 || events[1].RemoteIP != netip.MustParseAddr("10.30.0.20") {
+		t.Fatalf("second event = %+v, want logged drop with rule metadata", events[1])
 	}
 }
 
@@ -1523,6 +1526,7 @@ func TestPolicyRecorderTracksTraceEvents(t *testing.T) {
 			Precedence:  100,
 			RuleCookie:  88,
 		},
+		RuleRef: "prod/web/deny-admin",
 	}}
 	recorder := NewPolicyRecorder()
 	conntrack := NewInMemoryConntrackStore()
@@ -1563,8 +1567,8 @@ func TestPolicyRecorderTracksTraceEvents(t *testing.T) {
 	if events[0].Verdict != VerdictAllow || events[0].Established != true || events[0].Conntrack {
 		t.Fatalf("first trace event = %+v, want stateful allow establishing conntrack", events[0])
 	}
-	if events[1].Verdict != VerdictDrop || !events[1].DenyDrop || events[1].RuleCookie != 88 {
-		t.Fatalf("second trace event = %+v, want policy deny with cookie", events[1])
+	if events[1].Verdict != VerdictDrop || !events[1].DenyDrop || events[1].RuleCookie != 88 || events[1].RuleRef != "prod/web/deny-admin" {
+		t.Fatalf("second trace event = %+v, want policy deny with rule metadata", events[1])
 	}
 	if !events[2].NoMatchDrop || events[2].Verdict != VerdictDrop {
 		t.Fatalf("third trace event = %+v, want no-match drop marker", events[2])

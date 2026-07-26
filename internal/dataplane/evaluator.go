@@ -96,6 +96,7 @@ type DropEvent struct {
 	Protocol       uint8
 	DestPort       uint16
 	RuleCookie     uint32
+	RuleRef        string
 }
 
 type PolicyEvent struct {
@@ -107,6 +108,7 @@ type PolicyEvent struct {
 	Protocol       uint8
 	DestPort       uint16
 	RuleCookie     uint32
+	RuleRef        string
 	Conntrack      bool
 	Established    bool
 }
@@ -122,6 +124,7 @@ type TraceEvent struct {
 	ICMPType       uint8
 	ICMPCode       uint8
 	RuleCookie     uint32
+	RuleRef        string
 	Conntrack      bool
 	Established    bool
 	NoMatchDrop    bool
@@ -232,11 +235,13 @@ func (r *PolicyRecorder) Observe(endpointID string, packet Packet, decision Deci
 		ruleMetrics.RejectDrops++
 		event.Reason = DropReasonPolicyReject
 		event.RuleCookie = decision.Match.Value.RuleCookie
+		event.RuleRef = decision.Match.RuleRef
 	} else {
 		metrics.DenyDrops++
 		ruleMetrics.DenyDrops++
 		event.Reason = DropReasonPolicyDeny
 		event.RuleCookie = decision.Match.Value.RuleCookie
+		event.RuleRef = decision.Match.RuleRef
 	}
 	if shouldLogPolicy(decision) {
 		metrics.Logged++
@@ -359,6 +364,7 @@ func policyEvent(endpointID string, packet Packet, decision Decision) PolicyEven
 	}
 	if decision.Match != nil {
 		event.RuleCookie = decision.Match.Value.RuleCookie
+		event.RuleRef = decision.Match.RuleRef
 	}
 	return event
 }
@@ -379,6 +385,7 @@ func traceEvent(endpointID string, packet Packet, decision Decision) TraceEvent 
 	}
 	if decision.Match != nil {
 		event.RuleCookie = decision.Match.Value.RuleCookie
+		event.RuleRef = decision.Match.RuleRef
 	}
 	if decision.Verdict == VerdictDrop || decision.Verdict == VerdictReject {
 		event.NoMatchDrop = decision.Match == nil
