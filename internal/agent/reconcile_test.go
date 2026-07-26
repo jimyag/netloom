@@ -3970,6 +3970,8 @@ func TestReconcileNodeReportsPolicyRuleCatalog(t *testing.T) {
 		entry.VPC != "prod" ||
 		entry.SecurityGroup != "web" ||
 		entry.RuleID != "allow-web" ||
+		entry.Direction != model.DirectionIngress ||
+		entry.Action != model.ActionAllow ||
 		entry.RuleCookie != dataplane.PolicyRuleCookie("prod/web/allow-web") {
 		t.Fatalf("policy rule catalog entry = %+v, want endpoint-qualified rule reference", entry)
 	}

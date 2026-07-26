@@ -438,7 +438,8 @@ In long-running state-file agent mode, `NETLOOM_AGENT_METRICS_ADDR` enables a
 Prometheus text endpoint with `/metrics` and `/healthz`. The scrape surface
 exports the latest reconcile success and duration, policy-map
 entries/capacity/pressure, policy-map drift, aggregate rule counters,
-per-endpoint or per-TCX target rule counters, cumulative policy
+per-endpoint or per-TCX target rule counters with bounded action/direction
+metadata, cumulative policy
 add/update/delete/failure/rollback counters, a reconcile latency histogram, and
 TCX failure/rollback signals. The same listener also serves `/policy/explain`
 and `/route/explain`: policy explanation evaluates endpoint, peer, protocol,

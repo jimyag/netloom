@@ -106,12 +106,14 @@ type ReconcileResult struct {
 }
 
 type PolicyRuleCatalogEntry struct {
-	EndpointID    string `json:"endpoint_id"`
-	RuleCookie    uint32 `json:"rule_cookie"`
-	RuleRef       string `json:"rule_ref"`
-	VPC           string `json:"vpc,omitempty"`
-	SecurityGroup string `json:"security_group,omitempty"`
-	RuleID        string `json:"rule_id,omitempty"`
+	EndpointID    string          `json:"endpoint_id"`
+	RuleCookie    uint32          `json:"rule_cookie"`
+	RuleRef       string          `json:"rule_ref"`
+	VPC           string          `json:"vpc,omitempty"`
+	SecurityGroup string          `json:"security_group,omitempty"`
+	RuleID        string          `json:"rule_id,omitempty"`
+	Direction     model.Direction `json:"direction,omitempty"`
+	Action        model.Action    `json:"action,omitempty"`
 }
 
 type PolicyStore interface {
@@ -2406,6 +2408,8 @@ func catalogPolicyRules(programs []policy.Program) []PolicyRuleCatalogEntry {
 				VPC:           rule.VPC,
 				SecurityGroup: rule.SecurityGroup,
 				RuleID:        rule.ID,
+				Direction:     rule.Direction,
+				Action:        rule.Action,
 			}
 			key := fmt.Sprintf("%s\x00%d", entry.EndpointID, entry.RuleCookie)
 			byKey[key] = entry
@@ -2429,6 +2433,8 @@ func catalogPolicyRules(programs []policy.Program) []PolicyRuleCatalogEntry {
 				VPC:           rule.VPC,
 				SecurityGroup: rule.SecurityGroup,
 				RuleID:        nonEmptyString(rule.ID, mapEntry.RuleID),
+				Direction:     rule.Direction,
+				Action:        rule.Action,
 			}
 			key := fmt.Sprintf("%s\x00%d", entry.EndpointID, entry.RuleCookie)
 			byKey[key] = entry

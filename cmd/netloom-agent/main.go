@@ -415,23 +415,25 @@ type policyRulesOutput struct {
 }
 
 type policyRuleOutput struct {
-	EndpointID    string `json:"endpoint_id"`
-	RuleCookie    uint32 `json:"rule_cookie"`
-	RuleRef       string `json:"rule_ref,omitempty"`
-	VPC           string `json:"vpc,omitempty"`
-	SecurityGroup string `json:"security_group,omitempty"`
-	RuleID        string `json:"rule_id,omitempty"`
-	Packets       uint64 `json:"packets"`
-	Bytes         uint64 `json:"bytes"`
-	Allowed       uint64 `json:"allowed"`
-	Dropped       uint64 `json:"dropped"`
-	Rejected      uint64 `json:"rejected"`
-	NoMatchDrops  uint64 `json:"no_match_drops"`
-	DenyDrops     uint64 `json:"deny_drops"`
-	RejectDrops   uint64 `json:"reject_drops"`
-	Conntrack     uint64 `json:"conntrack"`
-	Established   uint64 `json:"established"`
-	Logged        uint64 `json:"logged"`
+	EndpointID    string          `json:"endpoint_id"`
+	RuleCookie    uint32          `json:"rule_cookie"`
+	RuleRef       string          `json:"rule_ref,omitempty"`
+	VPC           string          `json:"vpc,omitempty"`
+	SecurityGroup string          `json:"security_group,omitempty"`
+	RuleID        string          `json:"rule_id,omitempty"`
+	Direction     model.Direction `json:"direction,omitempty"`
+	Action        model.Action    `json:"action,omitempty"`
+	Packets       uint64          `json:"packets"`
+	Bytes         uint64          `json:"bytes"`
+	Allowed       uint64          `json:"allowed"`
+	Dropped       uint64          `json:"dropped"`
+	Rejected      uint64          `json:"rejected"`
+	NoMatchDrops  uint64          `json:"no_match_drops"`
+	DenyDrops     uint64          `json:"deny_drops"`
+	RejectDrops   uint64          `json:"reject_drops"`
+	Conntrack     uint64          `json:"conntrack"`
+	Established   uint64          `json:"established"`
+	Logged        uint64          `json:"logged"`
 }
 
 type policyEventsOutput struct {
@@ -2576,6 +2578,8 @@ func mergePolicyRuleStatsAndCatalog(stats []dataplane.RuleMetrics, catalog []age
 		rule.VPC = entry.VPC
 		rule.SecurityGroup = entry.SecurityGroup
 		rule.RuleID = entry.RuleID
+		rule.Direction = entry.Direction
+		rule.Action = entry.Action
 		byKey[key] = rule
 	}
 	for _, stat := range stats {
@@ -6943,6 +6947,8 @@ func writeAgentMetrics(w ioStringWriter, snapshot agentMetricsSnapshot, totals a
 			"vpc":            catalog.VPC,
 			"security_group": catalog.SecurityGroup,
 			"rule_id":        catalog.RuleID,
+			"direction":      string(catalog.Direction),
+			"action":         string(catalog.Action),
 		})
 		fmt.Fprintf(w, "netloom_agent_policy_rule_packets_by_rule_total%s %d\n", labels, stat.Packets)
 		fmt.Fprintf(w, "netloom_agent_policy_rule_bytes_by_rule_total%s %d\n", labels, stat.Bytes)

@@ -3306,6 +3306,8 @@ func TestPolicyRulesAPIReportsCatalogAndCounters(t *testing.T) {
 				VPC:           "prod",
 				SecurityGroup: "web",
 				RuleID:        "allow-http",
+				Direction:     model.DirectionIngress,
+				Action:        model.ActionAllow,
 			},
 			{
 				EndpointID:    endpointID,
@@ -3314,6 +3316,8 @@ func TestPolicyRulesAPIReportsCatalogAndCounters(t *testing.T) {
 				VPC:           "prod",
 				SecurityGroup: "web",
 				RuleID:        "allow-https",
+				Direction:     model.DirectionEgress,
+				Action:        model.ActionDrop,
 			},
 		},
 	}, "ebpf", time.Millisecond)
@@ -3338,10 +3342,10 @@ func TestPolicyRulesAPIReportsCatalogAndCounters(t *testing.T) {
 	if len(got.Rules) != 2 {
 		t.Fatalf("rules = %+v, want two entries", got.Rules)
 	}
-	if got.Rules[0].EndpointID != endpointID || got.Rules[0].RuleCookie != 42 || got.Rules[0].RuleRef != "sg/web/allow-http" || got.Rules[0].Packets != 5 {
+	if got.Rules[0].EndpointID != endpointID || got.Rules[0].RuleCookie != 42 || got.Rules[0].RuleRef != "sg/web/allow-http" || got.Rules[0].Direction != model.DirectionIngress || got.Rules[0].Action != model.ActionAllow || got.Rules[0].Packets != 5 {
 		t.Fatalf("first rule = %+v, want catalog and counters for cookie 42", got.Rules[0])
 	}
-	if got.Rules[1].EndpointID != endpointID || got.Rules[1].RuleCookie != 43 || got.Rules[1].RuleRef != "sg/web/allow-https" || got.Rules[1].Packets != 0 {
+	if got.Rules[1].EndpointID != endpointID || got.Rules[1].RuleCookie != 43 || got.Rules[1].RuleRef != "sg/web/allow-https" || got.Rules[1].Direction != model.DirectionEgress || got.Rules[1].Action != model.ActionDrop || got.Rules[1].Packets != 0 {
 		t.Fatalf("second rule = %+v, want catalog-only zero counter for cookie 43", got.Rules[1])
 	}
 }
@@ -3548,6 +3552,8 @@ func TestAgentMetricsPersistsPolicyRulesToOpenVSwitchExternalID(t *testing.T) {
 			VPC:           "prod",
 			SecurityGroup: "web",
 			RuleID:        "allow-http",
+			Direction:     model.DirectionIngress,
+			Action:        model.ActionAllow,
 		}},
 	}, "ebpf", time.Millisecond)
 
@@ -3562,7 +3568,7 @@ func TestAgentMetricsPersistsPolicyRulesToOpenVSwitchExternalID(t *testing.T) {
 	if doc.Node != "node-a" || doc.Store != "ebpf" || !doc.LastReconcileSuccess {
 		t.Fatalf("policy rules doc = %+v, want successful node-a ebpf snapshot", doc)
 	}
-	if len(doc.Rules) != 1 || doc.Rules[0].EndpointID != endpointID || doc.Rules[0].RuleRef != "sg/web/allow-http" || doc.Rules[0].Packets != 5 {
+	if len(doc.Rules) != 1 || doc.Rules[0].EndpointID != endpointID || doc.Rules[0].RuleRef != "sg/web/allow-http" || doc.Rules[0].Direction != model.DirectionIngress || doc.Rules[0].Action != model.ActionAllow || doc.Rules[0].Packets != 5 {
 		t.Fatalf("policy rules = %+v, want persisted allow-http counters", doc.Rules)
 	}
 }
@@ -5953,6 +5959,8 @@ func TestAgentMetricsExportsLatestPolicyAndTCXCounters(t *testing.T) {
 			VPC:           "prod",
 			SecurityGroup: "web",
 			RuleID:        "deny-client",
+			Direction:     model.DirectionIngress,
+			Action:        model.ActionDrop,
 		}},
 		TCXEligible:      1,
 		TCXSkipped:       2,
@@ -6060,10 +6068,10 @@ func TestAgentMetricsExportsLatestPolicyAndTCXCounters(t *testing.T) {
 		`netloom_agent_policy_rule_no_match_drops_total{node="node-a",store="ebpf"} 0`,
 		`netloom_agent_policy_rule_deny_drops_total{node="node-a",store="ebpf"} 1`,
 		`netloom_agent_policy_rule_reject_drops_total{node="node-a",store="ebpf"} 0`,
-		`netloom_agent_policy_rule_packets_by_rule_total{endpoint="prod\x00pod-a",node="node-a",rule_cookie="7",rule_id="deny-client",rule_ref="prod/web/deny-client",security_group="web",store="ebpf",vpc="prod"} 1`,
-		`netloom_agent_policy_rule_deny_drops_by_rule_total{endpoint="prod\x00pod-a",node="node-a",rule_cookie="7",rule_id="deny-client",rule_ref="prod/web/deny-client",security_group="web",store="ebpf",vpc="prod"} 1`,
-		`netloom_agent_policy_rule_packets_by_rule_total{endpoint="tcx:iface=eth0 direction=ingress attach=2",node="node-a",rule_cookie="42",rule_id="",rule_ref="",security_group="",store="ebpf",vpc=""} 2`,
-		`netloom_agent_policy_rule_reject_drops_by_rule_total{endpoint="tcx:iface=eth0 direction=ingress attach=2",node="node-a",rule_cookie="42",rule_id="",rule_ref="",security_group="",store="ebpf",vpc=""} 0`,
+		`netloom_agent_policy_rule_packets_by_rule_total{action="drop",direction="ingress",endpoint="prod\x00pod-a",node="node-a",rule_cookie="7",rule_id="deny-client",rule_ref="prod/web/deny-client",security_group="web",store="ebpf",vpc="prod"} 1`,
+		`netloom_agent_policy_rule_deny_drops_by_rule_total{action="drop",direction="ingress",endpoint="prod\x00pod-a",node="node-a",rule_cookie="7",rule_id="deny-client",rule_ref="prod/web/deny-client",security_group="web",store="ebpf",vpc="prod"} 1`,
+		`netloom_agent_policy_rule_packets_by_rule_total{action="",direction="",endpoint="tcx:iface=eth0 direction=ingress attach=2",node="node-a",rule_cookie="42",rule_id="",rule_ref="",security_group="",store="ebpf",vpc=""} 2`,
+		`netloom_agent_policy_rule_reject_drops_by_rule_total{action="",direction="",endpoint="tcx:iface=eth0 direction=ingress attach=2",node="node-a",rule_cookie="42",rule_id="",rule_ref="",security_group="",store="ebpf",vpc=""} 0`,
 		`netloom_agent_tcx_eligible{node="node-a",store="ebpf"} 1`,
 		`netloom_agent_tcx_skipped{node="node-a",store="ebpf"} 2`,
 		`netloom_agent_tcx_failed{node="node-a",store="ebpf",target=""} 0`,
