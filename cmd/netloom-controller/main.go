@@ -47,6 +47,11 @@ func main() {
 				log.Fatal(err)
 			}
 			return
+		case "controller-events-clear":
+			if err := runControllerEventsClear(ctx, os.Args[2:], os.Stdout); err != nil {
+				log.Fatal(err)
+			}
+			return
 		}
 	}
 	if path, ok := desiredStateRuntimePathFromEnv(); ok {
@@ -206,6 +211,65 @@ func runControllerEventsWithStore(ctx context.Context, opts controllerEventsOpti
 	return encoder.Encode(output)
 }
 
+func runControllerEventsClear(ctx context.Context, args []string, stdout io.Writer) error {
+	var opts controllerEventsClearOptions
+	flags := flag.NewFlagSet("netloom-controller controller-events-clear", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	flags.StringVar(&opts.ovsdb, "ovsdb", os.Getenv("NETLOOM_OVSDB_ENDPOINT"), "Open_vSwitch OVSDB endpoint")
+	flags.StringVar(&opts.phase, "phase", "", "optional reconcile phase to clear")
+	flags.StringVar(&opts.success, "success", "", "optional success filter: true or false")
+	flags.BoolVar(&opts.all, "all", false, "clear all controller events")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(opts.ovsdb) == "" {
+		return errors.New("missing -ovsdb or NETLOOM_OVSDB_ENDPOINT")
+	}
+	client, closeStore, err := newOpenVSwitchClient(ctx, opts.ovsdb)
+	if err != nil {
+		return err
+	}
+	defer closeStore()
+	return runControllerEventsClearWithStore(ctx, opts, stdout, linuxdatapath.NewLibOVSDBProviderSyncer(client))
+}
+
+func runControllerEventsClearWithStore(ctx context.Context, opts controllerEventsClearOptions, stdout io.Writer, store ovsdbControlStatusWriter) error {
+	if store == nil {
+		return errors.New("missing Open_vSwitch external_id store")
+	}
+	successFilter, err := parseOptionalBool(strings.TrimSpace(opts.success))
+	if err != nil {
+		return err
+	}
+	phase := strings.TrimSpace(opts.phase)
+	if err := validateControllerEventsClearSelector(opts.all, phase, successFilter); err != nil {
+		return err
+	}
+	doc, err := loadControllerEventsDocument(ctx, store)
+	if err != nil {
+		return err
+	}
+	next, cleared := clearControllerEvents(doc.Events, opts.all, phase, successFilter)
+	doc.Events = next
+	doc.UpdatedAt = time.Now().UTC()
+	if err := saveControllerEventsDocument(ctx, store, doc); err != nil {
+		return err
+	}
+	output := controllerEventsClearOutput{
+		Ready:           true,
+		TotalEvents:     len(next) + len(cleared),
+		ClearedEvents:   len(cleared),
+		RemainingEvents: len(next),
+		FilterPhase:     phase,
+		FilterSuccess:   successFilter,
+		All:             opts.all,
+		Cleared:         cleared,
+	}
+	encoder := json.NewEncoder(stdout)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(output)
+}
+
 type stateFileReconciler struct {
 	memory                 *control.MemoryBackend
 	executor               ovn.Executor
@@ -301,6 +365,13 @@ type controllerEventsOptions struct {
 	limit   int
 }
 
+type controllerEventsClearOptions struct {
+	ovsdb   string
+	phase   string
+	success string
+	all     bool
+}
+
 type controllerEventsOutput struct {
 	Ready         bool                    `json:"ready"`
 	TotalEvents   int                     `json:"total_events"`
@@ -309,6 +380,17 @@ type controllerEventsOutput struct {
 	FilterPhase   string                  `json:"filter_phase,omitempty"`
 	FilterSuccess *bool                   `json:"filter_success,omitempty"`
 	Events        []controllerEventRecord `json:"events"`
+}
+
+type controllerEventsClearOutput struct {
+	Ready           bool                    `json:"ready"`
+	TotalEvents     int                     `json:"total_events"`
+	ClearedEvents   int                     `json:"cleared_events"`
+	RemainingEvents int                     `json:"remaining_events"`
+	FilterPhase     string                  `json:"filter_phase,omitempty"`
+	FilterSuccess   *bool                   `json:"filter_success,omitempty"`
+	All             bool                    `json:"all,omitempty"`
+	Cleared         []controllerEventRecord `json:"cleared,omitempty"`
 }
 
 type controllerEventsDocument struct {
@@ -1032,6 +1114,14 @@ func appendOVSDBControllerEvent(ctx context.Context, store ovsdbControlStatusWri
 	}
 	doc.Events = trimControllerEvents(append(doc.Events, event))
 	doc.UpdatedAt = time.Now().UTC()
+	return saveControllerEventsDocument(ctx, store, doc)
+}
+
+func saveControllerEventsDocument(ctx context.Context, store ovsdbControlStatusWriter, doc controllerEventsDocument) error {
+	if store == nil {
+		return nil
+	}
+	doc.Events = trimControllerEvents(doc.Events)
 	raw, err := json.Marshal(doc)
 	if err != nil {
 		return fmt.Errorf("encode Open_vSwitch controller events: %w", err)
@@ -1054,15 +1144,52 @@ func filterControllerEvents(events []controllerEventRecord, phase string, succes
 	phase = strings.TrimSpace(phase)
 	out := make([]controllerEventRecord, 0, len(events))
 	for _, event := range events {
-		if phase != "" && event.Phase != phase {
-			continue
+		if controllerEventMatches(event, phase, success) {
+			out = append(out, event)
 		}
-		if success != nil && event.Success != *success {
-			continue
-		}
-		out = append(out, event)
 	}
 	return out
+}
+
+func clearControllerEvents(events []controllerEventRecord, all bool, phase string, success *bool) ([]controllerEventRecord, []controllerEventRecord) {
+	if all {
+		return nil, append([]controllerEventRecord(nil), events...)
+	}
+	phase = strings.TrimSpace(phase)
+	next := make([]controllerEventRecord, 0, len(events))
+	cleared := make([]controllerEventRecord, 0)
+	for _, event := range events {
+		if controllerEventMatches(event, phase, success) {
+			cleared = append(cleared, event)
+			continue
+		}
+		next = append(next, event)
+	}
+	return next, cleared
+}
+
+func controllerEventMatches(event controllerEventRecord, phase string, success *bool) bool {
+	if phase != "" && event.Phase != phase {
+		return false
+	}
+	if success != nil && event.Success != *success {
+		return false
+	}
+	return true
+}
+
+func validateControllerEventsClearSelector(all bool, phase string, success *bool) error {
+	hasSelector := strings.TrimSpace(phase) != "" || success != nil
+	if all {
+		if hasSelector {
+			return errors.New("controller events clear must use -all or filters, not both")
+		}
+		return nil
+	}
+	if !hasSelector {
+		return errors.New("controller events clear requires -all or at least one filter")
+	}
+	return nil
 }
 
 func recentControllerEvents(events []controllerEventRecord, limit int) []controllerEventRecord {

@@ -339,6 +339,7 @@ NETLOOM_AGENT_METRICS_ADDR=:9092 \
 ```bash
 ./netloom-controller controller-status -ovsdb unix:/var/run/openvswitch/db.sock
 ./netloom-controller controller-events -ovsdb unix:/var/run/openvswitch/db.sock -limit 20
+./netloom-controller controller-events-clear -ovsdb unix:/var/run/openvswitch/db.sock -phase ovn_health -success false
 ./netloom-agent agent-status -ovsdb unix:/var/run/openvswitch/db.sock
 ./netloom-agent dns-observations-export -ovsdb unix:/var/run/openvswitch/db.sock
 ./netloom-agent identity-groups-export -ovsdb unix:/var/run/openvswitch/db.sock
@@ -378,7 +379,8 @@ cluster quorum、stale advisory、maintenance 和错误状态。
 用于查看最近 controller reconcile 成功/失败、失败阶段、OVN health、cluster quorum、
 audit、stale advisory 和 maintenance 摘要。audit 事件会保留 duplicate、incomplete、
 missing、unexpected 的表级计数，以及 managed field drift 的字段级计数；可用 `-phase`、`-success` 和 `-limit`
-过滤。
+过滤。`controller-events-clear` 使用同一组 `phase`/`success` 过滤字段清理已审计事件；
+全量清理必须显式使用 `-all`，且不能和过滤条件混用。
 `agent-status` CLI 会解码 `Open_vSwitch.external_ids:netloom_agent_status`，
 用于查看最近一次 agent reconcile 的 policy/eBPF rollout、policy rule counter
 summary/top rule hotspots、TCX、runtime preflight、provider、datapath 和错误状态。

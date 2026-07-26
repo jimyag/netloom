@@ -162,6 +162,93 @@ func TestRunControllerEventsWithStoreReportsFilteredHistory(t *testing.T) {
 	}
 }
 
+func TestRunControllerEventsClearWithStoreReportsJSON(t *testing.T) {
+	doc := controllerEventsDocument{
+		UpdatedAt: time.Date(2026, 7, 17, 1, 2, 3, 0, time.UTC),
+		Events: []controllerEventRecord{{
+			ID:               "success-a",
+			CompletedAt:      time.Date(2026, 7, 17, 1, 0, 0, 0, time.UTC),
+			Success:          true,
+			DurationMS:       25,
+			OVNHealth:        "ok",
+			OVNClusterQuorum: "ok",
+			OVNAuditStatus:   "ok",
+		}, {
+			ID:                "failure-a",
+			CompletedAt:       time.Date(2026, 7, 17, 1, 1, 0, 0, time.UTC),
+			Success:           false,
+			Phase:             "ovn_health",
+			Error:             "ovn health check: timeout",
+			DurationMS:        30,
+			OVNHealth:         "error",
+			OVNHealthFailures: 1,
+		}, {
+			ID:          "failure-b",
+			CompletedAt: time.Date(2026, 7, 17, 1, 2, 0, 0, time.UTC),
+			Success:     false,
+			Phase:       "apply",
+			Error:       "apply failed",
+			DurationMS:  40,
+			OVNHealth:   "ok",
+		}},
+	}
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &recordingOVSDBControlStatusWriter{values: map[string]string{
+		controllerOVSDBEventsKey: string(raw),
+	}}
+	var out bytes.Buffer
+	if err := runControllerEventsClearWithStore(t.Context(), controllerEventsClearOptions{phase: "ovn_health", success: "false"}, &out, store); err != nil {
+		t.Fatal(err)
+	}
+	var got controllerEventsClearOutput
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("decode controller-events-clear output: %v\n%s", err, out.String())
+	}
+	if !got.Ready || got.TotalEvents != 3 || got.ClearedEvents != 1 || got.RemainingEvents != 2 || got.FilterPhase != "ovn_health" || got.FilterSuccess == nil || *got.FilterSuccess {
+		t.Fatalf("controller events clear summary = %+v, want one filtered failure cleared", got)
+	}
+	if len(got.Cleared) != 1 || got.Cleared[0].ID != "failure-a" || got.Cleared[0].OVNHealth != "error" {
+		t.Fatalf("cleared = %+v, want ovn_health failure", got.Cleared)
+	}
+	if store.values["netloom_owner"] != "netloom" {
+		t.Fatalf("netloom_owner external_id = %q, want netloom", store.values["netloom_owner"])
+	}
+	var persisted controllerEventsDocument
+	if err := json.Unmarshal([]byte(store.values[controllerOVSDBEventsKey]), &persisted); err != nil {
+		t.Fatalf("decode persisted controller events: %v", err)
+	}
+	if len(persisted.Events) != 2 || persisted.Events[0].ID != "success-a" || persisted.Events[1].ID != "failure-b" {
+		t.Fatalf("persisted events = %+v, want success-a and failure-b", persisted.Events)
+	}
+
+	out.Reset()
+	err = runControllerEventsClearWithStore(t.Context(), controllerEventsClearOptions{}, &out, store)
+	if err == nil || !strings.Contains(err.Error(), "requires -all or at least one filter") {
+		t.Fatalf("err = %v, want selector requirement", err)
+	}
+
+	out.Reset()
+	err = runControllerEventsClearWithStore(t.Context(), controllerEventsClearOptions{all: true, phase: "apply"}, &out, store)
+	if err == nil || !strings.Contains(err.Error(), "must use -all or filters, not both") {
+		t.Fatalf("err = %v, want all/filter conflict", err)
+	}
+
+	out.Reset()
+	if err := runControllerEventsClearWithStore(t.Context(), controllerEventsClearOptions{all: true}, &out, store); err != nil {
+		t.Fatal(err)
+	}
+	got = controllerEventsClearOutput{}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("decode clear-all controller events output: %v\n%s", err, out.String())
+	}
+	if !got.All || got.TotalEvents != 2 || got.ClearedEvents != 2 || got.RemainingEvents != 0 {
+		t.Fatalf("clear-all output = %+v, want remaining events cleared", got)
+	}
+}
+
 func TestSyncOVSDBControllerEventAppendsBoundedHistory(t *testing.T) {
 	writer := &recordingOVSDBControlStatusWriter{values: make(map[string]string)}
 	reconciler := &stateFileReconciler{ovsStatus: writer}
