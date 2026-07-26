@@ -931,6 +931,39 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 			wantErr: "provider network \"physnet-a\" tenant \"prod\" uses 2 subnets, exceeds max_subnets 1",
 		},
 		{
+			name: "provider tenant load balancer quota exceeded",
+			mutate: func(state *DesiredState) {
+				state.ProviderNetworks = []model.ProviderNetwork{{
+					Name: "physnet-a",
+					Nodes: []model.ProviderNetworkNode{{
+						Node:      "node-a",
+						Interface: "eth1",
+					}},
+					TenantQuotas: []model.ProviderNetworkTenantQuota{{
+						Tenant:           "prod",
+						MaxLoadBalancers: 1,
+					}},
+				}}
+				state.Subnets[0].ProviderNetwork = "physnet-a"
+				state.Subnets[0].VLAN = 100
+				state.LoadBalancers = append(state.LoadBalancers, model.LoadBalancer{
+					Name: "metrics-vip",
+					VPC:  "prod",
+					VIP:  netip.MustParseAddr("10.96.0.20"),
+					Ports: []model.LoadBalancerPort{{
+						Port:     9090,
+						Protocol: model.ProtocolTCP,
+						Backends: []model.LoadBalancerBackend{{
+							IP:   netip.MustParseAddr("10.10.0.10"),
+							Port: 9091,
+						}},
+					}},
+					Subnets: []string{"apps"},
+				})
+			},
+			wantErr: "provider network \"physnet-a\" tenant \"prod\" uses 2 load balancers, exceeds max_load_balancers 1",
+		},
+		{
 			name: "duplicate security group",
 			mutate: func(state *DesiredState) {
 				state.SecurityGroups = append(state.SecurityGroups, state.SecurityGroups[0])

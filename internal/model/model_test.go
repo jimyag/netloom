@@ -323,6 +323,57 @@ func TestProviderNetworkRejectsInvalidTenantQueues(t *testing.T) {
 	}
 }
 
+func TestProviderNetworkRejectsInvalidTenantQuotas(t *testing.T) {
+	tests := []struct {
+		name    string
+		quota   ProviderNetworkTenantQuota
+		wantErr string
+	}{
+		{
+			name:    "negative load balancers",
+			quota:   ProviderNetworkTenantQuota{Tenant: "prod", MaxLoadBalancers: -1},
+			wantErr: "max_load_balancers must not be negative",
+		},
+		{
+			name:    "missing limits",
+			quota:   ProviderNetworkTenantQuota{Tenant: "prod"},
+			wantErr: "max_subnets, max_endpoints, or max_load_balancers is required",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ProviderNetwork{
+				Name:         "physnet-a",
+				TenantQuotas: []ProviderNetworkTenantQuota{tt.quota},
+				Nodes: []ProviderNetworkNode{
+					{Node: "node-a", Interface: "bond0.100"},
+				},
+			}.Validate()
+			if err == nil {
+				t.Fatal("expected invalid tenant quota to fail")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error %q does not contain %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestProviderNetworkAcceptsLoadBalancerOnlyTenantQuota(t *testing.T) {
+	if err := (ProviderNetwork{
+		Name: "physnet-a",
+		TenantQuotas: []ProviderNetworkTenantQuota{{
+			Tenant:           "prod",
+			MaxLoadBalancers: 3,
+		}},
+		Nodes: []ProviderNetworkNode{
+			{Node: "node-a", Interface: "bond0.100"},
+		},
+	}).Validate(); err != nil {
+		t.Fatalf("valid load-balancer-only tenant quota failed: %v", err)
+	}
+}
+
 func TestProviderNetworkAcceptsMultipleTenantQueueSelectors(t *testing.T) {
 	err := ProviderNetwork{
 		Name: "physnet-a",

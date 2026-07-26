@@ -5860,18 +5860,21 @@ func TestReconcileNodeReportsProviderNetworkCountsFromLinuxDatapath(t *testing.T
 				LinkState:       "missing",
 			}},
 			ProviderNetworkStatus: []linuxdatapath.ProviderNetworkStatus{{
-				ProviderNetwork: "physnet-a",
-				Ready:           false,
-				LinkCount:       1,
-				TenantCount:     1,
-				SubnetCount:     1,
-				EndpointCount:   1,
+				ProviderNetwork:   "physnet-a",
+				Ready:             false,
+				LinkCount:         1,
+				TenantCount:       1,
+				SubnetCount:       1,
+				EndpointCount:     1,
+				LoadBalancerCount: 1,
 				TenantUsage: []linuxdatapath.ProviderTenantUsage{{
-					Tenant:       "prod",
-					Subnets:      1,
-					Endpoints:    1,
-					MaxSubnets:   1,
-					MaxEndpoints: 2,
+					Tenant:           "prod",
+					Subnets:          1,
+					Endpoints:        1,
+					LoadBalancers:    1,
+					MaxSubnets:       1,
+					MaxEndpoints:     2,
+					MaxLoadBalancers: 3,
 				}},
 			}},
 		}, nil),
@@ -5886,14 +5889,14 @@ func TestReconcileNodeReportsProviderNetworkCountsFromLinuxDatapath(t *testing.T
 		t.Fatalf("provider network status = %+v, want 1 entry", result.ProviderNetworkStatus)
 	}
 	status := result.ProviderNetworkStatus[0]
-	if status.TenantCount != 1 || status.SubnetCount != 1 || status.EndpointCount != 1 {
+	if status.TenantCount != 1 || status.SubnetCount != 1 || status.EndpointCount != 1 || status.LoadBalancerCount != 1 {
 		t.Fatalf("provider network status = %+v, want prod tenant usage", status)
 	}
 	if len(status.TenantUsage) != 1 {
 		t.Fatalf("tenant usage = %+v, want 1 entry", status.TenantUsage)
 	}
 	usage := status.TenantUsage[0]
-	if usage.Tenant != "prod" || usage.Subnets != 1 || usage.Endpoints != 1 || usage.MaxSubnets != 1 || usage.MaxEndpoints != 2 || usage.Exceeded {
+	if usage.Tenant != "prod" || usage.Subnets != 1 || usage.Endpoints != 1 || usage.LoadBalancers != 1 || usage.MaxSubnets != 1 || usage.MaxEndpoints != 2 || usage.MaxLoadBalancers != 3 || usage.Exceeded {
 		t.Fatalf("tenant usage = %+v, want prod quota usage", usage)
 	}
 	if result.ProviderReady != 0 || result.ProviderDegraded != 1 {

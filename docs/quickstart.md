@@ -47,6 +47,14 @@ NETLOOM_TCX_WORKLOAD=1 \
       "isolation": "exclusive",
       "nodes": [
         {"node": "node-a", "interface": "eth1"}
+      ],
+      "tenant_quotas": [
+        {
+          "tenant": "prod",
+          "max_subnets": 2,
+          "max_endpoints": 100,
+          "max_load_balancers": 10
+        }
       ]
     }
   ],

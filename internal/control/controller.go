@@ -829,7 +829,7 @@ func validateObjectGraph(state DesiredState) error {
 		endpointIPs[ipKey] = endpoint.ID
 		endpoints[key] = endpoint
 	}
-	if err := validateProviderNetworkTenantQuotas(providerNetworks, subnets, state.Endpoints); err != nil {
+	if err := validateProviderNetworkTenantQuotas(providerNetworks, subnets, state.Endpoints, state.LoadBalancers); err != nil {
 		return err
 	}
 	if err := validateIdentityGroupEndpointReferences(identityGroups, endpoints); err != nil {
@@ -1460,12 +1460,13 @@ func routeMatchPortKey(ranges []model.PortRange) string {
 }
 
 type providerTenantUsage struct {
-	subnets   int
-	endpoints int
+	subnets       int
+	endpoints     int
+	loadBalancers int
 }
 
-func validateProviderNetworkTenantQuotas(providerNetworks map[string]model.ProviderNetwork, subnets map[string]model.Subnet, endpoints []model.Endpoint) error {
-	usage := providerNetworkTenantUsage(subnets, endpoints)
+func validateProviderNetworkTenantQuotas(providerNetworks map[string]model.ProviderNetwork, subnets map[string]model.Subnet, endpoints []model.Endpoint, loadBalancers []model.LoadBalancer) error {
+	usage := providerNetworkTenantUsage(subnets, endpoints, loadBalancers)
 	for providerName, provider := range providerNetworks {
 		providerUsage := usage[providerName]
 		for _, quota := range provider.TenantQuotas {
@@ -1476,12 +1477,15 @@ func validateProviderNetworkTenantQuotas(providerNetworks map[string]model.Provi
 			if quota.MaxEndpoints > 0 && tenantUsage.endpoints > quota.MaxEndpoints {
 				return fmt.Errorf("provider network %q tenant %q uses %d endpoints, exceeds max_endpoints %d", providerName, quota.Tenant, tenantUsage.endpoints, quota.MaxEndpoints)
 			}
+			if quota.MaxLoadBalancers > 0 && tenantUsage.loadBalancers > quota.MaxLoadBalancers {
+				return fmt.Errorf("provider network %q tenant %q uses %d load balancers, exceeds max_load_balancers %d", providerName, quota.Tenant, tenantUsage.loadBalancers, quota.MaxLoadBalancers)
+			}
 		}
 	}
 	return nil
 }
 
-func providerNetworkTenantUsage(subnets map[string]model.Subnet, endpoints []model.Endpoint) map[string]map[string]providerTenantUsage {
+func providerNetworkTenantUsage(subnets map[string]model.Subnet, endpoints []model.Endpoint, loadBalancers []model.LoadBalancer) map[string]map[string]providerTenantUsage {
 	usage := make(map[string]map[string]providerTenantUsage)
 	subnetProviders := make(map[string]string, len(subnets))
 	for key, subnet := range subnets {
@@ -1501,6 +1505,23 @@ func providerNetworkTenantUsage(subnets map[string]model.Subnet, endpoints []mod
 		tenantUsage := providerTenantUsageFor(usage, providerName, endpoint.VPC)
 		tenantUsage.endpoints++
 		setProviderTenantUsage(usage, providerName, endpoint.VPC, tenantUsage)
+	}
+	seenLoadBalancers := make(map[string]struct{})
+	for _, lb := range loadBalancers {
+		for _, subnetName := range lb.Subnets {
+			providerName := subnetProviders[subnetKey(lb.VPC, subnetName)]
+			if providerName == "" {
+				continue
+			}
+			key := providerName + "\x00" + lb.VPC + "\x00" + lb.Name
+			if _, ok := seenLoadBalancers[key]; ok {
+				continue
+			}
+			seenLoadBalancers[key] = struct{}{}
+			tenantUsage := providerTenantUsageFor(usage, providerName, lb.VPC)
+			tenantUsage.loadBalancers++
+			setProviderTenantUsage(usage, providerName, lb.VPC, tenantUsage)
+		}
 	}
 	return usage
 }

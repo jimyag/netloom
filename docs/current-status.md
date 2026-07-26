@@ -25,7 +25,7 @@ Provider Network、Linux datapath、eBPF/TCX ACL、状态观测和 policy lifecy
 | PolicyRoute | 已实现 | 支持 reroute、drop、reject、L4 match，并投影到 OVN LRP 和 Linux RPDB；会审计/修复未声明的 stale `options`、`chain`、`jump_chain` 和 `bfd_sessions`。 |
 | NAT | 已实现 | 支持 SNAT、DNAT、Floating IP 和端口映射。 |
 | LoadBalancer | 已实现 | 支持 TCP、UDP、SCTP VIP、backend、session affinity、health check，并审计/修复 stale parent refs、health-check refs 和 `ip_port_mappings`。 |
-| Provider Network | 已实现 | 支持 OVN localnet、本机 OVS Bridge/Controller/Port/Interface、QoS、Queue。 |
+| Provider Network | 已实现 | 支持 OVN localnet、本机 OVS Bridge/Controller/Port/Interface、QoS、Queue，以及按租户统计 subnet、endpoint、load balancer 配额。 |
 | SecurityGroup | 已实现 | 编译成 Cilium 风格 endpoint policy map。 |
 | ACL 执行 | 已实现 | 由 eBPF/TCX 执行 ingress/egress TCP、UDP、SCTP、ICMP，安全组不写 OVN ACL。 |
 | Desired State | 已实现 | 支持 JSON 文件，也支持存入本机 Open_vSwitch OVSDB `external_ids`；导入和运行时加载都会执行完整对象图校验，提前拒绝未知 VPC、坏子网引用、冲突路由、无效 NAT/LB 等配置。 |

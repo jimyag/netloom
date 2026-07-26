@@ -74,9 +74,10 @@ type ProviderNetworkQoS struct {
 }
 
 type ProviderNetworkTenantQuota struct {
-	Tenant       string `json:"tenant"`
-	MaxSubnets   int    `json:"max_subnets,omitempty"`
-	MaxEndpoints int    `json:"max_endpoints,omitempty"`
+	Tenant           string `json:"tenant"`
+	MaxSubnets       int    `json:"max_subnets,omitempty"`
+	MaxEndpoints     int    `json:"max_endpoints,omitempty"`
+	MaxLoadBalancers int    `json:"max_load_balancers,omitempty"`
 }
 
 type ProviderNetworkTenantQueuePolicy struct {
@@ -412,8 +413,11 @@ func (q ProviderNetworkTenantQuota) Validate() error {
 	if q.MaxEndpoints < 0 {
 		return errors.New("max_endpoints must not be negative")
 	}
-	if q.MaxSubnets == 0 && q.MaxEndpoints == 0 {
-		return errors.New("max_subnets or max_endpoints is required")
+	if q.MaxLoadBalancers < 0 {
+		return errors.New("max_load_balancers must not be negative")
+	}
+	if q.MaxSubnets == 0 && q.MaxEndpoints == 0 && q.MaxLoadBalancers == 0 {
+		return errors.New("max_subnets, max_endpoints, or max_load_balancers is required")
 	}
 	return nil
 }

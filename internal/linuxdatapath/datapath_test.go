@@ -1413,13 +1413,18 @@ func TestProviderNetworkStatusesIncludesTenantQuotaUsage(t *testing.T) {
 		ProviderNetworks: []model.ProviderNetwork{{
 			Name: "physnet-a",
 			TenantQuotas: []model.ProviderNetworkTenantQuota{{
-				Tenant:       "prod",
-				MaxSubnets:   2,
-				MaxEndpoints: 3,
+				Tenant:           "prod",
+				MaxSubnets:       2,
+				MaxEndpoints:     3,
+				MaxLoadBalancers: 2,
 			}},
 		}},
 		Subnets: []model.Subnet{{
 			Name:            "apps",
+			VPC:             "prod",
+			ProviderNetwork: "physnet-a",
+		}, {
+			Name:            "edge",
 			VPC:             "prod",
 			ProviderNetwork: "physnet-a",
 		}},
@@ -1427,6 +1432,11 @@ func TestProviderNetworkStatusesIncludesTenantQuotaUsage(t *testing.T) {
 			{ID: "pod-a", VPC: "prod", Subnet: "apps"},
 			{ID: "pod-b", VPC: "prod", Subnet: "apps"},
 		},
+		LoadBalancers: []model.LoadBalancer{{
+			Name:    "web",
+			VPC:     "prod",
+			Subnets: []string{"apps", "edge"},
+		}},
 	}
 
 	statuses := providerNetworkStatuses(state, []ProviderLinkStatus{{ProviderNetwork: "physnet-a", Ready: true}}, nil)
@@ -1434,15 +1444,15 @@ func TestProviderNetworkStatusesIncludesTenantQuotaUsage(t *testing.T) {
 		t.Fatalf("statuses = %d, want 1", len(statuses))
 	}
 	status := statuses[0]
-	if !status.Ready || status.TenantCount != 1 || status.SubnetCount != 1 || status.EndpointCount != 2 {
+	if !status.Ready || status.TenantCount != 1 || status.SubnetCount != 2 || status.EndpointCount != 2 || status.LoadBalancerCount != 1 {
 		t.Fatalf("provider network status = %+v, want ready with tenant usage", status)
 	}
 	if len(status.TenantUsage) != 1 {
 		t.Fatalf("tenant usage = %d, want 1", len(status.TenantUsage))
 	}
 	usage := status.TenantUsage[0]
-	if usage.Tenant != "prod" || usage.Subnets != 1 || usage.Endpoints != 2 || usage.MaxSubnets != 2 || usage.MaxEndpoints != 3 || usage.Exceeded {
-		t.Fatalf("tenant usage = %+v, want prod 1/2 subnets and 2/3 endpoints", usage)
+	if usage.Tenant != "prod" || usage.Subnets != 2 || usage.Endpoints != 2 || usage.LoadBalancers != 1 || usage.MaxSubnets != 2 || usage.MaxEndpoints != 3 || usage.MaxLoadBalancers != 2 || usage.Exceeded {
+		t.Fatalf("tenant usage = %+v, want prod 2/2 subnets, 2/3 endpoints, and 1/2 load balancers", usage)
 	}
 }
 
@@ -1476,6 +1486,39 @@ func TestProviderNetworkStatusesMarksTenantQuotaExceeded(t *testing.T) {
 	}
 	if len(status.TenantUsage) != 1 || !status.TenantUsage[0].Exceeded {
 		t.Fatalf("tenant usage = %+v, want exceeded", status.TenantUsage)
+	}
+}
+
+func TestProviderNetworkStatusesMarksTenantLoadBalancerQuotaExceeded(t *testing.T) {
+	state := control.DesiredState{
+		ProviderNetworks: []model.ProviderNetwork{{
+			Name: "physnet-a",
+			TenantQuotas: []model.ProviderNetworkTenantQuota{{
+				Tenant:           "prod",
+				MaxLoadBalancers: 1,
+			}},
+		}},
+		Subnets: []model.Subnet{{
+			Name:            "apps",
+			VPC:             "prod",
+			ProviderNetwork: "physnet-a",
+		}},
+		LoadBalancers: []model.LoadBalancer{
+			{Name: "web", VPC: "prod", Subnets: []string{"apps"}},
+			{Name: "metrics", VPC: "prod", Subnets: []string{"apps"}},
+		},
+	}
+
+	statuses := providerNetworkStatuses(state, []ProviderLinkStatus{{ProviderNetwork: "physnet-a", Ready: true}}, nil)
+	if len(statuses) != 1 {
+		t.Fatalf("statuses = %d, want 1", len(statuses))
+	}
+	status := statuses[0]
+	if status.Ready || status.IssueCount != 1 || status.LoadBalancerCount != 2 || !providerNetworkStatusContainsReason(status, "tenant-quota-exceeded") {
+		t.Fatalf("provider network status = %+v, want load balancer tenant quota exceeded", status)
+	}
+	if len(status.TenantUsage) != 1 || !status.TenantUsage[0].Exceeded || status.TenantUsage[0].LoadBalancers != 2 || status.TenantUsage[0].MaxLoadBalancers != 1 {
+		t.Fatalf("tenant usage = %+v, want load balancer quota exceeded", status.TenantUsage)
 	}
 }
 

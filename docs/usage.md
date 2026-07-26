@@ -65,6 +65,14 @@ fail closed，不继续写 policy map、TCX 或本机 datapath，并把失败写
       "qos": {
         "egress_rate_bps": 1000000000
       },
+      "tenant_quotas": [
+        {
+          "tenant": "prod",
+          "max_subnets": 2,
+          "max_endpoints": 100,
+          "max_load_balancers": 10
+        }
+      ],
       "tenant_queues": [
         {
           "tenant": "prod",

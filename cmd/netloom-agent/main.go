@@ -4780,7 +4780,7 @@ func formatProviderNetworkStatus(statuses []linuxdatapath.ProviderNetworkStatus)
 		}
 		usage := ""
 		if status.TenantCount > 0 {
-			usage = fmt.Sprintf(":tenants=%d:subnets=%d:endpoints=%d:%s", status.TenantCount, status.SubnetCount, status.EndpointCount, formatProviderTenantUsage(status.TenantUsage))
+			usage = fmt.Sprintf(":tenants=%d:subnets=%d:endpoints=%d:load_balancers=%d:%s", status.TenantCount, status.SubnetCount, status.EndpointCount, status.LoadBalancerCount, formatProviderTenantUsage(status.TenantUsage))
 		}
 		parts = append(parts, fmt.Sprintf("%s:%s:%d/%d:%d:%s%s", status.ProviderNetwork, state, status.ReadyLinks, status.LinkCount, status.IssueCount, reasons, usage))
 	}
@@ -4797,7 +4797,7 @@ func formatProviderTenantUsage(usages []linuxdatapath.ProviderTenantUsage) strin
 		if usage.Exceeded {
 			state = "exceeded"
 		}
-		parts = append(parts, fmt.Sprintf("%s=%s:%d/%d:%d/%d", usage.Tenant, state, usage.Subnets, usage.MaxSubnets, usage.Endpoints, usage.MaxEndpoints))
+		parts = append(parts, fmt.Sprintf("%s=%s:%d/%d:%d/%d:%d/%d", usage.Tenant, state, usage.Subnets, usage.MaxSubnets, usage.Endpoints, usage.MaxEndpoints, usage.LoadBalancers, usage.MaxLoadBalancers))
 	}
 	return strings.Join(parts, "+")
 }
@@ -8783,8 +8783,10 @@ func writeAgentMetrics(w ioStringWriter, snapshot agentMetricsSnapshot, totals a
 	}
 	writeMetricType(w, "netloom_agent_provider_tenant_subnets", "gauge")
 	writeMetricType(w, "netloom_agent_provider_tenant_endpoints", "gauge")
+	writeMetricType(w, "netloom_agent_provider_tenant_load_balancers", "gauge")
 	writeMetricType(w, "netloom_agent_provider_tenant_max_subnets", "gauge")
 	writeMetricType(w, "netloom_agent_provider_tenant_max_endpoints", "gauge")
+	writeMetricType(w, "netloom_agent_provider_tenant_max_load_balancers", "gauge")
 	writeMetricType(w, "netloom_agent_provider_tenant_quota_exceeded", "gauge")
 	for _, status := range result.ProviderNetworkStatus {
 		for _, usage := range status.TenantUsage {
@@ -8800,8 +8802,10 @@ func writeAgentMetrics(w ioStringWriter, snapshot agentMetricsSnapshot, totals a
 			}
 			fmt.Fprintf(w, "netloom_agent_provider_tenant_subnets%s %d\n", labels, usage.Subnets)
 			fmt.Fprintf(w, "netloom_agent_provider_tenant_endpoints%s %d\n", labels, usage.Endpoints)
+			fmt.Fprintf(w, "netloom_agent_provider_tenant_load_balancers%s %d\n", labels, usage.LoadBalancers)
 			fmt.Fprintf(w, "netloom_agent_provider_tenant_max_subnets%s %d\n", labels, usage.MaxSubnets)
 			fmt.Fprintf(w, "netloom_agent_provider_tenant_max_endpoints%s %d\n", labels, usage.MaxEndpoints)
+			fmt.Fprintf(w, "netloom_agent_provider_tenant_max_load_balancers%s %d\n", labels, usage.MaxLoadBalancers)
 			fmt.Fprintf(w, "netloom_agent_provider_tenant_quota_exceeded%s %d\n", labels, exceeded)
 		}
 	}

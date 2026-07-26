@@ -121,25 +121,28 @@ type ProviderOVSDBStatus struct {
 }
 
 type ProviderNetworkStatus struct {
-	ProviderNetwork string
-	Ready           bool
-	LinkCount       int
-	ReadyLinks      int
-	IssueCount      int
-	Reasons         []string
-	TenantCount     int
-	SubnetCount     int
-	EndpointCount   int
-	TenantUsage     []ProviderTenantUsage
+	ProviderNetwork   string
+	Ready             bool
+	LinkCount         int
+	ReadyLinks        int
+	IssueCount        int
+	Reasons           []string
+	TenantCount       int
+	SubnetCount       int
+	EndpointCount     int
+	LoadBalancerCount int
+	TenantUsage       []ProviderTenantUsage
 }
 
 type ProviderTenantUsage struct {
-	Tenant       string
-	Subnets      int
-	Endpoints    int
-	MaxSubnets   int
-	MaxEndpoints int
-	Exceeded     bool
+	Tenant           string
+	Subnets          int
+	Endpoints        int
+	LoadBalancers    int
+	MaxSubnets       int
+	MaxEndpoints     int
+	MaxLoadBalancers int
+	Exceeded         bool
 }
 
 type CommandExecutor struct{}
@@ -726,6 +729,7 @@ func applyProviderTenantUsage(statuses []ProviderNetworkStatus, usage map[string
 		for _, tenant := range tenantUsage {
 			statuses[index].SubnetCount += tenant.Subnets
 			statuses[index].EndpointCount += tenant.Endpoints
+			statuses[index].LoadBalancerCount += tenant.LoadBalancers
 			if tenant.Exceeded {
 				statuses[index].Reasons = appendUniqueSorted(statuses[index].Reasons, "tenant-quota-exceeded")
 				statuses[index].IssueCount = len(statuses[index].Reasons)
@@ -767,6 +771,23 @@ func providerTenantUsage(state control.DesiredState) map[string][]ProviderTenant
 		usage.Endpoints++
 		setProviderTenantUsage(usageByProviderTenant, providerName, endpoint.VPC, usage)
 	}
+	seenLoadBalancers := make(map[string]struct{})
+	for _, lb := range state.LoadBalancers {
+		for _, subnetName := range lb.Subnets {
+			providerName := subnetProvider[subnetStateKey(lb.VPC, subnetName)]
+			if providerName == "" {
+				continue
+			}
+			key := providerName + "\x00" + lb.VPC + "\x00" + lb.Name
+			if _, ok := seenLoadBalancers[key]; ok {
+				continue
+			}
+			seenLoadBalancers[key] = struct{}{}
+			usage := providerTenantUsageFor(usageByProviderTenant, providerName, lb.VPC)
+			usage.LoadBalancers++
+			setProviderTenantUsage(usageByProviderTenant, providerName, lb.VPC, usage)
+		}
+	}
 	out := make(map[string][]ProviderTenantUsage, len(usageByProviderTenant))
 	for provider, tenants := range usageByProviderTenant {
 		for tenant, usage := range tenants {
@@ -774,8 +795,10 @@ func providerTenantUsage(state control.DesiredState) map[string][]ProviderTenant
 			usage.Tenant = tenant
 			usage.MaxSubnets = quota.MaxSubnets
 			usage.MaxEndpoints = quota.MaxEndpoints
+			usage.MaxLoadBalancers = quota.MaxLoadBalancers
 			usage.Exceeded = (usage.MaxSubnets > 0 && usage.Subnets > usage.MaxSubnets) ||
-				(usage.MaxEndpoints > 0 && usage.Endpoints > usage.MaxEndpoints)
+				(usage.MaxEndpoints > 0 && usage.Endpoints > usage.MaxEndpoints) ||
+				(usage.MaxLoadBalancers > 0 && usage.LoadBalancers > usage.MaxLoadBalancers)
 			out[provider] = append(out[provider], usage)
 		}
 	}
