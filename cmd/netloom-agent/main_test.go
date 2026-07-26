@@ -3188,6 +3188,22 @@ func TestPolicyEventsAPIFiltersByCapacityHotspotRuleRef(t *testing.T) {
 	if got.Events[0].PolicyMapPressurePercent < 100 || got.Events[0].PolicyMapRecommendedCapacity != 3 {
 		t.Fatalf("event pressure = %+v, want saturated event with recommended capacity", got.Events[0])
 	}
+
+	cutoff := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/policy/events?occurred_before="+url.QueryEscape(cutoff.Format(time.RFC3339)), nil)
+	metrics.handlePolicyEvents(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	got = policyEventsOutput{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode occurred-before policy events response: %v\n%s", err, recorder.Body.String())
+	}
+	if got.FilterOccurredBefore == nil || !got.FilterOccurredBefore.Equal(cutoff) || got.EventCount != 1 || len(got.Events) != 1 {
+		t.Fatalf("occurred-before filtered events = %+v, want one event before cutoff %s", got, cutoff.Format(time.RFC3339))
+	}
 }
 
 func TestPolicyEventsAPIRejectsInvalidRemediatedFilter(t *testing.T) {
@@ -3232,6 +3248,22 @@ func TestPolicyEventsAPIRejectsInvalidPressureThreshold(t *testing.T) {
 	}
 	if !strings.Contains(recorder.Body.String(), "invalid pressure-min-percent") {
 		t.Fatalf("body missing invalid pressure threshold error: %s", recorder.Body.String())
+	}
+}
+
+func TestPolicyEventsAPIRejectsInvalidOccurredBefore(t *testing.T) {
+	metrics := newAgentMetrics(dataplane.NewInMemoryPolicyStore())
+	observeAgentReconcileResult(metrics, agent.ReconcileResult{Node: "node-a"}, "memory", time.Millisecond)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/policy/events?occurred_before=bad", nil)
+	metrics.handlePolicyEvents(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "invalid occurred-before") {
+		t.Fatalf("body missing invalid occurred-before error: %s", recorder.Body.String())
 	}
 }
 
@@ -3312,6 +3344,10 @@ func TestPolicyEventsAPIRejectsInvalidLimit(t *testing.T) {
 
 func TestRunPolicyEventsWithStoreReportsFilteredJSON(t *testing.T) {
 	store := ovsdbPolicyEventsStore{syncer: &fakeOpenVSwitchExternalIDStore{}}
+	firstOccurred := time.Date(2026, 7, 17, 1, 0, 0, 0, time.UTC)
+	secondOccurred := time.Date(2026, 7, 17, 1, 10, 0, 0, time.UTC)
+	thirdOccurred := time.Date(2026, 7, 17, 1, 20, 0, 0, time.UTC)
+	eventCutoff := time.Date(2026, 7, 17, 1, 15, 0, 0, time.UTC)
 	if err := store.Save(t.Context(), policyEventsDocument{
 		Node:                 "node-a",
 		Store:                "ebpf",
@@ -3324,12 +3360,14 @@ func TestRunPolicyEventsWithStoreReportsFilteredJSON(t *testing.T) {
 			RuleCookies: []uint32{42},
 			RuleRefs:    []string{"prod/web/allow-http"},
 			Success:     true,
+			OccurredAt:  &firstOccurred,
 		}, {
 			EndpointID:  model.EndpointKey("prod", "pod-b"),
 			Revision:    1,
 			RuleCookies: []uint32{43},
 			RuleRefs:    []string{"prod/db/allow-db"},
 			Success:     true,
+			OccurredAt:  &secondOccurred,
 		}, {
 			EndpointID:  model.EndpointKey("prod", "pod-a"),
 			Revision:    2,
@@ -3345,6 +3383,7 @@ func TestRunPolicyEventsWithStoreReportsFilteredJSON(t *testing.T) {
 			PolicyMapRecommendedCapacity: 12,
 			Success:                      false,
 			Error:                        "policy map capacity exceeded: apply failed",
+			OccurredAt:                   &thirdOccurred,
 		}},
 	}); err != nil {
 		t.Fatal(err)
@@ -3464,6 +3503,30 @@ func TestRunPolicyEventsWithStoreReportsFilteredJSON(t *testing.T) {
 	}
 	if got.Events[0].PolicyMapRecommendedCapacity != 12 {
 		t.Fatalf("event recommended capacity = %d, want 12", got.Events[0].PolicyMapRecommendedCapacity)
+	}
+
+	stdout.Reset()
+	if err := runPolicyEventsWithStore(t.Context(), policyEventsOptions{occurredAfter: eventCutoff.Format(time.RFC3339), limit: 10}, &stdout, store); err != nil {
+		t.Fatal(err)
+	}
+	got = policyEventsOutput{}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode occurred-after filtered policy-events output: %v\n%s", err, stdout.String())
+	}
+	if got.FilterOccurredAfter == nil || !got.FilterOccurredAfter.Equal(eventCutoff) || got.EventCount != 1 || len(got.Events) != 1 || got.Events[0].Revision != 2 {
+		t.Fatalf("occurred-after filtered events = %+v, want pod-a revision 2", got)
+	}
+
+	stdout.Reset()
+	if err := runPolicyEventsWithStore(t.Context(), policyEventsOptions{occurredBefore: eventCutoff.Format(time.RFC3339), limit: 10}, &stdout, store); err != nil {
+		t.Fatal(err)
+	}
+	got = policyEventsOutput{}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode occurred-before filtered policy-events output: %v\n%s", err, stdout.String())
+	}
+	if got.FilterOccurredBefore == nil || !got.FilterOccurredBefore.Equal(eventCutoff) || got.EventCount != 2 || len(got.Events) != 2 {
+		t.Fatalf("occurred-before filtered events = %+v, want two events before cutoff", got)
 	}
 }
 

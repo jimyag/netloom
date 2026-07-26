@@ -281,6 +281,8 @@ type policyEventsOptions struct {
 	pressureSeverity       string
 	pressureMinPercent     string
 	recommendedCapacityMin string
+	occurredAfter          string
+	occurredBefore         string
 	ruleCookie             string
 	ruleRef                string
 	capacityHotspotRuleRef string
@@ -497,6 +499,8 @@ type policyEventsOutput struct {
 	FilterPressureSeverity       string                        `json:"filter_pressure_severity,omitempty"`
 	FilterPressureMinPercent     uint32                        `json:"filter_pressure_min_percent,omitempty"`
 	FilterRecommendedCapacityMin uint32                        `json:"filter_recommended_capacity_min,omitempty"`
+	FilterOccurredAfter          *time.Time                    `json:"filter_occurred_after,omitempty"`
+	FilterOccurredBefore         *time.Time                    `json:"filter_occurred_before,omitempty"`
 	FilterRuleCookie             uint32                        `json:"filter_rule_cookie,omitempty"`
 	FilterRuleRef                string                        `json:"filter_rule_ref,omitempty"`
 	FilterCapacityHotspotRuleRef string                        `json:"filter_capacity_hotspot_rule_ref,omitempty"`
@@ -1425,6 +1429,8 @@ func runPolicyEvents(ctx context.Context, args []string, stdout io.Writer) error
 	flags.StringVar(&opts.pressureSeverity, "pressure-severity", "", "optional policy map pressure severity to include: normal, warning, critical, full, or unknown")
 	flags.StringVar(&opts.pressureMinPercent, "pressure-min-percent", "", "optional minimum policy map pressure percent to include")
 	flags.StringVar(&opts.recommendedCapacityMin, "recommended-capacity-min", "", "optional minimum recommended policy map capacity to include")
+	flags.StringVar(&opts.occurredAfter, "occurred-after", "", "optional RFC3339 timestamp; include events occurring at or after this time")
+	flags.StringVar(&opts.occurredBefore, "occurred-before", "", "optional RFC3339 timestamp; include events occurring before this time")
 	flags.StringVar(&opts.ruleCookie, "rule-cookie", "", "optional dataplane rule cookie to include")
 	flags.StringVar(&opts.ruleRef, "rule-ref", "", "optional policy rule reference to include")
 	flags.StringVar(&opts.capacityHotspotRuleRef, "capacity-hotspot-rule-ref", "", "optional policy map capacity hotspot rule reference to include")
@@ -1483,6 +1489,8 @@ func runPolicyEventsWithStore(ctx context.Context, opts policyEventsOptions, std
 		FilterPressureSeverity:       filter.PressureSeverity,
 		FilterPressureMinPercent:     optionalUint32Value(filter.PressureMinPercent),
 		FilterRecommendedCapacityMin: optionalUint32Value(filter.RecommendedCapacityMin),
+		FilterOccurredAfter:          filter.OccurredAfter,
+		FilterOccurredBefore:         filter.OccurredBefore,
 		FilterRuleCookie:             filterPolicyUpdateEventRuleCookieValue(filter),
 		FilterRuleRef:                filter.RuleRef,
 		FilterCapacityHotspotRuleRef: filter.CapacityHotspotRuleRef,
@@ -2399,6 +2407,8 @@ type policyUpdateEventFilter struct {
 	PressureSeverity       string
 	PressureMinPercent     *uint32
 	RecommendedCapacityMin *uint32
+	OccurredAfter          *time.Time
+	OccurredBefore         *time.Time
 	RuleCookie             *uint32
 	RuleRef                string
 	CapacityHotspotRuleRef string
@@ -2407,14 +2417,14 @@ type policyUpdateEventFilter struct {
 }
 
 func policyUpdateEventFilterFromOptions(opts policyEventsOptions) (policyUpdateEventFilter, error) {
-	return policyUpdateEventFilterFromValues(opts.endpoint, opts.success, opts.remediated, opts.remediation, opts.errorContains, opts.pressureSeverity, opts.pressureMinPercent, opts.recommendedCapacityMin, opts.ruleCookie, opts.ruleRef, opts.capacityHotspotRuleRef, opts.direction, opts.action)
+	return policyUpdateEventFilterFromValues(opts.endpoint, opts.success, opts.remediated, opts.remediation, opts.errorContains, opts.pressureSeverity, opts.pressureMinPercent, opts.recommendedCapacityMin, opts.occurredAfter, opts.occurredBefore, opts.ruleCookie, opts.ruleRef, opts.capacityHotspotRuleRef, opts.direction, opts.action)
 }
 
 func policyUpdateEventFilterFromRequest(r *http.Request, endpoint string) (policyUpdateEventFilter, error) {
-	return policyUpdateEventFilterFromValues(endpoint, r.URL.Query().Get("success"), r.URL.Query().Get("remediated"), r.URL.Query().Get("remediation"), r.URL.Query().Get("error_contains"), r.URL.Query().Get("pressure_severity"), r.URL.Query().Get("pressure_min_percent"), r.URL.Query().Get("recommended_capacity_min"), r.URL.Query().Get("rule_cookie"), r.URL.Query().Get("rule_ref"), r.URL.Query().Get("capacity_hotspot_rule_ref"), r.URL.Query().Get("direction"), r.URL.Query().Get("action"))
+	return policyUpdateEventFilterFromValues(endpoint, r.URL.Query().Get("success"), r.URL.Query().Get("remediated"), r.URL.Query().Get("remediation"), r.URL.Query().Get("error_contains"), r.URL.Query().Get("pressure_severity"), r.URL.Query().Get("pressure_min_percent"), r.URL.Query().Get("recommended_capacity_min"), r.URL.Query().Get("occurred_after"), r.URL.Query().Get("occurred_before"), r.URL.Query().Get("rule_cookie"), r.URL.Query().Get("rule_ref"), r.URL.Query().Get("capacity_hotspot_rule_ref"), r.URL.Query().Get("direction"), r.URL.Query().Get("action"))
 }
 
-func policyUpdateEventFilterFromValues(endpoint, successRaw, remediatedRaw, remediation, errorContains, pressureSeverity, pressureMinPercentRaw, recommendedCapacityMinRaw, ruleCookieRaw, ruleRef, capacityHotspotRuleRef, direction, action string) (policyUpdateEventFilter, error) {
+func policyUpdateEventFilterFromValues(endpoint, successRaw, remediatedRaw, remediation, errorContains, pressureSeverity, pressureMinPercentRaw, recommendedCapacityMinRaw, occurredAfterRaw, occurredBeforeRaw, ruleCookieRaw, ruleRef, capacityHotspotRuleRef, direction, action string) (policyUpdateEventFilter, error) {
 	success, err := policyActionSuccessFromString(successRaw)
 	if err != nil {
 		return policyUpdateEventFilter{}, err
@@ -2432,6 +2442,14 @@ func policyUpdateEventFilterFromValues(endpoint, successRaw, remediatedRaw, reme
 		return policyUpdateEventFilter{}, err
 	}
 	recommendedCapacityMin, err := parseOptionalUint32Filter(recommendedCapacityMinRaw, "recommended-capacity-min")
+	if err != nil {
+		return policyUpdateEventFilter{}, err
+	}
+	occurredAfter, err := parseOptionalTimeFilter(occurredAfterRaw, "occurred-after")
+	if err != nil {
+		return policyUpdateEventFilter{}, err
+	}
+	occurredBefore, err := parseOptionalTimeFilter(occurredBeforeRaw, "occurred-before")
 	if err != nil {
 		return policyUpdateEventFilter{}, err
 	}
@@ -2472,6 +2490,8 @@ func policyUpdateEventFilterFromValues(endpoint, successRaw, remediatedRaw, reme
 		PressureSeverity:       pressureSeverity,
 		PressureMinPercent:     pressureMinPercent,
 		RecommendedCapacityMin: recommendedCapacityMin,
+		OccurredAfter:          occurredAfter,
+		OccurredBefore:         occurredBefore,
 		RuleCookie:             ruleCookie,
 		RuleRef:                strings.TrimSpace(ruleRef),
 		CapacityHotspotRuleRef: strings.TrimSpace(capacityHotspotRuleRef),
@@ -2501,6 +2521,8 @@ func policyEventsOutputFromSnapshot(snapshot agentMetricsSnapshot, events []data
 		FilterPressureSeverity:       filter.PressureSeverity,
 		FilterPressureMinPercent:     optionalUint32Value(filter.PressureMinPercent),
 		FilterRecommendedCapacityMin: optionalUint32Value(filter.RecommendedCapacityMin),
+		FilterOccurredAfter:          filter.OccurredAfter,
+		FilterOccurredBefore:         filter.OccurredBefore,
 		FilterRuleCookie:             filterPolicyUpdateEventRuleCookieValue(filter),
 		FilterRuleRef:                filter.RuleRef,
 		FilterCapacityHotspotRuleRef: filter.CapacityHotspotRuleRef,
@@ -2747,6 +2769,12 @@ func filterPolicyUpdateEvents(events []dataplane.PolicyUpdateEvent, filter polic
 		if filter.RecommendedCapacityMin != nil && event.PolicyMapRecommendedCapacity < *filter.RecommendedCapacityMin {
 			continue
 		}
+		if filter.OccurredAfter != nil && (event.OccurredAt == nil || event.OccurredAt.Before(*filter.OccurredAfter)) {
+			continue
+		}
+		if filter.OccurredBefore != nil && (event.OccurredAt == nil || !event.OccurredAt.Before(*filter.OccurredBefore)) {
+			continue
+		}
 		if filter.RuleCookie != nil && !policyUpdateEventHasRuleCookie(event, *filter.RuleCookie) {
 			continue
 		}
@@ -2776,6 +2804,8 @@ func policyUpdateEventFilterActive(filter policyUpdateEventFilter) bool {
 		filter.PressureSeverity != "" ||
 		filter.PressureMinPercent != nil ||
 		filter.RecommendedCapacityMin != nil ||
+		filter.OccurredAfter != nil ||
+		filter.OccurredBefore != nil ||
 		filter.RuleCookie != nil ||
 		filter.RuleRef != "" ||
 		filter.CapacityHotspotRuleRef != "" ||
