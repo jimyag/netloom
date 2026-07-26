@@ -1040,6 +1040,60 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 			wantErr: "provider network \"physnet-a\" tenant \"prod\" uses 2 policy routes, exceeds max_policy_routes 1",
 		},
 		{
+			name: "provider tenant security group quota exceeded",
+			mutate: func(state *DesiredState) {
+				state.ProviderNetworks = []model.ProviderNetwork{{
+					Name: "physnet-a",
+					Nodes: []model.ProviderNetworkNode{{
+						Node:      "node-a",
+						Interface: "eth1",
+					}},
+					TenantQuotas: []model.ProviderNetworkTenantQuota{{
+						Tenant:            "prod",
+						MaxSecurityGroups: 1,
+					}},
+				}}
+				state.Subnets[0].ProviderNetwork = "physnet-a"
+				state.Subnets[0].VLAN = 100
+				state.SecurityGroups = append(state.SecurityGroups, model.SecurityGroup{
+					Name: "db",
+					VPC:  "prod",
+					Rules: []model.SecurityGroupRule{{
+						ID:        "allow-web",
+						Priority:  100,
+						Direction: model.DirectionIngress,
+						Action:    model.ActionAllow,
+					}},
+				})
+			},
+			wantErr: "provider network \"physnet-a\" tenant \"prod\" uses 2 security groups, exceeds max_security_groups 1",
+		},
+		{
+			name: "provider tenant security group rule quota exceeded",
+			mutate: func(state *DesiredState) {
+				state.ProviderNetworks = []model.ProviderNetwork{{
+					Name: "physnet-a",
+					Nodes: []model.ProviderNetworkNode{{
+						Node:      "node-a",
+						Interface: "eth1",
+					}},
+					TenantQuotas: []model.ProviderNetworkTenantQuota{{
+						Tenant:                "prod",
+						MaxSecurityGroupRules: 1,
+					}},
+				}}
+				state.Subnets[0].ProviderNetwork = "physnet-a"
+				state.Subnets[0].VLAN = 100
+				state.SecurityGroups[0].Rules = append(state.SecurityGroups[0].Rules, model.SecurityGroupRule{
+					ID:        "allow-metrics",
+					Priority:  101,
+					Direction: model.DirectionIngress,
+					Action:    model.ActionAllow,
+				})
+			},
+			wantErr: "provider network \"physnet-a\" tenant \"prod\" uses 2 security group rules, exceeds max_security_group_rules 1",
+		},
+		{
 			name: "duplicate security group",
 			mutate: func(state *DesiredState) {
 				state.SecurityGroups = append(state.SecurityGroups, state.SecurityGroups[0])

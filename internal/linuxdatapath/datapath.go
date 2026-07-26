@@ -121,34 +121,40 @@ type ProviderOVSDBStatus struct {
 }
 
 type ProviderNetworkStatus struct {
-	ProviderNetwork   string
-	Ready             bool
-	LinkCount         int
-	ReadyLinks        int
-	IssueCount        int
-	Reasons           []string
-	TenantCount       int
-	SubnetCount       int
-	EndpointCount     int
-	LoadBalancerCount int
-	NATRuleCount      int
-	PolicyRouteCount  int
-	TenantUsage       []ProviderTenantUsage
+	ProviderNetwork        string
+	Ready                  bool
+	LinkCount              int
+	ReadyLinks             int
+	IssueCount             int
+	Reasons                []string
+	TenantCount            int
+	SubnetCount            int
+	EndpointCount          int
+	LoadBalancerCount      int
+	NATRuleCount           int
+	PolicyRouteCount       int
+	SecurityGroupCount     int
+	SecurityGroupRuleCount int
+	TenantUsage            []ProviderTenantUsage
 }
 
 type ProviderTenantUsage struct {
-	Tenant           string
-	Subnets          int
-	Endpoints        int
-	LoadBalancers    int
-	NATRules         int
-	PolicyRoutes     int
-	MaxSubnets       int
-	MaxEndpoints     int
-	MaxLoadBalancers int
-	MaxNATRules      int
-	MaxPolicyRoutes  int
-	Exceeded         bool
+	Tenant                string
+	Subnets               int
+	Endpoints             int
+	LoadBalancers         int
+	NATRules              int
+	PolicyRoutes          int
+	SecurityGroups        int
+	SecurityGroupRules    int
+	MaxSubnets            int
+	MaxEndpoints          int
+	MaxLoadBalancers      int
+	MaxNATRules           int
+	MaxPolicyRoutes       int
+	MaxSecurityGroups     int
+	MaxSecurityGroupRules int
+	Exceeded              bool
 }
 
 type CommandExecutor struct{}
@@ -738,6 +744,8 @@ func applyProviderTenantUsage(statuses []ProviderNetworkStatus, usage map[string
 			statuses[index].LoadBalancerCount += tenant.LoadBalancers
 			statuses[index].NATRuleCount += tenant.NATRules
 			statuses[index].PolicyRouteCount += tenant.PolicyRoutes
+			statuses[index].SecurityGroupCount += tenant.SecurityGroups
+			statuses[index].SecurityGroupRuleCount += tenant.SecurityGroupRules
 			if tenant.Exceeded {
 				statuses[index].Reasons = appendUniqueSorted(statuses[index].Reasons, "tenant-quota-exceeded")
 				statuses[index].IssueCount = len(statuses[index].Reasons)
@@ -815,6 +823,14 @@ func providerTenantUsage(state control.DesiredState) map[string][]ProviderTenant
 			setProviderTenantUsage(usageByProviderTenant, providerName, route.VPC, usage)
 		}
 	}
+	for _, group := range state.SecurityGroups {
+		for providerName := range tenantProviders[group.VPC] {
+			usage := providerTenantUsageFor(usageByProviderTenant, providerName, group.VPC)
+			usage.SecurityGroups++
+			usage.SecurityGroupRules += len(group.Rules)
+			setProviderTenantUsage(usageByProviderTenant, providerName, group.VPC, usage)
+		}
+	}
 	out := make(map[string][]ProviderTenantUsage, len(usageByProviderTenant))
 	for provider, tenants := range usageByProviderTenant {
 		for tenant, usage := range tenants {
@@ -825,11 +841,15 @@ func providerTenantUsage(state control.DesiredState) map[string][]ProviderTenant
 			usage.MaxLoadBalancers = quota.MaxLoadBalancers
 			usage.MaxNATRules = quota.MaxNATRules
 			usage.MaxPolicyRoutes = quota.MaxPolicyRoutes
+			usage.MaxSecurityGroups = quota.MaxSecurityGroups
+			usage.MaxSecurityGroupRules = quota.MaxSecurityGroupRules
 			usage.Exceeded = (usage.MaxSubnets > 0 && usage.Subnets > usage.MaxSubnets) ||
 				(usage.MaxEndpoints > 0 && usage.Endpoints > usage.MaxEndpoints) ||
 				(usage.MaxLoadBalancers > 0 && usage.LoadBalancers > usage.MaxLoadBalancers) ||
 				(usage.MaxNATRules > 0 && usage.NATRules > usage.MaxNATRules) ||
-				(usage.MaxPolicyRoutes > 0 && usage.PolicyRoutes > usage.MaxPolicyRoutes)
+				(usage.MaxPolicyRoutes > 0 && usage.PolicyRoutes > usage.MaxPolicyRoutes) ||
+				(usage.MaxSecurityGroups > 0 && usage.SecurityGroups > usage.MaxSecurityGroups) ||
+				(usage.MaxSecurityGroupRules > 0 && usage.SecurityGroupRules > usage.MaxSecurityGroupRules)
 			out[provider] = append(out[provider], usage)
 		}
 	}

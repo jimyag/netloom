@@ -4780,7 +4780,7 @@ func formatProviderNetworkStatus(statuses []linuxdatapath.ProviderNetworkStatus)
 		}
 		usage := ""
 		if status.TenantCount > 0 {
-			usage = fmt.Sprintf(":tenants=%d:subnets=%d:endpoints=%d:load_balancers=%d:nat_rules=%d:policy_routes=%d:%s", status.TenantCount, status.SubnetCount, status.EndpointCount, status.LoadBalancerCount, status.NATRuleCount, status.PolicyRouteCount, formatProviderTenantUsage(status.TenantUsage))
+			usage = fmt.Sprintf(":tenants=%d:subnets=%d:endpoints=%d:load_balancers=%d:nat_rules=%d:policy_routes=%d:security_groups=%d:security_group_rules=%d:%s", status.TenantCount, status.SubnetCount, status.EndpointCount, status.LoadBalancerCount, status.NATRuleCount, status.PolicyRouteCount, status.SecurityGroupCount, status.SecurityGroupRuleCount, formatProviderTenantUsage(status.TenantUsage))
 		}
 		parts = append(parts, fmt.Sprintf("%s:%s:%d/%d:%d:%s%s", status.ProviderNetwork, state, status.ReadyLinks, status.LinkCount, status.IssueCount, reasons, usage))
 	}
@@ -4797,7 +4797,7 @@ func formatProviderTenantUsage(usages []linuxdatapath.ProviderTenantUsage) strin
 		if usage.Exceeded {
 			state = "exceeded"
 		}
-		parts = append(parts, fmt.Sprintf("%s=%s:%d/%d:%d/%d:%d/%d:%d/%d:%d/%d", usage.Tenant, state, usage.Subnets, usage.MaxSubnets, usage.Endpoints, usage.MaxEndpoints, usage.LoadBalancers, usage.MaxLoadBalancers, usage.NATRules, usage.MaxNATRules, usage.PolicyRoutes, usage.MaxPolicyRoutes))
+		parts = append(parts, fmt.Sprintf("%s=%s:%d/%d:%d/%d:%d/%d:%d/%d:%d/%d:%d/%d:%d/%d", usage.Tenant, state, usage.Subnets, usage.MaxSubnets, usage.Endpoints, usage.MaxEndpoints, usage.LoadBalancers, usage.MaxLoadBalancers, usage.NATRules, usage.MaxNATRules, usage.PolicyRoutes, usage.MaxPolicyRoutes, usage.SecurityGroups, usage.MaxSecurityGroups, usage.SecurityGroupRules, usage.MaxSecurityGroupRules))
 	}
 	return strings.Join(parts, "+")
 }
@@ -8786,11 +8786,15 @@ func writeAgentMetrics(w ioStringWriter, snapshot agentMetricsSnapshot, totals a
 	writeMetricType(w, "netloom_agent_provider_tenant_load_balancers", "gauge")
 	writeMetricType(w, "netloom_agent_provider_tenant_nat_rules", "gauge")
 	writeMetricType(w, "netloom_agent_provider_tenant_policy_routes", "gauge")
+	writeMetricType(w, "netloom_agent_provider_tenant_security_groups", "gauge")
+	writeMetricType(w, "netloom_agent_provider_tenant_security_group_rules", "gauge")
 	writeMetricType(w, "netloom_agent_provider_tenant_max_subnets", "gauge")
 	writeMetricType(w, "netloom_agent_provider_tenant_max_endpoints", "gauge")
 	writeMetricType(w, "netloom_agent_provider_tenant_max_load_balancers", "gauge")
 	writeMetricType(w, "netloom_agent_provider_tenant_max_nat_rules", "gauge")
 	writeMetricType(w, "netloom_agent_provider_tenant_max_policy_routes", "gauge")
+	writeMetricType(w, "netloom_agent_provider_tenant_max_security_groups", "gauge")
+	writeMetricType(w, "netloom_agent_provider_tenant_max_security_group_rules", "gauge")
 	writeMetricType(w, "netloom_agent_provider_tenant_quota_exceeded", "gauge")
 	for _, status := range result.ProviderNetworkStatus {
 		for _, usage := range status.TenantUsage {
@@ -8809,11 +8813,15 @@ func writeAgentMetrics(w ioStringWriter, snapshot agentMetricsSnapshot, totals a
 			fmt.Fprintf(w, "netloom_agent_provider_tenant_load_balancers%s %d\n", labels, usage.LoadBalancers)
 			fmt.Fprintf(w, "netloom_agent_provider_tenant_nat_rules%s %d\n", labels, usage.NATRules)
 			fmt.Fprintf(w, "netloom_agent_provider_tenant_policy_routes%s %d\n", labels, usage.PolicyRoutes)
+			fmt.Fprintf(w, "netloom_agent_provider_tenant_security_groups%s %d\n", labels, usage.SecurityGroups)
+			fmt.Fprintf(w, "netloom_agent_provider_tenant_security_group_rules%s %d\n", labels, usage.SecurityGroupRules)
 			fmt.Fprintf(w, "netloom_agent_provider_tenant_max_subnets%s %d\n", labels, usage.MaxSubnets)
 			fmt.Fprintf(w, "netloom_agent_provider_tenant_max_endpoints%s %d\n", labels, usage.MaxEndpoints)
 			fmt.Fprintf(w, "netloom_agent_provider_tenant_max_load_balancers%s %d\n", labels, usage.MaxLoadBalancers)
 			fmt.Fprintf(w, "netloom_agent_provider_tenant_max_nat_rules%s %d\n", labels, usage.MaxNATRules)
 			fmt.Fprintf(w, "netloom_agent_provider_tenant_max_policy_routes%s %d\n", labels, usage.MaxPolicyRoutes)
+			fmt.Fprintf(w, "netloom_agent_provider_tenant_max_security_groups%s %d\n", labels, usage.MaxSecurityGroups)
+			fmt.Fprintf(w, "netloom_agent_provider_tenant_max_security_group_rules%s %d\n", labels, usage.MaxSecurityGroupRules)
 			fmt.Fprintf(w, "netloom_agent_provider_tenant_quota_exceeded%s %d\n", labels, exceeded)
 		}
 	}

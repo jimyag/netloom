@@ -72,7 +72,9 @@ fail closed，不继续写 policy map、TCX 或本机 datapath，并把失败写
           "max_endpoints": 100,
           "max_load_balancers": 10,
           "max_nat_rules": 20,
-          "max_policy_routes": 20
+          "max_policy_routes": 20,
+          "max_security_groups": 50,
+          "max_security_group_rules": 500
         }
       ],
       "tenant_queues": [

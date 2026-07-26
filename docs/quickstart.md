@@ -55,7 +55,9 @@ NETLOOM_TCX_WORKLOAD=1 \
           "max_endpoints": 100,
           "max_load_balancers": 10,
           "max_nat_rules": 20,
-          "max_policy_routes": 20
+          "max_policy_routes": 20,
+          "max_security_groups": 50,
+          "max_security_group_rules": 500
         }
       ]
     }

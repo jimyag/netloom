@@ -345,9 +345,19 @@ func TestProviderNetworkRejectsInvalidTenantQuotas(t *testing.T) {
 			wantErr: "max_policy_routes must not be negative",
 		},
 		{
+			name:    "negative security groups",
+			quota:   ProviderNetworkTenantQuota{Tenant: "prod", MaxSecurityGroups: -1},
+			wantErr: "max_security_groups must not be negative",
+		},
+		{
+			name:    "negative security group rules",
+			quota:   ProviderNetworkTenantQuota{Tenant: "prod", MaxSecurityGroupRules: -1},
+			wantErr: "max_security_group_rules must not be negative",
+		},
+		{
 			name:    "missing limits",
 			quota:   ProviderNetworkTenantQuota{Tenant: "prod"},
-			wantErr: "max_subnets, max_endpoints, max_load_balancers, max_nat_rules, or max_policy_routes is required",
+			wantErr: "max_subnets, max_endpoints, max_load_balancers, max_nat_rules, max_policy_routes, max_security_groups, or max_security_group_rules is required",
 		},
 	}
 	for _, tt := range tests {
@@ -411,6 +421,23 @@ func TestProviderNetworkAcceptsPolicyRouteOnlyTenantQuota(t *testing.T) {
 		},
 	}).Validate(); err != nil {
 		t.Fatalf("valid policy-route-only tenant quota failed: %v", err)
+	}
+}
+
+func TestProviderNetworkAcceptsSecurityPolicyOnlyTenantQuotas(t *testing.T) {
+	for _, quota := range []ProviderNetworkTenantQuota{
+		{Tenant: "prod", MaxSecurityGroups: 3},
+		{Tenant: "prod", MaxSecurityGroupRules: 30},
+	} {
+		if err := (ProviderNetwork{
+			Name:         "physnet-a",
+			TenantQuotas: []ProviderNetworkTenantQuota{quota},
+			Nodes: []ProviderNetworkNode{
+				{Node: "node-a", Interface: "bond0.100"},
+			},
+		}).Validate(); err != nil {
+			t.Fatalf("valid security-policy-only tenant quota %+v failed: %v", quota, err)
+		}
 	}
 }
 

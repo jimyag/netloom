@@ -829,7 +829,7 @@ func validateObjectGraph(state DesiredState) error {
 		endpointIPs[ipKey] = endpoint.ID
 		endpoints[key] = endpoint
 	}
-	if err := validateProviderNetworkTenantQuotas(providerNetworks, subnets, state.Endpoints, state.LoadBalancers, state.NATRules, state.PolicyRoutes); err != nil {
+	if err := validateProviderNetworkTenantQuotas(providerNetworks, subnets, state.Endpoints, state.LoadBalancers, state.NATRules, state.PolicyRoutes, state.SecurityGroups); err != nil {
 		return err
 	}
 	if err := validateIdentityGroupEndpointReferences(identityGroups, endpoints); err != nil {
@@ -1460,15 +1460,17 @@ func routeMatchPortKey(ranges []model.PortRange) string {
 }
 
 type providerTenantUsage struct {
-	subnets       int
-	endpoints     int
-	loadBalancers int
-	natRules      int
-	policyRoutes  int
+	subnets            int
+	endpoints          int
+	loadBalancers      int
+	natRules           int
+	policyRoutes       int
+	securityGroups     int
+	securityGroupRules int
 }
 
-func validateProviderNetworkTenantQuotas(providerNetworks map[string]model.ProviderNetwork, subnets map[string]model.Subnet, endpoints []model.Endpoint, loadBalancers []model.LoadBalancer, natRules []model.NATRule, policyRoutes []model.PolicyRoute) error {
-	usage := providerNetworkTenantUsage(subnets, endpoints, loadBalancers, natRules, policyRoutes)
+func validateProviderNetworkTenantQuotas(providerNetworks map[string]model.ProviderNetwork, subnets map[string]model.Subnet, endpoints []model.Endpoint, loadBalancers []model.LoadBalancer, natRules []model.NATRule, policyRoutes []model.PolicyRoute, securityGroups []model.SecurityGroup) error {
+	usage := providerNetworkTenantUsage(subnets, endpoints, loadBalancers, natRules, policyRoutes, securityGroups)
 	for providerName, provider := range providerNetworks {
 		providerUsage := usage[providerName]
 		for _, quota := range provider.TenantQuotas {
@@ -1488,12 +1490,18 @@ func validateProviderNetworkTenantQuotas(providerNetworks map[string]model.Provi
 			if quota.MaxPolicyRoutes > 0 && tenantUsage.policyRoutes > quota.MaxPolicyRoutes {
 				return fmt.Errorf("provider network %q tenant %q uses %d policy routes, exceeds max_policy_routes %d", providerName, quota.Tenant, tenantUsage.policyRoutes, quota.MaxPolicyRoutes)
 			}
+			if quota.MaxSecurityGroups > 0 && tenantUsage.securityGroups > quota.MaxSecurityGroups {
+				return fmt.Errorf("provider network %q tenant %q uses %d security groups, exceeds max_security_groups %d", providerName, quota.Tenant, tenantUsage.securityGroups, quota.MaxSecurityGroups)
+			}
+			if quota.MaxSecurityGroupRules > 0 && tenantUsage.securityGroupRules > quota.MaxSecurityGroupRules {
+				return fmt.Errorf("provider network %q tenant %q uses %d security group rules, exceeds max_security_group_rules %d", providerName, quota.Tenant, tenantUsage.securityGroupRules, quota.MaxSecurityGroupRules)
+			}
 		}
 	}
 	return nil
 }
 
-func providerNetworkTenantUsage(subnets map[string]model.Subnet, endpoints []model.Endpoint, loadBalancers []model.LoadBalancer, natRules []model.NATRule, policyRoutes []model.PolicyRoute) map[string]map[string]providerTenantUsage {
+func providerNetworkTenantUsage(subnets map[string]model.Subnet, endpoints []model.Endpoint, loadBalancers []model.LoadBalancer, natRules []model.NATRule, policyRoutes []model.PolicyRoute, securityGroups []model.SecurityGroup) map[string]map[string]providerTenantUsage {
 	usage := make(map[string]map[string]providerTenantUsage)
 	subnetProviders := make(map[string]string, len(subnets))
 	tenantProviders := make(map[string]map[string]struct{})
@@ -1548,6 +1556,14 @@ func providerNetworkTenantUsage(subnets map[string]model.Subnet, endpoints []mod
 			tenantUsage := providerTenantUsageFor(usage, providerName, route.VPC)
 			tenantUsage.policyRoutes++
 			setProviderTenantUsage(usage, providerName, route.VPC, tenantUsage)
+		}
+	}
+	for _, group := range securityGroups {
+		for providerName := range tenantProviders[group.VPC] {
+			tenantUsage := providerTenantUsageFor(usage, providerName, group.VPC)
+			tenantUsage.securityGroups++
+			tenantUsage.securityGroupRules += len(group.Rules)
+			setProviderTenantUsage(usage, providerName, group.VPC, tenantUsage)
 		}
 	}
 	return usage

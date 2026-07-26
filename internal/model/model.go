@@ -74,12 +74,14 @@ type ProviderNetworkQoS struct {
 }
 
 type ProviderNetworkTenantQuota struct {
-	Tenant           string `json:"tenant"`
-	MaxSubnets       int    `json:"max_subnets,omitempty"`
-	MaxEndpoints     int    `json:"max_endpoints,omitempty"`
-	MaxLoadBalancers int    `json:"max_load_balancers,omitempty"`
-	MaxNATRules      int    `json:"max_nat_rules,omitempty"`
-	MaxPolicyRoutes  int    `json:"max_policy_routes,omitempty"`
+	Tenant                string `json:"tenant"`
+	MaxSubnets            int    `json:"max_subnets,omitempty"`
+	MaxEndpoints          int    `json:"max_endpoints,omitempty"`
+	MaxLoadBalancers      int    `json:"max_load_balancers,omitempty"`
+	MaxNATRules           int    `json:"max_nat_rules,omitempty"`
+	MaxPolicyRoutes       int    `json:"max_policy_routes,omitempty"`
+	MaxSecurityGroups     int    `json:"max_security_groups,omitempty"`
+	MaxSecurityGroupRules int    `json:"max_security_group_rules,omitempty"`
 }
 
 type ProviderNetworkTenantQueuePolicy struct {
@@ -424,8 +426,14 @@ func (q ProviderNetworkTenantQuota) Validate() error {
 	if q.MaxPolicyRoutes < 0 {
 		return errors.New("max_policy_routes must not be negative")
 	}
-	if q.MaxSubnets == 0 && q.MaxEndpoints == 0 && q.MaxLoadBalancers == 0 && q.MaxNATRules == 0 && q.MaxPolicyRoutes == 0 {
-		return errors.New("max_subnets, max_endpoints, max_load_balancers, max_nat_rules, or max_policy_routes is required")
+	if q.MaxSecurityGroups < 0 {
+		return errors.New("max_security_groups must not be negative")
+	}
+	if q.MaxSecurityGroupRules < 0 {
+		return errors.New("max_security_group_rules must not be negative")
+	}
+	if q.MaxSubnets == 0 && q.MaxEndpoints == 0 && q.MaxLoadBalancers == 0 && q.MaxNATRules == 0 && q.MaxPolicyRoutes == 0 && q.MaxSecurityGroups == 0 && q.MaxSecurityGroupRules == 0 {
+		return errors.New("max_subnets, max_endpoints, max_load_balancers, max_nat_rules, max_policy_routes, max_security_groups, or max_security_group_rules is required")
 	}
 	return nil
 }
