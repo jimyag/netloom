@@ -354,6 +354,8 @@ type policyStatusOutput struct {
 	PressureMax               uint32                           `json:"pressure_max"`
 	PressureEndpoint          string                           `json:"pressure_endpoint,omitempty"`
 	PressureSeverity          string                           `json:"pressure_severity"`
+	RecommendedCapacity       uint32                           `json:"recommended_capacity,omitempty"`
+	RecommendedEndpoint       string                           `json:"recommended_endpoint,omitempty"`
 	PressureEndpoints         int                              `json:"pressure_endpoints"`
 	PressureHotspots          []policyMapPressureHotspot       `json:"pressure_hotspots,omitempty"`
 	DriftEndpoints            int                              `json:"drift_endpoints"`
@@ -378,6 +380,8 @@ type policyStatusDocument struct {
 	PressureMax          uint32                           `json:"pressure_max"`
 	PressureEndpoint     string                           `json:"pressure_endpoint,omitempty"`
 	PressureSeverity     string                           `json:"pressure_severity"`
+	RecommendedCapacity  uint32                           `json:"recommended_capacity,omitempty"`
+	RecommendedEndpoint  string                           `json:"recommended_endpoint,omitempty"`
 	PressureEndpoints    int                              `json:"pressure_endpoints"`
 	PressureHotspots     []policyMapPressureHotspot       `json:"pressure_hotspots,omitempty"`
 	DriftEndpoints       int                              `json:"drift_endpoints"`
@@ -2053,22 +2057,24 @@ func validatePolicyEndpointPressureSeverity(severity string) error {
 
 func policyStatusOutputFromResult(result agent.ReconcileResult, storeName string, statuses []dataplane.PolicyEndpointStatus) policyStatusOutput {
 	return policyStatusOutput{
-		Node:              result.Node,
-		Store:             storeName,
-		EndpointCount:     len(statuses),
-		PolicyMapEntries:  result.PolicyMapEntries,
-		PolicyMapCapacity: result.PolicyMapCapacity,
-		PressureMax:       result.PolicyMapPressureMax,
-		PressureEndpoint:  result.PolicyMapPressureEndpoint,
-		PressureSeverity:  result.PolicyMapPressureSeverity,
-		PressureEndpoints: result.PolicyMapPressureEndpoints,
-		PressureHotspots:  append([]dataplane.PolicyMapPressureHotspot(nil), result.PolicyMapPressureHotspots...),
-		DriftEndpoints:    result.PolicyMapDriftEndpoints,
-		DriftMissing:      result.PolicyMapDriftMissing,
-		DriftExtra:        result.PolicyMapDriftExtra,
-		DriftChanged:      result.PolicyMapDriftChanged,
-		PolicyRevisionMax: result.PolicyRevisionMax,
-		Statuses:          statuses,
+		Node:                result.Node,
+		Store:               storeName,
+		EndpointCount:       len(statuses),
+		PolicyMapEntries:    result.PolicyMapEntries,
+		PolicyMapCapacity:   result.PolicyMapCapacity,
+		PressureMax:         result.PolicyMapPressureMax,
+		PressureEndpoint:    result.PolicyMapPressureEndpoint,
+		PressureSeverity:    result.PolicyMapPressureSeverity,
+		RecommendedCapacity: result.PolicyMapRecommendedCapacity,
+		RecommendedEndpoint: result.PolicyMapRecommendedEndpoint,
+		PressureEndpoints:   result.PolicyMapPressureEndpoints,
+		PressureHotspots:    append([]dataplane.PolicyMapPressureHotspot(nil), result.PolicyMapPressureHotspots...),
+		DriftEndpoints:      result.PolicyMapDriftEndpoints,
+		DriftMissing:        result.PolicyMapDriftMissing,
+		DriftExtra:          result.PolicyMapDriftExtra,
+		DriftChanged:        result.PolicyMapDriftChanged,
+		PolicyRevisionMax:   result.PolicyRevisionMax,
+		Statuses:            statuses,
 	}
 }
 
@@ -2097,6 +2103,8 @@ func policyStatusOutputFromDocument(doc policyStatusDocument, endpoint, pressure
 		PressureMax:               doc.PressureMax,
 		PressureEndpoint:          doc.PressureEndpoint,
 		PressureSeverity:          doc.PressureSeverity,
+		RecommendedCapacity:       doc.RecommendedCapacity,
+		RecommendedEndpoint:       doc.RecommendedEndpoint,
 		PressureEndpoints:         doc.PressureEndpoints,
 		PressureHotspots:          append([]dataplane.PolicyMapPressureHotspot(nil), doc.PressureHotspots...),
 		DriftEndpoints:            doc.DriftEndpoints,
@@ -2122,6 +2130,8 @@ func policyStatusDocumentFromSnapshot(snapshot agentMetricsSnapshot) policyStatu
 		PressureMax:          snapshot.Result.PolicyMapPressureMax,
 		PressureEndpoint:     snapshot.Result.PolicyMapPressureEndpoint,
 		PressureSeverity:     snapshot.Result.PolicyMapPressureSeverity,
+		RecommendedCapacity:  snapshot.Result.PolicyMapRecommendedCapacity,
+		RecommendedEndpoint:  snapshot.Result.PolicyMapRecommendedEndpoint,
 		PressureEndpoints:    snapshot.Result.PolicyMapPressureEndpoints,
 		PressureHotspots:     append([]dataplane.PolicyMapPressureHotspot(nil), snapshot.Result.PolicyMapPressureHotspots...),
 		DriftEndpoints:       snapshot.Result.PolicyMapDriftEndpoints,
@@ -3664,7 +3674,9 @@ type agentOVSDBStatus struct {
 	PolicyMapPressureEndpoint string `json:"policy_map_pressure_endpoint,omitempty"`
 	PolicyMapPressureSeverity string `json:"policy_map_pressure_severity"`
 
-	PolicyMapPressureHotspots []policyMapPressureHotspot `json:"policy_map_pressure_hotspots,omitempty"`
+	PolicyMapRecommendedCapacity uint32                     `json:"policy_map_recommended_capacity,omitempty"`
+	PolicyMapRecommendedEndpoint string                     `json:"policy_map_recommended_endpoint,omitempty"`
+	PolicyMapPressureHotspots    []policyMapPressureHotspot `json:"policy_map_pressure_hotspots,omitempty"`
 
 	PolicyPressureMitigated       int                  `json:"policy_pressure_mitigated"`
 	PolicyPressureQuarantined     int                  `json:"policy_pressure_quarantined"`
@@ -3734,6 +3746,8 @@ func syncAgentOVSDBStatus(ctx context.Context, store openVSwitchExternalIDStore,
 		PolicyMapPressureMax:          result.PolicyMapPressureMax,
 		PolicyMapPressureEndpoint:     result.PolicyMapPressureEndpoint,
 		PolicyMapPressureSeverity:     result.PolicyMapPressureSeverity,
+		PolicyMapRecommendedCapacity:  result.PolicyMapRecommendedCapacity,
+		PolicyMapRecommendedEndpoint:  result.PolicyMapRecommendedEndpoint,
 		PolicyMapPressureHotspots:     append([]dataplane.PolicyMapPressureHotspot(nil), result.PolicyMapPressureHotspots...),
 		PolicyPressureMitigated:       result.PolicyPressureMitigated,
 		PolicyPressureQuarantined:     result.PolicyPressureQuarantined,
@@ -6991,9 +7005,16 @@ func writeAgentMetrics(w ioStringWriter, snapshot agentMetricsSnapshot, totals a
 		"endpoint": result.PolicyMapPressureEndpoint,
 		"severity": policyMapPressureSeverityLabel(result.PolicyMapPressureSeverity),
 	}))
+	writeMetricType(w, "netloom_agent_policy_map_recommended_capacity", "gauge")
+	fmt.Fprintf(w, "netloom_agent_policy_map_recommended_capacity%s %d\n", prometheusLabels(map[string]string{
+		"node":     result.Node,
+		"store":    snapshot.Store,
+		"endpoint": result.PolicyMapRecommendedEndpoint,
+	}), result.PolicyMapRecommendedCapacity)
 	writeMetricType(w, "netloom_agent_policy_map_pressure_hotspot_percent", "gauge")
 	writeMetricType(w, "netloom_agent_policy_map_pressure_hotspot_entries", "gauge")
 	writeMetricType(w, "netloom_agent_policy_map_pressure_hotspot_capacity", "gauge")
+	writeMetricType(w, "netloom_agent_policy_map_pressure_hotspot_recommended_capacity", "gauge")
 	writeMetricType(w, "netloom_agent_policy_map_pressure_hotspot_severity", "gauge")
 	for i, hotspot := range result.PolicyMapPressureHotspots {
 		labels := prometheusLabels(map[string]string{
@@ -7005,6 +7026,7 @@ func writeAgentMetrics(w ioStringWriter, snapshot agentMetricsSnapshot, totals a
 		fmt.Fprintf(w, "netloom_agent_policy_map_pressure_hotspot_percent%s %d\n", labels, hotspot.PressurePercent)
 		fmt.Fprintf(w, "netloom_agent_policy_map_pressure_hotspot_entries%s %d\n", labels, hotspot.Entries)
 		fmt.Fprintf(w, "netloom_agent_policy_map_pressure_hotspot_capacity%s %d\n", labels, hotspot.Capacity)
+		fmt.Fprintf(w, "netloom_agent_policy_map_pressure_hotspot_recommended_capacity%s %d\n", labels, hotspot.RecommendedCapacity)
 		severityLabels := prometheusLabels(map[string]string{
 			"node":     result.Node,
 			"store":    snapshot.Store,

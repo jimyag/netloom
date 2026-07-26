@@ -947,6 +947,8 @@ func TestRunPolicyStatusExportWithStoreReportsFilteredJSON(t *testing.T) {
 		PolicyMapCapacity:    64,
 		PressureMax:          5,
 		PressureEndpoint:     endpointID,
+		RecommendedCapacity:  80,
+		RecommendedEndpoint:  model.EndpointKey("prod", "pod-b"),
 		PolicyRevisionMax:    7,
 		Statuses: []dataplane.PolicyEndpointStatus{{
 			EndpointID:       endpointID,
@@ -982,7 +984,7 @@ func TestRunPolicyStatusExportWithStoreReportsFilteredJSON(t *testing.T) {
 	if !got.Ready || !got.LastReconcileSuccess || got.Node != "node-a" || got.Store != "ebpf" || got.FilterEndpoint != "prod/pod-a" {
 		t.Fatalf("policy status summary = %+v, want ready filtered node-a ebpf", got)
 	}
-	if got.EndpointCount != 1 || got.PolicyMapEntries != 3 || got.PolicyMapCapacity != 64 || got.PolicyRevisionMax != 7 {
+	if got.EndpointCount != 1 || got.PolicyMapEntries != 3 || got.PolicyMapCapacity != 64 || got.RecommendedCapacity != 80 || got.RecommendedEndpoint != model.EndpointKey("prod", "pod-b") || got.PolicyRevisionMax != 7 {
 		t.Fatalf("policy status counters = %+v, want persisted counters and one filtered endpoint", got)
 	}
 	if len(got.Statuses) != 1 || got.Statuses[0].EndpointID != endpointID || got.Statuses[0].Revision != 7 || !got.Statuses[0].HasLastEvent {
@@ -1311,6 +1313,8 @@ func TestRunAgentStatusWithStoreReportsOpenVSwitchStatus(t *testing.T) {
 		Status:                        "success",
 		Endpoints:                     2,
 		PolicyMapEntries:              4,
+		PolicyMapRecommendedCapacity:  17,
+		PolicyMapRecommendedEndpoint:  "prod\x00pod-a",
 		PolicyRolloutApplied:          1,
 		TCX:                           "attached",
 		RuntimeReady:                  true,
@@ -1336,7 +1340,7 @@ func TestRunAgentStatusWithStoreReportsOpenVSwitchStatus(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
 		t.Fatalf("decode agent-status output: %v\n%s", err, out.String())
 	}
-	if got.Node != "node-a" || got.Store != "ebpf" || got.Status != "success" || got.PolicyMapEntries != 4 || got.PolicyRolloutApplied != 1 || got.ProviderReady != 1 || !got.RuntimeReady || got.RuntimeWarned != 1 || len(got.Runtime) != 2 {
+	if got.Node != "node-a" || got.Store != "ebpf" || got.Status != "success" || got.PolicyMapEntries != 4 || got.PolicyMapRecommendedCapacity != 17 || got.PolicyMapRecommendedEndpoint != "prod\x00pod-a" || got.PolicyRolloutApplied != 1 || got.ProviderReady != 1 || !got.RuntimeReady || got.RuntimeWarned != 1 || len(got.Runtime) != 2 {
 		t.Fatalf("agent status = %+v, want decoded OVSDB status", got)
 	}
 }
@@ -6167,8 +6171,8 @@ func TestPolicyEndpointAPIRolloutUsesPressureAwareBatchSize(t *testing.T) {
 		t.Fatalf("rollout pressure = %+v, want pod-a at 90%% severity critical", got.Rollout)
 	}
 	wantHotspots := []dataplane.PolicyMapPressureHotspot{
-		{EndpointID: model.EndpointKey("prod", "pod-a"), Entries: 9, Capacity: 10, PressurePercent: 90, Severity: dataplane.PolicyMapPressureCritical},
-		{EndpointID: model.EndpointKey("prod", "pod-b"), Entries: 8, Capacity: 10, PressurePercent: 80, Severity: dataplane.PolicyMapPressureWarning},
+		{EndpointID: model.EndpointKey("prod", "pod-a"), Entries: 9, Capacity: 10, PressurePercent: 90, Severity: dataplane.PolicyMapPressureCritical, RecommendedCapacity: 12},
+		{EndpointID: model.EndpointKey("prod", "pod-b"), Entries: 8, Capacity: 10, PressurePercent: 80, Severity: dataplane.PolicyMapPressureWarning, RecommendedCapacity: 11},
 	}
 	if !reflect.DeepEqual(got.Rollout.PressureHotspots, wantHotspots) {
 		t.Fatalf("rollout pressure hotspots = %+v, want %+v", got.Rollout.PressureHotspots, wantHotspots)
@@ -6212,22 +6216,25 @@ func TestAgentMetricsExportsLatestPolicyAndTCXCounters(t *testing.T) {
 	lastSeen := time.Unix(1_725_000_123, 0).UTC()
 	eventTime := time.Unix(1_725_000_120, 0).UTC()
 	observeAgentReconcileResult(metrics, agent.ReconcileResult{
-		Node:                       "node-a",
-		Endpoints:                  1,
-		Programs:                   1,
-		Entries:                    2,
-		PolicyMapEntries:           12,
-		PolicyMapCapacity:          16,
-		PolicyMapPressureMax:       75,
-		PolicyMapPressureEndpoint:  "prod\x00pod-a",
-		PolicyMapPressureSeverity:  dataplane.PolicyMapPressureNormal,
-		PolicyMapPressureEndpoints: 1,
+		Node:                         "node-a",
+		Endpoints:                    1,
+		Programs:                     1,
+		Entries:                      2,
+		PolicyMapEntries:             13,
+		PolicyMapCapacity:            16,
+		PolicyMapPressureMax:         81,
+		PolicyMapPressureEndpoint:    "prod\x00pod-a",
+		PolicyMapPressureSeverity:    dataplane.PolicyMapPressureWarning,
+		PolicyMapRecommendedCapacity: 17,
+		PolicyMapRecommendedEndpoint: "prod\x00pod-a",
+		PolicyMapPressureEndpoints:   1,
 		PolicyMapPressureHotspots: []dataplane.PolicyMapPressureHotspot{{
-			EndpointID:      "prod\x00pod-a",
-			Entries:         12,
-			Capacity:        16,
-			PressurePercent: 75,
-			Severity:        dataplane.PolicyMapPressureNormal,
+			EndpointID:          "prod\x00pod-a",
+			Entries:             13,
+			Capacity:            16,
+			PressurePercent:     81,
+			Severity:            dataplane.PolicyMapPressureWarning,
+			RecommendedCapacity: 17,
 		}},
 		PolicyPressureMitigated:          2,
 		PolicyPressureQuarantined:        1,
@@ -6351,13 +6358,15 @@ func TestAgentMetricsExportsLatestPolicyAndTCXCounters(t *testing.T) {
 		`netloom_agent_runtime_warned_checks{node="node-a",store="ebpf"} 1`,
 		`netloom_agent_runtime_check_status{check="bpffs",node="node-a",required="true",status="ok",store="ebpf"} 1`,
 		`netloom_agent_runtime_check_status{check="ovsdb",node="node-a",required="false",status="warn",store="ebpf"} 0`,
-		`netloom_agent_policy_map_entries{node="node-a",store="ebpf"} 12`,
-		`netloom_agent_policy_map_pressure_percent{endpoint="prod\x00pod-a",node="node-a",store="ebpf"} 75`,
-		`netloom_agent_policy_map_pressure_severity{endpoint="prod\x00pod-a",node="node-a",severity="normal",store="ebpf"} 1`,
-		`netloom_agent_policy_map_pressure_hotspot_percent{endpoint="prod\x00pod-a",node="node-a",rank="1",store="ebpf"} 75`,
-		`netloom_agent_policy_map_pressure_hotspot_entries{endpoint="prod\x00pod-a",node="node-a",rank="1",store="ebpf"} 12`,
+		`netloom_agent_policy_map_entries{node="node-a",store="ebpf"} 13`,
+		`netloom_agent_policy_map_pressure_percent{endpoint="prod\x00pod-a",node="node-a",store="ebpf"} 81`,
+		`netloom_agent_policy_map_pressure_severity{endpoint="prod\x00pod-a",node="node-a",severity="warning",store="ebpf"} 1`,
+		`netloom_agent_policy_map_recommended_capacity{endpoint="prod\x00pod-a",node="node-a",store="ebpf"} 17`,
+		`netloom_agent_policy_map_pressure_hotspot_percent{endpoint="prod\x00pod-a",node="node-a",rank="1",store="ebpf"} 81`,
+		`netloom_agent_policy_map_pressure_hotspot_entries{endpoint="prod\x00pod-a",node="node-a",rank="1",store="ebpf"} 13`,
 		`netloom_agent_policy_map_pressure_hotspot_capacity{endpoint="prod\x00pod-a",node="node-a",rank="1",store="ebpf"} 16`,
-		`netloom_agent_policy_map_pressure_hotspot_severity{endpoint="prod\x00pod-a",node="node-a",rank="1",severity="normal",store="ebpf"} 1`,
+		`netloom_agent_policy_map_pressure_hotspot_recommended_capacity{endpoint="prod\x00pod-a",node="node-a",rank="1",store="ebpf"} 17`,
+		`netloom_agent_policy_map_pressure_hotspot_severity{endpoint="prod\x00pod-a",node="node-a",rank="1",severity="warning",store="ebpf"} 1`,
 		`netloom_agent_policy_pressure_mitigated_endpoints{node="node-a",store="ebpf"} 2`,
 		`netloom_agent_policy_pressure_mitigated_endpoints_total{node="node-a",store="ebpf"} 2`,
 		`netloom_agent_policy_pressure_quarantined_endpoints{node="node-a",store="ebpf"} 1`,

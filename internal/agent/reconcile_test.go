@@ -3311,8 +3311,8 @@ func TestRolloutPolicyEndpointsPressureAwareShrinksBatchSize(t *testing.T) {
 		t.Fatalf("rollout pressure fields = %+v, want max=90 endpoint pod-a threshold 80 severity critical", rollout)
 	}
 	wantHotspots := []dataplane.PolicyMapPressureHotspot{
-		{EndpointID: model.EndpointKey("prod", "pod-a"), Entries: 9, Capacity: 10, PressurePercent: 90, Severity: dataplane.PolicyMapPressureCritical},
-		{EndpointID: model.EndpointKey("prod", "pod-b"), Entries: 8, Capacity: 10, PressurePercent: 80, Severity: dataplane.PolicyMapPressureWarning},
+		{EndpointID: model.EndpointKey("prod", "pod-a"), Entries: 9, Capacity: 10, PressurePercent: 90, Severity: dataplane.PolicyMapPressureCritical, RecommendedCapacity: 12},
+		{EndpointID: model.EndpointKey("prod", "pod-b"), Entries: 8, Capacity: 10, PressurePercent: 80, Severity: dataplane.PolicyMapPressureWarning, RecommendedCapacity: 11},
 	}
 	if !slices.EqualFunc(rollout.PressureHotspots, wantHotspots, func(a, b dataplane.PolicyMapPressureHotspot) bool {
 		return a == b
@@ -4130,6 +4130,9 @@ func TestReconcileNodeReportsPolicyMapPressureSummary(t *testing.T) {
 	}
 	if result.PolicyMapPressureMax != 81 || result.PolicyMapPressureEndpoint != model.EndpointKey("prod", "pod-a") || result.PolicyMapPressureEndpoints != 1 {
 		t.Fatalf("pressure summary = %+v, want one pressured endpoint at 81%%", result)
+	}
+	if result.PolicyMapRecommendedCapacity != 17 || result.PolicyMapRecommendedEndpoint != model.EndpointKey("prod", "pod-a") {
+		t.Fatalf("policy map recommended capacity = %d/%q, want 17 for pod-a", result.PolicyMapRecommendedCapacity, result.PolicyMapRecommendedEndpoint)
 	}
 }
 

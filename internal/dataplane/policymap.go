@@ -65,21 +65,24 @@ type PolicyMapUsage struct {
 }
 
 type PolicyMapPressureHotspot struct {
-	EndpointID      string `json:"endpoint_id"`
-	Entries         uint32 `json:"entries"`
-	Capacity        uint32 `json:"capacity"`
-	PressurePercent uint32 `json:"pressure_percent"`
-	Severity        string `json:"severity"`
+	EndpointID          string `json:"endpoint_id"`
+	Entries             uint32 `json:"entries"`
+	Capacity            uint32 `json:"capacity"`
+	PressurePercent     uint32 `json:"pressure_percent"`
+	Severity            string `json:"severity"`
+	RecommendedCapacity uint32 `json:"recommended_capacity,omitempty"`
 }
 
 type PolicyMapUsageSummary struct {
-	Entries             uint32                     `json:"entries"`
-	Capacity            uint32                     `json:"capacity"`
-	MaxPressurePercent  uint32                     `json:"max_pressure_percent"`
-	MaxPressureEndpoint string                     `json:"max_pressure_endpoint,omitempty"`
-	MaxPressureSeverity string                     `json:"max_pressure_severity"`
-	PressureEndpoints   int                        `json:"pressure_endpoints"`
-	PressureHotspots    []PolicyMapPressureHotspot `json:"pressure_hotspots,omitempty"`
+	Entries                     uint32                     `json:"entries"`
+	Capacity                    uint32                     `json:"capacity"`
+	MaxPressurePercent          uint32                     `json:"max_pressure_percent"`
+	MaxPressureEndpoint         string                     `json:"max_pressure_endpoint,omitempty"`
+	MaxPressureSeverity         string                     `json:"max_pressure_severity"`
+	RecommendedCapacity         uint32                     `json:"recommended_capacity,omitempty"`
+	RecommendedCapacityEndpoint string                     `json:"recommended_capacity_endpoint,omitempty"`
+	PressureEndpoints           int                        `json:"pressure_endpoints"`
+	PressureHotspots            []PolicyMapPressureHotspot `json:"pressure_hotspots,omitempty"`
 }
 
 const DefaultPolicyMapPressureThresholdPercent = 80
@@ -669,19 +672,28 @@ func SummarizePolicyMapUsage(usages []PolicyMapUsage) PolicyMapUsageSummary {
 		summary.Capacity += usage.Capacity
 		pressure := policyMapPressurePercent(usage)
 		severity := PolicyMapPressureSeverity(usage)
+		recommendedCapacity := PolicyMapRecommendedCapacity(usage)
 		if pressure > 0 {
 			summary.PressureHotspots = append(summary.PressureHotspots, PolicyMapPressureHotspot{
-				EndpointID:      usage.EndpointID,
-				Entries:         usage.Entries,
-				Capacity:        usage.Capacity,
-				PressurePercent: pressure,
-				Severity:        severity,
+				EndpointID:          usage.EndpointID,
+				Entries:             usage.Entries,
+				Capacity:            usage.Capacity,
+				PressurePercent:     pressure,
+				Severity:            severity,
+				RecommendedCapacity: recommendedCapacity,
 			})
 		}
 		if pressure > summary.MaxPressurePercent || pressure == summary.MaxPressurePercent && pressure > 0 && (summary.MaxPressureEndpoint == "" || usage.EndpointID < summary.MaxPressureEndpoint) {
 			summary.MaxPressurePercent = pressure
 			summary.MaxPressureEndpoint = usage.EndpointID
 			summary.MaxPressureSeverity = severity
+		}
+		if recommendedCapacity > summary.RecommendedCapacity ||
+			recommendedCapacity == summary.RecommendedCapacity &&
+				recommendedCapacity > 0 &&
+				(summary.RecommendedCapacityEndpoint == "" || usage.EndpointID < summary.RecommendedCapacityEndpoint) {
+			summary.RecommendedCapacity = recommendedCapacity
+			summary.RecommendedCapacityEndpoint = usage.EndpointID
 		}
 		if pressure >= DefaultPolicyMapPressureThresholdPercent {
 			summary.PressureEndpoints++
@@ -695,6 +707,14 @@ func SummarizePolicyMapUsage(usages []PolicyMapUsage) PolicyMapUsageSummary {
 		summary.PressureHotspots = summary.PressureHotspots[:DefaultPolicyMapPressureHotspotLimit]
 	}
 	return summary
+}
+
+func PolicyMapRecommendedCapacity(usage PolicyMapUsage) uint32 {
+	if usage.Capacity == 0 || usage.Entries == 0 || policyMapPressurePercent(usage) < DefaultPolicyMapPressureThresholdPercent {
+		return 0
+	}
+	threshold := uint64(DefaultPolicyMapPressureThresholdPercent)
+	return uint32((uint64(usage.Entries)*100)/threshold + 1)
 }
 
 func sortPolicyMapPressureHotspots(hotspots []PolicyMapPressureHotspot) {

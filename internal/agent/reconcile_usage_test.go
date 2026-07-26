@@ -90,4 +90,7 @@ func TestReconcileNodeAggregatesPolicyMapPressureSummary(t *testing.T) {
 	if result.PolicyMapPressureMax != 81 || result.PolicyMapPressureEndpoint != model.EndpointKey("prod", "pod-a") || result.PolicyMapPressureEndpoints != 1 {
 		t.Fatalf("pressure summary = %+v, want one pressured endpoint at 81%%", result)
 	}
+	if result.PolicyMapRecommendedCapacity != 17 || result.PolicyMapRecommendedEndpoint != model.EndpointKey("prod", "pod-a") {
+		t.Fatalf("policy map recommended capacity = %d/%q, want 17 for pod-a", result.PolicyMapRecommendedCapacity, result.PolicyMapRecommendedEndpoint)
+	}
 }

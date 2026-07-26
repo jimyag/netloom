@@ -105,6 +105,9 @@ func TestSummarizePolicyMapUsageCalculatesPressureBands(t *testing.T) {
 	if summary.PressureEndpoints != 1 {
 		t.Fatalf("pressure endpoints = %d, want 1", summary.PressureEndpoints)
 	}
+	if summary.RecommendedCapacity != 17 || summary.RecommendedCapacityEndpoint != "b" {
+		t.Fatalf("recommended capacity = %d/%q, want 17 for b", summary.RecommendedCapacity, summary.RecommendedCapacityEndpoint)
+	}
 }
 
 func TestDiffPolicyMapEntriesClassifiesDrift(t *testing.T) {
