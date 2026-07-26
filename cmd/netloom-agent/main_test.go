@@ -3398,6 +3398,68 @@ func TestPolicyRulesAPIFiltersByRuleCookie(t *testing.T) {
 	}
 }
 
+func TestPolicyRulesAPIFiltersByDirectionAndAction(t *testing.T) {
+	metrics := newAgentMetrics()
+	endpointID := model.EndpointKey("prod", "pod-a")
+	observeAgentReconcileResult(metrics, agent.ReconcileResult{
+		Node: "node-a",
+		PolicyRuleStats: []dataplane.RuleMetrics{{
+			EndpointID: endpointID,
+			RuleCookie: 42,
+			Packets:    5,
+			Bytes:      640,
+			Allowed:    5,
+		}, {
+			EndpointID: endpointID,
+			RuleCookie: 43,
+			Packets:    7,
+			Bytes:      700,
+			Dropped:    7,
+			DenyDrops:  7,
+		}},
+		PolicyRuleCatalog: []agent.PolicyRuleCatalogEntry{{
+			EndpointID:    endpointID,
+			RuleCookie:    42,
+			RuleRef:       "sg/web/allow-http",
+			VPC:           "prod",
+			SecurityGroup: "web",
+			RuleID:        "allow-http",
+			Direction:     model.DirectionIngress,
+			Action:        model.ActionAllow,
+		}, {
+			EndpointID:    endpointID,
+			RuleCookie:    43,
+			RuleRef:       "sg/web/drop-db",
+			VPC:           "prod",
+			SecurityGroup: "web",
+			RuleID:        "drop-db",
+			Direction:     model.DirectionEgress,
+			Action:        model.ActionDrop,
+		}},
+	}, "ebpf", time.Millisecond)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/policy/rules?direction=egress&action=drop", nil)
+	metrics.handlePolicyRules(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var got policyRulesOutput
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode policy rules response: %v\n%s", err, recorder.Body.String())
+	}
+	if got.FilterDirection != model.DirectionEgress || got.FilterAction != model.ActionDrop || got.RuleCount != 1 {
+		t.Fatalf("policy rules summary = %+v, want egress drop filter with one rule", got)
+	}
+	if got.Packets != 7 || got.Bytes != 700 || got.Dropped != 7 || got.DenyDrops != 7 || got.Allowed != 0 {
+		t.Fatalf("policy rules counters = %+v, want drop rule totals", got)
+	}
+	if len(got.Rules) != 1 || got.Rules[0].RuleCookie != 43 || got.Rules[0].RuleRef != "sg/web/drop-db" || got.Rules[0].Direction != model.DirectionEgress || got.Rules[0].Action != model.ActionDrop {
+		t.Fatalf("rules = %+v, want only egress drop-db rule", got.Rules)
+	}
+}
+
 func TestPolicyRulesAPIRejectsInvalidRuleCookie(t *testing.T) {
 	metrics := newAgentMetrics()
 	observeAgentReconcileResult(metrics, agent.ReconcileResult{Node: "node-a"}, "memory", time.Millisecond)
@@ -3408,6 +3470,33 @@ func TestPolicyRulesAPIRejectsInvalidRuleCookie(t *testing.T) {
 
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400; body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestPolicyRulesAPIRejectsInvalidDirectionAndAction(t *testing.T) {
+	metrics := newAgentMetrics()
+	observeAgentReconcileResult(metrics, agent.ReconcileResult{Node: "node-a"}, "memory", time.Millisecond)
+
+	for _, tc := range []struct {
+		name string
+		path string
+		want string
+	}{
+		{name: "direction", path: "/policy/rules?direction=sideways", want: "invalid direction"},
+		{name: "action", path: "/policy/rules?action=pass", want: "invalid action"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodGet, tc.path, nil)
+			metrics.handlePolicyRules(recorder, request)
+
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400; body=%s", recorder.Code, recorder.Body.String())
+			}
+			if !strings.Contains(recorder.Body.String(), tc.want) {
+				t.Fatalf("body=%s, want %q", recorder.Body.String(), tc.want)
+			}
+		})
 	}
 }
 
@@ -3494,6 +3583,51 @@ func TestRunPolicyRulesWithStoreFiltersByRuleRef(t *testing.T) {
 	}
 	if len(got.Rules) != 1 || got.Rules[0].RuleCookie != 43 || got.Rules[0].RuleRef != "sg/web/allow-https" {
 		t.Fatalf("rules = %+v, want allow-https rule", got.Rules)
+	}
+}
+
+func TestRunPolicyRulesWithStoreFiltersByDirectionAndAction(t *testing.T) {
+	store := ovsdbPolicyRulesStore{syncer: &fakeOpenVSwitchExternalIDStore{}}
+	if err := store.Save(t.Context(), policyRulesDocument{
+		Node:                 "node-a",
+		Store:                "ebpf",
+		LastReconcileSuccess: true,
+		Rules: []policyRuleOutput{{
+			EndpointID: "prod\x00pod-a",
+			RuleCookie: 42,
+			RuleRef:    "sg/web/allow-http",
+			Direction:  model.DirectionIngress,
+			Action:     model.ActionAllow,
+			Packets:    5,
+			Bytes:      640,
+			Allowed:    5,
+		}, {
+			EndpointID: "prod\x00pod-a",
+			RuleCookie: 43,
+			RuleRef:    "sg/web/drop-db",
+			Direction:  model.DirectionEgress,
+			Action:     model.ActionDrop,
+			Packets:    7,
+			Bytes:      700,
+			Dropped:    7,
+			DenyDrops:  7,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var stdout bytes.Buffer
+	if err := runPolicyRulesWithStore(t.Context(), policyRulesOptions{direction: "ingress", action: "allow"}, &stdout, store); err != nil {
+		t.Fatal(err)
+	}
+	var got policyRulesOutput
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode policy-rules output: %v\n%s", err, stdout.String())
+	}
+	if got.FilterDirection != model.DirectionIngress || got.FilterAction != model.ActionAllow || got.RuleCount != 1 || got.Packets != 5 || got.Allowed != 5 {
+		t.Fatalf("policy rules summary = %+v, want ingress allow rule", got)
+	}
+	if len(got.Rules) != 1 || got.Rules[0].RuleCookie != 42 || got.Rules[0].RuleRef != "sg/web/allow-http" {
+		t.Fatalf("rules = %+v, want allow-http rule", got.Rules)
 	}
 }
 

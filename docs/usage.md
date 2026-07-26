@@ -350,6 +350,7 @@ curl -s 'http://127.0.0.1:9092/policy/endpoints/prod/vm-a/revision?target_revisi
 ./netloom-agent policy-rules -ovsdb unix:/var/run/openvswitch/db.sock -endpoint prod/vm-a
 ./netloom-agent policy-rules -ovsdb unix:/var/run/openvswitch/db.sock -rule-cookie 42
 ./netloom-agent policy-rules -ovsdb unix:/var/run/openvswitch/db.sock -rule-ref sg/web/allow-http
+./netloom-agent policy-rules -ovsdb unix:/var/run/openvswitch/db.sock -direction ingress -action drop
 ./netloom-agent policy-events -ovsdb unix:/var/run/openvswitch/db.sock -endpoint prod/vm-a -limit 20
 ./netloom-agent policy-events -ovsdb unix:/var/run/openvswitch/db.sock -success false -limit 20
 ./netloom-agent policy-events -ovsdb unix:/var/run/openvswitch/db.sock -remediated true -limit 20
@@ -481,9 +482,12 @@ curl -s http://127.0.0.1:9092/policy/rules
 curl -s http://127.0.0.1:9092/policy/rules/prod/vm-a
 curl -s 'http://127.0.0.1:9092/policy/rules?rule_cookie=42'
 curl -s 'http://127.0.0.1:9092/policy/rules?rule_ref=sg/web/allow-http'
+curl -s 'http://127.0.0.1:9092/policy/rules?direction=ingress&action=drop'
 netloom-agent policy-rules \
   -ovsdb unix:/var/run/openvswitch/db.sock \
-  -endpoint prod/vm-a
+  -endpoint prod/vm-a \
+  -direction ingress \
+  -action drop
 ovs-vsctl get Open_vSwitch . external_ids:netloom_policy_rules
 ```
 
@@ -491,8 +495,9 @@ ovs-vsctl get Open_vSwitch . external_ids:netloom_policy_rules
 rule counter 合并视图会写入 `Open_vSwitch.external_ids:netloom_policy_rules`。
 `policy-rules` CLI 会从本机 OVSDB 读取同一个 key，适合在没有打开 agent HTTP listener
 时审计 Cilium-style rule counter 和规则来源映射。
-HTTP API 和 CLI 都支持按 endpoint、rule cookie 或 rule ref 过滤，便于从 eBPF/TCX
-计数器里的 cookie 反查对应安全组规则。
+HTTP API 和 CLI 都支持按 endpoint、rule cookie、rule ref、direction 或 action
+过滤，便于从 eBPF/TCX 计数器里的 cookie 反查对应安全组规则，并按 ingress/egress
+或 allow/drop/reject/log 快速收敛排障范围。
 
 查看最近 endpoint policy map 更新事件：
 

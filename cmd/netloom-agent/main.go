@@ -267,6 +267,8 @@ type policyRulesOptions struct {
 	endpoint   string
 	ruleCookie string
 	ruleRef    string
+	direction  string
+	action     string
 }
 
 type policyRolloutHistoryOptions struct {
@@ -399,6 +401,8 @@ type policyRulesOutput struct {
 	FilterEndpoint       string             `json:"filter_endpoint,omitempty"`
 	FilterRuleCookie     uint32             `json:"filter_rule_cookie,omitempty"`
 	FilterRuleRef        string             `json:"filter_rule_ref,omitempty"`
+	FilterDirection      model.Direction    `json:"filter_direction,omitempty"`
+	FilterAction         model.Action       `json:"filter_action,omitempty"`
 	RuleCount            int                `json:"rule_count"`
 	Packets              uint64             `json:"packets"`
 	Bytes                uint64             `json:"bytes"`
@@ -1364,6 +1368,8 @@ func runPolicyRules(ctx context.Context, args []string, stdout io.Writer) error 
 	flags.StringVar(&opts.endpoint, "endpoint", "", "optional endpoint key or endpoint ID to include")
 	flags.StringVar(&opts.ruleCookie, "rule-cookie", "", "optional dataplane rule cookie to include")
 	flags.StringVar(&opts.ruleRef, "rule-ref", "", "optional policy rule reference to include")
+	flags.StringVar(&opts.direction, "direction", "", "optional policy rule direction to include: ingress or egress")
+	flags.StringVar(&opts.action, "action", "", "optional policy rule action to include: allow, drop, reject, or log")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -2042,20 +2048,38 @@ type policyRuleFilter struct {
 	Endpoint   string
 	RuleCookie *uint32
 	RuleRef    string
+	Direction  model.Direction
+	Action     model.Action
 }
 
 func policyRuleFilterFromOptions(opts policyRulesOptions) (policyRuleFilter, error) {
-	return policyRuleFilterFromValues(opts.endpoint, opts.ruleCookie, opts.ruleRef)
+	return policyRuleFilterFromValues(opts.endpoint, opts.ruleCookie, opts.ruleRef, opts.direction, opts.action)
 }
 
 func policyRuleFilterFromRequest(r *http.Request, endpoint string) (policyRuleFilter, error) {
-	return policyRuleFilterFromValues(endpoint, r.URL.Query().Get("rule_cookie"), r.URL.Query().Get("rule_ref"))
+	return policyRuleFilterFromValues(endpoint, r.URL.Query().Get("rule_cookie"), r.URL.Query().Get("rule_ref"), r.URL.Query().Get("direction"), r.URL.Query().Get("action"))
 }
 
-func policyRuleFilterFromValues(endpoint, ruleCookie, ruleRef string) (policyRuleFilter, error) {
+func policyRuleFilterFromValues(endpoint, ruleCookie, ruleRef, direction, action string) (policyRuleFilter, error) {
 	filter := policyRuleFilter{
 		Endpoint: strings.TrimSpace(endpoint),
 		RuleRef:  strings.TrimSpace(ruleRef),
+	}
+	direction = strings.TrimSpace(direction)
+	switch model.Direction(direction) {
+	case "":
+	case model.DirectionIngress, model.DirectionEgress:
+		filter.Direction = model.Direction(direction)
+	default:
+		return filter, fmt.Errorf("invalid direction %q", direction)
+	}
+	action = strings.TrimSpace(action)
+	switch model.Action(action) {
+	case "":
+	case model.ActionAllow, model.ActionDrop, model.ActionReject, model.ActionLog:
+		filter.Action = model.Action(action)
+	default:
+		return filter, fmt.Errorf("invalid action %q", action)
 	}
 	ruleCookie = strings.TrimSpace(ruleCookie)
 	if ruleCookie == "" {
@@ -2095,6 +2119,8 @@ func policyRulesOutputFromRules(node, store string, rules []policyRuleOutput, fi
 		FilterEndpoint:   filter.Endpoint,
 		FilterRuleRef:    filter.RuleRef,
 		FilterRuleCookie: filterRuleCookieValue(filter),
+		FilterDirection:  filter.Direction,
+		FilterAction:     filter.Action,
 		RuleCount:        len(rules),
 		Rules:            rules,
 	}
@@ -2497,7 +2523,7 @@ func policyUpdateEventRuleRefs(event dataplane.PolicyUpdateEvent, refs map[strin
 }
 
 func filterPolicyRuleOutputs(rules []policyRuleOutput, filter policyRuleFilter) []policyRuleOutput {
-	if filter.Endpoint == "" && filter.RuleCookie == nil && filter.RuleRef == "" {
+	if !policyRuleFilterActive(filter) {
 		return append([]policyRuleOutput(nil), rules...)
 	}
 	out := make([]policyRuleOutput, 0, len(rules))
@@ -2519,7 +2545,21 @@ func policyRuleMatches(rule policyRuleOutput, filter policyRuleFilter) bool {
 	if filter.RuleRef != "" && rule.RuleRef != filter.RuleRef {
 		return false
 	}
+	if filter.Direction != "" && rule.Direction != filter.Direction {
+		return false
+	}
+	if filter.Action != "" && rule.Action != filter.Action {
+		return false
+	}
 	return true
+}
+
+func policyRuleFilterActive(filter policyRuleFilter) bool {
+	return filter.Endpoint != "" ||
+		filter.RuleCookie != nil ||
+		filter.RuleRef != "" ||
+		filter.Direction != "" ||
+		filter.Action != ""
 }
 
 func filterRuleCookieValue(filter policyRuleFilter) uint32 {
@@ -5711,7 +5751,7 @@ func (m *agentMetrics) handlePolicyRules(w http.ResponseWriter, r *http.Request)
 	output.Ready = true
 	output.LastReconcileSuccess = snapshot.Success
 	output.LastReconcileError = snapshot.Error
-	if (filter.Endpoint != "" || filter.RuleCookie != nil || filter.RuleRef != "") && len(output.Rules) == 0 {
+	if policyRuleFilterActive(filter) && len(output.Rules) == 0 {
 		w.WriteHeader(http.StatusNotFound)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "policy rule metrics not found"})
 		return
