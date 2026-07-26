@@ -1306,16 +1306,33 @@ func TestRunPolicyEntriesRequiresEndpoint(t *testing.T) {
 
 func TestRunAgentStatusWithStoreReportsOpenVSwitchStatus(t *testing.T) {
 	status := agentOVSDBStatus{
-		SchemaVersion:                 1,
-		UpdatedAt:                     time.Now().UTC().Format(time.RFC3339Nano),
-		Node:                          "node-a",
-		Store:                         "ebpf",
-		Status:                        "success",
-		Endpoints:                     2,
-		PolicyMapEntries:              4,
-		PolicyMapRecommendedCapacity:  17,
-		PolicyMapRecommendedEndpoint:  "prod\x00pod-a",
-		PolicyRolloutApplied:          1,
+		SchemaVersion:                1,
+		UpdatedAt:                    time.Now().UTC().Format(time.RFC3339Nano),
+		Node:                         "node-a",
+		Store:                        "ebpf",
+		Status:                       "success",
+		Endpoints:                    2,
+		PolicyMapEntries:             4,
+		PolicyMapRecommendedCapacity: 17,
+		PolicyMapRecommendedEndpoint: "prod\x00pod-a",
+		PolicyRolloutApplied:         1,
+		PolicyRulePackets:            3,
+		PolicyRuleDropped:            1,
+		PolicyRuleDenyDrops:          1,
+		PolicyRuleCount:              1,
+		PolicyRuleHotspots: []policyRuleOutput{{
+			EndpointID:    "prod\x00pod-a",
+			RuleCookie:    7,
+			RuleRef:       "prod/web/deny-client",
+			VPC:           "prod",
+			SecurityGroup: "web",
+			RuleID:        "deny-client",
+			Direction:     model.DirectionIngress,
+			Action:        model.ActionDrop,
+			Packets:       3,
+			Dropped:       1,
+			DenyDrops:     1,
+		}},
 		TCX:                           "attached",
 		RuntimeReady:                  true,
 		RuntimeFailed:                 0,
@@ -1342,6 +1359,12 @@ func TestRunAgentStatusWithStoreReportsOpenVSwitchStatus(t *testing.T) {
 	}
 	if got.Node != "node-a" || got.Store != "ebpf" || got.Status != "success" || got.PolicyMapEntries != 4 || got.PolicyMapRecommendedCapacity != 17 || got.PolicyMapRecommendedEndpoint != "prod\x00pod-a" || got.PolicyRolloutApplied != 1 || got.ProviderReady != 1 || !got.RuntimeReady || got.RuntimeWarned != 1 || len(got.Runtime) != 2 {
 		t.Fatalf("agent status = %+v, want decoded OVSDB status", got)
+	}
+	if got.PolicyRulePackets != 3 || got.PolicyRuleDropped != 1 || got.PolicyRuleDenyDrops != 1 || got.PolicyRuleCount != 1 {
+		t.Fatalf("agent policy rule summary = %+v, want decoded rule counters", got)
+	}
+	if len(got.PolicyRuleHotspots) != 1 || got.PolicyRuleHotspots[0].RuleRef != "prod/web/deny-client" {
+		t.Fatalf("agent policy rule hotspots = %+v, want decoded deny-client rule", got.PolicyRuleHotspots)
 	}
 }
 
@@ -1892,6 +1915,9 @@ func TestReconcileStateFileOnceWritesAgentStatusToOpenVSwitchExternalID(t *testi
 	}
 	if status.Status != "success" || status.Node != "node-a" || status.Store != "memory" || status.Endpoints != 1 || status.PolicyMapEntries != 1 {
 		t.Fatalf("agent OVSDB status = %+v, want successful node-a memory reconcile with one policy entry", status)
+	}
+	if status.PolicyRuleCount != 1 || len(status.PolicyRuleHotspots) != 1 || status.PolicyRuleHotspots[0].RuleRef != "prod/web/allow-http" {
+		t.Fatalf("agent OVSDB policy rule summary = count:%d hotspots:%+v, want allow-http rule attribution", status.PolicyRuleCount, status.PolicyRuleHotspots)
 	}
 	if !status.RuntimeReady || len(status.Runtime) == 0 {
 		t.Fatalf("agent OVSDB runtime status = ready:%t checks:%+v, want ready runtime preflight checks", status.RuntimeReady, status.Runtime)

@@ -48,6 +48,8 @@ const (
 	identityGroupsStateKey  = "netloom_identity_groups"
 )
 
+const defaultAgentStatusPolicyRuleLimit = 5
+
 var runAgentRuntimePreflight = agent.RunRuntimePreflight
 
 func main() {
@@ -3702,6 +3704,17 @@ type agentOVSDBStatus struct {
 	PolicyFailedRevision          uint64               `json:"policy_failed_revision,omitempty"`
 	PolicyRevisionMax             uint64               `json:"policy_revision_max"`
 	PolicyLastError               string               `json:"policy_last_error,omitempty"`
+	PolicyRulePackets             uint64               `json:"policy_rule_packets"`
+	PolicyRuleBytes               uint64               `json:"policy_rule_bytes"`
+	PolicyRuleAllowed             uint64               `json:"policy_rule_allowed"`
+	PolicyRuleDropped             uint64               `json:"policy_rule_dropped"`
+	PolicyRuleRejected            uint64               `json:"policy_rule_rejected"`
+	PolicyRuleLogged              uint64               `json:"policy_rule_logged"`
+	PolicyRuleNoMatchDrops        uint64               `json:"policy_rule_no_match_drops"`
+	PolicyRuleDenyDrops           uint64               `json:"policy_rule_deny_drops"`
+	PolicyRuleRejectDrops         uint64               `json:"policy_rule_reject_drops"`
+	PolicyRuleCount               int                  `json:"policy_rule_count"`
+	PolicyRuleHotspots            []policyRuleOutput   `json:"policy_rule_hotspots,omitempty"`
 	TCX                           string               `json:"tcx"`
 	TCXFailed                     int                  `json:"tcx_failed"`
 	TCXRollbacks                  int                  `json:"tcx_rollbacks"`
@@ -3773,6 +3786,17 @@ func syncAgentOVSDBStatus(ctx context.Context, store openVSwitchExternalIDStore,
 		PolicyFailedRevision:          result.PolicyFailedRevision,
 		PolicyRevisionMax:             result.PolicyRevisionMax,
 		PolicyLastError:               result.PolicyLastError,
+		PolicyRulePackets:             result.PolicyRulePackets,
+		PolicyRuleBytes:               result.PolicyRuleBytes,
+		PolicyRuleAllowed:             result.PolicyRuleAllowed,
+		PolicyRuleDropped:             result.PolicyRuleDropped,
+		PolicyRuleRejected:            result.PolicyRuleRejected,
+		PolicyRuleLogged:              result.PolicyRuleLogged,
+		PolicyRuleNoMatchDrops:        policyRuleNoMatchDrops(result.PolicyRuleStats),
+		PolicyRuleDenyDrops:           policyRuleDenyDrops(result.PolicyRuleStats),
+		PolicyRuleRejectDrops:         policyRuleRejectDrops(result.PolicyRuleStats),
+		PolicyRuleCount:               len(mergePolicyRuleStatsAndCatalog(result.PolicyRuleStats, result.PolicyRuleCatalog)),
+		PolicyRuleHotspots:            policyRuleStatusHotspots(result, defaultAgentStatusPolicyRuleLimit),
 		TCX:                           result.TCX,
 		TCXFailed:                     result.TCXFailed,
 		TCXRollbacks:                  result.TCXRollbacks,
@@ -3813,6 +3837,56 @@ func syncAgentOVSDBStatus(ctx context.Context, store openVSwitchExternalIDStore,
 	if err := store.SetOpenVSwitchExternalID(ctx, agentOVSDBStatusKey, string(raw)); err != nil {
 		log.Printf("write Open_vSwitch external_ids:%s: %v", agentOVSDBStatusKey, err)
 	}
+}
+
+func policyRuleStatusHotspots(result agent.ReconcileResult, limit int) []policyRuleOutput {
+	rules := mergePolicyRuleStatsAndCatalog(result.PolicyRuleStats, result.PolicyRuleCatalog)
+	if limit <= 0 || len(rules) == 0 {
+		return nil
+	}
+	sort.SliceStable(rules, func(i, j int) bool {
+		if rules[i].Dropped != rules[j].Dropped {
+			return rules[i].Dropped > rules[j].Dropped
+		}
+		if rules[i].Packets != rules[j].Packets {
+			return rules[i].Packets > rules[j].Packets
+		}
+		if rules[i].Bytes != rules[j].Bytes {
+			return rules[i].Bytes > rules[j].Bytes
+		}
+		if rules[i].EndpointID != rules[j].EndpointID {
+			return rules[i].EndpointID < rules[j].EndpointID
+		}
+		return rules[i].RuleCookie < rules[j].RuleCookie
+	})
+	if len(rules) > limit {
+		rules = rules[:limit]
+	}
+	return append([]policyRuleOutput(nil), rules...)
+}
+
+func policyRuleNoMatchDrops(stats []dataplane.RuleMetrics) uint64 {
+	var total uint64
+	for _, stat := range stats {
+		total += stat.NoMatchDrops
+	}
+	return total
+}
+
+func policyRuleDenyDrops(stats []dataplane.RuleMetrics) uint64 {
+	var total uint64
+	for _, stat := range stats {
+		total += stat.DenyDrops
+	}
+	return total
+}
+
+func policyRuleRejectDrops(stats []dataplane.RuleMetrics) uint64 {
+	var total uint64
+	for _, stat := range stats {
+		total += stat.RejectDrops
+	}
+	return total
 }
 
 func formatResultValue(value string) string {

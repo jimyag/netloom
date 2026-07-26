@@ -378,8 +378,8 @@ audit、stale advisory 和 maintenance 摘要。audit 事件会保留 duplicate�
 missing、unexpected 的表级计数，以及 managed field drift 的字段级计数；可用 `-phase`、`-success` 和 `-limit`
 过滤。
 `agent-status` CLI 会解码 `Open_vSwitch.external_ids:netloom_agent_status`，
-用于查看最近一次 agent reconcile 的 policy/eBPF rollout、TCX、runtime preflight、
-provider、datapath 和错误状态。
+用于查看最近一次 agent reconcile 的 policy/eBPF rollout、policy rule counter
+summary/top rule hotspots、TCX、runtime preflight、provider、datapath 和错误状态。
 `dns-observations-export` 会解码 `Open_vSwitch.external_ids:netloom_dns_observations`，
 用于查看 DNS observer 或外部 DNS feed 当前写入的 FQDN 到 A/AAAA 观测，
 这些记录会参与 `remote_fqdns` egress policy 编译。
