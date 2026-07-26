@@ -340,9 +340,14 @@ func TestProviderNetworkRejectsInvalidTenantQuotas(t *testing.T) {
 			wantErr: "max_nat_rules must not be negative",
 		},
 		{
+			name:    "negative policy routes",
+			quota:   ProviderNetworkTenantQuota{Tenant: "prod", MaxPolicyRoutes: -1},
+			wantErr: "max_policy_routes must not be negative",
+		},
+		{
 			name:    "missing limits",
 			quota:   ProviderNetworkTenantQuota{Tenant: "prod"},
-			wantErr: "max_subnets, max_endpoints, max_load_balancers, or max_nat_rules is required",
+			wantErr: "max_subnets, max_endpoints, max_load_balancers, max_nat_rules, or max_policy_routes is required",
 		},
 	}
 	for _, tt := range tests {
@@ -391,6 +396,21 @@ func TestProviderNetworkAcceptsNATRuleOnlyTenantQuota(t *testing.T) {
 		},
 	}).Validate(); err != nil {
 		t.Fatalf("valid nat-rule-only tenant quota failed: %v", err)
+	}
+}
+
+func TestProviderNetworkAcceptsPolicyRouteOnlyTenantQuota(t *testing.T) {
+	if err := (ProviderNetwork{
+		Name: "physnet-a",
+		TenantQuotas: []ProviderNetworkTenantQuota{{
+			Tenant:          "prod",
+			MaxPolicyRoutes: 3,
+		}},
+		Nodes: []ProviderNetworkNode{
+			{Node: "node-a", Interface: "bond0.100"},
+		},
+	}).Validate(); err != nil {
+		t.Fatalf("valid policy-route-only tenant quota failed: %v", err)
 	}
 }
 

@@ -132,6 +132,7 @@ type ProviderNetworkStatus struct {
 	EndpointCount     int
 	LoadBalancerCount int
 	NATRuleCount      int
+	PolicyRouteCount  int
 	TenantUsage       []ProviderTenantUsage
 }
 
@@ -141,10 +142,12 @@ type ProviderTenantUsage struct {
 	Endpoints        int
 	LoadBalancers    int
 	NATRules         int
+	PolicyRoutes     int
 	MaxSubnets       int
 	MaxEndpoints     int
 	MaxLoadBalancers int
 	MaxNATRules      int
+	MaxPolicyRoutes  int
 	Exceeded         bool
 }
 
@@ -734,6 +737,7 @@ func applyProviderTenantUsage(statuses []ProviderNetworkStatus, usage map[string
 			statuses[index].EndpointCount += tenant.Endpoints
 			statuses[index].LoadBalancerCount += tenant.LoadBalancers
 			statuses[index].NATRuleCount += tenant.NATRules
+			statuses[index].PolicyRouteCount += tenant.PolicyRoutes
 			if tenant.Exceeded {
 				statuses[index].Reasons = appendUniqueSorted(statuses[index].Reasons, "tenant-quota-exceeded")
 				statuses[index].IssueCount = len(statuses[index].Reasons)
@@ -804,6 +808,13 @@ func providerTenantUsage(state control.DesiredState) map[string][]ProviderTenant
 			setProviderTenantUsage(usageByProviderTenant, providerName, rule.VPC, usage)
 		}
 	}
+	for _, route := range state.PolicyRoutes {
+		for providerName := range tenantProviders[route.VPC] {
+			usage := providerTenantUsageFor(usageByProviderTenant, providerName, route.VPC)
+			usage.PolicyRoutes++
+			setProviderTenantUsage(usageByProviderTenant, providerName, route.VPC, usage)
+		}
+	}
 	out := make(map[string][]ProviderTenantUsage, len(usageByProviderTenant))
 	for provider, tenants := range usageByProviderTenant {
 		for tenant, usage := range tenants {
@@ -813,10 +824,12 @@ func providerTenantUsage(state control.DesiredState) map[string][]ProviderTenant
 			usage.MaxEndpoints = quota.MaxEndpoints
 			usage.MaxLoadBalancers = quota.MaxLoadBalancers
 			usage.MaxNATRules = quota.MaxNATRules
+			usage.MaxPolicyRoutes = quota.MaxPolicyRoutes
 			usage.Exceeded = (usage.MaxSubnets > 0 && usage.Subnets > usage.MaxSubnets) ||
 				(usage.MaxEndpoints > 0 && usage.Endpoints > usage.MaxEndpoints) ||
 				(usage.MaxLoadBalancers > 0 && usage.LoadBalancers > usage.MaxLoadBalancers) ||
-				(usage.MaxNATRules > 0 && usage.NATRules > usage.MaxNATRules)
+				(usage.MaxNATRules > 0 && usage.NATRules > usage.MaxNATRules) ||
+				(usage.MaxPolicyRoutes > 0 && usage.PolicyRoutes > usage.MaxPolicyRoutes)
 			out[provider] = append(out[provider], usage)
 		}
 	}

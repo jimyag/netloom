@@ -5868,16 +5868,19 @@ func TestReconcileNodeReportsProviderNetworkCountsFromLinuxDatapath(t *testing.T
 				EndpointCount:     1,
 				LoadBalancerCount: 1,
 				NATRuleCount:      1,
+				PolicyRouteCount:  1,
 				TenantUsage: []linuxdatapath.ProviderTenantUsage{{
 					Tenant:           "prod",
 					Subnets:          1,
 					Endpoints:        1,
 					LoadBalancers:    1,
 					NATRules:         1,
+					PolicyRoutes:     1,
 					MaxSubnets:       1,
 					MaxEndpoints:     2,
 					MaxLoadBalancers: 3,
 					MaxNATRules:      4,
+					MaxPolicyRoutes:  5,
 				}},
 			}},
 		}, nil),
@@ -5892,14 +5895,14 @@ func TestReconcileNodeReportsProviderNetworkCountsFromLinuxDatapath(t *testing.T
 		t.Fatalf("provider network status = %+v, want 1 entry", result.ProviderNetworkStatus)
 	}
 	status := result.ProviderNetworkStatus[0]
-	if status.TenantCount != 1 || status.SubnetCount != 1 || status.EndpointCount != 1 || status.LoadBalancerCount != 1 || status.NATRuleCount != 1 {
+	if status.TenantCount != 1 || status.SubnetCount != 1 || status.EndpointCount != 1 || status.LoadBalancerCount != 1 || status.NATRuleCount != 1 || status.PolicyRouteCount != 1 {
 		t.Fatalf("provider network status = %+v, want prod tenant usage", status)
 	}
 	if len(status.TenantUsage) != 1 {
 		t.Fatalf("tenant usage = %+v, want 1 entry", status.TenantUsage)
 	}
 	usage := status.TenantUsage[0]
-	if usage.Tenant != "prod" || usage.Subnets != 1 || usage.Endpoints != 1 || usage.LoadBalancers != 1 || usage.NATRules != 1 || usage.MaxSubnets != 1 || usage.MaxEndpoints != 2 || usage.MaxLoadBalancers != 3 || usage.MaxNATRules != 4 || usage.Exceeded {
+	if usage.Tenant != "prod" || usage.Subnets != 1 || usage.Endpoints != 1 || usage.LoadBalancers != 1 || usage.NATRules != 1 || usage.PolicyRoutes != 1 || usage.MaxSubnets != 1 || usage.MaxEndpoints != 2 || usage.MaxLoadBalancers != 3 || usage.MaxNATRules != 4 || usage.MaxPolicyRoutes != 5 || usage.Exceeded {
 		t.Fatalf("tenant usage = %+v, want prod quota usage", usage)
 	}
 	if result.ProviderReady != 0 || result.ProviderDegraded != 1 {
