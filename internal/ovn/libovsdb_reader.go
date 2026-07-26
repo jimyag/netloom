@@ -115,6 +115,7 @@ func (r *LibOVSDBManagedReader) ManagedOVNRows(ctx context.Context, table string
 				"tag":              intPointerField(row.Tag),
 				"tag_request":      intPointerField(row.TagRequest),
 				"enabled":          boolPointerField(row.Enabled),
+				"up":               boolPointerField(row.Up),
 				"ha_chassis_group": pointerStringValue(row.HaChassisGroup),
 				"mirror_rules":     stringSliceField(row.MirrorRules),
 				"parent_name":      pointerStringValue(row.ParentName),

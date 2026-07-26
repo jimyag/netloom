@@ -227,7 +227,7 @@ func TestNBCTLExecutorManagedOVNRowsResolvesSwitchPortDHCPOptions(t *testing.T) 
 	script := `#!/bin/sh
 printf '%s\n' "$*" >> "` + logPath + `"
 case "$*" in
-  *"--columns=_uuid,external_ids,name,type,addresses,port_security,options,tag,tag_request,enabled,ha_chassis_group,mirror_rules,parent_name,peer,dhcpv4_options,dhcpv6_options find Logical_Switch_Port external_ids:netloom_owner=netloom"*) printf 'lsp-pod-a,"{netloom_owner=netloom,netloom_vpc=prod,netloom_endpoint=prod/pod-a}",nl_lp_prod_pod-a,,02:00:00:00:00:20,,{},[],[],true,[],[],[],[],dhcp-v4,[]\n' ;;
+  *"--columns=_uuid,external_ids,name,type,addresses,port_security,options,tag,tag_request,enabled,up,ha_chassis_group,mirror_rules,parent_name,peer,dhcpv4_options,dhcpv6_options find Logical_Switch_Port external_ids:netloom_owner=netloom"*) printf 'lsp-pod-a,"{netloom_owner=netloom,netloom_vpc=prod,netloom_endpoint=prod/pod-a}",nl_lp_prod_pod-a,,02:00:00:00:00:20,,{},[],[],true,true,[],[],[],[],dhcp-v4,[]\n' ;;
   *"--columns=_uuid,external_ids,cidr find DHCP_Options external_ids:netloom_owner=netloom"*) printf 'dhcp-v4,"{netloom_owner=netloom,netloom_dhcp_family=4}",10.10.0.0/24\n' ;;
 esac
 `
@@ -252,7 +252,7 @@ esac
 	}
 	logged := string(logData)
 	for _, expected := range []string{
-		"--columns=_uuid,external_ids,name,type,addresses,port_security,options,tag,tag_request,enabled,ha_chassis_group,mirror_rules,parent_name,peer,dhcpv4_options,dhcpv6_options",
+		"--columns=_uuid,external_ids,name,type,addresses,port_security,options,tag,tag_request,enabled,up,ha_chassis_group,mirror_rules,parent_name,peer,dhcpv4_options,dhcpv6_options",
 		"--columns=_uuid,external_ids,cidr find DHCP_Options",
 	} {
 		if !strings.Contains(logged, expected) {
@@ -378,12 +378,46 @@ func TestManagedAuditNBCTLColumnsIncludesBFDStatus(t *testing.T) {
 	t.Fatalf("BFD audit columns = %v, want status", columns)
 }
 
+func TestAuditManagedObjectsFromReaderCountsLogicalSwitchPortUp(t *testing.T) {
+	reader := fakeManagedOVNReader{rows: map[string][]ManagedOVNRow{
+		"Logical_Switch_Port": {
+			{Table: "Logical_Switch_Port", UUID: "lsp-up", ExternalIDs: map[string]string{
+				"netloom_owner":    "netloom",
+				"netloom_vpc":      "prod",
+				"netloom_endpoint": "prod/pod-a",
+			}, Fields: map[string]string{"up": "true"}},
+			{Table: "Logical_Switch_Port", UUID: "lsp-down", ExternalIDs: map[string]string{
+				"netloom_owner":    "netloom",
+				"netloom_vpc":      "prod",
+				"netloom_endpoint": "prod/pod-b",
+			}, Fields: map[string]string{"up": "false"}},
+			{Table: "Logical_Switch_Port", UUID: "lsp-unknown", ExternalIDs: map[string]string{
+				"netloom_owner":    "netloom",
+				"netloom_vpc":      "prod",
+				"netloom_endpoint": "prod/pod-c",
+			}, Fields: map[string]string{}},
+		},
+	}}
+
+	stats, err := AuditManagedObjectsFromReader(context.Background(), reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.ManagedLogicalSwitchPorts != 3 ||
+		stats.LogicalSwitchPortUpCounts["true"] != 1 ||
+		stats.LogicalSwitchPortUpCounts["false"] != 1 ||
+		stats.LogicalSwitchPortUpCounts["unknown"] != 1 ||
+		stats.DriftedManagedRows != 0 {
+		t.Fatalf("audit stats = %+v, want logical switch port up counts without drift", stats)
+	}
+}
+
 func TestNBCTLExecutorManagedOVNRowsReportsMissingSwitchPortDHCPOptions(t *testing.T) {
 	tmp := t.TempDir()
 	binary := filepath.Join(tmp, "ovn-nbctl")
 	script := `#!/bin/sh
 case "$*" in
-  *"find Logical_Switch_Port external_ids:netloom_owner=netloom"*) printf 'lsp-pod-a,"{netloom_owner=netloom,netloom_vpc=prod,netloom_endpoint=prod/pod-a}",nl_lp_prod_pod-a,,10.10.0.20,,{},[],[],true,[],[],[],[],[],[]\n' ;;
+  *"find Logical_Switch_Port external_ids:netloom_owner=netloom"*) printf 'lsp-pod-a,"{netloom_owner=netloom,netloom_vpc=prod,netloom_endpoint=prod/pod-a}",nl_lp_prod_pod-a,,10.10.0.20,,{},[],[],true,true,[],[],[],[],[],[]\n' ;;
   *"find DHCP_Options external_ids:netloom_owner=netloom"*) printf 'dhcp-v4,"{netloom_owner=netloom,netloom_dhcp_family=4}",10.10.0.0/24\n' ;;
 esac
 `

@@ -37,6 +37,7 @@ type AuditStats struct {
 	UnexpectedManagedTableCounts     map[string]int `json:"unexpected_managed_table_counts,omitempty"`
 	DriftedManagedFieldCounts        map[string]int `json:"drifted_managed_field_counts,omitempty"`
 	BFDStatusCounts                  map[string]int `json:"bfd_status_counts,omitempty"`
+	LogicalSwitchPortUpCounts        map[string]int `json:"logical_switch_port_up_counts,omitempty"`
 }
 
 type ManagedOVNRow struct {
@@ -91,6 +92,7 @@ func AuditManagedObjectsFromReaderWithDesired(ctx context.Context, reader Manage
 		result := auditManagedRows(table.name, rows)
 		table.addCount(&stats, result.count)
 		stats.addBFDStatusCounts(table.name, result.rows)
+		stats.addLogicalSwitchPortUpCounts(table.name, result.rows)
 		stats.DuplicateManagedRows += result.duplicates
 		stats.IncompleteManagedRows += result.incomplete
 		stats.addDuplicateManagedTable(table.name, result.duplicates)
@@ -122,6 +124,22 @@ func AuditManagedObjectsFromReaderWithDesired(ctx context.Context, reader Manage
 		}
 	}
 	return stats, nil
+}
+
+func (s *AuditStats) addLogicalSwitchPortUpCounts(table string, rows []auditManagedRow) {
+	if table != "Logical_Switch_Port" {
+		return
+	}
+	for _, row := range rows {
+		up := "unknown"
+		if row.fields != nil && strings.TrimSpace(row.fields["up"]) != "" {
+			up = strings.TrimSpace(row.fields["up"])
+		}
+		if s.LogicalSwitchPortUpCounts == nil {
+			s.LogicalSwitchPortUpCounts = make(map[string]int)
+		}
+		s.LogicalSwitchPortUpCounts[up]++
+	}
 }
 
 func (s *AuditStats) addBFDStatusCounts(table string, rows []auditManagedRow) {
@@ -272,7 +290,7 @@ func managedAuditNBCTLColumns(table string) []string {
 	case "Logical_Router":
 		columns = append(columns, "name", "options", "ports", "load_balancers", "load_balancer_group", "nat", "policies", "static_routes", "copp", "enabled")
 	case "Logical_Switch_Port":
-		columns = append(columns, "name", "type", "addresses", "port_security", "options", "tag", "tag_request", "enabled", "ha_chassis_group", "mirror_rules", "parent_name", "peer", "dhcpv4_options", "dhcpv6_options")
+		columns = append(columns, "name", "type", "addresses", "port_security", "options", "tag", "tag_request", "enabled", "up", "ha_chassis_group", "mirror_rules", "parent_name", "peer", "dhcpv4_options", "dhcpv6_options")
 	case "Logical_Router_Port":
 		columns = append(columns, "name", "mac", "networks", "ipv6_ra_configs", "dhcp_relay", "ipv6_prefix", "enabled", "options", "gateway_chassis", "ha_chassis_group", "peer")
 	case "Logical_Router_Policy":

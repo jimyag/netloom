@@ -1527,6 +1527,15 @@ func writeControllerMetrics(w metricWriter, snapshot controllerMetricsSnapshot, 
 	fmt.Fprintf(w, "netloom_controller_ovn_live_logical_routers%s %d\n", auditLabels, snapshot.OVNAudit.ManagedLogicalRouters)
 	writeMetricType(w, "netloom_controller_ovn_live_logical_switch_ports", "gauge")
 	fmt.Fprintf(w, "netloom_controller_ovn_live_logical_switch_ports%s %d\n", auditLabels, snapshot.OVNAudit.ManagedLogicalSwitchPorts)
+	writeMetricType(w, "netloom_controller_ovn_live_logical_switch_port_up", "gauge")
+	for _, up := range sortedPositiveCountKeys(snapshot.OVNAudit.LogicalSwitchPortUpCounts) {
+		labels := prometheusLabels(map[string]string{
+			"ovn_health": fallbackMetricsLabel(snapshot.OVNHealthStatus, "disabled"),
+			"ovn_audit":  fallbackMetricsLabel(snapshot.OVNAuditStatus, "disabled"),
+			"up":         up,
+		})
+		fmt.Fprintf(w, "netloom_controller_ovn_live_logical_switch_port_up%s %d\n", labels, snapshot.OVNAudit.LogicalSwitchPortUpCounts[up])
+	}
 	writeMetricType(w, "netloom_controller_ovn_live_logical_router_ports", "gauge")
 	fmt.Fprintf(w, "netloom_controller_ovn_live_logical_router_ports%s %d\n", auditLabels, snapshot.OVNAudit.ManagedLogicalRouterPorts)
 	writeMetricType(w, "netloom_controller_ovn_live_logical_router_policies", "gauge")

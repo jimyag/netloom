@@ -1208,6 +1208,10 @@ func TestControllerMetricsExportsLatestSuccess(t *testing.T) {
 			BFDStatusCounts: map[string]int{
 				"down": 1,
 			},
+			LogicalSwitchPortUpCounts: map[string]int{
+				"false": 1,
+				"true":  1,
+			},
 		},
 		OVNStaleAdvisory: ovnStaleAdvisory{
 			Status:    "warning",
@@ -1279,6 +1283,8 @@ func TestControllerMetricsExportsLatestSuccess(t *testing.T) {
 		`netloom_controller_ovn_live_managed_objects{ovn_audit="ok",ovn_health="ok"} 12`,
 		`netloom_controller_ovn_live_logical_switches{ovn_audit="ok",ovn_health="ok"} 1`,
 		`netloom_controller_ovn_live_logical_switch_ports{ovn_audit="ok",ovn_health="ok"} 2`,
+		`netloom_controller_ovn_live_logical_switch_port_up{ovn_audit="ok",ovn_health="ok",up="false"} 1`,
+		`netloom_controller_ovn_live_logical_switch_port_up{ovn_audit="ok",ovn_health="ok",up="true"} 1`,
 		`netloom_controller_ovn_live_logical_router_policies{ovn_audit="ok",ovn_health="ok"} 1`,
 		`netloom_controller_ovn_live_logical_router_static_routes{ovn_audit="ok",ovn_health="ok"} 1`,
 		`netloom_controller_ovn_live_bfds{ovn_audit="ok",ovn_health="ok"} 1`,

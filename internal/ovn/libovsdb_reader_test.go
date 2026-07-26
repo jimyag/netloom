@@ -148,6 +148,81 @@ func TestAuditManagedObjectsFromLibOVSDBReaderCountsBFDStatus(t *testing.T) {
 	}
 }
 
+func TestAuditManagedObjectsFromLibOVSDBReaderCountsLogicalSwitchPortUp(t *testing.T) {
+	ctx := context.Background()
+	client, closeFn := newTestOVNNBClient(t)
+	defer closeFn()
+
+	if _, err := client.MonitorAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	writer := NewLibOVSDBTopologyWriter(client)
+	subnet := netloommodel.Subnet{
+		Name:    "apps",
+		VPC:     "prod",
+		CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+		Gateway: netip.MustParseAddr("10.10.0.1"),
+	}
+	if err := writer.EnsureVPC(ctx, netloommodel.VPC{Name: "prod"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureSubnet(ctx, subnet); err != nil {
+		t.Fatal(err)
+	}
+	endpoints := []netloommodel.Endpoint{
+		{ID: "pod-a", VPC: "prod", Subnet: "apps", IP: netip.MustParseAddr("10.10.0.10"), MAC: "02:00:00:00:00:10"},
+		{ID: "pod-b", VPC: "prod", Subnet: "apps", IP: netip.MustParseAddr("10.10.0.11"), MAC: "02:00:00:00:00:11"},
+	}
+	for _, endpoint := range endpoints {
+		if err := writer.EnsureEndpoint(ctx, endpoint); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var ports []ovnnb.LogicalSwitchPort
+	requireEventually(t, func() bool {
+		ports = nil
+		err := client.WhereCache(func(row *ovnnb.LogicalSwitchPort) bool {
+			return row.ExternalIDs["netloom_endpoint"] != ""
+		}).List(ctx, &ports)
+		return err == nil && len(ports) == 2
+	})
+	up := true
+	down := false
+	ports[0].Up = &up
+	ports[1].Up = &down
+	updateOpsA, err := client.Where(&ports[0]).Update(&ports[0], &ports[0].Up)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updateOpsB, err := client.Where(&ports[1]).Update(&ports[1], &ports[1].Up)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updateOps := append(updateOpsA, updateOpsB...)
+	results, err := client.Transact(ctx, updateOps...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, updateOps); err != nil {
+		t.Fatalf("operation errors=%+v err=%v", opErrors, err)
+	}
+
+	reader := NewLibOVSDBManagedReader(client)
+	var stats AuditStats
+	var auditErr error
+	if !eventually(func() bool {
+		stats, auditErr = AuditManagedObjectsFromReader(ctx, reader)
+		return auditErr == nil && stats.ManagedLogicalSwitchPorts == 3
+	}) {
+		t.Fatalf("audit stats = %+v err=%v, want three logical switch ports from libovsdb cache", stats, auditErr)
+	}
+	if stats.LogicalSwitchPortUpCounts["true"] != 1 ||
+		stats.LogicalSwitchPortUpCounts["false"] != 1 ||
+		stats.LogicalSwitchPortUpCounts["unknown"] != 1 {
+		t.Fatalf("audit stats = %+v, want logical switch port up counts from libovsdb cache", stats)
+	}
+}
+
 func TestAuditManagedObjectsReportsColumnDriftFromLibOVSDBReader(t *testing.T) {
 	ctx := context.Background()
 	client, closeFn := newTestOVNNBClient(t)
