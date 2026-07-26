@@ -7536,6 +7536,42 @@ func TestAgentMetricsExportsLatestPolicyAndTCXCounters(t *testing.T) {
 		t.Fatal(err)
 	}
 	configurePolicyRolloutStateStore(metrics, rolloutStateStore)
+	oldRolloutCompleted := time.Unix(1_725_000_250, 0).UTC()
+	rolloutCompleted := time.Unix(1_725_000_330, 0).UTC()
+	if err := metrics.recordPolicyRolloutHistory(policyRolloutHistoryEntry{
+		Source:      "desired-state",
+		Name:        "prod-rollout",
+		Node:        "node-a",
+		Store:       "ebpf",
+		CompletedAt: oldRolloutCompleted,
+		DurationMS:  900,
+		Rollout: agent.PolicyEndpointRollout{
+			Planned: 1,
+			Applied: 1,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := metrics.recordPolicyRolloutHistory(policyRolloutHistoryEntry{
+		Source:      "desired-state",
+		Name:        "prod-rollout",
+		Node:        "node-a",
+		Store:       "ebpf",
+		CompletedAt: rolloutCompleted,
+		DurationMS:  1200,
+		Rollout: agent.PolicyEndpointRollout{
+			Planned:        3,
+			Applied:        2,
+			Failed:         1,
+			RolledBack:     1,
+			RollbackFailed: 0,
+			SLOFailed:      true,
+			ProbeFailed:    true,
+			Paused:         true,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/metrics", nil)
@@ -7657,6 +7693,20 @@ func TestAgentMetricsExportsLatestPolicyAndTCXCounters(t *testing.T) {
 		`netloom_agent_policy_freeze_state_endpoint{endpoint="prod\x00pod-a",node="node-a",store="ebpf"} 1`,
 		fmt.Sprintf(`netloom_agent_policy_freeze_state_endpoint_expires_timestamp_seconds{endpoint="prod\x00pod-a",node="node-a",store="ebpf"} %d`, freezeExpires.Unix()),
 		`netloom_agent_policy_freeze_state_endpoint{endpoint="prod\x00pod-b",node="node-a",store="ebpf"} 1`,
+		`netloom_agent_policy_rollout_history_events{node="node-a",store="ebpf"} 2`,
+		`netloom_agent_policy_rollout_history_source_events{node="node-a",source="desired-state",store="ebpf"} 2`,
+		`netloom_agent_policy_rollout_history_latest_timestamp_seconds{node="node-a",rollout="prod-rollout",source="desired-state",store="ebpf"} 1725000330`,
+		`netloom_agent_policy_rollout_history_latest_duration_milliseconds{node="node-a",rollout="prod-rollout",source="desired-state",store="ebpf"} 1200`,
+		`netloom_agent_policy_rollout_history_latest_planned_endpoints{node="node-a",rollout="prod-rollout",source="desired-state",store="ebpf"} 3`,
+		`netloom_agent_policy_rollout_history_latest_applied_endpoints{node="node-a",rollout="prod-rollout",source="desired-state",store="ebpf"} 2`,
+		`netloom_agent_policy_rollout_history_latest_failed_endpoints{node="node-a",rollout="prod-rollout",source="desired-state",store="ebpf"} 1`,
+		`netloom_agent_policy_rollout_history_latest_rolled_back_endpoints{node="node-a",rollout="prod-rollout",source="desired-state",store="ebpf"} 1`,
+		`netloom_agent_policy_rollout_history_latest_rollback_failed_endpoints{node="node-a",rollout="prod-rollout",source="desired-state",store="ebpf"} 0`,
+		`netloom_agent_policy_rollout_history_latest_slo_failed{node="node-a",rollout="prod-rollout",source="desired-state",store="ebpf"} 1`,
+		`netloom_agent_policy_rollout_history_latest_probe_failed{node="node-a",rollout="prod-rollout",source="desired-state",store="ebpf"} 1`,
+		`netloom_agent_policy_rollout_history_latest_paused{node="node-a",rollout="prod-rollout",source="desired-state",store="ebpf"} 1`,
+		`netloom_agent_policy_rollout_history_latest_cancelled{node="node-a",rollout="prod-rollout",source="desired-state",store="ebpf"} 0`,
+		`netloom_agent_policy_rollout_history_latest_dry_run{node="node-a",rollout="prod-rollout",source="desired-state",store="ebpf"} 0`,
 		`netloom_agent_policy_rollout_state_enabled{node="node-a",store="ebpf"} 1`,
 		`netloom_agent_policy_rollout_state_load_error{node="node-a",store="ebpf"} 0`,
 		`netloom_agent_policy_rollout_state_rollouts{node="node-a",store="ebpf"} 1`,

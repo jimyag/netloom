@@ -7765,10 +7765,10 @@ func (m *agentMetrics) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	}
 	rolloutState, rolloutStateEnabled, rolloutStateLoadError := m.policyRolloutState(r.Context())
 	freezeState := m.policyFreezeStateEntries(r.Context(), time.Now())
-	writeAgentMetrics(w, snapshot, totals, m.policyActionHistory(), rolloutState, rolloutStateEnabled, rolloutStateLoadError, freezeState)
+	writeAgentMetrics(w, snapshot, totals, m.policyActionHistory(), m.policyRolloutHistory(), rolloutState, rolloutStateEnabled, rolloutStateLoadError, freezeState)
 }
 
-func writeAgentMetrics(w ioStringWriter, snapshot agentMetricsSnapshot, totals agentMetricsTotals, actionHistory []policyActionHistoryEntry, rolloutState policyRolloutStateDocument, rolloutStateEnabled bool, rolloutStateLoadError string, freezeState []policyFreezeStateEntry) {
+func writeAgentMetrics(w ioStringWriter, snapshot agentMetricsSnapshot, totals agentMetricsTotals, actionHistory []policyActionHistoryEntry, rolloutHistory []policyRolloutHistoryEntry, rolloutState policyRolloutStateDocument, rolloutStateEnabled bool, rolloutStateLoadError string, freezeState []policyFreezeStateEntry) {
 	result := snapshot.Result
 	baseLabels := prometheusLabels(map[string]string{
 		"node":  result.Node,
@@ -8007,6 +8007,7 @@ func writeAgentMetrics(w ioStringWriter, snapshot agentMetricsSnapshot, totals a
 	}), result.PolicyPressureQuarantined)
 	writePolicyActionHistoryMetrics(w, result.Node, snapshot.Store, actionHistory)
 	writePolicyFreezeStateMetrics(w, result.Node, snapshot.Store, freezeState)
+	writePolicyRolloutHistoryMetrics(w, result.Node, snapshot.Store, rolloutHistory)
 	writePolicyRolloutStateMetrics(w, result.Node, snapshot.Store, rolloutState, rolloutStateEnabled, rolloutStateLoadError)
 	writeMetricType(w, "netloom_agent_policy_rollouts", "gauge")
 	fmt.Fprintf(w, "netloom_agent_policy_rollouts%s %d\n", baseLabels, result.PolicyRollouts)
@@ -8303,6 +8304,58 @@ func writePolicyActionHistoryMetrics(w ioStringWriter, node, store string, histo
 	}
 }
 
+func writePolicyRolloutHistoryMetrics(w ioStringWriter, node, store string, history []policyRolloutHistoryEntry) {
+	baseLabels := prometheusLabels(map[string]string{
+		"node":  node,
+		"store": store,
+	})
+	sourceCounts := policyRolloutHistorySourceCounts(history)
+	writeMetricType(w, "netloom_agent_policy_rollout_history_events", "gauge")
+	fmt.Fprintf(w, "netloom_agent_policy_rollout_history_events%s %d\n", baseLabels, len(history))
+	writeMetricType(w, "netloom_agent_policy_rollout_history_source_events", "gauge")
+	for _, source := range sortedStringIntKeys(sourceCounts) {
+		fmt.Fprintf(w, "netloom_agent_policy_rollout_history_source_events%s %d\n", prometheusLabels(map[string]string{
+			"node":   node,
+			"store":  store,
+			"source": source,
+		}), sourceCounts[source])
+	}
+	writeMetricType(w, "netloom_agent_policy_rollout_history_latest_timestamp_seconds", "gauge")
+	writeMetricType(w, "netloom_agent_policy_rollout_history_latest_duration_milliseconds", "gauge")
+	writeMetricType(w, "netloom_agent_policy_rollout_history_latest_planned_endpoints", "gauge")
+	writeMetricType(w, "netloom_agent_policy_rollout_history_latest_applied_endpoints", "gauge")
+	writeMetricType(w, "netloom_agent_policy_rollout_history_latest_failed_endpoints", "gauge")
+	writeMetricType(w, "netloom_agent_policy_rollout_history_latest_rolled_back_endpoints", "gauge")
+	writeMetricType(w, "netloom_agent_policy_rollout_history_latest_rollback_failed_endpoints", "gauge")
+	writeMetricType(w, "netloom_agent_policy_rollout_history_latest_slo_failed", "gauge")
+	writeMetricType(w, "netloom_agent_policy_rollout_history_latest_probe_failed", "gauge")
+	writeMetricType(w, "netloom_agent_policy_rollout_history_latest_paused", "gauge")
+	writeMetricType(w, "netloom_agent_policy_rollout_history_latest_cancelled", "gauge")
+	writeMetricType(w, "netloom_agent_policy_rollout_history_latest_dry_run", "gauge")
+	for _, entry := range latestPolicyRolloutHistoryBySourceName(history) {
+		labels := prometheusLabels(map[string]string{
+			"node":    node,
+			"store":   store,
+			"source":  entry.Source,
+			"rollout": entry.Name,
+		})
+		if !entry.CompletedAt.IsZero() {
+			fmt.Fprintf(w, "netloom_agent_policy_rollout_history_latest_timestamp_seconds%s %d\n", labels, entry.CompletedAt.Unix())
+		}
+		fmt.Fprintf(w, "netloom_agent_policy_rollout_history_latest_duration_milliseconds%s %d\n", labels, entry.DurationMS)
+		fmt.Fprintf(w, "netloom_agent_policy_rollout_history_latest_planned_endpoints%s %d\n", labels, entry.Rollout.Planned)
+		fmt.Fprintf(w, "netloom_agent_policy_rollout_history_latest_applied_endpoints%s %d\n", labels, entry.Rollout.Applied)
+		fmt.Fprintf(w, "netloom_agent_policy_rollout_history_latest_failed_endpoints%s %d\n", labels, entry.Rollout.Failed)
+		fmt.Fprintf(w, "netloom_agent_policy_rollout_history_latest_rolled_back_endpoints%s %d\n", labels, entry.Rollout.RolledBack)
+		fmt.Fprintf(w, "netloom_agent_policy_rollout_history_latest_rollback_failed_endpoints%s %d\n", labels, entry.Rollout.RollbackFailed)
+		fmt.Fprintf(w, "netloom_agent_policy_rollout_history_latest_slo_failed%s %d\n", labels, boolMetric(entry.Rollout.SLOFailed))
+		fmt.Fprintf(w, "netloom_agent_policy_rollout_history_latest_probe_failed%s %d\n", labels, boolMetric(entry.Rollout.ProbeFailed))
+		fmt.Fprintf(w, "netloom_agent_policy_rollout_history_latest_paused%s %d\n", labels, boolMetric(entry.Rollout.Paused))
+		fmt.Fprintf(w, "netloom_agent_policy_rollout_history_latest_cancelled%s %d\n", labels, boolMetric(entry.Rollout.Cancelled))
+		fmt.Fprintf(w, "netloom_agent_policy_rollout_history_latest_dry_run%s %d\n", labels, boolMetric(entry.Rollout.DryRun))
+	}
+}
+
 func writePolicyRolloutStateMetrics(w ioStringWriter, node, store string, doc policyRolloutStateDocument, enabled bool, loadError string) {
 	baseLabels := prometheusLabels(map[string]string{
 		"node":  node,
@@ -8383,6 +8436,45 @@ func policyActionHistoryMetricCounts(history []policyActionHistoryEntry) (int, i
 	return len(history), success, len(history) - success, actions, reasons
 }
 
+func policyRolloutHistorySourceCounts(history []policyRolloutHistoryEntry) map[string]int {
+	counts := make(map[string]int)
+	for _, entry := range history {
+		source := strings.TrimSpace(entry.Source)
+		if source == "" {
+			continue
+		}
+		counts[source]++
+	}
+	return counts
+}
+
+func latestPolicyRolloutHistoryBySourceName(history []policyRolloutHistoryEntry) []policyRolloutHistoryEntry {
+	latest := make(map[string]policyRolloutHistoryEntry)
+	for _, entry := range history {
+		entry.Source = strings.TrimSpace(entry.Source)
+		entry.Name = strings.TrimSpace(entry.Name)
+		if entry.Source == "" {
+			continue
+		}
+		key := entry.Source + "\x00" + entry.Name
+		current, ok := latest[key]
+		if !ok || current.CompletedAt.Before(entry.CompletedAt) || current.CompletedAt.Equal(entry.CompletedAt) {
+			latest[key] = entry
+		}
+	}
+	out := make([]policyRolloutHistoryEntry, 0, len(latest))
+	for _, entry := range latest {
+		out = append(out, entry)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Source != out[j].Source {
+			return out[i].Source < out[j].Source
+		}
+		return out[i].Name < out[j].Name
+	})
+	return out
+}
+
 func latestPolicyActionHistoryByEndpointAction(history []policyActionHistoryEntry) []policyActionHistoryEntry {
 	latest := make(map[string]policyActionHistoryEntry)
 	for _, entry := range history {
@@ -8408,6 +8500,13 @@ func latestPolicyActionHistoryByEndpointAction(history []policyActionHistoryEntr
 		return out[i].Action < out[j].Action
 	})
 	return out
+}
+
+func boolMetric(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func sortedStringIntKeys(values map[string]int) []string {
