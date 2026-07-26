@@ -351,10 +351,14 @@ NETLOOM_AGENT_METRICS_ADDR=:9092 \
 ```bash
 ./netloom-controller controller-status -ovsdb unix:/var/run/openvswitch/db.sock
 ./netloom-controller controller-events -ovsdb unix:/var/run/openvswitch/db.sock -limit 20
+./netloom-controller controller-events -ovsdb unix:/var/run/openvswitch/db.sock -ovn-health error -limit 20
+./netloom-controller controller-events -ovsdb unix:/var/run/openvswitch/db.sock -ovn-quorum degraded -limit 20
 ./netloom-controller controller-events -ovsdb unix:/var/run/openvswitch/db.sock -error-contains timeout -limit 20
 ./netloom-controller controller-events-clear -ovsdb unix:/var/run/openvswitch/db.sock -phase ovn_health -success false
+./netloom-controller controller-events-clear -ovsdb unix:/var/run/openvswitch/db.sock -ovn-audit error
 ./netloom-controller controller-events-clear -ovsdb unix:/var/run/openvswitch/db.sock -error-contains "database is busy"
 curl -s 'http://127.0.0.1:9091/events?phase=ovn_health&success=false&limit=20'
+curl -s 'http://127.0.0.1:9091/events?ovn_health=error&ovn_quorum=degraded&limit=20'
 curl -s 'http://127.0.0.1:9091/events?error_contains=timeout&limit=20'
 curl -X DELETE -s 'http://127.0.0.1:9091/events?phase=ovn_health&success=false&error_contains=timeout'
 ./netloom-agent agent-status -ovsdb unix:/var/run/openvswitch/db.sock
@@ -396,9 +400,9 @@ cluster quorum、stale advisory、maintenance 和错误状态。
 `controller-events` CLI 会解码 `Open_vSwitch.external_ids:netloom_controller_events`，
 用于查看最近 controller reconcile 成功/失败、失败阶段、OVN health、cluster quorum、
 audit、stale advisory 和 maintenance 摘要。audit 事件会保留 duplicate、incomplete、
-missing、unexpected 的表级计数，以及 managed field drift 的字段级计数；可用 `-phase`、`-success`、`-error-contains` 和 `-limit`
+missing、unexpected 的表级计数，以及 managed field drift 的字段级计数；可用 `-phase`、`-success`、`-ovn-health`、`-ovn-audit`、`-ovn-quorum`、`-error-contains` 和 `-limit`
 过滤。`-error-contains` 会匹配 reconcile error、OVN audit error、leader probe error 和 maintenance error。
-长运行 controller 也提供 `GET /events` 和 `DELETE /events`，使用同一组 `phase`/`success`/`error_contains`
+长运行 controller 也提供 `GET /events` 和 `DELETE /events`，使用同一组 `phase`/`success`/`ovn_health`/`ovn_audit`/`ovn_quorum`/`error_contains`
 过滤字段查询或清理已审计事件；全量清理必须显式使用 `all=true` 或 CLI `-all`，且不能和过滤条件混用。
 `agent-status` CLI 会解码 `Open_vSwitch.external_ids:netloom_agent_status`，
 用于查看最近一次 agent reconcile 的 policy/eBPF rollout、policy rule counter
