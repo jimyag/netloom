@@ -2185,15 +2185,15 @@ func (r *Reconciler) syncPolicyStore(ctx context.Context, programs []policy.Prog
 		if _, ok := desired[endpointID]; ok {
 			continue
 		}
-		beforeEvents := 0
+		eventCursor := policyEventCursor{}
 		if eventStore != nil {
-			beforeEvents = len(eventStore.Events())
+			eventCursor = policyEventCursorFrom(eventStore.Events())
 		}
 		if err := store.DeleteEndpoint(ctx, endpointID); err != nil {
 			return fmt.Errorf("delete stale policy for endpoint %s: %w", endpointID, err)
 		}
 		if eventStore != nil {
-			recordPolicyEventsDelta(result, eventStore.Events(), beforeEvents, endpointID)
+			recordPolicyEventsDelta(result, eventStore.Events(), eventCursor, endpointID)
 		}
 		delete(r.policyEndpoints, endpointID)
 	}
@@ -2288,9 +2288,9 @@ func prepareReconcile(ctx context.Context, state control.DesiredState, options R
 			return ReconcileResult{}, nil, nil, err
 		}
 		eventStore, _ := options.Store.(PolicyEventStore)
-		beforeEvents := 0
+		eventCursor := policyEventCursor{}
 		if eventStore != nil {
-			beforeEvents = len(eventStore.Events())
+			eventCursor = policyEventCursorFrom(eventStore.Events())
 		}
 		result.Endpoints++
 		result.Programs++
@@ -2302,12 +2302,12 @@ func prepareReconcile(ctx context.Context, state control.DesiredState, options R
 		if !options.DeferPolicyApply && !frozen {
 			if err := backend.ApplyEndpointProgram(ctx, program); err != nil {
 				if eventStore != nil {
-					recordPolicyEventsDelta(&result, eventStore.Events(), beforeEvents, program.EndpointID)
+					recordPolicyEventsDelta(&result, eventStore.Events(), eventCursor, program.EndpointID)
 				}
 				return result, nil, nil, fmt.Errorf("apply policy program for endpoint %s in vpc %s: %w", endpoint.ID, endpoint.VPC, err)
 			}
 			if eventStore != nil {
-				recordPolicyEventsDelta(&result, eventStore.Events(), beforeEvents, program.EndpointID)
+				recordPolicyEventsDelta(&result, eventStore.Events(), eventCursor, program.EndpointID)
 			} else if statsStore, ok := options.Store.(PolicyStatsStore); ok {
 				stats := statsStore.LastStats(program.EndpointID)
 				result.PolicyAdded += stats.Added
@@ -2572,24 +2572,79 @@ func sweepPolicyEndpointsResult(ctx context.Context, store PolicyStore, programs
 		return nil
 	}
 	keep := policyEndpointKeepList(programs, frozen)
+	eventStore, _ := store.(PolicyEventStore)
+	eventCursor := policyEventCursor{}
+	if eventStore != nil {
+		eventCursor = policyEventCursorFrom(eventStore.Events())
+	}
 	swept, err := sweeper.SweepPolicyEndpoints(ctx, keep, maxIdle)
 	if err != nil {
 		return fmt.Errorf("sweep stale policy endpoints: %w", err)
 	}
 	result.PolicyGCEndpoints = swept
+	if eventStore != nil {
+		recordPolicyEventsDelta(result, eventStore.Events(), eventCursor, "")
+	}
 	return nil
 }
 
-func recordPolicyEventsDelta(result *ReconcileResult, events []dataplane.PolicyUpdateEvent, from int, endpointID string) {
+type policyEventCursor struct {
+	length  int
+	hasLast bool
+	last    policyEventMarker
+}
+
+type policyEventMarker struct {
+	EndpointID       string
+	PreviousRevision uint64
+	Revision         uint64
+	Success          bool
+	Error            string
+}
+
+func policyEventCursorFrom(events []dataplane.PolicyUpdateEvent) policyEventCursor {
+	cursor := policyEventCursor{length: len(events)}
+	if len(events) == 0 {
+		return cursor
+	}
+	cursor.hasLast = true
+	cursor.last = policyEventMarkerFrom(events[len(events)-1])
+	return cursor
+}
+
+func policyEventMarkerFrom(event dataplane.PolicyUpdateEvent) policyEventMarker {
+	return policyEventMarker{
+		EndpointID:       event.EndpointID,
+		PreviousRevision: event.PreviousRevision,
+		Revision:         event.Revision,
+		Success:          event.Success,
+		Error:            event.Error,
+	}
+}
+
+func policyEventDeltaStart(events []dataplane.PolicyUpdateEvent, cursor policyEventCursor) int {
+	if len(events) == 0 {
+		return 0
+	}
+	if !cursor.hasLast {
+		return 0
+	}
+	for i := len(events) - 1; i >= 0; i-- {
+		if policyEventMarkerFrom(events[i]) == cursor.last {
+			return i + 1
+		}
+	}
+	if len(events) > cursor.length {
+		return cursor.length
+	}
+	return 0
+}
+
+func recordPolicyEventsDelta(result *ReconcileResult, events []dataplane.PolicyUpdateEvent, cursor policyEventCursor, endpointID string) {
 	if result == nil {
 		return
 	}
-	if from < 0 {
-		from = 0
-	}
-	if from >= len(events) && len(events) > 0 {
-		from = len(events) - 1
-	}
+	from := policyEventDeltaStart(events, cursor)
 	for i := from; i < len(events); i++ {
 		event := events[i]
 		if endpointID != "" && event.EndpointID != endpointID {

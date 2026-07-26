@@ -97,12 +97,25 @@ type sweepingPolicyStore struct {
 	keep    []string
 	maxIdle time.Duration
 	swept   int
+	events  []dataplane.PolicyUpdateEvent
 }
 
 func (s *sweepingPolicyStore) SweepPolicyEndpoints(_ context.Context, keep []string, maxIdle time.Duration) (int, error) {
 	s.keep = append([]string(nil), keep...)
 	s.maxIdle = maxIdle
+	for i := 0; i < s.swept; i++ {
+		s.events = append(s.events, dataplane.PolicyUpdateEvent{
+			EndpointID: fmt.Sprintf("prod/stale-%d", i),
+			Revision:   uint64(i + 1),
+			Stats:      dataplane.PolicyUpdateStats{Revision: uint64(i + 1), Deleted: 1},
+			Success:    true,
+		})
+	}
 	return s.swept, nil
+}
+
+func (s *sweepingPolicyStore) Events() []dataplane.PolicyUpdateEvent {
+	return append([]dataplane.PolicyUpdateEvent(nil), s.events...)
 }
 
 type usagePolicyStore struct {
@@ -663,6 +676,9 @@ func TestReconcileNodeSweepsIdlePolicyEndpoints(t *testing.T) {
 	}
 	if result.PolicyGCEndpoints != 2 {
 		t.Fatalf("policy gc endpoints = %d, want 2", result.PolicyGCEndpoints)
+	}
+	if result.PolicyEvents != 2 || result.PolicyDeleted != 2 || result.PolicyRevisionMax != 2 {
+		t.Fatalf("policy gc event summary = %+v, want two delete events from sweep", result)
 	}
 	if store.maxIdle != time.Minute {
 		t.Fatalf("max idle = %s, want 1m", store.maxIdle)
@@ -3849,6 +3865,41 @@ func TestReconcilerDeletesStaleEndpointPolicy(t *testing.T) {
 	events := store.Events()
 	if len(events) != 2 || events[1].Stats.Deleted != 1 || events[1].PreviousRevision != 1 || events[1].Revision != 2 {
 		t.Fatalf("policy events = %+v, want stale endpoint delete event", events)
+	}
+}
+
+func TestRecordPolicyEventsDeltaHandlesBoundedEventRing(t *testing.T) {
+	before := []dataplane.PolicyUpdateEvent{
+		{EndpointID: "prod/pod-a", Revision: 1, Success: true, Stats: dataplane.PolicyUpdateStats{Revision: 1, Added: 1}},
+		{EndpointID: "prod/pod-a", Revision: 2, Success: true, Stats: dataplane.PolicyUpdateStats{Revision: 2, Updated: 1}},
+		{EndpointID: "prod/pod-a", Revision: 3, Success: true, Stats: dataplane.PolicyUpdateStats{Revision: 3, Unchanged: 1}},
+	}
+	cursor := policyEventCursorFrom(before)
+	after := []dataplane.PolicyUpdateEvent{
+		before[1],
+		before[2],
+		{EndpointID: "prod/pod-a", PreviousRevision: 3, Revision: 4, Success: true, Stats: dataplane.PolicyUpdateStats{Revision: 4, Deleted: 1}},
+	}
+	var result ReconcileResult
+
+	recordPolicyEventsDelta(&result, after, cursor, "prod/pod-a")
+
+	if result.PolicyEvents != 1 || result.PolicyDeleted != 1 || result.PolicyRevisionMax != 4 {
+		t.Fatalf("result = %+v, want only newest bounded delete event", result)
+	}
+}
+
+func TestRecordPolicyEventsDeltaDoesNotRecountUnchangedTail(t *testing.T) {
+	events := []dataplane.PolicyUpdateEvent{
+		{EndpointID: "prod/pod-a", Revision: 1, Success: true, Stats: dataplane.PolicyUpdateStats{Revision: 1, Added: 1}},
+	}
+	cursor := policyEventCursorFrom(events)
+	var result ReconcileResult
+
+	recordPolicyEventsDelta(&result, events, cursor, "prod/pod-a")
+
+	if result.PolicyEvents != 0 || result.PolicyAdded != 0 || result.PolicyRevisionMax != 0 {
+		t.Fatalf("result = %+v, want no repeated event accounting", result)
 	}
 }
 
