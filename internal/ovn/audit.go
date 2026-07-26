@@ -1214,7 +1214,7 @@ func staleManagedColumnShouldDrift(table, key string) bool {
 		}
 	case "Load_Balancer":
 		switch key {
-		case "options", "ip_port_mappings", "health_check_vips":
+		case "protocol", "options", "ip_port_mappings", "selection_fields", "health_check_vips":
 			return true
 		default:
 			return false

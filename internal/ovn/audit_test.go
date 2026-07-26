@@ -1792,8 +1792,8 @@ func TestAuditManagedObjectsFromReaderReportsStaleLoadBalancerColumns(t *testing
 			}, Fields: map[string]string{
 				"name":              loadBalancerProtocolName("prod", "api", model.ProtocolTCP),
 				"vips":              "10.96.0.10:443=10.10.0.20:8443",
-				"protocol":          "tcp",
-				"selection_fields":  "",
+				"protocol":          "udp",
+				"selection_fields":  "ip_src,tp_src",
 				"options":           "affinity_timeout=7200",
 				"ip_port_mappings":  "10.96.0.10=10.10.0.20",
 				"health_check_vips": "10.96.0.10:443",
@@ -1810,11 +1810,39 @@ func TestAuditManagedObjectsFromReaderReportsStaleLoadBalancerColumns(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stats.DriftedManagedRows != 1 || stats.DriftedManagedFields != 3 {
-		t.Fatalf("stale load balancer column drift stats = %+v, want options, ip_port_mappings, and health check attachment drift", stats)
+	if stats.DriftedManagedRows != 1 || stats.DriftedManagedFields != 5 {
+		t.Fatalf("stale load balancer column drift stats = %+v, want protocol, options, ip_port_mappings, selection_fields, and health check attachment drift", stats)
 	}
 	if got := stats.DriftedManagedFieldCounts["Load_Balancer.ip_port_mappings"]; got != 1 {
 		t.Fatalf("field drift counts = %+v, want stale ip_port_mappings drift", stats.DriftedManagedFieldCounts)
+	}
+	if got := stats.DriftedManagedFieldCounts["Load_Balancer.protocol"]; got != 1 {
+		t.Fatalf("field drift counts = %+v, want stale protocol drift", stats.DriftedManagedFieldCounts)
+	}
+	if got := stats.DriftedManagedFieldCounts["Load_Balancer.selection_fields"]; got != 1 {
+		t.Fatalf("field drift counts = %+v, want stale selection_fields drift", stats.DriftedManagedFieldCounts)
+	}
+}
+
+func TestManagedProvidedFieldDriftReportsLoadBalancerStaleProtocolAndSelectionFields(t *testing.T) {
+	drift := managedProvidedFieldDrift("Load_Balancer",
+		map[string]string{
+			"protocol":         "udp",
+			"selection_fields": "ip_src,tp_src",
+		},
+		map[string]string{"name": "nl_lb_prod_api_tcp"},
+	)
+	if len(drift) != 2 {
+		t.Fatalf("drift fields = %v, want protocol and selection_fields", drift)
+	}
+	got := make(map[string]struct{}, len(drift))
+	for _, field := range drift {
+		got[field] = struct{}{}
+	}
+	for _, field := range []string{"protocol", "selection_fields"} {
+		if _, ok := got[field]; !ok {
+			t.Fatalf("drift fields = %v, missing %s", drift, field)
+		}
 	}
 }
 
