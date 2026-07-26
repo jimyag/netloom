@@ -552,6 +552,27 @@ func TestRunDesiredStateImportWithStoreWritesOpenVSwitchExternalID(t *testing.T)
 	}
 }
 
+func TestRunDesiredStateImportWithStoreRejectsInvalidObjectGraph(t *testing.T) {
+	store := &fakeOpenVSwitchExternalIDStore{}
+	var stdout bytes.Buffer
+	err := runDesiredStateImportWithStore(t.Context(), desiredStateImportOptions{inputFile: "-"}, strings.NewReader(`{
+		"vpcs": [{"name": "prod"}],
+		"route_tables": [{"name": "main", "vpc": "missing", "routes": [{"destination": "0.0.0.0/0", "next_hops": ["10.10.0.254"]}]}]
+	}`), &stdout, store)
+	if err == nil {
+		t.Fatal("expected invalid desired-state graph to fail")
+	}
+	if !strings.Contains(err.Error(), `validate desired state: route table "main" references unknown vpc "missing"`) {
+		t.Fatalf("error %q does not describe invalid desired-state graph", err)
+	}
+	if len(store.values) != 0 {
+		t.Fatalf("store values = %+v, want no external_ids written", store.values)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, want no success summary", stdout.String())
+	}
+}
+
 func TestRunDesiredStateImportWritesRealOpenVSwitchOVSDB(t *testing.T) {
 	endpoint, client, cleanup := newTestAgentVSwitchOVSDB(t)
 	defer cleanup()
@@ -658,10 +679,18 @@ func TestRunDesiredStateExportReadsRealOpenVSwitchOVSDB(t *testing.T) {
 func TestLoadDesiredStateFromOpenVSwitchExternalIDStore(t *testing.T) {
 	raw, err := control.MarshalDesiredStateJSON(control.DesiredState{
 		VPCs: []model.VPC{{Name: "prod"}},
+		Subnets: []model.Subnet{{
+			Name:    "apps",
+			VPC:     "prod",
+			CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway: netip.MustParseAddr("10.10.0.1"),
+		}},
 		Endpoints: []model.Endpoint{{
-			ID:   "pod-a",
-			VPC:  "prod",
-			Node: "node-a",
+			ID:     "pod-a",
+			VPC:    "prod",
+			Subnet: "apps",
+			IP:     netip.MustParseAddr("10.10.0.10"),
+			Node:   "node-a",
 		}},
 	})
 	if err != nil {
@@ -1718,6 +1747,13 @@ func TestRunRouteExplainReportsNoRouteDrop(t *testing.T) {
 func writePolicyExplainState(t *testing.T) string {
 	t.Helper()
 	state := control.DesiredState{
+		VPCs: []model.VPC{{Name: "prod"}},
+		Subnets: []model.Subnet{{
+			Name:    "apps",
+			VPC:     "prod",
+			CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway: netip.MustParseAddr("10.10.0.1"),
+		}},
 		Endpoints: []model.Endpoint{
 			{
 				ID:             "pod-a",
@@ -1768,6 +1804,13 @@ func writeAgentState(t *testing.T, state control.DesiredState) string {
 
 func TestReconcileStateFileOnceAppliesDesiredPolicyRollout(t *testing.T) {
 	statePath := writeAgentState(t, control.DesiredState{
+		VPCs: []model.VPC{{Name: "prod"}},
+		Subnets: []model.Subnet{{
+			Name:    "apps",
+			VPC:     "prod",
+			CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway: netip.MustParseAddr("10.10.0.1"),
+		}},
 		Endpoints: []model.Endpoint{
 			{
 				ID:             "pod-a",
@@ -1873,6 +1916,13 @@ func TestReconcileStateFileOnceWritesAgentStatusToOpenVSwitchExternalID(t *testi
 	t.Setenv("NETLOOM_LINUX_DATAPATH", "")
 	t.Setenv("NETLOOM_PROVIDER_NETWORK_LINKS", "")
 	statePath := writeAgentState(t, control.DesiredState{
+		VPCs: []model.VPC{{Name: "prod"}},
+		Subnets: []model.Subnet{{
+			Name:    "apps",
+			VPC:     "prod",
+			CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway: netip.MustParseAddr("10.10.0.1"),
+		}},
 		Endpoints: []model.Endpoint{{
 			ID:             "pod-a",
 			VPC:            "prod",
@@ -1943,6 +1993,13 @@ func TestReconcileStateFileOnceStrictRuntimePreflightFailsClosed(t *testing.T) {
 		runAgentRuntimePreflight = originalPreflight
 	})
 	statePath := writeAgentState(t, control.DesiredState{
+		VPCs: []model.VPC{{Name: "prod"}},
+		Subnets: []model.Subnet{{
+			Name:    "apps",
+			VPC:     "prod",
+			CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway: netip.MustParseAddr("10.10.0.1"),
+		}},
 		Endpoints: []model.Endpoint{{
 			ID:             "pod-a",
 			VPC:            "prod",
@@ -1993,6 +2050,13 @@ func TestReconcileStateFileOnceStrictRuntimePreflightFailsClosed(t *testing.T) {
 
 func TestReconcileStateFileOnceResumesPersistedPolicyRolloutState(t *testing.T) {
 	state := control.DesiredState{
+		VPCs: []model.VPC{{Name: "prod"}},
+		Subnets: []model.Subnet{{
+			Name:    "apps",
+			VPC:     "prod",
+			CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway: netip.MustParseAddr("10.10.0.1"),
+		}},
 		Endpoints: []model.Endpoint{
 			{ID: "pod-a", VPC: "prod", Subnet: "apps", IP: netip.MustParseAddr("10.10.0.10"), Node: "node-a", SecurityGroups: []string{"web"}},
 			{ID: "pod-b", VPC: "prod", Subnet: "apps", IP: netip.MustParseAddr("10.10.0.11"), Node: "node-a", SecurityGroups: []string{"web"}},
@@ -2126,6 +2190,13 @@ func TestLoadPolicyRolloutResumeIgnoresStaleRevision(t *testing.T) {
 func writeRouteExplainState(t *testing.T) string {
 	t.Helper()
 	state := control.DesiredState{
+		VPCs: []model.VPC{{Name: "prod"}},
+		Subnets: []model.Subnet{{
+			Name:    "apps",
+			VPC:     "prod",
+			CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway: netip.MustParseAddr("10.10.0.1"),
+		}},
 		PolicyRoutes: []model.PolicyRoute{{
 			Name:     "private-via-fw",
 			VPC:      "prod",

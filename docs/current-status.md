@@ -28,7 +28,7 @@ Provider Network、Linux datapath、eBPF/TCX ACL、状态观测和 policy lifecy
 | Provider Network | 已实现 | 支持 OVN localnet、本机 OVS Bridge/Controller/Port/Interface、QoS、Queue。 |
 | SecurityGroup | 已实现 | 编译成 Cilium 风格 endpoint policy map。 |
 | ACL 执行 | 已实现 | 由 eBPF/TCX 执行 ingress/egress TCP、UDP、SCTP、ICMP，安全组不写 OVN ACL。 |
-| Desired State | 已实现 | 支持 JSON 文件，也支持存入本机 Open_vSwitch OVSDB `external_ids`。 |
+| Desired State | 已实现 | 支持 JSON 文件，也支持存入本机 Open_vSwitch OVSDB `external_ids`；导入和运行时加载都会执行完整对象图校验，提前拒绝未知 VPC、坏子网引用、冲突路由、无效 NAT/LB 等配置。 |
 | 状态和观测 | 已实现 | controller `/status`、agent `/metrics`、policy status、policy revision wait、policy explain、route explain、policy rules、policy events、policy entries。 |
 | Rollout / lifecycle | 已实现 | 支持 policy dry-run、batch rollout、approval、ack、finalize、SLO/probe、rollback、quarantine、freeze/unfreeze、freeze TTL 和成功/失败 endpoint action history。 |
 | Runtime selftest/status | 已实现 | agent 默认 selftest 验证策略编译/评估、stateful conntrack、runtime preflight；长运行 reconcile 会把 bpffs、memlock、BPF/NET_ADMIN capability、OVSDB/OVN endpoint 状态写入 `netloom_agent_status` 和 Prometheus metrics，并可通过 `NETLOOM_RUNTIME_PREFLIGHT_STRICT=1` 在必要检查失败时 fail closed。 |

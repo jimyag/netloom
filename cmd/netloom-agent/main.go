@@ -1797,6 +1797,9 @@ func runDesiredStateImportWithStore(ctx context.Context, opts desiredStateImport
 	if err != nil {
 		return err
 	}
+	if err := control.ValidateDesiredState(state); err != nil {
+		return fmt.Errorf("validate desired state: %w", err)
+	}
 	raw, err := control.MarshalDesiredStateJSON(state)
 	if err != nil {
 		return err
@@ -1884,7 +1887,14 @@ func loadDesiredStateFromPathOrOVSDB(ctx context.Context, path string, store ope
 			return control.DesiredState{}, err
 		}
 		defer file.Close()
-		return control.LoadDesiredStateJSON(file)
+		state, err := control.LoadDesiredStateJSON(file)
+		if err != nil {
+			return control.DesiredState{}, err
+		}
+		if err := control.ValidateDesiredState(state); err != nil {
+			return control.DesiredState{}, fmt.Errorf("validate desired state file %s: %w", path, err)
+		}
+		return state, nil
 	}
 	if store == nil {
 		envStore, closeStore, err := identityGroupObservationStoreFromEnv(ctx)
@@ -1914,6 +1924,9 @@ func loadDesiredStateFromPathOrOVSDB(ctx context.Context, path string, store ope
 	state, err := control.LoadDesiredStateJSON(strings.NewReader(raw))
 	if err != nil {
 		return control.DesiredState{}, fmt.Errorf("decode Open_vSwitch external_ids:%s: %w", control.DesiredStateOpenVSwitchExternalID, err)
+	}
+	if err := control.ValidateDesiredState(state); err != nil {
+		return control.DesiredState{}, fmt.Errorf("validate Open_vSwitch external_ids:%s: %w", control.DesiredStateOpenVSwitchExternalID, err)
 	}
 	return state, nil
 }

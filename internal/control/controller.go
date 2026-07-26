@@ -18,6 +18,10 @@ import (
 
 var identityGroupNow = time.Now
 
+func ValidateDesiredState(state DesiredState) error {
+	return validateObjectGraph(state)
+}
+
 type TopologyBackend interface {
 	EnsureVPC(context.Context, model.VPC) error
 	EnsureSubnet(context.Context, model.Subnet) error

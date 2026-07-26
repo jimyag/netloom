@@ -233,6 +233,27 @@ func TestLoadDesiredStateJSONRejectsUnknownFields(t *testing.T) {
 	}
 }
 
+func TestValidateDesiredStateRejectsInvalidObjectGraph(t *testing.T) {
+	state := DesiredState{
+		VPCs: []model.VPC{{Name: "prod"}},
+		RouteTables: []model.RouteTable{{
+			Name: "main",
+			VPC:  "missing",
+			Routes: []model.Route{{
+				Destination: netip.MustParsePrefix("0.0.0.0/0"),
+				NextHops:    []netip.Addr{netip.MustParseAddr("10.10.0.254")},
+			}},
+		}},
+	}
+	err := ValidateDesiredState(state)
+	if err == nil {
+		t.Fatal("expected invalid desired-state graph to fail")
+	}
+	if !strings.Contains(err.Error(), `route table "main" references unknown vpc "missing"`) {
+		t.Fatalf("error %q does not describe the invalid graph", err)
+	}
+}
+
 func TestDesiredStateRevisionAndSummary(t *testing.T) {
 	state := DesiredState{
 		VPCs:             []model.VPC{{Name: "prod"}},
