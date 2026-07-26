@@ -665,6 +665,9 @@ func validateObjectGraph(state DesiredState) error {
 	if err := validateProviderNetworkNodeInterfaceClaims(providerNetworks); err != nil {
 		return err
 	}
+	if err := validateProviderTenantQueueSubnetConflicts(providerNetworks); err != nil {
+		return err
+	}
 
 	subnets := make(map[string]model.Subnet, len(state.Subnets))
 	for _, subnet := range state.Subnets {
@@ -1215,6 +1218,56 @@ func validateProviderTenantQueueIdentityGroupConflicts(providerNetworks map[stri
 		}
 	}
 	return nil
+}
+
+func validateProviderTenantQueueSubnetConflicts(providerNetworks map[string]model.ProviderNetwork) error {
+	names := make([]string, 0, len(providerNetworks))
+	for name := range providerNetworks {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		providerNetwork := providerNetworks[name]
+		for i := range providerNetwork.TenantQueues {
+			left := providerNetwork.TenantQueues[i]
+			if !providerTenantQueuePolicySubnetScoped(left) {
+				continue
+			}
+			for j := i + 1; j < len(providerNetwork.TenantQueues); j++ {
+				right := providerNetwork.TenantQueues[j]
+				if left.Tenant != right.Tenant || !providerTenantQueuePolicySubnetScoped(right) {
+					continue
+				}
+				priority := providerTenantQueueSubnetPriority(left)
+				if priority != providerTenantQueueSubnetPriority(right) {
+					continue
+				}
+				if !protocolsMayOverlap(left.Protocol, right.Protocol) || !portRangesMayOverlap(left.Ports, right.Ports) {
+					continue
+				}
+				return fmt.Errorf("provider network %q tenant %q subnet queues %d and %d conflict on priority %d overlapping protocol/ports", providerNetwork.Name, left.Tenant, left.QueueID, right.QueueID, priority)
+			}
+		}
+	}
+	return nil
+}
+
+func providerTenantQueuePolicySubnetScoped(queue model.ProviderNetworkTenantQueuePolicy) bool {
+	return len(queue.EndpointSelector) == 0 &&
+		len(queue.EndpointExpressions) == 0 &&
+		len(queue.IdentityGroups) == 0 &&
+		len(queue.IdentitySelector) == 0 &&
+		len(queue.IdentityExpressions) == 0
+}
+
+func providerTenantQueueSubnetPriority(queue model.ProviderNetworkTenantQueuePolicy) int {
+	if len(queue.Ports) != 0 {
+		return 220
+	}
+	if queue.Protocol != "" {
+		return 215
+	}
+	return 210
 }
 
 func validateProviderNetworkNodeInterfaceClaims(providerNetworks map[string]model.ProviderNetwork) error {
