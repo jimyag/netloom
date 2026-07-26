@@ -639,6 +639,62 @@ func TestPlanProgramsProviderTenantQueueFlows(t *testing.T) {
 	}
 }
 
+func TestPlanRejectsConflictingProviderTenantQueueFlows(t *testing.T) {
+	state := control.DesiredState{
+		ProviderNetworks: []model.ProviderNetwork{{
+			Name: "physnet-a",
+			Nodes: []model.ProviderNetworkNode{{
+				Node:      "node-a",
+				Interface: "eth1",
+			}},
+			TenantQueues: []model.ProviderNetworkTenantQueuePolicy{{
+				Tenant:     "prod",
+				QueueID:    10,
+				Protocol:   model.ProtocolTCP,
+				Ports:      []model.PortRange{{From: 443, To: 444}},
+				MaxRateBPS: 100000000,
+			}, {
+				Tenant:     "prod",
+				QueueID:    11,
+				Protocol:   model.ProtocolTCP,
+				Ports:      []model.PortRange{{From: 444, To: 445}},
+				MaxRateBPS: 100000000,
+			}},
+		}},
+		Subnets: []model.Subnet{{
+			Name:            "baremetal",
+			VPC:             "prod",
+			CIDR:            netip.MustParsePrefix("10.10.0.0/24"),
+			Gateway:         netip.MustParseAddr("10.10.0.1"),
+			ProviderNetwork: "physnet-a",
+			VLAN:            100,
+		}},
+	}
+	_, _, err := Plan(context.Background(), state, Options{
+		Node:        "node-a",
+		LocalDevice: "nl0",
+		SyncOVSDB:   true,
+	})
+	if err == nil {
+		t.Fatal("expected conflicting provider tenant queue flows to fail")
+	}
+	bridge := providerNetworkBridgeName("physnet-a")
+	for _, expected := range []string{
+		"provider tenant queue flows conflict",
+		"bridge " + bridge,
+		"tenant prod",
+		"cidr 10.10.0.0/24",
+		"protocol tcp",
+		"port 444",
+		"priority 220",
+		"queues 10 and 11",
+	} {
+		if !strings.Contains(err.Error(), expected) {
+			t.Fatalf("error %q missing %q", err, expected)
+		}
+	}
+}
+
 func TestPlanProgramsProviderTenantQueueIPv6Flows(t *testing.T) {
 	state := control.DesiredState{
 		ProviderNetworks: []model.ProviderNetwork{{

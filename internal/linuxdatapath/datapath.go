@@ -319,13 +319,18 @@ func Plan(ctx context.Context, state control.DesiredState, options Options) ([]O
 	result.ProviderIssues = providerOVSDBRuntimeIssues(result.ProviderIssues, options.ProviderOVSDBStatus, options.Node)
 	result.ProviderNetworkStatus = providerNetworkStatuses(state, result.ProviderStatus, result.ProviderIssues)
 	ops = append(ops, planProviderNetworkLinks(providerSpecs)...)
+	var providerQueueFlows []providerQueueFlow
 	if options.SyncOVSDB {
+		providerQueueFlows = desiredProviderQueueFlows(state, providerSpecs)
+		if err := validateProviderQueueFlowConflicts(providerQueueFlows); err != nil {
+			return nil, result, err
+		}
 		ops = append(ops, planProviderOVSDBDirectSync(providerSpecs, state.IdentityGroups, state.Endpoints, options.CleanupStale))
-		ops = append(ops, planProviderQueueFlows(state, providerSpecs)...)
+		ops = append(ops, planProviderQueueFlows(providerQueueFlows)...)
 	}
 	if options.CleanupStale {
 		if options.SyncOVSDB {
-			ops = append(ops, planProviderQueueFlowCleanup(providerSpecs, desiredProviderQueueFlows(state, providerSpecs)))
+			ops = append(ops, planProviderQueueFlowCleanup(providerSpecs, providerQueueFlows))
 		}
 		ops = append(ops, planProviderNetworkLinkCleanup(providerSpecs))
 	}
@@ -1199,13 +1204,41 @@ func planProviderOVSDBDirectSync(specs []providerNetworkLinkSpec, identityGroups
 	}
 }
 
-func planProviderQueueFlows(state control.DesiredState, specs []providerNetworkLinkSpec) []Operation {
-	flows := desiredProviderQueueFlows(state, specs)
+func planProviderQueueFlows(flows []providerQueueFlow) []Operation {
 	ops := make([]Operation, 0, len(flows))
 	for _, flow := range flows {
 		ops = append(ops, ovsOFCTLOperation("--bundle", "add-flow", flow.Bridge, providerQueueFlowString(flow)))
 	}
 	return ops
+}
+
+func validateProviderQueueFlowConflicts(flows []providerQueueFlow) error {
+	seen := make(map[string]providerQueueFlow, len(flows))
+	for _, flow := range flows {
+		key := providerQueueFlowConflictKey(flow)
+		prev, ok := seen[key]
+		if !ok {
+			seen[key] = flow
+			continue
+		}
+		if prev.QueueID == flow.QueueID {
+			continue
+		}
+		return fmt.Errorf("provider tenant queue flows conflict on bridge %s tenant %s cidr %s protocol %s port %d priority %d queues %d and %d",
+			flow.Bridge, flow.Tenant, flow.CIDR.String(), flow.Protocol, flow.Port, providerQueueFlowPriority(flow), prev.QueueID, flow.QueueID)
+	}
+	return nil
+}
+
+func providerQueueFlowConflictKey(flow providerQueueFlow) string {
+	return strings.Join([]string{
+		flow.Bridge,
+		flow.Tenant,
+		flow.CIDR.String(),
+		string(flow.Protocol),
+		strconv.Itoa(int(flow.Port)),
+		strconv.Itoa(providerQueueFlowPriority(flow)),
+	}, "\x00")
 }
 
 func planProviderQueueFlowCleanup(specs []providerNetworkLinkSpec, flows []providerQueueFlow) Operation {

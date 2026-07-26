@@ -576,7 +576,10 @@ func executeProviderQueueFlows(ctx context.Context, options Options, state contr
 		executor = CommandExecutor{}
 	}
 	flows := desiredProviderQueueFlows(state, specs)
-	for _, op := range planProviderQueueFlows(state, specs) {
+	if err := validateProviderQueueFlowConflicts(flows); err != nil {
+		return err
+	}
+	for _, op := range planProviderQueueFlows(flows) {
 		if err := executor.Execute(ctx, op); err != nil {
 			return fmt.Errorf("sync provider queue flow: %w", err)
 		}
