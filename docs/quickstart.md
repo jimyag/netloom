@@ -53,7 +53,8 @@ NETLOOM_TCX_WORKLOAD=1 \
           "tenant": "prod",
           "max_subnets": 2,
           "max_endpoints": 100,
-          "max_load_balancers": 10
+          "max_load_balancers": 10,
+          "max_nat_rules": 20
         }
       ]
     }

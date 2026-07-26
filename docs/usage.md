@@ -70,7 +70,8 @@ fail closed，不继续写 policy map、TCX 或本机 datapath，并把失败写
           "tenant": "prod",
           "max_subnets": 2,
           "max_endpoints": 100,
-          "max_load_balancers": 10
+          "max_load_balancers": 10,
+          "max_nat_rules": 20
         }
       ],
       "tenant_queues": [

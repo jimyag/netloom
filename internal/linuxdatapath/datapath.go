@@ -131,6 +131,7 @@ type ProviderNetworkStatus struct {
 	SubnetCount       int
 	EndpointCount     int
 	LoadBalancerCount int
+	NATRuleCount      int
 	TenantUsage       []ProviderTenantUsage
 }
 
@@ -139,9 +140,11 @@ type ProviderTenantUsage struct {
 	Subnets          int
 	Endpoints        int
 	LoadBalancers    int
+	NATRules         int
 	MaxSubnets       int
 	MaxEndpoints     int
 	MaxLoadBalancers int
+	MaxNATRules      int
 	Exceeded         bool
 }
 
@@ -730,6 +733,7 @@ func applyProviderTenantUsage(statuses []ProviderNetworkStatus, usage map[string
 			statuses[index].SubnetCount += tenant.Subnets
 			statuses[index].EndpointCount += tenant.Endpoints
 			statuses[index].LoadBalancerCount += tenant.LoadBalancers
+			statuses[index].NATRuleCount += tenant.NATRules
 			if tenant.Exceeded {
 				statuses[index].Reasons = appendUniqueSorted(statuses[index].Reasons, "tenant-quota-exceeded")
 				statuses[index].IssueCount = len(statuses[index].Reasons)
@@ -752,12 +756,17 @@ func providerTenantUsage(state control.DesiredState) map[string][]ProviderTenant
 		}
 	}
 	subnetProvider := make(map[string]string, len(state.Subnets))
+	tenantProviders := make(map[string]map[string]struct{})
 	usageByProviderTenant := make(map[string]map[string]ProviderTenantUsage)
 	for _, subnet := range state.Subnets {
 		if subnet.ProviderNetwork == "" {
 			continue
 		}
 		subnetProvider[subnetStateKey(subnet.VPC, subnet.Name)] = subnet.ProviderNetwork
+		if tenantProviders[subnet.VPC] == nil {
+			tenantProviders[subnet.VPC] = make(map[string]struct{})
+		}
+		tenantProviders[subnet.VPC][subnet.ProviderNetwork] = struct{}{}
 		usage := providerTenantUsageFor(usageByProviderTenant, subnet.ProviderNetwork, subnet.VPC)
 		usage.Subnets++
 		setProviderTenantUsage(usageByProviderTenant, subnet.ProviderNetwork, subnet.VPC, usage)
@@ -788,6 +797,13 @@ func providerTenantUsage(state control.DesiredState) map[string][]ProviderTenant
 			setProviderTenantUsage(usageByProviderTenant, providerName, lb.VPC, usage)
 		}
 	}
+	for _, rule := range state.NATRules {
+		for providerName := range tenantProviders[rule.VPC] {
+			usage := providerTenantUsageFor(usageByProviderTenant, providerName, rule.VPC)
+			usage.NATRules++
+			setProviderTenantUsage(usageByProviderTenant, providerName, rule.VPC, usage)
+		}
+	}
 	out := make(map[string][]ProviderTenantUsage, len(usageByProviderTenant))
 	for provider, tenants := range usageByProviderTenant {
 		for tenant, usage := range tenants {
@@ -796,9 +812,11 @@ func providerTenantUsage(state control.DesiredState) map[string][]ProviderTenant
 			usage.MaxSubnets = quota.MaxSubnets
 			usage.MaxEndpoints = quota.MaxEndpoints
 			usage.MaxLoadBalancers = quota.MaxLoadBalancers
+			usage.MaxNATRules = quota.MaxNATRules
 			usage.Exceeded = (usage.MaxSubnets > 0 && usage.Subnets > usage.MaxSubnets) ||
 				(usage.MaxEndpoints > 0 && usage.Endpoints > usage.MaxEndpoints) ||
-				(usage.MaxLoadBalancers > 0 && usage.LoadBalancers > usage.MaxLoadBalancers)
+				(usage.MaxLoadBalancers > 0 && usage.LoadBalancers > usage.MaxLoadBalancers) ||
+				(usage.MaxNATRules > 0 && usage.NATRules > usage.MaxNATRules)
 			out[provider] = append(out[provider], usage)
 		}
 	}

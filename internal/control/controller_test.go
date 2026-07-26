@@ -964,6 +964,38 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 			wantErr: "provider network \"physnet-a\" tenant \"prod\" uses 2 load balancers, exceeds max_load_balancers 1",
 		},
 		{
+			name: "provider tenant nat rule quota exceeded",
+			mutate: func(state *DesiredState) {
+				state.ProviderNetworks = []model.ProviderNetwork{{
+					Name: "physnet-a",
+					Nodes: []model.ProviderNetworkNode{{
+						Node:      "node-a",
+						Interface: "eth1",
+					}},
+					TenantQuotas: []model.ProviderNetworkTenantQuota{{
+						Tenant:      "prod",
+						MaxNATRules: 1,
+					}},
+				}}
+				state.Subnets[0].ProviderNetwork = "physnet-a"
+				state.Subnets[0].VLAN = 100
+				state.NATRules = []model.NATRule{{
+					Name:       "ingress-1",
+					VPC:        "prod",
+					Type:       model.ActionDNAT,
+					ExternalIP: netip.MustParseAddr("192.0.2.10"),
+					TargetIP:   netip.MustParseAddr("10.10.0.10"),
+				}, {
+					Name:       "ingress-2",
+					VPC:        "prod",
+					Type:       model.ActionDNAT,
+					ExternalIP: netip.MustParseAddr("192.0.2.11"),
+					TargetIP:   netip.MustParseAddr("10.10.0.11"),
+				}}
+			},
+			wantErr: "provider network \"physnet-a\" tenant \"prod\" uses 2 nat rules, exceeds max_nat_rules 1",
+		},
+		{
 			name: "duplicate security group",
 			mutate: func(state *DesiredState) {
 				state.SecurityGroups = append(state.SecurityGroups, state.SecurityGroups[0])
