@@ -34,6 +34,7 @@ curl -s http://127.0.0.1:9092/metrics
 - controller `/status` 显示 OVN health 失败。
 - controller events 中 `ovn_health` 连续失败。
 - metrics 中 OVN consecutive failure 增长。
+- `NetloomOVNEndpointConnectErrors` 或 `NetloomOVNEndpointCooldownActive` 告警触发。
 
 处理：
 

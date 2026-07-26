@@ -474,6 +474,8 @@ type controllerEventRecord struct {
 	OVNClusterReachable   int            `json:"ovn_cluster_reachable,omitempty"`
 	OVNClusterQuorumSize  int            `json:"ovn_cluster_quorum_size,omitempty"`
 	OVNClusterLeaderCount int            `json:"ovn_cluster_leader_count,omitempty"`
+	OVNClusterConnectErrs int            `json:"ovn_cluster_connect_errors,omitempty"`
+	OVNClusterCooldowns   int            `json:"ovn_cluster_cooldowns,omitempty"`
 	OVNClusterFailovers   int            `json:"ovn_cluster_failovers,omitempty"`
 	OVNClusterLeaderPref  bool           `json:"ovn_cluster_leader_preferred,omitempty"`
 	OVNOps                int            `json:"ovn_ops"`
@@ -531,6 +533,8 @@ type ovnClusterHealthSnapshot struct {
 	ReachableEndpoints  int                          `json:"reachable_endpoints"`
 	QuorumSize          int                          `json:"quorum_size"`
 	LeaderCount         int                          `json:"leader_count"`
+	ConnectErrorCount   int                          `json:"connect_error_count"`
+	CooldownCount       int                          `json:"cooldown_count"`
 	Failovers           int                          `json:"failovers"`
 	LeaderPreferred     bool                         `json:"leader_preferred"`
 	Endpoints           []ovnClusterEndpointSnapshot `json:"endpoints,omitempty"`
@@ -1115,6 +1119,8 @@ func controllerEventFromSnapshot(snapshot controllerMetricsSnapshot) controllerE
 		OVNClusterReachable:   cluster.ReachableEndpoints,
 		OVNClusterQuorumSize:  cluster.QuorumSize,
 		OVNClusterLeaderCount: cluster.LeaderCount,
+		OVNClusterConnectErrs: cluster.ConnectErrorCount,
+		OVNClusterCooldowns:   cluster.CooldownCount,
 		OVNClusterFailovers:   cluster.Failovers,
 		OVNClusterLeaderPref:  cluster.LeaderPreferred,
 		OVNOps:                snapshot.OVNOps,
@@ -1782,6 +1788,10 @@ func writeControllerMetrics(w metricWriter, snapshot controllerMetricsSnapshot, 
 	fmt.Fprintf(w, "netloom_controller_ovn_cluster_quorum_size%s %d\n", baseLabels, snapshot.OVNCluster.QuorumSize)
 	writeMetricType(w, "netloom_controller_ovn_cluster_leaders", "gauge")
 	fmt.Fprintf(w, "netloom_controller_ovn_cluster_leaders%s %d\n", baseLabels, snapshot.OVNCluster.LeaderCount)
+	writeMetricType(w, "netloom_controller_ovn_cluster_connect_error_endpoints", "gauge")
+	fmt.Fprintf(w, "netloom_controller_ovn_cluster_connect_error_endpoints%s %d\n", baseLabels, snapshot.OVNCluster.ConnectErrorCount)
+	writeMetricType(w, "netloom_controller_ovn_cluster_cooldown_endpoints", "gauge")
+	fmt.Fprintf(w, "netloom_controller_ovn_cluster_cooldown_endpoints%s %d\n", baseLabels, snapshot.OVNCluster.CooldownCount)
 	writeMetricType(w, "netloom_controller_ovn_cluster_quorum_status", "gauge")
 	fmt.Fprintf(w, "netloom_controller_ovn_cluster_quorum_status%s 1\n", prometheusLabels(map[string]string{
 		"ovn_health": fallbackMetricsLabel(snapshot.OVNHealthStatus, "disabled"),
@@ -2829,6 +2839,8 @@ func summarizeOVNClusterHealth(snapshot ovnClusterHealthSnapshot) ovnClusterHeal
 	snapshot.ReachableEndpoints = 0
 	snapshot.QuorumSize = 0
 	snapshot.LeaderCount = 0
+	snapshot.ConnectErrorCount = 0
+	snapshot.CooldownCount = 0
 	snapshot.QuorumStatus = ""
 	if snapshot.ConfiguredEndpoints <= 0 {
 		snapshot.QuorumStatus = "disabled"
@@ -2845,6 +2857,12 @@ func summarizeOVNClusterHealth(snapshot ovnClusterHealthSnapshot) ovnClusterHeal
 		}
 		if endpoint.Leader {
 			snapshot.LeaderCount++
+		}
+		switch endpoint.Status {
+		case "connect_error":
+			snapshot.ConnectErrorCount++
+		case "cooldown":
+			snapshot.CooldownCount++
 		}
 	}
 	switch {

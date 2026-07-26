@@ -519,7 +519,7 @@ curl -s http://127.0.0.1:9092/metrics
 ```
 
 生产告警可以直接加载 [Prometheus alert rules](operations/prometheus-alerts.yml)。
-这份规则覆盖 controller reconcile、OVN health/quorum/audit/stale drift、agent
+这份规则覆盖 controller reconcile、OVN health/quorum/endpoint connect-error/endpoint cooldown/audit/stale drift、agent
 runtime preflight、TCX attach、policy-map pressure、policy update failure reason、
 endpoint lifecycle action failure/frozen blocker、policy rollout
 failed/paused/rollback-failed/durable-state 异常、provider network readiness/issue

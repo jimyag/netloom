@@ -139,6 +139,8 @@ func TestRunControllerEventsWithStoreReportsFilteredHistory(t *testing.T) {
 			OVNClusterReachable:   1,
 			OVNClusterQuorumSize:  2,
 			OVNClusterLeaderCount: 1,
+			OVNClusterConnectErrs: 1,
+			OVNClusterCooldowns:   1,
 			OVNClusterFailovers:   2,
 			OVNClusterLeaderPref:  true,
 		}, {
@@ -180,6 +182,8 @@ func TestRunControllerEventsWithStoreReportsFilteredHistory(t *testing.T) {
 		got.Events[0].OVNClusterReachable != 1 ||
 		got.Events[0].OVNClusterQuorumSize != 2 ||
 		got.Events[0].OVNClusterLeaderCount != 1 ||
+		got.Events[0].OVNClusterConnectErrs != 1 ||
+		got.Events[0].OVNClusterCooldowns != 1 ||
 		got.Events[0].OVNClusterFailovers != 2 ||
 		!got.Events[0].OVNClusterLeaderPref {
 		t.Fatalf("event cluster context = %+v, want persisted active and leader endpoints", got.Events[0])
@@ -590,10 +594,7 @@ func TestControllerEventFromSnapshotIncludesOVNAuditBreakdown(t *testing.T) {
 			LeaderEndpoint:      "ssl:10.0.0.2:6641",
 			LeaderProbeStatus:   "error",
 			LeaderProbeError:    "leader probe timeout",
-			ConfiguredEndpoints: 3,
-			ReachableEndpoints:  1,
-			QuorumSize:          2,
-			LeaderCount:         1,
+			ConfiguredEndpoints: 4,
 			Failovers:           2,
 			LeaderPreferred:     true,
 			Endpoints: []ovnClusterEndpointSnapshot{{
@@ -605,7 +606,13 @@ func TestControllerEventFromSnapshotIncludesOVNAuditBreakdown(t *testing.T) {
 				Leader:    true,
 			}, {
 				Endpoint:  "ssl:10.0.0.3:6641",
+				Status:    "connect_error",
 				Reachable: false,
+			}, {
+				Endpoint:    "ssl:10.0.0.4:6641",
+				Status:      "cooldown",
+				NextRetryAt: "2026-07-27T12:00:30Z",
+				Reachable:   false,
 			}},
 		},
 		OVNAudit: ovn.AuditStats{
@@ -625,15 +632,17 @@ func TestControllerEventFromSnapshotIncludesOVNAuditBreakdown(t *testing.T) {
 		event.OVNDriftedFieldCounts["Load_Balancer.options"] != 5 {
 		t.Fatalf("event audit breakdown = %+v, want table and field counts", event)
 	}
-	if event.OVNClusterQuorum != "degraded" ||
+	if event.OVNClusterQuorum != "lost" ||
 		event.OVNClusterActive != "ssl:10.0.0.1:6641" ||
 		event.OVNClusterLeader != "ssl:10.0.0.2:6641" ||
 		event.OVNClusterLeaderProbe != "error" ||
 		event.OVNClusterLeaderError != "leader probe timeout" ||
-		event.OVNClusterEndpoints != 3 ||
+		event.OVNClusterEndpoints != 4 ||
 		event.OVNClusterReachable != 2 ||
-		event.OVNClusterQuorumSize != 2 ||
+		event.OVNClusterQuorumSize != 3 ||
 		event.OVNClusterLeaderCount != 1 ||
+		event.OVNClusterConnectErrs != 1 ||
+		event.OVNClusterCooldowns != 1 ||
 		event.OVNClusterFailovers != 2 ||
 		!event.OVNClusterLeaderPref {
 		t.Fatalf("event cluster summary = %+v, want active leader and quorum context", event)
@@ -936,6 +945,8 @@ func TestSummarizeOVNClusterHealthReportsQuorumState(t *testing.T) {
 		reachable int
 		quorum    int
 		leaders   int
+		connect   int
+		cooldown  int
 	}{
 		{
 			name:     "unknown without endpoint probes",
@@ -971,13 +982,15 @@ func TestSummarizeOVNClusterHealthReportsQuorumState(t *testing.T) {
 			name: "lost when reachable endpoints fall below quorum",
 			snapshot: ovnClusterHealthSnapshot{ConfiguredEndpoints: 3, Endpoints: []ovnClusterEndpointSnapshot{
 				{Endpoint: "tcp:a:6641", Reachable: true, Leader: true},
-				{Endpoint: "tcp:b:6641"},
-				{Endpoint: "tcp:c:6641"},
+				{Endpoint: "tcp:b:6641", Status: "connect_error"},
+				{Endpoint: "tcp:c:6641", Status: "cooldown"},
 			}},
 			status:    "lost",
 			reachable: 1,
 			quorum:    2,
 			leaders:   1,
+			connect:   1,
+			cooldown:  1,
 		},
 		{
 			name: "split brain takes precedence over quorum",
@@ -995,8 +1008,13 @@ func TestSummarizeOVNClusterHealthReportsQuorumState(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := summarizeOVNClusterHealth(tt.snapshot)
-			if got.QuorumStatus != tt.status || got.ReachableEndpoints != tt.reachable || got.QuorumSize != tt.quorum || got.LeaderCount != tt.leaders {
-				t.Fatalf("summary = %+v, want status=%s reachable=%d quorum=%d leaders=%d", got, tt.status, tt.reachable, tt.quorum, tt.leaders)
+			if got.QuorumStatus != tt.status ||
+				got.ReachableEndpoints != tt.reachable ||
+				got.QuorumSize != tt.quorum ||
+				got.LeaderCount != tt.leaders ||
+				got.ConnectErrorCount != tt.connect ||
+				got.CooldownCount != tt.cooldown {
+				t.Fatalf("summary = %+v, want status=%s reachable=%d quorum=%d leaders=%d connect=%d cooldown=%d", got, tt.status, tt.reachable, tt.quorum, tt.leaders, tt.connect, tt.cooldown)
 			}
 		})
 	}
@@ -1808,6 +1826,8 @@ func TestControllerMetricsExportsLatestSuccess(t *testing.T) {
 		`netloom_controller_ovn_cluster_reachable_endpoints{ovn_health="ok"} 3`,
 		`netloom_controller_ovn_cluster_quorum_size{ovn_health="ok"} 2`,
 		`netloom_controller_ovn_cluster_leaders{ovn_health="ok"} 1`,
+		`netloom_controller_ovn_cluster_connect_error_endpoints{ovn_health="ok"} 0`,
+		`netloom_controller_ovn_cluster_cooldown_endpoints{ovn_health="ok"} 0`,
 		`netloom_controller_ovn_cluster_quorum_status{ovn_health="ok",status="ok"} 1`,
 		`netloom_controller_ovn_cluster_failovers{ovn_health="ok"} 1`,
 		`netloom_controller_ovn_cluster_endpoint_status{active="1",endpoint="tcp:10.0.0.2:6641",leader="1",leader_id="self",ovn_health="ok",role="leader",server_id="server-b",status="cluster member",target="ovnnb-b.ctl"} 1`,
@@ -1877,6 +1897,7 @@ func TestControllerMetricsExportsOVNClusterLeaderProbeError(t *testing.T) {
 			ConfiguredEndpoints: 3,
 			Endpoints: []ovnClusterEndpointSnapshot{{
 				Endpoint:  "tcp:10.0.0.1:6641",
+				Status:    "connect_error",
 				Reachable: false,
 				Error:     "timeout",
 			}},
@@ -1892,6 +1913,8 @@ func TestControllerMetricsExportsOVNClusterLeaderProbeError(t *testing.T) {
 	for _, expected := range []string{
 		`netloom_controller_ovn_cluster_leader_probe_status{ovn_health="error",status="error"} 1`,
 		`netloom_controller_ovn_cluster_leader_probe_error{error="ovn-appctl cluster/status timed out",ovn_health="error"} 1`,
+		`netloom_controller_ovn_cluster_connect_error_endpoints{ovn_health="error"} 1`,
+		`netloom_controller_ovn_cluster_cooldown_endpoints{ovn_health="error"} 0`,
 	} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("metrics output missing %q:\n%s", expected, output)
@@ -1921,7 +1944,7 @@ func TestControllerStatusAPIExportsLatestOVNStatus(t *testing.T) {
 			Endpoints: []ovnClusterEndpointSnapshot{
 				{Endpoint: "tcp:10.0.0.2:6641", Target: "ovnnb-b.ctl", Role: "leader", Reachable: true, Leader: true},
 				{Endpoint: "tcp:10.0.0.1:6641", Target: "ovnnb-a.ctl", Role: "follower", Reachable: true},
-				{Endpoint: "tcp:10.0.0.3:6641", Target: "ovnnb-c.ctl", Error: "timeout"},
+				{Endpoint: "tcp:10.0.0.3:6641", Target: "ovnnb-c.ctl", Status: "connect_error", Error: "timeout"},
 			},
 		},
 		OVNOps:         9,
@@ -1958,7 +1981,12 @@ func TestControllerStatusAPIExportsLatestOVNStatus(t *testing.T) {
 	if status.OVNHealth.Status != "ok" || status.OVNHealth.ConsecutiveSuccesses != 3 || status.OVNOps != 9 || status.OVNExecuted != 8 {
 		t.Fatalf("ovn health/execution = %+v ops=%d executed=%d, want latest values", status.OVNHealth, status.OVNOps, status.OVNExecuted)
 	}
-	if status.OVNHealth.Cluster.QuorumStatus != "degraded" || status.OVNHealth.Cluster.ReachableEndpoints != 2 || status.OVNHealth.Cluster.QuorumSize != 2 || status.OVNHealth.Cluster.LeaderCount != 1 {
+	if status.OVNHealth.Cluster.QuorumStatus != "degraded" ||
+		status.OVNHealth.Cluster.ReachableEndpoints != 2 ||
+		status.OVNHealth.Cluster.QuorumSize != 2 ||
+		status.OVNHealth.Cluster.LeaderCount != 1 ||
+		status.OVNHealth.Cluster.ConnectErrorCount != 1 ||
+		status.OVNHealth.Cluster.CooldownCount != 0 {
 		t.Fatalf("cluster status = %+v, want degraded quorum details", status.OVNHealth.Cluster)
 	}
 	if status.OVNAudit.ManagedLogicalRouters != 1 || status.OVNAudit.MissingManagedRows != 2 || status.OVNAudit.DriftedManagedRows != 3 {
@@ -2039,7 +2067,7 @@ func TestSyncOVSDBControlStatusPersistsAuditSummary(t *testing.T) {
 				Endpoints: []ovnClusterEndpointSnapshot{
 					{Endpoint: "tcp:a:6641", Reachable: true, Leader: true},
 					{Endpoint: "tcp:b:6641", Reachable: true},
-					{Endpoint: "tcp:c:6641"},
+					{Endpoint: "tcp:c:6641", Status: "cooldown", NextRetryAt: "2026-07-27T12:00:30Z"},
 				},
 			},
 		},
@@ -2072,7 +2100,12 @@ func TestSyncOVSDBControlStatusPersistsAuditSummary(t *testing.T) {
 	if status.OVNHealth.Status != "ok" || status.OVNOps != 7 || status.OVNExecuted != 6 {
 		t.Fatalf("ovn execution status = %+v, want health and operation counts", status)
 	}
-	if status.OVNHealth.Cluster.QuorumStatus != "degraded" || status.OVNHealth.Cluster.ReachableEndpoints != 2 || status.OVNHealth.Cluster.QuorumSize != 2 || status.OVNHealth.Cluster.LeaderCount != 1 {
+	if status.OVNHealth.Cluster.QuorumStatus != "degraded" ||
+		status.OVNHealth.Cluster.ReachableEndpoints != 2 ||
+		status.OVNHealth.Cluster.QuorumSize != 2 ||
+		status.OVNHealth.Cluster.LeaderCount != 1 ||
+		status.OVNHealth.Cluster.ConnectErrorCount != 0 ||
+		status.OVNHealth.Cluster.CooldownCount != 1 {
 		t.Fatalf("ovn cluster status = %+v, want degraded quorum summary", status.OVNHealth.Cluster)
 	}
 	if status.OVNAudit.ManagedLogicalRouters != 1 || status.OVNAudit.DriftedManagedRows != 2 {

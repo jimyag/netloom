@@ -45,6 +45,28 @@ groups:
           description: "The controller cannot determine the OVN Northbound leader. Inspect NETLOOM_OVN_CLUSTER_STATUS_TARGETS, ovn-appctl cluster/status output, and endpoint reachability."
           runbook_url: docs/operations/runbooks.md
 
+      - alert: NetloomOVNEndpointConnectErrors
+        expr: netloom_controller_ovn_cluster_connect_error_endpoints > 0
+        for: 2m
+        labels:
+          severity: warning
+          component: ovn
+        annotations:
+          summary: OVN Northbound endpoints have connection errors
+          description: "At least one configured OVN Northbound endpoint is failing libovsdb connection attempts. Inspect endpoint status labels, network reachability, and certificates."
+          runbook_url: docs/operations/runbooks.md
+
+      - alert: NetloomOVNEndpointCooldownActive
+        expr: netloom_controller_ovn_cluster_cooldown_endpoints > 0
+        for: 5m
+        labels:
+          severity: warning
+          component: ovn
+        annotations:
+          summary: OVN Northbound endpoints are in reconnect cooldown
+          description: "The controller is temporarily cooling down failed OVN Northbound endpoints. Check next_retry_at in controller status and confirm other endpoints remain reachable."
+          runbook_url: docs/operations/runbooks.md
+
       - alert: NetloomOVNManagedRowsMissing
         expr: netloom_controller_ovn_live_missing_managed_rows > 0
         for: 5m
