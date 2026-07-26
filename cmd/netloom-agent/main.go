@@ -259,6 +259,8 @@ type policyEventsOptions struct {
 	remediated string
 	ruleCookie string
 	ruleRef    string
+	direction  string
+	action     string
 	limit      int
 }
 
@@ -455,6 +457,8 @@ type policyEventsOutput struct {
 	FilterRemediated     *bool                         `json:"filter_remediated,omitempty"`
 	FilterRuleCookie     uint32                        `json:"filter_rule_cookie,omitempty"`
 	FilterRuleRef        string                        `json:"filter_rule_ref,omitempty"`
+	FilterDirection      model.Direction               `json:"filter_direction,omitempty"`
+	FilterAction         model.Action                  `json:"filter_action,omitempty"`
 	Events               []dataplane.PolicyUpdateEvent `json:"events"`
 }
 
@@ -1303,6 +1307,8 @@ func runPolicyEvents(ctx context.Context, args []string, stdout io.Writer) error
 	flags.StringVar(&opts.remediated, "remediated", "", "optional remediation filter: true or false")
 	flags.StringVar(&opts.ruleCookie, "rule-cookie", "", "optional dataplane rule cookie to include")
 	flags.StringVar(&opts.ruleRef, "rule-ref", "", "optional policy rule reference to include")
+	flags.StringVar(&opts.direction, "direction", "", "optional policy rule direction to include: ingress or egress")
+	flags.StringVar(&opts.action, "action", "", "optional policy rule action to include: allow, drop, reject, or log")
 	flags.IntVar(&opts.limit, "limit", defaultPolicyEventsLimit, "maximum recent policy update events")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -1353,6 +1359,8 @@ func runPolicyEventsWithStore(ctx context.Context, opts policyEventsOptions, std
 		FilterRemediated:     filter.Remediated,
 		FilterRuleCookie:     filterPolicyUpdateEventRuleCookieValue(filter),
 		FilterRuleRef:        filter.RuleRef,
+		FilterDirection:      filter.Direction,
+		FilterAction:         filter.Action,
 		Events:               recent,
 	}
 	encoder := json.NewEncoder(stdout)
@@ -2151,17 +2159,19 @@ type policyUpdateEventFilter struct {
 	Remediated *bool
 	RuleCookie *uint32
 	RuleRef    string
+	Direction  model.Direction
+	Action     model.Action
 }
 
 func policyUpdateEventFilterFromOptions(opts policyEventsOptions) (policyUpdateEventFilter, error) {
-	return policyUpdateEventFilterFromValues(opts.endpoint, opts.success, opts.remediated, opts.ruleCookie, opts.ruleRef)
+	return policyUpdateEventFilterFromValues(opts.endpoint, opts.success, opts.remediated, opts.ruleCookie, opts.ruleRef, opts.direction, opts.action)
 }
 
 func policyUpdateEventFilterFromRequest(r *http.Request, endpoint string) (policyUpdateEventFilter, error) {
-	return policyUpdateEventFilterFromValues(endpoint, r.URL.Query().Get("success"), r.URL.Query().Get("remediated"), r.URL.Query().Get("rule_cookie"), r.URL.Query().Get("rule_ref"))
+	return policyUpdateEventFilterFromValues(endpoint, r.URL.Query().Get("success"), r.URL.Query().Get("remediated"), r.URL.Query().Get("rule_cookie"), r.URL.Query().Get("rule_ref"), r.URL.Query().Get("direction"), r.URL.Query().Get("action"))
 }
 
-func policyUpdateEventFilterFromValues(endpoint, successRaw, remediatedRaw, ruleCookieRaw, ruleRef string) (policyUpdateEventFilter, error) {
+func policyUpdateEventFilterFromValues(endpoint, successRaw, remediatedRaw, ruleCookieRaw, ruleRef, direction, action string) (policyUpdateEventFilter, error) {
 	success, err := policyActionSuccessFromString(successRaw)
 	if err != nil {
 		return policyUpdateEventFilter{}, err
@@ -2180,12 +2190,32 @@ func policyUpdateEventFilterFromValues(endpoint, successRaw, remediatedRaw, rule
 		cookie := uint32(value)
 		ruleCookie = &cookie
 	}
+	direction = strings.TrimSpace(direction)
+	var filterDirection model.Direction
+	switch model.Direction(direction) {
+	case "":
+	case model.DirectionIngress, model.DirectionEgress:
+		filterDirection = model.Direction(direction)
+	default:
+		return policyUpdateEventFilter{}, fmt.Errorf("invalid direction %q", direction)
+	}
+	action = strings.TrimSpace(action)
+	var filterAction model.Action
+	switch model.Action(action) {
+	case "":
+	case model.ActionAllow, model.ActionDrop, model.ActionReject, model.ActionLog:
+		filterAction = model.Action(action)
+	default:
+		return policyUpdateEventFilter{}, fmt.Errorf("invalid action %q", action)
+	}
 	return policyUpdateEventFilter{
 		Endpoint:   strings.TrimSpace(endpoint),
 		Success:    success,
 		Remediated: remediated,
 		RuleCookie: ruleCookie,
 		RuleRef:    strings.TrimSpace(ruleRef),
+		Direction:  filterDirection,
+		Action:     filterAction,
 	}, nil
 }
 
@@ -2207,6 +2237,8 @@ func policyEventsOutputFromSnapshot(snapshot agentMetricsSnapshot, events []data
 		FilterRemediated:     filter.Remediated,
 		FilterRuleCookie:     filterPolicyUpdateEventRuleCookieValue(filter),
 		FilterRuleRef:        filter.RuleRef,
+		FilterDirection:      filter.Direction,
+		FilterAction:         filter.Action,
 		Events:               recent,
 	}
 }
@@ -2419,7 +2451,7 @@ func policyMapEntryOutputFromEntry(entry dataplane.PolicyMapEntry) policyMapEntr
 }
 
 func filterPolicyUpdateEvents(events []dataplane.PolicyUpdateEvent, filter policyUpdateEventFilter) []dataplane.PolicyUpdateEvent {
-	if filter.Endpoint == "" && filter.Success == nil && filter.Remediated == nil && filter.RuleCookie == nil && filter.RuleRef == "" {
+	if !policyUpdateEventFilterActive(filter) {
 		return append([]dataplane.PolicyUpdateEvent(nil), events...)
 	}
 	out := make([]dataplane.PolicyUpdateEvent, 0, len(events))
@@ -2439,9 +2471,25 @@ func filterPolicyUpdateEvents(events []dataplane.PolicyUpdateEvent, filter polic
 		if filter.RuleRef != "" && !slices.Contains(event.RuleRefs, filter.RuleRef) {
 			continue
 		}
+		if filter.Direction != "" && !slices.Contains(event.RuleDirections, string(filter.Direction)) {
+			continue
+		}
+		if filter.Action != "" && !slices.Contains(event.RuleActions, string(filter.Action)) {
+			continue
+		}
 		out = append(out, event)
 	}
 	return out
+}
+
+func policyUpdateEventFilterActive(filter policyUpdateEventFilter) bool {
+	return filter.Endpoint != "" ||
+		filter.Success != nil ||
+		filter.Remediated != nil ||
+		filter.RuleCookie != nil ||
+		filter.RuleRef != "" ||
+		filter.Direction != "" ||
+		filter.Action != ""
 }
 
 func filterPolicyUpdateEventRuleCookieValue(filter policyUpdateEventFilter) uint32 {
@@ -2477,21 +2525,23 @@ func enrichPolicyUpdateEvents(events []dataplane.PolicyUpdateEvent, catalog []ag
 	if len(events) == 0 {
 		return nil
 	}
-	refs := make(map[string]string, len(catalog))
+	refs := make(map[string]agent.PolicyRuleCatalogEntry, len(catalog))
 	for _, entry := range catalog {
 		key := policyRuleMetricKey(entry.EndpointID, entry.RuleCookie)
-		refs[key] = entry.RuleRef
+		refs[key] = entry
 	}
 	out := make([]dataplane.PolicyUpdateEvent, 0, len(events))
 	for _, event := range events {
 		next := event
 		next.RuleRefs = policyUpdateEventRuleRefs(next, refs)
+		next.RuleDirections = policyUpdateEventRuleDirections(next, refs)
+		next.RuleActions = policyUpdateEventRuleActions(next, refs)
 		out = append(out, next)
 	}
 	return out
 }
 
-func policyUpdateEventRuleRefs(event dataplane.PolicyUpdateEvent, refs map[string]string) []string {
+func policyUpdateEventRuleRefs(event dataplane.PolicyUpdateEvent, refs map[string]agent.PolicyRuleCatalogEntry) []string {
 	if len(event.RuleCookies) == 0 {
 		return append([]string(nil), event.RuleRefs...)
 	}
@@ -2508,7 +2558,7 @@ func policyUpdateEventRuleRefs(event dataplane.PolicyUpdateEvent, refs map[strin
 		out = append(out, ref)
 	}
 	for _, cookie := range event.RuleCookies {
-		ref := refs[policyRuleMetricKey(event.EndpointID, cookie)]
+		ref := refs[policyRuleMetricKey(event.EndpointID, cookie)].RuleRef
 		if ref == "" {
 			continue
 		}
@@ -2517,6 +2567,56 @@ func policyUpdateEventRuleRefs(event dataplane.PolicyUpdateEvent, refs map[strin
 		}
 		seen[ref] = struct{}{}
 		out = append(out, ref)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func policyUpdateEventRuleDirections(event dataplane.PolicyUpdateEvent, refs map[string]agent.PolicyRuleCatalogEntry) []string {
+	if len(event.RuleCookies) == 0 {
+		return append([]string(nil), event.RuleDirections...)
+	}
+	out := append([]string(nil), event.RuleDirections...)
+	for _, cookie := range event.RuleCookies {
+		direction := refs[policyRuleMetricKey(event.EndpointID, cookie)].Direction
+		if direction == "" {
+			continue
+		}
+		out = append(out, string(direction))
+	}
+	return uniqueSortedStrings(out)
+}
+
+func policyUpdateEventRuleActions(event dataplane.PolicyUpdateEvent, refs map[string]agent.PolicyRuleCatalogEntry) []string {
+	if len(event.RuleCookies) == 0 {
+		return append([]string(nil), event.RuleActions...)
+	}
+	out := append([]string(nil), event.RuleActions...)
+	for _, cookie := range event.RuleCookies {
+		action := refs[policyRuleMetricKey(event.EndpointID, cookie)].Action
+		if action == "" {
+			continue
+		}
+		out = append(out, string(action))
+	}
+	return uniqueSortedStrings(out)
+}
+
+func uniqueSortedStrings(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
 	}
 	sort.Strings(out)
 	return out

@@ -135,6 +135,8 @@ type PolicyUpdateEvent struct {
 	Stats            PolicyUpdateStats `json:"stats"`
 	RuleCookies      []uint32          `json:"rule_cookies,omitempty"`
 	RuleRefs         []string          `json:"rule_refs,omitempty"`
+	RuleDirections   []string          `json:"rule_directions,omitempty"`
+	RuleActions      []string          `json:"rule_actions,omitempty"`
 	Success          bool              `json:"success"`
 	Error            string            `json:"error,omitempty"`
 	Remediated       bool              `json:"remediated,omitempty"`

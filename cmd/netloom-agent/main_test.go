@@ -2741,8 +2741,8 @@ func TestPolicyEventsAPIReportsRecentEndpointEvents(t *testing.T) {
 	observeAgentReconcileResult(metrics, agent.ReconcileResult{
 		Node: "node-a",
 		PolicyRuleCatalog: []agent.PolicyRuleCatalogEntry{
-			{EndpointID: podA, RuleCookie: 42, RuleRef: "prod/web/allow-old", VPC: "prod", SecurityGroup: "web", RuleID: "allow-old"},
-			{EndpointID: podA, RuleCookie: 43, RuleRef: "prod/web/allow-new", VPC: "prod", SecurityGroup: "web", RuleID: "allow-new"},
+			{EndpointID: podA, RuleCookie: 42, RuleRef: "prod/web/allow-old", VPC: "prod", SecurityGroup: "web", RuleID: "allow-old", Direction: model.DirectionIngress, Action: model.ActionAllow},
+			{EndpointID: podA, RuleCookie: 43, RuleRef: "prod/web/allow-new", VPC: "prod", SecurityGroup: "web", RuleID: "allow-new", Direction: model.DirectionEgress, Action: model.ActionAllow},
 		},
 	}, "memory", time.Millisecond)
 
@@ -2772,6 +2772,9 @@ func TestPolicyEventsAPIReportsRecentEndpointEvents(t *testing.T) {
 	if !slices.Equal(got.Events[0].RuleCookies, []uint32{43}) || !slices.Equal(got.Events[0].RuleRefs, []string{"prod/web/allow-new"}) {
 		t.Fatalf("event rule refs = cookies %v refs %v, want allow-new", got.Events[0].RuleCookies, got.Events[0].RuleRefs)
 	}
+	if !slices.Equal(got.Events[0].RuleDirections, []string{"egress"}) || !slices.Equal(got.Events[0].RuleActions, []string{"allow"}) {
+		t.Fatalf("event rule metadata = directions %v actions %v, want egress allow", got.Events[0].RuleDirections, got.Events[0].RuleActions)
+	}
 
 	recorder = httptest.NewRecorder()
 	request = httptest.NewRequest(http.MethodGet, "/policy/events?rule_ref=prod/web/allow-new", nil)
@@ -2786,6 +2789,61 @@ func TestPolicyEventsAPIReportsRecentEndpointEvents(t *testing.T) {
 	}
 	if got.FilterRuleRef != "prod/web/allow-new" || got.EventCount != 1 || len(got.Events) != 1 || got.Events[0].Revision != 2 {
 		t.Fatalf("rule-ref filtered events = %+v, want only allow-new revision 2", got)
+	}
+}
+
+func TestPolicyEventsAPIFiltersByDirectionAndAction(t *testing.T) {
+	store := dataplane.NewInMemoryPolicyStore()
+	podA := model.EndpointKey("prod", "pod-a")
+	if err := store.ReplaceEndpoint(context.Background(), podA, []dataplane.PolicyMapEntry{{
+		Key:   dataplane.PolicyKey{PrefixLen: dataplane.StaticPrefixBits, Direction: dataplane.DirectionIngress, Protocol: 6, RemoteIdentity: 10},
+		Value: dataplane.PolicyEntry{RuleCookie: 42},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ReplaceEndpoint(context.Background(), podA, []dataplane.PolicyMapEntry{{
+		Key:   dataplane.PolicyKey{PrefixLen: dataplane.StaticPrefixBits, Direction: dataplane.DirectionEgress, Protocol: 6, RemoteIdentity: 11},
+		Value: dataplane.PolicyEntry{RuleCookie: 43},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	metrics := newAgentMetrics(store)
+	observeAgentReconcileResult(metrics, agent.ReconcileResult{
+		Node: "node-a",
+		PolicyRuleCatalog: []agent.PolicyRuleCatalogEntry{{
+			EndpointID: podA,
+			RuleCookie: 42,
+			RuleRef:    "prod/web/allow-http",
+			Direction:  model.DirectionIngress,
+			Action:     model.ActionAllow,
+		}, {
+			EndpointID: podA,
+			RuleCookie: 43,
+			RuleRef:    "prod/web/drop-db",
+			Direction:  model.DirectionEgress,
+			Action:     model.ActionDrop,
+		}},
+	}, "memory", time.Millisecond)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/policy/events?direction=egress&action=drop", nil)
+	metrics.handlePolicyEvents(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var got policyEventsOutput
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode policy events response: %v\n%s", err, recorder.Body.String())
+	}
+	if got.FilterDirection != model.DirectionEgress || got.FilterAction != model.ActionDrop || got.EventCount != 1 {
+		t.Fatalf("policy events summary = %+v, want egress drop filter with one event", got)
+	}
+	if len(got.Events) != 1 || got.Events[0].Revision != 2 || !slices.Contains(got.Events[0].RuleCookies, uint32(43)) {
+		t.Fatalf("events = %+v, want second event containing cookie 43", got.Events)
+	}
+	if !slices.Contains(got.Events[0].RuleDirections, "egress") || !slices.Contains(got.Events[0].RuleActions, "drop") {
+		t.Fatalf("event rule metadata = directions %v actions %v, want egress drop", got.Events[0].RuleDirections, got.Events[0].RuleActions)
 	}
 }
 
@@ -2853,6 +2911,33 @@ func TestPolicyEventsAPIRejectsInvalidRuleCookie(t *testing.T) {
 	}
 	if !strings.Contains(recorder.Body.String(), "invalid rule cookie") {
 		t.Fatalf("body missing invalid rule cookie error: %s", recorder.Body.String())
+	}
+}
+
+func TestPolicyEventsAPIRejectsInvalidDirectionAndAction(t *testing.T) {
+	metrics := newAgentMetrics(dataplane.NewInMemoryPolicyStore())
+	observeAgentReconcileResult(metrics, agent.ReconcileResult{Node: "node-a"}, "memory", time.Millisecond)
+
+	for _, tc := range []struct {
+		name string
+		path string
+		want string
+	}{
+		{name: "direction", path: "/policy/events?direction=sideways", want: "invalid direction"},
+		{name: "action", path: "/policy/events?action=pass", want: "invalid action"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodGet, tc.path, nil)
+			metrics.handlePolicyEvents(recorder, request)
+
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400; body=%s", recorder.Code, recorder.Body.String())
+			}
+			if !strings.Contains(recorder.Body.String(), tc.want) {
+				t.Fatalf("body=%s, want %q", recorder.Body.String(), tc.want)
+			}
+		})
 	}
 }
 
@@ -3001,6 +3086,49 @@ func TestRunPolicyEventsWithStoreFiltersRemediatedEvents(t *testing.T) {
 	}
 	if !got.Events[0].Remediated || got.Events[0].Remediation != "clear" {
 		t.Fatalf("events = %+v, want clear remediated event", got.Events)
+	}
+}
+
+func TestRunPolicyEventsWithStoreFiltersByDirectionAndAction(t *testing.T) {
+	store := ovsdbPolicyEventsStore{syncer: &fakeOpenVSwitchExternalIDStore{}}
+	if err := store.Save(t.Context(), policyEventsDocument{
+		Node:                 "node-a",
+		Store:                "ebpf",
+		LastReconcileSuccess: true,
+		TotalEvents:          2,
+		Events: []dataplane.PolicyUpdateEvent{{
+			EndpointID:     model.EndpointKey("prod", "pod-a"),
+			Revision:       1,
+			RuleCookies:    []uint32{42},
+			RuleRefs:       []string{"prod/web/allow-http"},
+			RuleDirections: []string{"ingress"},
+			RuleActions:    []string{"allow"},
+			Success:        true,
+		}, {
+			EndpointID:     model.EndpointKey("prod", "pod-a"),
+			Revision:       2,
+			RuleCookies:    []uint32{43},
+			RuleRefs:       []string{"prod/web/drop-db"},
+			RuleDirections: []string{"egress"},
+			RuleActions:    []string{"drop"},
+			Success:        true,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var stdout bytes.Buffer
+	if err := runPolicyEventsWithStore(t.Context(), policyEventsOptions{direction: "egress", action: "drop", limit: 10}, &stdout, store); err != nil {
+		t.Fatal(err)
+	}
+	var got policyEventsOutput
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode policy-events output: %v\n%s", err, stdout.String())
+	}
+	if got.FilterDirection != model.DirectionEgress || got.FilterAction != model.ActionDrop || got.EventCount != 1 || len(got.Events) != 1 {
+		t.Fatalf("policy events summary = %+v, want one egress drop event", got)
+	}
+	if got.Events[0].Revision != 2 || !slices.Equal(got.Events[0].RuleCookies, []uint32{43}) {
+		t.Fatalf("events = %+v, want revision 2 cookie 43", got.Events)
 	}
 }
 
