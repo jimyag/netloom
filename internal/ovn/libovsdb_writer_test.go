@@ -2453,6 +2453,26 @@ func TestLibOVSDBTopologyWriterEnsuresStaticRouteBFD(t *testing.T) {
 			t.Fatalf("route %s BFD = %v, want %s", routeKey, route.BFD, bfd.UUID)
 		}
 	}
+	up := ovnnb.BFDStatusUp
+	down := ovnnb.BFDStatusDown
+	bfds[0].Status = &up
+	bfds[1].Status = &down
+	statusOpsA, err := client.Where(&bfds[0]).Update(&bfds[0], &bfds[0].Status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statusOpsB, err := client.Where(&bfds[1]).Update(&bfds[1], &bfds[1].Status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statusOps := append(statusOpsA, statusOpsB...)
+	results, err := client.Transact(ctx, statusOps...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, statusOps); err != nil {
+		t.Fatalf("BFD status operation errors=%+v err=%v", opErrors, err)
+	}
 	auditState := topology.State{
 		VPCs:        map[string]model.VPC{"prod": {Name: "prod"}},
 		RouteTables: map[string]model.RouteTable{"prod/main": table},
@@ -2461,7 +2481,12 @@ func TestLibOVSDBTopologyWriterEnsuresStaticRouteBFD(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stats.ManagedBFDs != 2 || stats.DriftedManagedRows != 0 || stats.MissingManagedRows != 0 || stats.UnexpectedManagedRows != 0 {
+	if stats.ManagedBFDs != 2 ||
+		stats.BFDStatusCounts["up"] != 1 ||
+		stats.BFDStatusCounts["down"] != 1 ||
+		stats.DriftedManagedRows != 0 ||
+		stats.MissingManagedRows != 0 ||
+		stats.UnexpectedManagedRows != 0 {
 		t.Fatalf("audit stats after BFD create = %+v, want two clean managed BFD rows", stats)
 	}
 
@@ -2471,7 +2496,7 @@ func TestLibOVSDBTopologyWriterEnsuresStaticRouteBFD(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	results, err := client.Transact(ctx, driftOps...)
+	results, err = client.Transact(ctx, driftOps...)
 	if err != nil {
 		t.Fatal(err)
 	}

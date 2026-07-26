@@ -36,6 +36,7 @@ type AuditStats struct {
 	MissingManagedTableCounts        map[string]int `json:"missing_managed_table_counts,omitempty"`
 	UnexpectedManagedTableCounts     map[string]int `json:"unexpected_managed_table_counts,omitempty"`
 	DriftedManagedFieldCounts        map[string]int `json:"drifted_managed_field_counts,omitempty"`
+	BFDStatusCounts                  map[string]int `json:"bfd_status_counts,omitempty"`
 }
 
 type ManagedOVNRow struct {
@@ -89,6 +90,7 @@ func AuditManagedObjectsFromReaderWithDesired(ctx context.Context, reader Manage
 		}
 		result := auditManagedRows(table.name, rows)
 		table.addCount(&stats, result.count)
+		stats.addBFDStatusCounts(table.name, result.rows)
 		stats.DuplicateManagedRows += result.duplicates
 		stats.IncompleteManagedRows += result.incomplete
 		stats.addDuplicateManagedTable(table.name, result.duplicates)
@@ -120,6 +122,22 @@ func AuditManagedObjectsFromReaderWithDesired(ctx context.Context, reader Manage
 		}
 	}
 	return stats, nil
+}
+
+func (s *AuditStats) addBFDStatusCounts(table string, rows []auditManagedRow) {
+	if table != "BFD" {
+		return
+	}
+	for _, row := range rows {
+		status := "unknown"
+		if row.fields != nil && strings.TrimSpace(row.fields["status"]) != "" {
+			status = strings.TrimSpace(row.fields["status"])
+		}
+		if s.BFDStatusCounts == nil {
+			s.BFDStatusCounts = make(map[string]int)
+		}
+		s.BFDStatusCounts[status]++
+	}
 }
 
 func (s *AuditStats) addDuplicateManagedTable(table string, count int) {
@@ -262,7 +280,7 @@ func managedAuditNBCTLColumns(table string) []string {
 	case "Logical_Router_Static_Route":
 		columns = append(columns, "bfd", "ip_prefix", "nexthop", "options", "output_port", "policy", "route_table", "selection_fields")
 	case "BFD":
-		columns = append(columns, "logical_port", "dst_ip", "min_tx", "min_rx", "detect_mult", "options")
+		columns = append(columns, "logical_port", "dst_ip", "min_tx", "min_rx", "detect_mult", "options", "status")
 	case "NAT":
 		columns = append(columns, "type", "external_ip", "logical_ip", "external_port_range", "logical_port", "external_mac", "options", "allowed_ext_ips", "exempted_ext_ips", "gateway_port", "match", "priority")
 	case "Load_Balancer":

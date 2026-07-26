@@ -1535,6 +1535,15 @@ func writeControllerMetrics(w metricWriter, snapshot controllerMetricsSnapshot, 
 	fmt.Fprintf(w, "netloom_controller_ovn_live_logical_router_static_routes%s %d\n", auditLabels, snapshot.OVNAudit.ManagedLogicalRouterStaticRoutes)
 	writeMetricType(w, "netloom_controller_ovn_live_bfds", "gauge")
 	fmt.Fprintf(w, "netloom_controller_ovn_live_bfds%s %d\n", auditLabels, snapshot.OVNAudit.ManagedBFDs)
+	writeMetricType(w, "netloom_controller_ovn_live_bfd_status", "gauge")
+	for _, status := range sortedPositiveCountKeys(snapshot.OVNAudit.BFDStatusCounts) {
+		labels := prometheusLabels(map[string]string{
+			"ovn_health": fallbackMetricsLabel(snapshot.OVNHealthStatus, "disabled"),
+			"ovn_audit":  fallbackMetricsLabel(snapshot.OVNAuditStatus, "disabled"),
+			"status":     status,
+		})
+		fmt.Fprintf(w, "netloom_controller_ovn_live_bfd_status%s %d\n", labels, snapshot.OVNAudit.BFDStatusCounts[status])
+	}
 	writeMetricType(w, "netloom_controller_ovn_live_nat_rules", "gauge")
 	fmt.Fprintf(w, "netloom_controller_ovn_live_nat_rules%s %d\n", auditLabels, snapshot.OVNAudit.ManagedNATRules)
 	writeMetricType(w, "netloom_controller_ovn_live_load_balancers", "gauge")

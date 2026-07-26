@@ -101,6 +101,53 @@ func TestAuditManagedObjectsFromLibOVSDBReader(t *testing.T) {
 	}
 }
 
+func TestAuditManagedObjectsFromLibOVSDBReaderCountsBFDStatus(t *testing.T) {
+	ctx := context.Background()
+	client, closeFn := newTestOVNNBClient(t)
+	defer closeFn()
+
+	if _, err := client.MonitorAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	up := ovnnb.BFDStatusUp
+	down := ovnnb.BFDStatusDown
+	insertRows(t, ctx, client,
+		&ovnnb.BFD{
+			LogicalPort: routerPortName(logicalRouter("prod"), "apps"),
+			DstIP:       "10.10.0.253",
+			Status:      &up,
+			ExternalIDs: map[string]string{
+				"netloom_owner":       "netloom",
+				"netloom_vpc":         "prod",
+				"netloom_route_table": "main",
+				"netloom_route_key":   "10.20.0.0/24->10.10.0.253",
+			},
+		},
+		&ovnnb.BFD{
+			LogicalPort: routerPortName(logicalRouter("prod"), "apps"),
+			DstIP:       "10.10.0.254",
+			Status:      &down,
+			ExternalIDs: map[string]string{
+				"netloom_owner":       "netloom",
+				"netloom_vpc":         "prod",
+				"netloom_route_table": "main",
+				"netloom_route_key":   "10.20.0.0/24->10.10.0.254",
+			},
+		},
+	)
+
+	reader := NewLibOVSDBManagedReader(client)
+	var stats AuditStats
+	var auditErr error
+	requireEventually(t, func() bool {
+		stats, auditErr = AuditManagedObjectsFromReader(ctx, reader)
+		return auditErr == nil && stats.ManagedBFDs == 2
+	})
+	if stats.BFDStatusCounts["up"] != 1 || stats.BFDStatusCounts["down"] != 1 {
+		t.Fatalf("audit stats = %+v, want BFD status counts from libovsdb cache", stats)
+	}
+}
+
 func TestAuditManagedObjectsReportsColumnDriftFromLibOVSDBReader(t *testing.T) {
 	ctx := context.Background()
 	client, closeFn := newTestOVNNBClient(t)

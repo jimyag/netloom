@@ -331,6 +331,53 @@ esac
 	}
 }
 
+func TestAuditManagedObjectsFromReaderCountsBFDStatus(t *testing.T) {
+	reader := fakeManagedOVNReader{rows: map[string][]ManagedOVNRow{
+		"BFD": {
+			{Table: "BFD", UUID: "bfd-up", ExternalIDs: map[string]string{
+				"netloom_owner":       "netloom",
+				"netloom_vpc":         "prod",
+				"netloom_route_table": "main",
+				"netloom_route_key":   "10.20.0.0/24->10.10.0.253",
+			}, Fields: map[string]string{"status": "up"}},
+			{Table: "BFD", UUID: "bfd-down", ExternalIDs: map[string]string{
+				"netloom_owner":       "netloom",
+				"netloom_vpc":         "prod",
+				"netloom_route_table": "main",
+				"netloom_route_key":   "10.20.0.0/24->10.10.0.254",
+			}, Fields: map[string]string{"status": "down"}},
+			{Table: "BFD", UUID: "bfd-unknown", ExternalIDs: map[string]string{
+				"netloom_owner":       "netloom",
+				"netloom_vpc":         "prod",
+				"netloom_route_table": "main",
+				"netloom_route_key":   "10.20.0.0/24->10.10.0.255",
+			}, Fields: map[string]string{}},
+		},
+	}}
+
+	stats, err := AuditManagedObjectsFromReader(context.Background(), reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.ManagedBFDs != 3 ||
+		stats.BFDStatusCounts["up"] != 1 ||
+		stats.BFDStatusCounts["down"] != 1 ||
+		stats.BFDStatusCounts["unknown"] != 1 ||
+		stats.DriftedManagedRows != 0 {
+		t.Fatalf("audit stats = %+v, want BFD status counts without drift", stats)
+	}
+}
+
+func TestManagedAuditNBCTLColumnsIncludesBFDStatus(t *testing.T) {
+	columns := managedAuditNBCTLColumns("BFD")
+	for _, column := range columns {
+		if column == "status" {
+			return
+		}
+	}
+	t.Fatalf("BFD audit columns = %v, want status", columns)
+}
+
 func TestNBCTLExecutorManagedOVNRowsReportsMissingSwitchPortDHCPOptions(t *testing.T) {
 	tmp := t.TempDir()
 	binary := filepath.Join(tmp, "ovn-nbctl")

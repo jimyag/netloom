@@ -188,6 +188,10 @@ func (r *LibOVSDBManagedReader) ManagedOVNRows(ctx context.Context, table string
 			return nil, err
 		}
 		return managedOVNRowsFromModels(table, rows, func(row ovnnb.BFD) (string, map[string]string, map[string]string) {
+			status := ""
+			if row.Status != nil {
+				status = string(*row.Status)
+			}
 			return row.UUID, row.ExternalIDs, map[string]string{
 				"logical_port": row.LogicalPort,
 				"dst_ip":       row.DstIP,
@@ -195,6 +199,7 @@ func (r *LibOVSDBManagedReader) ManagedOVNRows(ctx context.Context, table string
 				"min_rx":       intPointerField(row.MinRx),
 				"detect_mult":  intPointerField(row.DetectMult),
 				"options":      mapField(row.Options),
+				"status":       status,
 			}
 		}), nil
 	case "NAT":

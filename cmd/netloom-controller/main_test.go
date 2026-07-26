@@ -1205,6 +1205,9 @@ func TestControllerMetricsExportsLatestSuccess(t *testing.T) {
 			DriftedManagedFieldCounts: map[string]int{
 				"Load_Balancer.options": 2,
 			},
+			BFDStatusCounts: map[string]int{
+				"down": 1,
+			},
 		},
 		OVNStaleAdvisory: ovnStaleAdvisory{
 			Status:    "warning",
@@ -1279,6 +1282,7 @@ func TestControllerMetricsExportsLatestSuccess(t *testing.T) {
 		`netloom_controller_ovn_live_logical_router_policies{ovn_audit="ok",ovn_health="ok"} 1`,
 		`netloom_controller_ovn_live_logical_router_static_routes{ovn_audit="ok",ovn_health="ok"} 1`,
 		`netloom_controller_ovn_live_bfds{ovn_audit="ok",ovn_health="ok"} 1`,
+		`netloom_controller_ovn_live_bfd_status{ovn_audit="ok",ovn_health="ok",status="down"} 1`,
 		`netloom_controller_ovn_live_nat_rules{ovn_audit="ok",ovn_health="ok"} 1`,
 		`netloom_controller_ovn_live_load_balancer_health_checks{ovn_audit="ok",ovn_health="ok"} 1`,
 		`netloom_controller_ovn_live_duplicate_managed_rows{ovn_audit="ok",ovn_health="ok"} 1`,
