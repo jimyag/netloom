@@ -480,6 +480,40 @@ func TestPlanPolicyEndpointReportsBlockingChangeRisk(t *testing.T) {
 	}
 }
 
+func TestPlanPolicyEndpointEntriesRejectsConflictingDuplicateDesiredEntries(t *testing.T) {
+	store := dataplane.NewInMemoryPolicyStore()
+	endpointID := model.EndpointKey("prod", "pod-a")
+	key := dataplane.PolicyKey{
+		PrefixLen:      dataplane.StaticPrefixBits,
+		RemoteIdentity: 42,
+		Direction:      dataplane.DirectionIngress,
+		Protocol:       6,
+	}
+	desired := []dataplane.PolicyMapEntry{
+		{
+			Key:     key,
+			Value:   dataplane.PolicyEntry{Deny: 1, Precedence: 100, RuleCookie: 41},
+			RuleRef: "prod/web/drop-a",
+		},
+		{
+			Key:     key,
+			Value:   dataplane.PolicyEntry{Deny: 1, Precedence: 100, RuleCookie: 42},
+			RuleRef: "prod/web/drop-b",
+		},
+	}
+
+	_, err := planPolicyEndpointEntries(endpointID, desired, store)
+	if err == nil || !strings.Contains(err.Error(), "conflicting policy map entries for identical key") {
+		t.Fatalf("error = %v, want duplicate desired entry conflict", err)
+	}
+	if revision := store.Revision(endpointID); revision != 0 {
+		t.Fatalf("revision after rejected plan = %d, want 0", revision)
+	}
+	if events := store.Events(); len(events) != 0 {
+		t.Fatalf("events after rejected plan = %+v, want no store mutation", events)
+	}
+}
+
 func TestQuarantinePolicyEndpointReplacesPolicyWithIngressAndEgressDrops(t *testing.T) {
 	state := control.DesiredState{
 		Endpoints: []model.Endpoint{{

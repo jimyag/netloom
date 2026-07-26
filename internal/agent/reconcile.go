@@ -1922,6 +1922,10 @@ func planPolicyEndpointEntries(endpointID string, desired []dataplane.PolicyMapE
 	if !ok {
 		return PolicyEndpointPlan{}, fmt.Errorf("policy endpoint entries are not available")
 	}
+	desired, err := dataplane.CanonicalPolicyMapEntries(desired)
+	if err != nil {
+		return PolicyEndpointPlan{}, fmt.Errorf("canonicalize policy map entries for endpoint %s: %w", endpointID, err)
+	}
 	current := entryStore.Entries(endpointID)
 	plan := dataplane.PlanPolicyUpdate(current, desired)
 	stats := plan.Stats()

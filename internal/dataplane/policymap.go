@@ -645,6 +645,10 @@ func EncodeProgram(program policy.Program) ([]PolicyMapEntry, error) {
 	return canonicalPolicyMapEntries(entries)
 }
 
+func CanonicalPolicyMapEntries(entries []PolicyMapEntry) ([]PolicyMapEntry, error) {
+	return canonicalPolicyMapEntries(entries)
+}
+
 func EncodeEntry(entry policy.MapEntry) (PolicyMapEntry, error) {
 	proto, err := protocolNumberForEntry(entry)
 	if err != nil {
