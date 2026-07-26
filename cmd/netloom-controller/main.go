@@ -163,6 +163,7 @@ func runControllerEvents(ctx context.Context, args []string, stdout io.Writer) e
 	flags.StringVar(&opts.ovsdb, "ovsdb", os.Getenv("NETLOOM_OVSDB_ENDPOINT"), "Open_vSwitch OVSDB endpoint")
 	flags.StringVar(&opts.phase, "phase", "", "optional reconcile phase to include")
 	flags.StringVar(&opts.success, "success", "", "optional success filter: true or false")
+	flags.StringVar(&opts.errorContains, "error-contains", "", "optional error substring to include")
 	flags.IntVar(&opts.limit, "limit", defaultControllerEventsLimit, "maximum recent controller events")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -197,16 +198,18 @@ func runControllerEventsWithStore(ctx context.Context, opts controllerEventsOpti
 		return err
 	}
 	phase := strings.TrimSpace(opts.phase)
-	filtered := filterControllerEvents(doc.Events, phase, successFilter)
+	errorContains := strings.TrimSpace(opts.errorContains)
+	filtered := filterControllerEvents(doc.Events, phase, successFilter, errorContains)
 	recent := recentControllerEvents(filtered, opts.limit)
 	output := controllerEventsOutput{
-		Ready:         true,
-		TotalEvents:   len(doc.Events),
-		EventCount:    len(recent),
-		Limit:         opts.limit,
-		FilterPhase:   phase,
-		FilterSuccess: successFilter,
-		Events:        recent,
+		Ready:               true,
+		TotalEvents:         len(doc.Events),
+		EventCount:          len(recent),
+		Limit:               opts.limit,
+		FilterPhase:         phase,
+		FilterSuccess:       successFilter,
+		FilterErrorContains: errorContains,
+		Events:              recent,
 	}
 	encoder := json.NewEncoder(stdout)
 	encoder.SetIndent("", "  ")
@@ -220,6 +223,7 @@ func runControllerEventsClear(ctx context.Context, args []string, stdout io.Writ
 	flags.StringVar(&opts.ovsdb, "ovsdb", os.Getenv("NETLOOM_OVSDB_ENDPOINT"), "Open_vSwitch OVSDB endpoint")
 	flags.StringVar(&opts.phase, "phase", "", "optional reconcile phase to clear")
 	flags.StringVar(&opts.success, "success", "", "optional success filter: true or false")
+	flags.StringVar(&opts.errorContains, "error-contains", "", "optional error substring to clear")
 	flags.BoolVar(&opts.all, "all", false, "clear all controller events")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -244,28 +248,30 @@ func runControllerEventsClearWithStore(ctx context.Context, opts controllerEvent
 		return err
 	}
 	phase := strings.TrimSpace(opts.phase)
-	if err := validateControllerEventsClearSelector(opts.all, phase, successFilter); err != nil {
+	errorContains := strings.TrimSpace(opts.errorContains)
+	if err := validateControllerEventsClearSelector(opts.all, phase, successFilter, errorContains); err != nil {
 		return err
 	}
 	doc, err := loadControllerEventsDocument(ctx, store)
 	if err != nil {
 		return err
 	}
-	next, cleared := clearControllerEvents(doc.Events, opts.all, phase, successFilter)
+	next, cleared := clearControllerEvents(doc.Events, opts.all, phase, successFilter, errorContains)
 	doc.Events = next
 	doc.UpdatedAt = time.Now().UTC()
 	if err := saveControllerEventsDocument(ctx, store, doc); err != nil {
 		return err
 	}
 	output := controllerEventsClearOutput{
-		Ready:           true,
-		TotalEvents:     len(next) + len(cleared),
-		ClearedEvents:   len(cleared),
-		RemainingEvents: len(next),
-		FilterPhase:     phase,
-		FilterSuccess:   successFilter,
-		All:             opts.all,
-		Cleared:         cleared,
+		Ready:               true,
+		TotalEvents:         len(next) + len(cleared),
+		ClearedEvents:       len(cleared),
+		RemainingEvents:     len(next),
+		FilterPhase:         phase,
+		FilterSuccess:       successFilter,
+		FilterErrorContains: errorContains,
+		All:                 opts.all,
+		Cleared:             cleared,
 	}
 	encoder := json.NewEncoder(stdout)
 	encoder.SetIndent("", "  ")
@@ -361,38 +367,42 @@ type controllerStatusOptions struct {
 }
 
 type controllerEventsOptions struct {
-	ovsdb   string
-	phase   string
-	success string
-	limit   int
+	ovsdb         string
+	phase         string
+	success       string
+	errorContains string
+	limit         int
 }
 
 type controllerEventsClearOptions struct {
-	ovsdb   string
-	phase   string
-	success string
-	all     bool
+	ovsdb         string
+	phase         string
+	success       string
+	errorContains string
+	all           bool
 }
 
 type controllerEventsOutput struct {
-	Ready         bool                    `json:"ready"`
-	TotalEvents   int                     `json:"total_events"`
-	EventCount    int                     `json:"event_count"`
-	Limit         int                     `json:"limit"`
-	FilterPhase   string                  `json:"filter_phase,omitempty"`
-	FilterSuccess *bool                   `json:"filter_success,omitempty"`
-	Events        []controllerEventRecord `json:"events"`
+	Ready               bool                    `json:"ready"`
+	TotalEvents         int                     `json:"total_events"`
+	EventCount          int                     `json:"event_count"`
+	Limit               int                     `json:"limit"`
+	FilterPhase         string                  `json:"filter_phase,omitempty"`
+	FilterSuccess       *bool                   `json:"filter_success,omitempty"`
+	FilterErrorContains string                  `json:"filter_error_contains,omitempty"`
+	Events              []controllerEventRecord `json:"events"`
 }
 
 type controllerEventsClearOutput struct {
-	Ready           bool                    `json:"ready"`
-	TotalEvents     int                     `json:"total_events"`
-	ClearedEvents   int                     `json:"cleared_events"`
-	RemainingEvents int                     `json:"remaining_events"`
-	FilterPhase     string                  `json:"filter_phase,omitempty"`
-	FilterSuccess   *bool                   `json:"filter_success,omitempty"`
-	All             bool                    `json:"all,omitempty"`
-	Cleared         []controllerEventRecord `json:"cleared,omitempty"`
+	Ready               bool                    `json:"ready"`
+	TotalEvents         int                     `json:"total_events"`
+	ClearedEvents       int                     `json:"cleared_events"`
+	RemainingEvents     int                     `json:"remaining_events"`
+	FilterPhase         string                  `json:"filter_phase,omitempty"`
+	FilterSuccess       *bool                   `json:"filter_success,omitempty"`
+	FilterErrorContains string                  `json:"filter_error_contains,omitempty"`
+	All                 bool                    `json:"all,omitempty"`
+	Cleared             []controllerEventRecord `json:"cleared,omitempty"`
 }
 
 type controllerEventsDocument struct {
@@ -1156,26 +1166,28 @@ func trimControllerEvents(events []controllerEventRecord) []controllerEventRecor
 	return append([]controllerEventRecord(nil), events[len(events)-limit:]...)
 }
 
-func filterControllerEvents(events []controllerEventRecord, phase string, success *bool) []controllerEventRecord {
+func filterControllerEvents(events []controllerEventRecord, phase string, success *bool, errorContains string) []controllerEventRecord {
 	phase = strings.TrimSpace(phase)
+	errorContains = strings.TrimSpace(errorContains)
 	out := make([]controllerEventRecord, 0, len(events))
 	for _, event := range events {
-		if controllerEventMatches(event, phase, success) {
+		if controllerEventMatches(event, phase, success, errorContains) {
 			out = append(out, event)
 		}
 	}
 	return out
 }
 
-func clearControllerEvents(events []controllerEventRecord, all bool, phase string, success *bool) ([]controllerEventRecord, []controllerEventRecord) {
+func clearControllerEvents(events []controllerEventRecord, all bool, phase string, success *bool, errorContains string) ([]controllerEventRecord, []controllerEventRecord) {
 	if all {
 		return nil, append([]controllerEventRecord(nil), events...)
 	}
 	phase = strings.TrimSpace(phase)
+	errorContains = strings.TrimSpace(errorContains)
 	next := make([]controllerEventRecord, 0, len(events))
 	cleared := make([]controllerEventRecord, 0)
 	for _, event := range events {
-		if controllerEventMatches(event, phase, success) {
+		if controllerEventMatches(event, phase, success, errorContains) {
 			cleared = append(cleared, event)
 			continue
 		}
@@ -1184,18 +1196,30 @@ func clearControllerEvents(events []controllerEventRecord, all bool, phase strin
 	return next, cleared
 }
 
-func controllerEventMatches(event controllerEventRecord, phase string, success *bool) bool {
+func controllerEventMatches(event controllerEventRecord, phase string, success *bool, errorContains string) bool {
 	if phase != "" && event.Phase != phase {
 		return false
 	}
 	if success != nil && event.Success != *success {
 		return false
 	}
+	if errorContains != "" && !strings.Contains(controllerEventErrorText(event), errorContains) {
+		return false
+	}
 	return true
 }
 
-func validateControllerEventsClearSelector(all bool, phase string, success *bool) error {
-	hasSelector := strings.TrimSpace(phase) != "" || success != nil
+func controllerEventErrorText(event controllerEventRecord) string {
+	return strings.Join([]string{
+		event.Error,
+		event.OVNAuditError,
+		event.OVNClusterLeaderError,
+		event.OVNMaintenanceError,
+	}, "\n")
+}
+
+func validateControllerEventsClearSelector(all bool, phase string, success *bool, errorContains string) error {
+	hasSelector := strings.TrimSpace(phase) != "" || success != nil || strings.TrimSpace(errorContains) != ""
 	if all {
 		if hasSelector {
 			return errors.New("controller events clear must use -all or filters, not both")
@@ -1521,9 +1545,10 @@ func (m *controllerMetrics) handleEventsGet(w http.ResponseWriter, r *http.Reque
 	}
 	var out bytes.Buffer
 	if err := runControllerEventsWithStore(r.Context(), controllerEventsOptions{
-		phase:   r.URL.Query().Get("phase"),
-		success: r.URL.Query().Get("success"),
-		limit:   limit,
+		phase:         r.URL.Query().Get("phase"),
+		success:       r.URL.Query().Get("success"),
+		errorContains: r.URL.Query().Get("error_contains"),
+		limit:         limit,
 	}, &out, store); err != nil {
 		writeControllerEventsHTTPError(w, err)
 		return
@@ -1550,9 +1575,10 @@ func (m *controllerMetrics) handleEventsDelete(w http.ResponseWriter, r *http.Re
 	}
 	var out bytes.Buffer
 	if err := runControllerEventsClearWithStore(r.Context(), controllerEventsClearOptions{
-		phase:   r.URL.Query().Get("phase"),
-		success: r.URL.Query().Get("success"),
-		all:     all != nil && *all,
+		phase:         r.URL.Query().Get("phase"),
+		success:       r.URL.Query().Get("success"),
+		errorContains: r.URL.Query().Get("error_contains"),
+		all:           all != nil && *all,
 	}, &out, store); err != nil {
 		writeControllerEventsHTTPError(w, err)
 		return

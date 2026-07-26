@@ -184,6 +184,18 @@ func TestRunControllerEventsWithStoreReportsFilteredHistory(t *testing.T) {
 		!got.Events[0].OVNClusterLeaderPref {
 		t.Fatalf("event cluster context = %+v, want persisted active and leader endpoints", got.Events[0])
 	}
+
+	out.Reset()
+	if err := runControllerEventsWithStore(t.Context(), controllerEventsOptions{errorContains: "leader probe timeout", limit: 10}, &out, store); err != nil {
+		t.Fatal(err)
+	}
+	got = controllerEventsOutput{}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("decode controller-events error filtered output: %v\n%s", err, out.String())
+	}
+	if got.EventCount != 1 || got.FilterErrorContains != "leader probe timeout" || len(got.Events) != 1 || got.Events[0].ID != "failure-a" {
+		t.Fatalf("controller events error filter output = %+v, want leader probe failure-a", got)
+	}
 }
 
 func TestRunControllerEventsClearWithStoreReportsJSON(t *testing.T) {
@@ -273,6 +285,49 @@ func TestRunControllerEventsClearWithStoreReportsJSON(t *testing.T) {
 	}
 }
 
+func TestRunControllerEventsClearWithStoreFiltersByErrorSubstring(t *testing.T) {
+	doc := controllerEventsDocument{
+		Events: []controllerEventRecord{{
+			ID:            "failure-a",
+			CompletedAt:   time.Date(2026, 7, 17, 1, 1, 0, 0, time.UTC),
+			Success:       false,
+			Phase:         "audit",
+			OVNAuditError: "audit managed NAT: database is busy",
+		}, {
+			ID:                  "failure-b",
+			CompletedAt:         time.Date(2026, 7, 17, 1, 2, 0, 0, time.UTC),
+			Success:             false,
+			Phase:               "maintenance",
+			OVNMaintenanceError: "compact OVN_Northbound timed out",
+		}},
+	}
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &recordingOVSDBControlStatusWriter{values: map[string]string{
+		controllerOVSDBEventsKey: string(raw),
+	}}
+	var out bytes.Buffer
+	if err := runControllerEventsClearWithStore(t.Context(), controllerEventsClearOptions{errorContains: "database is busy"}, &out, store); err != nil {
+		t.Fatal(err)
+	}
+	var got controllerEventsClearOutput
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("decode controller-events-clear error filtered output: %v\n%s", err, out.String())
+	}
+	if got.TotalEvents != 2 || got.ClearedEvents != 1 || got.RemainingEvents != 1 || got.FilterErrorContains != "database is busy" {
+		t.Fatalf("controller events clear error filter summary = %+v, want one audit error cleared", got)
+	}
+	var persisted controllerEventsDocument
+	if err := json.Unmarshal([]byte(store.values[controllerOVSDBEventsKey]), &persisted); err != nil {
+		t.Fatalf("decode persisted events: %v", err)
+	}
+	if len(persisted.Events) != 1 || persisted.Events[0].ID != "failure-b" {
+		t.Fatalf("persisted events = %+v, want only maintenance failure", persisted.Events)
+	}
+}
+
 func TestControllerEventsAPIReportsFilteredHistory(t *testing.T) {
 	store := &recordingOVSDBControlStatusWriter{values: map[string]string{
 		controllerOVSDBEventsKey: mustControllerEventsJSON(t, controllerEventsDocument{
@@ -307,7 +362,7 @@ func TestControllerEventsAPIReportsFilteredHistory(t *testing.T) {
 	metrics.eventsStore = store
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodGet, "/events?phase=ovn_health&success=false&limit=10", nil)
+	request := httptest.NewRequest(http.MethodGet, "/events?phase=ovn_health&success=false&error_contains=timeout&limit=10", nil)
 	metrics.handleEvents(recorder, request)
 
 	if recorder.Code != http.StatusOK {
@@ -317,7 +372,7 @@ func TestControllerEventsAPIReportsFilteredHistory(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode controller events API output: %v\n%s", err, recorder.Body.String())
 	}
-	if !got.Ready || got.TotalEvents != 3 || got.EventCount != 1 || got.FilterPhase != "ovn_health" || got.FilterSuccess == nil || *got.FilterSuccess {
+	if !got.Ready || got.TotalEvents != 3 || got.EventCount != 1 || got.FilterPhase != "ovn_health" || got.FilterSuccess == nil || *got.FilterSuccess || got.FilterErrorContains != "timeout" {
 		t.Fatalf("controller events API summary = %+v, want one filtered failure", got)
 	}
 	if len(got.Events) != 1 || got.Events[0].ID != "failure-a" || got.Events[0].OVNHealth != "error" {
@@ -357,7 +412,7 @@ func TestControllerEventsAPIClearsFilteredHistory(t *testing.T) {
 	metrics.eventsStore = store
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodDelete, "/events?phase=ovn_health&success=false", nil)
+	request := httptest.NewRequest(http.MethodDelete, "/events?phase=ovn_health&success=false&error_contains=timeout", nil)
 	metrics.handleEvents(recorder, request)
 
 	if recorder.Code != http.StatusOK {
@@ -367,7 +422,7 @@ func TestControllerEventsAPIClearsFilteredHistory(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode controller events clear API output: %v\n%s", err, recorder.Body.String())
 	}
-	if !got.Ready || got.TotalEvents != 3 || got.ClearedEvents != 1 || got.RemainingEvents != 2 {
+	if !got.Ready || got.TotalEvents != 3 || got.ClearedEvents != 1 || got.RemainingEvents != 2 || got.FilterErrorContains != "timeout" {
 		t.Fatalf("controller events clear API summary = %+v, want one filtered event cleared", got)
 	}
 	var persisted controllerEventsDocument
