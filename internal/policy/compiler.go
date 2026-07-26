@@ -69,15 +69,18 @@ type MapValue struct {
 }
 
 type CompileContext struct {
-	Endpoints  []model.Endpoint
-	Subnets    []model.Subnet
-	Gateways   []model.Gateway
-	Services   []model.LoadBalancer
-	DNSRecords []model.DNSRecord
-	CIDRGroups []model.CIDRGroup
+	Endpoints             []model.Endpoint
+	Subnets               []model.Subnet
+	Gateways              []model.Gateway
+	Services              []model.LoadBalancer
+	DNSRecords            []model.DNSRecord
+	FQDNMaxIPsPerHostname int
+	CIDRGroups            []model.CIDRGroup
 	IdentityResolver
 	Now time.Time
 }
+
+const defaultFQDNMaxIPsPerHostname = 50
 
 type gatewayCIDR struct {
 	node string
@@ -108,7 +111,7 @@ func CompileForEndpointWithContext(endpoint model.Endpoint, groups map[string]mo
 	if err != nil {
 		return Program{}, err
 	}
-	dnsRecords, err := indexDNSRecords(ctx.DNSRecords, ctx.Now)
+	dnsRecords, err := indexDNSRecords(ctx.DNSRecords, ctx.Now, ctx.FQDNMaxIPsPerHostname)
 	if err != nil {
 		return Program{}, err
 	}
@@ -922,13 +925,14 @@ func indexEndpointSelectorMembers(vpc string, endpoints []model.Endpoint) ([]mod
 	return out, nil
 }
 
-func indexDNSRecords(records []model.DNSRecord, now time.Time) (map[string][]netip.Addr, error) {
+func indexDNSRecords(records []model.DNSRecord, now time.Time, maxIPsPerHostname int) (map[string][]netip.Addr, error) {
 	if len(records) == 0 {
 		return nil, nil
 	}
 	if now.IsZero() {
 		now = time.Now()
 	}
+	maxIPsPerHostname = effectiveFQDNMaxIPsPerHostname(maxIPsPerHostname)
 	out := make(map[string][]netip.Addr, len(records))
 	for _, record := range records {
 		if err := record.Validate(); err != nil {
@@ -945,8 +949,21 @@ func indexDNSRecords(records []model.DNSRecord, now time.Time) (map[string][]net
 			return out[name][i].String() < out[name][j].String()
 		})
 		out[name] = dedupeAddrs(out[name])
+		if maxIPsPerHostname > 0 && len(out[name]) > maxIPsPerHostname {
+			out[name] = out[name][:maxIPsPerHostname]
+		}
 	}
 	return out, nil
+}
+
+func effectiveFQDNMaxIPsPerHostname(maxIPsPerHostname int) int {
+	if maxIPsPerHostname == 0 {
+		return defaultFQDNMaxIPsPerHostname
+	}
+	if maxIPsPerHostname < 0 {
+		return 0
+	}
+	return maxIPsPerHostname
 }
 
 func dedupeAddrs(addrs []netip.Addr) []netip.Addr {

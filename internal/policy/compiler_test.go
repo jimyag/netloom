@@ -2014,6 +2014,70 @@ func TestCompileForEndpointWithContextDeduplicatesDNSRecordIPs(t *testing.T) {
 	}
 }
 
+func TestCompileForEndpointWithContextCapsFQDNIPsPerHostname(t *testing.T) {
+	endpoint := model.Endpoint{
+		ID:             "pod-a",
+		VPC:            "prod",
+		Subnet:         "apps",
+		IP:             netip.MustParseAddr("10.10.0.10"),
+		Node:           "node-a",
+		SecurityGroups: []string{"client"},
+	}
+	groups := map[string]model.SecurityGroup{
+		"client": {
+			Name: "client",
+			VPC:  "prod",
+			Rules: []model.SecurityGroupRule{{
+				ID:          "allow-api",
+				Priority:    100,
+				Direction:   model.DirectionEgress,
+				Protocol:    model.ProtocolTCP,
+				RemoteFQDNs: []model.FQDNSelector{{MatchName: "api.example.com"}},
+				Ports:       []model.PortRange{{From: 443, To: 443}},
+				Action:      model.ActionAllow,
+			}},
+		},
+	}
+	ips := make([]netip.Addr, 0, 60)
+	for i := 60; i >= 1; i-- {
+		ips = append(ips, netip.AddrFrom4([4]byte{203, 0, byte(i), 1}))
+	}
+	records := []model.DNSRecord{{Name: "api.example.com", IPs: ips}}
+
+	program, err := CompileForEndpointWithContext(endpoint, groups, CompileContext{DNSRecords: records})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(program.Rules) != defaultFQDNMaxIPsPerHostname || len(program.MapEntries) != defaultFQDNMaxIPsPerHostname {
+		t.Fatalf("rules=%d entries=%d, want default capped %d", len(program.Rules), len(program.MapEntries), defaultFQDNMaxIPsPerHostname)
+	}
+	if got := program.Rules[0].RemoteCIDR.String(); got != "203.0.1.1/32" {
+		t.Fatalf("first fqdn cidr = %s, want deterministic sorted cap", got)
+	}
+
+	program, err = CompileForEndpointWithContext(endpoint, groups, CompileContext{
+		DNSRecords:            records,
+		FQDNMaxIPsPerHostname: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(program.Rules) != 2 || len(program.MapEntries) != 2 {
+		t.Fatalf("rules=%d entries=%d, want explicit cap 2", len(program.Rules), len(program.MapEntries))
+	}
+
+	program, err = CompileForEndpointWithContext(endpoint, groups, CompileContext{
+		DNSRecords:            records,
+		FQDNMaxIPsPerHostname: -1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(program.Rules) != len(ips) || len(program.MapEntries) != len(ips) {
+		t.Fatalf("rules=%d entries=%d, want uncapped %d", len(program.Rules), len(program.MapEntries), len(ips))
+	}
+}
+
 func TestCompileForEndpointWithContextExpandsRemoteCIDRGroup(t *testing.T) {
 	endpoint := model.Endpoint{
 		ID:             "pod-a",

@@ -169,6 +169,24 @@ func TestPolicyPressureQuarantineParsesEnabledValues(t *testing.T) {
 	}
 }
 
+func TestFQDNMaxIPsPerHostnameParsesEnv(t *testing.T) {
+	if got := fqdnMaxIPsPerHostname(); got != 0 {
+		t.Fatalf("fqdn max ips = %d, want compiler default", got)
+	}
+	t.Setenv("NETLOOM_FQDN_ENDPOINT_MAX_IP_PER_HOSTNAME", "25")
+	if got := fqdnMaxIPsPerHostname(); got != 25 {
+		t.Fatalf("fqdn max ips = %d, want 25", got)
+	}
+	t.Setenv("NETLOOM_FQDN_ENDPOINT_MAX_IP_PER_HOSTNAME", "0")
+	if got := fqdnMaxIPsPerHostname(); got != -1 {
+		t.Fatalf("fqdn max ips = %d, want unlimited sentinel", got)
+	}
+	t.Setenv("NETLOOM_FQDN_ENDPOINT_MAX_IP_PER_HOSTNAME", "bad")
+	if got := fqdnMaxIPsPerHostname(); got != 0 {
+		t.Fatalf("fqdn max ips = %d, want compiler default for invalid env", got)
+	}
+}
+
 func TestLinuxDatapathOptionsUsesNetlinkBackend(t *testing.T) {
 	t.Setenv("NETLOOM_LINUX_DATAPATH", "1")
 	t.Setenv("NETLOOM_LINUX_DATAPATH_MODE", "netns")

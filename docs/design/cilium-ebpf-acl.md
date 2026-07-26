@@ -335,6 +335,11 @@ wildcards in exact `match_name` selectors are rejected. Unresolved names compile
 to no entries, so they do not accidentally allow broad egress. This gives the
 eBPF ACL path the same CIDR fallback enforcement shape as `remote_cidr` while
 preserving the higher-level FQDN intent in the model.
+To keep Cilium-style FQDN expansion from exhausting endpoint policy maps, the
+compiler keeps at most 50 sorted IPs per DNS hostname by default. Bare-metal
+agents can tune this with `NETLOOM_FQDN_ENDPOINT_MAX_IP_PER_HOSTNAME`; setting it
+to `0` disables the cap for deployments that intentionally allow larger FQDN
+answer sets.
 The desired-state DNS cache supports TTL expiry with `ttl_seconds` and
 `observed_at`; expired records are skipped during policy compilation so stale
 answers stop granting egress. For agent-driven nodes, `NETLOOM_OVSDB_ENDPOINT` enables a runtime DNS observation cache in local OVSDB `Open_vSwitch.external_ids:netloom_dns_observations` on each state-file reconcile. The external_id value can contain the same `dns_records` shape as desired state, allowing an external DNS observer or proxy to refresh FQDN-derived CIDR entries without rewriting the main topology document. This is the state update half of Cilium's DNS proxy model;

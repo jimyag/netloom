@@ -172,6 +172,7 @@ type ReconcileOptions struct {
 	PolicyPressureMitigationThreshold uint32
 	PolicyPressureQuarantineThreshold uint32
 	PolicyPressureQuarantine          bool
+	FQDNMaxIPsPerHostname             int
 	DeferPolicyApply                  bool
 	FrozenPolicyEndpoints             map[string]struct{}
 	PolicyRolloutApprovalSecret       string
@@ -2065,13 +2066,14 @@ func compileEndpointPolicyProgram(state control.DesiredState, options ReconcileO
 	}
 	groups := securityGroupsForEndpointVPC(state.SecurityGroups, endpoint.VPC)
 	return policy.CompileForEndpointWithContext(endpoint, groups, policy.CompileContext{
-		Endpoints:        state.Endpoints,
-		Subnets:          state.Subnets,
-		Gateways:         state.Gateways,
-		Services:         state.LoadBalancers,
-		DNSRecords:       state.DNSRecords,
-		CIDRGroups:       state.CIDRGroups,
-		IdentityResolver: resolver,
+		Endpoints:             state.Endpoints,
+		Subnets:               state.Subnets,
+		Gateways:              state.Gateways,
+		Services:              state.LoadBalancers,
+		DNSRecords:            state.DNSRecords,
+		FQDNMaxIPsPerHostname: options.FQDNMaxIPsPerHostname,
+		CIDRGroups:            state.CIDRGroups,
+		IdentityResolver:      resolver,
 	})
 }
 
@@ -2265,13 +2267,14 @@ func prepareReconcile(ctx context.Context, state control.DesiredState, options R
 		}
 		groups := securityGroupsForEndpointVPC(state.SecurityGroups, endpoint.VPC)
 		program, err := policy.CompileForEndpointWithContext(endpoint, groups, policy.CompileContext{
-			Endpoints:        state.Endpoints,
-			Subnets:          state.Subnets,
-			Gateways:         state.Gateways,
-			Services:         state.LoadBalancers,
-			DNSRecords:       state.DNSRecords,
-			CIDRGroups:       state.CIDRGroups,
-			IdentityResolver: resolver,
+			Endpoints:             state.Endpoints,
+			Subnets:               state.Subnets,
+			Gateways:              state.Gateways,
+			Services:              state.LoadBalancers,
+			DNSRecords:            state.DNSRecords,
+			FQDNMaxIPsPerHostname: options.FQDNMaxIPsPerHostname,
+			CIDRGroups:            state.CIDRGroups,
+			IdentityResolver:      resolver,
 		})
 		if err != nil {
 			return ReconcileResult{}, nil, nil, err

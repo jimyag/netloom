@@ -922,8 +922,9 @@ func runPolicyStatus(args []string, stdout io.Writer) error {
 	store, storeName, closeStore := policyStore()
 	defer closeStore()
 	result, err := agent.ReconcileNodeWithOptions(context.Background(), state, agent.ReconcileOptions{
-		Node:  opts.node,
-		Store: store,
+		Node:                  opts.node,
+		Store:                 store,
+		FQDNMaxIPsPerHostname: fqdnMaxIPsPerHostname(),
 	})
 	if err != nil {
 		return err
@@ -1205,8 +1206,9 @@ func runPolicyEntries(args []string, stdout io.Writer) error {
 	store, storeName, closeStore := policyStore()
 	defer closeStore()
 	result, err := agent.ReconcileNodeWithOptions(context.Background(), state, agent.ReconcileOptions{
-		Node:  opts.node,
-		Store: store,
+		Node:                  opts.node,
+		Store:                 store,
+		FQDNMaxIPsPerHostname: fqdnMaxIPsPerHostname(),
 	})
 	if err != nil {
 		return err
@@ -2987,12 +2989,13 @@ func explainPolicyFromState(state control.DesiredState, opts policyExplainOption
 	}
 	groups := securityGroupsForEndpoint(state.SecurityGroups, endpoint.VPC)
 	program, err := policy.CompileForEndpointWithContext(endpoint, groups, policy.CompileContext{
-		Endpoints:  state.Endpoints,
-		Subnets:    state.Subnets,
-		Gateways:   state.Gateways,
-		Services:   state.LoadBalancers,
-		DNSRecords: state.DNSRecords,
-		CIDRGroups: state.CIDRGroups,
+		Endpoints:             state.Endpoints,
+		Subnets:               state.Subnets,
+		Gateways:              state.Gateways,
+		Services:              state.LoadBalancers,
+		DNSRecords:            state.DNSRecords,
+		FQDNMaxIPsPerHostname: fqdnMaxIPsPerHostname(),
+		CIDRGroups:            state.CIDRGroups,
 	})
 	if err != nil {
 		return dataplane.PolicyExplanation{}, err
@@ -3347,6 +3350,7 @@ func reconcileStateFile(ctx context.Context, path, node, storeName string, recon
 		PolicyPressureMitigationThreshold: policyPressureMitigationThreshold(),
 		PolicyPressureQuarantineThreshold: policyPressureQuarantineThreshold(),
 		PolicyPressureQuarantine:          policyPressureQuarantine(),
+		FQDNMaxIPsPerHostname:             fqdnMaxIPsPerHostname(),
 		DeferPolicyApply:                  agent.HasActivePolicyRollouts(state, node),
 		FrozenPolicyEndpoints:             metrics.frozenPolicyEndpointsSnapshot(),
 		PolicyRolloutApprovalSecret:       policyRolloutApprovalSecret(),
@@ -3372,6 +3376,7 @@ func reconcileStateFile(ctx context.Context, path, node, storeName string, recon
 		Node:                        node,
 		Store:                       metrics.store,
 		FrozenPolicyEndpoints:       metrics.frozenPolicyEndpointsSnapshot(),
+		FQDNMaxIPsPerHostname:       fqdnMaxIPsPerHostname(),
 		PolicyRolloutApprovalSecret: policyRolloutApprovalSecret(),
 		PolicyRolloutResume:         rolloutResume,
 	}); err != nil {
@@ -3458,6 +3463,7 @@ func reconcileStateFileOnceWithRuntimeStores(ctx context.Context, path, node, st
 		PolicyPressureMitigationThreshold: policyPressureMitigationThreshold(),
 		PolicyPressureQuarantineThreshold: policyPressureQuarantineThreshold(),
 		PolicyPressureQuarantine:          policyPressureQuarantine(),
+		FQDNMaxIPsPerHostname:             fqdnMaxIPsPerHostname(),
 		DeferPolicyApply:                  agent.HasActivePolicyRollouts(state, node),
 		PolicyRolloutApprovalSecret:       policyRolloutApprovalSecret(),
 		LinuxDatapath:                     linuxOptions,
@@ -3482,6 +3488,7 @@ func reconcileStateFileOnceWithRuntimeStores(ctx context.Context, path, node, st
 		Node:                        node,
 		Store:                       store,
 		FrozenPolicyEndpoints:       metrics.frozenPolicyEndpointsSnapshot(),
+		FQDNMaxIPsPerHostname:       fqdnMaxIPsPerHostname(),
 		PolicyRolloutApprovalSecret: policyRolloutApprovalSecret(),
 		PolicyRolloutResume:         rolloutResume,
 	}); err != nil {
@@ -5391,6 +5398,7 @@ func (m *agentMetrics) regeneratePolicyEndpoint(ctx context.Context, endpoint st
 		Node:                  snapshot.Result.Node,
 		Store:                 m.store,
 		FrozenPolicyEndpoints: m.frozenPolicyEndpointsSnapshot(),
+		FQDNMaxIPsPerHostname: fqdnMaxIPsPerHostname(),
 	}, endpointID)
 	if err != nil {
 		return dataplane.PolicyEndpointStatus{}, err
@@ -5415,6 +5423,7 @@ func (m *agentMetrics) planPolicyEndpoint(ctx context.Context, endpoint string) 
 		Node:                  snapshot.Result.Node,
 		Store:                 m.store,
 		FrozenPolicyEndpoints: m.frozenPolicyEndpointsSnapshot(),
+		FQDNMaxIPsPerHostname: fqdnMaxIPsPerHostname(),
 	}, endpointID)
 }
 
@@ -5434,6 +5443,7 @@ func (m *agentMetrics) quarantinePolicyEndpoint(ctx context.Context, endpoint st
 		Node:                  snapshot.Result.Node,
 		Store:                 m.store,
 		FrozenPolicyEndpoints: m.frozenPolicyEndpointsSnapshot(),
+		FQDNMaxIPsPerHostname: fqdnMaxIPsPerHostname(),
 	}, endpointID)
 	if err != nil {
 		return dataplane.PolicyEndpointStatus{}, err
@@ -5458,6 +5468,7 @@ func (m *agentMetrics) unquarantinePolicyEndpoint(ctx context.Context, endpoint 
 		Node:                  snapshot.Result.Node,
 		Store:                 m.store,
 		FrozenPolicyEndpoints: m.frozenPolicyEndpointsSnapshot(),
+		FQDNMaxIPsPerHostname: fqdnMaxIPsPerHostname(),
 	}, endpointID)
 	if err != nil {
 		return dataplane.PolicyEndpointStatus{}, err
@@ -5482,6 +5493,7 @@ func (m *agentMetrics) rollbackPolicyEndpoint(ctx context.Context, endpoint stri
 		Node:                  snapshot.Result.Node,
 		Store:                 m.store,
 		FrozenPolicyEndpoints: m.frozenPolicyEndpointsSnapshot(),
+		FQDNMaxIPsPerHostname: fqdnMaxIPsPerHostname(),
 	}, endpointID)
 	if err != nil {
 		return dataplane.PolicyEndpointStatus{}, err
@@ -5535,6 +5547,7 @@ func (m *agentMetrics) rolloutPolicyEndpoints(ctx context.Context, request polic
 		Store:                       m.store,
 		PolicyTelemetry:             m.storeTelemetry(),
 		FrozenPolicyEndpoints:       m.frozenPolicyEndpointsSnapshot(),
+		FQDNMaxIPsPerHostname:       fqdnMaxIPsPerHostname(),
 		PolicyRolloutApprovalSecret: policyRolloutApprovalSecret(),
 	}, agent.PolicyEndpointRolloutOptions{
 		EndpointIDs:               endpoints,
@@ -7928,6 +7941,21 @@ func policyPressureQuarantine() bool {
 	default:
 		return false
 	}
+}
+
+func fqdnMaxIPsPerHostname() int {
+	raw := strings.TrimSpace(os.Getenv("NETLOOM_FQDN_ENDPOINT_MAX_IP_PER_HOSTNAME"))
+	if raw == "" {
+		return 0
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < 0 {
+		return 0
+	}
+	if value == 0 {
+		return -1
+	}
+	return value
 }
 
 func policyRolloutApprovalSecret() string {
