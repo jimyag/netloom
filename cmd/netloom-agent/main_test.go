@@ -3055,6 +3055,24 @@ func TestPolicyEventsAPIFiltersFailedEvents(t *testing.T) {
 	if got.Events[0].Success || got.Events[0].EndpointID != podA || got.Events[0].Error == "" {
 		t.Fatalf("events = %+v, want failed pod-a event with error", got.Events)
 	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/policy/events?error_contains=in-memory%20policy%20update%20failed", nil)
+	metrics.handlePolicyEvents(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	got = policyEventsOutput{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode error-filtered policy events response: %v\n%s", err, recorder.Body.String())
+	}
+	if got.FilterErrorContains != "in-memory policy update failed" || got.EventCount != 1 || len(got.Events) != 1 {
+		t.Fatalf("error-filtered events output = %+v, want one in-memory failure event", got)
+	}
+	if got.Events[0].Success || !strings.Contains(got.Events[0].Error, "in-memory policy update failed") {
+		t.Fatalf("events = %+v, want in-memory failure event", got.Events)
+	}
 }
 
 func TestPolicyEventsAPIFiltersByCapacityHotspotRuleRef(t *testing.T) {
@@ -3211,7 +3229,7 @@ func TestRunPolicyEventsWithStoreReportsFilteredJSON(t *testing.T) {
 				{RuleRef: "prod/web/deny-ssh", Entries: 7},
 			},
 			Success: false,
-			Error:   "apply failed",
+			Error:   "policy map capacity exceeded: apply failed",
 		}},
 	}); err != nil {
 		t.Fatal(err)
@@ -3272,6 +3290,21 @@ func TestRunPolicyEventsWithStoreReportsFilteredJSON(t *testing.T) {
 	if got.FilterCapacityHotspotRuleRef != "prod/web/deny-ssh" || got.EventCount != 1 || len(got.Events) != 1 || got.Events[0].Revision != 2 {
 		t.Fatalf("capacity-hotspot filtered events = %+v, want pod-a deny-ssh revision 2", got)
 	}
+
+	stdout.Reset()
+	if err := runPolicyEventsWithStore(t.Context(), policyEventsOptions{errorContains: "capacity exceeded", limit: 10}, &stdout, store); err != nil {
+		t.Fatal(err)
+	}
+	got = policyEventsOutput{}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode error-filtered policy-events output: %v\n%s", err, stdout.String())
+	}
+	if got.FilterErrorContains != "capacity exceeded" || got.EventCount != 1 || len(got.Events) != 1 || got.Events[0].Revision != 2 {
+		t.Fatalf("error-filtered events = %+v, want pod-a deny-ssh revision 2", got)
+	}
+	if !strings.Contains(got.Events[0].Error, "capacity exceeded") {
+		t.Fatalf("event error = %q, want capacity exceeded substring", got.Events[0].Error)
+	}
 }
 
 func TestRunPolicyEventsWithStoreFiltersRemediatedEvents(t *testing.T) {
@@ -3310,6 +3343,21 @@ func TestRunPolicyEventsWithStoreFiltersRemediatedEvents(t *testing.T) {
 	}
 	if got.FilterRemediated == nil || !*got.FilterRemediated || got.EventCount != 1 || len(got.Events) != 1 {
 		t.Fatalf("policy events summary = %+v, want one remediated event", got)
+	}
+	if !got.Events[0].Remediated || got.Events[0].Remediation != "clear" {
+		t.Fatalf("events = %+v, want clear remediated event", got.Events)
+	}
+
+	stdout.Reset()
+	if err := runPolicyEventsWithStore(t.Context(), policyEventsOptions{remediation: "clear", limit: 10}, &stdout, store); err != nil {
+		t.Fatal(err)
+	}
+	got = policyEventsOutput{}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode remediation-filtered policy-events output: %v\n%s", err, stdout.String())
+	}
+	if got.FilterRemediation != "clear" || got.EventCount != 1 || len(got.Events) != 1 {
+		t.Fatalf("remediation-filtered events = %+v, want one clear event", got)
 	}
 	if !got.Events[0].Remediated || got.Events[0].Remediation != "clear" {
 		t.Fatalf("events = %+v, want clear remediated event", got.Events)

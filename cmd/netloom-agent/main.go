@@ -270,6 +270,8 @@ type policyEventsOptions struct {
 	endpoint               string
 	success                string
 	remediated             string
+	remediation            string
+	errorContains          string
 	ruleCookie             string
 	ruleRef                string
 	capacityHotspotRuleRef string
@@ -478,6 +480,8 @@ type policyEventsOutput struct {
 	FilterEndpoint               string                        `json:"filter_endpoint,omitempty"`
 	FilterSuccess                *bool                         `json:"filter_success,omitempty"`
 	FilterRemediated             *bool                         `json:"filter_remediated,omitempty"`
+	FilterRemediation            string                        `json:"filter_remediation,omitempty"`
+	FilterErrorContains          string                        `json:"filter_error_contains,omitempty"`
 	FilterRuleCookie             uint32                        `json:"filter_rule_cookie,omitempty"`
 	FilterRuleRef                string                        `json:"filter_rule_ref,omitempty"`
 	FilterCapacityHotspotRuleRef string                        `json:"filter_capacity_hotspot_rule_ref,omitempty"`
@@ -1368,6 +1372,8 @@ func runPolicyEvents(ctx context.Context, args []string, stdout io.Writer) error
 	flags.StringVar(&opts.endpoint, "endpoint", "", "optional endpoint key or endpoint ID to include")
 	flags.StringVar(&opts.success, "success", "", "optional success filter: true or false")
 	flags.StringVar(&opts.remediated, "remediated", "", "optional remediation filter: true or false")
+	flags.StringVar(&opts.remediation, "remediation", "", "optional remediation action to include")
+	flags.StringVar(&opts.errorContains, "error-contains", "", "optional policy update error substring to include")
 	flags.StringVar(&opts.ruleCookie, "rule-cookie", "", "optional dataplane rule cookie to include")
 	flags.StringVar(&opts.ruleRef, "rule-ref", "", "optional policy rule reference to include")
 	flags.StringVar(&opts.capacityHotspotRuleRef, "capacity-hotspot-rule-ref", "", "optional policy map capacity hotspot rule reference to include")
@@ -1421,6 +1427,8 @@ func runPolicyEventsWithStore(ctx context.Context, opts policyEventsOptions, std
 		FilterEndpoint:               filter.Endpoint,
 		FilterSuccess:                filter.Success,
 		FilterRemediated:             filter.Remediated,
+		FilterRemediation:            filter.Remediation,
+		FilterErrorContains:          filter.ErrorContains,
 		FilterRuleCookie:             filterPolicyUpdateEventRuleCookieValue(filter),
 		FilterRuleRef:                filter.RuleRef,
 		FilterCapacityHotspotRuleRef: filter.CapacityHotspotRuleRef,
@@ -2302,6 +2310,8 @@ type policyUpdateEventFilter struct {
 	Endpoint               string
 	Success                *bool
 	Remediated             *bool
+	Remediation            string
+	ErrorContains          string
 	RuleCookie             *uint32
 	RuleRef                string
 	CapacityHotspotRuleRef string
@@ -2310,14 +2320,14 @@ type policyUpdateEventFilter struct {
 }
 
 func policyUpdateEventFilterFromOptions(opts policyEventsOptions) (policyUpdateEventFilter, error) {
-	return policyUpdateEventFilterFromValues(opts.endpoint, opts.success, opts.remediated, opts.ruleCookie, opts.ruleRef, opts.capacityHotspotRuleRef, opts.direction, opts.action)
+	return policyUpdateEventFilterFromValues(opts.endpoint, opts.success, opts.remediated, opts.remediation, opts.errorContains, opts.ruleCookie, opts.ruleRef, opts.capacityHotspotRuleRef, opts.direction, opts.action)
 }
 
 func policyUpdateEventFilterFromRequest(r *http.Request, endpoint string) (policyUpdateEventFilter, error) {
-	return policyUpdateEventFilterFromValues(endpoint, r.URL.Query().Get("success"), r.URL.Query().Get("remediated"), r.URL.Query().Get("rule_cookie"), r.URL.Query().Get("rule_ref"), r.URL.Query().Get("capacity_hotspot_rule_ref"), r.URL.Query().Get("direction"), r.URL.Query().Get("action"))
+	return policyUpdateEventFilterFromValues(endpoint, r.URL.Query().Get("success"), r.URL.Query().Get("remediated"), r.URL.Query().Get("remediation"), r.URL.Query().Get("error_contains"), r.URL.Query().Get("rule_cookie"), r.URL.Query().Get("rule_ref"), r.URL.Query().Get("capacity_hotspot_rule_ref"), r.URL.Query().Get("direction"), r.URL.Query().Get("action"))
 }
 
-func policyUpdateEventFilterFromValues(endpoint, successRaw, remediatedRaw, ruleCookieRaw, ruleRef, capacityHotspotRuleRef, direction, action string) (policyUpdateEventFilter, error) {
+func policyUpdateEventFilterFromValues(endpoint, successRaw, remediatedRaw, remediation, errorContains, ruleCookieRaw, ruleRef, capacityHotspotRuleRef, direction, action string) (policyUpdateEventFilter, error) {
 	success, err := policyActionSuccessFromString(successRaw)
 	if err != nil {
 		return policyUpdateEventFilter{}, err
@@ -2358,6 +2368,8 @@ func policyUpdateEventFilterFromValues(endpoint, successRaw, remediatedRaw, rule
 		Endpoint:               strings.TrimSpace(endpoint),
 		Success:                success,
 		Remediated:             remediated,
+		Remediation:            strings.TrimSpace(remediation),
+		ErrorContains:          strings.TrimSpace(errorContains),
 		RuleCookie:             ruleCookie,
 		RuleRef:                strings.TrimSpace(ruleRef),
 		CapacityHotspotRuleRef: strings.TrimSpace(capacityHotspotRuleRef),
@@ -2382,6 +2394,8 @@ func policyEventsOutputFromSnapshot(snapshot agentMetricsSnapshot, events []data
 		FilterEndpoint:               filter.Endpoint,
 		FilterSuccess:                filter.Success,
 		FilterRemediated:             filter.Remediated,
+		FilterRemediation:            filter.Remediation,
+		FilterErrorContains:          filter.ErrorContains,
 		FilterRuleCookie:             filterPolicyUpdateEventRuleCookieValue(filter),
 		FilterRuleRef:                filter.RuleRef,
 		FilterCapacityHotspotRuleRef: filter.CapacityHotspotRuleRef,
@@ -2613,6 +2627,12 @@ func filterPolicyUpdateEvents(events []dataplane.PolicyUpdateEvent, filter polic
 		if filter.Remediated != nil && event.Remediated != *filter.Remediated {
 			continue
 		}
+		if filter.Remediation != "" && event.Remediation != filter.Remediation {
+			continue
+		}
+		if filter.ErrorContains != "" && !strings.Contains(event.Error, filter.ErrorContains) {
+			continue
+		}
 		if filter.RuleCookie != nil && !policyUpdateEventHasRuleCookie(event, *filter.RuleCookie) {
 			continue
 		}
@@ -2637,6 +2657,8 @@ func policyUpdateEventFilterActive(filter policyUpdateEventFilter) bool {
 	return filter.Endpoint != "" ||
 		filter.Success != nil ||
 		filter.Remediated != nil ||
+		filter.Remediation != "" ||
+		filter.ErrorContains != "" ||
 		filter.RuleCookie != nil ||
 		filter.RuleRef != "" ||
 		filter.CapacityHotspotRuleRef != "" ||
