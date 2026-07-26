@@ -1529,10 +1529,14 @@ func TestRunAgentStatusWithStoreRequiresStatusExternalID(t *testing.T) {
 }
 
 func TestRunPolicyActionHistoryWithStoreReportsFilteredJSON(t *testing.T) {
+	firstCompleted := time.Date(2026, 7, 18, 1, 0, 0, 0, time.UTC)
+	secondCompleted := time.Date(2026, 7, 18, 1, 10, 0, 0, time.UTC)
+	thirdCompleted := time.Date(2026, 7, 18, 1, 20, 0, 0, time.UTC)
+	completedCutoff := time.Date(2026, 7, 18, 1, 15, 0, 0, time.UTC)
 	history := []policyActionHistoryEntry{
-		{ID: "1", Action: "freeze", EndpointID: model.EndpointKey("prod", "vm-a"), Node: "node-a", Store: "ebpf", CompletedAt: time.Now().Add(-3 * time.Minute), Success: true},
-		{ID: "2", Action: "regenerate", EndpointID: model.EndpointKey("prod", "vm-a"), Node: "node-a", Store: "ebpf", CompletedAt: time.Now().Add(-2 * time.Minute), Success: false, Reason: "frozen", Error: "policy endpoint is frozen"},
-		{ID: "3", Action: "regenerate", EndpointID: model.EndpointKey("prod", "vm-b"), Node: "node-a", Store: "ebpf", CompletedAt: time.Now().Add(-time.Minute), Success: true},
+		{ID: "1", Action: "freeze", EndpointID: model.EndpointKey("prod", "vm-a"), Node: "node-a", Store: "ebpf", CompletedAt: firstCompleted, Success: true},
+		{ID: "2", Action: "regenerate", EndpointID: model.EndpointKey("prod", "vm-a"), Node: "node-a", Store: "ebpf", CompletedAt: secondCompleted, Success: false, Reason: "frozen", Error: "policy endpoint is frozen"},
+		{ID: "3", Action: "regenerate", EndpointID: model.EndpointKey("prod", "vm-b"), Node: "node-a", Store: "ebpf", CompletedAt: thirdCompleted, Success: true},
 	}
 	raw, err := json.Marshal(history)
 	if err != nil {
@@ -1562,6 +1566,32 @@ func TestRunPolicyActionHistoryWithStoreReportsFilteredJSON(t *testing.T) {
 	if len(got.History) != 1 || got.History[0].ID != "2" || got.History[0].Success || got.History[0].Reason != "frozen" || !strings.Contains(got.History[0].Error, "frozen") {
 		t.Fatalf("history = %+v, want failed regenerate action", got.History)
 	}
+
+	out.Reset()
+	err = runPolicyActionHistoryWithStore(t.Context(), policyActionHistoryOptions{completedAfter: completedCutoff.Format(time.RFC3339), limit: 10}, &out, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = policyActionHistoryOutput{}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("decode completed-after policy-action-history output: %v\n%s", err, out.String())
+	}
+	if got.FilterCompletedAfter == nil || !got.FilterCompletedAfter.Equal(completedCutoff) || got.EventCount != 1 || len(got.History) != 1 || got.History[0].ID != "3" {
+		t.Fatalf("completed-after output = %+v, want only latest action after cutoff", got)
+	}
+
+	out.Reset()
+	err = runPolicyActionHistoryWithStore(t.Context(), policyActionHistoryOptions{completedBefore: completedCutoff.Format(time.RFC3339), limit: 10}, &out, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = policyActionHistoryOutput{}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("decode completed-before policy-action-history output: %v\n%s", err, out.String())
+	}
+	if got.FilterCompletedBefore == nil || !got.FilterCompletedBefore.Equal(completedCutoff) || got.EventCount != 2 || len(got.History) != 2 {
+		t.Fatalf("completed-before output = %+v, want two actions before cutoff", got)
+	}
 }
 
 func TestRunPolicyActionHistoryWithStoreRejectsInvalidFilters(t *testing.T) {
@@ -1574,6 +1604,10 @@ func TestRunPolicyActionHistoryWithStoreRejectsInvalidFilters(t *testing.T) {
 	err = runPolicyActionHistoryWithStore(t.Context(), policyActionHistoryOptions{limit: -1}, &out, store)
 	if err == nil || !strings.Contains(err.Error(), "invalid limit -1") {
 		t.Fatalf("err = %v, want invalid limit", err)
+	}
+	err = runPolicyActionHistoryWithStore(t.Context(), policyActionHistoryOptions{completedBefore: "bad", limit: 10}, &out, store)
+	if err == nil || !strings.Contains(err.Error(), "invalid completed-before") {
+		t.Fatalf("err = %v, want invalid completed-before", err)
 	}
 }
 
@@ -5610,10 +5644,14 @@ func TestPolicyEndpointAPIPersistsActionHistoryToOpenVSwitchExternalID(t *testin
 }
 
 func TestPolicyEndpointActionHistoryAPIFiltersEndpointActionAndLimit(t *testing.T) {
+	firstCompleted := time.Date(2026, 7, 18, 1, 0, 0, 0, time.UTC)
+	secondCompleted := time.Date(2026, 7, 18, 1, 10, 0, 0, time.UTC)
+	thirdCompleted := time.Date(2026, 7, 18, 1, 20, 0, 0, time.UTC)
+	completedCutoff := time.Date(2026, 7, 18, 1, 15, 0, 0, time.UTC)
 	history := []policyActionHistoryEntry{
-		{ID: "1", Action: "freeze", EndpointID: model.EndpointKey("prod", "pod-a"), Node: "node-a", Store: "memory", CompletedAt: time.Now().Add(-3 * time.Minute), Success: true},
-		{ID: "2", Action: "unfreeze", EndpointID: model.EndpointKey("prod", "pod-a"), Node: "node-a", Store: "memory", CompletedAt: time.Now().Add(-2 * time.Minute), Success: true},
-		{ID: "3", Action: "freeze", EndpointID: model.EndpointKey("prod", "pod-b"), Node: "node-a", Store: "memory", CompletedAt: time.Now().Add(-time.Minute), Success: false, Reason: "frozen", Error: "policy endpoint is frozen"},
+		{ID: "1", Action: "freeze", EndpointID: model.EndpointKey("prod", "pod-a"), Node: "node-a", Store: "memory", CompletedAt: firstCompleted, Success: true},
+		{ID: "2", Action: "unfreeze", EndpointID: model.EndpointKey("prod", "pod-a"), Node: "node-a", Store: "memory", CompletedAt: secondCompleted, Success: true},
+		{ID: "3", Action: "freeze", EndpointID: model.EndpointKey("prod", "pod-b"), Node: "node-a", Store: "memory", CompletedAt: thirdCompleted, Success: false, Reason: "frozen", Error: "policy endpoint is frozen"},
 	}
 	raw, err := json.Marshal(history)
 	if err != nil {
@@ -5658,6 +5696,44 @@ func TestPolicyEndpointActionHistoryAPIFiltersEndpointActionAndLimit(t *testing.
 	}
 	if len(output.History) != 1 || output.History[0].ID != "3" || output.History[0].Reason != "frozen" {
 		t.Fatalf("reason action history = %+v, want failed frozen entry", output.History)
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/policy/endpoints/actions/history?completed_after="+url.QueryEscape(completedCutoff.Format(time.RFC3339)), nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("completed-after history status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	output = policyActionHistoryOutput{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &output); err != nil {
+		t.Fatalf("decode completed-after action history response: %v\n%s", err, recorder.Body.String())
+	}
+	if output.FilterCompletedAfter == nil || !output.FilterCompletedAfter.Equal(completedCutoff) || output.EventCount != 1 || len(output.History) != 1 || output.History[0].ID != "3" {
+		t.Fatalf("completed-after action history = %+v, want only action after cutoff", output)
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/policy/endpoints/actions/history?completed_before="+url.QueryEscape(completedCutoff.Format(time.RFC3339)), nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("completed-before history status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	output = policyActionHistoryOutput{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &output); err != nil {
+		t.Fatalf("decode completed-before action history response: %v\n%s", err, recorder.Body.String())
+	}
+	if output.FilterCompletedBefore == nil || !output.FilterCompletedBefore.Equal(completedCutoff) || output.EventCount != 2 || len(output.History) != 2 {
+		t.Fatalf("completed-before action history = %+v, want two actions before cutoff", output)
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/policy/endpoints/actions/history?completed_before=bad", nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("invalid completed-before status = %d, want 400; body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "invalid completed_before") {
+		t.Fatalf("body missing invalid completed_before error: %s", recorder.Body.String())
 	}
 }
 

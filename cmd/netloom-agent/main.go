@@ -267,12 +267,14 @@ type policyEntriesExportOptions struct {
 }
 
 type policyActionHistoryOptions struct {
-	ovsdb    string
-	endpoint string
-	action   string
-	reason   string
-	success  string
-	limit    int
+	ovsdb           string
+	endpoint        string
+	action          string
+	reason          string
+	success         string
+	completedAfter  string
+	completedBefore string
+	limit           int
 }
 
 type policyEventsOptions struct {
@@ -637,15 +639,17 @@ type policyRolloutHistoryOutput struct {
 }
 
 type policyActionHistoryOutput struct {
-	Ready          bool                       `json:"ready"`
-	TotalEvents    int                        `json:"total_events"`
-	EventCount     int                        `json:"event_count"`
-	Limit          int                        `json:"limit"`
-	FilterEndpoint string                     `json:"filter_endpoint,omitempty"`
-	FilterAction   string                     `json:"filter_action,omitempty"`
-	FilterReason   string                     `json:"filter_reason,omitempty"`
-	FilterSuccess  *bool                      `json:"filter_success,omitempty"`
-	History        []policyActionHistoryEntry `json:"history"`
+	Ready                 bool                       `json:"ready"`
+	TotalEvents           int                        `json:"total_events"`
+	EventCount            int                        `json:"event_count"`
+	Limit                 int                        `json:"limit"`
+	FilterEndpoint        string                     `json:"filter_endpoint,omitempty"`
+	FilterAction          string                     `json:"filter_action,omitempty"`
+	FilterReason          string                     `json:"filter_reason,omitempty"`
+	FilterSuccess         *bool                      `json:"filter_success,omitempty"`
+	FilterCompletedAfter  *time.Time                 `json:"filter_completed_after,omitempty"`
+	FilterCompletedBefore *time.Time                 `json:"filter_completed_before,omitempty"`
+	History               []policyActionHistoryEntry `json:"history"`
 }
 
 type policyRolloutHistoryEntry struct {
@@ -1390,6 +1394,8 @@ func runPolicyActionHistory(ctx context.Context, args []string, stdout io.Writer
 	flags.StringVar(&opts.action, "action", "", "optional lifecycle action to include")
 	flags.StringVar(&opts.reason, "reason", "", "optional lifecycle action reason to include")
 	flags.StringVar(&opts.success, "success", "", "optional success filter: true or false")
+	flags.StringVar(&opts.completedAfter, "completed-after", "", "optional RFC3339 timestamp; include actions completed at or after this time")
+	flags.StringVar(&opts.completedBefore, "completed-before", "", "optional RFC3339 timestamp; include actions completed before this time")
 	flags.IntVar(&opts.limit, "limit", defaultPolicyEventsLimit, "maximum recent action history entries")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -1419,6 +1425,14 @@ func runPolicyActionHistoryWithStore(ctx context.Context, opts policyActionHisto
 	if err != nil {
 		return err
 	}
+	completedAfter, err := parseOptionalTimeFilter(opts.completedAfter, "completed-after")
+	if err != nil {
+		return err
+	}
+	completedBefore, err := parseOptionalTimeFilter(opts.completedBefore, "completed-before")
+	if err != nil {
+		return err
+	}
 	history, err := store.Load(ctx)
 	if err != nil {
 		return err
@@ -1426,18 +1440,20 @@ func runPolicyActionHistoryWithStore(ctx context.Context, opts policyActionHisto
 	endpoint := strings.TrimSpace(opts.endpoint)
 	action := strings.TrimSpace(opts.action)
 	reason := strings.TrimSpace(opts.reason)
-	filtered := filterPolicyActionHistory(history, endpoint, action, reason, success)
+	filtered := filterPolicyActionHistory(history, endpoint, action, reason, success, completedAfter, completedBefore)
 	recent := recentPolicyActionHistory(filtered, opts.limit)
 	output := policyActionHistoryOutput{
-		Ready:          true,
-		TotalEvents:    len(history),
-		EventCount:     len(recent),
-		Limit:          opts.limit,
-		FilterEndpoint: endpoint,
-		FilterAction:   action,
-		FilterReason:   reason,
-		FilterSuccess:  success,
-		History:        recent,
+		Ready:                 true,
+		TotalEvents:           len(history),
+		EventCount:            len(recent),
+		Limit:                 opts.limit,
+		FilterEndpoint:        endpoint,
+		FilterAction:          action,
+		FilterReason:          reason,
+		FilterSuccess:         success,
+		FilterCompletedAfter:  completedAfter,
+		FilterCompletedBefore: completedBefore,
+		History:               recent,
 	}
 	encoder := json.NewEncoder(stdout)
 	encoder.SetIndent("", "  ")
@@ -4708,7 +4724,7 @@ func (m *agentMetrics) policyActionHistory() []policyActionHistoryEntry {
 	return append([]policyActionHistoryEntry(nil), m.actionHistory...)
 }
 
-func filterPolicyActionHistory(history []policyActionHistoryEntry, endpoint, action, reason string, success *bool) []policyActionHistoryEntry {
+func filterPolicyActionHistory(history []policyActionHistoryEntry, endpoint, action, reason string, success *bool, completedAfter, completedBefore *time.Time) []policyActionHistoryEntry {
 	endpoint = strings.TrimSpace(endpoint)
 	action = strings.TrimSpace(action)
 	reason = strings.TrimSpace(reason)
@@ -4725,6 +4741,12 @@ func filterPolicyActionHistory(history []policyActionHistoryEntry, endpoint, act
 			continue
 		}
 		if success != nil && entry.Success != *success {
+			continue
+		}
+		if completedAfter != nil && entry.CompletedAt.Before(*completedAfter) {
+			continue
+		}
+		if completedBefore != nil && !entry.CompletedAt.Before(*completedBefore) {
 			continue
 		}
 		if endpoint != "" {
@@ -6331,21 +6353,35 @@ func (m *agentMetrics) handlePolicyActionHistory(w http.ResponseWriter, r *http.
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
+	completedAfter, err := parseOptionalTimeFilter(r.URL.Query().Get("completed_after"), "completed_after")
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	completedBefore, err := parseOptionalTimeFilter(r.URL.Query().Get("completed_before"), "completed_before")
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
 	history := m.policyActionHistory()
-	filtered := filterPolicyActionHistory(history, endpoint, action, reason, success)
+	filtered := filterPolicyActionHistory(history, endpoint, action, reason, success, completedAfter, completedBefore)
 	recent := recentPolicyActionHistory(filtered, limit)
 	encoder := json.NewEncoder(w)
 	encoder.SetIndent("", "  ")
 	_ = encoder.Encode(policyActionHistoryOutput{
-		Ready:          true,
-		TotalEvents:    len(history),
-		EventCount:     len(recent),
-		Limit:          limit,
-		FilterEndpoint: endpoint,
-		FilterAction:   action,
-		FilterReason:   reason,
-		FilterSuccess:  success,
-		History:        recent,
+		Ready:                 true,
+		TotalEvents:           len(history),
+		EventCount:            len(recent),
+		Limit:                 limit,
+		FilterEndpoint:        endpoint,
+		FilterAction:          action,
+		FilterReason:          reason,
+		FilterSuccess:         success,
+		FilterCompletedAfter:  completedAfter,
+		FilterCompletedBefore: completedBefore,
+		History:               recent,
 	})
 }
 
