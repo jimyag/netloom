@@ -304,6 +304,26 @@ func TestControllerEnsuresEndpointsBeforeDistributedFloatingIPs(t *testing.T) {
 	}
 }
 
+func TestControllerAcceptsDistributedFloatingIPBoundToEndpoint(t *testing.T) {
+	state := validObjectGraphState()
+	endpointID := "pod.with/a:very_long_endpoint_name_that_needs_hashed_ovn_identifier"
+	state.Endpoints[0].ID = endpointID
+	state.Endpoints[0].MAC = "0A:58:0A:0A:00:0A"
+	state.NATRules = []model.NATRule{{
+		Name:        "web-fip",
+		VPC:         "prod",
+		Type:        model.ActionDNATSNAT,
+		ExternalIP:  netip.MustParseAddr("198.51.100.31"),
+		TargetIP:    netip.MustParseAddr("10.10.0.10"),
+		LogicalPort: model.OVNLogicalSwitchPortName("prod", endpointID),
+		ExternalMAC: "0a:58:0a:0a:00:0a",
+	}}
+
+	if err := NewController(NewMemoryBackend(), NewMemoryBackend()).Reconcile(context.Background(), state); err != nil {
+		t.Fatalf("distributed floating IP endpoint binding should validate: %v", err)
+	}
+}
+
 func TestControllerSyncsTopologyDNSRecords(t *testing.T) {
 	backend := &dnsSyncBackend{MemoryBackend: NewMemoryBackend()}
 	controller := NewController(backend, backend)
@@ -1978,6 +1998,54 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 				}}
 			},
 			wantErr: "nat rule \"web-fip\" target ip 10.10.0.12 is excluded by subnet \"apps\"",
+		},
+		{
+			name: "distributed floating ip target must be endpoint",
+			mutate: func(state *DesiredState) {
+				state.LoadBalancers[0].Ports[0].Backends[0].IP = netip.MustParseAddr("10.10.0.20")
+				state.NATRules = []model.NATRule{{
+					Name:        "web-fip",
+					VPC:         "prod",
+					Type:        model.ActionDNATSNAT,
+					ExternalIP:  netip.MustParseAddr("198.51.100.30"),
+					TargetIP:    netip.MustParseAddr("10.10.0.20"),
+					LogicalPort: "nl_lp_prod_missing",
+					ExternalMAC: "0a:58:0a:0a:00:14",
+				}}
+			},
+			wantErr: "nat rule \"web-fip\" logical_port requires target ip 10.10.0.20 to reference an endpoint in vpc \"prod\"",
+		},
+		{
+			name: "distributed floating ip logical port must match endpoint",
+			mutate: func(state *DesiredState) {
+				state.Endpoints[0].MAC = "0A:58:0A:0A:00:0A"
+				state.NATRules = []model.NATRule{{
+					Name:        "web-fip",
+					VPC:         "prod",
+					Type:        model.ActionDNATSNAT,
+					ExternalIP:  netip.MustParseAddr("198.51.100.30"),
+					TargetIP:    netip.MustParseAddr("10.10.0.10"),
+					LogicalPort: "nl_lp_prod_other",
+					ExternalMAC: "0a:58:0a:0a:00:0a",
+				}}
+			},
+			wantErr: "nat rule \"web-fip\" logical_port \"nl_lp_prod_other\" does not match endpoint \"pod-a\" logical port \"nl_lp_prod_pod-a\"",
+		},
+		{
+			name: "distributed floating ip external mac must match endpoint",
+			mutate: func(state *DesiredState) {
+				state.Endpoints[0].MAC = "0A:58:0A:0A:00:0A"
+				state.NATRules = []model.NATRule{{
+					Name:        "web-fip",
+					VPC:         "prod",
+					Type:        model.ActionDNATSNAT,
+					ExternalIP:  netip.MustParseAddr("198.51.100.30"),
+					TargetIP:    netip.MustParseAddr("10.10.0.10"),
+					LogicalPort: model.OVNLogicalSwitchPortName("prod", "pod-a"),
+					ExternalMAC: "0a:58:0a:0a:00:ff",
+				}}
+			},
+			wantErr: "nat rule \"web-fip\" external_mac \"0a:58:0a:0a:00:ff\" does not match endpoint \"pod-a\" mac \"0a:58:0a:0a:00:0a\"",
 		},
 		{
 			name: "load balancer unknown vpc",

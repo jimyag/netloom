@@ -946,6 +946,9 @@ func validateObjectGraph(state DesiredState) error {
 				return err
 			}
 		}
+		if err := validateDistributedNATEndpoint(rule, endpoints, endpointIPs); err != nil {
+			return err
+		}
 	}
 	for _, record := range state.DNSRecords {
 		if err := record.Validate(); err != nil {
@@ -964,6 +967,29 @@ func routeBFDLogicalPorts(subnets map[string]model.Subnet, vpc string) map[strin
 		ports[model.OVNLogicalRouterPortName(subnet.VPC, subnet.Name)] = struct{}{}
 	}
 	return ports
+}
+
+func validateDistributedNATEndpoint(rule model.NATRule, endpoints map[string]model.Endpoint, endpointIPs map[string]string) error {
+	if strings.TrimSpace(rule.LogicalPort) == "" {
+		return nil
+	}
+	endpointID := endpointIPs[rule.VPC+"|"+rule.TargetIP.String()]
+	if endpointID == "" {
+		return fmt.Errorf("nat rule %q logical_port requires target ip %s to reference an endpoint in vpc %q", rule.Name, rule.TargetIP, rule.VPC)
+	}
+	endpoint := endpoints[model.EndpointKey(rule.VPC, endpointID)]
+	expectedPort := model.OVNLogicalSwitchPortName(rule.VPC, endpoint.ID)
+	if rule.LogicalPort != expectedPort {
+		return fmt.Errorf("nat rule %q logical_port %q does not match endpoint %q logical port %q", rule.Name, rule.LogicalPort, endpoint.ID, expectedPort)
+	}
+	expectedMAC := endpoint.NormalizedMAC()
+	if expectedMAC == "" {
+		expectedMAC = model.GatewayMAC(endpoint.IP)
+	}
+	if strings.ToLower(rule.ExternalMAC) != expectedMAC {
+		return fmt.Errorf("nat rule %q external_mac %q does not match endpoint %q mac %q", rule.Name, rule.ExternalMAC, endpoint.ID, expectedMAC)
+	}
+	return nil
 }
 
 func validateSecurityGroupNamedPortReferences(groups []model.SecurityGroup, endpoints []model.Endpoint, groupByName map[string]model.SecurityGroup) error {

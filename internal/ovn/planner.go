@@ -382,7 +382,7 @@ func logicalSwitch(vpc, subnet string) string {
 }
 
 func logicalPort(vpc, endpoint string) string {
-	return ovnIdentifier("nl_lp_" + sanitize(vpc) + "_" + sanitize(endpoint))
+	return model.OVNLogicalSwitchPortName(vpc, endpoint)
 }
 
 func loadBalancerName(vpc, name string) string {

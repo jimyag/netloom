@@ -926,6 +926,10 @@ func OVNLogicalRouterPortName(vpc, subnet string) string {
 	return ovnIdentifier(OVNLogicalRouterName(vpc) + "_to_" + OVNSanitize(subnet))
 }
 
+func OVNLogicalSwitchPortName(vpc, endpoint string) string {
+	return ovnIdentifier("nl_lp_" + OVNSanitize(vpc) + "_" + OVNSanitize(endpoint))
+}
+
 func OVNSanitize(value string) string {
 	var out strings.Builder
 	for _, r := range value {

@@ -1533,8 +1533,14 @@ func TestOVNLogicalRouterPortNameIsStableAndEscaped(t *testing.T) {
 	if got := OVNLogicalRouterName("prod"); got != "nl_lr_prod" {
 		t.Fatalf("logical router = %q, want nl_lr_prod", got)
 	}
+	if got := OVNLogicalSwitchPortName("prod", "pod-a"); got != "nl_lp_prod_pod-a" {
+		t.Fatalf("logical switch port = %q, want nl_lp_prod_pod-a", got)
+	}
 	if got := OVNLogicalRouterPortName("prod", "apps"); got != "nl_lr_prod_to_apps" {
 		t.Fatalf("logical router port = %q, want nl_lr_prod_to_apps", got)
+	}
+	if got := OVNLogicalSwitchPortName("prod.env", "pod/a:west_1"); got != "nl_lp_prod_denv_pod_sa_cwest__1" {
+		t.Fatalf("escaped logical switch port = %q", got)
 	}
 	if got := OVNLogicalRouterPortName("prod.env", "apps/blue:west_1"); got != "nl_lr_prod_denv_to_apps_sblue_cwest__1" {
 		t.Fatalf("escaped logical router port = %q", got)
@@ -1548,6 +1554,16 @@ func TestOVNLogicalRouterPortNameIsStableAndEscaped(t *testing.T) {
 	}
 	if long != OVNLogicalRouterPortName("prod", "apps.with/a:very_long_subnet_name_that_needs_hashed_ovn_identifier") {
 		t.Fatal("logical router port is not stable")
+	}
+	longPort := OVNLogicalSwitchPortName("prod", "pod.with/a:very_long_endpoint_name_that_needs_hashed_ovn_identifier")
+	if len(longPort) > 63 {
+		t.Fatalf("logical switch port length = %d, want <= 63: %q", len(longPort), longPort)
+	}
+	if !strings.Contains(longPort, "_h") {
+		t.Fatalf("long logical switch port = %q, want hash suffix", longPort)
+	}
+	if longPort != OVNLogicalSwitchPortName("prod", "pod.with/a:very_long_endpoint_name_that_needs_hashed_ovn_identifier") {
+		t.Fatal("logical switch port is not stable")
 	}
 }
 
