@@ -749,6 +749,44 @@ func TestControllerAllowsRemoteServiceSCTPProtocol(t *testing.T) {
 	}
 }
 
+func TestControllerAllowsProviderIdentityGroupQueuesWithDifferentSpecificity(t *testing.T) {
+	state := validObjectGraphState()
+	state.IdentityGroups = []model.IdentityGroup{{
+		Name:        "frontend-api",
+		VPC:         "prod",
+		EndpointIDs: []string{"pod-a"},
+	}, {
+		Name:        "payments-api",
+		VPC:         "prod",
+		EndpointIDs: []string{"pod-a"},
+	}}
+	state.ProviderNetworks = []model.ProviderNetwork{{
+		Name: "physnet-a",
+		Nodes: []model.ProviderNetworkNode{{
+			Node:      "node-a",
+			Interface: "eth1",
+		}},
+		TenantQueues: []model.ProviderNetworkTenantQueuePolicy{{
+			Tenant:         "prod",
+			QueueID:        10,
+			Protocol:       model.ProtocolTCP,
+			IdentityGroups: []string{"frontend-api"},
+			MaxRateBPS:     500000000,
+		}, {
+			Tenant:         "prod",
+			QueueID:        11,
+			Protocol:       model.ProtocolTCP,
+			Ports:          []model.PortRange{{From: 443, To: 443}},
+			IdentityGroups: []string{"payments-api"},
+			MaxRateBPS:     250000000,
+		}},
+	}}
+
+	if err := NewController(NewMemoryBackend(), NewMemoryBackend()).Reconcile(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 	oldNow := identityGroupNow
 	identityGroupNow = func() time.Time { return time.Date(2026, 7, 10, 1, 2, 0, 0, time.UTC) }

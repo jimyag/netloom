@@ -1210,6 +1210,10 @@ func validateProviderTenantQueueIdentityGroupConflicts(providerNetworks map[stri
 				if left.Tenant != right.Tenant || len(right.IdentityGroups) == 0 {
 					continue
 				}
+				priority := providerTenantQueueEndpointPriority(left)
+				if priority != providerTenantQueueEndpointPriority(right) {
+					continue
+				}
 				if !protocolsMayOverlap(left.Protocol, right.Protocol) || !portRangesMayOverlap(left.Ports, right.Ports) {
 					continue
 				}
