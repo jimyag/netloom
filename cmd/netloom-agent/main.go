@@ -7175,6 +7175,7 @@ func writeAgentMetrics(w ioStringWriter, snapshot agentMetricsSnapshot, totals a
 	writeMetricType(w, "netloom_agent_policy_rollout_cancelled", "gauge")
 	fmt.Fprintf(w, "netloom_agent_policy_rollout_cancelled%s %d\n", baseLabels, result.PolicyRolloutCancelled)
 	writeMetricType(w, "netloom_agent_policy_rollout_pressure_severity", "gauge")
+	writeMetricType(w, "netloom_agent_policy_rollout_recommended_capacity", "gauge")
 	for _, rollout := range result.PolicyRolloutStatus {
 		if !rollout.Rollout.PressureAware {
 			continue
@@ -7186,6 +7187,13 @@ func writeAgentMetrics(w ioStringWriter, snapshot agentMetricsSnapshot, totals a
 			"severity": policyMapPressureSeverityLabel(rollout.Rollout.PressureSeverity),
 		})
 		fmt.Fprintf(w, "netloom_agent_policy_rollout_pressure_severity%s 1\n", labels)
+		capacityLabels := prometheusLabels(map[string]string{
+			"node":     result.Node,
+			"store":    snapshot.Store,
+			"rollout":  rollout.Name,
+			"endpoint": rollout.Rollout.PressureRecommendedEndpoint,
+		})
+		fmt.Fprintf(w, "netloom_agent_policy_rollout_recommended_capacity%s %d\n", capacityLabels, rollout.Rollout.PressureRecommendedCapacity)
 	}
 	writeMetricType(w, "netloom_agent_provider_networks", "gauge")
 	fmt.Fprintf(w, "netloom_agent_provider_networks%s %d\n", baseLabels, result.ProviderNetworks)

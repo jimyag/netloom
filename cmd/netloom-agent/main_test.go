@@ -6256,8 +6256,10 @@ func TestAgentMetricsExportsLatestPolicyAndTCXCounters(t *testing.T) {
 		PolicyRolloutStatus: []agent.NamedPolicyEndpointRollout{{
 			Name: "prod-rollout",
 			Rollout: agent.PolicyEndpointRollout{
-				PressureAware:    true,
-				PressureSeverity: dataplane.PolicyMapPressureCritical,
+				PressureAware:               true,
+				PressureSeverity:            dataplane.PolicyMapPressureCritical,
+				PressureRecommendedCapacity: 19,
+				PressureRecommendedEndpoint: "prod\x00pod-a",
 			},
 		}},
 		PolicyMapDriftEndpoints: 1,
@@ -6387,6 +6389,7 @@ func TestAgentMetricsExportsLatestPolicyAndTCXCounters(t *testing.T) {
 		`netloom_agent_policy_rollout_paused{node="node-a",store="ebpf"} 1`,
 		`netloom_agent_policy_rollout_cancelled{node="node-a",store="ebpf"} 1`,
 		`netloom_agent_policy_rollout_pressure_severity{node="node-a",rollout="prod-rollout",severity="critical",store="ebpf"} 1`,
+		`netloom_agent_policy_rollout_recommended_capacity{endpoint="prod\x00pod-a",node="node-a",rollout="prod-rollout",store="ebpf"} 19`,
 		`netloom_agent_provider_networks{node="node-a",store="ebpf"} 2`,
 		`netloom_agent_provider_links{node="node-a",store="ebpf"} 2`,
 		`netloom_agent_provider_ready{node="node-a",store="ebpf"} 1`,
