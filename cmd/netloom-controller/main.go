@@ -417,9 +417,16 @@ type controllerEventRecord struct {
 	OVNHealthFailures     int            `json:"ovn_health_failures,omitempty"`
 	OVNHealthRecovering   bool           `json:"ovn_health_recovering,omitempty"`
 	OVNClusterQuorum      string         `json:"ovn_cluster_quorum,omitempty"`
+	OVNClusterActive      string         `json:"ovn_cluster_active_endpoint,omitempty"`
+	OVNClusterLeader      string         `json:"ovn_cluster_leader_endpoint,omitempty"`
+	OVNClusterLeaderProbe string         `json:"ovn_cluster_leader_probe,omitempty"`
+	OVNClusterLeaderError string         `json:"ovn_cluster_leader_error,omitempty"`
+	OVNClusterEndpoints   int            `json:"ovn_cluster_endpoints,omitempty"`
 	OVNClusterReachable   int            `json:"ovn_cluster_reachable,omitempty"`
 	OVNClusterQuorumSize  int            `json:"ovn_cluster_quorum_size,omitempty"`
 	OVNClusterLeaderCount int            `json:"ovn_cluster_leader_count,omitempty"`
+	OVNClusterFailovers   int            `json:"ovn_cluster_failovers,omitempty"`
+	OVNClusterLeaderPref  bool           `json:"ovn_cluster_leader_preferred,omitempty"`
 	OVNOps                int            `json:"ovn_ops"`
 	OVNExecuted           int            `json:"ovn_executed"`
 	OVNAuditStatus        string         `json:"ovn_audit_status,omitempty"`
@@ -1050,9 +1057,16 @@ func controllerEventFromSnapshot(snapshot controllerMetricsSnapshot) controllerE
 		OVNHealthFailures:     snapshot.OVNHealthConsecutiveFailures,
 		OVNHealthRecovering:   snapshot.OVNHealthRecovering,
 		OVNClusterQuorum:      cluster.QuorumStatus,
+		OVNClusterActive:      cluster.ActiveEndpoint,
+		OVNClusterLeader:      cluster.LeaderEndpoint,
+		OVNClusterLeaderProbe: cluster.LeaderProbeStatus,
+		OVNClusterLeaderError: cluster.LeaderProbeError,
+		OVNClusterEndpoints:   cluster.ConfiguredEndpoints,
 		OVNClusterReachable:   cluster.ReachableEndpoints,
 		OVNClusterQuorumSize:  cluster.QuorumSize,
 		OVNClusterLeaderCount: cluster.LeaderCount,
+		OVNClusterFailovers:   cluster.Failovers,
+		OVNClusterLeaderPref:  cluster.LeaderPreferred,
 		OVNOps:                snapshot.OVNOps,
 		OVNExecuted:           snapshot.OVNExecuted,
 		OVNAuditStatus:        fallbackMetricsLabel(snapshot.OVNAuditStatus, "disabled"),

@@ -122,14 +122,25 @@ func TestRunControllerEventsWithStoreReportsFilteredHistory(t *testing.T) {
 			OVNClusterQuorum: "ok",
 			OVNAuditStatus:   "ok",
 		}, {
-			ID:                "failure-a",
-			CompletedAt:       time.Date(2026, 7, 17, 1, 1, 0, 0, time.UTC),
-			Success:           false,
-			Phase:             "ovn_health",
-			Error:             "ovn health check: timeout",
-			DurationMS:        30,
-			OVNHealth:         "error",
-			OVNHealthFailures: 1,
+			ID:                    "failure-a",
+			CompletedAt:           time.Date(2026, 7, 17, 1, 1, 0, 0, time.UTC),
+			Success:               false,
+			Phase:                 "ovn_health",
+			Error:                 "ovn health check: timeout",
+			DurationMS:            30,
+			OVNHealth:             "error",
+			OVNHealthFailures:     1,
+			OVNClusterQuorum:      "degraded",
+			OVNClusterActive:      "ssl:10.0.0.1:6641",
+			OVNClusterLeader:      "ssl:10.0.0.2:6641",
+			OVNClusterLeaderProbe: "error",
+			OVNClusterLeaderError: "leader probe timeout",
+			OVNClusterEndpoints:   3,
+			OVNClusterReachable:   1,
+			OVNClusterQuorumSize:  2,
+			OVNClusterLeaderCount: 1,
+			OVNClusterFailovers:   2,
+			OVNClusterLeaderPref:  true,
 		}, {
 			ID:          "failure-b",
 			CompletedAt: time.Date(2026, 7, 17, 1, 2, 0, 0, time.UTC),
@@ -160,6 +171,18 @@ func TestRunControllerEventsWithStoreReportsFilteredHistory(t *testing.T) {
 	}
 	if len(got.Events) != 1 || got.Events[0].ID != "failure-a" || got.Events[0].Error == "" || got.Events[0].OVNHealth != "error" {
 		t.Fatalf("events = %+v, want ovn_health failure", got.Events)
+	}
+	if got.Events[0].OVNClusterActive != "ssl:10.0.0.1:6641" ||
+		got.Events[0].OVNClusterLeader != "ssl:10.0.0.2:6641" ||
+		got.Events[0].OVNClusterLeaderProbe != "error" ||
+		got.Events[0].OVNClusterLeaderError != "leader probe timeout" ||
+		got.Events[0].OVNClusterEndpoints != 3 ||
+		got.Events[0].OVNClusterReachable != 1 ||
+		got.Events[0].OVNClusterQuorumSize != 2 ||
+		got.Events[0].OVNClusterLeaderCount != 1 ||
+		got.Events[0].OVNClusterFailovers != 2 ||
+		!got.Events[0].OVNClusterLeaderPref {
+		t.Fatalf("event cluster context = %+v, want persisted active and leader endpoints", got.Events[0])
 	}
 }
 
@@ -479,6 +502,29 @@ func TestSyncOVSDBControllerEventAppendsBoundedHistory(t *testing.T) {
 func TestControllerEventFromSnapshotIncludesOVNAuditBreakdown(t *testing.T) {
 	snapshot := controllerMetricsSnapshot{
 		OVNAuditStatus: "ok",
+		OVNCluster: ovnClusterHealthSnapshot{
+			ActiveEndpoint:      "ssl:10.0.0.1:6641",
+			LeaderEndpoint:      "ssl:10.0.0.2:6641",
+			LeaderProbeStatus:   "error",
+			LeaderProbeError:    "leader probe timeout",
+			ConfiguredEndpoints: 3,
+			ReachableEndpoints:  1,
+			QuorumSize:          2,
+			LeaderCount:         1,
+			Failovers:           2,
+			LeaderPreferred:     true,
+			Endpoints: []ovnClusterEndpointSnapshot{{
+				Endpoint:  "ssl:10.0.0.1:6641",
+				Reachable: true,
+			}, {
+				Endpoint:  "ssl:10.0.0.2:6641",
+				Reachable: true,
+				Leader:    true,
+			}, {
+				Endpoint:  "ssl:10.0.0.3:6641",
+				Reachable: false,
+			}},
+		},
 		OVNAudit: ovn.AuditStats{
 			DuplicateManagedTableCounts:  map[string]int{"Logical_Router_Policy": 1},
 			IncompleteManagedTableCounts: map[string]int{"Load_Balancer": 2},
@@ -495,6 +541,19 @@ func TestControllerEventFromSnapshotIncludesOVNAuditBreakdown(t *testing.T) {
 		event.OVNUnexpectedTables["Logical_Switch"] != 4 ||
 		event.OVNDriftedFieldCounts["Load_Balancer.options"] != 5 {
 		t.Fatalf("event audit breakdown = %+v, want table and field counts", event)
+	}
+	if event.OVNClusterQuorum != "degraded" ||
+		event.OVNClusterActive != "ssl:10.0.0.1:6641" ||
+		event.OVNClusterLeader != "ssl:10.0.0.2:6641" ||
+		event.OVNClusterLeaderProbe != "error" ||
+		event.OVNClusterLeaderError != "leader probe timeout" ||
+		event.OVNClusterEndpoints != 3 ||
+		event.OVNClusterReachable != 2 ||
+		event.OVNClusterQuorumSize != 2 ||
+		event.OVNClusterLeaderCount != 1 ||
+		event.OVNClusterFailovers != 2 ||
+		!event.OVNClusterLeaderPref {
+		t.Fatalf("event cluster summary = %+v, want active leader and quorum context", event)
 	}
 
 	snapshot.OVNAudit.DriftedManagedFieldCounts["Load_Balancer.options"] = 99
