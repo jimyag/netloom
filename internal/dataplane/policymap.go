@@ -221,7 +221,7 @@ func (s *InMemoryPolicyStore) ReplaceEndpoint(_ context.Context, endpointID stri
 	revision := previousRevision + 1
 	if err != nil {
 		err = fmt.Errorf("canonicalize policy map entries for endpoint %s: %w", endpointID, err)
-		s.recordPolicyUpdateFailure(endpointID, previousRevision, revision, PolicyUpdateStats{}, nil, nil, err)
+		s.recordPolicyUpdateFailure(endpointID, previousRevision, revision, PolicyUpdateStats{}, policyEntriesRuleCookies(entries), policyEntriesRuleRefs(entries), err)
 		return err
 	}
 	plan := PlanPolicyUpdate(s.endpoints[endpointID], desired)
@@ -314,6 +314,16 @@ func policyUpdateRuleCookies(oldEntries []PolicyMapEntry, plan PolicyUpdatePlan)
 	return sortedPolicyRuleCookies(cookies)
 }
 
+func policyEntriesRuleCookies(entries []PolicyMapEntry) []uint32 {
+	cookies := make(map[uint32]struct{})
+	for _, entry := range entries {
+		if entry.Value.RuleCookie != 0 {
+			cookies[entry.Value.RuleCookie] = struct{}{}
+		}
+	}
+	return sortedPolicyRuleCookies(cookies)
+}
+
 func policyUpdateRuleRefs(oldEntries []PolicyMapEntry, plan PolicyUpdatePlan) []string {
 	refs := make(map[string]struct{})
 	add := func(entry PolicyMapEntry) {
@@ -336,6 +346,16 @@ func policyUpdateRuleRefs(oldEntries []PolicyMapEntry, plan PolicyUpdatePlan) []
 			if _, ok := deleted[entry.Key]; ok {
 				add(entry)
 			}
+		}
+	}
+	return sortedPolicyRuleRefs(refs)
+}
+
+func policyEntriesRuleRefs(entries []PolicyMapEntry) []string {
+	refs := make(map[string]struct{})
+	for _, entry := range entries {
+		if entry.RuleRef != "" {
+			refs[entry.RuleRef] = struct{}{}
 		}
 	}
 	return sortedPolicyRuleRefs(refs)

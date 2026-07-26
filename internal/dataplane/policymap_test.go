@@ -965,6 +965,12 @@ func TestInMemoryPolicyStoreRejectsConflictingDuplicateDesiredEntries(t *testing
 	if len(events) != 2 || events[1].Success || events[1].PreviousRevision != 1 || events[1].Revision != 2 {
 		t.Fatalf("events after rejected duplicate desired entries = %+v, want failed revision 1 to 2 event", events)
 	}
+	if !slices.Equal(events[1].RuleCookies, []uint32{42, 43}) {
+		t.Fatalf("failed event rule cookies = %v, want conflicting desired rule cookies", events[1].RuleCookies)
+	}
+	if !slices.Equal(events[1].RuleRefs, []string{"prod/web/allow", "prod/web/drop"}) {
+		t.Fatalf("failed event rule refs = %v, want conflicting desired rule refs", events[1].RuleRefs)
+	}
 }
 
 func TestInMemoryPolicyStoreDeletesEndpoint(t *testing.T) {

@@ -112,7 +112,7 @@ func (s *EBPFPolicyStore) ReplaceEndpoint(ctx context.Context, endpointID string
 	revision := previousRevision + 1
 	if err != nil {
 		err = fmt.Errorf("canonicalize policy map entries for endpoint %s: %w", endpointID, err)
-		s.recordPolicyUpdateFailure(endpointID, previousRevision, revision, PolicyUpdateStats{}, nil, nil, entries, err)
+		s.recordPolicyUpdateFailure(endpointID, previousRevision, revision, PolicyUpdateStats{}, policyEntriesRuleCookies(entries), policyEntriesRuleRefs(entries), entries, err)
 		return err
 	}
 	plan := PlanPolicyUpdate(s.entries[endpointID], desired)

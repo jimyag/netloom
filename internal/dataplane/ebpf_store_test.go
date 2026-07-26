@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -137,6 +138,12 @@ func TestEBPFPolicyStoreRejectsConflictingDuplicateDesiredEntries(t *testing.T) 
 	events := store.Events()
 	if len(events) != 1 || events[0].Success || events[0].PreviousRevision != 5 || events[0].Revision != 6 {
 		t.Fatalf("events after rejected duplicate desired entries = %+v, want failed revision 5 to 6 event", events)
+	}
+	if !slices.Equal(events[0].RuleCookies, []uint32{100, 101}) {
+		t.Fatalf("failed event rule cookies = %v, want conflicting desired rule cookies", events[0].RuleCookies)
+	}
+	if !slices.Equal(events[0].RuleRefs, []string{"prod/web/allow", "prod/web/drop"}) {
+		t.Fatalf("failed event rule refs = %v, want conflicting desired rule refs", events[0].RuleRefs)
 	}
 }
 
