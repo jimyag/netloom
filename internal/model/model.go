@@ -918,6 +918,64 @@ func SubnetGatewayMAC(vpc, subnet string, ip netip.Addr) string {
 	return fmt.Sprintf("0a:58:%02x:%02x:%02x:%02x", sum[0], sum[1], sum[2], sum[3])
 }
 
+func OVNLogicalRouterName(vpc string) string {
+	return ovnIdentifier("nl_lr_" + OVNSanitize(vpc))
+}
+
+func OVNLogicalRouterPortName(vpc, subnet string) string {
+	return ovnIdentifier(OVNLogicalRouterName(vpc) + "_to_" + OVNSanitize(subnet))
+}
+
+func OVNSanitize(value string) string {
+	var out strings.Builder
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z',
+			r >= 'A' && r <= 'Z',
+			r >= '0' && r <= '9',
+			r == '-':
+			out.WriteRune(r)
+		case r == '_':
+			out.WriteString("__")
+		case r == '.':
+			out.WriteString("_d")
+		case r == '/':
+			out.WriteString("_s")
+		case r == ':':
+			out.WriteString("_c")
+		default:
+			out.WriteString("_x")
+			out.WriteString(fmt.Sprintf("%04x", r))
+		}
+	}
+	if out.Len() == 0 {
+		return "empty"
+	}
+	return out.String()
+}
+
+func OVNIdentifier(name string) string {
+	return ovnIdentifier(name)
+}
+
+func ovnIdentifier(name string) string {
+	const maxLen = 63
+	if len(name) <= maxLen {
+		return name
+	}
+	hash := ovnIdentifierHash(name)
+	headLen := maxLen - len("_h") - len(hash)
+	if headLen < 1 {
+		headLen = 1
+	}
+	return strings.TrimRight(name[:headLen], "_-") + "_h" + hash
+}
+
+func ovnIdentifierHash(name string) string {
+	sum := sha256.Sum256([]byte(name))
+	return fmt.Sprintf("%x", sum[:6])
+}
+
 func (r RouteTable) Validate() error {
 	if r.Name == "" {
 		return errors.New("route table name is required")

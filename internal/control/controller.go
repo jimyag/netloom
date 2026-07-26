@@ -888,6 +888,7 @@ func validateObjectGraph(state DesiredState) error {
 		if _, ok := vpcs[table.VPC]; !ok {
 			return fmt.Errorf("route table %q references unknown vpc %q", table.Name, table.VPC)
 		}
+		bfdLogicalPorts := routeBFDLogicalPorts(subnets, table.VPC)
 		for _, route := range table.Routes {
 			if route.Blackhole {
 				continue
@@ -895,6 +896,12 @@ func validateObjectGraph(state DesiredState) error {
 			for _, nextHop := range route.RouteNextHops() {
 				if err := validateAddressInVPCSubnets(subnets, table.VPC, nextHop, fmt.Sprintf("route table %q next hop %s", table.Name, nextHop)); err != nil {
 					return err
+				}
+			}
+			if route.BFD.Enabled {
+				logicalPort := strings.TrimSpace(route.BFD.LogicalPort)
+				if _, ok := bfdLogicalPorts[logicalPort]; !ok {
+					return fmt.Errorf("route table %q bfd logical port %q does not reference a subnet router port in vpc %q", table.Name, route.BFD.LogicalPort, table.VPC)
 				}
 			}
 		}
@@ -946,6 +953,17 @@ func validateObjectGraph(state DesiredState) error {
 		}
 	}
 	return nil
+}
+
+func routeBFDLogicalPorts(subnets map[string]model.Subnet, vpc string) map[string]struct{} {
+	ports := make(map[string]struct{})
+	for _, subnet := range subnets {
+		if subnet.VPC != vpc {
+			continue
+		}
+		ports[model.OVNLogicalRouterPortName(subnet.VPC, subnet.Name)] = struct{}{}
+	}
+	return ports
 }
 
 func validateSecurityGroupNamedPortReferences(groups []model.SecurityGroup, endpoints []model.Endpoint, groupByName map[string]model.SecurityGroup) error {

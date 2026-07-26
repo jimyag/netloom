@@ -1529,6 +1529,28 @@ func TestSubnetGatewayMACIncludesNetworkContext(t *testing.T) {
 	}
 }
 
+func TestOVNLogicalRouterPortNameIsStableAndEscaped(t *testing.T) {
+	if got := OVNLogicalRouterName("prod"); got != "nl_lr_prod" {
+		t.Fatalf("logical router = %q, want nl_lr_prod", got)
+	}
+	if got := OVNLogicalRouterPortName("prod", "apps"); got != "nl_lr_prod_to_apps" {
+		t.Fatalf("logical router port = %q, want nl_lr_prod_to_apps", got)
+	}
+	if got := OVNLogicalRouterPortName("prod.env", "apps/blue:west_1"); got != "nl_lr_prod_denv_to_apps_sblue_cwest__1" {
+		t.Fatalf("escaped logical router port = %q", got)
+	}
+	long := OVNLogicalRouterPortName("prod", "apps.with/a:very_long_subnet_name_that_needs_hashed_ovn_identifier")
+	if len(long) > 63 {
+		t.Fatalf("logical router port length = %d, want <= 63: %q", len(long), long)
+	}
+	if !strings.Contains(long, "_h") {
+		t.Fatalf("long logical router port = %q, want hash suffix", long)
+	}
+	if long != OVNLogicalRouterPortName("prod", "apps.with/a:very_long_subnet_name_that_needs_hashed_ovn_identifier") {
+		t.Fatal("logical router port is not stable")
+	}
+}
+
 func TestGatewayRequiresExternalInterface(t *testing.T) {
 	gateway := Gateway{
 		Name:  "gw-a",

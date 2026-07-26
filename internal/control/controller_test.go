@@ -1742,6 +1742,55 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 			wantErr: "route table \"main\" next hop 10.10.0.254 is excluded by subnet \"apps\"",
 		},
 		{
+			name: "route table bfd logical port unknown",
+			mutate: func(state *DesiredState) {
+				state.RouteTables = []model.RouteTable{{
+					Name: "main",
+					VPC:  "prod",
+					Routes: []model.Route{{
+						Destination: netip.MustParsePrefix("0.0.0.0/0"),
+						NextHops:    []netip.Addr{netip.MustParseAddr("10.10.0.254")},
+						BFD: model.RouteBFD{
+							Enabled:     true,
+							LogicalPort: "nl_lr_prod_to_missing",
+							MinTx:       300,
+							MinRx:       300,
+							DetectMult:  3,
+						},
+					}},
+				}}
+			},
+			wantErr: "route table \"main\" bfd logical port \"nl_lr_prod_to_missing\" does not reference a subnet router port in vpc \"prod\"",
+		},
+		{
+			name: "route table bfd logical port other vpc",
+			mutate: func(state *DesiredState) {
+				state.VPCs = append(state.VPCs, model.VPC{Name: "dev"})
+				state.Subnets = append(state.Subnets, model.Subnet{
+					Name:    "apps",
+					VPC:     "dev",
+					CIDR:    netip.MustParsePrefix("10.20.0.0/24"),
+					Gateway: netip.MustParseAddr("10.20.0.1"),
+				})
+				state.RouteTables = []model.RouteTable{{
+					Name: "main",
+					VPC:  "prod",
+					Routes: []model.Route{{
+						Destination: netip.MustParsePrefix("0.0.0.0/0"),
+						NextHops:    []netip.Addr{netip.MustParseAddr("10.10.0.254")},
+						BFD: model.RouteBFD{
+							Enabled:     true,
+							LogicalPort: model.OVNLogicalRouterPortName("dev", "apps"),
+							MinTx:       300,
+							MinRx:       300,
+							DetectMult:  3,
+						},
+					}},
+				}}
+			},
+			wantErr: "does not reference a subnet router port in vpc \"prod\"",
+		},
+		{
 			name: "policy route unknown vpc",
 			mutate: func(state *DesiredState) {
 				state.PolicyRoutes = []model.PolicyRoute{{
@@ -1952,6 +2001,38 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 				t.Fatalf("error %q does not contain %q", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestControllerAcceptsStaticRouteBFDLogicalRouterPort(t *testing.T) {
+	state := validObjectGraphState()
+	longSubnet := "apps.with/a:very_long_subnet_name_that_needs_hashed_ovn_identifier"
+	state.Subnets = []model.Subnet{{
+		Name:    longSubnet,
+		VPC:     "prod",
+		CIDR:    netip.MustParsePrefix("10.10.0.0/24"),
+		Gateway: netip.MustParseAddr("10.10.0.1"),
+	}}
+	state.Endpoints[0].Subnet = longSubnet
+	state.LoadBalancers[0].Subnets = []string{longSubnet}
+	state.RouteTables = []model.RouteTable{{
+		Name: "main",
+		VPC:  "prod",
+		Routes: []model.Route{{
+			Destination: netip.MustParsePrefix("0.0.0.0/0"),
+			NextHops:    []netip.Addr{netip.MustParseAddr("10.10.0.254")},
+			BFD: model.RouteBFD{
+				Enabled:     true,
+				LogicalPort: model.OVNLogicalRouterPortName("prod", longSubnet),
+				MinTx:       300,
+				MinRx:       300,
+				DetectMult:  3,
+			},
+		}},
+	}}
+
+	if err := NewController(NewMemoryBackend(), NewMemoryBackend()).Reconcile(context.Background(), state); err != nil {
+		t.Fatalf("route table BFD logical router port should validate: %v", err)
 	}
 }
 

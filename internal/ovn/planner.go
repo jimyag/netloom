@@ -2,7 +2,6 @@ package ovn
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
 	"net/netip"
@@ -18,8 +17,6 @@ type Operation struct {
 	Flags   []string
 	Args    []string
 }
-
-const ovnIdentifierMaxLen = 63
 
 func (o Operation) String() string {
 	parts := append([]string(nil), o.Flags...)
@@ -377,7 +374,7 @@ func (p *Planner) routerForVPC(vpc string) string {
 }
 
 func logicalRouter(vpc string) string {
-	return ovnIdentifier("nl_lr_" + sanitize(vpc))
+	return model.OVNLogicalRouterName(vpc)
 }
 
 func logicalSwitch(vpc, subnet string) string {
@@ -421,48 +418,11 @@ func localnetPortName(switchName, subnet string) string {
 }
 
 func ovnIdentifier(name string) string {
-	if len(name) <= ovnIdentifierMaxLen {
-		return name
-	}
-	hash := ovnIdentifierHash(name)
-	headLen := ovnIdentifierMaxLen - len("_h") - len(hash)
-	if headLen < 1 {
-		headLen = 1
-	}
-	return strings.TrimRight(name[:headLen], "_-") + "_h" + hash
-}
-
-func ovnIdentifierHash(name string) string {
-	sum := sha256.Sum256([]byte(name))
-	return fmt.Sprintf("%x", sum[:6])
+	return model.OVNIdentifier(name)
 }
 
 func sanitize(value string) string {
-	var out strings.Builder
-	for _, r := range value {
-		switch {
-		case r >= 'a' && r <= 'z',
-			r >= 'A' && r <= 'Z',
-			r >= '0' && r <= '9',
-			r == '-':
-			out.WriteRune(r)
-		case r == '_':
-			out.WriteString("__")
-		case r == '.':
-			out.WriteString("_d")
-		case r == '/':
-			out.WriteString("_s")
-		case r == ':':
-			out.WriteString("_c")
-		default:
-			out.WriteString("_x")
-			out.WriteString(fmt.Sprintf("%04x", r))
-		}
-	}
-	if out.Len() == 0 {
-		return "empty"
-	}
-	return out.String()
+	return model.OVNSanitize(value)
 }
 
 func deterministicMAC(subnet model.Subnet) string {
