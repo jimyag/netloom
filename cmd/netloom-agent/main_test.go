@@ -7356,6 +7356,20 @@ func TestAgentMetricsExportsLatestPolicyAndTCXCounters(t *testing.T) {
 		Reason:     "frozen",
 		Error:      "policy endpoint is frozen",
 	})
+	rolloutUpdated := time.Unix(1_725_000_300, 0).UTC()
+	rolloutStateStore := ovsdbPolicyRolloutStateStore{syncer: &fakeOpenVSwitchExternalIDStore{}}
+	if err := rolloutStateStore.Save(t.Context(), policyRolloutStateDocument{Rollouts: []policyRolloutStateEntry{{
+		Name:             "prod-rollout",
+		Node:             "node-a",
+		Store:            "ebpf",
+		UpdatedAt:        rolloutUpdated,
+		AppliedEndpoints: []string{"prod\x00pod-a", "prod\x00pod-b"},
+		Failed:           1,
+		Paused:           true,
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	configurePolicyRolloutStateStore(metrics, rolloutStateStore)
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/metrics", nil)
@@ -7468,6 +7482,16 @@ func TestAgentMetricsExportsLatestPolicyAndTCXCounters(t *testing.T) {
 		`netloom_agent_policy_action_history_action_events{action="freeze",node="node-a",store="ebpf"} 1`,
 		`netloom_agent_policy_action_history_action_events{action="regenerate",node="node-a",store="ebpf"} 1`,
 		`netloom_agent_policy_action_history_reason_events{node="node-a",reason="frozen",store="ebpf"} 1`,
+		`netloom_agent_policy_rollout_state_enabled{node="node-a",store="ebpf"} 1`,
+		`netloom_agent_policy_rollout_state_load_error{node="node-a",store="ebpf"} 0`,
+		`netloom_agent_policy_rollout_state_rollouts{node="node-a",store="ebpf"} 1`,
+		`netloom_agent_policy_rollout_state_paused_rollouts{node="node-a",store="ebpf"} 1`,
+		`netloom_agent_policy_rollout_state_applied_endpoints{node="node-a",store="ebpf"} 2`,
+		`netloom_agent_policy_rollout_state_failed_endpoints{node="node-a",store="ebpf"} 1`,
+		`netloom_agent_policy_rollout_state_rollout_applied_endpoints{node="node-a",rollout="prod-rollout",rollout_node="node-a",store="ebpf"} 2`,
+		`netloom_agent_policy_rollout_state_rollout_failed_endpoints{node="node-a",rollout="prod-rollout",rollout_node="node-a",store="ebpf"} 1`,
+		`netloom_agent_policy_rollout_state_rollout_paused{node="node-a",rollout="prod-rollout",rollout_node="node-a",store="ebpf"} 1`,
+		`netloom_agent_policy_rollout_state_rollout_updated_timestamp_seconds{node="node-a",rollout="prod-rollout",rollout_node="node-a",store="ebpf"} 1725000300`,
 		`netloom_agent_policy_rule_packets_total{node="node-a",store="ebpf"} 3`,
 		`netloom_agent_policy_rule_dropped_total{node="node-a",store="ebpf"} 1`,
 		`netloom_agent_policy_rule_no_match_drops_total{node="node-a",store="ebpf"} 0`,
@@ -7509,6 +7533,29 @@ func TestAgentMetricsExportsLatestFailure(t *testing.T) {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("failure metrics output missing %q:\n%s", expected, output)
 		}
+	}
+}
+
+func TestAgentMetricsReportsPolicyRolloutStateLoadError(t *testing.T) {
+	metrics := newAgentMetrics()
+	observeAgentReconcileResult(metrics, agent.ReconcileResult{Node: "node-a"}, "ebpf", 250*time.Millisecond)
+	configurePolicyRolloutStateStore(metrics, failingPolicyRolloutStateStore{err: errors.New("ovsdb read failed")})
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	metrics.handleMetrics(recorder, request)
+
+	output := recorder.Body.String()
+	for _, expected := range []string{
+		`netloom_agent_policy_rollout_state_enabled{node="node-a",store="ebpf"} 1`,
+		`netloom_agent_policy_rollout_state_load_error{node="node-a",store="ebpf"} 1`,
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("rollout state load error metrics output missing %q:\n%s", expected, output)
+		}
+	}
+	if strings.Contains(output, `netloom_agent_policy_rollout_state_rollouts{node="node-a",store="ebpf"}`) {
+		t.Fatalf("rollout state metrics should not report stale counts on load error:\n%s", output)
 	}
 }
 
@@ -7613,6 +7660,18 @@ func (s *fakeOpenVSwitchExternalIDStore) SetOpenVSwitchExternalID(_ context.Cont
 	}
 	s.values[key] = value
 	return nil
+}
+
+type failingPolicyRolloutStateStore struct {
+	err error
+}
+
+func (s failingPolicyRolloutStateStore) Load(context.Context) (policyRolloutStateDocument, error) {
+	return policyRolloutStateDocument{}, s.err
+}
+
+func (s failingPolicyRolloutStateStore) Save(context.Context, policyRolloutStateDocument) error {
+	return s.err
 }
 
 func newTestAgentVSwitchOVSDB(t *testing.T) (string, libovsdbclient.Client, func()) {
