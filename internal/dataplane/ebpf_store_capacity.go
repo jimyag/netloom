@@ -1,6 +1,7 @@
 package dataplane
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -8,9 +9,21 @@ import (
 
 const policyMapCapacityHotspotLimit = 5
 
-type policyMapCapacityHotspot struct {
-	RuleRef string
-	Entries int
+type PolicyMapCapacityError struct {
+	EndpointID     string
+	DesiredEntries int
+	Capacity       uint32
+	Hotspots       []PolicyMapCapacityHotspot
+}
+
+func (e *PolicyMapCapacityError) Error() string {
+	if e == nil {
+		return ""
+	}
+	if len(e.Hotspots) != 0 {
+		return fmt.Sprintf("policy map capacity exceeded for endpoint %s: desired_entries=%d capacity=%d top_rules=%s", e.EndpointID, e.DesiredEntries, e.Capacity, formatPolicyMapCapacityHotspots(e.Hotspots))
+	}
+	return fmt.Sprintf("policy map capacity exceeded for endpoint %s: desired_entries=%d capacity=%d", e.EndpointID, e.DesiredEntries, e.Capacity)
 }
 
 func (s *EBPFPolicyStore) validatePolicyMapCapacity(endpointID string, entries []PolicyMapEntry) error {
@@ -24,13 +37,15 @@ func (s *EBPFPolicyStore) validatePolicyMapCapacity(endpointID string, entries [
 	if uint32(len(unique)) <= s.maxEntries {
 		return nil
 	}
-	if hotspots := policyMapCapacityHotspots(entries, policyMapCapacityHotspotLimit); len(hotspots) != 0 {
-		return fmt.Errorf("policy map capacity exceeded for endpoint %s: desired_entries=%d capacity=%d top_rules=%s", endpointID, len(unique), s.maxEntries, formatPolicyMapCapacityHotspots(hotspots))
+	return &PolicyMapCapacityError{
+		EndpointID:     endpointID,
+		DesiredEntries: len(unique),
+		Capacity:       s.maxEntries,
+		Hotspots:       policyMapCapacityHotspots(entries, policyMapCapacityHotspotLimit),
 	}
-	return fmt.Errorf("policy map capacity exceeded for endpoint %s: desired_entries=%d capacity=%d", endpointID, len(unique), s.maxEntries)
 }
 
-func policyMapCapacityHotspots(entries []PolicyMapEntry, limit int) []policyMapCapacityHotspot {
+func policyMapCapacityHotspots(entries []PolicyMapEntry, limit int) []PolicyMapCapacityHotspot {
 	if limit <= 0 {
 		return nil
 	}
@@ -48,9 +63,9 @@ func policyMapCapacityHotspots(entries []PolicyMapEntry, limit int) []policyMapC
 		}
 		uniqueKeysByRule[ruleRef][entry.Key] = struct{}{}
 	}
-	hotspots := make([]policyMapCapacityHotspot, 0, len(uniqueKeysByRule))
+	hotspots := make([]PolicyMapCapacityHotspot, 0, len(uniqueKeysByRule))
 	for ruleRef, keys := range uniqueKeysByRule {
-		hotspots = append(hotspots, policyMapCapacityHotspot{RuleRef: ruleRef, Entries: len(keys)})
+		hotspots = append(hotspots, PolicyMapCapacityHotspot{RuleRef: ruleRef, Entries: len(keys)})
 	}
 	sort.Slice(hotspots, func(i, j int) bool {
 		if hotspots[i].Entries != hotspots[j].Entries {
@@ -64,10 +79,18 @@ func policyMapCapacityHotspots(entries []PolicyMapEntry, limit int) []policyMapC
 	return hotspots
 }
 
-func formatPolicyMapCapacityHotspots(hotspots []policyMapCapacityHotspot) string {
+func formatPolicyMapCapacityHotspots(hotspots []PolicyMapCapacityHotspot) string {
 	parts := make([]string, 0, len(hotspots))
 	for _, hotspot := range hotspots {
 		parts = append(parts, fmt.Sprintf("%s:%d", hotspot.RuleRef, hotspot.Entries))
 	}
 	return strings.Join(parts, ",")
+}
+
+func policyMapCapacityHotspotsFromError(err error) []PolicyMapCapacityHotspot {
+	var capacityErr *PolicyMapCapacityError
+	if !errors.As(err, &capacityErr) || capacityErr == nil || len(capacityErr.Hotspots) == 0 {
+		return nil
+	}
+	return append([]PolicyMapCapacityHotspot(nil), capacityErr.Hotspots...)
 }

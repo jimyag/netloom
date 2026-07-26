@@ -65,6 +65,11 @@ func TestEBPFPolicyStoreRejectsPolicyMapOverflowBeforeProgramming(t *testing.T) 
 		event.RuleRefs[2] != "prod/web/old-allow" {
 		t.Fatalf("overflow event rule refs = %v, want old and desired overflowing rule refs", event.RuleRefs)
 	}
+	if len(event.CapacityHotspots) != 2 ||
+		event.CapacityHotspots[0] != (PolicyMapCapacityHotspot{RuleRef: "prod/web/allow-http", Entries: 1}) ||
+		event.CapacityHotspots[1] != (PolicyMapCapacityHotspot{RuleRef: "prod/web/allow-https", Entries: 1}) {
+		t.Fatalf("overflow event capacity hotspots = %+v, want desired overflowing rule hotspots", event.CapacityHotspots)
+	}
 }
 
 func TestEBPFPolicyStoreClearsPolicyMapOverflowWhenConfigured(t *testing.T) {
@@ -130,6 +135,11 @@ func TestEBPFPolicyStoreClearsPolicyMapOverflowWhenConfigured(t *testing.T) {
 	if !strings.Contains(events[0].Error, "policy map capacity exceeded") {
 		t.Fatalf("overflow remediation event error = %q, want original overflow reason", events[0].Error)
 	}
+	if len(events[0].CapacityHotspots) != 2 ||
+		events[0].CapacityHotspots[0] != (PolicyMapCapacityHotspot{RuleRef: "prod/web/allow-http", Entries: 1}) ||
+		events[0].CapacityHotspots[1] != (PolicyMapCapacityHotspot{RuleRef: "prod/web/allow-https", Entries: 1}) {
+		t.Fatalf("overflow remediation capacity hotspots = %+v, want original desired overflowing rule hotspots", events[0].CapacityHotspots)
+	}
 }
 
 func TestEBPFPolicyStoreCapacityCheckCountsUniqueKeys(t *testing.T) {
@@ -186,7 +196,7 @@ func TestPolicyMapCapacityHotspotsRanksUniqueRuleEntries(t *testing.T) {
 		},
 	}
 	got := policyMapCapacityHotspots(entries, 3)
-	want := []policyMapCapacityHotspot{
+	want := []PolicyMapCapacityHotspot{
 		{RuleRef: "prod/web/allow-api", Entries: 2},
 		{RuleRef: "cookie:77", Entries: 1},
 		{RuleRef: "prod/web/allow-cache", Entries: 1},

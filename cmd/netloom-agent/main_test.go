@@ -3134,8 +3134,11 @@ func TestRunPolicyEventsWithStoreReportsFilteredJSON(t *testing.T) {
 			Revision:    2,
 			RuleCookies: []uint32{44},
 			RuleRefs:    []string{"prod/web/deny-ssh"},
-			Success:     false,
-			Error:       "apply failed",
+			CapacityHotspots: []dataplane.PolicyMapCapacityHotspot{
+				{RuleRef: "prod/web/deny-ssh", Entries: 7},
+			},
+			Success: false,
+			Error:   "apply failed",
 		}},
 	}); err != nil {
 		t.Fatal(err)
@@ -3156,6 +3159,9 @@ func TestRunPolicyEventsWithStoreReportsFilteredJSON(t *testing.T) {
 	}
 	if len(got.Events) != 1 || got.Events[0].Revision != 2 || got.Events[0].Success {
 		t.Fatalf("events = %+v, want latest failed pod-a revision 2", got.Events)
+	}
+	if len(got.Events[0].CapacityHotspots) != 1 || got.Events[0].CapacityHotspots[0].RuleRef != "prod/web/deny-ssh" || got.Events[0].CapacityHotspots[0].Entries != 7 {
+		t.Fatalf("capacity hotspots = %+v, want persisted structured overflow hotspot", got.Events[0].CapacityHotspots)
 	}
 
 	stdout.Reset()

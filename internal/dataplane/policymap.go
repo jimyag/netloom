@@ -74,6 +74,11 @@ type PolicyMapPressureHotspot struct {
 	RecommendedCapacity uint32 `json:"recommended_capacity,omitempty"`
 }
 
+type PolicyMapCapacityHotspot struct {
+	RuleRef string `json:"rule_ref"`
+	Entries int    `json:"entries"`
+}
+
 type PolicyMapUsageSummary struct {
 	Entries                     uint32                     `json:"entries"`
 	Capacity                    uint32                     `json:"capacity"`
@@ -132,19 +137,20 @@ func ParsePolicyMapOverflowAction(value string) (PolicyMapOverflowAction, error)
 }
 
 type PolicyUpdateEvent struct {
-	EndpointID       string            `json:"endpoint_id"`
-	PreviousRevision uint64            `json:"previous_revision"`
-	Revision         uint64            `json:"revision"`
-	OccurredAt       *time.Time        `json:"occurred_at,omitempty"`
-	Stats            PolicyUpdateStats `json:"stats"`
-	RuleCookies      []uint32          `json:"rule_cookies,omitempty"`
-	RuleRefs         []string          `json:"rule_refs,omitempty"`
-	RuleDirections   []string          `json:"rule_directions,omitempty"`
-	RuleActions      []string          `json:"rule_actions,omitempty"`
-	Success          bool              `json:"success"`
-	Error            string            `json:"error,omitempty"`
-	Remediated       bool              `json:"remediated,omitempty"`
-	Remediation      string            `json:"remediation,omitempty"`
+	EndpointID       string                     `json:"endpoint_id"`
+	PreviousRevision uint64                     `json:"previous_revision"`
+	Revision         uint64                     `json:"revision"`
+	OccurredAt       *time.Time                 `json:"occurred_at,omitempty"`
+	Stats            PolicyUpdateStats          `json:"stats"`
+	RuleCookies      []uint32                   `json:"rule_cookies,omitempty"`
+	RuleRefs         []string                   `json:"rule_refs,omitempty"`
+	CapacityHotspots []PolicyMapCapacityHotspot `json:"capacity_hotspots,omitempty"`
+	RuleDirections   []string                   `json:"rule_directions,omitempty"`
+	RuleActions      []string                   `json:"rule_actions,omitempty"`
+	Success          bool                       `json:"success"`
+	Error            string                     `json:"error,omitempty"`
+	Remediated       bool                       `json:"remediated,omitempty"`
+	Remediation      string                     `json:"remediation,omitempty"`
 }
 
 type PolicyEndpointStatus struct {
