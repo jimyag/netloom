@@ -812,6 +812,22 @@ func TestPlanPolicyUpdateDetectsRemoteCIDRMetadataChange(t *testing.T) {
 	}
 }
 
+func TestPlanPolicyUpdateIgnoresCounterOnlyChanges(t *testing.T) {
+	oldEntry := PolicyMapEntry{
+		Key:        PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 10, Direction: DirectionIngress},
+		Value:      PolicyEntry{Precedence: 10, RuleCookie: 42, Packets: 100, Bytes: 6400},
+		RemoteCIDR: netip.MustParsePrefix("10.10.0.10/32"),
+	}
+	newEntry := oldEntry
+	newEntry.Value.Packets = 0
+	newEntry.Value.Bytes = 0
+
+	plan := PlanPolicyUpdate([]PolicyMapEntry{oldEntry}, []PolicyMapEntry{newEntry})
+	if len(plan.Update) != 0 || len(plan.Unchanged) != 1 || plan.Unchanged[0] != newEntry {
+		t.Fatalf("plan = %+v, want counter-only change to stay unchanged", plan)
+	}
+}
+
 func TestCanonicalPolicyMapEntriesRejectsRemoteCIDRIdentityCollision(t *testing.T) {
 	key := PolicyKey{
 		PrefixLen:      StaticPrefixBits + 24,

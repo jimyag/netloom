@@ -407,8 +407,8 @@ control allows, and stateful return-flow allows without scraping log text.
 The eBPF policy-map value also carries packet and byte counter fields. The
 eBPF store implements the same policy telemetry interface by reading live pinned
 map values, classifying counters by rule cookie and action, and preserving those
-counters during drift checks so reconcile does not rewrite a healthy map merely
-because datapath counters changed. The same live-vs-desired comparison is
+counters during drift checks and dry-run update planning so reconcile does not
+rewrite a healthy map merely because datapath counters changed. The same live-vs-desired comparison is
 available as policy-map drift telemetry with missing, extra, and changed entry
 counts. The policy store also exposes endpoint-scoped lifecycle status that
 combines revision, map usage, pressure percent, pressure severity, drift, last

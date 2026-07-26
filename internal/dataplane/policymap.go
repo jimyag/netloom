@@ -959,7 +959,7 @@ func PlanPolicyUpdate(oldEntries, newEntries []PolicyMapEntry) PolicyUpdatePlan 
 			plan.Delete = append(plan.Delete, key)
 			continue
 		}
-		if oldEntry.Value == newEntry.Value && oldEntry.RemoteCIDR == newEntry.RemoteCIDR {
+		if policyMapEntriesSemanticsEqual(oldEntry, newEntry) {
 			plan.Unchanged = append(plan.Unchanged, newEntry)
 		} else {
 			plan.Update = append(plan.Update, newEntry)
@@ -972,6 +972,10 @@ func PlanPolicyUpdate(oldEntries, newEntries []PolicyMapEntry) PolicyUpdatePlan 
 	}
 	sortPlan(&plan)
 	return plan
+}
+
+func policyMapEntriesSemanticsEqual(left, right PolicyMapEntry) bool {
+	return policyEntrySemanticsEqual(left.Value, right.Value) && left.RemoteCIDR == right.RemoteCIDR
 }
 
 func policyUpdateSequence(oldEntryCount int, plan PolicyUpdatePlan, maxEntries uint32, fullRewrite bool) []policyUpdateStep {
