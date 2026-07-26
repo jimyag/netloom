@@ -201,6 +201,7 @@ type policyStatusOptions struct {
 	pressureSeverity                string
 	pressureMinPercent              string
 	recommendedCapacityMin          string
+	lastSeenBefore                  string
 	drifted                         string
 	revisionBelow                   uint64
 	lastEventSuccess                string
@@ -220,6 +221,7 @@ type policyStatusExportOptions struct {
 	pressureSeverity                string
 	pressureMinPercent              string
 	recommendedCapacityMin          string
+	lastSeenBefore                  string
 	drifted                         string
 	revisionBelow                   uint64
 	lastEventSuccess                string
@@ -360,6 +362,7 @@ type policyStatusOutput struct {
 	FilterPressureSeverity                string                           `json:"filter_pressure_severity,omitempty"`
 	FilterPressureMinPercent              uint32                           `json:"filter_pressure_min_percent,omitempty"`
 	FilterRecommendedCapacityMin          uint32                           `json:"filter_recommended_capacity_min,omitempty"`
+	FilterLastSeenBefore                  *time.Time                       `json:"filter_last_seen_before,omitempty"`
 	FilterDrifted                         *bool                            `json:"filter_drifted,omitempty"`
 	FilterRevisionBelow                   uint64                           `json:"filter_revision_below,omitempty"`
 	FilterLastEventSuccess                *bool                            `json:"filter_last_event_success,omitempty"`
@@ -921,6 +924,7 @@ func runPolicyStatus(args []string, stdout io.Writer) error {
 	flags.StringVar(&opts.pressureSeverity, "pressure-severity", "", "optional policy map pressure severity to include: normal, warning, critical, full, or unknown")
 	flags.StringVar(&opts.pressureMinPercent, "pressure-min-percent", "", "optional minimum policy map pressure percent to include")
 	flags.StringVar(&opts.recommendedCapacityMin, "recommended-capacity-min", "", "optional minimum recommended policy map capacity to include")
+	flags.StringVar(&opts.lastSeenBefore, "last-seen-before", "", "optional RFC3339 timestamp; include endpoints last seen before this time")
 	flags.StringVar(&opts.drifted, "drifted", "", "optional policy map drift filter: true or false")
 	flags.Uint64Var(&opts.revisionBelow, "revision-below", 0, "optional policy revision threshold; include endpoints below this revision")
 	flags.StringVar(&opts.lastEventSuccess, "last-event-success", "", "optional last policy update event success filter: true or false")
@@ -972,6 +976,10 @@ func runPolicyStatus(args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
+	lastSeenBefore, err := parseOptionalTimeFilter(opts.lastSeenBefore, "last-seen-before")
+	if err != nil {
+		return err
+	}
 	drifted, err := parseOptionalBoolFilter(opts.drifted, "drifted")
 	if err != nil {
 		return err
@@ -997,12 +1005,13 @@ func runPolicyStatus(args []string, stdout io.Writer) error {
 		return err
 	}
 	statuses := enrichPolicyEndpointStatuses(result.PolicyEndpointStatus, result.PolicyRuleCatalog)
-	statuses = filterPolicyEndpointStatuses(statuses, opts.endpoint, opts.pressureSeverity, pressureMinPercent, recommendedCapacityMin, drifted, opts.revisionBelow, lastEventSuccess, lastEventRemediated, lastEventRuleCookie, opts.lastEventRuleRef, opts.lastEventCapacityHotspotRuleRef, opts.lastEventRemediation, opts.lastEventErrorContains, lastEventDirection, lastEventAction, state.Endpoints)
+	statuses = filterPolicyEndpointStatuses(statuses, opts.endpoint, opts.pressureSeverity, pressureMinPercent, recommendedCapacityMin, lastSeenBefore, drifted, opts.revisionBelow, lastEventSuccess, lastEventRemediated, lastEventRuleCookie, opts.lastEventRuleRef, opts.lastEventCapacityHotspotRuleRef, opts.lastEventRemediation, opts.lastEventErrorContains, lastEventDirection, lastEventAction, state.Endpoints)
 	output := policyStatusOutputFromResult(result, storeName, statuses)
 	output.FilterEndpoint = strings.TrimSpace(opts.endpoint)
 	output.FilterPressureSeverity = strings.TrimSpace(opts.pressureSeverity)
 	output.FilterPressureMinPercent = optionalUint32Value(pressureMinPercent)
 	output.FilterRecommendedCapacityMin = optionalUint32Value(recommendedCapacityMin)
+	output.FilterLastSeenBefore = lastSeenBefore
 	output.FilterDrifted = drifted
 	output.FilterRevisionBelow = opts.revisionBelow
 	output.FilterLastEventSuccess = lastEventSuccess
@@ -1028,6 +1037,7 @@ func runPolicyStatusExport(ctx context.Context, args []string, stdout io.Writer)
 	flags.StringVar(&opts.pressureSeverity, "pressure-severity", "", "optional policy map pressure severity to include: normal, warning, critical, full, or unknown")
 	flags.StringVar(&opts.pressureMinPercent, "pressure-min-percent", "", "optional minimum policy map pressure percent to include")
 	flags.StringVar(&opts.recommendedCapacityMin, "recommended-capacity-min", "", "optional minimum recommended policy map capacity to include")
+	flags.StringVar(&opts.lastSeenBefore, "last-seen-before", "", "optional RFC3339 timestamp; include endpoints last seen before this time")
 	flags.StringVar(&opts.drifted, "drifted", "", "optional policy map drift filter: true or false")
 	flags.Uint64Var(&opts.revisionBelow, "revision-below", 0, "optional policy revision threshold; include endpoints below this revision")
 	flags.StringVar(&opts.lastEventSuccess, "last-event-success", "", "optional last policy update event success filter: true or false")
@@ -1072,6 +1082,10 @@ func runPolicyStatusExportWithStore(ctx context.Context, opts policyStatusExport
 	if err != nil {
 		return err
 	}
+	lastSeenBefore, err := parseOptionalTimeFilter(opts.lastSeenBefore, "last-seen-before")
+	if err != nil {
+		return err
+	}
 	drifted, err := parseOptionalBoolFilter(opts.drifted, "drifted")
 	if err != nil {
 		return err
@@ -1096,7 +1110,7 @@ func runPolicyStatusExportWithStore(ctx context.Context, opts policyStatusExport
 	if err != nil {
 		return err
 	}
-	output := policyStatusOutputFromDocument(doc, strings.TrimSpace(opts.endpoint), strings.TrimSpace(opts.pressureSeverity), pressureMinPercent, recommendedCapacityMin, drifted, opts.revisionBelow, lastEventSuccess, lastEventRemediated, lastEventRuleCookie, strings.TrimSpace(opts.lastEventRuleRef), strings.TrimSpace(opts.lastEventCapacityHotspotRuleRef), strings.TrimSpace(opts.lastEventRemediation), strings.TrimSpace(opts.lastEventErrorContains), lastEventDirection, lastEventAction)
+	output := policyStatusOutputFromDocument(doc, strings.TrimSpace(opts.endpoint), strings.TrimSpace(opts.pressureSeverity), pressureMinPercent, recommendedCapacityMin, lastSeenBefore, drifted, opts.revisionBelow, lastEventSuccess, lastEventRemediated, lastEventRuleCookie, strings.TrimSpace(opts.lastEventRuleRef), strings.TrimSpace(opts.lastEventCapacityHotspotRuleRef), strings.TrimSpace(opts.lastEventRemediation), strings.TrimSpace(opts.lastEventErrorContains), lastEventDirection, lastEventAction)
 	encoder := json.NewEncoder(stdout)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(output)
@@ -1148,7 +1162,7 @@ func runPolicyRevisionWaitWithStore(ctx context.Context, opts policyRevisionWait
 			return err
 		}
 		lastDoc = doc
-		statuses := filterPolicyEndpointStatuses(doc.Statuses, opts.endpoint, "", nil, nil, nil, 0, nil, nil, nil, "", "", "", "", "", "", nil)
+		statuses := filterPolicyEndpointStatuses(doc.Statuses, opts.endpoint, "", nil, nil, nil, nil, 0, nil, nil, nil, "", "", "", "", "", "", nil)
 		if len(statuses) > 0 {
 			lastStatus = statuses[0]
 			sawEndpoint = true
@@ -2003,14 +2017,14 @@ func loadDesiredStateFromPathOrOVSDB(ctx context.Context, path string, store ope
 	return state, nil
 }
 
-func filterPolicyEndpointStatuses(statuses []dataplane.PolicyEndpointStatus, endpoint, pressureSeverity string, pressureMinPercent, recommendedCapacityMin *uint32, drifted *bool, revisionBelow uint64, lastEventSuccess, lastEventRemediated *bool, lastEventRuleCookie *uint32, lastEventRuleRef, lastEventCapacityHotspotRuleRef, lastEventRemediation, lastEventErrorContains string, lastEventDirection model.Direction, lastEventAction model.Action, endpoints []model.Endpoint) []dataplane.PolicyEndpointStatus {
+func filterPolicyEndpointStatuses(statuses []dataplane.PolicyEndpointStatus, endpoint, pressureSeverity string, pressureMinPercent, recommendedCapacityMin *uint32, lastSeenBefore *time.Time, drifted *bool, revisionBelow uint64, lastEventSuccess, lastEventRemediated *bool, lastEventRuleCookie *uint32, lastEventRuleRef, lastEventCapacityHotspotRuleRef, lastEventRemediation, lastEventErrorContains string, lastEventDirection model.Direction, lastEventAction model.Action, endpoints []model.Endpoint) []dataplane.PolicyEndpointStatus {
 	endpoint = strings.TrimSpace(endpoint)
 	pressureSeverity = strings.TrimSpace(pressureSeverity)
 	lastEventRuleRef = strings.TrimSpace(lastEventRuleRef)
 	lastEventCapacityHotspotRuleRef = strings.TrimSpace(lastEventCapacityHotspotRuleRef)
 	lastEventRemediation = strings.TrimSpace(lastEventRemediation)
 	lastEventErrorContains = strings.TrimSpace(lastEventErrorContains)
-	if endpoint == "" && pressureSeverity == "" && pressureMinPercent == nil && recommendedCapacityMin == nil && drifted == nil && revisionBelow == 0 && lastEventSuccess == nil && lastEventRemediated == nil && lastEventRuleCookie == nil && lastEventRuleRef == "" && lastEventCapacityHotspotRuleRef == "" && lastEventRemediation == "" && lastEventErrorContains == "" && lastEventDirection == "" && lastEventAction == "" {
+	if endpoint == "" && pressureSeverity == "" && pressureMinPercent == nil && recommendedCapacityMin == nil && lastSeenBefore == nil && drifted == nil && revisionBelow == 0 && lastEventSuccess == nil && lastEventRemediated == nil && lastEventRuleCookie == nil && lastEventRuleRef == "" && lastEventCapacityHotspotRuleRef == "" && lastEventRemediation == "" && lastEventErrorContains == "" && lastEventDirection == "" && lastEventAction == "" {
 		return append([]dataplane.PolicyEndpointStatus(nil), statuses...)
 	}
 	keys := map[string]struct{}{endpoint: {}}
@@ -2036,6 +2050,9 @@ func filterPolicyEndpointStatuses(statuses []dataplane.PolicyEndpointStatus, end
 			Capacity:   status.Capacity,
 		})
 		if recommendedCapacityMin != nil && recommendedCapacity < *recommendedCapacityMin {
+			continue
+		}
+		if lastSeenBefore != nil && (status.LastSeen == nil || !status.LastSeen.Before(*lastSeenBefore)) {
 			continue
 		}
 		if drifted != nil && status.Drift.Drifted != *drifted {
@@ -2125,6 +2142,19 @@ func parseOptionalUint32Filter(value, name string) (*uint32, error) {
 	return &cookie, nil
 }
 
+func parseOptionalTimeFilter(value, name string) (*time.Time, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, nil
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return nil, fmt.Errorf("invalid %s %q", name, value)
+	}
+	parsed = parsed.UTC()
+	return &parsed, nil
+}
+
 func parsePolicyRuleDirectionFilter(value, name string) (model.Direction, error) {
 	value = strings.TrimSpace(value)
 	switch model.Direction(value) {
@@ -2188,8 +2218,8 @@ func policyStatusOutputFromResult(result agent.ReconcileResult, storeName string
 	}
 }
 
-func policyStatusOutputFromDocument(doc policyStatusDocument, endpoint, pressureSeverity string, pressureMinPercent, recommendedCapacityMin *uint32, drifted *bool, revisionBelow uint64, lastEventSuccess, lastEventRemediated *bool, lastEventRuleCookie *uint32, lastEventRuleRef, lastEventCapacityHotspotRuleRef, lastEventRemediation, lastEventErrorContains string, lastEventDirection model.Direction, lastEventAction model.Action) policyStatusOutput {
-	filtered := filterPolicyEndpointStatuses(doc.Statuses, endpoint, pressureSeverity, pressureMinPercent, recommendedCapacityMin, drifted, revisionBelow, lastEventSuccess, lastEventRemediated, lastEventRuleCookie, lastEventRuleRef, lastEventCapacityHotspotRuleRef, lastEventRemediation, lastEventErrorContains, lastEventDirection, lastEventAction, nil)
+func policyStatusOutputFromDocument(doc policyStatusDocument, endpoint, pressureSeverity string, pressureMinPercent, recommendedCapacityMin *uint32, lastSeenBefore *time.Time, drifted *bool, revisionBelow uint64, lastEventSuccess, lastEventRemediated *bool, lastEventRuleCookie *uint32, lastEventRuleRef, lastEventCapacityHotspotRuleRef, lastEventRemediation, lastEventErrorContains string, lastEventDirection model.Direction, lastEventAction model.Action) policyStatusOutput {
+	filtered := filterPolicyEndpointStatuses(doc.Statuses, endpoint, pressureSeverity, pressureMinPercent, recommendedCapacityMin, lastSeenBefore, drifted, revisionBelow, lastEventSuccess, lastEventRemediated, lastEventRuleCookie, lastEventRuleRef, lastEventCapacityHotspotRuleRef, lastEventRemediation, lastEventErrorContains, lastEventDirection, lastEventAction, nil)
 	return policyStatusOutput{
 		Node:                                  doc.Node,
 		Store:                                 doc.Store,
@@ -2201,6 +2231,7 @@ func policyStatusOutputFromDocument(doc policyStatusDocument, endpoint, pressure
 		FilterPressureSeverity:                strings.TrimSpace(pressureSeverity),
 		FilterPressureMinPercent:              optionalUint32Value(pressureMinPercent),
 		FilterRecommendedCapacityMin:          optionalUint32Value(recommendedCapacityMin),
+		FilterLastSeenBefore:                  lastSeenBefore,
 		FilterDrifted:                         drifted,
 		FilterRevisionBelow:                   revisionBelow,
 		FilterLastEventSuccess:                lastEventSuccess,
@@ -5991,6 +6022,12 @@ func (m *agentMetrics) handlePolicyEndpoints(w http.ResponseWriter, r *http.Requ
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
+	lastSeenBefore, err := parseOptionalTimeFilter(r.URL.Query().Get("last_seen_before"), "last_seen_before")
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
 	drifted, err := parseOptionalBoolFilter(r.URL.Query().Get("drifted"), "drifted")
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
@@ -6038,7 +6075,7 @@ func (m *agentMetrics) handlePolicyEndpoints(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	statuses := enrichPolicyEndpointStatuses(snapshot.Result.PolicyEndpointStatus, snapshot.Result.PolicyRuleCatalog)
-	statuses = filterPolicyEndpointStatuses(statuses, endpoint, pressureSeverity, pressureMinPercent, recommendedCapacityMin, drifted, revisionBelow, lastEventSuccess, lastEventRemediated, lastEventRuleCookie, lastEventRuleRef, lastEventCapacityHotspotRuleRef, lastEventRemediation, lastEventErrorContains, lastEventDirection, lastEventAction, nil)
+	statuses = filterPolicyEndpointStatuses(statuses, endpoint, pressureSeverity, pressureMinPercent, recommendedCapacityMin, lastSeenBefore, drifted, revisionBelow, lastEventSuccess, lastEventRemediated, lastEventRuleCookie, lastEventRuleRef, lastEventCapacityHotspotRuleRef, lastEventRemediation, lastEventErrorContains, lastEventDirection, lastEventAction, nil)
 	if endpoint != "" && len(statuses) == 0 {
 		w.WriteHeader(http.StatusNotFound)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "policy endpoint not found"})
@@ -6052,6 +6089,7 @@ func (m *agentMetrics) handlePolicyEndpoints(w http.ResponseWriter, r *http.Requ
 	output.FilterPressureSeverity = pressureSeverity
 	output.FilterPressureMinPercent = optionalUint32Value(pressureMinPercent)
 	output.FilterRecommendedCapacityMin = optionalUint32Value(recommendedCapacityMin)
+	output.FilterLastSeenBefore = lastSeenBefore
 	output.FilterDrifted = drifted
 	output.FilterRevisionBelow = revisionBelow
 	output.FilterLastEventSuccess = lastEventSuccess
@@ -6146,7 +6184,7 @@ func (m *agentMetrics) handlePolicyEndpointRevision(w http.ResponseWriter, r *ht
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": "policy endpoint status is not ready"})
 			return
 		}
-		statuses := filterPolicyEndpointStatuses(snapshot.Result.PolicyEndpointStatus, endpoint, "", nil, nil, nil, 0, nil, nil, nil, "", "", "", "", "", "", nil)
+		statuses := filterPolicyEndpointStatuses(snapshot.Result.PolicyEndpointStatus, endpoint, "", nil, nil, nil, nil, 0, nil, nil, nil, "", "", "", "", "", "", nil)
 		if len(statuses) > 0 {
 			lastStatus = statuses[0]
 			sawEndpoint = true

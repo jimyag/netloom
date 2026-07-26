@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -984,6 +985,9 @@ func TestRunPolicyStatusReportsEndpointLifecycleJSON(t *testing.T) {
 func TestRunPolicyStatusExportWithStoreReportsFilteredJSON(t *testing.T) {
 	store := ovsdbPolicyStatusStore{syncer: &fakeOpenVSwitchExternalIDStore{}}
 	endpointID := model.EndpointKey("prod", "pod-a")
+	podALastSeen := time.Date(2026, 7, 17, 1, 0, 0, 0, time.UTC)
+	podBLastSeen := time.Date(2026, 7, 17, 0, 0, 0, 0, time.UTC)
+	lastSeenCutoff := time.Date(2026, 7, 17, 0, 30, 0, 0, time.UTC)
 	if err := store.Save(t.Context(), policyStatusDocument{
 		Node:                 "node-a",
 		Store:                "ebpf",
@@ -1002,6 +1006,7 @@ func TestRunPolicyStatusExportWithStoreReportsFilteredJSON(t *testing.T) {
 			Revision:         7,
 			Entries:          2,
 			Capacity:         64,
+			LastSeen:         &podALastSeen,
 			PressurePercent:  5,
 			PressureSeverity: dataplane.PolicyMapPressureNormal,
 			LastEvent:        dataplane.PolicyUpdateEvent{EndpointID: endpointID, Revision: 7, Success: true},
@@ -1011,6 +1016,7 @@ func TestRunPolicyStatusExportWithStoreReportsFilteredJSON(t *testing.T) {
 			Revision:         1,
 			Entries:          63,
 			Capacity:         64,
+			LastSeen:         &podBLastSeen,
 			PressurePercent:  98,
 			PressureSeverity: dataplane.PolicyMapPressureCritical,
 			Drift:            dataplane.PolicyMapDrift{Drifted: true, Extra: 1},
@@ -1072,6 +1078,18 @@ func TestRunPolicyStatusExportWithStoreReportsFilteredJSON(t *testing.T) {
 	}
 	if got.FilterRecommendedCapacityMin != 79 || got.EndpointCount != 1 || len(got.Statuses) != 1 || got.Statuses[0].EndpointID != model.EndpointKey("prod", "pod-b") {
 		t.Fatalf("recommended-capacity filtered statuses = %+v, want only pod-b", got)
+	}
+
+	out.Reset()
+	if err := runPolicyStatusExportWithStore(t.Context(), policyStatusExportOptions{lastSeenBefore: lastSeenCutoff.Format(time.RFC3339)}, &out, store); err != nil {
+		t.Fatal(err)
+	}
+	got = policyStatusOutput{}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("decode last-seen-before filtered policy-status-export output: %v\n%s", err, out.String())
+	}
+	if got.FilterLastSeenBefore == nil || !got.FilterLastSeenBefore.Equal(lastSeenCutoff) || got.EndpointCount != 1 || len(got.Statuses) != 1 || got.Statuses[0].EndpointID != model.EndpointKey("prod", "pod-b") {
+		t.Fatalf("last-seen-before filtered statuses = %+v, want only stale pod-b before %s", got, lastSeenCutoff.Format(time.RFC3339))
 	}
 
 	out.Reset()
@@ -4392,6 +4410,9 @@ func TestRouteExplainAPIReturnsBadRequestForInvalidPacket(t *testing.T) {
 func TestPolicyEndpointAPIReportsLifecycleStatus(t *testing.T) {
 	metrics := newAgentMetrics()
 	endpointID := model.EndpointKey("prod", "pod-a")
+	podALastSeen := time.Date(2026, 7, 17, 1, 0, 0, 0, time.UTC)
+	podBLastSeen := time.Date(2026, 7, 17, 0, 0, 0, 0, time.UTC)
+	lastSeenCutoff := time.Date(2026, 7, 17, 0, 30, 0, 0, time.UTC)
 	observeAgentReconcileResult(metrics, agent.ReconcileResult{
 		Node:                      "node-a",
 		PolicyMapEntries:          1,
@@ -4404,6 +4425,7 @@ func TestPolicyEndpointAPIReportsLifecycleStatus(t *testing.T) {
 			Revision:         3,
 			Entries:          1,
 			Capacity:         16,
+			LastSeen:         &podALastSeen,
 			PressurePercent:  6,
 			PressureSeverity: dataplane.PolicyMapPressureNormal,
 			LastStats:        dataplane.PolicyUpdateStats{Revision: 3, Added: 1},
@@ -4418,6 +4440,7 @@ func TestPolicyEndpointAPIReportsLifecycleStatus(t *testing.T) {
 			Revision:         2,
 			Entries:          15,
 			Capacity:         16,
+			LastSeen:         &podBLastSeen,
 			PressurePercent:  93,
 			PressureSeverity: dataplane.PolicyMapPressureCritical,
 			Drift:            dataplane.PolicyMapDrift{Drifted: true, Changed: 1},
@@ -4493,6 +4516,21 @@ func TestPolicyEndpointAPIReportsLifecycleStatus(t *testing.T) {
 	}
 
 	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/policy/endpoints?last_seen_before="+url.QueryEscape(lastSeenCutoff.Format(time.RFC3339)), nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("last-seen-before filter status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	got = policyStatusOutput{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode last-seen-before policy endpoint API response: %v\n%s", err, recorder.Body.String())
+	}
+	if got.FilterLastSeenBefore == nil || !got.FilterLastSeenBefore.Equal(lastSeenCutoff) || got.EndpointCount != 1 || len(got.Statuses) != 1 || got.Statuses[0].EndpointID != model.EndpointKey("prod", "pod-b") {
+		t.Fatalf("last-seen-before filtered statuses = %+v, want pod-b", got)
+	}
+
+	recorder = httptest.NewRecorder()
 	request = httptest.NewRequest(http.MethodGet, "/policy/endpoints?pressure_min_percent=bad", nil)
 	metrics.handlePolicyEndpoints(recorder, request)
 
@@ -4501,6 +4539,17 @@ func TestPolicyEndpointAPIReportsLifecycleStatus(t *testing.T) {
 	}
 	if !strings.Contains(recorder.Body.String(), "invalid pressure_min_percent") {
 		t.Fatalf("body missing invalid pressure_min_percent error: %s", recorder.Body.String())
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/policy/endpoints?last_seen_before=bad", nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("invalid last-seen-before filter status = %d, want 400; body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "invalid last_seen_before") {
+		t.Fatalf("body missing invalid last_seen_before error: %s", recorder.Body.String())
 	}
 
 	recorder = httptest.NewRecorder()
