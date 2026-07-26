@@ -10,11 +10,13 @@
 ./netloom-controller controller-status -ovsdb unix:/var/run/openvswitch/db.sock
 ./netloom-controller controller-events -ovsdb unix:/var/run/openvswitch/db.sock -limit 100
 ./netloom-controller controller-events -ovsdb unix:/var/run/openvswitch/db.sock -ovn-health error -limit 20
+./netloom-controller controller-events -ovsdb unix:/var/run/openvswitch/db.sock -ovn-connect-errors true -limit 20
 ./netloom-controller controller-events -ovsdb unix:/var/run/openvswitch/db.sock -error-contains timeout -limit 20
 ./netloom-agent agent-status -ovsdb unix:/var/run/openvswitch/db.sock
 ./netloom-agent policy-status -state /etc/netloom/state.json -node node-a
 curl -s http://127.0.0.1:9091/status
 curl -s 'http://127.0.0.1:9091/events?ovn_health=error&limit=20'
+curl -s 'http://127.0.0.1:9091/events?ovn_connect_errors=true&limit=20'
 curl -s 'http://127.0.0.1:9091/events?error_contains=timeout&limit=20'
 curl -s http://127.0.0.1:9091/metrics
 curl -s http://127.0.0.1:9092/metrics

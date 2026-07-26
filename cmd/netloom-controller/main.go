@@ -167,6 +167,8 @@ func runControllerEvents(ctx context.Context, args []string, stdout io.Writer) e
 	flags.StringVar(&opts.ovnHealth, "ovn-health", "", "optional OVN health status to include")
 	flags.StringVar(&opts.ovnAudit, "ovn-audit", "", "optional OVN audit status to include")
 	flags.StringVar(&opts.ovnQuorum, "ovn-quorum", "", "optional OVN cluster quorum status to include")
+	flags.StringVar(&opts.ovnConnectErrors, "ovn-connect-errors", "", "optional OVN endpoint connect-error presence filter: true or false")
+	flags.StringVar(&opts.ovnCooldowns, "ovn-cooldowns", "", "optional OVN endpoint cooldown presence filter: true or false")
 	flags.IntVar(&opts.limit, "limit", defaultControllerEventsLimit, "maximum recent controller events")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -196,7 +198,15 @@ func runControllerEventsWithStore(ctx context.Context, opts controllerEventsOpti
 	if err != nil {
 		return err
 	}
-	successFilter, err := parseOptionalBool(strings.TrimSpace(opts.success))
+	successFilter, err := parseOptionalBoolFilter("success", strings.TrimSpace(opts.success))
+	if err != nil {
+		return err
+	}
+	ovnConnectErrorsFilter, err := parseOptionalBoolFilter("ovn-connect-errors", strings.TrimSpace(opts.ovnConnectErrors))
+	if err != nil {
+		return err
+	}
+	ovnCooldownsFilter, err := parseOptionalBoolFilter("ovn-cooldowns", strings.TrimSpace(opts.ovnCooldowns))
 	if err != nil {
 		return err
 	}
@@ -205,20 +215,22 @@ func runControllerEventsWithStore(ctx context.Context, opts controllerEventsOpti
 	ovnHealth := strings.TrimSpace(opts.ovnHealth)
 	ovnAudit := strings.TrimSpace(opts.ovnAudit)
 	ovnQuorum := strings.TrimSpace(opts.ovnQuorum)
-	filtered := filterControllerEvents(doc.Events, phase, successFilter, errorContains, ovnHealth, ovnAudit, ovnQuorum)
+	filtered := filterControllerEvents(doc.Events, phase, successFilter, errorContains, ovnHealth, ovnAudit, ovnQuorum, ovnConnectErrorsFilter, ovnCooldownsFilter)
 	recent := recentControllerEvents(filtered, opts.limit)
 	output := controllerEventsOutput{
-		Ready:               true,
-		TotalEvents:         len(doc.Events),
-		EventCount:          len(recent),
-		Limit:               opts.limit,
-		FilterPhase:         phase,
-		FilterSuccess:       successFilter,
-		FilterErrorContains: errorContains,
-		FilterOVNHealth:     ovnHealth,
-		FilterOVNAudit:      ovnAudit,
-		FilterOVNQuorum:     ovnQuorum,
-		Events:              recent,
+		Ready:                true,
+		TotalEvents:          len(doc.Events),
+		EventCount:           len(recent),
+		Limit:                opts.limit,
+		FilterPhase:          phase,
+		FilterSuccess:        successFilter,
+		FilterErrorContains:  errorContains,
+		FilterOVNHealth:      ovnHealth,
+		FilterOVNAudit:       ovnAudit,
+		FilterOVNQuorum:      ovnQuorum,
+		FilterOVNConnectErrs: ovnConnectErrorsFilter,
+		FilterOVNCooldowns:   ovnCooldownsFilter,
+		Events:               recent,
 	}
 	encoder := json.NewEncoder(stdout)
 	encoder.SetIndent("", "  ")
@@ -236,6 +248,8 @@ func runControllerEventsClear(ctx context.Context, args []string, stdout io.Writ
 	flags.StringVar(&opts.ovnHealth, "ovn-health", "", "optional OVN health status to clear")
 	flags.StringVar(&opts.ovnAudit, "ovn-audit", "", "optional OVN audit status to clear")
 	flags.StringVar(&opts.ovnQuorum, "ovn-quorum", "", "optional OVN cluster quorum status to clear")
+	flags.StringVar(&opts.ovnConnectErrors, "ovn-connect-errors", "", "optional OVN endpoint connect-error presence filter to clear: true or false")
+	flags.StringVar(&opts.ovnCooldowns, "ovn-cooldowns", "", "optional OVN endpoint cooldown presence filter to clear: true or false")
 	flags.BoolVar(&opts.all, "all", false, "clear all controller events")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -255,7 +269,15 @@ func runControllerEventsClearWithStore(ctx context.Context, opts controllerEvent
 	if store == nil {
 		return errors.New("missing Open_vSwitch external_id store")
 	}
-	successFilter, err := parseOptionalBool(strings.TrimSpace(opts.success))
+	successFilter, err := parseOptionalBoolFilter("success", strings.TrimSpace(opts.success))
+	if err != nil {
+		return err
+	}
+	ovnConnectErrorsFilter, err := parseOptionalBoolFilter("ovn-connect-errors", strings.TrimSpace(opts.ovnConnectErrors))
+	if err != nil {
+		return err
+	}
+	ovnCooldownsFilter, err := parseOptionalBoolFilter("ovn-cooldowns", strings.TrimSpace(opts.ovnCooldowns))
 	if err != nil {
 		return err
 	}
@@ -264,32 +286,34 @@ func runControllerEventsClearWithStore(ctx context.Context, opts controllerEvent
 	ovnHealth := strings.TrimSpace(opts.ovnHealth)
 	ovnAudit := strings.TrimSpace(opts.ovnAudit)
 	ovnQuorum := strings.TrimSpace(opts.ovnQuorum)
-	if err := validateControllerEventsClearSelector(opts.all, phase, successFilter, errorContains, ovnHealth, ovnAudit, ovnQuorum); err != nil {
+	if err := validateControllerEventsClearSelector(opts.all, phase, successFilter, errorContains, ovnHealth, ovnAudit, ovnQuorum, ovnConnectErrorsFilter, ovnCooldownsFilter); err != nil {
 		return err
 	}
 	doc, err := loadControllerEventsDocument(ctx, store)
 	if err != nil {
 		return err
 	}
-	next, cleared := clearControllerEvents(doc.Events, opts.all, phase, successFilter, errorContains, ovnHealth, ovnAudit, ovnQuorum)
+	next, cleared := clearControllerEvents(doc.Events, opts.all, phase, successFilter, errorContains, ovnHealth, ovnAudit, ovnQuorum, ovnConnectErrorsFilter, ovnCooldownsFilter)
 	doc.Events = next
 	doc.UpdatedAt = time.Now().UTC()
 	if err := saveControllerEventsDocument(ctx, store, doc); err != nil {
 		return err
 	}
 	output := controllerEventsClearOutput{
-		Ready:               true,
-		TotalEvents:         len(next) + len(cleared),
-		ClearedEvents:       len(cleared),
-		RemainingEvents:     len(next),
-		FilterPhase:         phase,
-		FilterSuccess:       successFilter,
-		FilterErrorContains: errorContains,
-		FilterOVNHealth:     ovnHealth,
-		FilterOVNAudit:      ovnAudit,
-		FilterOVNQuorum:     ovnQuorum,
-		All:                 opts.all,
-		Cleared:             cleared,
+		Ready:                true,
+		TotalEvents:          len(next) + len(cleared),
+		ClearedEvents:        len(cleared),
+		RemainingEvents:      len(next),
+		FilterPhase:          phase,
+		FilterSuccess:        successFilter,
+		FilterErrorContains:  errorContains,
+		FilterOVNHealth:      ovnHealth,
+		FilterOVNAudit:       ovnAudit,
+		FilterOVNQuorum:      ovnQuorum,
+		FilterOVNConnectErrs: ovnConnectErrorsFilter,
+		FilterOVNCooldowns:   ovnCooldownsFilter,
+		All:                  opts.all,
+		Cleared:              cleared,
 	}
 	encoder := json.NewEncoder(stdout)
 	encoder.SetIndent("", "  ")
@@ -394,54 +418,62 @@ type controllerStatusOptions struct {
 }
 
 type controllerEventsOptions struct {
-	ovsdb         string
-	phase         string
-	success       string
-	errorContains string
-	ovnHealth     string
-	ovnAudit      string
-	ovnQuorum     string
-	limit         int
+	ovsdb            string
+	phase            string
+	success          string
+	errorContains    string
+	ovnHealth        string
+	ovnAudit         string
+	ovnQuorum        string
+	ovnConnectErrors string
+	ovnCooldowns     string
+	limit            int
 }
 
 type controllerEventsClearOptions struct {
-	ovsdb         string
-	phase         string
-	success       string
-	errorContains string
-	ovnHealth     string
-	ovnAudit      string
-	ovnQuorum     string
-	all           bool
+	ovsdb            string
+	phase            string
+	success          string
+	errorContains    string
+	ovnHealth        string
+	ovnAudit         string
+	ovnQuorum        string
+	ovnConnectErrors string
+	ovnCooldowns     string
+	all              bool
 }
 
 type controllerEventsOutput struct {
-	Ready               bool                    `json:"ready"`
-	TotalEvents         int                     `json:"total_events"`
-	EventCount          int                     `json:"event_count"`
-	Limit               int                     `json:"limit"`
-	FilterPhase         string                  `json:"filter_phase,omitempty"`
-	FilterSuccess       *bool                   `json:"filter_success,omitempty"`
-	FilterErrorContains string                  `json:"filter_error_contains,omitempty"`
-	FilterOVNHealth     string                  `json:"filter_ovn_health,omitempty"`
-	FilterOVNAudit      string                  `json:"filter_ovn_audit,omitempty"`
-	FilterOVNQuorum     string                  `json:"filter_ovn_quorum,omitempty"`
-	Events              []controllerEventRecord `json:"events"`
+	Ready                bool                    `json:"ready"`
+	TotalEvents          int                     `json:"total_events"`
+	EventCount           int                     `json:"event_count"`
+	Limit                int                     `json:"limit"`
+	FilterPhase          string                  `json:"filter_phase,omitempty"`
+	FilterSuccess        *bool                   `json:"filter_success,omitempty"`
+	FilterErrorContains  string                  `json:"filter_error_contains,omitempty"`
+	FilterOVNHealth      string                  `json:"filter_ovn_health,omitempty"`
+	FilterOVNAudit       string                  `json:"filter_ovn_audit,omitempty"`
+	FilterOVNQuorum      string                  `json:"filter_ovn_quorum,omitempty"`
+	FilterOVNConnectErrs *bool                   `json:"filter_ovn_connect_errors,omitempty"`
+	FilterOVNCooldowns   *bool                   `json:"filter_ovn_cooldowns,omitempty"`
+	Events               []controllerEventRecord `json:"events"`
 }
 
 type controllerEventsClearOutput struct {
-	Ready               bool                    `json:"ready"`
-	TotalEvents         int                     `json:"total_events"`
-	ClearedEvents       int                     `json:"cleared_events"`
-	RemainingEvents     int                     `json:"remaining_events"`
-	FilterPhase         string                  `json:"filter_phase,omitempty"`
-	FilterSuccess       *bool                   `json:"filter_success,omitempty"`
-	FilterErrorContains string                  `json:"filter_error_contains,omitempty"`
-	FilterOVNHealth     string                  `json:"filter_ovn_health,omitempty"`
-	FilterOVNAudit      string                  `json:"filter_ovn_audit,omitempty"`
-	FilterOVNQuorum     string                  `json:"filter_ovn_quorum,omitempty"`
-	All                 bool                    `json:"all,omitempty"`
-	Cleared             []controllerEventRecord `json:"cleared,omitempty"`
+	Ready                bool                    `json:"ready"`
+	TotalEvents          int                     `json:"total_events"`
+	ClearedEvents        int                     `json:"cleared_events"`
+	RemainingEvents      int                     `json:"remaining_events"`
+	FilterPhase          string                  `json:"filter_phase,omitempty"`
+	FilterSuccess        *bool                   `json:"filter_success,omitempty"`
+	FilterErrorContains  string                  `json:"filter_error_contains,omitempty"`
+	FilterOVNHealth      string                  `json:"filter_ovn_health,omitempty"`
+	FilterOVNAudit       string                  `json:"filter_ovn_audit,omitempty"`
+	FilterOVNQuorum      string                  `json:"filter_ovn_quorum,omitempty"`
+	FilterOVNConnectErrs *bool                   `json:"filter_ovn_connect_errors,omitempty"`
+	FilterOVNCooldowns   *bool                   `json:"filter_ovn_cooldowns,omitempty"`
+	All                  bool                    `json:"all,omitempty"`
+	Cleared              []controllerEventRecord `json:"cleared,omitempty"`
 }
 
 type controllerEventsDocument struct {
@@ -1212,7 +1244,7 @@ func trimControllerEvents(events []controllerEventRecord) []controllerEventRecor
 	return append([]controllerEventRecord(nil), events[len(events)-limit:]...)
 }
 
-func filterControllerEvents(events []controllerEventRecord, phase string, success *bool, errorContains, ovnHealth, ovnAudit, ovnQuorum string) []controllerEventRecord {
+func filterControllerEvents(events []controllerEventRecord, phase string, success *bool, errorContains, ovnHealth, ovnAudit, ovnQuorum string, ovnConnectErrors, ovnCooldowns *bool) []controllerEventRecord {
 	phase = strings.TrimSpace(phase)
 	errorContains = strings.TrimSpace(errorContains)
 	ovnHealth = strings.TrimSpace(ovnHealth)
@@ -1220,14 +1252,14 @@ func filterControllerEvents(events []controllerEventRecord, phase string, succes
 	ovnQuorum = strings.TrimSpace(ovnQuorum)
 	out := make([]controllerEventRecord, 0, len(events))
 	for _, event := range events {
-		if controllerEventMatches(event, phase, success, errorContains, ovnHealth, ovnAudit, ovnQuorum) {
+		if controllerEventMatches(event, phase, success, errorContains, ovnHealth, ovnAudit, ovnQuorum, ovnConnectErrors, ovnCooldowns) {
 			out = append(out, event)
 		}
 	}
 	return out
 }
 
-func clearControllerEvents(events []controllerEventRecord, all bool, phase string, success *bool, errorContains, ovnHealth, ovnAudit, ovnQuorum string) ([]controllerEventRecord, []controllerEventRecord) {
+func clearControllerEvents(events []controllerEventRecord, all bool, phase string, success *bool, errorContains, ovnHealth, ovnAudit, ovnQuorum string, ovnConnectErrors, ovnCooldowns *bool) ([]controllerEventRecord, []controllerEventRecord) {
 	if all {
 		return nil, append([]controllerEventRecord(nil), events...)
 	}
@@ -1239,7 +1271,7 @@ func clearControllerEvents(events []controllerEventRecord, all bool, phase strin
 	next := make([]controllerEventRecord, 0, len(events))
 	cleared := make([]controllerEventRecord, 0)
 	for _, event := range events {
-		if controllerEventMatches(event, phase, success, errorContains, ovnHealth, ovnAudit, ovnQuorum) {
+		if controllerEventMatches(event, phase, success, errorContains, ovnHealth, ovnAudit, ovnQuorum, ovnConnectErrors, ovnCooldowns) {
 			cleared = append(cleared, event)
 			continue
 		}
@@ -1248,7 +1280,7 @@ func clearControllerEvents(events []controllerEventRecord, all bool, phase strin
 	return next, cleared
 }
 
-func controllerEventMatches(event controllerEventRecord, phase string, success *bool, errorContains, ovnHealth, ovnAudit, ovnQuorum string) bool {
+func controllerEventMatches(event controllerEventRecord, phase string, success *bool, errorContains, ovnHealth, ovnAudit, ovnQuorum string, ovnConnectErrors, ovnCooldowns *bool) bool {
 	if phase != "" && event.Phase != phase {
 		return false
 	}
@@ -1267,6 +1299,12 @@ func controllerEventMatches(event controllerEventRecord, phase string, success *
 	if ovnQuorum != "" && event.OVNClusterQuorum != ovnQuorum {
 		return false
 	}
+	if ovnConnectErrors != nil && (event.OVNClusterConnectErrs > 0) != *ovnConnectErrors {
+		return false
+	}
+	if ovnCooldowns != nil && (event.OVNClusterCooldowns > 0) != *ovnCooldowns {
+		return false
+	}
 	return true
 }
 
@@ -1279,9 +1317,11 @@ func controllerEventErrorText(event controllerEventRecord) string {
 	}, "\n")
 }
 
-func validateControllerEventsClearSelector(all bool, phase string, success *bool, errorContains, ovnHealth, ovnAudit, ovnQuorum string) error {
+func validateControllerEventsClearSelector(all bool, phase string, success *bool, errorContains, ovnHealth, ovnAudit, ovnQuorum string, ovnConnectErrors, ovnCooldowns *bool) error {
 	hasSelector := strings.TrimSpace(phase) != "" ||
 		success != nil ||
+		ovnConnectErrors != nil ||
+		ovnCooldowns != nil ||
 		strings.TrimSpace(errorContains) != "" ||
 		strings.TrimSpace(ovnHealth) != "" ||
 		strings.TrimSpace(ovnAudit) != "" ||
@@ -1309,12 +1349,16 @@ func recentControllerEvents(events []controllerEventRecord, limit int) []control
 }
 
 func parseOptionalBool(value string) (*bool, error) {
+	return parseOptionalBoolFilter("success", value)
+}
+
+func parseOptionalBoolFilter(name, value string) (*bool, error) {
 	if strings.TrimSpace(value) == "" {
 		return nil, nil
 	}
 	parsed, err := strconv.ParseBool(value)
 	if err != nil {
-		return nil, fmt.Errorf("invalid success filter %q", value)
+		return nil, fmt.Errorf("invalid %s filter %q", name, value)
 	}
 	return &parsed, nil
 }
@@ -1611,13 +1655,15 @@ func (m *controllerMetrics) handleEventsGet(w http.ResponseWriter, r *http.Reque
 	}
 	var out bytes.Buffer
 	if err := runControllerEventsWithStore(r.Context(), controllerEventsOptions{
-		phase:         r.URL.Query().Get("phase"),
-		success:       r.URL.Query().Get("success"),
-		errorContains: r.URL.Query().Get("error_contains"),
-		ovnHealth:     r.URL.Query().Get("ovn_health"),
-		ovnAudit:      r.URL.Query().Get("ovn_audit"),
-		ovnQuorum:     r.URL.Query().Get("ovn_quorum"),
-		limit:         limit,
+		phase:            r.URL.Query().Get("phase"),
+		success:          r.URL.Query().Get("success"),
+		errorContains:    r.URL.Query().Get("error_contains"),
+		ovnHealth:        r.URL.Query().Get("ovn_health"),
+		ovnAudit:         r.URL.Query().Get("ovn_audit"),
+		ovnQuorum:        r.URL.Query().Get("ovn_quorum"),
+		ovnConnectErrors: r.URL.Query().Get("ovn_connect_errors"),
+		ovnCooldowns:     r.URL.Query().Get("ovn_cooldowns"),
+		limit:            limit,
 	}, &out, store); err != nil {
 		writeControllerEventsHTTPError(w, err)
 		return
@@ -1636,7 +1682,7 @@ func (m *controllerMetrics) handleEventsDelete(w http.ResponseWriter, r *http.Re
 		})
 		return
 	}
-	all, err := parseOptionalBool(strings.TrimSpace(r.URL.Query().Get("all")))
+	all, err := parseOptionalBoolFilter("all", strings.TrimSpace(r.URL.Query().Get("all")))
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
@@ -1644,13 +1690,15 @@ func (m *controllerMetrics) handleEventsDelete(w http.ResponseWriter, r *http.Re
 	}
 	var out bytes.Buffer
 	if err := runControllerEventsClearWithStore(r.Context(), controllerEventsClearOptions{
-		phase:         r.URL.Query().Get("phase"),
-		success:       r.URL.Query().Get("success"),
-		errorContains: r.URL.Query().Get("error_contains"),
-		ovnHealth:     r.URL.Query().Get("ovn_health"),
-		ovnAudit:      r.URL.Query().Get("ovn_audit"),
-		ovnQuorum:     r.URL.Query().Get("ovn_quorum"),
-		all:           all != nil && *all,
+		phase:            r.URL.Query().Get("phase"),
+		success:          r.URL.Query().Get("success"),
+		errorContains:    r.URL.Query().Get("error_contains"),
+		ovnHealth:        r.URL.Query().Get("ovn_health"),
+		ovnAudit:         r.URL.Query().Get("ovn_audit"),
+		ovnQuorum:        r.URL.Query().Get("ovn_quorum"),
+		ovnConnectErrors: r.URL.Query().Get("ovn_connect_errors"),
+		ovnCooldowns:     r.URL.Query().Get("ovn_cooldowns"),
+		all:              all != nil && *all,
 	}, &out, store); err != nil {
 		writeControllerEventsHTTPError(w, err)
 		return

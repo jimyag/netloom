@@ -212,6 +212,36 @@ func TestRunControllerEventsWithStoreReportsFilteredHistory(t *testing.T) {
 	if got.EventCount != 1 || got.FilterOVNHealth != "error" || got.FilterOVNQuorum != "degraded" || len(got.Events) != 1 || got.Events[0].ID != "failure-a" {
 		t.Fatalf("controller events OVN filter output = %+v, want degraded OVN failure-a", got)
 	}
+
+	out.Reset()
+	if err := runControllerEventsWithStore(t.Context(), controllerEventsOptions{ovnConnectErrors: "true", ovnCooldowns: "true", limit: 10}, &out, store); err != nil {
+		t.Fatal(err)
+	}
+	got = controllerEventsOutput{}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("decode controller-events OVN endpoint failure filtered output: %v\n%s", err, out.String())
+	}
+	if got.EventCount != 1 ||
+		got.FilterOVNConnectErrs == nil ||
+		!*got.FilterOVNConnectErrs ||
+		got.FilterOVNCooldowns == nil ||
+		!*got.FilterOVNCooldowns ||
+		len(got.Events) != 1 ||
+		got.Events[0].ID != "failure-a" {
+		t.Fatalf("controller events OVN endpoint failure filter output = %+v, want failure-a", got)
+	}
+
+	out.Reset()
+	if err := runControllerEventsWithStore(t.Context(), controllerEventsOptions{ovnConnectErrors: "false", limit: 10}, &out, store); err != nil {
+		t.Fatal(err)
+	}
+	got = controllerEventsOutput{}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("decode controller-events no-connect-error filtered output: %v\n%s", err, out.String())
+	}
+	if got.EventCount != 2 || got.FilterOVNConnectErrs == nil || *got.FilterOVNConnectErrs {
+		t.Fatalf("controller events no-connect-error filter output = %+v, want two events without connect errors", got)
+	}
 }
 
 func TestRunControllerEventsClearWithStoreReportsJSON(t *testing.T) {
@@ -304,12 +334,14 @@ func TestRunControllerEventsClearWithStoreReportsJSON(t *testing.T) {
 func TestRunControllerEventsClearWithStoreFiltersByErrorSubstring(t *testing.T) {
 	doc := controllerEventsDocument{
 		Events: []controllerEventRecord{{
-			ID:             "failure-a",
-			CompletedAt:    time.Date(2026, 7, 17, 1, 1, 0, 0, time.UTC),
-			Success:        false,
-			Phase:          "audit",
-			OVNAuditStatus: "error",
-			OVNAuditError:  "audit managed NAT: database is busy",
+			ID:                    "failure-a",
+			CompletedAt:           time.Date(2026, 7, 17, 1, 1, 0, 0, time.UTC),
+			Success:               false,
+			Phase:                 "audit",
+			OVNAuditStatus:        "error",
+			OVNAuditError:         "audit managed NAT: database is busy",
+			OVNClusterConnectErrs: 1,
+			OVNClusterCooldowns:   1,
 		}, {
 			ID:                  "failure-b",
 			CompletedAt:         time.Date(2026, 7, 17, 1, 2, 0, 0, time.UTC),
@@ -358,6 +390,21 @@ func TestRunControllerEventsClearWithStoreFiltersByErrorSubstring(t *testing.T) 
 	if got.ClearedEvents != 1 || got.RemainingEvents != 1 || got.FilterOVNAudit != "error" || len(got.Cleared) != 1 || got.Cleared[0].ID != "failure-a" {
 		t.Fatalf("controller events clear audit filter summary = %+v, want audit failure-a cleared", got)
 	}
+
+	store = &recordingOVSDBControlStatusWriter{values: map[string]string{
+		controllerOVSDBEventsKey: string(raw),
+	}}
+	out.Reset()
+	if err := runControllerEventsClearWithStore(t.Context(), controllerEventsClearOptions{ovnCooldowns: "true"}, &out, store); err != nil {
+		t.Fatal(err)
+	}
+	got = controllerEventsClearOutput{}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("decode controller-events-clear cooldown filtered output: %v\n%s", err, out.String())
+	}
+	if got.ClearedEvents != 1 || got.RemainingEvents != 1 || got.FilterOVNCooldowns == nil || !*got.FilterOVNCooldowns || len(got.Cleared) != 1 || got.Cleared[0].ID != "failure-a" {
+		t.Fatalf("controller events clear cooldown filter summary = %+v, want failure-a cleared", got)
+	}
 }
 
 func TestControllerEventsAPIReportsFilteredHistory(t *testing.T) {
@@ -371,14 +418,15 @@ func TestControllerEventsAPIReportsFilteredHistory(t *testing.T) {
 				DurationMS:  25,
 				OVNHealth:   "ok",
 			}, {
-				ID:                "failure-a",
-				CompletedAt:       time.Date(2026, 7, 17, 1, 1, 0, 0, time.UTC),
-				Success:           false,
-				Phase:             "ovn_health",
-				Error:             "ovn health check: timeout",
-				DurationMS:        30,
-				OVNHealth:         "error",
-				OVNHealthFailures: 1,
+				ID:                    "failure-a",
+				CompletedAt:           time.Date(2026, 7, 17, 1, 1, 0, 0, time.UTC),
+				Success:               false,
+				Phase:                 "ovn_health",
+				Error:                 "ovn health check: timeout",
+				DurationMS:            30,
+				OVNHealth:             "error",
+				OVNHealthFailures:     1,
+				OVNClusterConnectErrs: 1,
 			}, {
 				ID:          "failure-b",
 				CompletedAt: time.Date(2026, 7, 17, 1, 2, 0, 0, time.UTC),
@@ -394,7 +442,7 @@ func TestControllerEventsAPIReportsFilteredHistory(t *testing.T) {
 	metrics.eventsStore = store
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodGet, "/events?phase=ovn_health&success=false&error_contains=timeout&ovn_health=error&limit=10", nil)
+	request := httptest.NewRequest(http.MethodGet, "/events?phase=ovn_health&success=false&error_contains=timeout&ovn_health=error&ovn_connect_errors=true&limit=10", nil)
 	metrics.handleEvents(recorder, request)
 
 	if recorder.Code != http.StatusOK {
@@ -404,7 +452,16 @@ func TestControllerEventsAPIReportsFilteredHistory(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode controller events API output: %v\n%s", err, recorder.Body.String())
 	}
-	if !got.Ready || got.TotalEvents != 3 || got.EventCount != 1 || got.FilterPhase != "ovn_health" || got.FilterSuccess == nil || *got.FilterSuccess || got.FilterErrorContains != "timeout" || got.FilterOVNHealth != "error" {
+	if !got.Ready ||
+		got.TotalEvents != 3 ||
+		got.EventCount != 1 ||
+		got.FilterPhase != "ovn_health" ||
+		got.FilterSuccess == nil ||
+		*got.FilterSuccess ||
+		got.FilterErrorContains != "timeout" ||
+		got.FilterOVNHealth != "error" ||
+		got.FilterOVNConnectErrs == nil ||
+		!*got.FilterOVNConnectErrs {
 		t.Fatalf("controller events API summary = %+v, want one filtered failure", got)
 	}
 	if len(got.Events) != 1 || got.Events[0].ID != "failure-a" || got.Events[0].OVNHealth != "error" {
@@ -422,13 +479,14 @@ func TestControllerEventsAPIClearsFilteredHistory(t *testing.T) {
 				DurationMS:  25,
 				OVNHealth:   "ok",
 			}, {
-				ID:          "failure-a",
-				CompletedAt: time.Date(2026, 7, 17, 1, 1, 0, 0, time.UTC),
-				Success:     false,
-				Phase:       "ovn_health",
-				Error:       "ovn health check: timeout",
-				DurationMS:  30,
-				OVNHealth:   "error",
+				ID:                  "failure-a",
+				CompletedAt:         time.Date(2026, 7, 17, 1, 1, 0, 0, time.UTC),
+				Success:             false,
+				Phase:               "ovn_health",
+				Error:               "ovn health check: timeout",
+				DurationMS:          30,
+				OVNHealth:           "error",
+				OVNClusterCooldowns: 1,
 			}, {
 				ID:          "failure-b",
 				CompletedAt: time.Date(2026, 7, 17, 1, 2, 0, 0, time.UTC),
@@ -444,7 +502,7 @@ func TestControllerEventsAPIClearsFilteredHistory(t *testing.T) {
 	metrics.eventsStore = store
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodDelete, "/events?phase=ovn_health&success=false&error_contains=timeout&ovn_health=error", nil)
+	request := httptest.NewRequest(http.MethodDelete, "/events?phase=ovn_health&success=false&error_contains=timeout&ovn_health=error&ovn_cooldowns=true", nil)
 	metrics.handleEvents(recorder, request)
 
 	if recorder.Code != http.StatusOK {
@@ -454,7 +512,14 @@ func TestControllerEventsAPIClearsFilteredHistory(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode controller events clear API output: %v\n%s", err, recorder.Body.String())
 	}
-	if !got.Ready || got.TotalEvents != 3 || got.ClearedEvents != 1 || got.RemainingEvents != 2 || got.FilterErrorContains != "timeout" || got.FilterOVNHealth != "error" {
+	if !got.Ready ||
+		got.TotalEvents != 3 ||
+		got.ClearedEvents != 1 ||
+		got.RemainingEvents != 2 ||
+		got.FilterErrorContains != "timeout" ||
+		got.FilterOVNHealth != "error" ||
+		got.FilterOVNCooldowns == nil ||
+		!*got.FilterOVNCooldowns {
 		t.Fatalf("controller events clear API summary = %+v, want one filtered event cleared", got)
 	}
 	var persisted controllerEventsDocument
