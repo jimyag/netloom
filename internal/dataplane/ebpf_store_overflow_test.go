@@ -42,6 +42,9 @@ func TestEBPFPolicyStoreRejectsPolicyMapOverflowBeforeProgramming(t *testing.T) 
 	if err == nil || !strings.Contains(err.Error(), "policy map capacity exceeded") {
 		t.Fatalf("error = %v, want capacity exceeded", err)
 	}
+	if !strings.Contains(err.Error(), "top_rules=prod/web/allow-http:1,prod/web/allow-https:1") {
+		t.Fatalf("error = %q, want overflowing rule hotspot attribution", err.Error())
+	}
 	if revision := store.Revision(endpointID); revision != 1 {
 		t.Fatalf("revision after overflow = %d, want 1", revision)
 	}
@@ -152,5 +155,51 @@ func TestEBPFPolicyStoreCapacityCheckCountsUniqueKeys(t *testing.T) {
 	})
 	if err := store.validatePolicyMapCapacity(endpointID, overflow); err == nil || !strings.Contains(err.Error(), "policy map capacity exceeded") {
 		t.Fatalf("validatePolicyMapCapacity() error = %v, want overflow", err)
+	}
+}
+
+func TestPolicyMapCapacityHotspotsRanksUniqueRuleEntries(t *testing.T) {
+	entries := []PolicyMapEntry{
+		{
+			Key:     PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 1, Direction: DirectionIngress},
+			RuleRef: "prod/web/allow-api",
+		},
+		{
+			Key:     PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 2, Direction: DirectionIngress},
+			RuleRef: "prod/web/allow-api",
+		},
+		{
+			Key:     PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 2, Direction: DirectionIngress},
+			RuleRef: "prod/web/allow-api",
+		},
+		{
+			Key:     PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 3, Direction: DirectionIngress},
+			RuleRef: "prod/web/allow-db",
+		},
+		{
+			Key:   PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 4, Direction: DirectionIngress},
+			Value: PolicyEntry{RuleCookie: 77},
+		},
+		{
+			Key:     PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 5, Direction: DirectionIngress},
+			RuleRef: "prod/web/allow-cache",
+		},
+	}
+	got := policyMapCapacityHotspots(entries, 3)
+	want := []policyMapCapacityHotspot{
+		{RuleRef: "prod/web/allow-api", Entries: 2},
+		{RuleRef: "cookie:77", Entries: 1},
+		{RuleRef: "prod/web/allow-cache", Entries: 1},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("hotspots = %+v, want %+v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("hotspots[%d] = %+v, want %+v; all=%+v", i, got[i], want[i], got)
+		}
+	}
+	if formatted := formatPolicyMapCapacityHotspots(got); formatted != "prod/web/allow-api:2,cookie:77:1,prod/web/allow-cache:1" {
+		t.Fatalf("formatPolicyMapCapacityHotspots() = %q, want stable rule summary", formatted)
 	}
 }
