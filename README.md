@@ -47,7 +47,7 @@ enforcement.
 
 Remaining work is mostly production packaging: multi-node deployment guides,
 certificate/systemd/container manifests, backup and restore, upgrade and
-rollback runbooks, alert rules, and long-duration scale validation.
+rollback runbooks, and long-duration scale validation.
 
 ## Build
 
@@ -136,6 +136,7 @@ NETLOOM_E2E=1 go test ./tests/e2e -run 'TestDockerLinuxPolicyRouting' -count=1
 - [Bare-metal usage guide](docs/usage.md)
 - [Feature matrix](docs/features.md)
 - [Bare-metal deployment](docs/operations/deployment.md)
+- [Prometheus alert rules](docs/operations/prometheus-alerts.yml)
 - [Backup and restore](docs/operations/backup-restore.md)
 - [Operations runbooks](docs/operations/runbooks.md)
 - [Scale validation](docs/operations/scale-validation.md)

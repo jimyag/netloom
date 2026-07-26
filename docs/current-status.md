@@ -9,7 +9,7 @@
 当前已经具备 VPC、子网、网关、安全组、安全组规则、策略路由、NAT、负载均衡、
 Provider Network、Linux datapath、eBPF/TCX ACL、状态观测和 policy lifecycle 的主路径。
 缺口主要集中在生产化材料和长期验证：多节点部署、证书和 systemd/container unit、
-备份恢复、升级回滚、容量压测、告警规则和故障处理 runbook。
+备份恢复、升级回滚、容量压测和故障处理 runbook。
 
 ## 已实现的主路径
 
@@ -30,6 +30,7 @@ Provider Network、Linux datapath、eBPF/TCX ACL、状态观测和 policy lifecy
 | ACL 执行 | 已实现 | 由 eBPF/TCX 执行 ingress/egress TCP、UDP、SCTP、ICMP，安全组不写 OVN ACL。 |
 | Desired State | 已实现 | 支持 JSON 文件，也支持存入本机 Open_vSwitch OVSDB `external_ids`；导入和运行时加载都会执行完整对象图校验，提前拒绝未知 VPC、坏子网引用、冲突路由、无效 NAT/LB 等配置。 |
 | 状态和观测 | 已实现 | controller `/status`、agent `/metrics`、policy status、policy revision wait、policy explain、route explain、policy rules、policy events、policy entries。 |
+| 告警规则 | 已实现 | 提供 controller、OVN cluster/audit/stale、agent runtime、eBPF policy lifecycle、TCX 和 provider network 的 Prometheus alert rules。 |
 | Rollout / lifecycle | 已实现 | 支持 policy dry-run、batch rollout、approval、ack、finalize、SLO/probe、rollback、quarantine、freeze/unfreeze、freeze TTL 和成功/失败 endpoint action history。 |
 | Runtime selftest/status | 已实现 | agent 默认 selftest 验证策略编译/评估、stateful conntrack、runtime preflight；长运行 reconcile 会把 bpffs、memlock、BPF/NET_ADMIN capability、OVSDB/OVN endpoint 状态写入 `netloom_agent_status` 和 Prometheus metrics，并可通过 `NETLOOM_RUNTIME_PREFLIGHT_STRICT=1` 在必要检查失败时 fail closed。 |
 

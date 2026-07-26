@@ -1,0 +1,169 @@
+groups:
+  - name: netloom-controller
+    rules:
+      - alert: NetloomControllerReconcileFailing
+        expr: netloom_controller_reconcile_success == 0
+        for: 2m
+        labels:
+          severity: critical
+          component: controller
+        annotations:
+          summary: Netloom controller reconcile is failing
+          description: "The controller failed its latest reconcile attempt. Check the phase and error labels on netloom_controller_reconcile_failure."
+          runbook_url: docs/operations/runbooks.md
+
+      - alert: NetloomOVNHealthFailing
+        expr: netloom_controller_ovn_health_consecutive_failures > 0
+        for: 2m
+        labels:
+          severity: critical
+          component: ovn
+        annotations:
+          summary: OVN Northbound health checks are failing
+          description: "The controller reports consecutive OVN health failures. Inspect OVN DB connectivity, leader state, and libovsdb reconnect status."
+          runbook_url: docs/operations/runbooks.md
+
+      - alert: NetloomOVNClusterQuorumDegraded
+        expr: netloom_controller_ovn_cluster_quorum_status{status!="ok"} == 1
+        for: 1m
+        labels:
+          severity: critical
+          component: ovn
+        annotations:
+          summary: OVN Northbound cluster quorum is degraded
+          description: "The controller did not observe an OK OVN cluster quorum state. Inspect endpoint role/status labels and leader probe output."
+          runbook_url: docs/operations/runbooks.md
+
+      - alert: NetloomOVNManagedRowsMissing
+        expr: netloom_controller_ovn_live_missing_managed_rows > 0
+        for: 5m
+        labels:
+          severity: warning
+          component: ovn
+        annotations:
+          summary: OVN managed rows are missing
+          description: "Netloom live audit reports desired OVN rows missing from Northbound DB. Check table labels and reconcile events before manual repair."
+          runbook_url: docs/operations/runbooks.md
+
+      - alert: NetloomOVNManagedRowsUnexpected
+        expr: netloom_controller_ovn_live_unexpected_managed_rows > 0
+        for: 10m
+        labels:
+          severity: warning
+          component: ovn
+        annotations:
+          summary: Unexpected Netloom-managed OVN rows exist
+          description: "Netloom live audit found managed OVN rows that are not in desired state. Confirm cleanup mode and stale-row ownership before deleting."
+          runbook_url: docs/operations/runbooks.md
+
+      - alert: NetloomOVNManagedRowsDrifted
+        expr: netloom_controller_ovn_live_drifted_managed_rows > 0
+        for: 5m
+        labels:
+          severity: warning
+          component: ovn
+        annotations:
+          summary: OVN managed rows have field drift
+          description: "Netloom live audit reports field-level drift on managed OVN rows. Use netloom_controller_ovn_live_drifted_managed_field labels to locate the table and field."
+          runbook_url: docs/operations/runbooks.md
+
+      - alert: NetloomOVNStaleAdvisoryActive
+        expr: netloom_controller_ovn_stale_advisory_active == 1
+        for: 10m
+        labels:
+          severity: warning
+          component: ovn
+        annotations:
+          summary: OVN stale-object advisory is active
+          description: "The controller stale-object burden crossed the configured advisory threshold. Review cleanup counts and scheduled maintenance."
+          runbook_url: docs/operations/runbooks.md
+
+  - name: netloom-agent
+    rules:
+      - alert: NetloomAgentRuntimePreflightFailing
+        expr: netloom_agent_runtime_failed_checks > 0
+        for: 1m
+        labels:
+          severity: critical
+          component: agent
+        annotations:
+          summary: Netloom agent runtime preflight is failing
+          description: "The agent reports failed runtime checks. Inspect bpffs, memlock, BPF capability, NET_ADMIN, OVSDB, and OVN endpoint checks before enabling strict mutation."
+          runbook_url: docs/operations/runbooks.md
+
+      - alert: NetloomTCXAttachFailing
+        expr: netloom_agent_tcx_failed > 0
+        for: 1m
+        labels:
+          severity: critical
+          component: ebpf
+        annotations:
+          summary: TCX policy attachment is failing
+          description: "The agent failed to attach or update TCX policy on at least one target. Inspect the target label and agent status last error."
+          runbook_url: docs/operations/runbooks.md
+
+      - alert: NetloomPolicyMapPressureCritical
+        expr: netloom_agent_policy_endpoint_pressure_severity{severity="critical"} == 1
+        for: 2m
+        labels:
+          severity: critical
+          component: ebpf
+        annotations:
+          summary: Endpoint policy map pressure is critical
+          description: "An endpoint policy map reached critical pressure. Use recommended-capacity and hotspot metrics before the next rollout."
+          runbook_url: docs/operations/runbooks.md
+
+      - alert: NetloomPolicyMapCapacityExceeded
+        expr: netloom_agent_policy_endpoint_last_event_failure_reason{reason="capacity_exceeded"} == 1
+        for: 1m
+        labels:
+          severity: critical
+          component: ebpf
+        annotations:
+          summary: Endpoint policy update exceeded map capacity
+          description: "The latest endpoint policy update failed because the policy map did not have enough capacity. Increase capacity or reduce rule expansion."
+          runbook_url: docs/operations/runbooks.md
+
+      - alert: NetloomPolicyCanonicalizationFailed
+        expr: netloom_agent_policy_endpoint_last_event_failure_reason{reason="canonicalization_failed"} == 1
+        for: 1m
+        labels:
+          severity: warning
+          component: policy
+        annotations:
+          summary: Endpoint policy canonicalization failed
+          description: "The latest endpoint policy update failed before programming. Inspect policy events for rule refs, direction, action, and canonicalization error."
+          runbook_url: docs/operations/runbooks.md
+
+      - alert: NetloomPolicyApplyFailed
+        expr: netloom_agent_policy_endpoint_last_event_failure_reason{reason="apply_failed"} == 1
+        for: 1m
+        labels:
+          severity: critical
+          component: ebpf
+        annotations:
+          summary: Endpoint policy apply failed
+          description: "The latest endpoint policy update failed while applying eBPF policy state. Inspect policy events, bpffs, pinned maps, and TCX state."
+          runbook_url: docs/operations/runbooks.md
+
+      - alert: NetloomProviderNetworkDegraded
+        expr: netloom_agent_provider_network_ready == 0
+        for: 2m
+        labels:
+          severity: critical
+          component: provider-network
+        annotations:
+          summary: Provider network is not ready
+          description: "A provider network is not ready. Check parent link readiness, bridge mapping, OVSDB row drift, QoS, Queue, and controller status labels."
+          runbook_url: docs/operations/runbooks.md
+
+      - alert: NetloomProviderNetworkIssueReported
+        expr: netloom_agent_provider_network_issue_reason == 1
+        for: 5m
+        labels:
+          severity: warning
+          component: provider-network
+        annotations:
+          summary: Provider network issue reason is active
+          description: "The agent reports a stable provider issue reason such as parent-down, link-drift, ovsdb-port-drift, ovsdb-interface-drift, qos-mismatch, or controller drift."
+          runbook_url: docs/operations/runbooks.md

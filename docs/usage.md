@@ -510,6 +510,11 @@ curl -s http://127.0.0.1:9091/metrics
 curl -s http://127.0.0.1:9092/metrics
 ```
 
+生产告警可以直接加载 [Prometheus alert rules](operations/prometheus-alerts.yml)。
+这份规则覆盖 controller reconcile、OVN health/quorum/audit/stale drift、agent
+runtime preflight、TCX attach、policy-map pressure、policy update failure reason
+和 provider network readiness/issue reason。
+
 agent 的普通 reconcile 日志也会打印 `policy_map_recommended_capacity` 和
 `policy_map_recommended_endpoint`，便于在没有 Prometheus 或 JSON 状态采集时直接从
 日志判断是否需要扩 eBPF policy map 容量。
