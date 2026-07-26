@@ -34,6 +34,17 @@ groups:
           description: "The controller did not observe an OK OVN cluster quorum state. Inspect endpoint role/status labels and leader probe output."
           runbook_url: docs/operations/runbooks.md
 
+      - alert: NetloomOVNLeaderProbeFailing
+        expr: netloom_controller_ovn_cluster_leader_probe_status{status="error"} == 1
+        for: 2m
+        labels:
+          severity: warning
+          component: ovn
+        annotations:
+          summary: OVN leader probing is failing
+          description: "The controller cannot determine the OVN Northbound leader. Inspect NETLOOM_OVN_CLUSTER_STATUS_TARGETS, ovn-appctl cluster/status output, and endpoint reachability."
+          runbook_url: docs/operations/runbooks.md
+
       - alert: NetloomOVNManagedRowsMissing
         expr: netloom_controller_ovn_live_missing_managed_rows > 0
         for: 5m
@@ -76,6 +87,17 @@ groups:
         annotations:
           summary: OVN stale-object advisory is active
           description: "The controller stale-object burden crossed the configured advisory threshold. Review cleanup counts and scheduled maintenance."
+          runbook_url: docs/operations/runbooks.md
+
+      - alert: NetloomOVNMaintenanceFailing
+        expr: netloom_controller_ovn_maintenance_failed > 0
+        for: 5m
+        labels:
+          severity: warning
+          component: ovn
+        annotations:
+          summary: OVN maintenance hook is failing
+          description: "The controller reports failed OVN maintenance actions such as compaction or stale-state hooks. Inspect maintenance error labels and controller events before retrying."
           runbook_url: docs/operations/runbooks.md
 
   - name: netloom-agent

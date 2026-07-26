@@ -75,10 +75,12 @@ func TestPrometheusAlertsCoverCriticalNetloomSignals(t *testing.T) {
 		"NetloomControllerReconcileFailing",
 		"NetloomOVNHealthFailing",
 		"NetloomOVNClusterQuorumDegraded",
+		"NetloomOVNLeaderProbeFailing",
 		"NetloomOVNManagedRowsMissing",
 		"NetloomOVNManagedRowsUnexpected",
 		"NetloomOVNManagedRowsDrifted",
 		"NetloomOVNStaleAdvisoryActive",
+		"NetloomOVNMaintenanceFailing",
 		"NetloomAgentRuntimePreflightFailing",
 		"NetloomTCXAttachFailing",
 		"NetloomPolicyMapPressureCritical",
@@ -107,10 +109,12 @@ func TestPrometheusAlertsCoverCriticalNetloomSignals(t *testing.T) {
 		"netloom_controller_reconcile_success",
 		"netloom_controller_ovn_health_consecutive_failures",
 		"netloom_controller_ovn_cluster_quorum_status",
+		"netloom_controller_ovn_cluster_leader_probe_status",
 		"netloom_controller_ovn_live_missing_managed_rows",
 		"netloom_controller_ovn_live_unexpected_managed_rows",
 		"netloom_controller_ovn_live_drifted_managed_rows",
 		"netloom_controller_ovn_stale_advisory_active",
+		"netloom_controller_ovn_maintenance_failed",
 		"netloom_agent_runtime_failed_checks",
 		"netloom_agent_tcx_failed",
 		"netloom_agent_policy_endpoint_pressure_severity",
@@ -135,6 +139,9 @@ func TestPrometheusAlertsCoverCriticalNetloomSignals(t *testing.T) {
 		if !strings.Contains(joined, `reason="`+reason+`"`) {
 			t.Fatalf("alert expressions do not cover failure reason %q", reason)
 		}
+	}
+	if !strings.Contains(joined, `status="error"`) {
+		t.Fatal("alert expressions do not cover OVN leader probe error status")
 	}
 }
 

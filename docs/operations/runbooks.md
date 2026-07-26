@@ -51,6 +51,7 @@ curl -s http://127.0.0.1:9092/metrics
 
 - active endpoint 发生变化。
 - leader endpoint 为空或和预期不一致。
+- `NetloomOVNLeaderProbeFailing` 告警触发。
 - reconcile latency 暂时升高。
 
 处理：
@@ -59,6 +60,22 @@ curl -s http://127.0.0.1:9092/metrics
 2. 确认 `NETLOOM_OVN_CLUSTER_STATUS_TARGETS` 配置了所有候选 endpoint。
 3. 如果当前 leader 不可达，先恢复 OVN 集群，而不是修改 desired state。
 4. 如果 failover 后 reconcile 成功，继续观察，不需要手工清理 Netloom-managed rows。
+
+## OVN maintenance 失败
+
+现象：
+
+- `NetloomOVNMaintenanceFailing` 告警触发。
+- metrics 中 `netloom_controller_ovn_maintenance_failed` 大于 0。
+- controller events 或 metrics 暴露 maintenance error。
+
+处理：
+
+1. 查看 `controller-status` 中 stale advisory、maintenance status 和最近 error。
+2. 检查 `NETLOOM_OVN_DB_COMPACT_TARGETS` 或 `NETLOOM_OVN_STALE_MAINTENANCE_CMD` 配置。
+3. 如果失败来自外部 maintenance command，先在目标节点手工执行同一命令确认权限、路径和超时。
+4. 如果 OVN health 或 quorum 同时异常，先恢复 OVN 集群，再重试 maintenance。
+5. 确认下一次成功 reconcile 后 maintenance failed 指标归零。
 
 ## OVN live audit 出现 drift
 
