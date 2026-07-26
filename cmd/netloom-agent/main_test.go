@@ -1468,6 +1468,7 @@ func TestRunAgentStatusWithStoreReportsOpenVSwitchStatus(t *testing.T) {
 		PolicyMapRecommendedCapacity: 17,
 		PolicyMapRecommendedEndpoint: "prod\x00pod-a",
 		PolicyRolloutApplied:         1,
+		PolicyFrozen:                 2,
 		PolicyAdded:                  2,
 		PolicyUpdated:                1,
 		PolicyDeleted:                1,
@@ -1516,6 +1517,9 @@ func TestRunAgentStatusWithStoreReportsOpenVSwitchStatus(t *testing.T) {
 	}
 	if got.Node != "node-a" || got.Store != "ebpf" || got.Status != "success" || got.PolicyMapEntries != 4 || got.PolicyMapRecommendedCapacity != 17 || got.PolicyMapRecommendedEndpoint != "prod\x00pod-a" || got.PolicyRolloutApplied != 1 || got.ProviderReady != 1 || !got.RuntimeReady || got.RuntimeWarned != 1 || len(got.Runtime) != 2 {
 		t.Fatalf("agent status = %+v, want decoded OVSDB status", got)
+	}
+	if got.PolicyFrozen != 2 {
+		t.Fatalf("agent policy frozen = %d, want decoded frozen endpoint count", got.PolicyFrozen)
 	}
 	if got.PolicyAdded != 2 || got.PolicyUpdated != 1 || got.PolicyDeleted != 1 || got.PolicyUnchanged != 3 || got.PolicyEvents != 4 {
 		t.Fatalf("agent policy event totals = added:%d updated:%d deleted:%d unchanged:%d events:%d, want decoded event counters", got.PolicyAdded, got.PolicyUpdated, got.PolicyDeleted, got.PolicyUnchanged, got.PolicyEvents)
@@ -3022,6 +3026,7 @@ func TestPrintReconcileResultIncludesPolicyMapUsageSummary(t *testing.T) {
 		PolicyMapDriftMissing:            2,
 		PolicyMapDriftExtra:              3,
 		PolicyMapDriftChanged:            4,
+		PolicyFrozen:                     2,
 		PolicyFailedEndpoint:             "prod\x00pod-b",
 		PolicyFailedRevision:             3,
 		PolicyRulePackets:                3,
@@ -3124,6 +3129,7 @@ func TestPrintReconcileResultIncludesPolicyMapUsageSummary(t *testing.T) {
 		"policy_map_drift_missing=2",
 		"policy_map_drift_extra=3",
 		"policy_map_drift_changed=4",
+		"policy_frozen=2",
 		`policy_failed_endpoint="prod\x00pod-b"`,
 		"policy_failed_revision=3",
 		"policy_rule_packets=3",
@@ -7836,6 +7842,7 @@ func TestAgentMetricsExportsLatestPolicyAndTCXCounters(t *testing.T) {
 		PolicyMapDriftMissing:   2,
 		PolicyMapDriftExtra:     3,
 		PolicyMapDriftChanged:   4,
+		PolicyFrozen:            2,
 		PolicyEndpointStatus: []dataplane.PolicyEndpointStatus{{
 			EndpointID:       "prod\x00pod-a",
 			Revision:         7,
@@ -8097,6 +8104,7 @@ func TestAgentMetricsExportsLatestPolicyAndTCXCounters(t *testing.T) {
 		`netloom_agent_policy_rollout_probe_failed_total{node="node-a",store="ebpf"} 1`,
 		`netloom_agent_policy_rollout_paused_total{node="node-a",store="ebpf"} 1`,
 		`netloom_agent_policy_rollout_cancelled_total{node="node-a",store="ebpf"} 1`,
+		`netloom_agent_policy_frozen_endpoints_total{node="node-a",store="ebpf"} 2`,
 		`netloom_agent_policy_endpoint_revision{endpoint="prod\x00pod-a",node="node-a",store="ebpf"} 7`,
 		`netloom_agent_policy_endpoint_entries{endpoint="prod\x00pod-a",node="node-a",store="ebpf"} 12`,
 		`netloom_agent_policy_endpoint_capacity{endpoint="prod\x00pod-a",node="node-a",store="ebpf"} 16`,
@@ -8128,6 +8136,7 @@ func TestAgentMetricsExportsLatestPolicyAndTCXCounters(t *testing.T) {
 		`netloom_agent_policy_map_drift_missing_entries{node="node-a",store="ebpf"} 2`,
 		`netloom_agent_policy_map_drift_extra_entries{node="node-a",store="ebpf"} 3`,
 		`netloom_agent_policy_map_drift_changed_entries{node="node-a",store="ebpf"} 4`,
+		`netloom_agent_policy_frozen_endpoints{node="node-a",store="ebpf"} 2`,
 		`netloom_agent_policy_action_history_events{node="node-a",store="ebpf"} 2`,
 		`netloom_agent_policy_action_history_success_events{node="node-a",store="ebpf"} 1`,
 		`netloom_agent_policy_action_history_failure_events{node="node-a",store="ebpf"} 1`,
