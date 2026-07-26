@@ -317,40 +317,45 @@ type controllerEventsDocument struct {
 }
 
 type controllerEventRecord struct {
-	ID                    string    `json:"id"`
-	CompletedAt           time.Time `json:"completed_at"`
-	Success               bool      `json:"success"`
-	Phase                 string    `json:"phase,omitempty"`
-	Error                 string    `json:"error,omitempty"`
-	DurationMS            int64     `json:"duration_ms"`
-	VPCs                  int       `json:"vpcs"`
-	Subnets               int       `json:"subnets"`
-	Endpoints             int       `json:"endpoints"`
-	PolicyRoutes          int       `json:"policy_routes"`
-	LoadBalancers         int       `json:"load_balancers"`
-	PolicyEntries         int       `json:"policy_entries"`
-	OVNHealth             string    `json:"ovn_health,omitempty"`
-	OVNHealthFailures     int       `json:"ovn_health_failures,omitempty"`
-	OVNHealthRecovering   bool      `json:"ovn_health_recovering,omitempty"`
-	OVNClusterQuorum      string    `json:"ovn_cluster_quorum,omitempty"`
-	OVNClusterReachable   int       `json:"ovn_cluster_reachable,omitempty"`
-	OVNClusterQuorumSize  int       `json:"ovn_cluster_quorum_size,omitempty"`
-	OVNClusterLeaderCount int       `json:"ovn_cluster_leader_count,omitempty"`
-	OVNOps                int       `json:"ovn_ops"`
-	OVNExecuted           int       `json:"ovn_executed"`
-	OVNAuditStatus        string    `json:"ovn_audit_status,omitempty"`
-	OVNAuditError         string    `json:"ovn_audit_error,omitempty"`
-	OVNManagedRows        int       `json:"ovn_managed_rows,omitempty"`
-	OVNMissingRows        int       `json:"ovn_missing_rows,omitempty"`
-	OVNUnexpectedRows     int       `json:"ovn_unexpected_rows,omitempty"`
-	OVNDriftedRows        int       `json:"ovn_drifted_rows,omitempty"`
-	OVNDriftedFields      int       `json:"ovn_drifted_fields,omitempty"`
-	OVNStaleStatus        string    `json:"ovn_stale_status,omitempty"`
-	OVNStaleBurden        int       `json:"ovn_stale_burden,omitempty"`
-	OVNMaintenanceStatus  string    `json:"ovn_maintenance_status,omitempty"`
-	OVNMaintenanceError   string    `json:"ovn_maintenance_error,omitempty"`
-	OVNMaintenanceAttempt int       `json:"ovn_maintenance_attempted,omitempty"`
-	OVNMaintenanceFailed  int       `json:"ovn_maintenance_failed,omitempty"`
+	ID                    string         `json:"id"`
+	CompletedAt           time.Time      `json:"completed_at"`
+	Success               bool           `json:"success"`
+	Phase                 string         `json:"phase,omitempty"`
+	Error                 string         `json:"error,omitempty"`
+	DurationMS            int64          `json:"duration_ms"`
+	VPCs                  int            `json:"vpcs"`
+	Subnets               int            `json:"subnets"`
+	Endpoints             int            `json:"endpoints"`
+	PolicyRoutes          int            `json:"policy_routes"`
+	LoadBalancers         int            `json:"load_balancers"`
+	PolicyEntries         int            `json:"policy_entries"`
+	OVNHealth             string         `json:"ovn_health,omitempty"`
+	OVNHealthFailures     int            `json:"ovn_health_failures,omitempty"`
+	OVNHealthRecovering   bool           `json:"ovn_health_recovering,omitempty"`
+	OVNClusterQuorum      string         `json:"ovn_cluster_quorum,omitempty"`
+	OVNClusterReachable   int            `json:"ovn_cluster_reachable,omitempty"`
+	OVNClusterQuorumSize  int            `json:"ovn_cluster_quorum_size,omitempty"`
+	OVNClusterLeaderCount int            `json:"ovn_cluster_leader_count,omitempty"`
+	OVNOps                int            `json:"ovn_ops"`
+	OVNExecuted           int            `json:"ovn_executed"`
+	OVNAuditStatus        string         `json:"ovn_audit_status,omitempty"`
+	OVNAuditError         string         `json:"ovn_audit_error,omitempty"`
+	OVNManagedRows        int            `json:"ovn_managed_rows,omitempty"`
+	OVNMissingRows        int            `json:"ovn_missing_rows,omitempty"`
+	OVNUnexpectedRows     int            `json:"ovn_unexpected_rows,omitempty"`
+	OVNDriftedRows        int            `json:"ovn_drifted_rows,omitempty"`
+	OVNDriftedFields      int            `json:"ovn_drifted_fields,omitempty"`
+	OVNDuplicateTables    map[string]int `json:"ovn_duplicate_table_counts,omitempty"`
+	OVNIncompleteTables   map[string]int `json:"ovn_incomplete_table_counts,omitempty"`
+	OVNMissingTables      map[string]int `json:"ovn_missing_table_counts,omitempty"`
+	OVNUnexpectedTables   map[string]int `json:"ovn_unexpected_table_counts,omitempty"`
+	OVNDriftedFieldCounts map[string]int `json:"ovn_drifted_field_counts,omitempty"`
+	OVNStaleStatus        string         `json:"ovn_stale_status,omitempty"`
+	OVNStaleBurden        int            `json:"ovn_stale_burden,omitempty"`
+	OVNMaintenanceStatus  string         `json:"ovn_maintenance_status,omitempty"`
+	OVNMaintenanceError   string         `json:"ovn_maintenance_error,omitempty"`
+	OVNMaintenanceAttempt int            `json:"ovn_maintenance_attempted,omitempty"`
+	OVNMaintenanceFailed  int            `json:"ovn_maintenance_failed,omitempty"`
 }
 
 type ovnMaintenanceResult struct {
@@ -973,6 +978,11 @@ func controllerEventFromSnapshot(snapshot controllerMetricsSnapshot) controllerE
 		OVNUnexpectedRows:     snapshot.OVNAudit.UnexpectedManagedRows,
 		OVNDriftedRows:        snapshot.OVNAudit.DriftedManagedRows,
 		OVNDriftedFields:      snapshot.OVNAudit.DriftedManagedFields,
+		OVNDuplicateTables:    cloneStringIntMap(snapshot.OVNAudit.DuplicateManagedTableCounts),
+		OVNIncompleteTables:   cloneStringIntMap(snapshot.OVNAudit.IncompleteManagedTableCounts),
+		OVNMissingTables:      cloneStringIntMap(snapshot.OVNAudit.MissingManagedTableCounts),
+		OVNUnexpectedTables:   cloneStringIntMap(snapshot.OVNAudit.UnexpectedManagedTableCounts),
+		OVNDriftedFieldCounts: cloneStringIntMap(snapshot.OVNAudit.DriftedManagedFieldCounts),
 		OVNStaleStatus:        snapshot.OVNStaleAdvisory.Status,
 		OVNStaleBurden:        snapshot.OVNStaleAdvisory.Burden,
 		OVNMaintenanceStatus:  snapshot.OVNMaintenance.Status,
@@ -980,6 +990,17 @@ func controllerEventFromSnapshot(snapshot controllerMetricsSnapshot) controllerE
 		OVNMaintenanceAttempt: snapshot.OVNMaintenance.Attempted,
 		OVNMaintenanceFailed:  snapshot.OVNMaintenance.Failed,
 	}
+}
+
+func cloneStringIntMap(values map[string]int) map[string]int {
+	if len(values) == 0 {
+		return nil
+	}
+	cloned := make(map[string]int, len(values))
+	for key, value := range values {
+		cloned[key] = value
+	}
+	return cloned
 }
 
 func loadControllerEventsDocument(ctx context.Context, store openVSwitchExternalIDReader) (controllerEventsDocument, error) {

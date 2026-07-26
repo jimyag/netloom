@@ -374,7 +374,8 @@ ovs-vsctl get Open_vSwitch . external_ids:netloom_policy_events
 cluster quorum、stale advisory、maintenance 和错误状态。
 `controller-events` CLI 会解码 `Open_vSwitch.external_ids:netloom_controller_events`，
 用于查看最近 controller reconcile 成功/失败、失败阶段、OVN health、cluster quorum、
-audit、stale advisory 和 maintenance 摘要；可用 `-phase`、`-success` 和 `-limit`
+audit、stale advisory 和 maintenance 摘要。audit 事件会保留 duplicate、incomplete、
+missing、unexpected 的表级计数，以及 managed field drift 的字段级计数；可用 `-phase`、`-success` 和 `-limit`
 过滤。
 `agent-status` CLI 会解码 `Open_vSwitch.external_ids:netloom_agent_status`，
 用于查看最近一次 agent reconcile 的 policy/eBPF rollout、TCX、runtime preflight、

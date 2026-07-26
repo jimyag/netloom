@@ -202,6 +202,33 @@ func TestSyncOVSDBControllerEventAppendsBoundedHistory(t *testing.T) {
 	}
 }
 
+func TestControllerEventFromSnapshotIncludesOVNAuditBreakdown(t *testing.T) {
+	snapshot := controllerMetricsSnapshot{
+		OVNAuditStatus: "ok",
+		OVNAudit: ovn.AuditStats{
+			DuplicateManagedTableCounts:  map[string]int{"Logical_Router_Policy": 1},
+			IncompleteManagedTableCounts: map[string]int{"Load_Balancer": 2},
+			MissingManagedTableCounts:    map[string]int{"Logical_Router_Port": 3},
+			UnexpectedManagedTableCounts: map[string]int{"Logical_Switch": 4},
+			DriftedManagedFieldCounts:    map[string]int{"Load_Balancer.options": 5},
+		},
+	}
+
+	event := controllerEventFromSnapshot(snapshot)
+	if event.OVNDuplicateTables["Logical_Router_Policy"] != 1 ||
+		event.OVNIncompleteTables["Load_Balancer"] != 2 ||
+		event.OVNMissingTables["Logical_Router_Port"] != 3 ||
+		event.OVNUnexpectedTables["Logical_Switch"] != 4 ||
+		event.OVNDriftedFieldCounts["Load_Balancer.options"] != 5 {
+		t.Fatalf("event audit breakdown = %+v, want table and field counts", event)
+	}
+
+	snapshot.OVNAudit.DriftedManagedFieldCounts["Load_Balancer.options"] = 99
+	if event.OVNDriftedFieldCounts["Load_Balancer.options"] != 5 {
+		t.Fatalf("event drifted field count changed after snapshot mutation: %d", event.OVNDriftedFieldCounts["Load_Balancer.options"])
+	}
+}
+
 func TestObserveReconcileFailurePersistsControllerEvent(t *testing.T) {
 	writer := &recordingOVSDBControlStatusWriter{values: make(map[string]string)}
 	reconciler := &stateFileReconciler{
