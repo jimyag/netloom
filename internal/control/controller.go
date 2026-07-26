@@ -844,6 +844,9 @@ func validateObjectGraph(state DesiredState) error {
 	if err := validateProviderTenantQueueIdentityGroupConflicts(providerNetworks, identityGroups, endpoints); err != nil {
 		return err
 	}
+	if err := validateProviderTenantQueueEndpointConflicts(providerNetworks, identityGroups, endpoints); err != nil {
+		return err
+	}
 	if err := validateSecurityGroupNamedPortReferences(state.SecurityGroups, state.Endpoints, securityGroups); err != nil {
 		return err
 	}
@@ -1252,6 +1255,87 @@ func validateProviderTenantQueueSubnetConflicts(providerNetworks map[string]mode
 	return nil
 }
 
+func validateProviderTenantQueueEndpointConflicts(providerNetworks map[string]model.ProviderNetwork, groups map[string]model.IdentityGroup, endpoints map[string]model.Endpoint) error {
+	names := make([]string, 0, len(providerNetworks))
+	for name := range providerNetworks {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		providerNetwork := providerNetworks[name]
+		for i := range providerNetwork.TenantQueues {
+			left := providerNetwork.TenantQueues[i]
+			if providerTenantQueuePolicySubnetScoped(left) {
+				continue
+			}
+			leftEndpoints := providerTenantQueueMatchingEndpoints(left, groups, endpoints)
+			if len(leftEndpoints) == 0 {
+				continue
+			}
+			for j := i + 1; j < len(providerNetwork.TenantQueues); j++ {
+				right := providerNetwork.TenantQueues[j]
+				if left.Tenant != right.Tenant || providerTenantQueuePolicySubnetScoped(right) {
+					continue
+				}
+				priority := providerTenantQueueEndpointPriority(left)
+				if priority != providerTenantQueueEndpointPriority(right) {
+					continue
+				}
+				if !protocolsMayOverlap(left.Protocol, right.Protocol) || !portRangesMayOverlap(left.Ports, right.Ports) {
+					continue
+				}
+				if endpointKey, ok := firstSharedEndpointKey(leftEndpoints, providerTenantQueueMatchingEndpoints(right, groups, endpoints)); ok {
+					endpoint := endpoints[endpointKey]
+					return fmt.Errorf("provider network %q tenant %q endpoint queues %d and %d conflict on endpoint %q priority %d overlapping protocol/ports", providerNetwork.Name, left.Tenant, left.QueueID, right.QueueID, endpoint.ID, priority)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func providerTenantQueueMatchingEndpoints(queue model.ProviderNetworkTenantQueuePolicy, groups map[string]model.IdentityGroup, endpoints map[string]model.Endpoint) map[string]struct{} {
+	out := make(map[string]struct{})
+	for key, endpoint := range endpoints {
+		if endpoint.VPC != queue.Tenant {
+			continue
+		}
+		if !providerTenantQueueMatchesEndpoint(queue, groups, endpoint) {
+			continue
+		}
+		out[key] = struct{}{}
+	}
+	return out
+}
+
+func providerTenantQueueMatchesEndpoint(queue model.ProviderNetworkTenantQueuePolicy, groups map[string]model.IdentityGroup, endpoint model.Endpoint) bool {
+	if (len(queue.EndpointSelector) != 0 || len(queue.EndpointExpressions) != 0) &&
+		!endpoint.Labels.MatchesSelector(queue.EndpointSelector, queue.EndpointExpressions) {
+		return false
+	}
+	if len(queue.IdentityGroups) != 0 && !providerTenantQueueMatchesAnyIdentityGroup(queue, groups, endpoint) {
+		return false
+	}
+	if (len(queue.IdentitySelector) != 0 || len(queue.IdentityExpressions) != 0) &&
+		!endpoint.Labels.MatchesSelector(queue.IdentitySelector, queue.IdentityExpressions) {
+		return false
+	}
+	return true
+}
+
+func providerTenantQueueMatchesAnyIdentityGroup(queue model.ProviderNetworkTenantQueuePolicy, groups map[string]model.IdentityGroup, endpoint model.Endpoint) bool {
+	for _, groupName := range queue.IdentityGroups {
+		group, ok := groups[identityGroupKey(queue.Tenant, groupName)]
+		if !ok {
+			continue
+		}
+		if identityGroupMatchesEndpoint(group, endpoint) {
+			return true
+		}
+	}
+	return false
+}
+
 func providerTenantQueuePolicySubnetScoped(queue model.ProviderNetworkTenantQueuePolicy) bool {
 	return len(queue.EndpointSelector) == 0 &&
 		len(queue.EndpointExpressions) == 0 &&
@@ -1268,6 +1352,16 @@ func providerTenantQueueSubnetPriority(queue model.ProviderNetworkTenantQueuePol
 		return 215
 	}
 	return 210
+}
+
+func providerTenantQueueEndpointPriority(queue model.ProviderNetworkTenantQueuePolicy) int {
+	if len(queue.Ports) != 0 {
+		return 240
+	}
+	if queue.Protocol != "" {
+		return 235
+	}
+	return 230
 }
 
 func validateProviderNetworkNodeInterfaceClaims(providerNetworks map[string]model.ProviderNetwork) error {

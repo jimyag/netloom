@@ -933,6 +933,35 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 			wantErr: `provider network "physnet-a" tenant "prod" subnet queues 10 and 11 conflict on priority 220 overlapping protocol/ports`,
 		},
 		{
+			name: "provider endpoint selector queue conflict",
+			mutate: func(state *DesiredState) {
+				state.Endpoints[0].Labels = model.Labels{"app": "web", "tier": "frontend"}
+				state.ProviderNetworks = []model.ProviderNetwork{{
+					Name: "physnet-a",
+					Nodes: []model.ProviderNetworkNode{{
+						Node:      "node-a",
+						Interface: "eth1",
+					}},
+					TenantQueues: []model.ProviderNetworkTenantQueuePolicy{{
+						Tenant:           "prod",
+						QueueID:          10,
+						Protocol:         model.ProtocolTCP,
+						Ports:            []model.PortRange{{From: 443, To: 443}},
+						EndpointSelector: model.Labels{"app": "web"},
+						MaxRateBPS:       500000000,
+					}, {
+						Tenant:           "prod",
+						QueueID:          11,
+						Protocol:         model.ProtocolTCP,
+						Ports:            []model.PortRange{{From: 443, To: 443}},
+						EndpointSelector: model.Labels{"tier": "frontend"},
+						MaxRateBPS:       250000000,
+					}},
+				}}
+			},
+			wantErr: `provider network "physnet-a" tenant "prod" endpoint queues 10 and 11 conflict on endpoint "pod-a" priority 240 overlapping protocol/ports`,
+		},
+		{
 			name: "duplicate provider network controller target",
 			mutate: func(state *DesiredState) {
 				state.ProviderNetworks = []model.ProviderNetwork{{
