@@ -6936,6 +6936,7 @@ func writeAgentMetrics(w ioStringWriter, snapshot agentMetricsSnapshot, totals a
 	writeMetricType(w, "netloom_agent_policy_rule_reject_drops_total", "counter")
 	fmt.Fprintf(w, "netloom_agent_policy_rule_reject_drops_total%s %d\n", baseLabels, rejectDrops)
 	ruleCatalog := policyRuleCatalogByMetricKey(result.PolicyRuleCatalog)
+	writePolicyRuleActionDirectionMetrics(w, result.Node, snapshot.Store, result.PolicyRuleStats, ruleCatalog)
 	for _, stat := range result.PolicyRuleStats {
 		catalog := ruleCatalog[policyRuleMetricKey(stat.EndpointID, stat.RuleCookie)]
 		labels := prometheusLabels(map[string]string{
@@ -6983,6 +6984,101 @@ func policyRuleDropReasonTotals(stats []dataplane.RuleMetrics) (uint64, uint64, 
 		rejectDrops += stat.RejectDrops
 	}
 	return noMatchDrops, denyDrops, rejectDrops
+}
+
+type policyRuleActionDirectionTotals struct {
+	Packets      uint64
+	Bytes        uint64
+	Allowed      uint64
+	Dropped      uint64
+	Rejected     uint64
+	NoMatchDrops uint64
+	DenyDrops    uint64
+	RejectDrops  uint64
+	Logged       uint64
+}
+
+func writePolicyRuleActionDirectionMetrics(w ioStringWriter, node, store string, stats []dataplane.RuleMetrics, catalog map[string]agent.PolicyRuleCatalogEntry) {
+	totals := policyRuleActionDirectionMetricTotals(stats, catalog)
+	writeMetricType(w, "netloom_agent_policy_rule_packets_by_action_direction_total", "counter")
+	writeMetricType(w, "netloom_agent_policy_rule_bytes_by_action_direction_total", "counter")
+	writeMetricType(w, "netloom_agent_policy_rule_allowed_by_action_direction_total", "counter")
+	writeMetricType(w, "netloom_agent_policy_rule_dropped_by_action_direction_total", "counter")
+	writeMetricType(w, "netloom_agent_policy_rule_rejected_by_action_direction_total", "counter")
+	writeMetricType(w, "netloom_agent_policy_rule_no_match_drops_by_action_direction_total", "counter")
+	writeMetricType(w, "netloom_agent_policy_rule_deny_drops_by_action_direction_total", "counter")
+	writeMetricType(w, "netloom_agent_policy_rule_reject_drops_by_action_direction_total", "counter")
+	writeMetricType(w, "netloom_agent_policy_rule_logged_by_action_direction_total", "counter")
+	for _, key := range sortedPolicyRuleActionDirectionMetricKeys(totals) {
+		action, direction := splitPolicyRuleActionDirectionMetricKey(key)
+		labels := prometheusLabels(map[string]string{
+			"node":      node,
+			"store":     store,
+			"action":    action,
+			"direction": direction,
+		})
+		total := totals[key]
+		fmt.Fprintf(w, "netloom_agent_policy_rule_packets_by_action_direction_total%s %d\n", labels, total.Packets)
+		fmt.Fprintf(w, "netloom_agent_policy_rule_bytes_by_action_direction_total%s %d\n", labels, total.Bytes)
+		fmt.Fprintf(w, "netloom_agent_policy_rule_allowed_by_action_direction_total%s %d\n", labels, total.Allowed)
+		fmt.Fprintf(w, "netloom_agent_policy_rule_dropped_by_action_direction_total%s %d\n", labels, total.Dropped)
+		fmt.Fprintf(w, "netloom_agent_policy_rule_rejected_by_action_direction_total%s %d\n", labels, total.Rejected)
+		fmt.Fprintf(w, "netloom_agent_policy_rule_no_match_drops_by_action_direction_total%s %d\n", labels, total.NoMatchDrops)
+		fmt.Fprintf(w, "netloom_agent_policy_rule_deny_drops_by_action_direction_total%s %d\n", labels, total.DenyDrops)
+		fmt.Fprintf(w, "netloom_agent_policy_rule_reject_drops_by_action_direction_total%s %d\n", labels, total.RejectDrops)
+		fmt.Fprintf(w, "netloom_agent_policy_rule_logged_by_action_direction_total%s %d\n", labels, total.Logged)
+	}
+}
+
+func policyRuleActionDirectionMetricTotals(stats []dataplane.RuleMetrics, catalog map[string]agent.PolicyRuleCatalogEntry) map[string]policyRuleActionDirectionTotals {
+	totals := make(map[string]policyRuleActionDirectionTotals)
+	for _, stat := range stats {
+		entry := catalog[policyRuleMetricKey(stat.EndpointID, stat.RuleCookie)]
+		key := policyRuleActionDirectionMetricKey(string(entry.Action), string(entry.Direction))
+		total := totals[key]
+		total.Packets += stat.Packets
+		total.Bytes += stat.Bytes
+		total.Allowed += stat.Allowed
+		total.Dropped += stat.Dropped
+		total.Rejected += stat.Rejected
+		total.NoMatchDrops += stat.NoMatchDrops
+		total.DenyDrops += stat.DenyDrops
+		total.RejectDrops += stat.RejectDrops
+		total.Logged += stat.Logged
+		totals[key] = total
+	}
+	return totals
+}
+
+func sortedPolicyRuleActionDirectionMetricKeys(totals map[string]policyRuleActionDirectionTotals) []string {
+	keys := make([]string, 0, len(totals))
+	for key, total := range totals {
+		if total.Packets != 0 ||
+			total.Bytes != 0 ||
+			total.Allowed != 0 ||
+			total.Dropped != 0 ||
+			total.Rejected != 0 ||
+			total.NoMatchDrops != 0 ||
+			total.DenyDrops != 0 ||
+			total.RejectDrops != 0 ||
+			total.Logged != 0 {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func policyRuleActionDirectionMetricKey(action, direction string) string {
+	return action + "|" + direction
+}
+
+func splitPolicyRuleActionDirectionMetricKey(key string) (string, string) {
+	action, direction, ok := strings.Cut(key, "|")
+	if !ok {
+		return key, ""
+	}
+	return action, direction
 }
 
 func policyRuleCatalogByMetricKey(catalog []agent.PolicyRuleCatalogEntry) map[string]agent.PolicyRuleCatalogEntry {
