@@ -495,9 +495,12 @@ policy map pressure metrics 还会给出扩容建议：
 当某个 endpoint map 达到 warning 阈值时，推荐值表示让当前 entries 回到 warning
 阈值以下所需的最小 capacity；未达到阈值时为 `0`。
 pressure-aware rollout 也会暴露
+`netloom_agent_policy_rollout_pressure_max_percent{rollout=...}`、
+`netloom_agent_policy_rollout_pressure_threshold_percent{rollout=...}`、
+`netloom_agent_policy_rollout_pressure_adjusted{rollout=...}` 和
 `netloom_agent_policy_rollout_recommended_capacity{rollout=...,endpoint=...}`，
-用于让 Prometheus 告警或发布门禁直接读取本次 rollout 建议容量，而不必轮询
-rollout JSON。
+用于让 Prometheus 告警或发布门禁直接读取本次 rollout 是否因为 policy-map
+pressure 降低 batch、当前压力、阈值和建议容量，而不必轮询 rollout JSON。
 
 provider network 健康也会输出为低基数 metrics：
 `netloom_agent_provider_networks`、`netloom_agent_provider_links`、
