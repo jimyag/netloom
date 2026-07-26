@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -370,6 +371,68 @@ func TestControllerEventsAPIReportsNotEnabledWithoutStore(t *testing.T) {
 	}
 	if !strings.Contains(recorder.Body.String(), "not enabled") {
 		t.Fatalf("body missing not-enabled error: %s", recorder.Body.String())
+	}
+}
+
+func TestControllerMetricsServerRoutesEventsAPI(t *testing.T) {
+	store := &recordingOVSDBControlStatusWriter{values: map[string]string{
+		controllerOVSDBEventsKey: mustControllerEventsJSON(t, controllerEventsDocument{
+			Events: []controllerEventRecord{{
+				ID:          "failure-a",
+				CompletedAt: time.Date(2026, 7, 17, 1, 1, 0, 0, time.UTC),
+				Success:     false,
+				Phase:       "ovn_health",
+				Error:       "ovn health check: timeout",
+				DurationMS:  30,
+				OVNHealth:   "error",
+			}},
+		}),
+	}}
+	metrics := newControllerMetrics()
+	metrics.eventsStore = store
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	addr := freeControllerHTTPAddr(t)
+	closeServer, err := startControllerMetricsServer(ctx, addr, metrics)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeServer()
+
+	getResp, err := http.Get("http://" + addr + "/events?success=false")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer getResp.Body.Close()
+	if getResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /events status = %d, want 200", getResp.StatusCode)
+	}
+	var got controllerEventsOutput
+	if err := json.NewDecoder(getResp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode GET /events response: %v", err)
+	}
+	if got.EventCount != 1 || len(got.Events) != 1 || got.Events[0].ID != "failure-a" {
+		t.Fatalf("GET /events output = %+v, want failure-a", got)
+	}
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodDelete, "http://"+addr+"/events?success=false", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleteResp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer deleteResp.Body.Close()
+	if deleteResp.StatusCode != http.StatusOK {
+		t.Fatalf("DELETE /events status = %d, want 200", deleteResp.StatusCode)
+	}
+	var cleared controllerEventsClearOutput
+	if err := json.NewDecoder(deleteResp.Body).Decode(&cleared); err != nil {
+		t.Fatalf("decode DELETE /events response: %v", err)
+	}
+	if cleared.ClearedEvents != 1 || cleared.RemainingEvents != 0 {
+		t.Fatalf("DELETE /events output = %+v, want one cleared event", cleared)
 	}
 }
 
@@ -2148,6 +2211,19 @@ func mustControllerEventsJSON(t *testing.T, doc controllerEventsDocument) string
 		t.Fatal(err)
 	}
 	return string(raw)
+}
+
+func freeControllerHTTPAddr(t *testing.T) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return addr
 }
 
 func (r fakeOpenVSwitchExternalIDReader) OpenVSwitchExternalID(_ context.Context, key string) (string, bool, error) {
