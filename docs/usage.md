@@ -480,6 +480,15 @@ curl -s http://127.0.0.1:9091/metrics
 curl -s http://127.0.0.1:9092/metrics
 ```
 
+agent metrics 会暴露最近 endpoint lifecycle action history 的聚合计数：
+`netloom_agent_policy_action_history_events`、
+`netloom_agent_policy_action_history_success_events`、
+`netloom_agent_policy_action_history_failure_events`、
+`netloom_agent_policy_action_history_action_events{action=...}` 和
+`netloom_agent_policy_action_history_reason_events{reason=...}`。这些 label
+使用固定 action 和稳定 failure reason，适合对 freeze、quarantine、rollback、
+regenerate 等动作失败做低基数告警。
+
 查看 controller 最新 OVN 健康、集群、audit 和 stale 状态：
 
 ```bash
@@ -633,6 +642,8 @@ ovs-vsctl get Open_vSwitch . external_ids:netloom_policy_endpoint_action_history
 都会写入 `Open_vSwitch.external_ids:netloom_policy_endpoint_action_history`，用于节点本地审计。
 失败记录包含 `success:false`、稳定的 `reason` 和原始 `error`。API 支持按
 `endpoint`、`action`、`reason`、`success` 和 `limit` 查询最近的相关动作。
+同一份内存历史也会通过 agent `/metrics` 输出 action、reason、success 和 failure
+聚合，便于在不拉取明细 JSON 的情况下监控 lifecycle 风险。
 `policy-action-history` CLI 会从本机
 Open_vSwitch OVSDB 读取同一个 key，适合在没有打开 agent HTTP listener 时做节点本地审计。
 

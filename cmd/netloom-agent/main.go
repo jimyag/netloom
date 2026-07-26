@@ -6911,10 +6911,10 @@ func (m *agentMetrics) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintln(w, "netloom_agent_reconcile_ready 0")
 		return
 	}
-	writeAgentMetrics(w, snapshot, totals)
+	writeAgentMetrics(w, snapshot, totals, m.policyActionHistory())
 }
 
-func writeAgentMetrics(w ioStringWriter, snapshot agentMetricsSnapshot, totals agentMetricsTotals) {
+func writeAgentMetrics(w ioStringWriter, snapshot agentMetricsSnapshot, totals agentMetricsTotals, actionHistory []policyActionHistoryEntry) {
 	result := snapshot.Result
 	baseLabels := prometheusLabels(map[string]string{
 		"node":  result.Node,
@@ -7129,6 +7129,7 @@ func writeAgentMetrics(w ioStringWriter, snapshot agentMetricsSnapshot, totals a
 		"store":    snapshot.Store,
 		"endpoint": result.PolicyPressureQuarantineEndpoint,
 	}), result.PolicyPressureQuarantined)
+	writePolicyActionHistoryMetrics(w, result.Node, snapshot.Store, actionHistory)
 	writeMetricType(w, "netloom_agent_policy_rollouts", "gauge")
 	fmt.Fprintf(w, "netloom_agent_policy_rollouts%s %d\n", baseLabels, result.PolicyRollouts)
 	writeMetricType(w, "netloom_agent_policy_rollout_planned_endpoints", "gauge")
@@ -7281,6 +7282,66 @@ func writeAgentMetrics(w ioStringWriter, snapshot agentMetricsSnapshot, totals a
 	}), result.TCXFailed)
 	writeMetricType(w, "netloom_agent_tcx_rollbacks", "gauge")
 	fmt.Fprintf(w, "netloom_agent_tcx_rollbacks%s %d\n", baseLabels, result.TCXRollbacks)
+}
+
+func writePolicyActionHistoryMetrics(w ioStringWriter, node, store string, history []policyActionHistoryEntry) {
+	total, success, failure, actions, reasons := policyActionHistoryMetricCounts(history)
+	baseLabels := prometheusLabels(map[string]string{
+		"node":  node,
+		"store": store,
+	})
+	writeMetricType(w, "netloom_agent_policy_action_history_events", "gauge")
+	fmt.Fprintf(w, "netloom_agent_policy_action_history_events%s %d\n", baseLabels, total)
+	writeMetricType(w, "netloom_agent_policy_action_history_success_events", "gauge")
+	fmt.Fprintf(w, "netloom_agent_policy_action_history_success_events%s %d\n", baseLabels, success)
+	writeMetricType(w, "netloom_agent_policy_action_history_failure_events", "gauge")
+	fmt.Fprintf(w, "netloom_agent_policy_action_history_failure_events%s %d\n", baseLabels, failure)
+	writeMetricType(w, "netloom_agent_policy_action_history_action_events", "gauge")
+	for _, action := range sortedStringIntKeys(actions) {
+		fmt.Fprintf(w, "netloom_agent_policy_action_history_action_events%s %d\n", prometheusLabels(map[string]string{
+			"node":   node,
+			"store":  store,
+			"action": action,
+		}), actions[action])
+	}
+	writeMetricType(w, "netloom_agent_policy_action_history_reason_events", "gauge")
+	for _, reason := range sortedStringIntKeys(reasons) {
+		fmt.Fprintf(w, "netloom_agent_policy_action_history_reason_events%s %d\n", prometheusLabels(map[string]string{
+			"node":   node,
+			"store":  store,
+			"reason": reason,
+		}), reasons[reason])
+	}
+}
+
+func policyActionHistoryMetricCounts(history []policyActionHistoryEntry) (int, int, int, map[string]int, map[string]int) {
+	actions := make(map[string]int)
+	reasons := make(map[string]int)
+	success := 0
+	for _, entry := range history {
+		if entry.Success {
+			success++
+		}
+		if entry.Action != "" {
+			actions[entry.Action]++
+		}
+		if entry.Reason != "" {
+			reasons[entry.Reason]++
+		}
+	}
+	return len(history), success, len(history) - success, actions, reasons
+}
+
+func sortedStringIntKeys(values map[string]int) []string {
+	keys := make([]string, 0, len(values))
+	for key, value := range values {
+		if value == 0 {
+			continue
+		}
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func policyRuleDropReasonTotals(stats []dataplane.RuleMetrics) (uint64, uint64, uint64) {

@@ -6308,6 +6308,18 @@ func TestAgentMetricsExportsLatestPolicyAndTCXCounters(t *testing.T) {
 		{Name: "bpffs", Status: "ok", Required: true, Detail: "/sys/fs/bpf"},
 		{Name: "ovsdb", Status: "warn", Detail: "not configured"},
 	})
+	metrics.recordPolicyEndpointAction(context.Background(), policyActionHistoryEntry{
+		Action:     "freeze",
+		EndpointID: "prod\x00pod-a",
+		Success:    true,
+	})
+	metrics.recordPolicyEndpointAction(context.Background(), policyActionHistoryEntry{
+		Action:     "regenerate",
+		EndpointID: "prod\x00pod-a",
+		Success:    false,
+		Reason:     "frozen",
+		Error:      "policy endpoint is frozen",
+	})
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/metrics", nil)
@@ -6390,6 +6402,12 @@ func TestAgentMetricsExportsLatestPolicyAndTCXCounters(t *testing.T) {
 		`netloom_agent_policy_map_drift_missing_entries{node="node-a",store="ebpf"} 2`,
 		`netloom_agent_policy_map_drift_extra_entries{node="node-a",store="ebpf"} 3`,
 		`netloom_agent_policy_map_drift_changed_entries{node="node-a",store="ebpf"} 4`,
+		`netloom_agent_policy_action_history_events{node="node-a",store="ebpf"} 2`,
+		`netloom_agent_policy_action_history_success_events{node="node-a",store="ebpf"} 1`,
+		`netloom_agent_policy_action_history_failure_events{node="node-a",store="ebpf"} 1`,
+		`netloom_agent_policy_action_history_action_events{action="freeze",node="node-a",store="ebpf"} 1`,
+		`netloom_agent_policy_action_history_action_events{action="regenerate",node="node-a",store="ebpf"} 1`,
+		`netloom_agent_policy_action_history_reason_events{node="node-a",reason="frozen",store="ebpf"} 1`,
 		`netloom_agent_policy_rule_packets_total{node="node-a",store="ebpf"} 3`,
 		`netloom_agent_policy_rule_dropped_total{node="node-a",store="ebpf"} 1`,
 		`netloom_agent_policy_rule_no_match_drops_total{node="node-a",store="ebpf"} 0`,
