@@ -529,6 +529,17 @@ pressure-aware rollout 也会暴露
 `netloom_agent_policy_rollout_recommended_capacity{rollout=...,endpoint=...}`，
 用于让 Prometheus 告警或发布门禁直接读取本次 rollout 是否因为 policy-map
 pressure 降低 batch、当前压力、阈值和建议容量，而不必轮询 rollout JSON。
+rollout history metrics 还会保留最近一次 rollout 的 policy map 变更量：
+`netloom_agent_policy_rollout_history_latest_policy_added_entries`、
+`netloom_agent_policy_rollout_history_latest_policy_updated_entries`、
+`netloom_agent_policy_rollout_history_latest_policy_deleted_entries`、
+`netloom_agent_policy_rollout_history_latest_policy_unchanged_entries`、
+`netloom_agent_policy_rollout_history_latest_policy_events`、
+`netloom_agent_policy_rollout_history_latest_policy_failed_events`、
+`netloom_agent_policy_rollout_history_latest_policy_rollback_events` 和
+`netloom_agent_policy_rollout_history_latest_policy_revision_max`。这些指标按
+`source` 和 `rollout` 标注，用于在 rollout 完成后继续审计 apply、SLO/probe
+rollback 或 apply failure rollback 实际修改了多少 endpoint policy map entry。
 
 provider network 健康也会输出为低基数 metrics：
 `netloom_agent_provider_networks`、`netloom_agent_provider_links`、
@@ -776,7 +787,12 @@ ovs-vsctl get Open_vSwitch . external_ids:netloom_policy_rollout_history
 历史会写入 `Open_vSwitch.external_ids:netloom_policy_rollout_history`。
 `policy-rollout-history` CLI 支持按 `source`、`name`、完成时间窗口和 `limit`
 查询最近的 rollout，用于查看 approval、ack、finalize、SLO/probe、rollback 等
-staged policy rollout 结果。`DELETE /policy/endpoints/rollout/history` 和
+staged policy rollout 结果。rollout JSON 中的 `policy_added`、`policy_updated`、
+`policy_deleted`、`policy_unchanged`、`policy_events`、`policy_failed`、
+`policy_rollbacks` 和 `policy_revision_max` 记录本次 rollout apply/rollback
+路径实际产生的 policy-map update event 汇总；如果配置了 `change_status_url`，
+这些字段也会进入外部 change-status callback payload，方便变更系统审计真实
+endpoint map 变更。`DELETE /policy/endpoints/rollout/history` 和
 `policy-rollout-history-clear` 使用同一组过滤字段清理已审计的历史；为了避免误删，
 全量清理必须显式使用 `all=true` 或 CLI `-all`，且不能和过滤条件混用。
 
