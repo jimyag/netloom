@@ -745,6 +745,22 @@ ovs-vsctl get Open_vSwitch . external_ids:netloom_policy_rollout_state
 支持按 `name` 和 `node` 过滤，用于确认 rollout 断点恢复时哪些 endpoint 已经应用、
 哪些 rollout 处于 paused 或 failed 状态。
 
+清理已确认不再需要的 rollout 恢复状态：
+
+```bash
+netloom-agent policy-rollout-state-clear \
+  -ovsdb unix:/var/run/openvswitch/db.sock \
+  -name web-canary \
+  -node node-a
+
+curl -X DELETE \
+  'http://127.0.0.1:9092/policy/endpoints/rollout/state?name=web-canary&node=node-a'
+```
+
+为了避免误删，`policy-rollout-state-clear` 和 HTTP DELETE 都要求提供 `name`、
+`node` 或时间窗口过滤条件；如果确实要清空全部状态，需要显式使用 `-all` 或
+`all=true`。
+
 检查本机托管网络对象：
 
 ```bash

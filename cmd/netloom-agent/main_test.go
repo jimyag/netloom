@@ -1890,6 +1890,68 @@ func TestPolicyEndpointAPIRolloutStateRequiresStore(t *testing.T) {
 	}
 }
 
+func TestPolicyEndpointAPIRolloutStateClearFilters(t *testing.T) {
+	firstUpdated := time.Date(2026, 7, 20, 1, 0, 0, 0, time.UTC)
+	secondUpdated := time.Date(2026, 7, 20, 1, 20, 0, 0, time.UTC)
+	store := ovsdbPolicyRolloutStateStore{syncer: &fakeOpenVSwitchExternalIDStore{}}
+	if err := store.Save(t.Context(), policyRolloutStateDocument{Rollouts: []policyRolloutStateEntry{
+		{Name: "canary", Node: "node-a", Revision: "rev-a", UpdatedAt: firstUpdated, AppliedEndpoints: []string{model.EndpointKey("prod", "vm-a")}, Paused: true},
+		{Name: "canary", Node: "node-b", Revision: "rev-b", UpdatedAt: secondUpdated, AppliedEndpoints: []string{model.EndpointKey("prod", "vm-b")}, Failed: 1},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	metrics := newAgentMetrics(dataplane.NewInMemoryPolicyStore())
+	configurePolicyRolloutStateStore(metrics, store)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodDelete, "/policy/endpoints/rollout/state?name=canary&node=node-b", nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("clear rollout state status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var output policyRolloutStateClearOutput
+	if err := json.Unmarshal(recorder.Body.Bytes(), &output); err != nil {
+		t.Fatalf("decode clear rollout state response: %v\n%s", err, recorder.Body.String())
+	}
+	if !output.Ready || output.TotalRollouts != 2 || output.ClearedRollouts != 1 || output.RemainingRollouts != 1 || output.FilterNode != "node-b" {
+		t.Fatalf("clear output = %+v, want one cleared node-b rollout", output)
+	}
+	if len(output.Cleared) != 1 || output.Cleared[0].Revision != "rev-b" {
+		t.Fatalf("cleared = %+v, want rev-b", output.Cleared)
+	}
+	doc, err := store.Load(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Rollouts) != 1 || doc.Rollouts[0].Node != "node-a" {
+		t.Fatalf("remaining rollout state = %+v, want only node-a", doc)
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodDelete, "/policy/endpoints/rollout/state", nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("clear without selector status = %d, want 400; body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "requires all=true or at least one filter") {
+		t.Fatalf("body missing selector error: %s", recorder.Body.String())
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodDelete, "/policy/endpoints/rollout/state?all=true", nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("clear all rollout state status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	output = policyRolloutStateClearOutput{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &output); err != nil {
+		t.Fatalf("decode clear all rollout state response: %v\n%s", err, recorder.Body.String())
+	}
+	if !output.All || output.ClearedRollouts != 1 || output.RemainingRollouts != 0 {
+		t.Fatalf("clear all output = %+v, want remaining rollout cleared", output)
+	}
+}
+
 func TestRunPolicyRolloutStateWithStoreReportsFilteredJSON(t *testing.T) {
 	firstUpdated := time.Date(2026, 7, 20, 1, 0, 0, 0, time.UTC)
 	secondUpdated := time.Date(2026, 7, 20, 1, 20, 0, 0, time.UTC)
@@ -1967,6 +2029,49 @@ func TestRunPolicyRolloutStateWithStoreReportsFilteredJSON(t *testing.T) {
 	err = runPolicyRolloutStateWithStore(t.Context(), policyRolloutStateOptions{updatedBefore: "bad"}, &out, store)
 	if err == nil || !strings.Contains(err.Error(), "invalid updated-before") {
 		t.Fatalf("err = %v, want invalid updated-before", err)
+	}
+}
+
+func TestRunPolicyRolloutStateClearWithStoreReportsJSON(t *testing.T) {
+	firstUpdated := time.Date(2026, 7, 20, 1, 0, 0, 0, time.UTC)
+	secondUpdated := time.Date(2026, 7, 20, 1, 20, 0, 0, time.UTC)
+	store := ovsdbPolicyRolloutStateStore{syncer: &fakeOpenVSwitchExternalIDStore{}}
+	if err := store.Save(t.Context(), policyRolloutStateDocument{Rollouts: []policyRolloutStateEntry{
+		{Name: "canary", Node: "node-a", Revision: "rev-a", UpdatedAt: firstUpdated, AppliedEndpoints: []string{model.EndpointKey("prod", "vm-a")}},
+		{Name: "canary", Node: "node-b", Revision: "rev-b", UpdatedAt: secondUpdated, AppliedEndpoints: []string{model.EndpointKey("prod", "vm-b")}, Failed: 1},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	err := runPolicyRolloutStateClearWithStore(t.Context(), policyRolloutStateClearOptions{
+		name:          "canary",
+		updatedBefore: secondUpdated.Format(time.RFC3339),
+	}, &out, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got policyRolloutStateClearOutput
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("decode policy-rollout-state-clear output: %v\n%s", err, out.String())
+	}
+	if !got.Ready || got.TotalRollouts != 2 || got.ClearedRollouts != 1 || got.RemainingRollouts != 1 || got.FilterName != "canary" || got.FilterUpdatedBefore == nil || !got.FilterUpdatedBefore.Equal(secondUpdated) {
+		t.Fatalf("clear output = %+v, want one rollout cleared before cutoff", got)
+	}
+	if len(got.Cleared) != 1 || got.Cleared[0].Revision != "rev-a" {
+		t.Fatalf("cleared = %+v, want rev-a", got.Cleared)
+	}
+	doc, err := store.Load(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Rollouts) != 1 || doc.Rollouts[0].Revision != "rev-b" {
+		t.Fatalf("remaining rollout state = %+v, want rev-b", doc)
+	}
+
+	out.Reset()
+	err = runPolicyRolloutStateClearWithStore(t.Context(), policyRolloutStateClearOptions{}, &out, store)
+	if err == nil || !strings.Contains(err.Error(), "requires -all or at least one filter") {
+		t.Fatalf("err = %v, want selector requirement", err)
 	}
 }
 

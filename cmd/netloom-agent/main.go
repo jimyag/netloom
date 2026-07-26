@@ -115,6 +115,11 @@ func main() {
 				log.Fatal(err)
 			}
 			return
+		case "policy-rollout-state-clear":
+			if err := runPolicyRolloutStateClear(context.Background(), os.Args[2:], os.Stdout); err != nil {
+				log.Fatal(err)
+			}
+			return
 		case "policy-freeze-state":
 			if err := runPolicyFreezeState(context.Background(), os.Args[2:], os.Stdout); err != nil {
 				log.Fatal(err)
@@ -321,6 +326,15 @@ type policyRolloutStateOptions struct {
 	node          string
 	updatedAfter  string
 	updatedBefore string
+}
+
+type policyRolloutStateClearOptions struct {
+	ovsdb         string
+	name          string
+	node          string
+	updatedAfter  string
+	updatedBefore string
+	all           bool
 }
 
 type policyFreezeStateOptions struct {
@@ -725,6 +739,19 @@ type policyRolloutStateOutput struct {
 	FilterUpdatedAfter  *time.Time                `json:"filter_updated_after,omitempty"`
 	FilterUpdatedBefore *time.Time                `json:"filter_updated_before,omitempty"`
 	Rollouts            []policyRolloutStateEntry `json:"rollouts"`
+}
+
+type policyRolloutStateClearOutput struct {
+	Ready               bool                      `json:"ready"`
+	TotalRollouts       int                       `json:"total_rollouts"`
+	ClearedRollouts     int                       `json:"cleared_rollouts"`
+	RemainingRollouts   int                       `json:"remaining_rollouts"`
+	FilterName          string                    `json:"filter_name,omitempty"`
+	FilterNode          string                    `json:"filter_node,omitempty"`
+	FilterUpdatedAfter  *time.Time                `json:"filter_updated_after,omitempty"`
+	FilterUpdatedBefore *time.Time                `json:"filter_updated_before,omitempty"`
+	All                 bool                      `json:"all,omitempty"`
+	Cleared             []policyRolloutStateEntry `json:"cleared,omitempty"`
 }
 
 type policyRolloutStateEntry struct {
@@ -1714,6 +1741,72 @@ func runPolicyRolloutStateWithStore(ctx context.Context, opts policyRolloutState
 		FilterUpdatedAfter:  updatedAfter,
 		FilterUpdatedBefore: updatedBefore,
 		Rollouts:            rollouts,
+	}
+	encoder := json.NewEncoder(stdout)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(output)
+}
+
+func runPolicyRolloutStateClear(ctx context.Context, args []string, stdout io.Writer) error {
+	var opts policyRolloutStateClearOptions
+	flags := flag.NewFlagSet("netloom-agent policy-rollout-state-clear", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	flags.StringVar(&opts.ovsdb, "ovsdb", os.Getenv("NETLOOM_OVSDB_ENDPOINT"), "Open_vSwitch OVSDB endpoint")
+	flags.StringVar(&opts.name, "name", "", "optional rollout name to clear")
+	flags.StringVar(&opts.node, "node", "", "optional rollout node to clear")
+	flags.StringVar(&opts.updatedAfter, "updated-after", "", "optional RFC3339 timestamp; clear rollout state updated at or after this time")
+	flags.StringVar(&opts.updatedBefore, "updated-before", "", "optional RFC3339 timestamp; clear rollout state updated before this time")
+	flags.BoolVar(&opts.all, "all", false, "clear all rollout state entries")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(opts.ovsdb) == "" {
+		return errors.New("missing -ovsdb or NETLOOM_OVSDB_ENDPOINT")
+	}
+	client, closeStore, err := newOpenVSwitchClient(ctx, opts.ovsdb)
+	if err != nil {
+		return err
+	}
+	defer closeStore()
+	return runPolicyRolloutStateClearWithStore(ctx, opts, stdout, ovsdbPolicyRolloutStateStore{syncer: linuxdatapath.NewLibOVSDBProviderSyncer(client)})
+}
+
+func runPolicyRolloutStateClearWithStore(ctx context.Context, opts policyRolloutStateClearOptions, stdout io.Writer, store policyRolloutStateStore) error {
+	if store == nil {
+		return errors.New("missing policy rollout state store")
+	}
+	name := strings.TrimSpace(opts.name)
+	node := strings.TrimSpace(opts.node)
+	updatedAfter, err := parseOptionalTimeFilter(opts.updatedAfter, "updated-after")
+	if err != nil {
+		return err
+	}
+	updatedBefore, err := parseOptionalTimeFilter(opts.updatedBefore, "updated-before")
+	if err != nil {
+		return err
+	}
+	if err := validatePolicyRolloutStateClearSelector(opts.all, name, node, updatedAfter, updatedBefore); err != nil {
+		return err
+	}
+	doc, err := store.Load(ctx)
+	if err != nil {
+		return err
+	}
+	next, cleared := clearPolicyRolloutState(doc.Rollouts, opts.all, name, node, updatedAfter, updatedBefore)
+	if err := store.Save(ctx, policyRolloutStateDocument{Rollouts: next}); err != nil {
+		return err
+	}
+	output := policyRolloutStateClearOutput{
+		Ready:               true,
+		TotalRollouts:       len(doc.Rollouts),
+		ClearedRollouts:     len(cleared),
+		RemainingRollouts:   len(next),
+		FilterName:          name,
+		FilterNode:          node,
+		FilterUpdatedAfter:  updatedAfter,
+		FilterUpdatedBefore: updatedBefore,
+		All:                 opts.all,
+		Cleared:             cleared,
 	}
 	encoder := json.NewEncoder(stdout)
 	encoder.SetIndent("", "  ")
@@ -4683,21 +4776,49 @@ func filterPolicyRolloutState(rollouts []policyRolloutStateEntry, name, node str
 	node = strings.TrimSpace(node)
 	out := make([]policyRolloutStateEntry, 0, len(rollouts))
 	for _, rollout := range rollouts {
-		if name != "" && rollout.Name != name {
-			continue
+		if policyRolloutStateEntryMatches(rollout, name, node, updatedAfter, updatedBefore) {
+			out = append(out, rollout)
 		}
-		if node != "" && rollout.Node != node {
-			continue
-		}
-		if updatedAfter != nil && rollout.UpdatedAt.Before(*updatedAfter) {
-			continue
-		}
-		if updatedBefore != nil && !rollout.UpdatedAt.Before(*updatedBefore) {
-			continue
-		}
-		out = append(out, rollout)
 	}
 	return out
+}
+
+func clearPolicyRolloutState(rollouts []policyRolloutStateEntry, all bool, name, node string, updatedAfter, updatedBefore *time.Time) ([]policyRolloutStateEntry, []policyRolloutStateEntry) {
+	name = strings.TrimSpace(name)
+	node = strings.TrimSpace(node)
+	next := make([]policyRolloutStateEntry, 0, len(rollouts))
+	cleared := make([]policyRolloutStateEntry, 0, len(rollouts))
+	for _, rollout := range rollouts {
+		if all || policyRolloutStateEntryMatches(rollout, name, node, updatedAfter, updatedBefore) {
+			cleared = append(cleared, rollout)
+			continue
+		}
+		next = append(next, rollout)
+	}
+	return next, cleared
+}
+
+func policyRolloutStateEntryMatches(rollout policyRolloutStateEntry, name, node string, updatedAfter, updatedBefore *time.Time) bool {
+	if name != "" && rollout.Name != name {
+		return false
+	}
+	if node != "" && rollout.Node != node {
+		return false
+	}
+	if updatedAfter != nil && rollout.UpdatedAt.Before(*updatedAfter) {
+		return false
+	}
+	if updatedBefore != nil && !rollout.UpdatedAt.Before(*updatedBefore) {
+		return false
+	}
+	return true
+}
+
+func validatePolicyRolloutStateClearSelector(all bool, name, node string, updatedAfter, updatedBefore *time.Time) error {
+	if all || strings.TrimSpace(name) != "" || strings.TrimSpace(node) != "" || updatedAfter != nil || updatedBefore != nil {
+		return nil
+	}
+	return errors.New("policy rollout state clear requires -all or at least one filter")
 }
 
 func filterPolicyFreezeState(entries []policyFreezeStateEntry, endpoint string) []policyFreezeStateEntry {
@@ -6325,6 +6446,10 @@ func isPolicyEndpointRevisionRequest(r *http.Request) bool {
 }
 
 func (m *agentMetrics) handlePolicyRolloutState(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodDelete {
+		m.handlePolicyRolloutStateClear(w, r)
+		return
+	}
 	if r.Method != http.MethodGet {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "method not allowed"})
@@ -6368,6 +6493,67 @@ func (m *agentMetrics) handlePolicyRolloutState(w http.ResponseWriter, r *http.R
 		FilterUpdatedAfter:  updatedAfter,
 		FilterUpdatedBefore: updatedBefore,
 		Rollouts:            rollouts,
+	})
+}
+
+func (m *agentMetrics) handlePolicyRolloutStateClear(w http.ResponseWriter, r *http.Request) {
+	store := m.policyRolloutStateStore()
+	if store == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "policy rollout state is not enabled"})
+		return
+	}
+	name := strings.TrimSpace(r.URL.Query().Get("name"))
+	node := strings.TrimSpace(r.URL.Query().Get("node"))
+	all, err := parseOptionalBoolFilter(r.URL.Query().Get("all"), "all")
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	updatedAfter, err := parseOptionalTimeFilter(r.URL.Query().Get("updated_after"), "updated_after")
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	updatedBefore, err := parseOptionalTimeFilter(r.URL.Query().Get("updated_before"), "updated_before")
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	clearAll := all != nil && *all
+	if err := validatePolicyRolloutStateClearSelector(clearAll, name, node, updatedAfter, updatedBefore); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": strings.ReplaceAll(err.Error(), "-all", "all=true")})
+		return
+	}
+	doc, err := store.Load(r.Context())
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	next, cleared := clearPolicyRolloutState(doc.Rollouts, clearAll, name, node, updatedAfter, updatedBefore)
+	if err := store.Save(r.Context(), policyRolloutStateDocument{Rollouts: next}); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	encoder := json.NewEncoder(w)
+	encoder.SetIndent("", "  ")
+	_ = encoder.Encode(policyRolloutStateClearOutput{
+		Ready:               true,
+		TotalRollouts:       len(doc.Rollouts),
+		ClearedRollouts:     len(cleared),
+		RemainingRollouts:   len(next),
+		FilterName:          name,
+		FilterNode:          node,
+		FilterUpdatedAfter:  updatedAfter,
+		FilterUpdatedBefore: updatedBefore,
+		All:                 clearAll,
+		Cleared:             cleared,
 	})
 }
 
