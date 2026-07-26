@@ -252,6 +252,7 @@ type policyActionHistoryOptions struct {
 	ovsdb    string
 	endpoint string
 	action   string
+	reason   string
 	success  string
 	limit    int
 }
@@ -596,6 +597,7 @@ type policyActionHistoryOutput struct {
 	Limit          int                        `json:"limit"`
 	FilterEndpoint string                     `json:"filter_endpoint,omitempty"`
 	FilterAction   string                     `json:"filter_action,omitempty"`
+	FilterReason   string                     `json:"filter_reason,omitempty"`
 	FilterSuccess  *bool                      `json:"filter_success,omitempty"`
 	History        []policyActionHistoryEntry `json:"history"`
 }
@@ -622,6 +624,7 @@ type policyActionHistoryEntry struct {
 	Entries     uint32    `json:"entries,omitempty"`
 	ExpiresAt   time.Time `json:"expires_at,omitempty"`
 	Success     bool      `json:"success"`
+	Reason      string    `json:"reason,omitempty"`
 	Error       string    `json:"error,omitempty"`
 }
 
@@ -1273,6 +1276,7 @@ func runPolicyActionHistory(ctx context.Context, args []string, stdout io.Writer
 	flags.StringVar(&opts.ovsdb, "ovsdb", os.Getenv("NETLOOM_OVSDB_ENDPOINT"), "Open_vSwitch OVSDB endpoint")
 	flags.StringVar(&opts.endpoint, "endpoint", "", "optional endpoint key or endpoint ID to include")
 	flags.StringVar(&opts.action, "action", "", "optional lifecycle action to include")
+	flags.StringVar(&opts.reason, "reason", "", "optional lifecycle action reason to include")
 	flags.StringVar(&opts.success, "success", "", "optional success filter: true or false")
 	flags.IntVar(&opts.limit, "limit", defaultPolicyEventsLimit, "maximum recent action history entries")
 	if err := flags.Parse(args); err != nil {
@@ -1309,7 +1313,8 @@ func runPolicyActionHistoryWithStore(ctx context.Context, opts policyActionHisto
 	}
 	endpoint := strings.TrimSpace(opts.endpoint)
 	action := strings.TrimSpace(opts.action)
-	filtered := filterPolicyActionHistory(history, endpoint, action, success)
+	reason := strings.TrimSpace(opts.reason)
+	filtered := filterPolicyActionHistory(history, endpoint, action, reason, success)
 	recent := recentPolicyActionHistory(filtered, opts.limit)
 	output := policyActionHistoryOutput{
 		Ready:          true,
@@ -1318,6 +1323,7 @@ func runPolicyActionHistoryWithStore(ctx context.Context, opts policyActionHisto
 		Limit:          opts.limit,
 		FilterEndpoint: endpoint,
 		FilterAction:   action,
+		FilterReason:   reason,
 		FilterSuccess:  success,
 		History:        recent,
 	}
@@ -4329,9 +4335,10 @@ func (m *agentMetrics) policyActionHistory() []policyActionHistoryEntry {
 	return append([]policyActionHistoryEntry(nil), m.actionHistory...)
 }
 
-func filterPolicyActionHistory(history []policyActionHistoryEntry, endpoint, action string, success *bool) []policyActionHistoryEntry {
+func filterPolicyActionHistory(history []policyActionHistoryEntry, endpoint, action, reason string, success *bool) []policyActionHistoryEntry {
 	endpoint = strings.TrimSpace(endpoint)
 	action = strings.TrimSpace(action)
+	reason = strings.TrimSpace(reason)
 	candidates := map[string]struct{}{}
 	if endpoint != "" {
 		candidates = policyEndpointCandidates(endpoint)
@@ -4339,6 +4346,9 @@ func filterPolicyActionHistory(history []policyActionHistoryEntry, endpoint, act
 	out := make([]policyActionHistoryEntry, 0, len(history))
 	for _, entry := range history {
 		if action != "" && entry.Action != action {
+			continue
+		}
+		if reason != "" && entry.Reason != reason {
 			continue
 		}
 		if success != nil && entry.Success != *success {
@@ -5894,6 +5904,7 @@ func (m *agentMetrics) handlePolicyActionHistory(w http.ResponseWriter, r *http.
 	}
 	endpoint := strings.TrimSpace(r.URL.Query().Get("endpoint"))
 	action := strings.TrimSpace(r.URL.Query().Get("action"))
+	reason := strings.TrimSpace(r.URL.Query().Get("reason"))
 	success, err := policyActionSuccessFromRequest(r)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
@@ -5901,7 +5912,7 @@ func (m *agentMetrics) handlePolicyActionHistory(w http.ResponseWriter, r *http.
 		return
 	}
 	history := m.policyActionHistory()
-	filtered := filterPolicyActionHistory(history, endpoint, action, success)
+	filtered := filterPolicyActionHistory(history, endpoint, action, reason, success)
 	recent := recentPolicyActionHistory(filtered, limit)
 	encoder := json.NewEncoder(w)
 	encoder.SetIndent("", "  ")
@@ -5912,6 +5923,7 @@ func (m *agentMetrics) handlePolicyActionHistory(w http.ResponseWriter, r *http.
 		Limit:          limit,
 		FilterEndpoint: endpoint,
 		FilterAction:   action,
+		FilterReason:   reason,
 		FilterSuccess:  success,
 		History:        recent,
 	})
@@ -6274,8 +6286,28 @@ func (m *agentMetrics) recordPolicyEndpointActionFailure(ctx context.Context, ac
 		Action:     action,
 		EndpointID: endpointID,
 		Success:    false,
+		Reason:     policyEndpointActionFailureReason(actionErr),
 		Error:      actionErr.Error(),
 	})
+}
+
+func policyEndpointActionFailureReason(err error) string {
+	if err == nil {
+		return ""
+	}
+	message := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(message, "frozen"):
+		return "frozen"
+	case strings.Contains(message, "not enabled"), strings.Contains(message, "not ready"):
+		return "not_ready"
+	case strings.Contains(message, "not found"):
+		return "not_found"
+	case strings.Contains(message, "missing"), strings.Contains(message, "required"), strings.Contains(message, "assigned to node"):
+		return "invalid_request"
+	default:
+		return "action_failed"
+	}
 }
 
 func decodePolicyEndpointFreezeRequest(r *http.Request) (policyEndpointFreezeRequest, error) {

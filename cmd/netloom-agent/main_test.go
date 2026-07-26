@@ -1352,7 +1352,7 @@ func TestRunAgentStatusWithStoreRequiresStatusExternalID(t *testing.T) {
 func TestRunPolicyActionHistoryWithStoreReportsFilteredJSON(t *testing.T) {
 	history := []policyActionHistoryEntry{
 		{ID: "1", Action: "freeze", EndpointID: model.EndpointKey("prod", "vm-a"), Node: "node-a", Store: "ebpf", CompletedAt: time.Now().Add(-3 * time.Minute), Success: true},
-		{ID: "2", Action: "regenerate", EndpointID: model.EndpointKey("prod", "vm-a"), Node: "node-a", Store: "ebpf", CompletedAt: time.Now().Add(-2 * time.Minute), Success: false, Error: "policy endpoint is frozen"},
+		{ID: "2", Action: "regenerate", EndpointID: model.EndpointKey("prod", "vm-a"), Node: "node-a", Store: "ebpf", CompletedAt: time.Now().Add(-2 * time.Minute), Success: false, Reason: "frozen", Error: "policy endpoint is frozen"},
 		{ID: "3", Action: "regenerate", EndpointID: model.EndpointKey("prod", "vm-b"), Node: "node-a", Store: "ebpf", CompletedAt: time.Now().Add(-time.Minute), Success: true},
 	}
 	raw, err := json.Marshal(history)
@@ -1366,6 +1366,7 @@ func TestRunPolicyActionHistoryWithStoreReportsFilteredJSON(t *testing.T) {
 	err = runPolicyActionHistoryWithStore(t.Context(), policyActionHistoryOptions{
 		endpoint: "prod/vm-a",
 		action:   "regenerate",
+		reason:   "frozen",
 		success:  "false",
 		limit:    10,
 	}, &out, store)
@@ -1376,10 +1377,10 @@ func TestRunPolicyActionHistoryWithStoreReportsFilteredJSON(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
 		t.Fatalf("decode policy-action-history output: %v\n%s", err, out.String())
 	}
-	if !got.Ready || got.TotalEvents != 3 || got.EventCount != 1 || got.FilterEndpoint != "prod/vm-a" || got.FilterAction != "regenerate" || got.FilterSuccess == nil || *got.FilterSuccess {
-		t.Fatalf("output = %+v, want failed regenerate filter metadata", got)
+	if !got.Ready || got.TotalEvents != 3 || got.EventCount != 1 || got.FilterEndpoint != "prod/vm-a" || got.FilterAction != "regenerate" || got.FilterReason != "frozen" || got.FilterSuccess == nil || *got.FilterSuccess {
+		t.Fatalf("output = %+v, want failed frozen regenerate filter metadata", got)
 	}
-	if len(got.History) != 1 || got.History[0].ID != "2" || got.History[0].Success || !strings.Contains(got.History[0].Error, "frozen") {
+	if len(got.History) != 1 || got.History[0].ID != "2" || got.History[0].Success || got.History[0].Reason != "frozen" || !strings.Contains(got.History[0].Error, "frozen") {
 		t.Fatalf("history = %+v, want failed regenerate action", got.History)
 	}
 }
@@ -4938,7 +4939,7 @@ func TestPolicyEndpointActionHistoryAPIFiltersEndpointActionAndLimit(t *testing.
 	history := []policyActionHistoryEntry{
 		{ID: "1", Action: "freeze", EndpointID: model.EndpointKey("prod", "pod-a"), Node: "node-a", Store: "memory", CompletedAt: time.Now().Add(-3 * time.Minute), Success: true},
 		{ID: "2", Action: "unfreeze", EndpointID: model.EndpointKey("prod", "pod-a"), Node: "node-a", Store: "memory", CompletedAt: time.Now().Add(-2 * time.Minute), Success: true},
-		{ID: "3", Action: "freeze", EndpointID: model.EndpointKey("prod", "pod-b"), Node: "node-a", Store: "memory", CompletedAt: time.Now().Add(-time.Minute), Success: false, Error: "policy endpoint is frozen"},
+		{ID: "3", Action: "freeze", EndpointID: model.EndpointKey("prod", "pod-b"), Node: "node-a", Store: "memory", CompletedAt: time.Now().Add(-time.Minute), Success: false, Reason: "frozen", Error: "policy endpoint is frozen"},
 	}
 	raw, err := json.Marshal(history)
 	if err != nil {
@@ -4966,6 +4967,23 @@ func TestPolicyEndpointActionHistoryAPIFiltersEndpointActionAndLimit(t *testing.
 	}
 	if len(output.History) != 1 || output.History[0].ID != "1" || output.History[0].EndpointID != model.EndpointKey("prod", "pod-a") || output.History[0].Action != "freeze" || !output.History[0].Success {
 		t.Fatalf("action history = %+v, want only prod/pod-a freeze", output.History)
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/policy/endpoints/actions/history?reason=frozen&success=false&limit=10", nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("reason history status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	output = policyActionHistoryOutput{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &output); err != nil {
+		t.Fatalf("decode reason action history response: %v\n%s", err, recorder.Body.String())
+	}
+	if output.FilterReason != "frozen" || output.FilterSuccess == nil || *output.FilterSuccess || output.EventCount != 1 {
+		t.Fatalf("reason action history metadata = %+v, want failed frozen filter", output)
+	}
+	if len(output.History) != 1 || output.History[0].ID != "3" || output.History[0].Reason != "frozen" {
+		t.Fatalf("reason action history = %+v, want failed frozen entry", output.History)
 	}
 }
 
@@ -5023,12 +5041,12 @@ func TestPolicyEndpointActionHistoryRecordsFailedAction(t *testing.T) {
 	if persisted[0].Action != "freeze" || persisted[0].EndpointID != endpointID || !persisted[0].Success {
 		t.Fatalf("persisted freeze action = %+v, want successful freeze", persisted[0])
 	}
-	if persisted[1].Action != "regenerate" || persisted[1].EndpointID != endpointID || persisted[1].Success || !strings.Contains(persisted[1].Error, "frozen") {
+	if persisted[1].Action != "regenerate" || persisted[1].EndpointID != endpointID || persisted[1].Success || persisted[1].Reason != "frozen" || !strings.Contains(persisted[1].Error, "frozen") {
 		t.Fatalf("persisted regenerate action = %+v, want failed frozen regenerate", persisted[1])
 	}
 
 	recorder = httptest.NewRecorder()
-	request = httptest.NewRequest(http.MethodGet, "/policy/endpoints/actions/history?action=regenerate&success=false", nil)
+	request = httptest.NewRequest(http.MethodGet, "/policy/endpoints/actions/history?action=regenerate&reason=frozen&success=false", nil)
 	metrics.handlePolicyEndpoints(recorder, request)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("history status = %d, body=%s", recorder.Code, recorder.Body.String())
@@ -5037,7 +5055,7 @@ func TestPolicyEndpointActionHistoryRecordsFailedAction(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &output); err != nil {
 		t.Fatalf("decode action history response: %v\n%s", err, recorder.Body.String())
 	}
-	if output.FilterSuccess == nil || *output.FilterSuccess || output.EventCount != 1 || len(output.History) != 1 || output.History[0].Success {
+	if output.FilterReason != "frozen" || output.FilterSuccess == nil || *output.FilterSuccess || output.EventCount != 1 || len(output.History) != 1 || output.History[0].Success || output.History[0].Reason != "frozen" {
 		t.Fatalf("action history output = %+v, want failed regenerate only", output)
 	}
 }
