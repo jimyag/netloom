@@ -304,32 +304,60 @@ func TestDNSSocketFilterProgramSpecMatchesDNSResponses(t *testing.T) {
 	if spec.Name != "netloom_dns" || spec.Type != ebpf.SocketFilter || spec.License != "MIT" {
 		t.Fatalf("spec = name:%s type:%s license:%s, want socket filter", spec.Name, spec.Type, spec.License)
 	}
-	wantOffsets := map[int32]asm.Size{
-		12: asm.Half,
-		14: asm.Byte,
-		20: asm.Byte,
-		23: asm.Byte,
-		34: asm.Half,
-		44: asm.Byte,
-		54: asm.Half,
-		64: asm.Byte,
+	wantLoads := map[string]struct{}{
+		loadKey(12, asm.Half): {},
+		loadKey(14, asm.Byte): {},
+		loadKey(16, asm.Half): {},
+		loadKey(18, asm.Byte): {},
+		loadKey(20, asm.Byte): {},
+		loadKey(20, asm.Half): {},
+		loadKey(22, asm.Byte): {},
+		loadKey(23, asm.Byte): {},
+		loadKey(24, asm.Byte): {},
+		loadKey(27, asm.Byte): {},
+		loadKey(28, asm.Byte): {},
+		loadKey(31, asm.Byte): {},
+		loadKey(34, asm.Half): {},
+		loadKey(38, asm.Half): {},
+		loadKey(42, asm.Half): {},
+		loadKey(44, asm.Byte): {},
+		loadKey(48, asm.Byte): {},
+		loadKey(52, asm.Byte): {},
+		loadKey(54, asm.Half): {},
+		loadKey(58, asm.Half): {},
+		loadKey(62, asm.Half): {},
+		loadKey(64, asm.Byte): {},
+		loadKey(68, asm.Byte): {},
+		loadKey(72, asm.Byte): {},
 	}
 	for _, ins := range spec.Instructions {
 		offset := int32(ins.Constant)
-		size, ok := wantOffsets[offset]
-		if !ok {
-			continue
+		for _, size := range []asm.Size{asm.Byte, asm.Half} {
+			if ins.OpCode == asm.LoadAbsOp(size) {
+				delete(wantLoads, loadKey(offset, size))
+			}
 		}
-		if ins.OpCode != asm.LoadAbsOp(size) {
-			t.Fatalf("load offset %d opcode = %s, want LoadAbs %s", offset, ins.OpCode, size)
+	}
+	if len(wantLoads) != 0 {
+		t.Fatalf("missing socket filter loads: %+v", wantLoads)
+	}
+	for _, symbol := range []string{
+		"ipv4_l3_14",
+		"ipv4_l3_18",
+		"ipv4_l3_22",
+		"ipv6_l3_14",
+		"ipv6_l3_18",
+		"ipv6_l3_22",
+		"vlan_l3_18",
+		"vlan_l3_22",
+		"pass",
+		"drop",
+	} {
+		if !instructionHasSymbol(spec.Instructions, symbol) {
+			t.Fatalf("socket filter instructions missing expected branch symbol %q:\n%s", symbol, spec.Instructions)
 		}
-		delete(wantOffsets, offset)
 	}
-	if len(wantOffsets) != 0 {
-		t.Fatalf("missing socket filter load offsets: %+v", wantOffsets)
-	}
-	if !instructionHasSymbol(spec.Instructions, "ipv4") || !instructionHasSymbol(spec.Instructions, "ipv6") ||
-		!instructionHasSymbol(spec.Instructions, "pass") || !instructionHasSymbol(spec.Instructions, "drop") {
+	if !instructionComparesEtherType(spec.Instructions, 0x8100) || !instructionComparesEtherType(spec.Instructions, 0x88a8) {
 		t.Fatalf("socket filter instructions missing expected branch symbols:\n%s", spec.Instructions)
 	}
 	if got := spec.Instructions[len(spec.Instructions)-2]; got.Symbol() != "pass" || got.Constant != 0xffff {
@@ -353,6 +381,19 @@ func TestParseBoolDefault(t *testing.T) {
 	if !parseBoolDefault("bad", true) {
 		t.Fatal("invalid value should use fallback")
 	}
+}
+
+func loadKey(offset int32, size asm.Size) string {
+	return fmt.Sprintf("%d/%s", offset, size)
+}
+
+func instructionComparesEtherType(instructions asm.Instructions, etherType int32) bool {
+	for _, ins := range instructions {
+		if ins.Constant == int64(etherType) {
+			return true
+		}
+	}
+	return false
 }
 
 func instructionHasSymbol(instructions asm.Instructions, symbol string) bool {

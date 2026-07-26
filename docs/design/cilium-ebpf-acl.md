@@ -357,9 +357,10 @@ sidecar-friendly bridge: it accepts newline-delimited base64 or hex DNS
 responses, one raw DNS response, UDP proxy traffic, or DNS-over-TCP proxy
 traffic, including multiple queries on one TCP client connection, and merges the derived records into local OVSDB
 `Open_vSwitch.external_ids:netloom_dns_observations`. Its AF_PACKET passive
-capture path attaches a small eBPF socket filter by default so common IPv4/IPv6
-UDP DNS responses are filtered before user space, while the Go parser remains
-the final validation and VLAN/extension-header fallback path.
+capture path attaches a small eBPF socket filter by default so untagged,
+single-tagged, and double-tagged IPv4/IPv6 UDP DNS responses are filtered
+before user space, while the Go parser remains the final validation and
+extension-header fallback path.
 
 Stateful rules now have a userspace conntrack model that mirrors the Cilium
 policy decision shape. `EvaluateStateful` first checks established reverse-flow
