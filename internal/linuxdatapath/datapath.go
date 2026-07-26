@@ -1402,13 +1402,19 @@ func providerQueueFlowString(flow providerQueueFlow) string {
 
 func providerQueueFlowPriority(flow providerQueueFlow) int {
 	if flow.EndpointScoped {
-		if flow.Protocol != "" || flow.Port != 0 {
-			return 230
+		if flow.Port != 0 {
+			return 240
 		}
-		return 225
+		if flow.Protocol != "" {
+			return 235
+		}
+		return 230
 	}
-	if flow.Protocol != "" || flow.Port != 0 {
+	if flow.Port != 0 {
 		return 220
+	}
+	if flow.Protocol != "" {
+		return 215
 	}
 	return 210
 }

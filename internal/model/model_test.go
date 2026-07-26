@@ -242,6 +242,23 @@ func TestProviderNetworkRejectsInvalidTenantQueues(t *testing.T) {
 			wantErr: "provider network tenant queue id 10 is duplicated",
 		},
 		{
+			name: "duplicate selector with reordered ports",
+			queues: []ProviderNetworkTenantQueuePolicy{{
+				Tenant:     "prod",
+				QueueID:    10,
+				Protocol:   ProtocolTCP,
+				Ports:      []PortRange{{From: 443, To: 443}, {From: 8443, To: 8443}},
+				MaxRateBPS: 500000000,
+			}, {
+				Tenant:     "prod",
+				QueueID:    11,
+				Protocol:   ProtocolTCP,
+				Ports:      []PortRange{{From: 8443, To: 8443}, {From: 443, To: 443}},
+				MaxRateBPS: 100000000,
+			}},
+			wantErr: `provider network tenant queue selector "prod|tcp|443-443|8443-8443" is duplicated`,
+		},
+		{
 			name: "ports require protocol",
 			queues: []ProviderNetworkTenantQueuePolicy{{
 				Tenant:     "prod",

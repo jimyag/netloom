@@ -503,7 +503,14 @@ func (q ProviderNetworkTenantQueuePolicy) Validate() error {
 
 func providerNetworkTenantQueueSelectorKey(queue ProviderNetworkTenantQueuePolicy) string {
 	parts := []string{queue.Tenant, string(queue.Protocol)}
-	for _, port := range queue.Ports {
+	ports := append([]PortRange(nil), queue.Ports...)
+	slices.SortFunc(ports, func(a, b PortRange) int {
+		if a.From != b.From {
+			return int(a.From) - int(b.From)
+		}
+		return int(a.To) - int(b.To)
+	})
+	for _, port := range ports {
 		parts = append(parts, fmt.Sprintf("%d-%d", port.From, port.To))
 	}
 	if selector := labelsSelectorKey(queue.EndpointSelector); selector != "" {

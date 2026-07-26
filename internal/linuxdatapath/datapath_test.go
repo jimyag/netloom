@@ -581,6 +581,11 @@ func TestPlanProgramsProviderTenantQueueFlows(t *testing.T) {
 				Ports:            []model.PortRange{{From: 8443, To: 8443}},
 				EndpointSelector: model.Labels{"app": "web"},
 				MaxRateBPS:       100000000,
+			}, {
+				Tenant:     "prod",
+				QueueID:    13,
+				Protocol:   model.ProtocolTCP,
+				MaxRateBPS: 100000000,
 			}},
 		}},
 		Subnets: []model.Subnet{{
@@ -620,9 +625,10 @@ func TestPlanProgramsProviderTenantQueueFlows(t *testing.T) {
 	for _, expected := range []string{
 		"ovs-ofctl --bundle add-flow " + bridge,
 		"table=0,priority=210,ip,nw_src=10.10.0.0/24,actions=set_queue:10,NORMAL",
+		"table=0,priority=215,tcp,nw_src=10.10.0.0/24,actions=set_queue:13,NORMAL",
 		"table=0,priority=220,tcp,nw_src=10.10.0.0/24,tp_dst=443,actions=set_queue:11,NORMAL",
 		"table=0,priority=220,tcp,nw_src=10.10.0.0/24,tp_dst=444,actions=set_queue:11,NORMAL",
-		"table=0,priority=230,tcp,nw_src=10.10.0.10/32,tp_dst=8443,actions=set_queue:12,NORMAL",
+		"table=0,priority=240,tcp,nw_src=10.10.0.10/32,tp_dst=8443,actions=set_queue:12,NORMAL",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("provider tenant queue flow ops missing %q:\n%s", expected, joined)
@@ -725,7 +731,7 @@ func TestPlanProgramsProviderTenantQueueIdentitySelectorFlows(t *testing.T) {
 		t.Fatal(err)
 	}
 	joined := stringifyOps(ops)
-	if !strings.Contains(joined, "table=0,priority=225,ip,nw_src=10.10.0.10/32,actions=set_queue:20,NORMAL") {
+	if !strings.Contains(joined, "table=0,priority=230,ip,nw_src=10.10.0.10/32,actions=set_queue:20,NORMAL") {
 		t.Fatalf("provider identity queue flow ops missing pod-a /32:\n%s", joined)
 	}
 	if strings.Contains(joined, "nw_src=10.10.0.0/24") || strings.Contains(joined, "nw_src=10.10.0.11/32") {
@@ -802,8 +808,8 @@ func TestPlanProgramsProviderTenantQueueIdentityGroupFlows(t *testing.T) {
 	}
 	joined := stringifyOps(ops)
 	for _, expected := range []string{
-		"table=0,priority=225,ip,nw_src=10.10.0.10/32,actions=set_queue:30,NORMAL",
-		"table=0,priority=225,ip,nw_src=10.10.0.12/32,actions=set_queue:30,NORMAL",
+		"table=0,priority=230,ip,nw_src=10.10.0.10/32,actions=set_queue:30,NORMAL",
+		"table=0,priority=230,ip,nw_src=10.10.0.12/32,actions=set_queue:30,NORMAL",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("provider identity group queue flow ops missing %q:\n%s", expected, joined)
