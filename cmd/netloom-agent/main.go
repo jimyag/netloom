@@ -3843,11 +3843,13 @@ type agentMetricsTotals struct {
 	ConntrackExpired          uint64
 	PolicyRulePackets         uint64
 	PolicyRuleBytes           uint64
+	PolicyRuleAllowed         uint64
 	PolicyRuleDropped         uint64
 	PolicyRuleRejected        uint64
 	PolicyRuleNoMatchDrops    uint64
 	PolicyRuleDenyDrops       uint64
 	PolicyRuleRejectDrops     uint64
+	PolicyRuleLogged          uint64
 	PolicyRuleActionDirection map[string]policyRuleActionDirectionTotals
 }
 
@@ -4831,8 +4833,10 @@ func (t *agentMetricsTotals) observe(snapshot agentMetricsSnapshot) {
 	t.ConntrackExpired += uint64(nonNegative(result.ConntrackExpired))
 	t.PolicyRulePackets += result.PolicyRulePackets
 	t.PolicyRuleBytes += result.PolicyRuleBytes
+	t.PolicyRuleAllowed += result.PolicyRuleAllowed
 	t.PolicyRuleDropped += result.PolicyRuleDropped
 	t.PolicyRuleRejected += result.PolicyRuleRejected
+	t.PolicyRuleLogged += result.PolicyRuleLogged
 	noMatchDrops, denyDrops, rejectDrops := policyRuleDropReasonTotals(result.PolicyRuleStats)
 	t.PolicyRuleNoMatchDrops += noMatchDrops
 	t.PolicyRuleDenyDrops += denyDrops
@@ -6926,11 +6930,13 @@ func writeAgentMetrics(w ioStringWriter, snapshot agentMetricsSnapshot, totals a
 	writeAgentCounter(w, "netloom_agent_conntrack_expired_total", baseLabels, totals.ConntrackExpired)
 	writeAgentCounter(w, "netloom_agent_policy_rule_packets_observed_total", baseLabels, totals.PolicyRulePackets)
 	writeAgentCounter(w, "netloom_agent_policy_rule_bytes_observed_total", baseLabels, totals.PolicyRuleBytes)
+	writeAgentCounter(w, "netloom_agent_policy_rule_allowed_observed_total", baseLabels, totals.PolicyRuleAllowed)
 	writeAgentCounter(w, "netloom_agent_policy_rule_dropped_observed_total", baseLabels, totals.PolicyRuleDropped)
 	writeAgentCounter(w, "netloom_agent_policy_rule_rejected_observed_total", baseLabels, totals.PolicyRuleRejected)
 	writeAgentCounter(w, "netloom_agent_policy_rule_no_match_drops_observed_total", baseLabels, totals.PolicyRuleNoMatchDrops)
 	writeAgentCounter(w, "netloom_agent_policy_rule_deny_drops_observed_total", baseLabels, totals.PolicyRuleDenyDrops)
 	writeAgentCounter(w, "netloom_agent_policy_rule_reject_drops_observed_total", baseLabels, totals.PolicyRuleRejectDrops)
+	writeAgentCounter(w, "netloom_agent_policy_rule_logged_observed_total", baseLabels, totals.PolicyRuleLogged)
 	writePolicyRuleActionDirectionObservedMetrics(w, result.Node, snapshot.Store, totals.PolicyRuleActionDirection)
 
 	writeMetricType(w, "netloom_agent_policy_rule_packets_total", "counter")

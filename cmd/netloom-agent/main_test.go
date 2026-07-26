@@ -6118,16 +6118,20 @@ func TestAgentMetricsAccumulatesReconcileCountersAndBuckets(t *testing.T) {
 		ConntrackExpired:   3,
 		PolicyRulePackets:  5,
 		PolicyRuleBytes:    512,
+		PolicyRuleAllowed:  2,
 		PolicyRuleDropped:  2,
 		PolicyRuleRejected: 1,
+		PolicyRuleLogged:   1,
 		PolicyRuleStats: []dataplane.RuleMetrics{
 			{EndpointID: "prod\x00pod-a", RuleCookie: 0, Packets: 1, Bytes: 64, Dropped: 1, NoMatchDrops: 1},
 			{EndpointID: "prod\x00pod-a", RuleCookie: 7, Packets: 1, Bytes: 128, Dropped: 1, DenyDrops: 1},
 			{EndpointID: "prod\x00pod-a", RuleCookie: 8, Packets: 1, Bytes: 128, Rejected: 1, RejectDrops: 1},
+			{EndpointID: "prod\x00pod-a", RuleCookie: 9, Packets: 2, Bytes: 192, Allowed: 2, Logged: 1},
 		},
 		PolicyRuleCatalog: []agent.PolicyRuleCatalogEntry{
 			{EndpointID: "prod\x00pod-a", RuleCookie: 7, Direction: model.DirectionIngress, Action: model.ActionDrop},
 			{EndpointID: "prod\x00pod-a", RuleCookie: 8, Direction: model.DirectionEgress, Action: model.ActionReject},
+			{EndpointID: "prod\x00pod-a", RuleCookie: 9, Direction: model.DirectionEgress, Action: model.ActionAllow},
 		},
 	}, "ebpf", 250*time.Millisecond)
 	observeAgentReconcileFailure(metrics, agent.ReconcileResult{
@@ -6163,17 +6167,22 @@ func TestAgentMetricsAccumulatesReconcileCountersAndBuckets(t *testing.T) {
 		`netloom_agent_conntrack_expired_total{node="node-a",store="ebpf"} 3`,
 		`netloom_agent_policy_rule_packets_observed_total{node="node-a",store="ebpf"} 5`,
 		`netloom_agent_policy_rule_bytes_observed_total{node="node-a",store="ebpf"} 512`,
+		`netloom_agent_policy_rule_allowed_observed_total{node="node-a",store="ebpf"} 2`,
 		`netloom_agent_policy_rule_dropped_observed_total{node="node-a",store="ebpf"} 2`,
 		`netloom_agent_policy_rule_rejected_observed_total{node="node-a",store="ebpf"} 1`,
 		`netloom_agent_policy_rule_no_match_drops_observed_total{node="node-a",store="ebpf"} 1`,
 		`netloom_agent_policy_rule_deny_drops_observed_total{node="node-a",store="ebpf"} 1`,
 		`netloom_agent_policy_rule_reject_drops_observed_total{node="node-a",store="ebpf"} 1`,
+		`netloom_agent_policy_rule_logged_observed_total{node="node-a",store="ebpf"} 1`,
 		`netloom_agent_policy_rule_packets_by_action_direction_observed_total{action="",direction="",node="node-a",store="ebpf"} 1`,
 		`netloom_agent_policy_rule_no_match_drops_by_action_direction_observed_total{action="",direction="",node="node-a",store="ebpf"} 1`,
 		`netloom_agent_policy_rule_packets_by_action_direction_observed_total{action="drop",direction="ingress",node="node-a",store="ebpf"} 1`,
 		`netloom_agent_policy_rule_deny_drops_by_action_direction_observed_total{action="drop",direction="ingress",node="node-a",store="ebpf"} 1`,
 		`netloom_agent_policy_rule_packets_by_action_direction_observed_total{action="reject",direction="egress",node="node-a",store="ebpf"} 1`,
 		`netloom_agent_policy_rule_reject_drops_by_action_direction_observed_total{action="reject",direction="egress",node="node-a",store="ebpf"} 1`,
+		`netloom_agent_policy_rule_packets_by_action_direction_observed_total{action="allow",direction="egress",node="node-a",store="ebpf"} 2`,
+		`netloom_agent_policy_rule_allowed_by_action_direction_observed_total{action="allow",direction="egress",node="node-a",store="ebpf"} 2`,
+		`netloom_agent_policy_rule_logged_by_action_direction_observed_total{action="allow",direction="egress",node="node-a",store="ebpf"} 1`,
 	} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("cumulative metrics output missing %q:\n%s", expected, output)
