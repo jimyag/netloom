@@ -1673,6 +1673,13 @@ func writeControllerMetrics(w metricWriter, snapshot controllerMetricsSnapshot, 
 		"ovn_health": fallbackMetricsLabel(snapshot.OVNHealthStatus, "disabled"),
 		"status":     fallbackMetricsLabel(snapshot.OVNCluster.LeaderProbeStatus, "disabled"),
 	}))
+	if snapshot.OVNCluster.LeaderProbeError != "" {
+		writeMetricType(w, "netloom_controller_ovn_cluster_leader_probe_error", "gauge")
+		fmt.Fprintf(w, "netloom_controller_ovn_cluster_leader_probe_error%s 1\n", prometheusLabels(map[string]string{
+			"error":      snapshot.OVNCluster.LeaderProbeError,
+			"ovn_health": fallbackMetricsLabel(snapshot.OVNHealthStatus, "disabled"),
+		}))
+	}
 	writeMetricType(w, "netloom_controller_ovn_cluster_leader_preferred", "gauge")
 	fmt.Fprintf(w, "netloom_controller_ovn_cluster_leader_preferred%s %d\n", baseLabels, boolMetric(snapshot.OVNCluster.LeaderPreferred))
 	writeMetricType(w, "netloom_controller_ovn_cluster_endpoints", "gauge")

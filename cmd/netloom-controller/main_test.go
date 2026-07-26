@@ -1682,6 +1682,38 @@ func TestControllerMetricsExportsLatestSuccess(t *testing.T) {
 	}
 }
 
+func TestControllerMetricsExportsOVNClusterLeaderProbeError(t *testing.T) {
+	metrics := newControllerMetrics()
+	metrics.observe(controllerMetricsSnapshot{
+		OVNHealthStatus: "error",
+		OVNCluster: ovnClusterHealthSnapshot{
+			LeaderProbeStatus:   "error",
+			LeaderProbeError:    "ovn-appctl cluster/status timed out",
+			ConfiguredEndpoints: 3,
+			Endpoints: []ovnClusterEndpointSnapshot{{
+				Endpoint:  "tcp:10.0.0.1:6641",
+				Reachable: false,
+				Error:     "timeout",
+			}},
+		},
+		Success: false,
+	})
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	metrics.handleMetrics(recorder, request)
+
+	output := recorder.Body.String()
+	for _, expected := range []string{
+		`netloom_controller_ovn_cluster_leader_probe_status{ovn_health="error",status="error"} 1`,
+		`netloom_controller_ovn_cluster_leader_probe_error{error="ovn-appctl cluster/status timed out",ovn_health="error"} 1`,
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("metrics output missing %q:\n%s", expected, output)
+		}
+	}
+}
+
 func TestControllerStatusAPIExportsLatestOVNStatus(t *testing.T) {
 	metrics := newControllerMetrics()
 	metrics.observe(controllerMetricsSnapshot{
