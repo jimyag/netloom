@@ -662,6 +662,9 @@ func validateObjectGraph(state DesiredState) error {
 		}
 		providerNetworks[providerNetwork.Name] = providerNetwork
 	}
+	if err := validateProviderNetworkNodeInterfaceClaims(providerNetworks); err != nil {
+		return err
+	}
 
 	subnets := make(map[string]model.Subnet, len(state.Subnets))
 	for _, subnet := range state.Subnets {
@@ -1212,6 +1215,40 @@ func validateProviderTenantQueueIdentityGroupConflicts(providerNetworks map[stri
 		}
 	}
 	return nil
+}
+
+func validateProviderNetworkNodeInterfaceClaims(providerNetworks map[string]model.ProviderNetwork) error {
+	type claim struct {
+		provider string
+		node     string
+		iface    string
+	}
+	claims := make(map[string]claim)
+	names := make([]string, 0, len(providerNetworks))
+	for name := range providerNetworks {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, providerName := range names {
+		provider := providerNetworks[providerName]
+		for _, node := range provider.Nodes {
+			for _, iface := range providerNodeInterfaces(node) {
+				key := node.Node + "\x00" + iface
+				if previous, ok := claims[key]; ok && previous.provider != provider.Name {
+					return fmt.Errorf("provider networks %q and %q both claim interface %s on node %s", previous.provider, provider.Name, iface, node.Node)
+				}
+				claims[key] = claim{provider: provider.Name, node: node.Node, iface: iface}
+			}
+		}
+	}
+	return nil
+}
+
+func providerNodeInterfaces(node model.ProviderNetworkNode) []string {
+	if node.Interface != "" {
+		return []string{node.Interface}
+	}
+	return append([]string(nil), node.Interfaces...)
 }
 
 func providerTenantQueueIdentityGroupEndpoints(queue model.ProviderNetworkTenantQueuePolicy, groups map[string]model.IdentityGroup, endpoints map[string]model.Endpoint) map[string]struct{} {

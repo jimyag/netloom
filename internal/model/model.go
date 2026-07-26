@@ -339,7 +339,7 @@ func (p ProviderNetwork) Validate() error {
 	if p.Name == "" {
 		return errors.New("provider network name is required")
 	}
-	if p.Isolation != "" && p.Isolation != "shared" && p.Isolation != "exclusive" {
+	if p.Isolation != "" && p.Isolation != "exclusive" {
 		return fmt.Errorf("provider network isolation %q is invalid", p.Isolation)
 	}
 	seenControllerTargets := make(map[string]struct{}, len(p.ControllerTargets))
@@ -622,6 +622,9 @@ func (n ProviderNetworkNode) Validate() error {
 	}
 	if n.Interface == "" && len(n.Interfaces) == 0 {
 		return errors.New("provider network interface or interfaces are required")
+	}
+	if n.Interface != "" && len(n.Interfaces) > 0 {
+		return errors.New("provider network interface and interfaces are mutually exclusive")
 	}
 	seen := make(map[string]struct{}, len(n.Interfaces))
 	for _, candidate := range n.Interfaces {

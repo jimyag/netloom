@@ -923,6 +923,44 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 			wantErr: "provider network controller target \"tcp:192.0.2.10:6653\" is duplicated",
 		},
 		{
+			name: "provider networks share node interface",
+			mutate: func(state *DesiredState) {
+				state.ProviderNetworks = []model.ProviderNetwork{{
+					Name: "physnet-a",
+					Nodes: []model.ProviderNetworkNode{{
+						Node:      "node-a",
+						Interface: "eth1",
+					}},
+				}, {
+					Name: "physnet-b",
+					Nodes: []model.ProviderNetworkNode{{
+						Node:      "node-a",
+						Interface: "eth1",
+					}},
+				}}
+			},
+			wantErr: `provider networks "physnet-a" and "physnet-b" both claim interface eth1 on node node-a`,
+		},
+		{
+			name: "provider networks share candidate interface",
+			mutate: func(state *DesiredState) {
+				state.ProviderNetworks = []model.ProviderNetwork{{
+					Name: "physnet-a",
+					Nodes: []model.ProviderNetworkNode{{
+						Node:       "node-a",
+						Interfaces: []string{"ens5", "eth1"},
+					}},
+				}, {
+					Name: "physnet-b",
+					Nodes: []model.ProviderNetworkNode{{
+						Node:       "node-a",
+						Interfaces: []string{"eth2", "eth1"},
+					}},
+				}}
+			},
+			wantErr: `provider networks "physnet-a" and "physnet-b" both claim interface eth1 on node node-a`,
+		},
+		{
 			name: "provider tenant subnet quota exceeded",
 			mutate: func(state *DesiredState) {
 				state.ProviderNetworks = []model.ProviderNetwork{{

@@ -2044,17 +2044,16 @@ func TestPlanRejectsConflictingProviderNetworksOnSameParentVLAN(t *testing.T) {
 		Node:        "node-a",
 		LocalDevice: "nl0",
 	})
-	if err == nil || !strings.Contains(err.Error(), `provider networks "physnet-a" and "physnet-b" both require parent eth1 vlan 100`) {
+	if err == nil || !strings.Contains(err.Error(), `provider networks "physnet-a" and "physnet-b" cannot share parent eth1`) {
 		t.Fatalf("err = %v, want conflicting provider network failure", err)
 	}
 }
 
-func TestPlanRejectsExclusiveProviderNetworkParentSharing(t *testing.T) {
+func TestPlanRejectsProviderNetworkParentSharingAcrossVLANs(t *testing.T) {
 	state := control.DesiredState{
 		ProviderNetworks: []model.ProviderNetwork{
 			{
-				Name:      "physnet-a",
-				Isolation: "exclusive",
+				Name: "physnet-a",
 				Nodes: []model.ProviderNetworkNode{{
 					Node:      "node-a",
 					Interface: "eth1",
@@ -2095,8 +2094,8 @@ func TestPlanRejectsExclusiveProviderNetworkParentSharing(t *testing.T) {
 		Node:        "node-a",
 		LocalDevice: "nl0",
 	})
-	if err == nil || !strings.Contains(err.Error(), `provider networks "physnet-a" and "physnet-b" cannot share exclusive parent eth1`) {
-		t.Fatalf("err = %v, want exclusive parent sharing failure", err)
+	if err == nil || !strings.Contains(err.Error(), `provider networks "physnet-a" and "physnet-b" cannot share parent eth1`) {
+		t.Fatalf("err = %v, want parent sharing failure", err)
 	}
 	if len(result.ProviderIssues) != 1 || result.ProviderIssues[0].Reason != "parent-isolation-conflict" || result.ProviderIssues[0].ParentDevice != "eth1" || result.ProviderIssues[0].Detail != "physnet-a" {
 		t.Fatalf("provider issues = %+v, want parent-isolation-conflict with physnet-a detail", result.ProviderIssues)
@@ -2430,14 +2429,14 @@ func TestPlanReturnsInventorySummaryOnConflictingProviderNetworks(t *testing.T) 
 			{Name: "eth2", Ready: false, State: "down"},
 		},
 	})
-	if err == nil || !strings.Contains(err.Error(), `provider networks "physnet-a" and "physnet-b" both require parent eth1 vlan 100`) {
+	if err == nil || !strings.Contains(err.Error(), `provider networks "physnet-a" and "physnet-b" cannot share parent eth1`) {
 		t.Fatalf("err = %v, want conflicting provider network failure", err)
 	}
 	if result.ProviderInventoryTotal != 2 || result.ProviderInventoryReady != 1 || result.ProviderInventoryDegraded != 1 {
 		t.Fatalf("provider inventory summary = %+v, want total=2 ready=1 degraded=1", result)
 	}
-	if len(result.ProviderIssues) != 1 || result.ProviderIssues[0].Reason != "parent-vlan-conflict" || result.ProviderIssues[0].ParentDevice != "eth1" || result.ProviderIssues[0].VLAN != 100 {
-		t.Fatalf("provider issues = %+v, want parent-vlan-conflict on eth1/100", result.ProviderIssues)
+	if len(result.ProviderIssues) != 1 || result.ProviderIssues[0].Reason != "parent-isolation-conflict" || result.ProviderIssues[0].ParentDevice != "eth1" || result.ProviderIssues[0].VLAN != 100 {
+		t.Fatalf("provider issues = %+v, want parent-isolation-conflict on eth1/100", result.ProviderIssues)
 	}
 }
 

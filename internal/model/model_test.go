@@ -93,8 +93,7 @@ func TestCoreNetworkResourcesValidateRequiredFields(t *testing.T) {
 			name: "provider network isolation",
 			valid: func() error {
 				return ProviderNetwork{
-					Name:      "physnet-a",
-					Isolation: "shared",
+					Name: "physnet-a",
 					Nodes: []ProviderNetworkNode{
 						{Node: "node-a", Interface: "bond0.100"},
 					},
@@ -103,7 +102,7 @@ func TestCoreNetworkResourcesValidateRequiredFields(t *testing.T) {
 			invalid: func() error {
 				return ProviderNetwork{
 					Name:      "physnet-a",
-					Isolation: "tenant",
+					Isolation: "shared",
 					Nodes: []ProviderNetworkNode{
 						{Node: "node-a", Interface: "bond0.100"},
 					},
@@ -573,6 +572,21 @@ func TestProviderNetworkAcceptsCandidateInterfaces(t *testing.T) {
 	}.Validate()
 	if err != nil {
 		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+func TestProviderNetworkRejectsMixedInterfaceModes(t *testing.T) {
+	err := ProviderNetwork{
+		Name: "physnet-a",
+		Nodes: []ProviderNetworkNode{
+			{Node: "node-a", Interface: "eth1", Interfaces: []string{"ens5"}},
+		},
+	}.Validate()
+	if err == nil {
+		t.Fatal("expected mixed interface modes to fail")
+	}
+	if !strings.Contains(err.Error(), "interface and interfaces are mutually exclusive") {
+		t.Fatalf("error %q does not mention mutually exclusive interface modes", err)
 	}
 }
 

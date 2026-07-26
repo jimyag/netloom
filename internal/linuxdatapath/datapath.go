@@ -475,7 +475,7 @@ func desiredProviderNetworkLinkSpecs(state control.DesiredState, node string, ma
 					Reason:          "parent-isolation-conflict",
 					Detail:          claimed.ProviderNetwork,
 				},
-				err: fmt.Errorf("provider networks %q and %q cannot share exclusive parent %s", claimed.ProviderNetwork, spec.ProviderNetwork, parent),
+				err: fmt.Errorf("provider networks %q and %q cannot share parent %s", claimed.ProviderNetwork, spec.ProviderNetwork, parent),
 			}
 		}
 		claimedParents[parent] = spec
@@ -544,7 +544,7 @@ func providerIsolationConflicts(a, b providerNetworkLinkSpec) bool {
 	if a.ProviderNetwork == b.ProviderNetwork {
 		return false
 	}
-	return a.Isolation == "exclusive" || b.Isolation == "exclusive"
+	return true
 }
 
 func providerLinkMappingsForNode(providerNetworks []model.ProviderNetwork, node string, fallback map[string]string, inventory []ProviderInterface) (map[string]string, error) {

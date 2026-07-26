@@ -132,7 +132,7 @@ curl -s http://127.0.0.1:9092/metrics
 
 1. 核对 `NETLOOM_PROVIDER_NETWORK_LINKS` 和 desired state 中 provider name 是否一致。
 2. 检查物理 NIC 是否存在、up、未被错误 provider 共享。
-3. 对 `isolation=exclusive` 的 provider，确认没有其他 provider 使用同一 parent。
+3. 确认同一节点上的 parent NIC 只归属一个 provider network。
 4. 如果 OVSDB drift 来自外部手工修改，先停止外部写入，再让 agent reconcile。
 5. 开启 cleanup 前先确认 stale provider bridge/port/interface 都是 Netloom-owned。
 
