@@ -162,7 +162,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Printf("netloom-agent ready for node policy and datapath reconciliation endpoint=%s entries=%d allow=%s deny=%s policy_allowed=%d policy_dropped=%d policy_conntrack=%d policy_established=%d policy_logged=%d rule_stats=%s rule_catalog=%s drop_events=%d policy_events=%d trace_events=%d tcx=%s runtime_ready=%t runtime=%s\n", result.EndpointID, result.Entries, result.Allowed, result.Denied, result.PolicyStats.Allowed, result.PolicyStats.Dropped, result.PolicyStats.Conntrack, result.PolicyStats.Established, result.PolicyStats.Logged, formatRuleStats(result.RuleStats), formatRuleCatalog(result.RuleCatalog), result.DropEvents, result.PolicyEvents, result.TraceEvents, result.TCX, result.RuntimeReady, formatRuntimeChecks(result.Runtime))
+	fmt.Printf("netloom-agent ready for node policy and datapath reconciliation endpoint=%s entries=%d allow=%s deny=%s policy_allowed=%d policy_dropped=%d policy_conntrack=%d policy_established=%d policy_logged=%d rule_stats=%s rule_catalog=%s drop_events=%d drop_event_refs=%s policy_events=%d policy_event_refs=%s trace_events=%d trace_event_refs=%s tcx=%s runtime_ready=%t runtime=%s\n", result.EndpointID, result.Entries, result.Allowed, result.Denied, result.PolicyStats.Allowed, result.PolicyStats.Dropped, result.PolicyStats.Conntrack, result.PolicyStats.Established, result.PolicyStats.Logged, formatRuleStats(result.RuleStats), formatRuleCatalog(result.RuleCatalog), result.DropEvents, formatStringList(result.DropEventRefs), result.PolicyEvents, formatStringList(result.PolicyEventRefs), result.TraceEvents, formatStringList(result.TraceEventRefs), result.TCX, result.RuntimeReady, formatRuntimeChecks(result.Runtime))
 }
 
 func desiredStateRuntimePathFromEnv() (string, bool) {
@@ -3935,6 +3935,13 @@ func formatRuleCatalog(catalog []agent.PolicyRuleCatalogEntry) string {
 		parts = append(parts, fmt.Sprintf("%d:%s", entry.RuleCookie, entry.RuleRef))
 	}
 	return strings.Join(parts, ";")
+}
+
+func formatStringList(values []string) string {
+	if len(values) == 0 {
+		return "none"
+	}
+	return strings.Join(values, ";")
 }
 
 func formatRuntimeChecks(checks []agent.RuntimeCheck) string {

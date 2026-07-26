@@ -61,11 +61,22 @@ func TestRunSelfTestCompilesAndEvaluatesPolicy(t *testing.T) {
 	if result.DropEvents != 1 {
 		t.Fatalf("drop events = %d, want 1", result.DropEvents)
 	}
+	if len(result.DropEventRefs) != 1 || result.DropEventRefs[0] != "default/web/deny-range" {
+		t.Fatalf("drop event refs = %+v, want deny-range rule ref", result.DropEventRefs)
+	}
 	if result.PolicyEvents != 3 {
 		t.Fatalf("policy events = %d, want 3", result.PolicyEvents)
 	}
+	if !stringSliceContains(result.PolicyEventRefs, "default/web/allow-https") ||
+		!stringSliceContains(result.PolicyEventRefs, "default/web/deny-range") {
+		t.Fatalf("policy event refs = %+v, want allow and deny rule refs", result.PolicyEventRefs)
+	}
 	if result.TraceEvents != 4 {
 		t.Fatalf("trace events = %d, want 4", result.TraceEvents)
+	}
+	if !stringSliceContains(result.TraceEventRefs, "default/web/allow-https") ||
+		!stringSliceContains(result.TraceEventRefs, "default/web/deny-range") {
+		t.Fatalf("trace event refs = %+v, want allow and deny rule refs", result.TraceEventRefs)
 	}
 	if result.TCX != "not-requested" {
 		t.Fatalf("tcx status = %s, want not-requested", result.TCX)
@@ -73,6 +84,15 @@ func TestRunSelfTestCompilesAndEvaluatesPolicy(t *testing.T) {
 	if len(result.Runtime) == 0 {
 		t.Fatal("expected runtime preflight checks")
 	}
+}
+
+func stringSliceContains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func selfTestCatalogContains(catalog []PolicyRuleCatalogEntry, ref string) bool {

@@ -17,19 +17,22 @@ import (
 )
 
 type SelfTestResult struct {
-	EndpointID   string
-	Entries      int
-	Allowed      dataplane.Verdict
-	Denied       dataplane.Verdict
-	PolicyStats  dataplane.PolicyMetrics
-	RuleStats    []dataplane.RuleMetrics
-	RuleCatalog  []PolicyRuleCatalogEntry
-	DropEvents   int
-	PolicyEvents int
-	TraceEvents  int
-	TCX          string
-	RuntimeReady bool
-	Runtime      []RuntimeCheck
+	EndpointID      string
+	Entries         int
+	Allowed         dataplane.Verdict
+	Denied          dataplane.Verdict
+	PolicyStats     dataplane.PolicyMetrics
+	RuleStats       []dataplane.RuleMetrics
+	RuleCatalog     []PolicyRuleCatalogEntry
+	DropEvents      int
+	DropEventRefs   []string
+	PolicyEvents    int
+	PolicyEventRefs []string
+	TraceEvents     int
+	TraceEventRefs  []string
+	TCX             string
+	RuntimeReady    bool
+	Runtime         []RuntimeCheck
 }
 
 type RuntimeCheck struct {
@@ -228,20 +231,53 @@ func RunSelfTest(ctx context.Context) (SelfTestResult, error) {
 	}
 
 	return SelfTestResult{
-		EndpointID:   endpointKey,
-		Entries:      len(entries),
-		Allowed:      allowed.Verdict,
-		Denied:       denied.Verdict,
-		PolicyStats:  recorder.Metrics(endpointKey),
-		RuleStats:    recorder.RuleMetrics(endpointKey),
-		RuleCatalog:  catalogPolicyRules([]policy.Program{program}),
-		DropEvents:   len(recorder.DropEvents()),
-		PolicyEvents: len(recorder.PolicyEvents()),
-		TraceEvents:  len(recorder.TraceEvents()),
-		TCX:          tcxStatus,
-		RuntimeReady: runtimeReady,
-		Runtime:      runtimeChecks,
+		EndpointID:      endpointKey,
+		Entries:         len(entries),
+		Allowed:         allowed.Verdict,
+		Denied:          denied.Verdict,
+		PolicyStats:     recorder.Metrics(endpointKey),
+		RuleStats:       recorder.RuleMetrics(endpointKey),
+		RuleCatalog:     catalogPolicyRules([]policy.Program{program}),
+		DropEvents:      len(recorder.DropEvents()),
+		DropEventRefs:   dropEventRuleRefs(recorder.DropEvents()),
+		PolicyEvents:    len(recorder.PolicyEvents()),
+		PolicyEventRefs: policyEventRuleRefs(recorder.PolicyEvents()),
+		TraceEvents:     len(recorder.TraceEvents()),
+		TraceEventRefs:  traceEventRuleRefs(recorder.TraceEvents()),
+		TCX:             tcxStatus,
+		RuntimeReady:    runtimeReady,
+		Runtime:         runtimeChecks,
 	}, nil
+}
+
+func dropEventRuleRefs(events []dataplane.DropEvent) []string {
+	refs := make([]string, 0, len(events))
+	for _, event := range events {
+		if strings.TrimSpace(event.RuleRef) != "" {
+			refs = append(refs, event.RuleRef)
+		}
+	}
+	return refs
+}
+
+func policyEventRuleRefs(events []dataplane.PolicyEvent) []string {
+	refs := make([]string, 0, len(events))
+	for _, event := range events {
+		if strings.TrimSpace(event.RuleRef) != "" {
+			refs = append(refs, event.RuleRef)
+		}
+	}
+	return refs
+}
+
+func traceEventRuleRefs(events []dataplane.TraceEvent) []string {
+	refs := make([]string, 0, len(events))
+	for _, event := range events {
+		if strings.TrimSpace(event.RuleRef) != "" {
+			refs = append(refs, event.RuleRef)
+		}
+	}
+	return refs
 }
 
 func RunRuntimePreflight() []RuntimeCheck {
