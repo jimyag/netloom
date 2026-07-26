@@ -2707,19 +2707,25 @@ func TestApplyPolicyRolloutsSyncsExternalChangeStatus(t *testing.T) {
 			t.Fatalf("status method = %s, want POST", r.Method)
 		}
 		var request struct {
-			ApprovalRef string   `json:"approval_ref"`
-			Status      string   `json:"status"`
-			Endpoints   []string `json:"endpoints"`
-			Planned     int      `json:"planned"`
-			Applied     int      `json:"applied"`
-			Skipped     int      `json:"skipped"`
-			Failed      int      `json:"failed"`
+			ApprovalRef       string   `json:"approval_ref"`
+			Status            string   `json:"status"`
+			Endpoints         []string `json:"endpoints"`
+			Planned           int      `json:"planned"`
+			Applied           int      `json:"applied"`
+			Skipped           int      `json:"skipped"`
+			Failed            int      `json:"failed"`
+			PolicyAdded       int      `json:"policy_added"`
+			PolicyEvents      int      `json:"policy_events"`
+			PolicyRevisionMax uint64   `json:"policy_revision_max"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Fatalf("decode status request: %v", err)
 		}
 		if request.ApprovalRef != "chg-9999" || request.Status != "applied" || request.Planned != 2 || request.Applied != 2 || request.Skipped != 0 || request.Failed != 0 {
 			t.Fatalf("status request = %+v, want applied summary", request)
+		}
+		if request.PolicyAdded != 2 || request.PolicyEvents != 2 || request.PolicyRevisionMax != 1 {
+			t.Fatalf("status request policy events = %+v, want rollout map event totals", request)
 		}
 		if !slices.Equal(request.Endpoints, []string{model.EndpointKey("prod", "pod-a"), model.EndpointKey("prod", "pod-b")}) {
 			t.Fatalf("status endpoints = %+v, want sorted endpoints", request.Endpoints)

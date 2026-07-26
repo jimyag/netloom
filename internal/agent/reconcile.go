@@ -849,6 +849,15 @@ type policyRolloutChangeStatusRequest struct {
 	Failed             int      `json:"failed"`
 	RolledBack         int      `json:"rolled_back,omitempty"`
 	RollbackFailed     int      `json:"rollback_failed,omitempty"`
+	PolicyAdded        int      `json:"policy_added,omitempty"`
+	PolicyUpdated      int      `json:"policy_updated,omitempty"`
+	PolicyDeleted      int      `json:"policy_deleted,omitempty"`
+	PolicyUnchanged    int      `json:"policy_unchanged,omitempty"`
+	PolicyEvents       int      `json:"policy_events,omitempty"`
+	PolicyFailed       int      `json:"policy_failed,omitempty"`
+	PolicyRollbacks    int      `json:"policy_rollbacks,omitempty"`
+	PolicyRevisionMax  uint64   `json:"policy_revision_max,omitempty"`
+	PolicyLastError    string   `json:"policy_last_error,omitempty"`
 	Paused             bool     `json:"paused,omitempty"`
 	Cancelled          bool     `json:"cancelled,omitempty"`
 	ApprovalPending    bool     `json:"approval_pending,omitempty"`
@@ -1030,6 +1039,15 @@ func postPolicyRolloutChangeStatus(ctx context.Context, options PolicyEndpointRo
 		Failed:             rollout.Failed,
 		RolledBack:         rollout.RolledBack,
 		RollbackFailed:     rollout.RollbackFailed,
+		PolicyAdded:        rollout.PolicyAdded,
+		PolicyUpdated:      rollout.PolicyUpdated,
+		PolicyDeleted:      rollout.PolicyDeleted,
+		PolicyUnchanged:    rollout.PolicyUnchanged,
+		PolicyEvents:       rollout.PolicyEvents,
+		PolicyFailed:       rollout.PolicyFailed,
+		PolicyRollbacks:    rollout.PolicyRollbacks,
+		PolicyRevisionMax:  rollout.PolicyRevisionMax,
+		PolicyLastError:    rollout.PolicyLastError,
 		Paused:             rollout.Paused,
 		Cancelled:          rollout.Cancelled,
 		ApprovalPending:    rollout.ApprovalPending,
