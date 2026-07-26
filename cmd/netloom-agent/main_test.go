@@ -3128,6 +3128,24 @@ func TestPolicyEventsAPIFiltersByCapacityHotspotRuleRef(t *testing.T) {
 	if got.Events[0].PolicyMapPressureSeverity != dataplane.PolicyMapPressureFull || got.Events[0].PolicyMapPressurePercent != 100 {
 		t.Fatalf("event pressure = %+v, want full pressure", got.Events[0])
 	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/policy/events?pressure_min_percent=100", nil)
+	metrics.handlePolicyEvents(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	got = policyEventsOutput{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode pressure-min policy events response: %v\n%s", err, recorder.Body.String())
+	}
+	if got.FilterPressureMinPercent != 100 || got.EventCount != 1 || len(got.Events) != 1 {
+		t.Fatalf("pressure-min filtered events = %+v, want one saturated overflow event", got)
+	}
+	if got.Events[0].PolicyMapPressurePercent < 100 || got.Events[0].PolicyMapRecommendedCapacity != 3 {
+		t.Fatalf("event pressure = %+v, want saturated event with recommended capacity", got.Events[0])
+	}
 }
 
 func TestPolicyEventsAPIRejectsInvalidRemediatedFilter(t *testing.T) {
@@ -3156,6 +3174,22 @@ func TestPolicyEventsAPIRejectsInvalidPressureSeverity(t *testing.T) {
 	}
 	if !strings.Contains(recorder.Body.String(), "unsupported pressure severity") {
 		t.Fatalf("body missing unsupported pressure severity error: %s", recorder.Body.String())
+	}
+}
+
+func TestPolicyEventsAPIRejectsInvalidPressureThreshold(t *testing.T) {
+	metrics := newAgentMetrics(dataplane.NewInMemoryPolicyStore())
+	observeAgentReconcileResult(metrics, agent.ReconcileResult{Node: "node-a"}, "memory", time.Millisecond)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/policy/events?pressure_min_percent=bad", nil)
+	metrics.handlePolicyEvents(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "invalid pressure-min-percent") {
+		t.Fatalf("body missing invalid pressure threshold error: %s", recorder.Body.String())
 	}
 }
 
@@ -3358,6 +3392,36 @@ func TestRunPolicyEventsWithStoreReportsFilteredJSON(t *testing.T) {
 	}
 	if got.Events[0].PolicyMapPressureSeverity != dataplane.PolicyMapPressureCritical || got.Events[0].PolicyMapRecommendedCapacity != 12 {
 		t.Fatalf("event pressure = %+v, want persisted critical pressure", got.Events[0])
+	}
+
+	stdout.Reset()
+	if err := runPolicyEventsWithStore(t.Context(), policyEventsOptions{pressureMinPercent: "90", limit: 10}, &stdout, store); err != nil {
+		t.Fatal(err)
+	}
+	got = policyEventsOutput{}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode pressure-min filtered policy-events output: %v\n%s", err, stdout.String())
+	}
+	if got.FilterPressureMinPercent != 90 || got.EventCount != 1 || len(got.Events) != 1 || got.Events[0].Revision != 2 {
+		t.Fatalf("pressure-min filtered events = %+v, want pod-a deny-ssh revision 2", got)
+	}
+	if got.Events[0].PolicyMapPressurePercent != 90 {
+		t.Fatalf("event pressure percent = %d, want 90", got.Events[0].PolicyMapPressurePercent)
+	}
+
+	stdout.Reset()
+	if err := runPolicyEventsWithStore(t.Context(), policyEventsOptions{recommendedCapacityMin: "12", limit: 10}, &stdout, store); err != nil {
+		t.Fatal(err)
+	}
+	got = policyEventsOutput{}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode recommended-capacity filtered policy-events output: %v\n%s", err, stdout.String())
+	}
+	if got.FilterRecommendedCapacityMin != 12 || got.EventCount != 1 || len(got.Events) != 1 || got.Events[0].Revision != 2 {
+		t.Fatalf("recommended-capacity filtered events = %+v, want pod-a deny-ssh revision 2", got)
+	}
+	if got.Events[0].PolicyMapRecommendedCapacity != 12 {
+		t.Fatalf("event recommended capacity = %d, want 12", got.Events[0].PolicyMapRecommendedCapacity)
 	}
 }
 

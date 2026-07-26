@@ -273,6 +273,8 @@ type policyEventsOptions struct {
 	remediation            string
 	errorContains          string
 	pressureSeverity       string
+	pressureMinPercent     string
+	recommendedCapacityMin string
 	ruleCookie             string
 	ruleRef                string
 	capacityHotspotRuleRef string
@@ -484,6 +486,8 @@ type policyEventsOutput struct {
 	FilterRemediation            string                        `json:"filter_remediation,omitempty"`
 	FilterErrorContains          string                        `json:"filter_error_contains,omitempty"`
 	FilterPressureSeverity       string                        `json:"filter_pressure_severity,omitempty"`
+	FilterPressureMinPercent     uint32                        `json:"filter_pressure_min_percent,omitempty"`
+	FilterRecommendedCapacityMin uint32                        `json:"filter_recommended_capacity_min,omitempty"`
 	FilterRuleCookie             uint32                        `json:"filter_rule_cookie,omitempty"`
 	FilterRuleRef                string                        `json:"filter_rule_ref,omitempty"`
 	FilterCapacityHotspotRuleRef string                        `json:"filter_capacity_hotspot_rule_ref,omitempty"`
@@ -1377,6 +1381,8 @@ func runPolicyEvents(ctx context.Context, args []string, stdout io.Writer) error
 	flags.StringVar(&opts.remediation, "remediation", "", "optional remediation action to include")
 	flags.StringVar(&opts.errorContains, "error-contains", "", "optional policy update error substring to include")
 	flags.StringVar(&opts.pressureSeverity, "pressure-severity", "", "optional policy map pressure severity to include: normal, warning, critical, full, or unknown")
+	flags.StringVar(&opts.pressureMinPercent, "pressure-min-percent", "", "optional minimum policy map pressure percent to include")
+	flags.StringVar(&opts.recommendedCapacityMin, "recommended-capacity-min", "", "optional minimum recommended policy map capacity to include")
 	flags.StringVar(&opts.ruleCookie, "rule-cookie", "", "optional dataplane rule cookie to include")
 	flags.StringVar(&opts.ruleRef, "rule-ref", "", "optional policy rule reference to include")
 	flags.StringVar(&opts.capacityHotspotRuleRef, "capacity-hotspot-rule-ref", "", "optional policy map capacity hotspot rule reference to include")
@@ -1433,6 +1439,8 @@ func runPolicyEventsWithStore(ctx context.Context, opts policyEventsOptions, std
 		FilterRemediation:            filter.Remediation,
 		FilterErrorContains:          filter.ErrorContains,
 		FilterPressureSeverity:       filter.PressureSeverity,
+		FilterPressureMinPercent:     optionalUint32Value(filter.PressureMinPercent),
+		FilterRecommendedCapacityMin: optionalUint32Value(filter.RecommendedCapacityMin),
 		FilterRuleCookie:             filterPolicyUpdateEventRuleCookieValue(filter),
 		FilterRuleRef:                filter.RuleRef,
 		FilterCapacityHotspotRuleRef: filter.CapacityHotspotRuleRef,
@@ -2317,6 +2325,8 @@ type policyUpdateEventFilter struct {
 	Remediation            string
 	ErrorContains          string
 	PressureSeverity       string
+	PressureMinPercent     *uint32
+	RecommendedCapacityMin *uint32
 	RuleCookie             *uint32
 	RuleRef                string
 	CapacityHotspotRuleRef string
@@ -2325,14 +2335,14 @@ type policyUpdateEventFilter struct {
 }
 
 func policyUpdateEventFilterFromOptions(opts policyEventsOptions) (policyUpdateEventFilter, error) {
-	return policyUpdateEventFilterFromValues(opts.endpoint, opts.success, opts.remediated, opts.remediation, opts.errorContains, opts.pressureSeverity, opts.ruleCookie, opts.ruleRef, opts.capacityHotspotRuleRef, opts.direction, opts.action)
+	return policyUpdateEventFilterFromValues(opts.endpoint, opts.success, opts.remediated, opts.remediation, opts.errorContains, opts.pressureSeverity, opts.pressureMinPercent, opts.recommendedCapacityMin, opts.ruleCookie, opts.ruleRef, opts.capacityHotspotRuleRef, opts.direction, opts.action)
 }
 
 func policyUpdateEventFilterFromRequest(r *http.Request, endpoint string) (policyUpdateEventFilter, error) {
-	return policyUpdateEventFilterFromValues(endpoint, r.URL.Query().Get("success"), r.URL.Query().Get("remediated"), r.URL.Query().Get("remediation"), r.URL.Query().Get("error_contains"), r.URL.Query().Get("pressure_severity"), r.URL.Query().Get("rule_cookie"), r.URL.Query().Get("rule_ref"), r.URL.Query().Get("capacity_hotspot_rule_ref"), r.URL.Query().Get("direction"), r.URL.Query().Get("action"))
+	return policyUpdateEventFilterFromValues(endpoint, r.URL.Query().Get("success"), r.URL.Query().Get("remediated"), r.URL.Query().Get("remediation"), r.URL.Query().Get("error_contains"), r.URL.Query().Get("pressure_severity"), r.URL.Query().Get("pressure_min_percent"), r.URL.Query().Get("recommended_capacity_min"), r.URL.Query().Get("rule_cookie"), r.URL.Query().Get("rule_ref"), r.URL.Query().Get("capacity_hotspot_rule_ref"), r.URL.Query().Get("direction"), r.URL.Query().Get("action"))
 }
 
-func policyUpdateEventFilterFromValues(endpoint, successRaw, remediatedRaw, remediation, errorContains, pressureSeverity, ruleCookieRaw, ruleRef, capacityHotspotRuleRef, direction, action string) (policyUpdateEventFilter, error) {
+func policyUpdateEventFilterFromValues(endpoint, successRaw, remediatedRaw, remediation, errorContains, pressureSeverity, pressureMinPercentRaw, recommendedCapacityMinRaw, ruleCookieRaw, ruleRef, capacityHotspotRuleRef, direction, action string) (policyUpdateEventFilter, error) {
 	success, err := policyActionSuccessFromString(successRaw)
 	if err != nil {
 		return policyUpdateEventFilter{}, err
@@ -2343,6 +2353,14 @@ func policyUpdateEventFilterFromValues(endpoint, successRaw, remediatedRaw, reme
 	}
 	pressureSeverity = strings.TrimSpace(pressureSeverity)
 	if err := validatePolicyEndpointPressureSeverity(pressureSeverity); err != nil {
+		return policyUpdateEventFilter{}, err
+	}
+	pressureMinPercent, err := parseOptionalUint32Filter(pressureMinPercentRaw, "pressure-min-percent")
+	if err != nil {
+		return policyUpdateEventFilter{}, err
+	}
+	recommendedCapacityMin, err := parseOptionalUint32Filter(recommendedCapacityMinRaw, "recommended-capacity-min")
+	if err != nil {
 		return policyUpdateEventFilter{}, err
 	}
 	ruleCookieRaw = strings.TrimSpace(ruleCookieRaw)
@@ -2380,6 +2398,8 @@ func policyUpdateEventFilterFromValues(endpoint, successRaw, remediatedRaw, reme
 		Remediation:            strings.TrimSpace(remediation),
 		ErrorContains:          strings.TrimSpace(errorContains),
 		PressureSeverity:       pressureSeverity,
+		PressureMinPercent:     pressureMinPercent,
+		RecommendedCapacityMin: recommendedCapacityMin,
 		RuleCookie:             ruleCookie,
 		RuleRef:                strings.TrimSpace(ruleRef),
 		CapacityHotspotRuleRef: strings.TrimSpace(capacityHotspotRuleRef),
@@ -2407,6 +2427,8 @@ func policyEventsOutputFromSnapshot(snapshot agentMetricsSnapshot, events []data
 		FilterRemediation:            filter.Remediation,
 		FilterErrorContains:          filter.ErrorContains,
 		FilterPressureSeverity:       filter.PressureSeverity,
+		FilterPressureMinPercent:     optionalUint32Value(filter.PressureMinPercent),
+		FilterRecommendedCapacityMin: optionalUint32Value(filter.RecommendedCapacityMin),
 		FilterRuleCookie:             filterPolicyUpdateEventRuleCookieValue(filter),
 		FilterRuleRef:                filter.RuleRef,
 		FilterCapacityHotspotRuleRef: filter.CapacityHotspotRuleRef,
@@ -2647,6 +2669,12 @@ func filterPolicyUpdateEvents(events []dataplane.PolicyUpdateEvent, filter polic
 		if filter.PressureSeverity != "" && event.PolicyMapPressureSeverity != filter.PressureSeverity {
 			continue
 		}
+		if filter.PressureMinPercent != nil && event.PolicyMapPressurePercent < *filter.PressureMinPercent {
+			continue
+		}
+		if filter.RecommendedCapacityMin != nil && event.PolicyMapRecommendedCapacity < *filter.RecommendedCapacityMin {
+			continue
+		}
 		if filter.RuleCookie != nil && !policyUpdateEventHasRuleCookie(event, *filter.RuleCookie) {
 			continue
 		}
@@ -2674,6 +2702,8 @@ func policyUpdateEventFilterActive(filter policyUpdateEventFilter) bool {
 		filter.Remediation != "" ||
 		filter.ErrorContains != "" ||
 		filter.PressureSeverity != "" ||
+		filter.PressureMinPercent != nil ||
+		filter.RecommendedCapacityMin != nil ||
 		filter.RuleCookie != nil ||
 		filter.RuleRef != "" ||
 		filter.CapacityHotspotRuleRef != "" ||
