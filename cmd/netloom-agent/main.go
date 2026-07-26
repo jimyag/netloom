@@ -4518,6 +4518,11 @@ type agentOVSDBStatus struct {
 	PolicyMapDriftExtra           int                  `json:"policy_map_drift_extra"`
 	PolicyMapDriftChanged         int                  `json:"policy_map_drift_changed"`
 	PolicyGCEndpoints             int                  `json:"policy_gc_endpoints"`
+	PolicyAdded                   int                  `json:"policy_added"`
+	PolicyUpdated                 int                  `json:"policy_updated"`
+	PolicyDeleted                 int                  `json:"policy_deleted"`
+	PolicyUnchanged               int                  `json:"policy_unchanged"`
+	PolicyEvents                  int                  `json:"policy_events"`
 	PolicyFailed                  int                  `json:"policy_failed"`
 	PolicyRollbacks               int                  `json:"policy_rollbacks"`
 	PolicyFailedEndpoint          string               `json:"policy_failed_endpoint,omitempty"`
@@ -4600,6 +4605,11 @@ func syncAgentOVSDBStatus(ctx context.Context, store openVSwitchExternalIDStore,
 		PolicyMapDriftExtra:           result.PolicyMapDriftExtra,
 		PolicyMapDriftChanged:         result.PolicyMapDriftChanged,
 		PolicyGCEndpoints:             result.PolicyGCEndpoints,
+		PolicyAdded:                   result.PolicyAdded,
+		PolicyUpdated:                 result.PolicyUpdated,
+		PolicyDeleted:                 result.PolicyDeleted,
+		PolicyUnchanged:               result.PolicyUnchanged,
+		PolicyEvents:                  result.PolicyEvents,
 		PolicyFailed:                  result.PolicyFailed,
 		PolicyRollbacks:               result.PolicyRollbacks,
 		PolicyFailedEndpoint:          result.PolicyFailedEndpoint,

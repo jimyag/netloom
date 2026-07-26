@@ -1468,6 +1468,11 @@ func TestRunAgentStatusWithStoreReportsOpenVSwitchStatus(t *testing.T) {
 		PolicyMapRecommendedCapacity: 17,
 		PolicyMapRecommendedEndpoint: "prod\x00pod-a",
 		PolicyRolloutApplied:         1,
+		PolicyAdded:                  2,
+		PolicyUpdated:                1,
+		PolicyDeleted:                1,
+		PolicyUnchanged:              3,
+		PolicyEvents:                 4,
 		PolicyRulePackets:            3,
 		PolicyRuleDropped:            1,
 		PolicyRuleDenyDrops:          1,
@@ -1511,6 +1516,9 @@ func TestRunAgentStatusWithStoreReportsOpenVSwitchStatus(t *testing.T) {
 	}
 	if got.Node != "node-a" || got.Store != "ebpf" || got.Status != "success" || got.PolicyMapEntries != 4 || got.PolicyMapRecommendedCapacity != 17 || got.PolicyMapRecommendedEndpoint != "prod\x00pod-a" || got.PolicyRolloutApplied != 1 || got.ProviderReady != 1 || !got.RuntimeReady || got.RuntimeWarned != 1 || len(got.Runtime) != 2 {
 		t.Fatalf("agent status = %+v, want decoded OVSDB status", got)
+	}
+	if got.PolicyAdded != 2 || got.PolicyUpdated != 1 || got.PolicyDeleted != 1 || got.PolicyUnchanged != 3 || got.PolicyEvents != 4 {
+		t.Fatalf("agent policy event totals = added:%d updated:%d deleted:%d unchanged:%d events:%d, want decoded event counters", got.PolicyAdded, got.PolicyUpdated, got.PolicyDeleted, got.PolicyUnchanged, got.PolicyEvents)
 	}
 	if got.PolicyRulePackets != 3 || got.PolicyRuleDropped != 1 || got.PolicyRuleDenyDrops != 1 || got.PolicyRuleCount != 1 {
 		t.Fatalf("agent policy rule summary = %+v, want decoded rule counters", got)
@@ -2699,6 +2707,9 @@ func TestReconcileStateFileOnceWritesAgentStatusToOpenVSwitchExternalID(t *testi
 	}
 	if status.Status != "success" || status.Node != "node-a" || status.Store != "memory" || status.Endpoints != 1 || status.PolicyMapEntries != 1 {
 		t.Fatalf("agent OVSDB status = %+v, want successful node-a memory reconcile with one policy entry", status)
+	}
+	if status.PolicyAdded != 1 || status.PolicyUpdated != 0 || status.PolicyDeleted != 0 || status.PolicyUnchanged != 0 || status.PolicyEvents != 1 {
+		t.Fatalf("agent OVSDB policy event totals = added:%d updated:%d deleted:%d unchanged:%d events:%d, want first policy apply event", status.PolicyAdded, status.PolicyUpdated, status.PolicyDeleted, status.PolicyUnchanged, status.PolicyEvents)
 	}
 	if status.PolicyRuleCount != 1 || len(status.PolicyRuleHotspots) != 1 || status.PolicyRuleHotspots[0].RuleRef != "prod/web/allow-http" {
 		t.Fatalf("agent OVSDB policy rule summary = count:%d hotspots:%+v, want allow-http rule attribution", status.PolicyRuleCount, status.PolicyRuleHotspots)
