@@ -2511,6 +2511,11 @@ func mitigatePolicyMapPressureResult(ctx context.Context, store PolicyStore, pro
 	if mitigationThreshold > 0 && result.PolicyMapPressureMax >= mitigationThreshold {
 		inventory, ok := store.(PolicyEndpointInventory)
 		if ok {
+			eventStore, _ := store.(PolicyEventStore)
+			eventCursor := policyEventCursor{}
+			if eventStore != nil {
+				eventCursor = policyEventCursorFrom(eventStore.Events())
+			}
 			endpointIDs, err := inventory.EndpointIDs(ctx)
 			if err != nil {
 				return fmt.Errorf("list policy endpoints for pressure mitigation: %w", err)
@@ -2527,6 +2532,9 @@ func mitigatePolicyMapPressureResult(ctx context.Context, store PolicyStore, pro
 			}
 			result.PolicyPressureMitigated = mitigated
 			if mitigated > 0 {
+				if eventStore != nil {
+					recordPolicyEventsDelta(result, eventStore.Events(), eventCursor, "")
+				}
 				if err := populatePolicyMapUsageResult(ctx, store, result); err != nil {
 					return err
 				}

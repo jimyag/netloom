@@ -894,6 +894,12 @@ func TestReconcileNodeMitigatesPolicyMapPressureByDeletingNonDesiredEndpoints(t 
 	if result.PolicyPressureMitigated != 1 {
 		t.Fatalf("policy pressure mitigated = %d, want 1", result.PolicyPressureMitigated)
 	}
+	if result.PolicyDeleted != 1 {
+		t.Fatalf("policy deleted = %d, want stale endpoint delete event", result.PolicyDeleted)
+	}
+	if result.PolicyEvents != 2 || result.PolicyRevisionMax != 2 {
+		t.Fatalf("policy event summary = %+v, want desired apply plus pressure delete events", result)
+	}
 	if entries := store.Entries(staleEndpoint); len(entries) != 0 {
 		t.Fatalf("stale endpoint entries = %d, want deleted", len(entries))
 	}
