@@ -118,6 +118,13 @@ NETLOOM_E2E=1 go test ./tests/e2e -run 'TestDockerLinuxPolicyRouting' -count=1
 - 容器化运行清单：systemd/container unit 中的 capability、mount、rlimit、socket 权限模板。
 - 发布流程：版本号、配置迁移策略、灰度升级和回滚手册。
 
+对应的生产化文档入口：
+
+- [裸金属部署手册](operations/deployment.md)
+- [备份和恢复](operations/backup-restore.md)
+- [故障处理剧本](operations/runbooks.md)
+- [容量和长期验证](operations/scale-validation.md)
+
 ## 边界
 
 - 这是裸金属 SDN 产品，不集成 Kubernetes。

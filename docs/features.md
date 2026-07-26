@@ -102,6 +102,13 @@
 - 故障剧本：OVN leader failover、OVSDB reconnect、TCX attach 失败、provider parent interface 变化、BPF map pressure。
 - 容器化运行清单：systemd/container unit 中的 capability、mount、rlimit、socket 权限模板。
 
+生产化文档已经开始沉淀在 [docs/operations](operations/deployment.md)：
+
+- [裸金属部署手册](operations/deployment.md)
+- [备份和恢复](operations/backup-restore.md)
+- [故障处理剧本](operations/runbooks.md)
+- [容量和长期验证](operations/scale-validation.md)
+
 ## 推荐验证命令
 
 日常提交前：

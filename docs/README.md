@@ -28,9 +28,18 @@ deployment guidance, scale validation, and operations runbooks.
 4. [Feature matrix](features.md): feature-by-feature implementation and test
    entry points for VPC, subnet, gateway, SecurityGroup, policy route, provider
    network, NAT, load balancer, and observability.
-5. [eBPF ACL design](design/cilium-ebpf-acl.md): why SecurityGroup/ACL
+5. [Bare-metal deployment](operations/deployment.md): production component
+   layout, runtime permissions, controller/agent templates, and upgrade order.
+6. [Backup and restore](operations/backup-restore.md): what state must be
+   preserved and how to restore OVN, Open vSwitch, desired state, and policy
+   lifecycle state.
+7. [Operations runbooks](operations/runbooks.md): OVN, OVSDB, TCX, provider
+   network, PolicyRoute, LB, FQDN, and policy-map pressure troubleshooting.
+8. [Scale validation](operations/scale-validation.md): capacity dimensions,
+   soak tests, failure injection, and pass/fail criteria.
+9. [eBPF ACL design](design/cilium-ebpf-acl.md): why SecurityGroup/ACL
    enforcement lives in eBPF/TCX instead of OVN ACL.
-6. [Gap analysis vs Cilium and Kube-OVN](analysis/sdn-gap-vs-cilium-kube-ovn.md):
+10. [Gap analysis vs Cilium and Kube-OVN](analysis/sdn-gap-vs-cilium-kube-ovn.md):
    implementation choices and remaining production hardening work.
 
 ## Minimal Commands
