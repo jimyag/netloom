@@ -3878,6 +3878,88 @@ func TestPolicyEventsAPIFiltersFailedEvents(t *testing.T) {
 	}
 }
 
+func TestPolicyEventsAPIFiltersCanonicalizationFailuresByRuleAttribution(t *testing.T) {
+	store := dataplane.NewInMemoryPolicyStore()
+	podA := model.EndpointKey("prod", "pod-a")
+	oldEntry := dataplane.PolicyMapEntry{
+		Key:     dataplane.PolicyKey{PrefixLen: dataplane.StaticPrefixBits, Direction: dataplane.DirectionIngress, Protocol: 6, RemoteIdentity: 10},
+		Value:   dataplane.PolicyEntry{RuleCookie: 41},
+		RuleRef: "prod/web/old",
+	}
+	if err := store.ReplaceEndpoint(context.Background(), podA, []dataplane.PolicyMapEntry{oldEntry}); err != nil {
+		t.Fatal(err)
+	}
+	conflict := []dataplane.PolicyMapEntry{{
+		Key:     oldEntry.Key,
+		Value:   dataplane.PolicyEntry{Deny: 1, Precedence: 20, RuleCookie: 42},
+		RuleRef: "prod/web/allow",
+	}, {
+		Key:     oldEntry.Key,
+		Value:   dataplane.PolicyEntry{Deny: 1, Precedence: 20, RuleCookie: 43},
+		RuleRef: "prod/web/drop",
+	}}
+	if err := store.ReplaceEndpoint(context.Background(), podA, conflict); err == nil {
+		t.Fatal("expected conflicting desired policy entries to fail")
+	}
+	metrics := newAgentMetrics(store)
+	observeAgentReconcileResult(metrics, agent.ReconcileResult{
+		Node: "node-a",
+		PolicyRuleCatalog: []agent.PolicyRuleCatalogEntry{{
+			EndpointID: podA,
+			RuleCookie: 42,
+			RuleRef:    "prod/web/allow",
+			Direction:  model.DirectionIngress,
+			Action:     model.ActionAllow,
+		}, {
+			EndpointID: podA,
+			RuleCookie: 43,
+			RuleRef:    "prod/web/drop",
+			Direction:  model.DirectionIngress,
+			Action:     model.ActionDrop,
+		}},
+	}, "memory", time.Millisecond)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/policy/events?success=false&rule_ref=prod/web/drop&direction=ingress&action=drop", nil)
+	metrics.handlePolicyEvents(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var got policyEventsOutput
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode rule-ref filtered canonicalization failure response: %v\n%s", err, recorder.Body.String())
+	}
+	if got.FilterRuleRef != "prod/web/drop" || got.FilterDirection != model.DirectionIngress || got.FilterAction != model.ActionDrop || got.EventCount != 1 {
+		t.Fatalf("filtered output = %+v, want one ingress drop canonicalization failure", got)
+	}
+	if len(got.Events) != 1 || got.Events[0].Success || got.Events[0].Revision != 2 {
+		t.Fatalf("events = %+v, want failed revision 2 event", got.Events)
+	}
+	if !slices.Equal(got.Events[0].RuleCookies, []uint32{42, 43}) || !slices.Equal(got.Events[0].RuleRefs, []string{"prod/web/allow", "prod/web/drop"}) {
+		t.Fatalf("event attribution = cookies %v refs %v, want conflicting desired rules", got.Events[0].RuleCookies, got.Events[0].RuleRefs)
+	}
+	if !slices.Contains(got.Events[0].RuleDirections, "ingress") || !slices.Contains(got.Events[0].RuleActions, "drop") {
+		t.Fatalf("event rule metadata = directions %v actions %v, want ingress drop", got.Events[0].RuleDirections, got.Events[0].RuleActions)
+	}
+	if !strings.Contains(got.Events[0].Error, "conflicting policy map entries for identical key") {
+		t.Fatalf("event error = %q, want canonicalization conflict", got.Events[0].Error)
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/policy/events?rule_cookie=43", nil)
+	metrics.handlePolicyEvents(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	got = policyEventsOutput{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode rule-cookie filtered canonicalization failure response: %v\n%s", err, recorder.Body.String())
+	}
+	if got.FilterRuleCookie != 43 || got.EventCount != 1 || len(got.Events) != 1 || got.Events[0].Revision != 2 {
+		t.Fatalf("rule-cookie filtered events = %+v, want failed revision 2 for cookie 43", got)
+	}
+}
+
 func TestPolicyEventsAPIFiltersByCapacityHotspotRuleRef(t *testing.T) {
 	store := dataplane.NewEBPFPolicyStore(1)
 	podA := model.EndpointKey("prod", "pod-a")
@@ -4192,6 +4274,24 @@ func TestRunPolicyEventsWithStoreReportsFilteredJSON(t *testing.T) {
 	}
 	if got.FilterRuleRef != "prod/db/allow-db" || got.EventCount != 1 || len(got.Events) != 1 || got.Events[0].Revision != 1 || got.Events[0].EndpointID != model.EndpointKey("prod", "pod-b") {
 		t.Fatalf("rule-ref filtered events = %+v, want pod-b allow-db revision 1", got)
+	}
+
+	stdout.Reset()
+	if err := runPolicyEventsWithStore(t.Context(), policyEventsOptions{success: "false", ruleRef: "prod/web/deny-ssh", ruleCookie: "44", limit: 10}, &stdout, store); err != nil {
+		t.Fatal(err)
+	}
+	got = policyEventsOutput{}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode failed rule-attribution filtered policy-events output: %v\n%s", err, stdout.String())
+	}
+	if got.FilterRuleCookie != 44 || got.FilterRuleRef != "prod/web/deny-ssh" || got.FilterSuccess == nil || *got.FilterSuccess || got.EventCount != 1 {
+		t.Fatalf("failed rule-attribution filtered events = %+v, want one failed deny-ssh event", got)
+	}
+	if len(got.Events) != 1 || got.Events[0].Revision != 2 || got.Events[0].Success {
+		t.Fatalf("failed rule-attribution events = %+v, want pod-a failed revision 2", got.Events)
+	}
+	if !slices.Equal(got.Events[0].RuleCookies, []uint32{44}) || !slices.Equal(got.Events[0].RuleRefs, []string{"prod/web/deny-ssh"}) {
+		t.Fatalf("failed event attribution = cookies %v refs %v, want deny-ssh", got.Events[0].RuleCookies, got.Events[0].RuleRefs)
 	}
 
 	stdout.Reset()
