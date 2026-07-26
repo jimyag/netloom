@@ -2563,8 +2563,16 @@ func quarantinePolicyMapPressureResult(ctx context.Context, store PolicyStore, k
 		return nil
 	}
 	entries := quarantinePolicyMapEntries()
+	eventStore, _ := store.(PolicyEventStore)
+	eventCursor := policyEventCursor{}
+	if eventStore != nil {
+		eventCursor = policyEventCursorFrom(eventStore.Events())
+	}
 	if err := store.ReplaceEndpoint(ctx, endpointID, entries); err != nil {
 		return fmt.Errorf("quarantine pressured policy endpoint %s: %w", endpointID, err)
+	}
+	if eventStore != nil {
+		recordPolicyEventsDelta(result, eventStore.Events(), eventCursor, endpointID)
 	}
 	result.PolicyPressureQuarantined = 1
 	result.PolicyPressureQuarantineEndpoint = endpointID

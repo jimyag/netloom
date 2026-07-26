@@ -1024,6 +1024,9 @@ func TestReconcileNodeQuarantinesDesiredEndpointWhenPolicyMapPressureRemainsHigh
 	if result.PolicyPressureQuarantineEndpoint != endpointID {
 		t.Fatalf("policy pressure quarantine endpoint = %q, want %q", result.PolicyPressureQuarantineEndpoint, endpointID)
 	}
+	if result.PolicyEvents != 2 || result.PolicyDeleted != 1 || result.PolicyAdded != 3 || result.PolicyRevisionMax != 2 {
+		t.Fatalf("policy event summary = %+v, want desired apply plus quarantine replacement events", result)
+	}
 	entries := store.Entries(endpointID)
 	if len(entries) != 2 {
 		t.Fatalf("quarantine entries = %d, want ingress and egress drops", len(entries))
