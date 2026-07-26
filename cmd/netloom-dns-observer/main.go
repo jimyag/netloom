@@ -13,10 +13,13 @@ import (
 	"log"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/asm"
 	"github.com/jimyag/netloom/internal/control"
 	"github.com/jimyag/netloom/internal/dnsobserver"
 	"github.com/jimyag/netloom/internal/linuxdatapath"
@@ -25,24 +28,25 @@ import (
 )
 
 type options struct {
-	inputPath       string
-	ovsdbEndpoint   string
-	format          string
-	mergeExisting   bool
-	defaultTTL      uint
-	observedAtValue string
-	listenUDP       string
-	upstreamUDP     string
-	udpTimeout      time.Duration
-	listenTCP       string
-	upstreamTCP     string
-	tcpTimeout      time.Duration
-	captureIface    string
-	captureCount    uint
-	captureDuration time.Duration
-	nfqueue         int
-	nfqueueCount    uint
-	nfqueueDuration time.Duration
+	inputPath         string
+	ovsdbEndpoint     string
+	format            string
+	mergeExisting     bool
+	defaultTTL        uint
+	observedAtValue   string
+	listenUDP         string
+	upstreamUDP       string
+	udpTimeout        time.Duration
+	listenTCP         string
+	upstreamTCP       string
+	tcpTimeout        time.Duration
+	captureIface      string
+	captureEBPFFilter bool
+	captureCount      uint
+	captureDuration   time.Duration
+	nfqueue           int
+	nfqueueCount      uint
+	nfqueueDuration   time.Duration
 }
 
 type result struct {
@@ -74,6 +78,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer, 
 	flags.StringVar(&opts.upstreamTCP, "upstream-tcp", os.Getenv("NETLOOM_DNS_OBSERVER_UPSTREAM_TCP"), "upstream TCP DNS server used with -listen-tcp")
 	flags.DurationVar(&opts.tcpTimeout, "tcp-timeout", 2*time.Second, "TCP upstream timeout used with -listen-tcp")
 	flags.StringVar(&opts.captureIface, "capture-iface", os.Getenv("NETLOOM_DNS_OBSERVER_CAPTURE_IFACE"), "interface name to passively capture UDP DNS responses with AF_PACKET")
+	flags.BoolVar(&opts.captureEBPFFilter, "capture-ebpf-filter", parseBoolDefault(os.Getenv("NETLOOM_DNS_OBSERVER_CAPTURE_EBPF_FILTER"), true), "attach an eBPF socket filter to AF_PACKET capture sockets")
 	flags.UintVar(&opts.captureCount, "capture-count", 0, "number of DNS response packets to capture before exiting; 0 means unlimited")
 	flags.DurationVar(&opts.captureDuration, "capture-duration", 0, "maximum AF_PACKET capture duration; 0 means run until context cancellation or -capture-count")
 	flags.IntVar(&opts.nfqueue, "nfqueue", -1, "netfilter NFQUEUE number to observe DNS responses from; requires build tag netloom_nfqueue")
@@ -221,7 +226,7 @@ func runPacketCapture(ctx context.Context, opts options, store dnsObservationSto
 		captureCtx, cancel = context.WithTimeout(ctx, opts.captureDuration)
 	}
 	defer cancel()
-	capture, err := newAFPacketDNSCapture(strings.TrimSpace(opts.captureIface))
+	capture, err := newAFPacketDNSCapture(strings.TrimSpace(opts.captureIface), opts.captureEBPFFilter)
 	if err != nil {
 		return err
 	}
@@ -318,10 +323,11 @@ type dnsCapture interface {
 }
 
 type afPacketDNSCapture struct {
-	fd int
+	fd      int
+	program *ebpf.Program
 }
 
-func newAFPacketDNSCapture(ifaceName string) (*afPacketDNSCapture, error) {
+func newAFPacketDNSCapture(ifaceName string, attachEBPFFilter bool) (*afPacketDNSCapture, error) {
 	if ifaceName == "" {
 		return nil, fmt.Errorf("-capture-iface is required")
 	}
@@ -340,7 +346,21 @@ func newAFPacketDNSCapture(ifaceName string) (*afPacketDNSCapture, error) {
 		_ = unix.Close(fd)
 		return nil, err
 	}
-	return &afPacketDNSCapture{fd: fd}, nil
+	capture := &afPacketDNSCapture{fd: fd}
+	if attachEBPFFilter {
+		program, err := newDNSSocketFilterProgram()
+		if err != nil {
+			_ = capture.Close()
+			return nil, fmt.Errorf("create DNS eBPF socket filter: %w", err)
+		}
+		if err := attachSocketFilter(fd, program); err != nil {
+			_ = program.Close()
+			_ = capture.Close()
+			return nil, fmt.Errorf("attach DNS eBPF socket filter: %w", err)
+		}
+		capture.program = program
+	}
+	return capture, nil
 }
 
 func (c *afPacketDNSCapture) Close() error {
@@ -349,7 +369,58 @@ func (c *afPacketDNSCapture) Close() error {
 	}
 	err := unix.Close(c.fd)
 	c.fd = -1
+	if c.program != nil {
+		if closeErr := c.program.Close(); err == nil {
+			err = closeErr
+		}
+		c.program = nil
+	}
 	return err
+}
+
+func newDNSSocketFilterProgram() (*ebpf.Program, error) {
+	return ebpf.NewProgram(dnsSocketFilterProgramSpec())
+}
+
+func attachSocketFilter(fd int, program *ebpf.Program) error {
+	return unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_ATTACH_BPF, program.FD())
+}
+
+func dnsSocketFilterProgramSpec() *ebpf.ProgramSpec {
+	const snapLen = 0xffff
+	return &ebpf.ProgramSpec{
+		Name:    "netloom_dns",
+		Type:    ebpf.SocketFilter,
+		License: "MIT",
+		Instructions: asm.Instructions{
+			asm.LoadAbs(12, asm.Half),
+			asm.JEq.Imm(asm.R0, 0x0800, "ipv4"),
+			asm.JEq.Imm(asm.R0, 0x86dd, "ipv6"),
+			asm.Ja.Label("drop"),
+
+			asm.LoadAbs(14, asm.Byte).WithSymbol("ipv4"),
+			asm.JNE.Imm(asm.R0, 0x45, "drop"),
+			asm.LoadAbs(23, asm.Byte),
+			asm.JNE.Imm(asm.R0, unix.IPPROTO_UDP, "drop"),
+			asm.LoadAbs(34, asm.Half),
+			asm.JNE.Imm(asm.R0, 53, "drop"),
+			asm.LoadAbs(44, asm.Byte),
+			asm.JSet.Imm(asm.R0, 0x80, "pass"),
+			asm.Ja.Label("drop"),
+
+			asm.LoadAbs(20, asm.Byte).WithSymbol("ipv6"),
+			asm.JNE.Imm(asm.R0, unix.IPPROTO_UDP, "drop"),
+			asm.LoadAbs(54, asm.Half),
+			asm.JNE.Imm(asm.R0, 53, "drop"),
+			asm.LoadAbs(64, asm.Byte),
+			asm.JSet.Imm(asm.R0, 0x80, "pass"),
+
+			asm.Mov.Imm(asm.R0, 0).WithSymbol("drop"),
+			asm.Return(),
+			asm.Mov.Imm(asm.R0, snapLen).WithSymbol("pass"),
+			asm.Return(),
+		},
+	}
 }
 
 func (c *afPacketDNSCapture) Serve(ctx context.Context, observer dnsPacketObserver, maxPackets int) (result, error) {
@@ -502,6 +573,18 @@ func dnsResponseFromUDPPacket(packet []byte) ([]byte, bool) {
 
 func htons(value uint16) uint16 {
 	return (value << 8) | (value >> 8)
+}
+
+func parseBoolDefault(value string, fallback bool) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return fallback
+	}
+	return parsed
 }
 
 func errorsIsContextDeadline(err error) bool {

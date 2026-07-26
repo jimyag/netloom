@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/asm"
 	"github.com/go-logr/logr"
 	libovsdbclient "github.com/ovn-kubernetes/libovsdb/client"
 	"github.com/ovn-kubernetes/libovsdb/database/inmemory"
@@ -295,6 +297,71 @@ func TestDNSResponseFromEthernetFrameIgnoresQueriesAndNonDNSResponses(t *testing
 	if _, ok := dnsResponseFromEthernetFrame(ethernetIPv4UDPFrame(response, 53000, 53, false)); ok {
 		t.Fatal("non-53 source port should not be captured as a DNS response")
 	}
+}
+
+func TestDNSSocketFilterProgramSpecMatchesDNSResponses(t *testing.T) {
+	spec := dnsSocketFilterProgramSpec()
+	if spec.Name != "netloom_dns" || spec.Type != ebpf.SocketFilter || spec.License != "MIT" {
+		t.Fatalf("spec = name:%s type:%s license:%s, want socket filter", spec.Name, spec.Type, spec.License)
+	}
+	wantOffsets := map[int32]asm.Size{
+		12: asm.Half,
+		14: asm.Byte,
+		20: asm.Byte,
+		23: asm.Byte,
+		34: asm.Half,
+		44: asm.Byte,
+		54: asm.Half,
+		64: asm.Byte,
+	}
+	for _, ins := range spec.Instructions {
+		offset := int32(ins.Constant)
+		size, ok := wantOffsets[offset]
+		if !ok {
+			continue
+		}
+		if ins.OpCode != asm.LoadAbsOp(size) {
+			t.Fatalf("load offset %d opcode = %s, want LoadAbs %s", offset, ins.OpCode, size)
+		}
+		delete(wantOffsets, offset)
+	}
+	if len(wantOffsets) != 0 {
+		t.Fatalf("missing socket filter load offsets: %+v", wantOffsets)
+	}
+	if !instructionHasSymbol(spec.Instructions, "ipv4") || !instructionHasSymbol(spec.Instructions, "ipv6") ||
+		!instructionHasSymbol(spec.Instructions, "pass") || !instructionHasSymbol(spec.Instructions, "drop") {
+		t.Fatalf("socket filter instructions missing expected branch symbols:\n%s", spec.Instructions)
+	}
+	if got := spec.Instructions[len(spec.Instructions)-2]; got.Symbol() != "pass" || got.Constant != 0xffff {
+		t.Fatalf("pass return setup = %s, want snap length", got)
+	}
+}
+
+func TestParseBoolDefault(t *testing.T) {
+	if !parseBoolDefault("", true) {
+		t.Fatal("empty value should use true fallback")
+	}
+	if parseBoolDefault("", false) {
+		t.Fatal("empty value should use false fallback")
+	}
+	if !parseBoolDefault("true", false) {
+		t.Fatal("true should parse")
+	}
+	if parseBoolDefault("0", true) {
+		t.Fatal("0 should parse as false")
+	}
+	if !parseBoolDefault("bad", true) {
+		t.Fatal("invalid value should use fallback")
+	}
+}
+
+func instructionHasSymbol(instructions asm.Instructions, symbol string) bool {
+	for _, ins := range instructions {
+		if ins.Symbol() == symbol {
+			return true
+		}
+	}
+	return false
 }
 
 func TestUDPProxyForwardsResponsesAndWritesDNSObservations(t *testing.T) {

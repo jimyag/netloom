@@ -401,6 +401,9 @@ summary/top rule hotspots、TCX、runtime preflight、provider、datapath 和错
 `dns-observations-export` 会解码 `Open_vSwitch.external_ids:netloom_dns_observations`，
 用于查看 DNS observer 或外部 DNS feed 当前写入的 FQDN 到 A/AAAA 观测，
 这些记录会参与 `remote_fqdns` egress policy 编译。
+`netloom-dns-observer -capture-iface <ifname>` 默认会在 AF_PACKET socket 上
+附加 eBPF socket filter，只把常见 IPv4/IPv6 UDP DNS response 送到用户态；
+如需排查复杂封包，可用 `-capture-ebpf-filter=false` 保留纯用户态过滤。
 `identity-groups-export` 默认导出 `Open_vSwitch.external_ids:netloom_identity_groups`，
 也就是 agent 根据 desired state、identity group feed 和 endpoint 解析出的当前成员快照；
 如果要查看原始导入或远端 feed 观测，可加 `-source observations` 导出
