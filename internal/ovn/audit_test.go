@@ -392,10 +392,17 @@ func TestAuditManagedObjectsFromReaderCountsLogicalSwitchPortUp(t *testing.T) {
 				"netloom_endpoint": "prod/pod-b",
 			}, Fields: map[string]string{"up": "false"}},
 			{Table: "Logical_Switch_Port", UUID: "lsp-unknown", ExternalIDs: map[string]string{
-				"netloom_owner":    "netloom",
-				"netloom_vpc":      "prod",
-				"netloom_endpoint": "prod/pod-c",
+				"netloom_owner":  "netloom",
+				"netloom_vpc":    "prod",
+				"netloom_subnet": "apps",
+				"netloom_role":   "router",
 			}, Fields: map[string]string{}},
+			{Table: "Logical_Switch_Port", UUID: "lsp-localnet", ExternalIDs: map[string]string{
+				"netloom_owner":            "netloom",
+				"netloom_vpc":              "prod",
+				"netloom_subnet":           "apps",
+				"netloom_provider_network": "physnet-a",
+			}, Fields: map[string]string{"up": "true"}},
 		},
 	}}
 
@@ -403,12 +410,16 @@ func TestAuditManagedObjectsFromReaderCountsLogicalSwitchPortUp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stats.ManagedLogicalSwitchPorts != 3 ||
-		stats.LogicalSwitchPortUpCounts["true"] != 1 ||
+	if stats.ManagedLogicalSwitchPorts != 4 ||
+		stats.LogicalSwitchPortUpCounts["true"] != 2 ||
 		stats.LogicalSwitchPortUpCounts["false"] != 1 ||
 		stats.LogicalSwitchPortUpCounts["unknown"] != 1 ||
+		stats.LogicalSwitchPortUpRoleCounts[logicalSwitchPortRoleUpKey("endpoint", "true")] != 1 ||
+		stats.LogicalSwitchPortUpRoleCounts[logicalSwitchPortRoleUpKey("endpoint", "false")] != 1 ||
+		stats.LogicalSwitchPortUpRoleCounts[logicalSwitchPortRoleUpKey("router", "unknown")] != 1 ||
+		stats.LogicalSwitchPortUpRoleCounts[logicalSwitchPortRoleUpKey("localnet", "true")] != 1 ||
 		stats.DriftedManagedRows != 0 {
-		t.Fatalf("audit stats = %+v, want logical switch port up counts without drift", stats)
+		t.Fatalf("audit stats = %+v, want logical switch port up counts by role without drift", stats)
 	}
 }
 

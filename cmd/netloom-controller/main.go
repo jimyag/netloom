@@ -1536,6 +1536,17 @@ func writeControllerMetrics(w metricWriter, snapshot controllerMetricsSnapshot, 
 		})
 		fmt.Fprintf(w, "netloom_controller_ovn_live_logical_switch_port_up%s %d\n", labels, snapshot.OVNAudit.LogicalSwitchPortUpCounts[up])
 	}
+	writeMetricType(w, "netloom_controller_ovn_live_logical_switch_port_up_by_role", "gauge")
+	for _, key := range sortedPositiveCountKeys(snapshot.OVNAudit.LogicalSwitchPortUpRoleCounts) {
+		role, up := splitLogicalSwitchPortRoleUpKey(key)
+		labels := prometheusLabels(map[string]string{
+			"ovn_health": fallbackMetricsLabel(snapshot.OVNHealthStatus, "disabled"),
+			"ovn_audit":  fallbackMetricsLabel(snapshot.OVNAuditStatus, "disabled"),
+			"role":       role,
+			"up":         up,
+		})
+		fmt.Fprintf(w, "netloom_controller_ovn_live_logical_switch_port_up_by_role%s %d\n", labels, snapshot.OVNAudit.LogicalSwitchPortUpRoleCounts[key])
+	}
 	writeMetricType(w, "netloom_controller_ovn_live_logical_router_ports", "gauge")
 	fmt.Fprintf(w, "netloom_controller_ovn_live_logical_router_ports%s %d\n", auditLabels, snapshot.OVNAudit.ManagedLogicalRouterPorts)
 	writeMetricType(w, "netloom_controller_ovn_live_logical_router_policies", "gauge")
@@ -1680,6 +1691,20 @@ func sortedPositiveCountKeys(counts map[string]int) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+func splitLogicalSwitchPortRoleUpKey(key string) (string, string) {
+	role, up, ok := strings.Cut(key, "|")
+	if !ok {
+		return "unknown", key
+	}
+	if role == "" {
+		role = "unknown"
+	}
+	if up == "" {
+		up = "unknown"
+	}
+	return role, up
 }
 
 type metricWriter interface {

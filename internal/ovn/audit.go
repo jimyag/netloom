@@ -38,6 +38,7 @@ type AuditStats struct {
 	DriftedManagedFieldCounts        map[string]int `json:"drifted_managed_field_counts,omitempty"`
 	BFDStatusCounts                  map[string]int `json:"bfd_status_counts,omitempty"`
 	LogicalSwitchPortUpCounts        map[string]int `json:"logical_switch_port_up_counts,omitempty"`
+	LogicalSwitchPortUpRoleCounts    map[string]int `json:"logical_switch_port_up_role_counts,omitempty"`
 }
 
 type ManagedOVNRow struct {
@@ -139,7 +140,28 @@ func (s *AuditStats) addLogicalSwitchPortUpCounts(table string, rows []auditMana
 			s.LogicalSwitchPortUpCounts = make(map[string]int)
 		}
 		s.LogicalSwitchPortUpCounts[up]++
+		if s.LogicalSwitchPortUpRoleCounts == nil {
+			s.LogicalSwitchPortUpRoleCounts = make(map[string]int)
+		}
+		s.LogicalSwitchPortUpRoleCounts[logicalSwitchPortRoleUpKey(logicalSwitchPortRole(row.externalIDs), up)]++
 	}
+}
+
+func logicalSwitchPortRole(externalIDs map[string]string) string {
+	switch {
+	case externalIDs["netloom_endpoint"] != "":
+		return "endpoint"
+	case externalIDs["netloom_role"] == "router":
+		return "router"
+	case externalIDs["netloom_provider_network"] != "":
+		return "localnet"
+	default:
+		return "unknown"
+	}
+}
+
+func logicalSwitchPortRoleUpKey(role, up string) string {
+	return role + "|" + up
 }
 
 func (s *AuditStats) addBFDStatusCounts(table string, rows []auditManagedRow) {

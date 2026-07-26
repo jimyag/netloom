@@ -221,6 +221,11 @@ func TestAuditManagedObjectsFromLibOVSDBReaderCountsLogicalSwitchPortUp(t *testi
 		stats.LogicalSwitchPortUpCounts["unknown"] != 1 {
 		t.Fatalf("audit stats = %+v, want logical switch port up counts from libovsdb cache", stats)
 	}
+	if stats.LogicalSwitchPortUpRoleCounts[logicalSwitchPortRoleUpKey("endpoint", "true")] != 1 ||
+		stats.LogicalSwitchPortUpRoleCounts[logicalSwitchPortRoleUpKey("endpoint", "false")] != 1 ||
+		stats.LogicalSwitchPortUpRoleCounts[logicalSwitchPortRoleUpKey("router", "unknown")] != 1 {
+		t.Fatalf("audit stats = %+v, want logical switch port up counts by role from libovsdb cache", stats)
+	}
 }
 
 func TestAuditManagedObjectsReportsColumnDriftFromLibOVSDBReader(t *testing.T) {

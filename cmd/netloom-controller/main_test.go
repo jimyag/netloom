@@ -1212,6 +1212,11 @@ func TestControllerMetricsExportsLatestSuccess(t *testing.T) {
 				"false": 1,
 				"true":  1,
 			},
+			LogicalSwitchPortUpRoleCounts: map[string]int{
+				"endpoint|false": 1,
+				"endpoint|true":  1,
+				"router|unknown": 1,
+			},
 		},
 		OVNStaleAdvisory: ovnStaleAdvisory{
 			Status:    "warning",
@@ -1285,6 +1290,9 @@ func TestControllerMetricsExportsLatestSuccess(t *testing.T) {
 		`netloom_controller_ovn_live_logical_switch_ports{ovn_audit="ok",ovn_health="ok"} 2`,
 		`netloom_controller_ovn_live_logical_switch_port_up{ovn_audit="ok",ovn_health="ok",up="false"} 1`,
 		`netloom_controller_ovn_live_logical_switch_port_up{ovn_audit="ok",ovn_health="ok",up="true"} 1`,
+		`netloom_controller_ovn_live_logical_switch_port_up_by_role{ovn_audit="ok",ovn_health="ok",role="endpoint",up="false"} 1`,
+		`netloom_controller_ovn_live_logical_switch_port_up_by_role{ovn_audit="ok",ovn_health="ok",role="endpoint",up="true"} 1`,
+		`netloom_controller_ovn_live_logical_switch_port_up_by_role{ovn_audit="ok",ovn_health="ok",role="router",up="unknown"} 1`,
 		`netloom_controller_ovn_live_logical_router_policies{ovn_audit="ok",ovn_health="ok"} 1`,
 		`netloom_controller_ovn_live_logical_router_static_routes{ovn_audit="ok",ovn_health="ok"} 1`,
 		`netloom_controller_ovn_live_bfds{ovn_audit="ok",ovn_health="ok"} 1`,

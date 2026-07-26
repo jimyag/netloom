@@ -25,8 +25,8 @@ Implemented control-plane features:
   load-balancer parent refs, health-check refs, stale `ip_port_mappings`, and
   stale router/switch CoPP refs.
 - Controller metrics include OVN live audit counters, table/field drift,
-  logical switch port runtime `up` counts, and BFD runtime status counts for
-  managed static-route BFD sessions.
+  logical switch port runtime `up` counts by bounded port role, and BFD runtime
+  status counts for managed static-route BFD sessions.
 - Desired state from a JSON file or from local
   `Open_vSwitch.external_ids:netloom_desired_state`.
 
