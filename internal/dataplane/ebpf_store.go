@@ -653,6 +653,23 @@ func (s *EBPFPolicyStore) Events() []PolicyUpdateEvent {
 	return append([]PolicyUpdateEvent(nil), s.events...)
 }
 
+func (s *EBPFPolicyStore) ClearEvents(match func(PolicyUpdateEvent) bool) (int, []PolicyUpdateEvent, []PolicyUpdateEvent) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	total := len(s.events)
+	next := make([]PolicyUpdateEvent, 0, len(s.events))
+	cleared := make([]PolicyUpdateEvent, 0)
+	for _, event := range s.events {
+		if match != nil && match(event) {
+			cleared = append(cleared, event)
+			continue
+		}
+		next = append(next, event)
+	}
+	s.events = next
+	return total, append([]PolicyUpdateEvent(nil), s.events...), cleared
+}
+
 func (s *EBPFPolicyStore) OverflowAction() PolicyMapOverflowAction {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -359,6 +359,7 @@ curl -s 'http://127.0.0.1:9092/policy/endpoints/prod/vm-a/revision?target_revisi
 ./netloom-agent policy-events -ovsdb unix:/var/run/openvswitch/db.sock -rule-ref prod/web/allow-http -limit 20
 ./netloom-agent policy-events -ovsdb unix:/var/run/openvswitch/db.sock -capacity-hotspot-rule-ref prod/web/allow-http -limit 20
 ./netloom-agent policy-events -ovsdb unix:/var/run/openvswitch/db.sock -direction egress -action drop -limit 20
+./netloom-agent policy-events-clear -ovsdb unix:/var/run/openvswitch/db.sock -success false -error-contains "capacity exceeded"
 ovs-vsctl get Open_vSwitch . external_ids:netloom_controller_status
 ovs-vsctl get Open_vSwitch . external_ids:netloom_controller_events
 ovs-vsctl get Open_vSwitch . external_ids:netloom_agent_status
@@ -703,6 +704,8 @@ curl -s 'http://127.0.0.1:9092/policy/events?rule_cookie=42&limit=20'
 curl -s 'http://127.0.0.1:9092/policy/events?rule_ref=prod/web/allow-http&limit=20'
 curl -s 'http://127.0.0.1:9092/policy/events?capacity_hotspot_rule_ref=prod/web/allow-http&limit=20'
 curl -s 'http://127.0.0.1:9092/policy/events?direction=egress&action=drop&limit=20'
+curl -X DELETE -s 'http://127.0.0.1:9092/policy/events?success=false&error_contains=capacity%20exceeded'
+curl -X DELETE -s 'http://127.0.0.1:9092/policy/events?rule_ref=prod/web/allow-http'
 netloom-agent policy-events \
   -ovsdb unix:/var/run/openvswitch/db.sock \
   -endpoint prod/vm-a \
@@ -716,6 +719,10 @@ netloom-agent policy-events \
   -direction egress \
   -action drop \
   -limit 20
+netloom-agent policy-events-clear \
+  -ovsdb unix:/var/run/openvswitch/db.sock \
+  -success false \
+  -error-contains "capacity exceeded"
 ovs-vsctl get Open_vSwitch . external_ids:netloom_policy_events
 ```
 
@@ -725,6 +732,8 @@ rule cookies、rule refs、rule directions、rule actions、success/error 和 ov
 用于节点重启后继续审计 Cilium-style policy regeneration 结果。HTTP API 和 CLI 都支持按
 endpoint、success、remediated、rule cookie、rule ref、direction 和 action 过滤，便于直接定位失败更新、
 自动 remediation 事件或特定 ingress/egress allow/drop/reject/log 规则触发的更新。
+`DELETE /policy/events` 和 `policy-events-clear` 使用同一组过滤字段清理已审计事件；
+全量清理必须显式使用 `all=true` 或 CLI `-all`，且不能和过滤条件混用。
 
 查看 endpoint policy rollout 历史：
 

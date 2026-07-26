@@ -105,6 +105,11 @@ func main() {
 				log.Fatal(err)
 			}
 			return
+		case "policy-events-clear":
+			if err := runPolicyEventsClear(context.Background(), os.Args[2:], os.Stdout); err != nil {
+				log.Fatal(err)
+			}
+			return
 		case "policy-rules":
 			if err := runPolicyRules(context.Background(), os.Args[2:], os.Stdout); err != nil {
 				log.Fatal(err)
@@ -321,6 +326,26 @@ type policyEventsOptions struct {
 	direction              string
 	action                 string
 	limit                  int
+}
+
+type policyEventsClearOptions struct {
+	ovsdb                  string
+	endpoint               string
+	success                string
+	remediated             string
+	remediation            string
+	errorContains          string
+	pressureSeverity       string
+	pressureMinPercent     string
+	recommendedCapacityMin string
+	occurredAfter          string
+	occurredBefore         string
+	ruleCookie             string
+	ruleRef                string
+	capacityHotspotRuleRef string
+	direction              string
+	action                 string
+	all                    bool
 }
 
 type policyRulesOptions struct {
@@ -563,6 +588,35 @@ type policyEventsOutput struct {
 	FilterDirection              model.Direction               `json:"filter_direction,omitempty"`
 	FilterAction                 model.Action                  `json:"filter_action,omitempty"`
 	Events                       []dataplane.PolicyUpdateEvent `json:"events"`
+}
+
+type policyEventsClearOutput struct {
+	Node                         string                        `json:"node"`
+	Store                        string                        `json:"store"`
+	Ready                        bool                          `json:"ready"`
+	LastReconcileSuccess         bool                          `json:"last_reconcile_success"`
+	LastReconcileError           string                        `json:"last_reconcile_error,omitempty"`
+	UpdatedAt                    time.Time                     `json:"updated_at,omitempty"`
+	TotalEvents                  int                           `json:"total_events"`
+	ClearedEvents                int                           `json:"cleared_events"`
+	RemainingEvents              int                           `json:"remaining_events"`
+	FilterEndpoint               string                        `json:"filter_endpoint,omitempty"`
+	FilterSuccess                *bool                         `json:"filter_success,omitempty"`
+	FilterRemediated             *bool                         `json:"filter_remediated,omitempty"`
+	FilterRemediation            string                        `json:"filter_remediation,omitempty"`
+	FilterErrorContains          string                        `json:"filter_error_contains,omitempty"`
+	FilterPressureSeverity       string                        `json:"filter_pressure_severity,omitempty"`
+	FilterPressureMinPercent     uint32                        `json:"filter_pressure_min_percent,omitempty"`
+	FilterRecommendedCapacityMin uint32                        `json:"filter_recommended_capacity_min,omitempty"`
+	FilterOccurredAfter          *time.Time                    `json:"filter_occurred_after,omitempty"`
+	FilterOccurredBefore         *time.Time                    `json:"filter_occurred_before,omitempty"`
+	FilterRuleCookie             uint32                        `json:"filter_rule_cookie,omitempty"`
+	FilterRuleRef                string                        `json:"filter_rule_ref,omitempty"`
+	FilterCapacityHotspotRuleRef string                        `json:"filter_capacity_hotspot_rule_ref,omitempty"`
+	FilterDirection              model.Direction               `json:"filter_direction,omitempty"`
+	FilterAction                 model.Action                  `json:"filter_action,omitempty"`
+	All                          bool                          `json:"all,omitempty"`
+	Cleared                      []dataplane.PolicyUpdateEvent `json:"cleared,omitempty"`
 }
 
 type policyEntriesOutput struct {
@@ -872,6 +926,10 @@ type policyActionHistoryStore interface {
 type policyEventsStore interface {
 	Load(context.Context) (policyEventsDocument, error)
 	Save(context.Context, policyEventsDocument) error
+}
+
+type policyEventClearStore interface {
+	ClearEvents(func(dataplane.PolicyUpdateEvent) bool) (int, []dataplane.PolicyUpdateEvent, []dataplane.PolicyUpdateEvent)
 }
 
 type policyStatusStore interface {
@@ -1712,6 +1770,68 @@ func runPolicyEventsWithStore(ctx context.Context, opts policyEventsOptions, std
 		FilterAction:                 filter.Action,
 		Events:                       recent,
 	}
+	encoder := json.NewEncoder(stdout)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(output)
+}
+
+func runPolicyEventsClear(ctx context.Context, args []string, stdout io.Writer) error {
+	var opts policyEventsClearOptions
+	flags := flag.NewFlagSet("netloom-agent policy-events-clear", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	flags.StringVar(&opts.ovsdb, "ovsdb", os.Getenv("NETLOOM_OVSDB_ENDPOINT"), "Open_vSwitch OVSDB endpoint")
+	flags.StringVar(&opts.endpoint, "endpoint", "", "optional endpoint key or endpoint ID to clear")
+	flags.StringVar(&opts.success, "success", "", "optional success filter: true or false")
+	flags.StringVar(&opts.remediated, "remediated", "", "optional remediation filter: true or false")
+	flags.StringVar(&opts.remediation, "remediation", "", "optional remediation action to clear")
+	flags.StringVar(&opts.errorContains, "error-contains", "", "optional policy update error substring to clear")
+	flags.StringVar(&opts.pressureSeverity, "pressure-severity", "", "optional policy map pressure severity to clear: normal, warning, critical, full, or unknown")
+	flags.StringVar(&opts.pressureMinPercent, "pressure-min-percent", "", "optional minimum policy map pressure percent to clear")
+	flags.StringVar(&opts.recommendedCapacityMin, "recommended-capacity-min", "", "optional minimum recommended policy map capacity to clear")
+	flags.StringVar(&opts.occurredAfter, "occurred-after", "", "optional RFC3339 timestamp; clear events occurring at or after this time")
+	flags.StringVar(&opts.occurredBefore, "occurred-before", "", "optional RFC3339 timestamp; clear events occurring before this time")
+	flags.StringVar(&opts.ruleCookie, "rule-cookie", "", "optional dataplane rule cookie to clear")
+	flags.StringVar(&opts.ruleRef, "rule-ref", "", "optional policy rule reference to clear")
+	flags.StringVar(&opts.capacityHotspotRuleRef, "capacity-hotspot-rule-ref", "", "optional policy map capacity hotspot rule reference to clear")
+	flags.StringVar(&opts.direction, "direction", "", "optional policy rule direction to clear: ingress or egress")
+	flags.StringVar(&opts.action, "action", "", "optional policy rule action to clear: allow, drop, reject, or log")
+	flags.BoolVar(&opts.all, "all", false, "clear all policy update events")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(opts.ovsdb) == "" {
+		return errors.New("missing -ovsdb or NETLOOM_OVSDB_ENDPOINT")
+	}
+	client, closeStore, err := newOpenVSwitchClient(ctx, opts.ovsdb)
+	if err != nil {
+		return err
+	}
+	defer closeStore()
+	return runPolicyEventsClearWithStore(ctx, opts, stdout, ovsdbPolicyEventsStore{syncer: linuxdatapath.NewLibOVSDBProviderSyncer(client)})
+}
+
+func runPolicyEventsClearWithStore(ctx context.Context, opts policyEventsClearOptions, stdout io.Writer, store policyEventsStore) error {
+	if store == nil {
+		return errors.New("missing policy events store")
+	}
+	filter, err := policyUpdateEventFilterFromClearOptions(opts)
+	if err != nil {
+		return err
+	}
+	if err := validatePolicyUpdateEventClearSelector(opts.all, filter); err != nil {
+		return err
+	}
+	doc, err := store.Load(ctx)
+	if err != nil {
+		return err
+	}
+	next, cleared := clearPolicyUpdateEvents(doc.Events, opts.all, filter)
+	doc.Events = next
+	doc.TotalEvents = len(next)
+	if err := store.Save(ctx, doc); err != nil {
+		return err
+	}
+	output := policyEventsClearOutputFromDocument(doc, len(doc.Events)+len(cleared), cleared, filter, opts.all)
 	encoder := json.NewEncoder(stdout)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(output)
@@ -2798,6 +2918,10 @@ func policyUpdateEventFilterFromOptions(opts policyEventsOptions) (policyUpdateE
 	return policyUpdateEventFilterFromValues(opts.endpoint, opts.success, opts.remediated, opts.remediation, opts.errorContains, opts.pressureSeverity, opts.pressureMinPercent, opts.recommendedCapacityMin, opts.occurredAfter, opts.occurredBefore, opts.ruleCookie, opts.ruleRef, opts.capacityHotspotRuleRef, opts.direction, opts.action)
 }
 
+func policyUpdateEventFilterFromClearOptions(opts policyEventsClearOptions) (policyUpdateEventFilter, error) {
+	return policyUpdateEventFilterFromValues(opts.endpoint, opts.success, opts.remediated, opts.remediation, opts.errorContains, opts.pressureSeverity, opts.pressureMinPercent, opts.recommendedCapacityMin, opts.occurredAfter, opts.occurredBefore, opts.ruleCookie, opts.ruleRef, opts.capacityHotspotRuleRef, opts.direction, opts.action)
+}
+
 func policyUpdateEventFilterFromRequest(r *http.Request, endpoint string) (policyUpdateEventFilter, error) {
 	return policyUpdateEventFilterFromValues(endpoint, r.URL.Query().Get("success"), r.URL.Query().Get("remediated"), r.URL.Query().Get("remediation"), r.URL.Query().Get("error_contains"), r.URL.Query().Get("pressure_severity"), r.URL.Query().Get("pressure_min_percent"), r.URL.Query().Get("recommended_capacity_min"), r.URL.Query().Get("occurred_after"), r.URL.Query().Get("occurred_before"), r.URL.Query().Get("rule_cookie"), r.URL.Query().Get("rule_ref"), r.URL.Query().Get("capacity_hotspot_rule_ref"), r.URL.Query().Get("direction"), r.URL.Query().Get("action"))
 }
@@ -2907,6 +3031,37 @@ func policyEventsOutputFromSnapshot(snapshot agentMetricsSnapshot, events []data
 		FilterDirection:              filter.Direction,
 		FilterAction:                 filter.Action,
 		Events:                       recent,
+	}
+}
+
+func policyEventsClearOutputFromDocument(doc policyEventsDocument, total int, cleared []dataplane.PolicyUpdateEvent, filter policyUpdateEventFilter, all bool) policyEventsClearOutput {
+	return policyEventsClearOutput{
+		Node:                         doc.Node,
+		Store:                        doc.Store,
+		Ready:                        true,
+		LastReconcileSuccess:         doc.LastReconcileSuccess,
+		LastReconcileError:           doc.LastReconcileError,
+		UpdatedAt:                    doc.UpdatedAt,
+		TotalEvents:                  total,
+		ClearedEvents:                len(cleared),
+		RemainingEvents:              len(doc.Events),
+		FilterEndpoint:               filter.Endpoint,
+		FilterSuccess:                filter.Success,
+		FilterRemediated:             filter.Remediated,
+		FilterRemediation:            filter.Remediation,
+		FilterErrorContains:          filter.ErrorContains,
+		FilterPressureSeverity:       filter.PressureSeverity,
+		FilterPressureMinPercent:     optionalUint32Value(filter.PressureMinPercent),
+		FilterRecommendedCapacityMin: optionalUint32Value(filter.RecommendedCapacityMin),
+		FilterOccurredAfter:          filter.OccurredAfter,
+		FilterOccurredBefore:         filter.OccurredBefore,
+		FilterRuleCookie:             filterPolicyUpdateEventRuleCookieValue(filter),
+		FilterRuleRef:                filter.RuleRef,
+		FilterCapacityHotspotRuleRef: filter.CapacityHotspotRuleRef,
+		FilterDirection:              filter.Direction,
+		FilterAction:                 filter.Action,
+		All:                          all,
+		Cleared:                      cleared,
 	}
 }
 
@@ -3123,54 +3278,93 @@ func filterPolicyUpdateEvents(events []dataplane.PolicyUpdateEvent, filter polic
 	}
 	out := make([]dataplane.PolicyUpdateEvent, 0, len(events))
 	for _, event := range events {
-		if filter.Endpoint != "" && !policyRuleEndpointMatches(event.EndpointID, filter.Endpoint) {
-			continue
+		if policyUpdateEventMatches(event, filter) {
+			out = append(out, event)
 		}
-		if filter.Success != nil && event.Success != *filter.Success {
-			continue
-		}
-		if filter.Remediated != nil && event.Remediated != *filter.Remediated {
-			continue
-		}
-		if filter.Remediation != "" && event.Remediation != filter.Remediation {
-			continue
-		}
-		if filter.ErrorContains != "" && !strings.Contains(event.Error, filter.ErrorContains) {
-			continue
-		}
-		if filter.PressureSeverity != "" && event.PolicyMapPressureSeverity != filter.PressureSeverity {
-			continue
-		}
-		if filter.PressureMinPercent != nil && event.PolicyMapPressurePercent < *filter.PressureMinPercent {
-			continue
-		}
-		if filter.RecommendedCapacityMin != nil && event.PolicyMapRecommendedCapacity < *filter.RecommendedCapacityMin {
-			continue
-		}
-		if filter.OccurredAfter != nil && (event.OccurredAt == nil || event.OccurredAt.Before(*filter.OccurredAfter)) {
-			continue
-		}
-		if filter.OccurredBefore != nil && (event.OccurredAt == nil || !event.OccurredAt.Before(*filter.OccurredBefore)) {
-			continue
-		}
-		if filter.RuleCookie != nil && !policyUpdateEventHasRuleCookie(event, *filter.RuleCookie) {
-			continue
-		}
-		if filter.RuleRef != "" && !slices.Contains(event.RuleRefs, filter.RuleRef) {
-			continue
-		}
-		if filter.CapacityHotspotRuleRef != "" && !policyUpdateEventHasCapacityHotspotRuleRef(event, filter.CapacityHotspotRuleRef) {
-			continue
-		}
-		if filter.Direction != "" && !slices.Contains(event.RuleDirections, string(filter.Direction)) {
-			continue
-		}
-		if filter.Action != "" && !slices.Contains(event.RuleActions, string(filter.Action)) {
-			continue
-		}
-		out = append(out, event)
 	}
 	return out
+}
+
+func clearPolicyUpdateEvents(events []dataplane.PolicyUpdateEvent, all bool, filter policyUpdateEventFilter) ([]dataplane.PolicyUpdateEvent, []dataplane.PolicyUpdateEvent) {
+	if all {
+		return nil, append([]dataplane.PolicyUpdateEvent(nil), events...)
+	}
+	next := make([]dataplane.PolicyUpdateEvent, 0, len(events))
+	cleared := make([]dataplane.PolicyUpdateEvent, 0)
+	for _, event := range events {
+		if policyUpdateEventMatches(event, filter) {
+			cleared = append(cleared, event)
+			continue
+		}
+		next = append(next, event)
+	}
+	return next, cleared
+}
+
+func policyUpdateEventMatches(event dataplane.PolicyUpdateEvent, filter policyUpdateEventFilter) bool {
+	if !policyUpdateEventFilterActive(filter) {
+		return true
+	}
+	if filter.Endpoint != "" && !policyRuleEndpointMatches(event.EndpointID, filter.Endpoint) {
+		return false
+	}
+	if filter.Success != nil && event.Success != *filter.Success {
+		return false
+	}
+	if filter.Remediated != nil && event.Remediated != *filter.Remediated {
+		return false
+	}
+	if filter.Remediation != "" && event.Remediation != filter.Remediation {
+		return false
+	}
+	if filter.ErrorContains != "" && !strings.Contains(event.Error, filter.ErrorContains) {
+		return false
+	}
+	if filter.PressureSeverity != "" && event.PolicyMapPressureSeverity != filter.PressureSeverity {
+		return false
+	}
+	if filter.PressureMinPercent != nil && event.PolicyMapPressurePercent < *filter.PressureMinPercent {
+		return false
+	}
+	if filter.RecommendedCapacityMin != nil && event.PolicyMapRecommendedCapacity < *filter.RecommendedCapacityMin {
+		return false
+	}
+	if filter.OccurredAfter != nil && (event.OccurredAt == nil || event.OccurredAt.Before(*filter.OccurredAfter)) {
+		return false
+	}
+	if filter.OccurredBefore != nil && (event.OccurredAt == nil || !event.OccurredAt.Before(*filter.OccurredBefore)) {
+		return false
+	}
+	if filter.RuleCookie != nil && !policyUpdateEventHasRuleCookie(event, *filter.RuleCookie) {
+		return false
+	}
+	if filter.RuleRef != "" && !slices.Contains(event.RuleRefs, filter.RuleRef) {
+		return false
+	}
+	if filter.CapacityHotspotRuleRef != "" && !policyUpdateEventHasCapacityHotspotRuleRef(event, filter.CapacityHotspotRuleRef) {
+		return false
+	}
+	if filter.Direction != "" && !slices.Contains(event.RuleDirections, string(filter.Direction)) {
+		return false
+	}
+	if filter.Action != "" && !slices.Contains(event.RuleActions, string(filter.Action)) {
+		return false
+	}
+	return true
+}
+
+func validatePolicyUpdateEventClearSelector(all bool, filter policyUpdateEventFilter) error {
+	hasSelector := policyUpdateEventFilterActive(filter)
+	if all {
+		if hasSelector {
+			return errors.New("policy events clear must use -all or filters, not both")
+		}
+		return nil
+	}
+	if !hasSelector {
+		return errors.New("policy events clear requires -all or at least one filter")
+	}
+	return nil
 }
 
 func policyUpdateEventFilterActive(filter policyUpdateEventFilter) bool {
@@ -4882,6 +5076,15 @@ func configurePolicyEventsStore(metrics *agentMetrics, store policyEventsStore) 
 	metrics.mu.Lock()
 	defer metrics.mu.Unlock()
 	metrics.policyEventsStore = store
+}
+
+func (m *agentMetrics) policyEventsPersistenceStore() policyEventsStore {
+	if m == nil {
+		return nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.policyEventsStore
 }
 
 func configurePolicyRulesStore(metrics *agentMetrics, store policyRulesStore) {
@@ -7255,7 +7458,7 @@ func (m *agentMetrics) handlePolicyRules(w http.ResponseWriter, r *http.Request)
 
 func (m *agentMetrics) handlePolicyEvents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	if r.Method != http.MethodGet {
+	if r.Method != http.MethodGet && r.Method != http.MethodDelete {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "method not allowed"})
 		return
@@ -7272,14 +7475,51 @@ func (m *agentMetrics) handlePolicyEvents(w http.ResponseWriter, r *http.Request
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "policy events are not enabled"})
 		return
 	}
-	limit, err := policyEventsLimitFromRequest(r)
+	endpoint := policyEventEndpointFromRequest(r)
+	filter, err := policyUpdateEventFilterFromRequest(r, endpoint)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
-	endpoint := policyEventEndpointFromRequest(r)
-	filter, err := policyUpdateEventFilterFromRequest(r, endpoint)
+	if r.Method == http.MethodDelete {
+		clearStore, ok := m.store.(policyEventClearStore)
+		if !ok {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "policy event cleanup is not enabled"})
+			return
+		}
+		all, err := parseOptionalBoolFilter(r.URL.Query().Get("all"), "all")
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+		clearAll := all != nil && *all
+		if err := validatePolicyUpdateEventClearSelector(clearAll, filter); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": strings.ReplaceAll(err.Error(), "-all", "all=true")})
+			return
+		}
+		total, next, cleared := clearStore.ClearEvents(func(event dataplane.PolicyUpdateEvent) bool {
+			enriched := enrichPolicyUpdateEvents([]dataplane.PolicyUpdateEvent{event}, snapshot.Result.PolicyRuleCatalog)
+			return len(enriched) == 1 && policyUpdateEventMatches(enriched[0], filter)
+		})
+		doc := policyEventsDocumentFromSnapshot(snapshot, next)
+		if store := m.policyEventsPersistenceStore(); store != nil {
+			if err := store.Save(r.Context(), doc); err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+				return
+			}
+		}
+		cleared = enrichPolicyUpdateEvents(cleared, snapshot.Result.PolicyRuleCatalog)
+		encoder := json.NewEncoder(w)
+		encoder.SetIndent("", "  ")
+		_ = encoder.Encode(policyEventsClearOutputFromDocument(doc, total, cleared, filter, clearAll))
+		return
+	}
+	limit, err := policyEventsLimitFromRequest(r)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})

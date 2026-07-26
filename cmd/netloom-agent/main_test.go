@@ -3644,6 +3644,97 @@ func TestPolicyEventsAPIReportsRecentEndpointEvents(t *testing.T) {
 	}
 }
 
+func TestPolicyEventsAPIClearsFilteredEvents(t *testing.T) {
+	store := dataplane.NewInMemoryPolicyStore()
+	podA := model.EndpointKey("prod", "pod-a")
+	podB := model.EndpointKey("prod", "pod-b")
+	if err := store.ReplaceEndpoint(context.Background(), podA, []dataplane.PolicyMapEntry{{
+		Key: dataplane.PolicyKey{
+			PrefixLen:      dataplane.StaticPrefixBits,
+			Direction:      dataplane.DirectionIngress,
+			Protocol:       6,
+			RemoteIdentity: 10,
+		},
+		Value:   dataplane.PolicyEntry{RuleCookie: 42},
+		RuleRef: "prod/web/allow-http",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ReplaceEndpoint(context.Background(), podB, []dataplane.PolicyMapEntry{{
+		Key: dataplane.PolicyKey{
+			PrefixLen:      dataplane.StaticPrefixBits,
+			Direction:      dataplane.DirectionEgress,
+			Protocol:       6,
+			RemoteIdentity: 20,
+		},
+		Value:   dataplane.PolicyEntry{RuleCookie: 7},
+		RuleRef: "prod/db/allow-db",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeleteEndpoint(context.Background(), podA); err != nil {
+		t.Fatal(err)
+	}
+	syncer := &fakeOpenVSwitchExternalIDStore{values: map[string]string{}}
+	persistence := ovsdbPolicyEventsStore{syncer: syncer}
+	metrics := newAgentMetrics(store)
+	configurePolicyEventsStore(metrics, persistence)
+	observeAgentReconcileResult(metrics, agent.ReconcileResult{
+		Node: "node-a",
+		PolicyRuleCatalog: []agent.PolicyRuleCatalogEntry{
+			{EndpointID: podA, RuleCookie: 42, RuleRef: "prod/web/allow-http", VPC: "prod", SecurityGroup: "web", RuleID: "allow-http", Direction: model.DirectionIngress, Action: model.ActionAllow},
+			{EndpointID: podB, RuleCookie: 7, RuleRef: "prod/db/allow-db", VPC: "prod", SecurityGroup: "db", RuleID: "allow-db", Direction: model.DirectionEgress, Action: model.ActionAllow},
+		},
+	}, "memory", time.Millisecond)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodDelete, "/policy/events?endpoint=prod/pod-a&rule_ref=prod/web/allow-http", nil)
+	metrics.handlePolicyEvents(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("clear policy events status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var output policyEventsClearOutput
+	if err := json.Unmarshal(recorder.Body.Bytes(), &output); err != nil {
+		t.Fatalf("decode clear policy events response: %v\n%s", err, recorder.Body.String())
+	}
+	if !output.Ready || output.TotalEvents != 2 || output.ClearedEvents != 1 || output.RemainingEvents != 1 || output.FilterEndpoint != "prod/pod-a" || output.FilterRuleRef != "prod/web/allow-http" {
+		t.Fatalf("clear output = %+v, want one pod-a allow-http event cleared", output)
+	}
+	if len(output.Cleared) != 1 || output.Cleared[0].EndpointID != podA {
+		t.Fatalf("cleared = %+v, want pod-a event", output.Cleared)
+	}
+	if events := store.Events(); len(events) != 1 || events[0].EndpointID != podB {
+		t.Fatalf("runtime events = %+v, want only pod-b event", events)
+	}
+	doc, err := persistence.Load(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.TotalEvents != 1 || len(doc.Events) != 1 || doc.Events[0].EndpointID != podB {
+		t.Fatalf("persisted events = %+v, want only pod-b event", doc)
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodDelete, "/policy/events", nil)
+	metrics.handlePolicyEvents(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("clear without selector status = %d, want 400; body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "requires all=true or at least one filter") {
+		t.Fatalf("body missing selector error: %s", recorder.Body.String())
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodDelete, "/policy/events?all=true&endpoint=prod/pod-b", nil)
+	metrics.handlePolicyEvents(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("clear all with filter status = %d, want 400; body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "must use all=true or filters, not both") {
+		t.Fatalf("body missing all/filter conflict error: %s", recorder.Body.String())
+	}
+}
+
 func TestPolicyEventsAPIFiltersByDirectionAndAction(t *testing.T) {
 	store := dataplane.NewInMemoryPolicyStore()
 	podA := model.EndpointKey("prod", "pod-a")
@@ -4165,6 +4256,76 @@ func TestRunPolicyEventsWithStoreReportsFilteredJSON(t *testing.T) {
 	}
 	if got.FilterOccurredBefore == nil || !got.FilterOccurredBefore.Equal(eventCutoff) || got.EventCount != 2 || len(got.Events) != 2 {
 		t.Fatalf("occurred-before filtered events = %+v, want two events before cutoff", got)
+	}
+}
+
+func TestRunPolicyEventsClearWithStoreReportsJSON(t *testing.T) {
+	store := ovsdbPolicyEventsStore{syncer: &fakeOpenVSwitchExternalIDStore{}}
+	firstOccurred := time.Date(2026, 7, 17, 1, 0, 0, 0, time.UTC)
+	secondOccurred := time.Date(2026, 7, 17, 1, 10, 0, 0, time.UTC)
+	thirdOccurred := time.Date(2026, 7, 17, 1, 20, 0, 0, time.UTC)
+	if err := store.Save(t.Context(), policyEventsDocument{
+		Node:                 "node-a",
+		Store:                "ebpf",
+		LastReconcileSuccess: true,
+		UpdatedAt:            time.Date(2026, 7, 17, 1, 2, 3, 0, time.UTC),
+		TotalEvents:          3,
+		Events: []dataplane.PolicyUpdateEvent{{
+			EndpointID:  model.EndpointKey("prod", "pod-a"),
+			Revision:    1,
+			RuleCookies: []uint32{42},
+			RuleRefs:    []string{"prod/web/allow-http"},
+			Success:     true,
+			OccurredAt:  &firstOccurred,
+		}, {
+			EndpointID: model.EndpointKey("prod", "pod-b"),
+			Revision:   1,
+			Success:    true,
+			OccurredAt: &secondOccurred,
+		}, {
+			EndpointID:  model.EndpointKey("prod", "pod-a"),
+			Revision:    2,
+			RuleCookies: []uint32{44},
+			RuleRefs:    []string{"prod/web/deny-ssh"},
+			Success:     false,
+			Error:       "policy map capacity exceeded: apply failed",
+			OccurredAt:  &thirdOccurred,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var stdout bytes.Buffer
+	if err := runPolicyEventsClearWithStore(t.Context(), policyEventsClearOptions{endpoint: "prod/pod-a", success: "false"}, &stdout, store); err != nil {
+		t.Fatal(err)
+	}
+	var got policyEventsClearOutput
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode policy-events-clear output: %v\n%s", err, stdout.String())
+	}
+	if !got.Ready || got.Node != "node-a" || got.Store != "ebpf" || got.TotalEvents != 3 || got.ClearedEvents != 1 || got.RemainingEvents != 2 || got.FilterEndpoint != "prod/pod-a" || got.FilterSuccess == nil || *got.FilterSuccess {
+		t.Fatalf("clear output = %+v, want filtered failed pod-a clear", got)
+	}
+	if len(got.Cleared) != 1 || got.Cleared[0].Revision != 2 || got.Cleared[0].Success {
+		t.Fatalf("cleared = %+v, want failed revision 2", got.Cleared)
+	}
+	doc, err := store.Load(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.TotalEvents != 2 || len(doc.Events) != 2 || doc.Events[0].Revision != 1 || doc.Events[1].EndpointID != model.EndpointKey("prod", "pod-b") {
+		t.Fatalf("remaining doc = %+v, want pod-a revision 1 and pod-b revision 1", doc)
+	}
+
+	stdout.Reset()
+	err = runPolicyEventsClearWithStore(t.Context(), policyEventsClearOptions{}, &stdout, store)
+	if err == nil || !strings.Contains(err.Error(), "requires -all or at least one filter") {
+		t.Fatalf("err = %v, want selector requirement", err)
+	}
+
+	stdout.Reset()
+	err = runPolicyEventsClearWithStore(t.Context(), policyEventsClearOptions{all: true, endpoint: "prod/pod-a"}, &stdout, store)
+	if err == nil || !strings.Contains(err.Error(), "must use -all or filters, not both") {
+		t.Fatalf("err = %v, want all/filter conflict", err)
 	}
 }
 
