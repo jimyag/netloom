@@ -7167,6 +7167,8 @@ func writeAgentMetrics(w ioStringWriter, snapshot agentMetricsSnapshot, totals a
 	writeMetricType(w, "netloom_agent_policy_endpoint_last_event_unchanged_entries", "gauge")
 	writeMetricType(w, "netloom_agent_policy_endpoint_last_event_rule_cookies", "gauge")
 	writeMetricType(w, "netloom_agent_policy_endpoint_last_event_rule_refs", "gauge")
+	writeMetricType(w, "netloom_agent_policy_endpoint_last_event_capacity_hotspots", "gauge")
+	writeMetricType(w, "netloom_agent_policy_endpoint_last_event_capacity_hotspot_entries", "gauge")
 	writeMetricType(w, "netloom_agent_policy_endpoint_last_event_rule_directions", "gauge")
 	writeMetricType(w, "netloom_agent_policy_endpoint_last_event_rule_actions", "gauge")
 	writeMetricType(w, "netloom_agent_policy_endpoint_last_event_rule_direction", "gauge")
@@ -7216,6 +7218,16 @@ func writeAgentMetrics(w ioStringWriter, snapshot agentMetricsSnapshot, totals a
 			fmt.Fprintf(w, "netloom_agent_policy_endpoint_last_event_unchanged_entries%s %d\n", labels, status.LastEvent.Stats.Unchanged)
 			fmt.Fprintf(w, "netloom_agent_policy_endpoint_last_event_rule_cookies%s %d\n", labels, len(status.LastEvent.RuleCookies))
 			fmt.Fprintf(w, "netloom_agent_policy_endpoint_last_event_rule_refs%s %d\n", labels, len(status.LastEvent.RuleRefs))
+			fmt.Fprintf(w, "netloom_agent_policy_endpoint_last_event_capacity_hotspots%s %d\n", labels, len(status.LastEvent.CapacityHotspots))
+			for i, hotspot := range status.LastEvent.CapacityHotspots {
+				fmt.Fprintf(w, "netloom_agent_policy_endpoint_last_event_capacity_hotspot_entries%s %d\n", prometheusLabels(map[string]string{
+					"node":     result.Node,
+					"store":    snapshot.Store,
+					"endpoint": status.EndpointID,
+					"rank":     strconv.Itoa(i + 1),
+					"rule_ref": hotspot.RuleRef,
+				}), hotspot.Entries)
+			}
 			fmt.Fprintf(w, "netloom_agent_policy_endpoint_last_event_rule_directions%s %d\n", labels, len(status.LastEvent.RuleDirections))
 			fmt.Fprintf(w, "netloom_agent_policy_endpoint_last_event_rule_actions%s %d\n", labels, len(status.LastEvent.RuleActions))
 			for _, direction := range status.LastEvent.RuleDirections {
