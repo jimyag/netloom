@@ -7165,6 +7165,42 @@ func writeAgentMetrics(w ioStringWriter, snapshot agentMetricsSnapshot, totals a
 		})
 		fmt.Fprintf(w, "netloom_agent_policy_rollout_pressure_severity%s 1\n", labels)
 	}
+	writeMetricType(w, "netloom_agent_provider_networks", "gauge")
+	fmt.Fprintf(w, "netloom_agent_provider_networks%s %d\n", baseLabels, result.ProviderNetworks)
+	writeMetricType(w, "netloom_agent_provider_links", "gauge")
+	fmt.Fprintf(w, "netloom_agent_provider_links%s %d\n", baseLabels, result.ProviderLinks)
+	writeMetricType(w, "netloom_agent_provider_ready", "gauge")
+	fmt.Fprintf(w, "netloom_agent_provider_ready%s %d\n", baseLabels, result.ProviderReady)
+	writeMetricType(w, "netloom_agent_provider_degraded", "gauge")
+	fmt.Fprintf(w, "netloom_agent_provider_degraded%s %d\n", baseLabels, result.ProviderDegraded)
+	writeMetricType(w, "netloom_agent_provider_network_ready", "gauge")
+	writeMetricType(w, "netloom_agent_provider_network_links", "gauge")
+	writeMetricType(w, "netloom_agent_provider_network_ready_links", "gauge")
+	writeMetricType(w, "netloom_agent_provider_network_issues", "gauge")
+	writeMetricType(w, "netloom_agent_provider_network_issue_reason", "gauge")
+	for _, status := range result.ProviderNetworkStatus {
+		ready := 0
+		if status.Ready {
+			ready = 1
+		}
+		labels := prometheusLabels(map[string]string{
+			"node":             result.Node,
+			"store":            snapshot.Store,
+			"provider_network": status.ProviderNetwork,
+		})
+		fmt.Fprintf(w, "netloom_agent_provider_network_ready%s %d\n", labels, ready)
+		fmt.Fprintf(w, "netloom_agent_provider_network_links%s %d\n", labels, status.LinkCount)
+		fmt.Fprintf(w, "netloom_agent_provider_network_ready_links%s %d\n", labels, status.ReadyLinks)
+		fmt.Fprintf(w, "netloom_agent_provider_network_issues%s %d\n", labels, status.IssueCount)
+		for _, reason := range sortedNonEmptyStrings(status.Reasons) {
+			fmt.Fprintf(w, "netloom_agent_provider_network_issue_reason%s 1\n", prometheusLabels(map[string]string{
+				"node":             result.Node,
+				"store":            snapshot.Store,
+				"provider_network": status.ProviderNetwork,
+				"reason":           reason,
+			}))
+		}
+	}
 	writeMetricType(w, "netloom_agent_provider_tenant_subnets", "gauge")
 	writeMetricType(w, "netloom_agent_provider_tenant_endpoints", "gauge")
 	writeMetricType(w, "netloom_agent_provider_tenant_max_subnets", "gauge")
@@ -7342,6 +7378,19 @@ func sortedStringIntKeys(values map[string]int) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+func sortedNonEmptyStrings(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func policyRuleDropReasonTotals(stats []dataplane.RuleMetrics) (uint64, uint64, uint64) {

@@ -489,6 +489,17 @@ agent metrics 会暴露最近 endpoint lifecycle action history 的聚合计数�
 使用固定 action 和稳定 failure reason，适合对 freeze、quarantine、rollback、
 regenerate 等动作失败做低基数告警。
 
+provider network 健康也会输出为低基数 metrics：
+`netloom_agent_provider_networks`、`netloom_agent_provider_links`、
+`netloom_agent_provider_ready`、`netloom_agent_provider_degraded`、
+`netloom_agent_provider_network_ready{provider_network=...}`、
+`netloom_agent_provider_network_links{provider_network=...}`、
+`netloom_agent_provider_network_ready_links{provider_network=...}`、
+`netloom_agent_provider_network_issues{provider_network=...}` 和
+`netloom_agent_provider_network_issue_reason{provider_network=...,reason=...}`。
+这些指标用于直接告警 underlay/provider 问题，例如 parent down、link drift、
+OVSDB bridge/port/interface/QoS drift 或 controller drift。
+
 查看 controller 最新 OVN 健康、集群、audit 和 stale 状态：
 
 ```bash
