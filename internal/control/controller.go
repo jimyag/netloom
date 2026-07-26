@@ -1195,7 +1195,13 @@ func validateIdentityGroupEndpointReferences(groups map[string]model.IdentityGro
 }
 
 func validateProviderTenantQueueIdentityGroupConflicts(providerNetworks map[string]model.ProviderNetwork, groups map[string]model.IdentityGroup, endpoints map[string]model.Endpoint, subnets map[string]model.Subnet) error {
-	for _, providerNetwork := range providerNetworks {
+	names := make([]string, 0, len(providerNetworks))
+	for name := range providerNetworks {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		providerNetwork := providerNetworks[name]
 		for i := range providerNetwork.TenantQueues {
 			left := providerNetwork.TenantQueues[i]
 			if len(left.IdentityGroups) == 0 {
@@ -1468,12 +1474,18 @@ func identityGroupMatchesEndpoint(group model.IdentityGroup, endpoint model.Endp
 }
 
 func firstSharedEndpointKey(left, right map[string]struct{}) (string, bool) {
+	keys := make([]string, 0, len(left))
 	for key := range left {
-		if _, ok := right[key]; ok {
-			return key, true
+		if _, ok := right[key]; !ok {
+			continue
 		}
+		keys = append(keys, key)
 	}
-	return "", false
+	if len(keys) == 0 {
+		return "", false
+	}
+	sort.Strings(keys)
+	return keys[0], true
 }
 
 func endpointDefinesNamedPort(endpoint model.Endpoint, protocol model.Protocol, name string) bool {

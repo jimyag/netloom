@@ -1024,6 +1024,15 @@ func TestControllerRejectsInvalidObjectGraph(t *testing.T) {
 				state.Subnets[0].ProviderNetwork = "physnet-a"
 				state.Subnets[0].VLAN = 100
 				state.Endpoints[0].Labels = model.Labels{"app": "web", "tier": "frontend"}
+				state.Endpoints = append(state.Endpoints, model.Endpoint{
+					ID:             "pod-b",
+					VPC:            "prod",
+					Subnet:         "apps",
+					IP:             netip.MustParseAddr("10.10.0.11"),
+					Node:           "node-a",
+					SecurityGroups: []string{"web"},
+					Labels:         model.Labels{"app": "web", "tier": "frontend"},
+				})
 				state.ProviderNetworks = []model.ProviderNetwork{{
 					Name: "physnet-a",
 					Nodes: []model.ProviderNetworkNode{{
