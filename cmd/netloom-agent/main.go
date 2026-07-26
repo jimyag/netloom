@@ -95,6 +95,11 @@ func main() {
 				log.Fatal(err)
 			}
 			return
+		case "policy-action-history-clear":
+			if err := runPolicyActionHistoryClear(context.Background(), os.Args[2:], os.Stdout); err != nil {
+				log.Fatal(err)
+			}
+			return
 		case "policy-events":
 			if err := runPolicyEvents(context.Background(), os.Args[2:], os.Stdout); err != nil {
 				log.Fatal(err)
@@ -280,6 +285,17 @@ type policyActionHistoryOptions struct {
 	completedAfter  string
 	completedBefore string
 	limit           int
+}
+
+type policyActionHistoryClearOptions struct {
+	ovsdb           string
+	endpoint        string
+	action          string
+	reason          string
+	success         string
+	completedAfter  string
+	completedBefore string
+	all             bool
 }
 
 type policyEventsOptions struct {
@@ -672,6 +688,21 @@ type policyActionHistoryOutput struct {
 	History               []policyActionHistoryEntry `json:"history"`
 }
 
+type policyActionHistoryClearOutput struct {
+	Ready                 bool                       `json:"ready"`
+	TotalEvents           int                        `json:"total_events"`
+	ClearedEvents         int                        `json:"cleared_events"`
+	RemainingEvents       int                        `json:"remaining_events"`
+	FilterEndpoint        string                     `json:"filter_endpoint,omitempty"`
+	FilterAction          string                     `json:"filter_action,omitempty"`
+	FilterReason          string                     `json:"filter_reason,omitempty"`
+	FilterSuccess         *bool                      `json:"filter_success,omitempty"`
+	FilterCompletedAfter  *time.Time                 `json:"filter_completed_after,omitempty"`
+	FilterCompletedBefore *time.Time                 `json:"filter_completed_before,omitempty"`
+	All                   bool                       `json:"all,omitempty"`
+	Cleared               []policyActionHistoryEntry `json:"cleared,omitempty"`
+}
+
 type policyRolloutHistoryEntry struct {
 	ID          string                      `json:"id"`
 	Source      string                      `json:"source"`
@@ -807,6 +838,7 @@ type policyRolloutHistoryStore interface {
 type policyActionHistoryStore interface {
 	Load(context.Context) ([]policyActionHistoryEntry, error)
 	Append(context.Context, policyActionHistoryEntry) error
+	Save(context.Context, []policyActionHistoryEntry) error
 }
 
 type policyEventsStore interface {
@@ -1489,6 +1521,81 @@ func runPolicyActionHistoryWithStore(ctx context.Context, opts policyActionHisto
 		FilterCompletedAfter:  completedAfter,
 		FilterCompletedBefore: completedBefore,
 		History:               recent,
+	}
+	encoder := json.NewEncoder(stdout)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(output)
+}
+
+func runPolicyActionHistoryClear(ctx context.Context, args []string, stdout io.Writer) error {
+	var opts policyActionHistoryClearOptions
+	flags := flag.NewFlagSet("netloom-agent policy-action-history-clear", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	flags.StringVar(&opts.ovsdb, "ovsdb", os.Getenv("NETLOOM_OVSDB_ENDPOINT"), "Open_vSwitch OVSDB endpoint")
+	flags.StringVar(&opts.endpoint, "endpoint", "", "optional endpoint key to clear")
+	flags.StringVar(&opts.action, "action", "", "optional action to clear")
+	flags.StringVar(&opts.reason, "reason", "", "optional reason to clear")
+	flags.StringVar(&opts.success, "success", "", "optional success filter: true or false")
+	flags.StringVar(&opts.completedAfter, "completed-after", "", "optional RFC3339 timestamp; clear actions completed at or after this time")
+	flags.StringVar(&opts.completedBefore, "completed-before", "", "optional RFC3339 timestamp; clear actions completed before this time")
+	flags.BoolVar(&opts.all, "all", false, "clear all action history entries")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(opts.ovsdb) == "" {
+		return errors.New("missing -ovsdb or NETLOOM_OVSDB_ENDPOINT")
+	}
+	client, closeStore, err := newOpenVSwitchClient(ctx, opts.ovsdb)
+	if err != nil {
+		return err
+	}
+	defer closeStore()
+	return runPolicyActionHistoryClearWithStore(ctx, opts, stdout, ovsdbPolicyActionHistoryStore{syncer: linuxdatapath.NewLibOVSDBProviderSyncer(client)})
+}
+
+func runPolicyActionHistoryClearWithStore(ctx context.Context, opts policyActionHistoryClearOptions, stdout io.Writer, store policyActionHistoryStore) error {
+	if store == nil {
+		return errors.New("missing policy action history store")
+	}
+	endpoint := strings.TrimSpace(opts.endpoint)
+	action := strings.TrimSpace(opts.action)
+	reason := strings.TrimSpace(opts.reason)
+	success, err := parseOptionalBoolFilter(opts.success, "success")
+	if err != nil {
+		return err
+	}
+	completedAfter, err := parseOptionalTimeFilter(opts.completedAfter, "completed-after")
+	if err != nil {
+		return err
+	}
+	completedBefore, err := parseOptionalTimeFilter(opts.completedBefore, "completed-before")
+	if err != nil {
+		return err
+	}
+	if err := validatePolicyActionHistoryClearSelector(opts.all, endpoint, action, reason, success, completedAfter, completedBefore); err != nil {
+		return err
+	}
+	history, err := store.Load(ctx)
+	if err != nil {
+		return err
+	}
+	next, cleared := clearPolicyActionHistory(history, opts.all, endpoint, action, reason, success, completedAfter, completedBefore)
+	if err := store.Save(ctx, next); err != nil {
+		return err
+	}
+	output := policyActionHistoryClearOutput{
+		Ready:                 true,
+		TotalEvents:           len(history),
+		ClearedEvents:         len(cleared),
+		RemainingEvents:       len(next),
+		FilterEndpoint:        endpoint,
+		FilterAction:          action,
+		FilterReason:          reason,
+		FilterSuccess:         success,
+		FilterCompletedAfter:  completedAfter,
+		FilterCompletedBefore: completedBefore,
+		All:                   opts.all,
+		Cleared:               cleared,
 	}
 	encoder := json.NewEncoder(stdout)
 	encoder.SetIndent("", "  ")
@@ -4926,6 +5033,28 @@ func (m *agentMetrics) policyActionHistory() []policyActionHistoryEntry {
 	return append([]policyActionHistoryEntry(nil), m.actionHistory...)
 }
 
+func (m *agentMetrics) clearPolicyActionHistory(ctx context.Context, all bool, endpoint, action, reason string, success *bool, completedAfter, completedBefore *time.Time) (int, []policyActionHistoryEntry, []policyActionHistoryEntry, error) {
+	if m == nil {
+		return 0, nil, nil, nil
+	}
+	m.mu.Lock()
+	previous := append([]policyActionHistoryEntry(nil), m.actionHistory...)
+	next, cleared := clearPolicyActionHistory(previous, all, endpoint, action, reason, success, completedAfter, completedBefore)
+	m.actionHistory = trimPolicyActionHistory(next)
+	store := m.actionHistoryStore
+	m.mu.Unlock()
+	if store == nil {
+		return len(previous), m.policyActionHistory(), cleared, nil
+	}
+	if err := store.Save(ctx, next); err != nil {
+		m.mu.Lock()
+		m.actionHistory = previous
+		m.mu.Unlock()
+		return len(previous), previous, nil, err
+	}
+	return len(previous), next, cleared, nil
+}
+
 func filterPolicyActionHistory(history []policyActionHistoryEntry, endpoint, action, reason string, success *bool, completedAfter, completedBefore *time.Time) []policyActionHistoryEntry {
 	endpoint = strings.TrimSpace(endpoint)
 	action = strings.TrimSpace(action)
@@ -4936,29 +5065,77 @@ func filterPolicyActionHistory(history []policyActionHistoryEntry, endpoint, act
 	}
 	out := make([]policyActionHistoryEntry, 0, len(history))
 	for _, entry := range history {
-		if action != "" && entry.Action != action {
-			continue
+		if policyActionHistoryEntryMatches(entry, candidates, action, reason, success, completedAfter, completedBefore) {
+			out = append(out, entry)
 		}
-		if reason != "" && entry.Reason != reason {
-			continue
-		}
-		if success != nil && entry.Success != *success {
-			continue
-		}
-		if completedAfter != nil && entry.CompletedAt.Before(*completedAfter) {
-			continue
-		}
-		if completedBefore != nil && !entry.CompletedAt.Before(*completedBefore) {
-			continue
-		}
-		if endpoint != "" {
-			if _, ok := candidates[entry.EndpointID]; !ok {
-				continue
-			}
-		}
-		out = append(out, entry)
 	}
 	return out
+}
+
+func clearPolicyActionHistory(history []policyActionHistoryEntry, all bool, endpoint, action, reason string, success *bool, completedAfter, completedBefore *time.Time) ([]policyActionHistoryEntry, []policyActionHistoryEntry) {
+	if all {
+		return nil, append([]policyActionHistoryEntry(nil), history...)
+	}
+	endpoint = strings.TrimSpace(endpoint)
+	action = strings.TrimSpace(action)
+	reason = strings.TrimSpace(reason)
+	candidates := map[string]struct{}{}
+	if endpoint != "" {
+		candidates = policyEndpointCandidates(endpoint)
+	}
+	next := make([]policyActionHistoryEntry, 0, len(history))
+	cleared := make([]policyActionHistoryEntry, 0)
+	for _, entry := range history {
+		if policyActionHistoryEntryMatches(entry, candidates, action, reason, success, completedAfter, completedBefore) {
+			cleared = append(cleared, entry)
+			continue
+		}
+		next = append(next, entry)
+	}
+	return next, cleared
+}
+
+func policyActionHistoryEntryMatches(entry policyActionHistoryEntry, endpointCandidates map[string]struct{}, action, reason string, success *bool, completedAfter, completedBefore *time.Time) bool {
+	if action != "" && entry.Action != action {
+		return false
+	}
+	if reason != "" && entry.Reason != reason {
+		return false
+	}
+	if success != nil && entry.Success != *success {
+		return false
+	}
+	if completedAfter != nil && entry.CompletedAt.Before(*completedAfter) {
+		return false
+	}
+	if completedBefore != nil && !entry.CompletedAt.Before(*completedBefore) {
+		return false
+	}
+	if len(endpointCandidates) != 0 {
+		if _, ok := endpointCandidates[entry.EndpointID]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func validatePolicyActionHistoryClearSelector(all bool, endpoint, action, reason string, success *bool, completedAfter, completedBefore *time.Time) error {
+	hasSelector := strings.TrimSpace(endpoint) != "" ||
+		strings.TrimSpace(action) != "" ||
+		strings.TrimSpace(reason) != "" ||
+		success != nil ||
+		completedAfter != nil ||
+		completedBefore != nil
+	if all {
+		if hasSelector {
+			return errors.New("policy action history clear must use -all or filters, not both")
+		}
+		return nil
+	}
+	if !hasSelector {
+		return errors.New("policy action history clear requires -all or at least one filter")
+	}
+	return nil
 }
 
 func recentPolicyActionHistory(history []policyActionHistoryEntry, limit int) []policyActionHistoryEntry {
@@ -5240,6 +5417,17 @@ func (s ovsdbPolicyActionHistoryStore) Append(ctx context.Context, entry policyA
 		return err
 	}
 	raw, err := json.Marshal(trimPolicyActionHistory(append(history, entry)))
+	if err != nil {
+		return fmt.Errorf("encode Open_vSwitch external_ids:%s: %w", policyActionHistoryKey, err)
+	}
+	return s.syncer.SetOpenVSwitchExternalID(ctx, policyActionHistoryKey, string(raw))
+}
+
+func (s ovsdbPolicyActionHistoryStore) Save(ctx context.Context, history []policyActionHistoryEntry) error {
+	if s.syncer == nil {
+		return nil
+	}
+	raw, err := json.Marshal(trimPolicyActionHistory(history))
 	if err != nil {
 		return fmt.Errorf("encode Open_vSwitch external_ids:%s: %w", policyActionHistoryKey, err)
 	}
@@ -6729,15 +6917,9 @@ func (m *agentMetrics) handlePolicyEndpointRevision(w http.ResponseWriter, r *ht
 }
 
 func (m *agentMetrics) handlePolicyActionHistory(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
+	if r.Method != http.MethodGet && r.Method != http.MethodDelete {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "method not allowed"})
-		return
-	}
-	limit, err := policyEventsLimitFromRequest(r)
-	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 	endpoint := strings.TrimSpace(r.URL.Query().Get("endpoint"))
@@ -6756,6 +6938,49 @@ func (m *agentMetrics) handlePolicyActionHistory(w http.ResponseWriter, r *http.
 		return
 	}
 	completedBefore, err := parseOptionalTimeFilter(r.URL.Query().Get("completed_before"), "completed_before")
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	if r.Method == http.MethodDelete {
+		all, err := parseOptionalBoolFilter(r.URL.Query().Get("all"), "all")
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+		clearAll := all != nil && *all
+		if err := validatePolicyActionHistoryClearSelector(clearAll, endpoint, action, reason, success, completedAfter, completedBefore); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": strings.ReplaceAll(err.Error(), "-all", "all=true")})
+			return
+		}
+		total, next, cleared, err := m.clearPolicyActionHistory(r.Context(), clearAll, endpoint, action, reason, success, completedAfter, completedBefore)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+		encoder := json.NewEncoder(w)
+		encoder.SetIndent("", "  ")
+		_ = encoder.Encode(policyActionHistoryClearOutput{
+			Ready:                 true,
+			TotalEvents:           total,
+			ClearedEvents:         len(cleared),
+			RemainingEvents:       len(next),
+			FilterEndpoint:        endpoint,
+			FilterAction:          action,
+			FilterReason:          reason,
+			FilterSuccess:         success,
+			FilterCompletedAfter:  completedAfter,
+			FilterCompletedBefore: completedBefore,
+			All:                   clearAll,
+			Cleared:               cleared,
+		})
+		return
+	}
+	limit, err := policyEventsLimitFromRequest(r)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})

@@ -1611,6 +1611,57 @@ func TestRunPolicyActionHistoryWithStoreRejectsInvalidFilters(t *testing.T) {
 	}
 }
 
+func TestRunPolicyActionHistoryClearWithStoreReportsJSON(t *testing.T) {
+	firstCompleted := time.Date(2026, 7, 18, 1, 0, 0, 0, time.UTC)
+	secondCompleted := time.Date(2026, 7, 18, 1, 10, 0, 0, time.UTC)
+	thirdCompleted := time.Date(2026, 7, 18, 1, 20, 0, 0, time.UTC)
+	history := []policyActionHistoryEntry{
+		{ID: "1", Action: "freeze", EndpointID: model.EndpointKey("prod", "vm-a"), Node: "node-a", Store: "ebpf", CompletedAt: firstCompleted, Success: true},
+		{ID: "2", Action: "regenerate", EndpointID: model.EndpointKey("prod", "vm-a"), Node: "node-a", Store: "ebpf", CompletedAt: secondCompleted, Success: false, Reason: "frozen", Error: "policy endpoint is frozen"},
+		{ID: "3", Action: "regenerate", EndpointID: model.EndpointKey("prod", "vm-b"), Node: "node-a", Store: "ebpf", CompletedAt: thirdCompleted, Success: true},
+	}
+	raw, err := json.Marshal(history)
+	if err != nil {
+		t.Fatal(err)
+	}
+	syncer := &fakeOpenVSwitchExternalIDStore{values: map[string]string{
+		policyActionHistoryKey: string(raw),
+	}}
+	store := ovsdbPolicyActionHistoryStore{syncer: syncer}
+	var out bytes.Buffer
+	err = runPolicyActionHistoryClearWithStore(t.Context(), policyActionHistoryClearOptions{
+		endpoint: "prod/vm-a",
+		action:   "regenerate",
+		success:  "false",
+	}, &out, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got policyActionHistoryClearOutput
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("decode policy-action-history-clear output: %v\n%s", err, out.String())
+	}
+	if !got.Ready || got.TotalEvents != 3 || got.ClearedEvents != 1 || got.RemainingEvents != 2 || got.FilterEndpoint != "prod/vm-a" || got.FilterAction != "regenerate" || got.FilterSuccess == nil || *got.FilterSuccess {
+		t.Fatalf("output = %+v, want failed regenerate clear metadata", got)
+	}
+	if len(got.Cleared) != 1 || got.Cleared[0].ID != "2" {
+		t.Fatalf("cleared = %+v, want action 2", got.Cleared)
+	}
+	var remaining []policyActionHistoryEntry
+	if err := json.Unmarshal([]byte(syncer.values[policyActionHistoryKey]), &remaining); err != nil {
+		t.Fatalf("decode remaining history: %v", err)
+	}
+	if len(remaining) != 2 || remaining[0].ID != "1" || remaining[1].ID != "3" {
+		t.Fatalf("remaining = %+v, want actions 1 and 3", remaining)
+	}
+
+	out.Reset()
+	err = runPolicyActionHistoryClearWithStore(t.Context(), policyActionHistoryClearOptions{}, &out, store)
+	if err == nil || !strings.Contains(err.Error(), "requires -all or at least one filter") {
+		t.Fatalf("err = %v, want required selector", err)
+	}
+}
+
 func TestRunPolicyRolloutHistoryWithStoreReportsFilteredJSON(t *testing.T) {
 	firstCompleted := time.Date(2026, 7, 19, 1, 0, 0, 0, time.UTC)
 	secondCompleted := time.Date(2026, 7, 19, 1, 10, 0, 0, time.UTC)
@@ -6132,6 +6183,62 @@ func TestPolicyEndpointActionHistoryAPIFiltersEndpointActionAndLimit(t *testing.
 	}
 	if !strings.Contains(recorder.Body.String(), "invalid completed_before") {
 		t.Fatalf("body missing invalid completed_before error: %s", recorder.Body.String())
+	}
+}
+
+func TestPolicyEndpointActionHistoryAPIClearsFilteredHistory(t *testing.T) {
+	firstCompleted := time.Date(2026, 7, 18, 1, 0, 0, 0, time.UTC)
+	secondCompleted := time.Date(2026, 7, 18, 1, 10, 0, 0, time.UTC)
+	thirdCompleted := time.Date(2026, 7, 18, 1, 20, 0, 0, time.UTC)
+	history := []policyActionHistoryEntry{
+		{ID: "1", Action: "freeze", EndpointID: model.EndpointKey("prod", "pod-a"), Node: "node-a", Store: "memory", CompletedAt: firstCompleted, Success: true},
+		{ID: "2", Action: "unfreeze", EndpointID: model.EndpointKey("prod", "pod-a"), Node: "node-a", Store: "memory", CompletedAt: secondCompleted, Success: true},
+		{ID: "3", Action: "freeze", EndpointID: model.EndpointKey("prod", "pod-b"), Node: "node-a", Store: "memory", CompletedAt: thirdCompleted, Success: false, Reason: "frozen", Error: "policy endpoint is frozen"},
+	}
+	raw, err := json.Marshal(history)
+	if err != nil {
+		t.Fatal(err)
+	}
+	syncer := &fakeOpenVSwitchExternalIDStore{values: map[string]string{
+		policyActionHistoryKey: string(raw),
+	}}
+	metrics := newAgentMetrics(dataplane.NewInMemoryPolicyStore())
+	if err := configurePolicyActionHistory(t.Context(), metrics, ovsdbPolicyActionHistoryStore{syncer: syncer}); err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodDelete, "/policy/endpoints/actions/history?endpoint=prod/pod-a&action=freeze", nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("clear status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var output policyActionHistoryClearOutput
+	if err := json.Unmarshal(recorder.Body.Bytes(), &output); err != nil {
+		t.Fatalf("decode clear action history response: %v\n%s", err, recorder.Body.String())
+	}
+	if !output.Ready || output.TotalEvents != 3 || output.ClearedEvents != 1 || output.RemainingEvents != 2 || output.FilterEndpoint != "prod/pod-a" || output.FilterAction != "freeze" {
+		t.Fatalf("clear output = %+v, want filtered clear metadata", output)
+	}
+	if len(output.Cleared) != 1 || output.Cleared[0].ID != "1" {
+		t.Fatalf("cleared = %+v, want action 1", output.Cleared)
+	}
+	if history := metrics.policyActionHistory(); len(history) != 2 || history[0].ID != "2" || history[1].ID != "3" {
+		t.Fatalf("memory history = %+v, want actions 2 and 3", history)
+	}
+	var persisted []policyActionHistoryEntry
+	if err := json.Unmarshal([]byte(syncer.values[policyActionHistoryKey]), &persisted); err != nil {
+		t.Fatalf("decode persisted action history: %v", err)
+	}
+	if len(persisted) != 2 || persisted[0].ID != "2" || persisted[1].ID != "3" {
+		t.Fatalf("persisted = %+v, want actions 2 and 3", persisted)
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodDelete, "/policy/endpoints/actions/history", nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("clear without selector status = %d, want 400; body=%s", recorder.Code, recorder.Body.String())
 	}
 }
 

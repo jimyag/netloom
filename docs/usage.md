@@ -305,7 +305,7 @@ NETLOOM_AGENT_METRICS_ADDR=:9092 \
 | Provider Network | `agent-status`、Open_vSwitch bridge/port/interface/qos/queue | 本机 provider bridge、VLAN、QoS/Queue 和 controller 连接状态正常。 |
 | Linux datapath | `agent-status`、`ip netns`、`ip rule`、`ip route` | 工作负载 netns/veth、地址、路由和 RPDB rule 被正确创建。 |
 | SecurityGroup / ACL | `policy-status`、`policy-entries`、`policy-explain` | endpoint policy map 已生成，TCX 规则判定与安全组规则一致。 |
-| Rollout / lifecycle | `policy-rollout-state`、`policy-action-history` | rollout、freeze、quarantine、rollback 等动作有明确状态和历史记录。 |
+| Rollout / lifecycle | `policy-rollout-state`、`policy-action-history`、`policy-action-history-clear` | rollout、freeze、quarantine、rollback 等动作有明确状态和历史记录，并可按过滤条件清理已审计历史。 |
 | 观测和持久化 | `/metrics`、Open_vSwitch `external_ids` | controller/agent 状态、policy events、rules、entries 和 metrics 可查询。 |
 
 ## Desired State 存入 OVSDB
@@ -665,11 +665,17 @@ curl -s http://127.0.0.1:9092/policy/endpoints/actions/history
 curl -s 'http://127.0.0.1:9092/policy/endpoints/actions/history?endpoint=prod/vm-a&action=freeze&limit=20'
 curl -s 'http://127.0.0.1:9092/policy/endpoints/actions/history?action=regenerate&success=false'
 curl -s 'http://127.0.0.1:9092/policy/endpoints/actions/history?reason=frozen&success=false'
+curl -X DELETE -s 'http://127.0.0.1:9092/policy/endpoints/actions/history?endpoint=prod/vm-a&action=regenerate&success=false'
 netloom-agent policy-action-history \
   -ovsdb unix:/var/run/openvswitch/db.sock \
   -endpoint prod/vm-a \
   -action regenerate \
   -reason frozen \
+  -success false
+netloom-agent policy-action-history-clear \
+  -ovsdb unix:/var/run/openvswitch/db.sock \
+  -endpoint prod/vm-a \
+  -action regenerate \
   -success false
 ovs-vsctl get Open_vSwitch . external_ids:netloom_policy_endpoint_action_history
 ```
@@ -679,6 +685,8 @@ ovs-vsctl get Open_vSwitch . external_ids:netloom_policy_endpoint_action_history
 都会写入 `Open_vSwitch.external_ids:netloom_policy_endpoint_action_history`，用于节点本地审计。
 失败记录包含 `success:false`、稳定的 `reason` 和原始 `error`。API 支持按
 `endpoint`、`action`、`reason`、`success` 和 `limit` 查询最近的相关动作。
+`DELETE /policy/endpoints/actions/history` 和 `policy-action-history-clear` 使用同一组
+过滤字段清理已审计的历史；全量清理必须显式使用 `all=true` 或 CLI `-all`。
 同一份内存历史也会通过 agent `/metrics` 输出 action、reason、success 和 failure
 聚合，便于在不拉取明细 JSON 的情况下监控 lifecycle 风险。
 `policy-action-history` CLI 会从本机
