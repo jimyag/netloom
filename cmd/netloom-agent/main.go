@@ -7764,10 +7764,11 @@ func (m *agentMetrics) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rolloutState, rolloutStateEnabled, rolloutStateLoadError := m.policyRolloutState(r.Context())
-	writeAgentMetrics(w, snapshot, totals, m.policyActionHistory(), rolloutState, rolloutStateEnabled, rolloutStateLoadError)
+	freezeState := m.policyFreezeStateEntries(r.Context(), time.Now())
+	writeAgentMetrics(w, snapshot, totals, m.policyActionHistory(), rolloutState, rolloutStateEnabled, rolloutStateLoadError, freezeState)
 }
 
-func writeAgentMetrics(w ioStringWriter, snapshot agentMetricsSnapshot, totals agentMetricsTotals, actionHistory []policyActionHistoryEntry, rolloutState policyRolloutStateDocument, rolloutStateEnabled bool, rolloutStateLoadError string) {
+func writeAgentMetrics(w ioStringWriter, snapshot agentMetricsSnapshot, totals agentMetricsTotals, actionHistory []policyActionHistoryEntry, rolloutState policyRolloutStateDocument, rolloutStateEnabled bool, rolloutStateLoadError string, freezeState []policyFreezeStateEntry) {
 	result := snapshot.Result
 	baseLabels := prometheusLabels(map[string]string{
 		"node":  result.Node,
@@ -8005,6 +8006,7 @@ func writeAgentMetrics(w ioStringWriter, snapshot agentMetricsSnapshot, totals a
 		"endpoint": result.PolicyPressureQuarantineEndpoint,
 	}), result.PolicyPressureQuarantined)
 	writePolicyActionHistoryMetrics(w, result.Node, snapshot.Store, actionHistory)
+	writePolicyFreezeStateMetrics(w, result.Node, snapshot.Store, freezeState)
 	writePolicyRolloutStateMetrics(w, result.Node, snapshot.Store, rolloutState, rolloutStateEnabled, rolloutStateLoadError)
 	writeMetricType(w, "netloom_agent_policy_rollouts", "gauge")
 	fmt.Fprintf(w, "netloom_agent_policy_rollouts%s %d\n", baseLabels, result.PolicyRollouts)
@@ -8217,6 +8219,29 @@ func writeAgentMetrics(w ioStringWriter, snapshot agentMetricsSnapshot, totals a
 	}), result.TCXFailed)
 	writeMetricType(w, "netloom_agent_tcx_rollbacks", "gauge")
 	fmt.Fprintf(w, "netloom_agent_tcx_rollbacks%s %d\n", baseLabels, result.TCXRollbacks)
+}
+
+func writePolicyFreezeStateMetrics(w ioStringWriter, node, store string, entries []policyFreezeStateEntry) {
+	baseLabels := prometheusLabels(map[string]string{
+		"node":  node,
+		"store": store,
+	})
+	writeMetricType(w, "netloom_agent_policy_freeze_state_endpoints", "gauge")
+	fmt.Fprintf(w, "netloom_agent_policy_freeze_state_endpoints%s %d\n", baseLabels, len(entries))
+	writeMetricType(w, "netloom_agent_policy_freeze_state_endpoint", "gauge")
+	writeMetricType(w, "netloom_agent_policy_freeze_state_endpoint_expires_timestamp_seconds", "gauge")
+	for _, entry := range entries {
+		labels := prometheusLabels(map[string]string{
+			"node":     node,
+			"store":    store,
+			"endpoint": entry.EndpointID,
+		})
+		fmt.Fprintf(w, "netloom_agent_policy_freeze_state_endpoint%s 1\n", labels)
+		if entry.ExpiresAt.IsZero() {
+			continue
+		}
+		fmt.Fprintf(w, "netloom_agent_policy_freeze_state_endpoint_expires_timestamp_seconds%s %d\n", labels, entry.ExpiresAt.Unix())
+	}
 }
 
 func writePolicyActionHistoryMetrics(w ioStringWriter, node, store string, history []policyActionHistoryEntry) {

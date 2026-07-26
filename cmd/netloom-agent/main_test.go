@@ -7507,6 +7507,17 @@ func TestAgentMetricsExportsLatestPolicyAndTCXCounters(t *testing.T) {
 		Reason:     "frozen",
 		Error:      "policy endpoint is frozen",
 	})
+	freezeExpires := time.Now().UTC().Add(time.Hour)
+	freezeStateStore := ovsdbPolicyFreezeStateStore{syncer: &fakeOpenVSwitchExternalIDStore{}}
+	if err := freezeStateStore.Save(t.Context(), policyFreezeStateDocument{FrozenEndpoints: []policyFreezeStateEntry{
+		{EndpointID: "prod\x00pod-a", ExpiresAt: freezeExpires},
+		{EndpointID: "prod\x00pod-b"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := configurePolicyFreezeState(t.Context(), metrics, freezeStateStore); err != nil {
+		t.Fatal(err)
+	}
 	rolloutUpdated := time.Unix(1_725_000_300, 0).UTC()
 	rolloutStateStore := ovsdbPolicyRolloutStateStore{syncer: &fakeOpenVSwitchExternalIDStore{}}
 	if err := rolloutStateStore.Save(t.Context(), policyRolloutStateDocument{Rollouts: []policyRolloutStateEntry{{
@@ -7633,6 +7644,10 @@ func TestAgentMetricsExportsLatestPolicyAndTCXCounters(t *testing.T) {
 		`netloom_agent_policy_action_history_action_events{action="freeze",node="node-a",store="ebpf"} 1`,
 		`netloom_agent_policy_action_history_action_events{action="regenerate",node="node-a",store="ebpf"} 1`,
 		`netloom_agent_policy_action_history_reason_events{node="node-a",reason="frozen",store="ebpf"} 1`,
+		`netloom_agent_policy_freeze_state_endpoints{node="node-a",store="ebpf"} 2`,
+		`netloom_agent_policy_freeze_state_endpoint{endpoint="prod\x00pod-a",node="node-a",store="ebpf"} 1`,
+		fmt.Sprintf(`netloom_agent_policy_freeze_state_endpoint_expires_timestamp_seconds{endpoint="prod\x00pod-a",node="node-a",store="ebpf"} %d`, freezeExpires.Unix()),
+		`netloom_agent_policy_freeze_state_endpoint{endpoint="prod\x00pod-b",node="node-a",store="ebpf"} 1`,
 		`netloom_agent_policy_rollout_state_enabled{node="node-a",store="ebpf"} 1`,
 		`netloom_agent_policy_rollout_state_load_error{node="node-a",store="ebpf"} 0`,
 		`netloom_agent_policy_rollout_state_rollouts{node="node-a",store="ebpf"} 1`,
