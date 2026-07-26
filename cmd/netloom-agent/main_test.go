@@ -2109,6 +2109,52 @@ func TestRunPolicyFreezeStateWithStoreReportsActiveFrozenEndpoints(t *testing.T)
 	}
 }
 
+func TestPolicyEndpointAPIFreezeStateFilters(t *testing.T) {
+	now := time.Now().UTC()
+	raw, err := json.Marshal(policyFreezeStateDocument{
+		FrozenEndpoints: []policyFreezeStateEntry{
+			{EndpointID: model.EndpointKey("prod", "vm-a"), ExpiresAt: now.Add(time.Hour)},
+			{EndpointID: model.EndpointKey("prod", "vm-b"), ExpiresAt: now.Add(-time.Minute)},
+			{EndpointID: model.EndpointKey("prod", "vm-c")},
+			{EndpointID: model.EndpointKey("prod", "vm-a"), ExpiresAt: now.Add(2 * time.Hour)},
+		},
+		UpdatedAt: now.Add(-time.Minute),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	metrics := newAgentMetrics(dataplane.NewInMemoryPolicyStore())
+	if err := configurePolicyFreezeState(t.Context(), metrics, ovsdbPolicyFreezeStateStore{syncer: &fakeOpenVSwitchExternalIDStore{values: map[string]string{
+		policyFreezeStateKey: string(raw),
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/policy/endpoints/freeze/state?endpoint=prod/vm-a", nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("freeze state status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var output policyFreezeStateOutput
+	if err := json.Unmarshal(recorder.Body.Bytes(), &output); err != nil {
+		t.Fatalf("decode freeze state response: %v\n%s", err, recorder.Body.String())
+	}
+	if !output.Ready || output.TotalFrozenEndpoints != 2 || output.ActiveFrozenEndpoints != 2 || output.FilterEndpoint != "prod/vm-a" {
+		t.Fatalf("freeze state output = %+v, want filtered active freeze metadata", output)
+	}
+	if len(output.FrozenEndpoints) != 1 || output.FrozenEndpoints[0].EndpointID != model.EndpointKey("prod", "vm-a") || !output.FrozenEndpoints[0].ExpiresAt.Equal(now.Add(2*time.Hour)) {
+		t.Fatalf("frozen endpoints = %+v, want latest active vm-a freeze", output.FrozenEndpoints)
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPost, "/policy/endpoints/freeze/state", nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+	if recorder.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("freeze state post status = %d, want 405; body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestRunPolicyExplainReportsSelectorAllow(t *testing.T) {
 	statePath := writePolicyExplainState(t)
 	var stdout bytes.Buffer

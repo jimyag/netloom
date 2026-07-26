@@ -606,11 +606,13 @@ curl -X POST http://127.0.0.1:9092/policy/endpoints/prod/vm-a/unfreeze
 netloom-agent policy-freeze-state \
   -ovsdb unix:/var/run/openvswitch/db.sock \
   -endpoint prod/vm-a
+curl -s 'http://127.0.0.1:9092/policy/endpoints/freeze/state?endpoint=prod/vm-a'
 ovs-vsctl get Open_vSwitch . external_ids:netloom_policy_freeze_state
 ```
 
 `policy-freeze-state` CLI 会去重并过滤已经过期的冻结记录，支持按 `endpoint`
-查询某个 endpoint 当前是否被冻结。
+查询某个 endpoint 当前是否被冻结；长运行 agent 也通过
+`/policy/endpoints/freeze/state` 暴露当前 active freeze state。
 
 预览某个 endpoint 下一次 policy-map 更新：
 

@@ -5729,6 +5729,16 @@ func (m *agentMetrics) frozenPolicyEndpointExpirations() map[string]time.Time {
 	return out
 }
 
+func (m *agentMetrics) policyFreezeStateEntries(ctx context.Context, now time.Time) []policyFreezeStateEntry {
+	if m == nil {
+		return nil
+	}
+	m.pruneExpiredFrozenPolicyEndpoints(ctx, now)
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.frozenPolicyStateEntriesLocked()
+}
+
 func (m *agentMetrics) frozenPolicyStateEntriesLocked() []policyFreezeStateEntry {
 	entries := make([]policyFreezeStateEntry, 0, len(m.frozenEndpoints))
 	for endpointID, expiresAt := range m.frozenEndpoints {
@@ -6262,6 +6272,10 @@ func startAgentMetricsServer(ctx context.Context, addr string, metrics *agentMet
 
 func (m *agentMetrics) handlePolicyEndpoints(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+	if isPolicyFreezeStateRequest(r) {
+		m.handlePolicyFreezeState(w, r)
+		return
+	}
 	if isPolicyRolloutStateRequest(r) {
 		m.handlePolicyRolloutState(w, r)
 		return
@@ -6423,6 +6437,13 @@ func isPolicyRolloutStateRequest(r *http.Request) bool {
 	return strings.Trim(r.URL.Path, "/") == "policy/endpoints/rollout/state"
 }
 
+func isPolicyFreezeStateRequest(r *http.Request) bool {
+	if r == nil || r.URL == nil {
+		return false
+	}
+	return strings.Trim(r.URL.Path, "/") == "policy/endpoints/freeze/state"
+}
+
 func isPolicyRolloutHistoryRequest(r *http.Request) bool {
 	if r == nil || r.URL == nil {
 		return false
@@ -6493,6 +6514,26 @@ func (m *agentMetrics) handlePolicyRolloutState(w http.ResponseWriter, r *http.R
 		FilterUpdatedAfter:  updatedAfter,
 		FilterUpdatedBefore: updatedBefore,
 		Rollouts:            rollouts,
+	})
+}
+
+func (m *agentMetrics) handlePolicyFreezeState(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "method not allowed"})
+		return
+	}
+	endpoint := strings.TrimSpace(r.URL.Query().Get("endpoint"))
+	active := m.policyFreezeStateEntries(r.Context(), time.Now())
+	filtered := filterPolicyFreezeState(active, endpoint)
+	encoder := json.NewEncoder(w)
+	encoder.SetIndent("", "  ")
+	_ = encoder.Encode(policyFreezeStateOutput{
+		Ready:                 true,
+		TotalFrozenEndpoints:  len(active),
+		ActiveFrozenEndpoints: len(active),
+		FilterEndpoint:        endpoint,
+		FrozenEndpoints:       filtered,
 	})
 }
 
