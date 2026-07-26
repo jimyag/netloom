@@ -730,6 +730,7 @@ Open_vSwitch OVSDB 读取同一个 key，适合在没有打开 agent HTTP listen
 curl -s http://127.0.0.1:9092/policy/events
 curl -s 'http://127.0.0.1:9092/policy/events/prod/vm-a?limit=20'
 curl -s 'http://127.0.0.1:9092/policy/events?success=false&limit=20'
+curl -s 'http://127.0.0.1:9092/policy/events?failure_reason=capacity_exceeded&limit=20'
 curl -s 'http://127.0.0.1:9092/policy/events?remediated=true&limit=20'
 curl -s 'http://127.0.0.1:9092/policy/events?rule_cookie=42&limit=20'
 curl -s 'http://127.0.0.1:9092/policy/events?rule_ref=prod/web/allow-http&limit=20'
@@ -744,6 +745,7 @@ netloom-agent policy-events \
 netloom-agent policy-events \
   -ovsdb unix:/var/run/openvswitch/db.sock \
   -success false \
+  -failure-reason capacity_exceeded \
   -limit 20
 netloom-agent policy-events \
   -ovsdb unix:/var/run/openvswitch/db.sock \
@@ -761,8 +763,8 @@ ovs-vsctl get Open_vSwitch . external_ids:netloom_policy_events
 `Open_vSwitch.external_ids:netloom_policy_events`，包括 endpoint、revision、diff stats、
 rule cookies、rule refs、rule directions、rule actions、success/error 和 overflow remediation 信息，
 用于节点重启后继续审计 Cilium-style policy regeneration 结果。HTTP API 和 CLI 都支持按
-endpoint、success、remediated、rule cookie、rule ref、direction 和 action 过滤，便于直接定位失败更新、
-自动 remediation 事件或特定 ingress/egress allow/drop/reject/log 规则触发的更新。
+endpoint、success、remediated、failure reason、rule cookie、rule ref、direction 和 action 过滤，便于直接定位失败更新、
+自动 remediation 事件、`canonicalization_failed`、`capacity_exceeded`、`apply_failed` 或特定 ingress/egress allow/drop/reject/log 规则触发的更新。
 `DELETE /policy/events` 和 `policy-events-clear` 使用同一组过滤字段清理已审计事件；
 全量清理必须显式使用 `all=true` 或 CLI `-all`，且不能和过滤条件混用。
 

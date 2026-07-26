@@ -971,6 +971,9 @@ func TestInMemoryPolicyStoreRejectsConflictingDuplicateDesiredEntries(t *testing
 	if !slices.Equal(events[1].RuleRefs, []string{"prod/web/allow", "prod/web/drop"}) {
 		t.Fatalf("failed event rule refs = %v, want conflicting desired rule refs", events[1].RuleRefs)
 	}
+	if events[1].FailureReason != PolicyUpdateFailureCanonicalization {
+		t.Fatalf("failed event reason = %q, want %q", events[1].FailureReason, PolicyUpdateFailureCanonicalization)
+	}
 }
 
 func TestInMemoryPolicyStoreDeletesEndpoint(t *testing.T) {

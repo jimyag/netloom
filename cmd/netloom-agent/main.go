@@ -314,6 +314,7 @@ type policyEventsOptions struct {
 	success                string
 	remediated             string
 	remediation            string
+	failureReason          string
 	errorContains          string
 	pressureSeverity       string
 	pressureMinPercent     string
@@ -334,6 +335,7 @@ type policyEventsClearOptions struct {
 	success                string
 	remediated             string
 	remediation            string
+	failureReason          string
 	errorContains          string
 	pressureSeverity       string
 	pressureMinPercent     string
@@ -576,6 +578,7 @@ type policyEventsOutput struct {
 	FilterSuccess                *bool                         `json:"filter_success,omitempty"`
 	FilterRemediated             *bool                         `json:"filter_remediated,omitempty"`
 	FilterRemediation            string                        `json:"filter_remediation,omitempty"`
+	FilterFailureReason          string                        `json:"filter_failure_reason,omitempty"`
 	FilterErrorContains          string                        `json:"filter_error_contains,omitempty"`
 	FilterPressureSeverity       string                        `json:"filter_pressure_severity,omitempty"`
 	FilterPressureMinPercent     uint32                        `json:"filter_pressure_min_percent,omitempty"`
@@ -604,6 +607,7 @@ type policyEventsClearOutput struct {
 	FilterSuccess                *bool                         `json:"filter_success,omitempty"`
 	FilterRemediated             *bool                         `json:"filter_remediated,omitempty"`
 	FilterRemediation            string                        `json:"filter_remediation,omitempty"`
+	FilterFailureReason          string                        `json:"filter_failure_reason,omitempty"`
 	FilterErrorContains          string                        `json:"filter_error_contains,omitempty"`
 	FilterPressureSeverity       string                        `json:"filter_pressure_severity,omitempty"`
 	FilterPressureMinPercent     uint32                        `json:"filter_pressure_min_percent,omitempty"`
@@ -1697,6 +1701,7 @@ func runPolicyEvents(ctx context.Context, args []string, stdout io.Writer) error
 	flags.StringVar(&opts.success, "success", "", "optional success filter: true or false")
 	flags.StringVar(&opts.remediated, "remediated", "", "optional remediation filter: true or false")
 	flags.StringVar(&opts.remediation, "remediation", "", "optional remediation action to include")
+	flags.StringVar(&opts.failureReason, "failure-reason", "", "optional policy update failure reason to include: canonicalization_failed, capacity_exceeded, or apply_failed")
 	flags.StringVar(&opts.errorContains, "error-contains", "", "optional policy update error substring to include")
 	flags.StringVar(&opts.pressureSeverity, "pressure-severity", "", "optional policy map pressure severity to include: normal, warning, critical, full, or unknown")
 	flags.StringVar(&opts.pressureMinPercent, "pressure-min-percent", "", "optional minimum policy map pressure percent to include")
@@ -1757,6 +1762,7 @@ func runPolicyEventsWithStore(ctx context.Context, opts policyEventsOptions, std
 		FilterSuccess:                filter.Success,
 		FilterRemediated:             filter.Remediated,
 		FilterRemediation:            filter.Remediation,
+		FilterFailureReason:          filter.FailureReason,
 		FilterErrorContains:          filter.ErrorContains,
 		FilterPressureSeverity:       filter.PressureSeverity,
 		FilterPressureMinPercent:     optionalUint32Value(filter.PressureMinPercent),
@@ -1784,6 +1790,7 @@ func runPolicyEventsClear(ctx context.Context, args []string, stdout io.Writer) 
 	flags.StringVar(&opts.success, "success", "", "optional success filter: true or false")
 	flags.StringVar(&opts.remediated, "remediated", "", "optional remediation filter: true or false")
 	flags.StringVar(&opts.remediation, "remediation", "", "optional remediation action to clear")
+	flags.StringVar(&opts.failureReason, "failure-reason", "", "optional policy update failure reason to clear: canonicalization_failed, capacity_exceeded, or apply_failed")
 	flags.StringVar(&opts.errorContains, "error-contains", "", "optional policy update error substring to clear")
 	flags.StringVar(&opts.pressureSeverity, "pressure-severity", "", "optional policy map pressure severity to clear: normal, warning, critical, full, or unknown")
 	flags.StringVar(&opts.pressureMinPercent, "pressure-min-percent", "", "optional minimum policy map pressure percent to clear")
@@ -2901,6 +2908,7 @@ type policyUpdateEventFilter struct {
 	Success                *bool
 	Remediated             *bool
 	Remediation            string
+	FailureReason          string
 	ErrorContains          string
 	PressureSeverity       string
 	PressureMinPercent     *uint32
@@ -2915,18 +2923,18 @@ type policyUpdateEventFilter struct {
 }
 
 func policyUpdateEventFilterFromOptions(opts policyEventsOptions) (policyUpdateEventFilter, error) {
-	return policyUpdateEventFilterFromValues(opts.endpoint, opts.success, opts.remediated, opts.remediation, opts.errorContains, opts.pressureSeverity, opts.pressureMinPercent, opts.recommendedCapacityMin, opts.occurredAfter, opts.occurredBefore, opts.ruleCookie, opts.ruleRef, opts.capacityHotspotRuleRef, opts.direction, opts.action)
+	return policyUpdateEventFilterFromValues(opts.endpoint, opts.success, opts.remediated, opts.remediation, opts.failureReason, opts.errorContains, opts.pressureSeverity, opts.pressureMinPercent, opts.recommendedCapacityMin, opts.occurredAfter, opts.occurredBefore, opts.ruleCookie, opts.ruleRef, opts.capacityHotspotRuleRef, opts.direction, opts.action)
 }
 
 func policyUpdateEventFilterFromClearOptions(opts policyEventsClearOptions) (policyUpdateEventFilter, error) {
-	return policyUpdateEventFilterFromValues(opts.endpoint, opts.success, opts.remediated, opts.remediation, opts.errorContains, opts.pressureSeverity, opts.pressureMinPercent, opts.recommendedCapacityMin, opts.occurredAfter, opts.occurredBefore, opts.ruleCookie, opts.ruleRef, opts.capacityHotspotRuleRef, opts.direction, opts.action)
+	return policyUpdateEventFilterFromValues(opts.endpoint, opts.success, opts.remediated, opts.remediation, opts.failureReason, opts.errorContains, opts.pressureSeverity, opts.pressureMinPercent, opts.recommendedCapacityMin, opts.occurredAfter, opts.occurredBefore, opts.ruleCookie, opts.ruleRef, opts.capacityHotspotRuleRef, opts.direction, opts.action)
 }
 
 func policyUpdateEventFilterFromRequest(r *http.Request, endpoint string) (policyUpdateEventFilter, error) {
-	return policyUpdateEventFilterFromValues(endpoint, r.URL.Query().Get("success"), r.URL.Query().Get("remediated"), r.URL.Query().Get("remediation"), r.URL.Query().Get("error_contains"), r.URL.Query().Get("pressure_severity"), r.URL.Query().Get("pressure_min_percent"), r.URL.Query().Get("recommended_capacity_min"), r.URL.Query().Get("occurred_after"), r.URL.Query().Get("occurred_before"), r.URL.Query().Get("rule_cookie"), r.URL.Query().Get("rule_ref"), r.URL.Query().Get("capacity_hotspot_rule_ref"), r.URL.Query().Get("direction"), r.URL.Query().Get("action"))
+	return policyUpdateEventFilterFromValues(endpoint, r.URL.Query().Get("success"), r.URL.Query().Get("remediated"), r.URL.Query().Get("remediation"), r.URL.Query().Get("failure_reason"), r.URL.Query().Get("error_contains"), r.URL.Query().Get("pressure_severity"), r.URL.Query().Get("pressure_min_percent"), r.URL.Query().Get("recommended_capacity_min"), r.URL.Query().Get("occurred_after"), r.URL.Query().Get("occurred_before"), r.URL.Query().Get("rule_cookie"), r.URL.Query().Get("rule_ref"), r.URL.Query().Get("capacity_hotspot_rule_ref"), r.URL.Query().Get("direction"), r.URL.Query().Get("action"))
 }
 
-func policyUpdateEventFilterFromValues(endpoint, successRaw, remediatedRaw, remediation, errorContains, pressureSeverity, pressureMinPercentRaw, recommendedCapacityMinRaw, occurredAfterRaw, occurredBeforeRaw, ruleCookieRaw, ruleRef, capacityHotspotRuleRef, direction, action string) (policyUpdateEventFilter, error) {
+func policyUpdateEventFilterFromValues(endpoint, successRaw, remediatedRaw, remediation, failureReason, errorContains, pressureSeverity, pressureMinPercentRaw, recommendedCapacityMinRaw, occurredAfterRaw, occurredBeforeRaw, ruleCookieRaw, ruleRef, capacityHotspotRuleRef, direction, action string) (policyUpdateEventFilter, error) {
 	success, err := policyActionSuccessFromString(successRaw)
 	if err != nil {
 		return policyUpdateEventFilter{}, err
@@ -2934,6 +2942,15 @@ func policyUpdateEventFilterFromValues(endpoint, successRaw, remediatedRaw, reme
 	remediated, err := policyActionBoolFilterFromString("remediated", remediatedRaw)
 	if err != nil {
 		return policyUpdateEventFilter{}, err
+	}
+	failureReason = strings.TrimSpace(failureReason)
+	switch failureReason {
+	case "",
+		dataplane.PolicyUpdateFailureCanonicalization,
+		dataplane.PolicyUpdateFailureCapacityExceeded,
+		dataplane.PolicyUpdateFailureApplyFailed:
+	default:
+		return policyUpdateEventFilter{}, fmt.Errorf("invalid failure reason %q", failureReason)
 	}
 	pressureSeverity = strings.TrimSpace(pressureSeverity)
 	if err := validatePolicyEndpointPressureSeverity(pressureSeverity); err != nil {
@@ -2988,6 +3005,7 @@ func policyUpdateEventFilterFromValues(endpoint, successRaw, remediatedRaw, reme
 		Success:                success,
 		Remediated:             remediated,
 		Remediation:            strings.TrimSpace(remediation),
+		FailureReason:          strings.TrimSpace(failureReason),
 		ErrorContains:          strings.TrimSpace(errorContains),
 		PressureSeverity:       pressureSeverity,
 		PressureMinPercent:     pressureMinPercent,
@@ -3019,6 +3037,7 @@ func policyEventsOutputFromSnapshot(snapshot agentMetricsSnapshot, events []data
 		FilterSuccess:                filter.Success,
 		FilterRemediated:             filter.Remediated,
 		FilterRemediation:            filter.Remediation,
+		FilterFailureReason:          filter.FailureReason,
 		FilterErrorContains:          filter.ErrorContains,
 		FilterPressureSeverity:       filter.PressureSeverity,
 		FilterPressureMinPercent:     optionalUint32Value(filter.PressureMinPercent),
@@ -3049,6 +3068,7 @@ func policyEventsClearOutputFromDocument(doc policyEventsDocument, total int, cl
 		FilterSuccess:                filter.Success,
 		FilterRemediated:             filter.Remediated,
 		FilterRemediation:            filter.Remediation,
+		FilterFailureReason:          filter.FailureReason,
 		FilterErrorContains:          filter.ErrorContains,
 		FilterPressureSeverity:       filter.PressureSeverity,
 		FilterPressureMinPercent:     optionalUint32Value(filter.PressureMinPercent),
@@ -3317,6 +3337,9 @@ func policyUpdateEventMatches(event dataplane.PolicyUpdateEvent, filter policyUp
 	if filter.Remediation != "" && event.Remediation != filter.Remediation {
 		return false
 	}
+	if filter.FailureReason != "" && event.FailureReason != filter.FailureReason {
+		return false
+	}
 	if filter.ErrorContains != "" && !strings.Contains(event.Error, filter.ErrorContains) {
 		return false
 	}
@@ -3372,6 +3395,7 @@ func policyUpdateEventFilterActive(filter policyUpdateEventFilter) bool {
 		filter.Success != nil ||
 		filter.Remediated != nil ||
 		filter.Remediation != "" ||
+		filter.FailureReason != "" ||
 		filter.ErrorContains != "" ||
 		filter.PressureSeverity != "" ||
 		filter.PressureMinPercent != nil ||

@@ -197,6 +197,7 @@ func (s *EBPFPolicyStore) clearEndpointPolicyAfterOverflowLocked(ctx context.Con
 		RuleRefs:         policyUpdateRuleRefs(oldEntries, clearPlan),
 		CapacityHotspots: policyMapCapacityHotspotsFromError(overflowErr),
 		Success:          true,
+		FailureReason:    PolicyUpdateFailureReason(overflowErr),
 		Remediated:       true,
 		Remediation:      string(PolicyMapOverflowClear),
 		Error:            overflowErr.Error(),
@@ -551,6 +552,7 @@ func (s *EBPFPolicyStore) recordPolicyUpdateFailure(endpointID string, previousR
 		RuleRefs:         ruleRefs,
 		CapacityHotspots: policyMapCapacityHotspotsFromError(err),
 		Success:          false,
+		FailureReason:    PolicyUpdateFailureReason(err),
 		Error:            err.Error(),
 	})
 	attachPolicyUpdateEventPressure(&s.events[len(s.events)-1], len(desiredEntries), s.maxEntries)

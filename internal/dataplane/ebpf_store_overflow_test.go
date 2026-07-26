@@ -70,6 +70,9 @@ func TestEBPFPolicyStoreRejectsPolicyMapOverflowBeforeProgramming(t *testing.T) 
 		event.CapacityHotspots[1] != (PolicyMapCapacityHotspot{RuleRef: "prod/web/allow-https", Entries: 1}) {
 		t.Fatalf("overflow event capacity hotspots = %+v, want desired overflowing rule hotspots", event.CapacityHotspots)
 	}
+	if event.FailureReason != PolicyUpdateFailureCapacityExceeded {
+		t.Fatalf("overflow event reason = %q, want %q", event.FailureReason, PolicyUpdateFailureCapacityExceeded)
+	}
 	if event.PolicyMapEntries != 2 || event.PolicyMapCapacity != 1 || event.PolicyMapPressurePercent != 100 || event.PolicyMapPressureSeverity != PolicyMapPressureFull || event.PolicyMapRecommendedCapacity != 3 {
 		t.Fatalf("overflow event pressure = entries %d capacity %d percent %d severity %q recommended %d, want full pressure for desired oversized map", event.PolicyMapEntries, event.PolicyMapCapacity, event.PolicyMapPressurePercent, event.PolicyMapPressureSeverity, event.PolicyMapRecommendedCapacity)
 	}
@@ -137,6 +140,9 @@ func TestEBPFPolicyStoreClearsPolicyMapOverflowWhenConfigured(t *testing.T) {
 	}
 	if !strings.Contains(events[0].Error, "policy map capacity exceeded") {
 		t.Fatalf("overflow remediation event error = %q, want original overflow reason", events[0].Error)
+	}
+	if events[0].FailureReason != PolicyUpdateFailureCapacityExceeded {
+		t.Fatalf("overflow remediation event reason = %q, want %q", events[0].FailureReason, PolicyUpdateFailureCapacityExceeded)
 	}
 	if len(events[0].CapacityHotspots) != 2 ||
 		events[0].CapacityHotspots[0] != (PolicyMapCapacityHotspot{RuleRef: "prod/web/allow-http", Entries: 1}) ||

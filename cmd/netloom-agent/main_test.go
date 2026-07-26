@@ -3876,6 +3876,24 @@ func TestPolicyEventsAPIFiltersFailedEvents(t *testing.T) {
 	if got.Events[0].Success || !strings.Contains(got.Events[0].Error, "in-memory policy update failed") {
 		t.Fatalf("events = %+v, want in-memory failure event", got.Events)
 	}
+	if got.Events[0].FailureReason != dataplane.PolicyUpdateFailureApplyFailed {
+		t.Fatalf("event failure reason = %q, want %q", got.Events[0].FailureReason, dataplane.PolicyUpdateFailureApplyFailed)
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/policy/events?failure_reason=apply_failed", nil)
+	metrics.handlePolicyEvents(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	got = policyEventsOutput{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode failure-reason filtered policy events response: %v\n%s", err, recorder.Body.String())
+	}
+	if got.FilterFailureReason != dataplane.PolicyUpdateFailureApplyFailed || got.EventCount != 1 || len(got.Events) != 1 || got.Events[0].Success {
+		t.Fatalf("failure-reason filtered events output = %+v, want one apply failure event", got)
+	}
 }
 
 func TestPolicyEventsAPIFiltersCanonicalizationFailuresByRuleAttribution(t *testing.T) {
@@ -3920,7 +3938,7 @@ func TestPolicyEventsAPIFiltersCanonicalizationFailuresByRuleAttribution(t *test
 	}, "memory", time.Millisecond)
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodGet, "/policy/events?success=false&rule_ref=prod/web/drop&direction=ingress&action=drop", nil)
+	request := httptest.NewRequest(http.MethodGet, "/policy/events?success=false&failure_reason=canonicalization_failed&rule_ref=prod/web/drop&direction=ingress&action=drop", nil)
 	metrics.handlePolicyEvents(recorder, request)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
@@ -3929,7 +3947,7 @@ func TestPolicyEventsAPIFiltersCanonicalizationFailuresByRuleAttribution(t *test
 	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode rule-ref filtered canonicalization failure response: %v\n%s", err, recorder.Body.String())
 	}
-	if got.FilterRuleRef != "prod/web/drop" || got.FilterDirection != model.DirectionIngress || got.FilterAction != model.ActionDrop || got.EventCount != 1 {
+	if got.FilterFailureReason != dataplane.PolicyUpdateFailureCanonicalization || got.FilterRuleRef != "prod/web/drop" || got.FilterDirection != model.DirectionIngress || got.FilterAction != model.ActionDrop || got.EventCount != 1 {
 		t.Fatalf("filtered output = %+v, want one ingress drop canonicalization failure", got)
 	}
 	if len(got.Events) != 1 || got.Events[0].Success || got.Events[0].Revision != 2 {
@@ -3943,6 +3961,9 @@ func TestPolicyEventsAPIFiltersCanonicalizationFailuresByRuleAttribution(t *test
 	}
 	if !strings.Contains(got.Events[0].Error, "conflicting policy map entries for identical key") {
 		t.Fatalf("event error = %q, want canonicalization conflict", got.Events[0].Error)
+	}
+	if got.Events[0].FailureReason != dataplane.PolicyUpdateFailureCanonicalization {
+		t.Fatalf("event failure reason = %q, want %q", got.Events[0].FailureReason, dataplane.PolicyUpdateFailureCanonicalization)
 	}
 
 	recorder = httptest.NewRecorder()
@@ -4013,6 +4034,9 @@ func TestPolicyEventsAPIFiltersByCapacityHotspotRuleRef(t *testing.T) {
 	if got.Events[0].PolicyMapPressureSeverity != dataplane.PolicyMapPressureFull || got.Events[0].PolicyMapPressurePercent != 100 {
 		t.Fatalf("event pressure = %+v, want full pressure", got.Events[0])
 	}
+	if got.Events[0].FailureReason != dataplane.PolicyUpdateFailureCapacityExceeded {
+		t.Fatalf("event failure reason = %q, want %q", got.Events[0].FailureReason, dataplane.PolicyUpdateFailureCapacityExceeded)
+	}
 
 	recorder = httptest.NewRecorder()
 	request = httptest.NewRequest(http.MethodGet, "/policy/events?pressure_min_percent=100", nil)
@@ -4047,6 +4071,21 @@ func TestPolicyEventsAPIFiltersByCapacityHotspotRuleRef(t *testing.T) {
 	if got.FilterOccurredBefore == nil || !got.FilterOccurredBefore.Equal(cutoff) || got.EventCount != 1 || len(got.Events) != 1 {
 		t.Fatalf("occurred-before filtered events = %+v, want one event before cutoff %s", got, cutoff.Format(time.RFC3339))
 	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/policy/events?failure_reason=capacity_exceeded", nil)
+	metrics.handlePolicyEvents(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	got = policyEventsOutput{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode failure-reason policy events response: %v\n%s", err, recorder.Body.String())
+	}
+	if got.FilterFailureReason != dataplane.PolicyUpdateFailureCapacityExceeded || got.EventCount != 1 || len(got.Events) != 1 {
+		t.Fatalf("failure-reason filtered events = %+v, want one capacity exceeded event", got)
+	}
 }
 
 func TestPolicyEventsAPIRejectsInvalidRemediatedFilter(t *testing.T) {
@@ -4059,6 +4098,22 @@ func TestPolicyEventsAPIRejectsInvalidRemediatedFilter(t *testing.T) {
 
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400; body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestPolicyEventsAPIRejectsInvalidFailureReason(t *testing.T) {
+	metrics := newAgentMetrics(dataplane.NewInMemoryPolicyStore())
+	observeAgentReconcileResult(metrics, agent.ReconcileResult{Node: "node-a"}, "memory", time.Millisecond)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/policy/events?failure_reason=overflow", nil)
+	metrics.handlePolicyEvents(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "invalid failure reason") {
+		t.Fatalf("body missing invalid failure reason error: %s", recorder.Body.String())
 	}
 }
 
@@ -4225,6 +4280,7 @@ func TestRunPolicyEventsWithStoreReportsFilteredJSON(t *testing.T) {
 			PolicyMapPressureSeverity:    dataplane.PolicyMapPressureCritical,
 			PolicyMapRecommendedCapacity: 12,
 			Success:                      false,
+			FailureReason:                dataplane.PolicyUpdateFailureCapacityExceeded,
 			Error:                        "policy map capacity exceeded: apply failed",
 			OccurredAt:                   &thirdOccurred,
 		}},
@@ -4322,6 +4378,21 @@ func TestRunPolicyEventsWithStoreReportsFilteredJSON(t *testing.T) {
 	}
 
 	stdout.Reset()
+	if err := runPolicyEventsWithStore(t.Context(), policyEventsOptions{failureReason: dataplane.PolicyUpdateFailureCapacityExceeded, limit: 10}, &stdout, store); err != nil {
+		t.Fatal(err)
+	}
+	got = policyEventsOutput{}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode failure-reason filtered policy-events output: %v\n%s", err, stdout.String())
+	}
+	if got.FilterFailureReason != dataplane.PolicyUpdateFailureCapacityExceeded || got.EventCount != 1 || len(got.Events) != 1 || got.Events[0].Revision != 2 {
+		t.Fatalf("failure-reason filtered events = %+v, want pod-a deny-ssh revision 2", got)
+	}
+	if got.Events[0].FailureReason != dataplane.PolicyUpdateFailureCapacityExceeded {
+		t.Fatalf("event failure reason = %q, want capacity exceeded", got.Events[0].FailureReason)
+	}
+
+	stdout.Reset()
 	if err := runPolicyEventsWithStore(t.Context(), policyEventsOptions{pressureSeverity: dataplane.PolicyMapPressureCritical, limit: 10}, &stdout, store); err != nil {
 		t.Fatal(err)
 	}
@@ -4415,26 +4486,27 @@ func TestRunPolicyEventsClearWithStoreReportsJSON(t *testing.T) {
 			Success:    true,
 			OccurredAt: &secondOccurred,
 		}, {
-			EndpointID:  model.EndpointKey("prod", "pod-a"),
-			Revision:    2,
-			RuleCookies: []uint32{44},
-			RuleRefs:    []string{"prod/web/deny-ssh"},
-			Success:     false,
-			Error:       "policy map capacity exceeded: apply failed",
-			OccurredAt:  &thirdOccurred,
+			EndpointID:    model.EndpointKey("prod", "pod-a"),
+			Revision:      2,
+			RuleCookies:   []uint32{44},
+			RuleRefs:      []string{"prod/web/deny-ssh"},
+			Success:       false,
+			FailureReason: dataplane.PolicyUpdateFailureCapacityExceeded,
+			Error:         "policy map capacity exceeded: apply failed",
+			OccurredAt:    &thirdOccurred,
 		}},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	var stdout bytes.Buffer
-	if err := runPolicyEventsClearWithStore(t.Context(), policyEventsClearOptions{endpoint: "prod/pod-a", success: "false"}, &stdout, store); err != nil {
+	if err := runPolicyEventsClearWithStore(t.Context(), policyEventsClearOptions{endpoint: "prod/pod-a", success: "false", failureReason: dataplane.PolicyUpdateFailureCapacityExceeded}, &stdout, store); err != nil {
 		t.Fatal(err)
 	}
 	var got policyEventsClearOutput
 	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
 		t.Fatalf("decode policy-events-clear output: %v\n%s", err, stdout.String())
 	}
-	if !got.Ready || got.Node != "node-a" || got.Store != "ebpf" || got.TotalEvents != 3 || got.ClearedEvents != 1 || got.RemainingEvents != 2 || got.FilterEndpoint != "prod/pod-a" || got.FilterSuccess == nil || *got.FilterSuccess {
+	if !got.Ready || got.Node != "node-a" || got.Store != "ebpf" || got.TotalEvents != 3 || got.ClearedEvents != 1 || got.RemainingEvents != 2 || got.FilterEndpoint != "prod/pod-a" || got.FilterSuccess == nil || *got.FilterSuccess || got.FilterFailureReason != dataplane.PolicyUpdateFailureCapacityExceeded {
 		t.Fatalf("clear output = %+v, want filtered failed pod-a clear", got)
 	}
 	if len(got.Cleared) != 1 || got.Cleared[0].Revision != 2 || got.Cleared[0].Success {

@@ -145,6 +145,9 @@ func TestEBPFPolicyStoreRejectsConflictingDuplicateDesiredEntries(t *testing.T) 
 	if !slices.Equal(events[0].RuleRefs, []string{"prod/web/allow", "prod/web/drop"}) {
 		t.Fatalf("failed event rule refs = %v, want conflicting desired rule refs", events[0].RuleRefs)
 	}
+	if events[0].FailureReason != PolicyUpdateFailureCanonicalization {
+		t.Fatalf("failed event reason = %q, want %q", events[0].FailureReason, PolicyUpdateFailureCanonicalization)
+	}
 }
 
 func TestEBPFPolicyStorePrivileged(t *testing.T) {

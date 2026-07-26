@@ -155,6 +155,7 @@ type PolicyUpdateEvent struct {
 	RuleDirections               []string                   `json:"rule_directions,omitempty"`
 	RuleActions                  []string                   `json:"rule_actions,omitempty"`
 	Success                      bool                       `json:"success"`
+	FailureReason                string                     `json:"failure_reason,omitempty"`
 	Error                        string                     `json:"error,omitempty"`
 	Remediated                   bool                       `json:"remediated,omitempty"`
 	Remediation                  string                     `json:"remediation,omitempty"`
@@ -284,6 +285,7 @@ func (s *InMemoryPolicyStore) recordPolicyUpdateFailure(endpointID string, previ
 		RuleCookies:      ruleCookies,
 		RuleRefs:         ruleRefs,
 		Success:          false,
+		FailureReason:    PolicyUpdateFailureReason(err),
 		Error:            err.Error(),
 	})
 }
