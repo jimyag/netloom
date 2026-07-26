@@ -3419,6 +3419,9 @@ func TestRolloutPolicyEndpointsStopsAfterApplyFailure(t *testing.T) {
 	if rollout.Planned != 3 || rollout.Applied != 1 || rollout.Failed != 1 || rollout.Skipped != 1 || rollout.RolledBack != 1 || rollout.RollbackFailed != 0 {
 		t.Fatalf("rollout summary = %+v, want applied=1 failed=1 skipped=1 rolled_back=1", rollout)
 	}
+	if rollout.PolicyEvents != 2 || rollout.PolicyAdded != 2 || rollout.PolicyDeleted != 2 || rollout.PolicyRevisionMax != 3 {
+		t.Fatalf("rollout policy event summary = %+v, want apply plus rollback map replacement events", rollout)
+	}
 	phases := []string{rollout.Items[0].Phase, rollout.Items[1].Phase, rollout.Items[2].Phase}
 	if !slices.Equal(phases, []string{"rolled_back", "failed", "skipped"}) {
 		t.Fatalf("rollout phases = %+v, want rolled_back failed skipped", phases)
