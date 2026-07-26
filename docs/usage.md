@@ -523,6 +523,11 @@ agent metrics 会暴露最近 endpoint lifecycle action history 的聚合计数�
 使用固定 action 和稳定 failure reason，适合对 freeze、quarantine、rollback、
 regenerate 等动作失败做低基数告警。
 
+agent metrics 也会把 endpoint 最近一次 policy map update 的稳定失败原因暴露为
+`netloom_agent_policy_endpoint_last_event_failure_reason{endpoint=...,reason=...}`。
+当前 reason 固定为 `canonicalization_failed`、`capacity_exceeded` 和 `apply_failed`，
+适合区分规则编译错误、policy map 容量不足和 eBPF/TCX 写入失败。
+
 policy map pressure metrics 还会给出扩容建议：
 `netloom_agent_policy_map_recommended_capacity{endpoint=...}`、
 `netloom_agent_policy_map_pressure_hotspot_available_entries{endpoint=...,rank=...}` 和

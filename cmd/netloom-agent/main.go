@@ -8643,6 +8643,7 @@ func writeAgentMetrics(w ioStringWriter, snapshot agentMetricsSnapshot, totals a
 	writeMetricType(w, "netloom_agent_policy_endpoint_last_event_revision", "gauge")
 	writeMetricType(w, "netloom_agent_policy_endpoint_last_event_success", "gauge")
 	writeMetricType(w, "netloom_agent_policy_endpoint_last_event_remediated", "gauge")
+	writeMetricType(w, "netloom_agent_policy_endpoint_last_event_failure_reason", "gauge")
 	writeMetricType(w, "netloom_agent_policy_endpoint_last_event_timestamp_seconds", "gauge")
 	writeMetricType(w, "netloom_agent_policy_endpoint_last_event_added_entries", "gauge")
 	writeMetricType(w, "netloom_agent_policy_endpoint_last_event_updated_entries", "gauge")
@@ -8692,6 +8693,14 @@ func writeAgentMetrics(w ioStringWriter, snapshot agentMetricsSnapshot, totals a
 			fmt.Fprintf(w, "netloom_agent_policy_endpoint_last_event_revision%s %d\n", labels, status.LastEvent.Revision)
 			fmt.Fprintf(w, "netloom_agent_policy_endpoint_last_event_success%s %d\n", labels, success)
 			fmt.Fprintf(w, "netloom_agent_policy_endpoint_last_event_remediated%s %d\n", labels, remediated)
+			if status.LastEvent.FailureReason != "" {
+				fmt.Fprintf(w, "netloom_agent_policy_endpoint_last_event_failure_reason%s 1\n", prometheusLabels(map[string]string{
+					"node":     result.Node,
+					"store":    snapshot.Store,
+					"endpoint": status.EndpointID,
+					"reason":   status.LastEvent.FailureReason,
+				}))
+			}
 			if status.LastEvent.OccurredAt != nil && !status.LastEvent.OccurredAt.IsZero() {
 				fmt.Fprintf(w, "netloom_agent_policy_endpoint_last_event_timestamp_seconds%s %d\n", labels, status.LastEvent.OccurredAt.Unix())
 			}
