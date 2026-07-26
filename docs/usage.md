@@ -480,6 +480,10 @@ curl -s http://127.0.0.1:9091/metrics
 curl -s http://127.0.0.1:9092/metrics
 ```
 
+agent 的普通 reconcile 日志也会打印 `policy_map_recommended_capacity` 和
+`policy_map_recommended_endpoint`，便于在没有 Prometheus 或 JSON 状态采集时直接从
+日志判断是否需要扩 eBPF policy map 容量。
+
 agent metrics 会暴露最近 endpoint lifecycle action history 的聚合计数：
 `netloom_agent_policy_action_history_events`、
 `netloom_agent_policy_action_history_success_events`、
