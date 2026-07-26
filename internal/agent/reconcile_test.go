@@ -2005,6 +2005,9 @@ func TestReconcileDefersPolicyApplyForDesiredStateRollout(t *testing.T) {
 	if result.PolicyRollouts != 1 || result.PolicyRolloutPlanned != 2 || result.PolicyRolloutApplied != 2 || result.PolicyRolloutFailed != 0 {
 		t.Fatalf("rollout summary = %+v, want two applied endpoints", result)
 	}
+	if result.PolicyEvents != 2 || result.PolicyAdded != 2 || result.PolicyDeleted != 0 || result.PolicyRevisionMax != 1 {
+		t.Fatalf("rollout policy event summary = %+v, want two rollout apply events in reconcile result", result)
+	}
 	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 1 {
 		t.Fatalf("pod-a entries = %+v, want applied policy", entries)
 	}

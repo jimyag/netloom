@@ -1815,6 +1815,19 @@ func ApplyPolicyRolloutResults(result *ReconcileResult, rollouts []NamedPolicyEn
 		result.PolicyRolloutFailed += rollout.Rollout.Failed
 		result.PolicyRolloutRolledBack += rollout.Rollout.RolledBack
 		result.PolicyRolloutRollbackFailed += rollout.Rollout.RollbackFailed
+		result.PolicyAdded += rollout.Rollout.PolicyAdded
+		result.PolicyUpdated += rollout.Rollout.PolicyUpdated
+		result.PolicyDeleted += rollout.Rollout.PolicyDeleted
+		result.PolicyUnchanged += rollout.Rollout.PolicyUnchanged
+		result.PolicyEvents += rollout.Rollout.PolicyEvents
+		result.PolicyFailed += rollout.Rollout.PolicyFailed
+		result.PolicyRollbacks += rollout.Rollout.PolicyRollbacks
+		if rollout.Rollout.PolicyRevisionMax > result.PolicyRevisionMax {
+			result.PolicyRevisionMax = rollout.Rollout.PolicyRevisionMax
+		}
+		if rollout.Rollout.PolicyLastError != "" {
+			result.PolicyLastError = rollout.Rollout.PolicyLastError
+		}
 		if rollout.Rollout.SLOFailed {
 			result.PolicyRolloutSLOFailed++
 		}
