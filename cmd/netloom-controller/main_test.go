@@ -1370,6 +1370,108 @@ func TestLibOVSDBClusterConnectorFailsOverEndpoints(t *testing.T) {
 	}
 }
 
+func TestLibOVSDBClusterConnectorSkipsEndpointDuringFailureCooldown(t *testing.T) {
+	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+	attempts := make([]string, 0)
+	cluster := newLibOVSDBClusterConnector("test", []string{"tcp:a:6641", "tcp:b:6641"}, func(_ context.Context, _ string, endpoint string) (libovsdbclient.Client, func(), error) {
+		attempts = append(attempts, endpoint)
+		if endpoint == "tcp:a:6641" {
+			return nil, nil, errors.New("connection refused")
+		}
+		return nil, func() {}, nil
+	}, nil)
+	cluster.endpointFailureCooldown = 30 * time.Second
+	cluster.now = func() time.Time { return now }
+
+	if _, _, err := cluster.Connect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(attempts, ",") != "tcp:a:6641,tcp:b:6641" {
+		t.Fatalf("first attempts = %+v, want failed a then b", attempts)
+	}
+	snapshot := cluster.Snapshot()
+	if len(snapshot.Endpoints) != 2 || snapshot.Endpoints[0].Status != "connect_error" || snapshot.Endpoints[0].NextRetryAt == "" {
+		t.Fatalf("first endpoint statuses = %+v, want failed a with retry timestamp", snapshot.Endpoints)
+	}
+
+	attempts = attempts[:0]
+	if _, _, err := cluster.Connect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(attempts, ",") != "tcp:b:6641" {
+		t.Fatalf("second attempts = %+v, want cooled a skipped and b attempted", attempts)
+	}
+	snapshot = cluster.Snapshot()
+	if snapshot.Endpoints[0].Endpoint != "tcp:a:6641" || snapshot.Endpoints[0].Status != "cooldown" || snapshot.Endpoints[0].NextRetryAt == "" {
+		t.Fatalf("cooldown endpoint status = %+v, want a skipped with next retry", snapshot.Endpoints)
+	}
+
+	now = now.Add(31 * time.Second)
+	attempts = attempts[:0]
+	cluster.dial = func(_ context.Context, _ string, endpoint string) (libovsdbclient.Client, func(), error) {
+		attempts = append(attempts, endpoint)
+		return nil, func() {}, nil
+	}
+	if _, _, err := cluster.Connect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(attempts, ",") != "tcp:a:6641" {
+		t.Fatalf("third attempts = %+v, want cooled endpoint retried after deadline", attempts)
+	}
+	snapshot = cluster.Snapshot()
+	if snapshot.ActiveEndpoint != "tcp:a:6641" || snapshot.Endpoints[0].Status != "connected" || snapshot.Endpoints[0].NextRetryAt != "" || snapshot.Endpoints[0].Error != "" {
+		t.Fatalf("recovered endpoint status = %+v, want connected a without stale retry", snapshot.Endpoints)
+	}
+}
+
+func TestLibOVSDBClusterConnectorRetriesAllEndpointsWhenAllAreCoolingDown(t *testing.T) {
+	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+	attempts := make([]string, 0)
+	cluster := newLibOVSDBClusterConnector("test", []string{"tcp:a:6641", "tcp:b:6641"}, func(_ context.Context, _ string, endpoint string) (libovsdbclient.Client, func(), error) {
+		attempts = append(attempts, endpoint)
+		return nil, nil, errors.New("down")
+	}, nil)
+	cluster.endpointFailureCooldown = 30 * time.Second
+	cluster.now = func() time.Time { return now }
+
+	if _, _, err := cluster.Connect(context.Background()); err == nil {
+		t.Fatal("expected initial connect failure")
+	}
+	if strings.Join(attempts, ",") != "tcp:a:6641,tcp:b:6641" {
+		t.Fatalf("first attempts = %+v, want both endpoints", attempts)
+	}
+
+	attempts = attempts[:0]
+	if _, _, err := cluster.Connect(context.Background()); err == nil {
+		t.Fatal("expected cooled all-endpoint retry to still fail")
+	}
+	if strings.Join(attempts, ",") != "tcp:a:6641,tcp:b:6641" {
+		t.Fatalf("second attempts = %+v, want all cooled endpoints retried for diagnostics", attempts)
+	}
+	snapshot := cluster.Snapshot()
+	if len(snapshot.Endpoints) != 2 || snapshot.Endpoints[0].Status != "connect_error" || snapshot.Endpoints[1].Status != "connect_error" {
+		t.Fatalf("endpoint statuses = %+v, want fresh connect errors after all-endpoint retry", snapshot.Endpoints)
+	}
+}
+
+func TestLibOVSDBEndpointFailureCooldownParsesMilliseconds(t *testing.T) {
+	t.Setenv("NETLOOM_OVN_LIBOVSDB_ENDPOINT_FAILURE_COOLDOWN_MS", "1250")
+	cooldown, err := libovsdbEndpointFailureCooldown()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cooldown != 1250*time.Millisecond {
+		t.Fatalf("cooldown = %s, want 1250ms", cooldown)
+	}
+}
+
+func TestLibOVSDBEndpointFailureCooldownRejectsInvalidValue(t *testing.T) {
+	t.Setenv("NETLOOM_OVN_LIBOVSDB_ENDPOINT_FAILURE_COOLDOWN_MS", "soon")
+	if _, err := libovsdbEndpointFailureCooldown(); err == nil {
+		t.Fatal("expected invalid endpoint failure cooldown to fail")
+	}
+}
+
 func TestReconcileFailureBackoffDefaultsToInterval(t *testing.T) {
 	backoff, err := reconcileFailureBackoff(750 * time.Millisecond)
 	if err != nil {

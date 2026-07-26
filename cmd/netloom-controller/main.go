@@ -341,18 +341,27 @@ type ovnClusterProbeResult struct {
 }
 
 type libovsdbClusterConnector struct {
-	mu           sync.Mutex
-	owner        string
-	endpoints    []string
-	dial         libovsdbDialFunc
-	leaderProbe  ovnLeaderProbe
-	leader       string
-	leaderStatus string
-	leaderError  string
-	statuses     []ovnClusterEndpointSnapshot
-	current      string
-	currentIndex int
-	failovers    int
+	mu                      sync.Mutex
+	owner                   string
+	endpoints               []string
+	dial                    libovsdbDialFunc
+	leaderProbe             ovnLeaderProbe
+	leader                  string
+	leaderStatus            string
+	leaderError             string
+	statuses                []ovnClusterEndpointSnapshot
+	current                 string
+	currentIndex            int
+	failovers               int
+	endpointFailureCooldown time.Duration
+	endpointFailures        map[string]libovsdbEndpointFailure
+	now                     func() time.Time
+}
+
+type libovsdbEndpointFailure struct {
+	Failures  int
+	NextRetry time.Time
+	Error     string
 }
 
 type ovnCleanupStatsReporter interface {
@@ -528,15 +537,16 @@ type ovnClusterHealthSnapshot struct {
 }
 
 type ovnClusterEndpointSnapshot struct {
-	Endpoint  string `json:"endpoint"`
-	Target    string `json:"target,omitempty"`
-	Role      string `json:"role,omitempty"`
-	Status    string `json:"status,omitempty"`
-	ServerID  string `json:"server_id,omitempty"`
-	LeaderID  string `json:"leader_id,omitempty"`
-	Reachable bool   `json:"reachable"`
-	Leader    bool   `json:"leader,omitempty"`
-	Error     string `json:"error,omitempty"`
+	Endpoint    string `json:"endpoint"`
+	Target      string `json:"target,omitempty"`
+	Role        string `json:"role,omitempty"`
+	Status      string `json:"status,omitempty"`
+	ServerID    string `json:"server_id,omitempty"`
+	LeaderID    string `json:"leader_id,omitempty"`
+	Reachable   bool   `json:"reachable"`
+	Leader      bool   `json:"leader,omitempty"`
+	Error       string `json:"error,omitempty"`
+	NextRetryAt string `json:"next_retry_at,omitempty"`
 }
 
 type ovnHealthTracker struct {
@@ -2549,6 +2559,11 @@ func newLibOVSDBClusterConnectorFromEnv(owner string) (*libovsdbClusterConnector
 		return nil, nil, nil, fmt.Errorf("%s requires NETLOOM_OVN_LIBOVSDB_ENDPOINT", owner)
 	}
 	cluster := newLibOVSDBClusterConnector(owner, endpoints, newOVNNBClientForEndpoint, ovnLeaderProbeFromEnv())
+	cooldown, err := libovsdbEndpointFailureCooldown()
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	cluster.endpointFailureCooldown = cooldown
 	client, closeFn, err := cluster.Connect(context.Background())
 	if err != nil {
 		return nil, nil, nil, err
@@ -2585,11 +2600,14 @@ func newLibOVSDBClusterConnector(owner string, endpoints []string, dial libovsdb
 		dial = newOVNNBClientForEndpoint
 	}
 	return &libovsdbClusterConnector{
-		owner:        owner,
-		endpoints:    append([]string(nil), endpoints...),
-		dial:         dial,
-		leaderProbe:  leaderProbe,
-		currentIndex: -1,
+		owner:                   owner,
+		endpoints:               append([]string(nil), endpoints...),
+		dial:                    dial,
+		leaderProbe:             leaderProbe,
+		currentIndex:            -1,
+		endpointFailureCooldown: 5 * time.Second,
+		endpointFailures:        make(map[string]libovsdbEndpointFailure),
+		now:                     time.Now,
 	}
 }
 
@@ -2610,28 +2628,32 @@ func (c *libovsdbClusterConnector) Connect(ctx context.Context) (libovsdbclient.
 		}
 	}
 
+	primary, cooled, attempts := c.endpointAttemptPlan(start)
 	var errs []string
-	attempts := make([]ovnClusterEndpointSnapshot, 0, len(c.endpoints))
-	for offset := 0; offset < len(c.endpoints); offset++ {
-		index := (start + offset) % len(c.endpoints)
+	connected := false
+	for _, index := range append(primary, cooled...) {
 		endpoint := c.endpoints[index]
 		client, closeFn, err := c.dial(ctx, c.owner, endpoint)
 		if err != nil {
 			errs = append(errs, fmt.Sprintf("%s: %v", endpoint, err))
+			nextRetryAt := c.recordClusterEndpointFailure(endpoint, err)
 			attempts = append(attempts, ovnClusterEndpointSnapshot{
-				Endpoint:  endpoint,
-				Status:    "connect_error",
-				Reachable: false,
-				Error:     err.Error(),
+				Endpoint:    endpoint,
+				Status:      "connect_error",
+				Reachable:   false,
+				Error:       err.Error(),
+				NextRetryAt: nextRetryAt,
 			})
 			continue
 		}
+		c.recordClusterEndpointSuccess(endpoint)
 		attempts = append(attempts, ovnClusterEndpointSnapshot{
 			Endpoint:  endpoint,
 			Status:    "connected",
 			Reachable: true,
 		})
 		c.mu.Lock()
+		connected = true
 		if previous != "" && endpoint != previous {
 			c.failovers++
 		}
@@ -2644,7 +2666,71 @@ func (c *libovsdbClusterConnector) Connect(ctx context.Context) (libovsdbclient.
 	c.mu.Lock()
 	c.statuses = mergeOVNClusterConnectStatuses(c.statuses, attempts)
 	c.mu.Unlock()
+	if !connected && len(errs) == 0 {
+		errs = append(errs, "no OVN northbound libovsdb endpoint was eligible for retry")
+	}
 	return nil, nil, fmt.Errorf("connect OVN northbound libovsdb endpoints: %s", strings.Join(errs, "; "))
+}
+
+func (c *libovsdbClusterConnector) endpointAttemptPlan(start int) ([]int, []int, []ovnClusterEndpointSnapshot) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	now := c.nowTimeLocked()
+	primary := make([]int, 0, len(c.endpoints))
+	cooled := make([]int, 0, len(c.endpoints))
+	skipped := make([]ovnClusterEndpointSnapshot, 0)
+	for offset := 0; offset < len(c.endpoints); offset++ {
+		index := (start + offset) % len(c.endpoints)
+		endpoint := c.endpoints[index]
+		if failure, ok := c.endpointFailures[endpoint]; ok && c.endpointFailureCooldown > 0 && now.Before(failure.NextRetry) {
+			cooled = append(cooled, index)
+			skipped = append(skipped, ovnClusterEndpointSnapshot{
+				Endpoint:    endpoint,
+				Status:      "cooldown",
+				Reachable:   false,
+				Error:       failure.Error,
+				NextRetryAt: failure.NextRetry.Format(time.RFC3339Nano),
+			})
+			continue
+		}
+		primary = append(primary, index)
+	}
+	if len(primary) == 0 {
+		return cooled, nil, skipped
+	}
+	return primary, cooled, skipped
+}
+
+func (c *libovsdbClusterConnector) recordClusterEndpointFailure(endpoint string, err error) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.endpointFailures == nil {
+		c.endpointFailures = make(map[string]libovsdbEndpointFailure)
+	}
+	failure := c.endpointFailures[endpoint]
+	failure.Failures++
+	failure.Error = err.Error()
+	if c.endpointFailureCooldown > 0 {
+		failure.NextRetry = c.nowTimeLocked().Add(c.endpointFailureCooldown)
+	}
+	c.endpointFailures[endpoint] = failure
+	if failure.NextRetry.IsZero() {
+		return ""
+	}
+	return failure.NextRetry.Format(time.RFC3339Nano)
+}
+
+func (c *libovsdbClusterConnector) recordClusterEndpointSuccess(endpoint string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.endpointFailures, endpoint)
+}
+
+func (c *libovsdbClusterConnector) nowTimeLocked() time.Time {
+	if c.now != nil {
+		return c.now()
+	}
+	return time.Now()
 }
 
 func mergeOVNClusterConnectStatuses(existing, attempts []ovnClusterEndpointSnapshot) []ovnClusterEndpointSnapshot {
@@ -2672,10 +2758,12 @@ func mergeOVNClusterConnectStatus(existing, attempt ovnClusterEndpointSnapshot) 
 	if attempt.Error != "" {
 		existing.Status = attempt.Status
 		existing.Error = attempt.Error
+		existing.NextRetryAt = attempt.NextRetryAt
 		return existing
 	}
 	existing.Error = ""
-	if existing.Status == "" || existing.Status == "error" || existing.Status == "connect_error" {
+	existing.NextRetryAt = ""
+	if existing.Status == "" || existing.Status == "error" || existing.Status == "connect_error" || existing.Status == "cooldown" {
 		existing.Status = attempt.Status
 	}
 	return existing
@@ -3231,6 +3319,21 @@ func libovsdbReconnectMaxBackoff() (time.Duration, error) {
 	ms, err := strconv.Atoi(raw)
 	if err != nil {
 		return 0, fmt.Errorf("invalid NETLOOM_OVN_LIBOVSDB_RECONNECT_MAX_BACKOFF_MS: %w", err)
+	}
+	if ms <= 0 {
+		return 0, nil
+	}
+	return time.Duration(ms) * time.Millisecond, nil
+}
+
+func libovsdbEndpointFailureCooldown() (time.Duration, error) {
+	raw := os.Getenv("NETLOOM_OVN_LIBOVSDB_ENDPOINT_FAILURE_COOLDOWN_MS")
+	if raw == "" {
+		return 5 * time.Second, nil
+	}
+	ms, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("invalid NETLOOM_OVN_LIBOVSDB_ENDPOINT_FAILURE_COOLDOWN_MS: %w", err)
 	}
 	if ms <= 0 {
 		return 0, nil

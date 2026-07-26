@@ -12,7 +12,7 @@
 | `netloom-agent` | 每台计算节点 | 收敛本机 OVS、Linux route/RPDB、endpoint policy map 和 TCX attach。 |
 | `netloom-dns-observer` | 需要 FQDN policy 的节点 | 把 DNS 观测写入本机 Open_vSwitch OVSDB，供 agent 编译 `remote_fqdns` 规则。 |
 
-生产路径使用 `NETLOOM_OVN_LIBOVSDB_ENDPOINT` 或 `NETLOOM_OVN_LIBOVSDB_ENDPOINTS`，不要使用旧 nbctl backend。
+生产路径使用 `NETLOOM_OVN_LIBOVSDB_ENDPOINT`，不要使用旧 nbctl backend。多个 OVN NB endpoint 直接写成逗号、空白或换行分隔的列表。
 
 ## 目录和权限
 
@@ -43,7 +43,7 @@ NETLOOM_OVN_LIBOVSDB_ENDPOINT=unix:/var/run/ovn/ovnnb_db.sock
 多 endpoint：
 
 ```bash
-NETLOOM_OVN_LIBOVSDB_ENDPOINTS=tcp:10.0.0.11:6641,tcp:10.0.0.12:6641,tcp:10.0.0.13:6641
+NETLOOM_OVN_LIBOVSDB_ENDPOINT=tcp:10.0.0.11:6641,tcp:10.0.0.12:6641,tcp:10.0.0.13:6641
 ```
 
 如果需要 leader 优先，可以配置 OVN cluster status target：
@@ -52,7 +52,7 @@ NETLOOM_OVN_LIBOVSDB_ENDPOINTS=tcp:10.0.0.11:6641,tcp:10.0.0.12:6641,tcp:10.0.0.
 NETLOOM_OVN_CLUSTER_STATUS_TARGETS=10.0.0.11,10.0.0.12,10.0.0.13
 ```
 
-controller 会在 status、events 和 metrics 中暴露 active endpoint、leader endpoint、quorum 和 failover 信息。
+controller 会在 status、events 和 metrics 中暴露 active endpoint、leader endpoint、quorum 和 failover 信息。连接失败的 endpoint 会进入短暂冷却，默认 5 秒，可用 `NETLOOM_OVN_LIBOVSDB_ENDPOINT_FAILURE_COOLDOWN_MS` 调整；如果所有 endpoint 都处于冷却，controller 仍会全部重试以保留诊断信号。
 
 ## Desired State 发布方式
 
@@ -79,7 +79,7 @@ OVSDB 方式适合裸金属节点统一读取：
 
 ```bash
 NETLOOM_STATE_FILE=/etc/netloom/state.json \
-NETLOOM_OVN_LIBOVSDB_ENDPOINTS=tcp:10.0.0.11:6641,tcp:10.0.0.12:6641,tcp:10.0.0.13:6641 \
+NETLOOM_OVN_LIBOVSDB_ENDPOINT=tcp:10.0.0.11:6641,tcp:10.0.0.12:6641,tcp:10.0.0.13:6641 \
 NETLOOM_OVSDB_ENDPOINT=unix:/var/run/openvswitch/db.sock \
 NETLOOM_RECONCILE_INTERVAL_MS=5000 \
 NETLOOM_CONTROLLER_METRICS_ADDR=:9091 \

@@ -256,8 +256,8 @@ NETLOOM_CONTROLLER_METRICS_ADDR=:9091 \
 | --- | --- |
 | `NETLOOM_STATE_FILE` | desired state JSON 文件路径。 |
 | `NETLOOM_OVSDB_ENDPOINT` | 从本机 Open_vSwitch OVSDB 读取 desired state，并写 controller 状态。 |
-| `NETLOOM_OVN_LIBOVSDB_ENDPOINT` | OVN NB OVSDB endpoint。 |
-| `NETLOOM_OVN_LIBOVSDB_ENDPOINTS` | 多 OVN NB endpoint，适合集群模式。 |
+| `NETLOOM_OVN_LIBOVSDB_ENDPOINT` | OVN NB OVSDB endpoint；多个 endpoint 可用逗号、空白或换行分隔。 |
+| `NETLOOM_OVN_LIBOVSDB_ENDPOINT_FAILURE_COOLDOWN_MS` | 单个 OVN NB endpoint 连接失败后的冷却时间；默认 5000ms，所有 endpoint 都在冷却时仍会全部重试。 |
 | `NETLOOM_RECONCILE_INTERVAL_MS` | 周期 reconcile 间隔；未设置时执行一次。 |
 | `NETLOOM_CONTROLLER_METRICS_ADDR` | controller Prometheus metrics 监听地址。 |
 
@@ -396,7 +396,7 @@ ovs-vsctl get Open_vSwitch . external_ids:netloom_policy_events
 
 `controller-status` CLI 会解码 `Open_vSwitch.external_ids:netloom_controller_status`，
 用于查看最近一次 controller reconcile 的 desired object 计数、OVN health、OVN audit、
-cluster quorum、stale advisory、maintenance 和错误状态。
+cluster quorum、endpoint `connect_error`/`cooldown`/`next_retry_at`、stale advisory、maintenance 和错误状态。
 `controller-events` CLI 会解码 `Open_vSwitch.external_ids:netloom_controller_events`，
 用于查看最近 controller reconcile 成功/失败、失败阶段、OVN health、cluster quorum、
 audit、stale advisory 和 maintenance 摘要。audit 事件会保留 duplicate、incomplete、

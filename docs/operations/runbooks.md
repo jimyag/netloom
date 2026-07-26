@@ -38,10 +38,11 @@ curl -s http://127.0.0.1:9092/metrics
 处理：
 
 1. 查看 `controller-status` 中 active endpoint、leader endpoint 和 quorum summary。
-2. 如果多 endpoint 配置存在，确认 `NETLOOM_OVN_LIBOVSDB_ENDPOINTS` 覆盖所有 NB 节点。
+2. 如果多 endpoint 配置存在，确认 `NETLOOM_OVN_LIBOVSDB_ENDPOINT` 覆盖所有 NB 节点。
 3. 检查 OVN NB 服务、网络连通性和证书。
-4. 恢复任意可达 majority 后等待 controller reconnect。
-5. 观察第一个 recovering reconcile 是否成功。
+4. 查看 endpoint status 是否为 `connect_error` 或 `cooldown`；`next_retry_at` 表示下一次优先重试时间。
+5. 恢复任意可达 majority 后等待 controller reconnect。
+6. 观察第一个 recovering reconcile 是否成功。
 
 恢复后确认：
 
