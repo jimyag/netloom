@@ -2113,6 +2113,16 @@ func TestPolicyEndpointAPIRolloutStateClearFilters(t *testing.T) {
 	if !output.All || output.ClearedRollouts != 1 || output.RemainingRollouts != 0 {
 		t.Fatalf("clear all output = %+v, want remaining rollout cleared", output)
 	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodDelete, "/policy/endpoints/rollout/state?all=true&name=canary", nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("clear all with filter status = %d, want 400; body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "must use all=true or filters, not both") {
+		t.Fatalf("body missing all/filter conflict error: %s", recorder.Body.String())
+	}
 }
 
 func TestRunPolicyRolloutStateWithStoreReportsFilteredJSON(t *testing.T) {
@@ -2235,6 +2245,12 @@ func TestRunPolicyRolloutStateClearWithStoreReportsJSON(t *testing.T) {
 	err = runPolicyRolloutStateClearWithStore(t.Context(), policyRolloutStateClearOptions{}, &out, store)
 	if err == nil || !strings.Contains(err.Error(), "requires -all or at least one filter") {
 		t.Fatalf("err = %v, want selector requirement", err)
+	}
+
+	out.Reset()
+	err = runPolicyRolloutStateClearWithStore(t.Context(), policyRolloutStateClearOptions{all: true, name: "canary"}, &out, store)
+	if err == nil || !strings.Contains(err.Error(), "must use -all or filters, not both") {
+		t.Fatalf("err = %v, want all/filter conflict", err)
 	}
 }
 

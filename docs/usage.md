@@ -749,7 +749,7 @@ ovs-vsctl get Open_vSwitch . external_ids:netloom_policy_rollout_history
 查询最近的 rollout，用于查看 approval、ack、finalize、SLO/probe、rollback 等
 staged policy rollout 结果。`DELETE /policy/endpoints/rollout/history` 和
 `policy-rollout-history-clear` 使用同一组过滤字段清理已审计的历史；为了避免误删，
-全量清理必须显式使用 `all=true` 或 CLI `-all`。
+全量清理必须显式使用 `all=true` 或 CLI `-all`，且不能和过滤条件混用。
 
 查看 desired-state policy rollout 的恢复状态：
 
@@ -778,7 +778,7 @@ curl -X DELETE \
 
 为了避免误删，`policy-rollout-state-clear` 和 HTTP DELETE 都要求提供 `name`、
 `node` 或时间窗口过滤条件；如果确实要清空全部状态，需要显式使用 `-all` 或
-`all=true`。
+`all=true`，且不能和过滤条件混用。
 
 检查本机托管网络对象：
 

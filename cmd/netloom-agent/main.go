@@ -5057,10 +5057,20 @@ func policyRolloutStateEntryMatches(rollout policyRolloutStateEntry, name, node 
 }
 
 func validatePolicyRolloutStateClearSelector(all bool, name, node string, updatedAfter, updatedBefore *time.Time) error {
-	if all || strings.TrimSpace(name) != "" || strings.TrimSpace(node) != "" || updatedAfter != nil || updatedBefore != nil {
+	hasSelector := strings.TrimSpace(name) != "" ||
+		strings.TrimSpace(node) != "" ||
+		updatedAfter != nil ||
+		updatedBefore != nil
+	if all {
+		if hasSelector {
+			return errors.New("policy rollout state clear must use -all or filters, not both")
+		}
 		return nil
 	}
-	return errors.New("policy rollout state clear requires -all or at least one filter")
+	if !hasSelector {
+		return errors.New("policy rollout state clear requires -all or at least one filter")
+	}
+	return nil
 }
 
 func filterPolicyFreezeState(entries []policyFreezeStateEntry, endpoint string) []policyFreezeStateEntry {
