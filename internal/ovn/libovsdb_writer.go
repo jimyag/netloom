@@ -2861,7 +2861,11 @@ func desiredNATRuleRow(rule model.NATRule) ovnnb.NAT {
 
 func desiredOVNDNSRecords(records []model.DNSRecord) map[string]string {
 	ipsByName := make(map[string]map[string]struct{}, len(records))
+	now := time.Now()
 	for _, record := range records {
+		if record.IsExpired(now) {
+			continue
+		}
 		name := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(record.Name)), ".")
 		if name == "" {
 			continue

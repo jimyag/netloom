@@ -630,6 +630,11 @@ func TestLibOVSDBTopologyWriterSyncsDNSRecords(t *testing.T) {
 	}, {
 		Name: "api.example.com",
 		IPs:  []netip.Addr{netip.MustParseAddr("203.0.113.20")},
+	}, {
+		Name:       "api.example.com",
+		IPs:        []netip.Addr{netip.MustParseAddr("203.0.113.99")},
+		TTLSeconds: 1,
+		ObservedAt: time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC),
 	}}
 
 	if err := writer.SyncDNSRecords(ctx, subnets, records); err != nil {
