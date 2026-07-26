@@ -249,6 +249,130 @@ func TestRunControllerEventsClearWithStoreReportsJSON(t *testing.T) {
 	}
 }
 
+func TestControllerEventsAPIReportsFilteredHistory(t *testing.T) {
+	store := &recordingOVSDBControlStatusWriter{values: map[string]string{
+		controllerOVSDBEventsKey: mustControllerEventsJSON(t, controllerEventsDocument{
+			UpdatedAt: time.Date(2026, 7, 17, 1, 2, 3, 0, time.UTC),
+			Events: []controllerEventRecord{{
+				ID:          "success-a",
+				CompletedAt: time.Date(2026, 7, 17, 1, 0, 0, 0, time.UTC),
+				Success:     true,
+				DurationMS:  25,
+				OVNHealth:   "ok",
+			}, {
+				ID:                "failure-a",
+				CompletedAt:       time.Date(2026, 7, 17, 1, 1, 0, 0, time.UTC),
+				Success:           false,
+				Phase:             "ovn_health",
+				Error:             "ovn health check: timeout",
+				DurationMS:        30,
+				OVNHealth:         "error",
+				OVNHealthFailures: 1,
+			}, {
+				ID:          "failure-b",
+				CompletedAt: time.Date(2026, 7, 17, 1, 2, 0, 0, time.UTC),
+				Success:     false,
+				Phase:       "apply",
+				Error:       "apply failed",
+				DurationMS:  40,
+				OVNHealth:   "ok",
+			}},
+		}),
+	}}
+	metrics := newControllerMetrics()
+	metrics.eventsStore = store
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/events?phase=ovn_health&success=false&limit=10", nil)
+	metrics.handleEvents(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var got controllerEventsOutput
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode controller events API output: %v\n%s", err, recorder.Body.String())
+	}
+	if !got.Ready || got.TotalEvents != 3 || got.EventCount != 1 || got.FilterPhase != "ovn_health" || got.FilterSuccess == nil || *got.FilterSuccess {
+		t.Fatalf("controller events API summary = %+v, want one filtered failure", got)
+	}
+	if len(got.Events) != 1 || got.Events[0].ID != "failure-a" || got.Events[0].OVNHealth != "error" {
+		t.Fatalf("events = %+v, want ovn_health failure", got.Events)
+	}
+}
+
+func TestControllerEventsAPIClearsFilteredHistory(t *testing.T) {
+	store := &recordingOVSDBControlStatusWriter{values: map[string]string{
+		controllerOVSDBEventsKey: mustControllerEventsJSON(t, controllerEventsDocument{
+			Events: []controllerEventRecord{{
+				ID:          "success-a",
+				CompletedAt: time.Date(2026, 7, 17, 1, 0, 0, 0, time.UTC),
+				Success:     true,
+				DurationMS:  25,
+				OVNHealth:   "ok",
+			}, {
+				ID:          "failure-a",
+				CompletedAt: time.Date(2026, 7, 17, 1, 1, 0, 0, time.UTC),
+				Success:     false,
+				Phase:       "ovn_health",
+				Error:       "ovn health check: timeout",
+				DurationMS:  30,
+				OVNHealth:   "error",
+			}, {
+				ID:          "failure-b",
+				CompletedAt: time.Date(2026, 7, 17, 1, 2, 0, 0, time.UTC),
+				Success:     false,
+				Phase:       "apply",
+				Error:       "apply failed",
+				DurationMS:  40,
+				OVNHealth:   "ok",
+			}},
+		}),
+	}}
+	metrics := newControllerMetrics()
+	metrics.eventsStore = store
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodDelete, "/events?phase=ovn_health&success=false", nil)
+	metrics.handleEvents(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var got controllerEventsClearOutput
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode controller events clear API output: %v\n%s", err, recorder.Body.String())
+	}
+	if !got.Ready || got.TotalEvents != 3 || got.ClearedEvents != 1 || got.RemainingEvents != 2 {
+		t.Fatalf("controller events clear API summary = %+v, want one filtered event cleared", got)
+	}
+	var persisted controllerEventsDocument
+	if err := json.Unmarshal([]byte(store.values[controllerOVSDBEventsKey]), &persisted); err != nil {
+		t.Fatalf("decode persisted controller events: %v", err)
+	}
+	if len(persisted.Events) != 2 || persisted.Events[0].ID != "success-a" || persisted.Events[1].ID != "failure-b" {
+		t.Fatalf("persisted events = %+v, want success-a and failure-b", persisted.Events)
+	}
+	if store.values["netloom_owner"] != "netloom" {
+		t.Fatalf("netloom_owner external_id = %q, want netloom", store.values["netloom_owner"])
+	}
+}
+
+func TestControllerEventsAPIReportsNotEnabledWithoutStore(t *testing.T) {
+	metrics := newControllerMetrics()
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/events", nil)
+
+	metrics.handleEvents(recorder, request)
+
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", recorder.Code)
+	}
+	if !strings.Contains(recorder.Body.String(), "not enabled") {
+		t.Fatalf("body missing not-enabled error: %s", recorder.Body.String())
+	}
+}
+
 func TestSyncOVSDBControllerEventAppendsBoundedHistory(t *testing.T) {
 	writer := &recordingOVSDBControlStatusWriter{values: make(map[string]string)}
 	reconciler := &stateFileReconciler{ovsStatus: writer}
@@ -2015,6 +2139,15 @@ type recordingOVSDBControlStatusWriter struct {
 
 type fakeOpenVSwitchExternalIDReader struct {
 	values map[string]string
+}
+
+func mustControllerEventsJSON(t *testing.T, doc controllerEventsDocument) string {
+	t.Helper()
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
 }
 
 func (r fakeOpenVSwitchExternalIDReader) OpenVSwitchExternalID(_ context.Context, key string) (string, bool, error) {

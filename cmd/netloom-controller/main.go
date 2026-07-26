@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -104,6 +105,7 @@ func runStateFile(ctx context.Context, path string) error {
 		return reconcile()
 	}
 	metrics := newControllerMetrics()
+	metrics.eventsStore = reconciler.ovsStatus
 	reconciler.metrics = metrics
 	if closeMetrics, err := startControllerMetricsServer(ctx, os.Getenv("NETLOOM_CONTROLLER_METRICS_ADDR"), metrics); err != nil {
 		return err
@@ -1214,10 +1216,11 @@ func parseOptionalBool(value string) (*bool, error) {
 }
 
 type controllerMetrics struct {
-	mu       sync.RWMutex
-	snapshot controllerMetricsSnapshot
-	totals   controllerMetricsTotals
-	ready    bool
+	mu          sync.RWMutex
+	snapshot    controllerMetricsSnapshot
+	totals      controllerMetricsTotals
+	ready       bool
+	eventsStore ovsdbControlStatusWriter
 }
 
 type controllerMetricsSnapshot struct {
@@ -1419,6 +1422,7 @@ func startControllerMetricsServer(ctx context.Context, addr string, metrics *con
 	mux := http.NewServeMux()
 	mux.HandleFunc("/metrics", metrics.handleMetrics)
 	mux.HandleFunc("/status", metrics.handleStatus)
+	mux.HandleFunc("/events", metrics.handleEvents)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok\n"))
@@ -1466,6 +1470,101 @@ func (m *controllerMetrics) handleStatus(w http.ResponseWriter, r *http.Request)
 	encoder := json.NewEncoder(w)
 	encoder.SetIndent("", "  ")
 	_ = encoder.Encode(status)
+}
+
+func (m *controllerMetrics) handleEvents(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	switch r.Method {
+	case http.MethodGet:
+		m.handleEventsGet(w, r)
+	case http.MethodDelete:
+		m.handleEventsDelete(w, r)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "method not allowed"})
+	}
+}
+
+func (m *controllerMetrics) handleEventsGet(w http.ResponseWriter, r *http.Request) {
+	store := m.controllerEventsStore()
+	if store == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ready": false,
+			"error": "controller events are not enabled",
+		})
+		return
+	}
+	limit := defaultControllerEventsLimit
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 0 {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid limit"})
+			return
+		}
+		limit = parsed
+	}
+	var out bytes.Buffer
+	if err := runControllerEventsWithStore(r.Context(), controllerEventsOptions{
+		phase:   r.URL.Query().Get("phase"),
+		success: r.URL.Query().Get("success"),
+		limit:   limit,
+	}, &out, store); err != nil {
+		writeControllerEventsHTTPError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(out.Bytes())
+}
+
+func (m *controllerMetrics) handleEventsDelete(w http.ResponseWriter, r *http.Request) {
+	store := m.controllerEventsStore()
+	if store == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ready": false,
+			"error": "controller events are not enabled",
+		})
+		return
+	}
+	all, err := parseOptionalBool(strings.TrimSpace(r.URL.Query().Get("all")))
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	var out bytes.Buffer
+	if err := runControllerEventsClearWithStore(r.Context(), controllerEventsClearOptions{
+		phase:   r.URL.Query().Get("phase"),
+		success: r.URL.Query().Get("success"),
+		all:     all != nil && *all,
+	}, &out, store); err != nil {
+		writeControllerEventsHTTPError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(out.Bytes())
+}
+
+func (m *controllerMetrics) controllerEventsStore() ovsdbControlStatusWriter {
+	if m == nil {
+		return nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.eventsStore
+}
+
+func writeControllerEventsHTTPError(w http.ResponseWriter, err error) {
+	status := http.StatusInternalServerError
+	if strings.Contains(err.Error(), "invalid ") ||
+		strings.Contains(err.Error(), "requires -all or at least one filter") ||
+		strings.Contains(err.Error(), "must use -all or filters") {
+		status = http.StatusBadRequest
+	}
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 }
 
 func (m *controllerMetrics) handleMetrics(w http.ResponseWriter, _ *http.Request) {

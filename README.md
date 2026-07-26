@@ -116,6 +116,8 @@ Useful runtime checks:
 ./netloom-agent policy-explain -state /etc/netloom/state.json -vpc prod -endpoint vm-a -direction ingress -protocol tcp -remote-ip 10.10.0.20 -dest-port 80
 ./netloom-agent route-explain -state /etc/netloom/state.json -vpc prod -source 10.10.0.10 -dest 8.8.8.8 -protocol tcp -dest-port 443
 curl -s http://127.0.0.1:9091/status
+curl -s 'http://127.0.0.1:9091/events?phase=ovn_health&success=false&limit=20'
+curl -X DELETE -s 'http://127.0.0.1:9091/events?phase=ovn_health&success=false'
 curl -s http://127.0.0.1:9092/metrics
 ```
 

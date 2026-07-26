@@ -228,6 +228,8 @@ NETLOOM_LINUX_DATAPATH_CLEANUP=1
   -ovsdb unix:/var/run/openvswitch/db.sock \
   -limit 20
 
+curl -s 'http://127.0.0.1:9091/events?phase=ovn_health&success=false&limit=20'
+curl -X DELETE -s 'http://127.0.0.1:9091/events?phase=ovn_health&success=false'
 curl -s http://127.0.0.1:9091/status
 curl -s http://127.0.0.1:9091/metrics
 ```
