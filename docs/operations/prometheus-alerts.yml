@@ -146,6 +146,39 @@ groups:
           description: "The latest endpoint policy update failed while applying eBPF policy state. Inspect policy events, bpffs, pinned maps, and TCX state."
           runbook_url: docs/operations/runbooks.md
 
+      - alert: NetloomPolicyActionHistoryFailures
+        expr: netloom_agent_policy_action_history_failure_events > 0
+        for: 5m
+        labels:
+          severity: warning
+          component: policy
+        annotations:
+          summary: Endpoint policy lifecycle actions are failing
+          description: "The agent recorded failed endpoint lifecycle actions such as regenerate, quarantine, rollback, freeze, or unfreeze. Inspect action history by endpoint, action, and reason."
+          runbook_url: docs/operations/runbooks.md
+
+      - alert: NetloomPolicyEndpointActionFailed
+        expr: netloom_agent_policy_action_history_endpoint_last_success == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: policy
+        annotations:
+          summary: Latest endpoint policy lifecycle action failed
+          description: "The latest lifecycle action for an endpoint failed. Use policy-action-history to identify the endpoint, action, stable failure reason, and error."
+          runbook_url: docs/operations/runbooks.md
+
+      - alert: NetloomPolicyEndpointActionFrozen
+        expr: netloom_agent_policy_action_history_endpoint_last_reason{reason="frozen"} == 1
+        for: 5m
+        labels:
+          severity: warning
+          component: policy
+        annotations:
+          summary: Endpoint policy lifecycle action is blocked by freeze
+          description: "An endpoint lifecycle action was rejected because the endpoint is frozen. Confirm the freeze state and expiry before retrying rollout, regenerate, quarantine, or rollback."
+          runbook_url: docs/operations/runbooks.md
+
       - alert: NetloomPolicyRolloutFailed
         expr: netloom_agent_policy_rollout_failed_endpoints > 0
         for: 1m

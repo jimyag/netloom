@@ -85,6 +85,9 @@ func TestPrometheusAlertsCoverCriticalNetloomSignals(t *testing.T) {
 		"NetloomPolicyMapCapacityExceeded",
 		"NetloomPolicyCanonicalizationFailed",
 		"NetloomPolicyApplyFailed",
+		"NetloomPolicyActionHistoryFailures",
+		"NetloomPolicyEndpointActionFailed",
+		"NetloomPolicyEndpointActionFrozen",
 		"NetloomPolicyRolloutFailed",
 		"NetloomPolicyRolloutRollbackFailed",
 		"NetloomPolicyRolloutPaused",
@@ -112,6 +115,9 @@ func TestPrometheusAlertsCoverCriticalNetloomSignals(t *testing.T) {
 		"netloom_agent_tcx_failed",
 		"netloom_agent_policy_endpoint_pressure_severity",
 		"netloom_agent_policy_endpoint_last_event_failure_reason",
+		"netloom_agent_policy_action_history_failure_events",
+		"netloom_agent_policy_action_history_endpoint_last_success",
+		"netloom_agent_policy_action_history_endpoint_last_reason",
 		"netloom_agent_policy_rollout_failed_endpoints",
 		"netloom_agent_policy_rollout_rollback_failed_endpoints",
 		"netloom_agent_policy_rollout_paused",
@@ -125,7 +131,7 @@ func TestPrometheusAlertsCoverCriticalNetloomSignals(t *testing.T) {
 			t.Fatalf("alert expressions do not cover metric %q", metric)
 		}
 	}
-	for _, reason := range []string{"capacity_exceeded", "canonicalization_failed", "apply_failed"} {
+	for _, reason := range []string{"capacity_exceeded", "canonicalization_failed", "apply_failed", "frozen"} {
 		if !strings.Contains(joined, `reason="`+reason+`"`) {
 			t.Fatalf("alert expressions do not cover failure reason %q", reason)
 		}

@@ -513,8 +513,9 @@ curl -s http://127.0.0.1:9092/metrics
 生产告警可以直接加载 [Prometheus alert rules](operations/prometheus-alerts.yml)。
 这份规则覆盖 controller reconcile、OVN health/quorum/audit/stale drift、agent
 runtime preflight、TCX attach、policy-map pressure、policy update failure reason、
-policy rollout failed/paused/rollback-failed/durable-state 异常和 provider network
-readiness/issue reason。
+endpoint lifecycle action failure/frozen blocker、policy rollout
+failed/paused/rollback-failed/durable-state 异常和 provider network readiness/issue
+reason。
 
 agent 的普通 reconcile 日志也会打印 `policy_map_recommended_capacity` 和
 `policy_map_recommended_endpoint`，便于在没有 Prometheus 或 JSON 状态采集时直接从
@@ -527,7 +528,10 @@ agent metrics 会暴露最近 endpoint lifecycle action history 的聚合计数�
 `netloom_agent_policy_action_history_action_events{action=...}` 和
 `netloom_agent_policy_action_history_reason_events{reason=...}`。这些 label
 使用固定 action 和稳定 failure reason，适合对 freeze、quarantine、rollback、
-regenerate 等动作失败做低基数告警。
+regenerate 等动作失败做低基数告警。告警规则还会使用
+`netloom_agent_policy_action_history_endpoint_last_success{endpoint=...,action=...}`
+和 `netloom_agent_policy_action_history_endpoint_last_reason{endpoint=...,action=...,reason=...}`
+识别最近一次 endpoint lifecycle action 失败和 frozen 阻断。
 
 agent metrics 也会把 endpoint 最近一次 policy map update 的稳定失败原因暴露为
 `netloom_agent_policy_endpoint_last_event_failure_reason{endpoint=...,reason=...}`。
