@@ -6125,6 +6125,10 @@ func TestAgentMetricsAccumulatesReconcileCountersAndBuckets(t *testing.T) {
 			{EndpointID: "prod\x00pod-a", RuleCookie: 7, Packets: 1, Bytes: 128, Dropped: 1, DenyDrops: 1},
 			{EndpointID: "prod\x00pod-a", RuleCookie: 8, Packets: 1, Bytes: 128, Rejected: 1, RejectDrops: 1},
 		},
+		PolicyRuleCatalog: []agent.PolicyRuleCatalogEntry{
+			{EndpointID: "prod\x00pod-a", RuleCookie: 7, Direction: model.DirectionIngress, Action: model.ActionDrop},
+			{EndpointID: "prod\x00pod-a", RuleCookie: 8, Direction: model.DirectionEgress, Action: model.ActionReject},
+		},
 	}, "ebpf", 250*time.Millisecond)
 	observeAgentReconcileFailure(metrics, agent.ReconcileResult{
 		Node:            "node-a",
@@ -6164,6 +6168,12 @@ func TestAgentMetricsAccumulatesReconcileCountersAndBuckets(t *testing.T) {
 		`netloom_agent_policy_rule_no_match_drops_observed_total{node="node-a",store="ebpf"} 1`,
 		`netloom_agent_policy_rule_deny_drops_observed_total{node="node-a",store="ebpf"} 1`,
 		`netloom_agent_policy_rule_reject_drops_observed_total{node="node-a",store="ebpf"} 1`,
+		`netloom_agent_policy_rule_packets_by_action_direction_observed_total{action="",direction="",node="node-a",store="ebpf"} 1`,
+		`netloom_agent_policy_rule_no_match_drops_by_action_direction_observed_total{action="",direction="",node="node-a",store="ebpf"} 1`,
+		`netloom_agent_policy_rule_packets_by_action_direction_observed_total{action="drop",direction="ingress",node="node-a",store="ebpf"} 1`,
+		`netloom_agent_policy_rule_deny_drops_by_action_direction_observed_total{action="drop",direction="ingress",node="node-a",store="ebpf"} 1`,
+		`netloom_agent_policy_rule_packets_by_action_direction_observed_total{action="reject",direction="egress",node="node-a",store="ebpf"} 1`,
+		`netloom_agent_policy_rule_reject_drops_by_action_direction_observed_total{action="reject",direction="egress",node="node-a",store="ebpf"} 1`,
 	} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("cumulative metrics output missing %q:\n%s", expected, output)
