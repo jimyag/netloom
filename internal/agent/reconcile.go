@@ -2130,7 +2130,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, state control.DesiredState, 
 	if err != nil {
 		return result, err
 	}
-	if err := r.syncPolicyStore(ctx, programs, options.Store, options.FrozenPolicyEndpoints); err != nil {
+	if err := r.syncPolicyStore(ctx, programs, options.Store, options.FrozenPolicyEndpoints, &result); err != nil {
 		return result, err
 	}
 	if err := populatePolicyMapUsageResult(ctx, options.Store, &result); err != nil {
@@ -2162,10 +2162,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, state control.DesiredState, 
 	return result, nil
 }
 
-func (r *Reconciler) syncPolicyStore(ctx context.Context, programs []policy.Program, store PolicyStore, frozen map[string]struct{}) error {
+func (r *Reconciler) syncPolicyStore(ctx context.Context, programs []policy.Program, store PolicyStore, frozen map[string]struct{}, result *ReconcileResult) error {
 	if r == nil || store == nil {
 		return nil
 	}
+	eventStore, _ := store.(PolicyEventStore)
 	desired := policyEndpointKeepSet(programs, frozen)
 	tracked := make(map[string]struct{}, len(r.policyEndpoints))
 	for endpointID := range r.policyEndpoints {
@@ -2184,8 +2185,15 @@ func (r *Reconciler) syncPolicyStore(ctx context.Context, programs []policy.Prog
 		if _, ok := desired[endpointID]; ok {
 			continue
 		}
+		beforeEvents := 0
+		if eventStore != nil {
+			beforeEvents = len(eventStore.Events())
+		}
 		if err := store.DeleteEndpoint(ctx, endpointID); err != nil {
 			return fmt.Errorf("delete stale policy for endpoint %s: %w", endpointID, err)
+		}
+		if eventStore != nil {
+			recordPolicyEventsDelta(result, eventStore.Events(), beforeEvents, endpointID)
 		}
 		delete(r.policyEndpoints, endpointID)
 	}
@@ -2578,6 +2586,9 @@ func recordPolicyEventsDelta(result *ReconcileResult, events []dataplane.PolicyU
 	}
 	if from < 0 {
 		from = 0
+	}
+	if from >= len(events) && len(events) > 0 {
+		from = len(events) - 1
 	}
 	for i := from; i < len(events); i++ {
 		event := events[i]

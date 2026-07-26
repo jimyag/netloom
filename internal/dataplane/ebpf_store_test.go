@@ -71,6 +71,35 @@ func TestEBPFPolicyStoreDeleteEndpointRejectsEmptyID(t *testing.T) {
 	}
 }
 
+func TestEBPFPolicyStoreDeleteEndpointRecordsPolicyUpdateEvent(t *testing.T) {
+	store := NewEBPFPolicyStore(16)
+	endpointID := model.EndpointKey("prod", "pod-a")
+	store.entries[endpointID] = []PolicyMapEntry{{
+		Key:     PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 7, Direction: DirectionIngress},
+		Value:   PolicyEntry{Precedence: 10, RuleCookie: 99},
+		RuleRef: "prod/web/drop-client",
+	}}
+	store.revisions[endpointID] = 5
+
+	if err := store.DeleteEndpoint(context.Background(), endpointID); err != nil {
+		t.Fatal(err)
+	}
+	if entries := store.Entries(endpointID); len(entries) != 0 {
+		t.Fatalf("entries after delete = %+v, want empty", entries)
+	}
+	events := store.Events()
+	if len(events) != 1 {
+		t.Fatalf("events after delete = %+v, want one delete event", events)
+	}
+	event := events[0]
+	if event.EndpointID != endpointID || !event.Success || event.PreviousRevision != 5 || event.Revision != 6 || event.Stats.Deleted != 1 {
+		t.Fatalf("delete event = %+v, want successful revision 5 to 6 delete", event)
+	}
+	if len(event.RuleCookies) != 1 || event.RuleCookies[0] != 99 || len(event.RuleRefs) != 1 || event.RuleRefs[0] != "prod/web/drop-client" {
+		t.Fatalf("delete event attribution = %+v, want deleted rule cookie/ref", event)
+	}
+}
+
 func TestEBPFPolicyStorePrivileged(t *testing.T) {
 	requireEBPFTest(t)
 	endpointID := model.EndpointKey("prod", "pod-a")

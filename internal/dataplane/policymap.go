@@ -335,6 +335,17 @@ func policyUpdateRuleRefs(oldEntries []PolicyMapEntry, plan PolicyUpdatePlan) []
 	return sortedPolicyRuleRefs(refs)
 }
 
+func policyEntryKeys(entries []PolicyMapEntry) []PolicyKey {
+	if len(entries) == 0 {
+		return nil
+	}
+	keys := make([]PolicyKey, 0, len(entries))
+	for _, entry := range entries {
+		keys = append(keys, entry.Key)
+	}
+	return keys
+}
+
 func sortedPolicyRuleCookies(cookies map[uint32]struct{}) []uint32 {
 	if len(cookies) == 0 {
 		return nil
@@ -363,6 +374,7 @@ func (s *InMemoryPolicyStore) DeleteEndpoint(_ context.Context, endpointID strin
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	s.recordEndpointDeleteEventLocked(endpointID)
 	s.deleteEndpointLocked(endpointID)
 	return nil
 }
@@ -385,6 +397,30 @@ func (s *InMemoryPolicyStore) deleteEndpointLocked(endpointID string) {
 	delete(s.lastStats, endpointID)
 	delete(s.lastSeen, endpointID)
 	delete(s.revisions, endpointID)
+}
+
+func (s *InMemoryPolicyStore) recordEndpointDeleteEventLocked(endpointID string) {
+	entries := s.endpoints[endpointID]
+	previousRevision := s.revisions[endpointID]
+	if len(entries) == 0 && previousRevision == 0 {
+		if _, ok := s.lastStats[endpointID]; !ok {
+			if _, ok := s.lastSeen[endpointID]; !ok {
+				return
+			}
+		}
+	}
+	stats := PolicyUpdateStats{Revision: previousRevision + 1, Deleted: len(entries)}
+	plan := PolicyUpdatePlan{Delete: policyEntryKeys(entries)}
+	s.events = appendPolicyUpdateEvent(s.events, PolicyUpdateEvent{
+		EndpointID:       endpointID,
+		PreviousRevision: previousRevision,
+		Revision:         stats.Revision,
+		OccurredAt:       policyEventOccurredAt(time.Now()),
+		Stats:            stats,
+		RuleCookies:      policyUpdateRuleCookies(entries, plan),
+		RuleRefs:         policyUpdateRuleRefs(entries, plan),
+		Success:          true,
+	})
 }
 
 func (s *InMemoryPolicyStore) SweepPolicyEndpoints(ctx context.Context, keep []string, maxIdle time.Duration) (int, error) {
@@ -415,6 +451,7 @@ func (s *InMemoryPolicyStore) SweepPolicyEndpoints(ctx context.Context, keep []s
 		if now.Sub(lastSeen) < maxIdle {
 			continue
 		}
+		s.recordEndpointDeleteEventLocked(endpointID)
 		s.deleteEndpointLocked(endpointID)
 		swept++
 	}

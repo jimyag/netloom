@@ -550,6 +550,49 @@ func (s *EBPFPolicyStore) recordPolicyUpdateFailure(endpointID string, previousR
 	attachPolicyUpdateEventPressure(&s.events[len(s.events)-1], len(desiredEntries), s.maxEntries)
 }
 
+func (s *EBPFPolicyStore) endpointDeleteEventLocked(endpointID string) (PolicyUpdateEvent, bool, error) {
+	entries := s.entries[endpointID]
+	previousRevision := s.revisions[endpointID]
+	if len(entries) == 0 && previousRevision == 0 && s.maps[endpointID] == nil {
+		if _, ok := s.lastStats[endpointID]; !ok {
+			if _, ok := s.lastSeen[endpointID]; !ok {
+				if s.pinRoot == "" {
+					return PolicyUpdateEvent{}, false, nil
+				}
+				exists, err := pathExists(s.pinnedPolicyMapPath(endpointID))
+				if err != nil {
+					return PolicyUpdateEvent{}, false, err
+				}
+				if !exists {
+					return PolicyUpdateEvent{}, false, nil
+				}
+			}
+		}
+	}
+	stats := PolicyUpdateStats{Revision: previousRevision + 1, Deleted: len(entries)}
+	plan := PolicyUpdatePlan{Delete: policyEntryKeys(entries)}
+	return PolicyUpdateEvent{
+		EndpointID:       endpointID,
+		PreviousRevision: previousRevision,
+		Revision:         stats.Revision,
+		OccurredAt:       policyEventOccurredAt(time.Now()),
+		Stats:            stats,
+		RuleCookies:      policyUpdateRuleCookies(entries, plan),
+		RuleRefs:         policyUpdateRuleRefs(entries, plan),
+		Success:          true,
+	}, true, nil
+}
+
+func pathExists(path string) (bool, error) {
+	if _, err := os.Stat(path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
 func (s *EBPFPolicyStore) DeleteEndpoint(ctx context.Context, endpointID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -560,7 +603,18 @@ func (s *EBPFPolicyStore) DeleteEndpoint(ctx context.Context, endpointID string)
 	if endpointID == "" {
 		return fmt.Errorf("endpoint id is required")
 	}
-	return s.deleteEndpointLocked(endpointID)
+	event, recordEvent, err := s.endpointDeleteEventLocked(endpointID)
+	if err != nil {
+		return err
+	}
+	if err := s.deleteEndpointLocked(endpointID); err != nil {
+		return err
+	}
+	if recordEvent {
+		s.events = appendPolicyUpdateEvent(s.events, event)
+		attachPolicyUpdateEventPressure(&s.events[len(s.events)-1], 0, s.maxEntries)
+	}
+	return nil
 }
 
 func (s *EBPFPolicyStore) deleteEndpointLocked(endpointID string) error {
@@ -614,8 +668,16 @@ func (s *EBPFPolicyStore) SweepPolicyEndpoints(ctx context.Context, keep []strin
 		if now.Sub(lastSeen) < maxIdle {
 			continue
 		}
+		event, recordEvent, err := s.endpointDeleteEventLocked(endpointID)
+		if err != nil {
+			return swept, err
+		}
 		if err := s.deleteEndpointLocked(endpointID); err != nil {
 			return swept, err
+		}
+		if recordEvent {
+			s.events = appendPolicyUpdateEvent(s.events, event)
+			attachPolicyUpdateEventPressure(&s.events[len(s.events)-1], 0, s.maxEntries)
 		}
 		swept++
 	}

@@ -914,8 +914,9 @@ func TestInMemoryPolicyStoreAppliesIncrementalStats(t *testing.T) {
 func TestInMemoryPolicyStoreDeletesEndpoint(t *testing.T) {
 	store := NewInMemoryPolicyStore()
 	entries := []PolicyMapEntry{{
-		Key:   PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 1, Direction: DirectionIngress},
-		Value: PolicyEntry{Precedence: 10},
+		Key:     PolicyKey{PrefixLen: StaticPrefixBits, RemoteIdentity: 1, Direction: DirectionIngress},
+		Value:   PolicyEntry{Precedence: 10, RuleCookie: 42},
+		RuleRef: "prod/web/drop-client",
 	}}
 	endpointA := model.EndpointKey("prod", "pod-a")
 	if err := store.ReplaceEndpoint(context.Background(), endpointA, entries); err != nil {
@@ -939,6 +940,27 @@ func TestInMemoryPolicyStoreDeletesEndpoint(t *testing.T) {
 	}
 	if len(statuses) != 0 {
 		t.Fatalf("endpoint statuses after delete = %+v, want none", statuses)
+	}
+	events := store.Events()
+	if len(events) != 2 {
+		t.Fatalf("events after delete = %+v, want apply and delete events", events)
+	}
+	deleteEvent := events[1]
+	if deleteEvent.EndpointID != endpointA || !deleteEvent.Success || deleteEvent.PreviousRevision != 1 || deleteEvent.Revision != 2 {
+		t.Fatalf("delete event = %+v, want successful revision 1 to 2 delete", deleteEvent)
+	}
+	if deleteEvent.Stats.Deleted != 1 || len(deleteEvent.RuleCookies) != 1 || deleteEvent.RuleCookies[0] != 42 || len(deleteEvent.RuleRefs) != 1 || deleteEvent.RuleRefs[0] != "prod/web/drop-client" {
+		t.Fatalf("delete event attribution = %+v, want deleted rule cookie/ref", deleteEvent)
+	}
+}
+
+func TestInMemoryPolicyStoreDeleteUnknownEndpointDoesNotRecordEvent(t *testing.T) {
+	store := NewInMemoryPolicyStore()
+	if err := store.DeleteEndpoint(context.Background(), model.EndpointKey("prod", "missing")); err != nil {
+		t.Fatal(err)
+	}
+	if events := store.Events(); len(events) != 0 {
+		t.Fatalf("events after deleting unknown endpoint = %+v, want none", events)
 	}
 }
 

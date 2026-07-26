@@ -3836,11 +3836,19 @@ func TestReconcilerDeletesStaleEndpointPolicy(t *testing.T) {
 	}
 
 	state.Endpoints = nil
-	if _, err := reconciler.Reconcile(context.Background(), state, ReconcileOptions{Node: "node-a"}); err != nil {
+	result, err := reconciler.Reconcile(context.Background(), state, ReconcileOptions{Node: "node-a"})
+	if err != nil {
 		t.Fatal(err)
 	}
 	if entries := store.Entries(model.EndpointKey("prod", "pod-a")); len(entries) != 0 {
 		t.Fatalf("stale pod-a entries = %+v, want deleted", entries)
+	}
+	if result.PolicyDeleted != 1 || result.PolicyEvents != 1 || result.PolicyRevisionMax != 2 {
+		t.Fatalf("delete policy result = %+v, want one delete event at revision 2", result)
+	}
+	events := store.Events()
+	if len(events) != 2 || events[1].Stats.Deleted != 1 || events[1].PreviousRevision != 1 || events[1].Revision != 2 {
+		t.Fatalf("policy events = %+v, want stale endpoint delete event", events)
 	}
 }
 

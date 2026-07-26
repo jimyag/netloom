@@ -3712,11 +3712,11 @@ func TestPolicyEventsAPIClearsFilteredEvents(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &output); err != nil {
 		t.Fatalf("decode clear policy events response: %v\n%s", err, recorder.Body.String())
 	}
-	if !output.Ready || output.TotalEvents != 2 || output.ClearedEvents != 1 || output.RemainingEvents != 1 || output.FilterEndpoint != "prod/pod-a" || output.FilterRuleRef != "prod/web/allow-http" {
-		t.Fatalf("clear output = %+v, want one pod-a allow-http event cleared", output)
+	if !output.Ready || output.TotalEvents != 3 || output.ClearedEvents != 2 || output.RemainingEvents != 1 || output.FilterEndpoint != "prod/pod-a" || output.FilterRuleRef != "prod/web/allow-http" {
+		t.Fatalf("clear output = %+v, want pod-a allow-http apply and delete events cleared", output)
 	}
-	if len(output.Cleared) != 1 || output.Cleared[0].EndpointID != podA {
-		t.Fatalf("cleared = %+v, want pod-a event", output.Cleared)
+	if len(output.Cleared) != 2 || output.Cleared[0].EndpointID != podA || output.Cleared[1].EndpointID != podA {
+		t.Fatalf("cleared = %+v, want pod-a apply and delete events", output.Cleared)
 	}
 	if events := store.Events(); len(events) != 1 || events[0].EndpointID != podB {
 		t.Fatalf("runtime events = %+v, want only pod-b event", events)
