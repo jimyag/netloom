@@ -316,9 +316,11 @@ type policyRolloutHistoryOptions struct {
 }
 
 type policyRolloutStateOptions struct {
-	ovsdb string
-	name  string
-	node  string
+	ovsdb         string
+	name          string
+	node          string
+	updatedAfter  string
+	updatedBefore string
 }
 
 type policyFreezeStateOptions struct {
@@ -715,12 +717,14 @@ type policyRolloutStateDocument struct {
 }
 
 type policyRolloutStateOutput struct {
-	Ready         bool                      `json:"ready"`
-	TotalRollouts int                       `json:"total_rollouts"`
-	RolloutCount  int                       `json:"rollout_count"`
-	FilterName    string                    `json:"filter_name,omitempty"`
-	FilterNode    string                    `json:"filter_node,omitempty"`
-	Rollouts      []policyRolloutStateEntry `json:"rollouts"`
+	Ready               bool                      `json:"ready"`
+	TotalRollouts       int                       `json:"total_rollouts"`
+	RolloutCount        int                       `json:"rollout_count"`
+	FilterName          string                    `json:"filter_name,omitempty"`
+	FilterNode          string                    `json:"filter_node,omitempty"`
+	FilterUpdatedAfter  *time.Time                `json:"filter_updated_after,omitempty"`
+	FilterUpdatedBefore *time.Time                `json:"filter_updated_before,omitempty"`
+	Rollouts            []policyRolloutStateEntry `json:"rollouts"`
 }
 
 type policyRolloutStateEntry struct {
@@ -1666,6 +1670,8 @@ func runPolicyRolloutState(ctx context.Context, args []string, stdout io.Writer)
 	flags.StringVar(&opts.ovsdb, "ovsdb", os.Getenv("NETLOOM_OVSDB_ENDPOINT"), "Open_vSwitch OVSDB endpoint")
 	flags.StringVar(&opts.name, "name", "", "optional rollout name to include")
 	flags.StringVar(&opts.node, "node", "", "optional rollout node to include")
+	flags.StringVar(&opts.updatedAfter, "updated-after", "", "optional RFC3339 timestamp; include rollout state updated at or after this time")
+	flags.StringVar(&opts.updatedBefore, "updated-before", "", "optional RFC3339 timestamp; include rollout state updated before this time")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -1690,14 +1696,24 @@ func runPolicyRolloutStateWithStore(ctx context.Context, opts policyRolloutState
 	}
 	name := strings.TrimSpace(opts.name)
 	node := strings.TrimSpace(opts.node)
-	rollouts := filterPolicyRolloutState(doc.Rollouts, name, node)
+	updatedAfter, err := parseOptionalTimeFilter(opts.updatedAfter, "updated-after")
+	if err != nil {
+		return err
+	}
+	updatedBefore, err := parseOptionalTimeFilter(opts.updatedBefore, "updated-before")
+	if err != nil {
+		return err
+	}
+	rollouts := filterPolicyRolloutState(doc.Rollouts, name, node, updatedAfter, updatedBefore)
 	output := policyRolloutStateOutput{
-		Ready:         true,
-		TotalRollouts: len(doc.Rollouts),
-		RolloutCount:  len(rollouts),
-		FilterName:    name,
-		FilterNode:    node,
-		Rollouts:      rollouts,
+		Ready:               true,
+		TotalRollouts:       len(doc.Rollouts),
+		RolloutCount:        len(rollouts),
+		FilterName:          name,
+		FilterNode:          node,
+		FilterUpdatedAfter:  updatedAfter,
+		FilterUpdatedBefore: updatedBefore,
+		Rollouts:            rollouts,
 	}
 	encoder := json.NewEncoder(stdout)
 	encoder.SetIndent("", "  ")
@@ -4646,7 +4662,7 @@ func recentPolicyRolloutHistory(history []policyRolloutHistoryEntry, limit int) 
 	return append([]policyRolloutHistoryEntry(nil), history[len(history)-limit:]...)
 }
 
-func filterPolicyRolloutState(rollouts []policyRolloutStateEntry, name, node string) []policyRolloutStateEntry {
+func filterPolicyRolloutState(rollouts []policyRolloutStateEntry, name, node string, updatedAfter, updatedBefore *time.Time) []policyRolloutStateEntry {
 	name = strings.TrimSpace(name)
 	node = strings.TrimSpace(node)
 	out := make([]policyRolloutStateEntry, 0, len(rollouts))
@@ -4655,6 +4671,12 @@ func filterPolicyRolloutState(rollouts []policyRolloutStateEntry, name, node str
 			continue
 		}
 		if node != "" && rollout.Node != node {
+			continue
+		}
+		if updatedAfter != nil && rollout.UpdatedAt.Before(*updatedAfter) {
+			continue
+		}
+		if updatedBefore != nil && !rollout.UpdatedAt.Before(*updatedBefore) {
 			continue
 		}
 		out = append(out, rollout)

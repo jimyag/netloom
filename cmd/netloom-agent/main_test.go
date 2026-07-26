@@ -1790,13 +1790,16 @@ func TestPolicyEndpointAPIRolloutHistoryFilters(t *testing.T) {
 }
 
 func TestRunPolicyRolloutStateWithStoreReportsFilteredJSON(t *testing.T) {
+	firstUpdated := time.Date(2026, 7, 20, 1, 0, 0, 0, time.UTC)
+	secondUpdated := time.Date(2026, 7, 20, 1, 20, 0, 0, time.UTC)
+	updatedCutoff := time.Date(2026, 7, 20, 1, 10, 0, 0, time.UTC)
 	doc := policyRolloutStateDocument{Rollouts: []policyRolloutStateEntry{
 		{
 			Name:             "canary",
 			Node:             "node-a",
 			Revision:         "rev-a",
 			Store:            "ebpf",
-			UpdatedAt:        time.Now().Add(-time.Minute),
+			UpdatedAt:        firstUpdated,
 			AppliedEndpoints: []string{model.EndpointKey("prod", "vm-a")},
 			Paused:           true,
 		},
@@ -1805,7 +1808,7 @@ func TestRunPolicyRolloutStateWithStoreReportsFilteredJSON(t *testing.T) {
 			Node:             "node-b",
 			Revision:         "rev-b",
 			Store:            "ebpf",
-			UpdatedAt:        time.Now(),
+			UpdatedAt:        secondUpdated,
 			AppliedEndpoints: []string{model.EndpointKey("prod", "vm-b")},
 			Failed:           1,
 		},
@@ -1831,6 +1834,38 @@ func TestRunPolicyRolloutStateWithStoreReportsFilteredJSON(t *testing.T) {
 	}
 	if len(got.Rollouts) != 1 || got.Rollouts[0].Revision != "rev-b" || got.Rollouts[0].Failed != 1 || len(got.Rollouts[0].AppliedEndpoints) != 1 || got.Rollouts[0].AppliedEndpoints[0] != model.EndpointKey("prod", "vm-b") {
 		t.Fatalf("rollouts = %+v, want node-b failed rollout state", got.Rollouts)
+	}
+
+	out.Reset()
+	err = runPolicyRolloutStateWithStore(t.Context(), policyRolloutStateOptions{updatedAfter: updatedCutoff.Format(time.RFC3339)}, &out, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = policyRolloutStateOutput{}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("decode updated-after policy-rollout-state output: %v\n%s", err, out.String())
+	}
+	if got.FilterUpdatedAfter == nil || !got.FilterUpdatedAfter.Equal(updatedCutoff) || got.RolloutCount != 1 || len(got.Rollouts) != 1 || got.Rollouts[0].Node != "node-b" {
+		t.Fatalf("updated-after rollout state = %+v, want node-b state after cutoff", got)
+	}
+
+	out.Reset()
+	err = runPolicyRolloutStateWithStore(t.Context(), policyRolloutStateOptions{updatedBefore: updatedCutoff.Format(time.RFC3339)}, &out, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = policyRolloutStateOutput{}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("decode updated-before policy-rollout-state output: %v\n%s", err, out.String())
+	}
+	if got.FilterUpdatedBefore == nil || !got.FilterUpdatedBefore.Equal(updatedCutoff) || got.RolloutCount != 1 || len(got.Rollouts) != 1 || got.Rollouts[0].Node != "node-a" {
+		t.Fatalf("updated-before rollout state = %+v, want node-a state before cutoff", got)
+	}
+
+	out.Reset()
+	err = runPolicyRolloutStateWithStore(t.Context(), policyRolloutStateOptions{updatedBefore: "bad"}, &out, store)
+	if err == nil || !strings.Contains(err.Error(), "invalid updated-before") {
+		t.Fatalf("err = %v, want invalid updated-before", err)
 	}
 }
 
