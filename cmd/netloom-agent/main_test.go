@@ -1051,6 +1051,30 @@ func TestRunPolicyStatusExportWithStoreReportsFilteredJSON(t *testing.T) {
 	}
 
 	out.Reset()
+	if err := runPolicyStatusExportWithStore(t.Context(), policyStatusExportOptions{pressureMinPercent: "90"}, &out, store); err != nil {
+		t.Fatal(err)
+	}
+	got = policyStatusOutput{}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("decode pressure-min filtered policy-status-export output: %v\n%s", err, out.String())
+	}
+	if got.FilterPressureMinPercent != 90 || got.EndpointCount != 1 || len(got.Statuses) != 1 || got.Statuses[0].EndpointID != model.EndpointKey("prod", "pod-b") {
+		t.Fatalf("pressure-min filtered statuses = %+v, want only pressured pod-b", got)
+	}
+
+	out.Reset()
+	if err := runPolicyStatusExportWithStore(t.Context(), policyStatusExportOptions{recommendedCapacityMin: "79"}, &out, store); err != nil {
+		t.Fatal(err)
+	}
+	got = policyStatusOutput{}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("decode recommended-capacity filtered policy-status-export output: %v\n%s", err, out.String())
+	}
+	if got.FilterRecommendedCapacityMin != 79 || got.EndpointCount != 1 || len(got.Statuses) != 1 || got.Statuses[0].EndpointID != model.EndpointKey("prod", "pod-b") {
+		t.Fatalf("recommended-capacity filtered statuses = %+v, want only pod-b", got)
+	}
+
+	out.Reset()
 	if err := runPolicyStatusExportWithStore(t.Context(), policyStatusExportOptions{drifted: "true"}, &out, store); err != nil {
 		t.Fatal(err)
 	}
@@ -4436,6 +4460,47 @@ func TestPolicyEndpointAPIReportsLifecycleStatus(t *testing.T) {
 	}
 	if got.FilterPressureSeverity != dataplane.PolicyMapPressureCritical || got.EndpointCount != 1 || len(got.Statuses) != 1 || got.Statuses[0].EndpointID != model.EndpointKey("prod", "pod-b") {
 		t.Fatalf("critical filtered statuses = %+v, want pod-b", got)
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/policy/endpoints?pressure_min_percent=90", nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("pressure-min filter status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	got = policyStatusOutput{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode pressure-min policy endpoint API response: %v\n%s", err, recorder.Body.String())
+	}
+	if got.FilterPressureMinPercent != 90 || got.EndpointCount != 1 || len(got.Statuses) != 1 || got.Statuses[0].EndpointID != model.EndpointKey("prod", "pod-b") {
+		t.Fatalf("pressure-min filtered statuses = %+v, want pod-b", got)
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/policy/endpoints?recommended_capacity_min=19", nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("recommended-capacity filter status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	got = policyStatusOutput{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode recommended-capacity policy endpoint API response: %v\n%s", err, recorder.Body.String())
+	}
+	if got.FilterRecommendedCapacityMin != 19 || got.EndpointCount != 1 || len(got.Statuses) != 1 || got.Statuses[0].EndpointID != model.EndpointKey("prod", "pod-b") {
+		t.Fatalf("recommended-capacity filtered statuses = %+v, want pod-b", got)
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/policy/endpoints?pressure_min_percent=bad", nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("invalid pressure-min filter status = %d, want 400; body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "invalid pressure_min_percent") {
+		t.Fatalf("body missing invalid pressure_min_percent error: %s", recorder.Body.String())
 	}
 
 	recorder = httptest.NewRecorder()
