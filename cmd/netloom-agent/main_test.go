@@ -7495,17 +7495,21 @@ func TestAgentMetricsExportsLatestPolicyAndTCXCounters(t *testing.T) {
 		{Name: "bpffs", Status: "ok", Required: true, Detail: "/sys/fs/bpf"},
 		{Name: "ovsdb", Status: "warn", Detail: "not configured"},
 	})
+	freezeCompleted := time.Unix(1_725_000_200, 0).UTC()
+	regenerateCompleted := time.Unix(1_725_000_210, 0).UTC()
 	metrics.recordPolicyEndpointAction(context.Background(), policyActionHistoryEntry{
-		Action:     "freeze",
-		EndpointID: "prod\x00pod-a",
-		Success:    true,
+		Action:      "freeze",
+		EndpointID:  "prod\x00pod-a",
+		CompletedAt: freezeCompleted,
+		Success:     true,
 	})
 	metrics.recordPolicyEndpointAction(context.Background(), policyActionHistoryEntry{
-		Action:     "regenerate",
-		EndpointID: "prod\x00pod-a",
-		Success:    false,
-		Reason:     "frozen",
-		Error:      "policy endpoint is frozen",
+		Action:      "regenerate",
+		EndpointID:  "prod\x00pod-a",
+		CompletedAt: regenerateCompleted,
+		Success:     false,
+		Reason:      "frozen",
+		Error:       "policy endpoint is frozen",
 	})
 	freezeExpires := time.Now().UTC().Add(time.Hour)
 	freezeStateStore := ovsdbPolicyFreezeStateStore{syncer: &fakeOpenVSwitchExternalIDStore{}}
@@ -7644,6 +7648,11 @@ func TestAgentMetricsExportsLatestPolicyAndTCXCounters(t *testing.T) {
 		`netloom_agent_policy_action_history_action_events{action="freeze",node="node-a",store="ebpf"} 1`,
 		`netloom_agent_policy_action_history_action_events{action="regenerate",node="node-a",store="ebpf"} 1`,
 		`netloom_agent_policy_action_history_reason_events{node="node-a",reason="frozen",store="ebpf"} 1`,
+		`netloom_agent_policy_action_history_endpoint_last_success{action="freeze",endpoint="prod\x00pod-a",node="node-a",store="ebpf"} 1`,
+		`netloom_agent_policy_action_history_endpoint_last_timestamp_seconds{action="freeze",endpoint="prod\x00pod-a",node="node-a",store="ebpf"} 1725000200`,
+		`netloom_agent_policy_action_history_endpoint_last_success{action="regenerate",endpoint="prod\x00pod-a",node="node-a",store="ebpf"} 0`,
+		`netloom_agent_policy_action_history_endpoint_last_timestamp_seconds{action="regenerate",endpoint="prod\x00pod-a",node="node-a",store="ebpf"} 1725000210`,
+		`netloom_agent_policy_action_history_endpoint_last_reason{action="regenerate",endpoint="prod\x00pod-a",node="node-a",reason="frozen",store="ebpf"} 1`,
 		`netloom_agent_policy_freeze_state_endpoints{node="node-a",store="ebpf"} 2`,
 		`netloom_agent_policy_freeze_state_endpoint{endpoint="prod\x00pod-a",node="node-a",store="ebpf"} 1`,
 		fmt.Sprintf(`netloom_agent_policy_freeze_state_endpoint_expires_timestamp_seconds{endpoint="prod\x00pod-a",node="node-a",store="ebpf"} %d`, freezeExpires.Unix()),

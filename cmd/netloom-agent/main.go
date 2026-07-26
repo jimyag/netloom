@@ -8272,6 +8272,35 @@ func writePolicyActionHistoryMetrics(w ioStringWriter, node, store string, histo
 			"reason": reason,
 		}), reasons[reason])
 	}
+	writeMetricType(w, "netloom_agent_policy_action_history_endpoint_last_success", "gauge")
+	writeMetricType(w, "netloom_agent_policy_action_history_endpoint_last_timestamp_seconds", "gauge")
+	writeMetricType(w, "netloom_agent_policy_action_history_endpoint_last_reason", "gauge")
+	for _, entry := range latestPolicyActionHistoryByEndpointAction(history) {
+		labels := prometheusLabels(map[string]string{
+			"node":     node,
+			"store":    store,
+			"endpoint": entry.EndpointID,
+			"action":   entry.Action,
+		})
+		success := 0
+		if entry.Success {
+			success = 1
+		}
+		fmt.Fprintf(w, "netloom_agent_policy_action_history_endpoint_last_success%s %d\n", labels, success)
+		if !entry.CompletedAt.IsZero() {
+			fmt.Fprintf(w, "netloom_agent_policy_action_history_endpoint_last_timestamp_seconds%s %d\n", labels, entry.CompletedAt.Unix())
+		}
+		if entry.Reason == "" {
+			continue
+		}
+		fmt.Fprintf(w, "netloom_agent_policy_action_history_endpoint_last_reason%s 1\n", prometheusLabels(map[string]string{
+			"node":     node,
+			"store":    store,
+			"endpoint": entry.EndpointID,
+			"action":   entry.Action,
+			"reason":   entry.Reason,
+		}))
+	}
 }
 
 func writePolicyRolloutStateMetrics(w ioStringWriter, node, store string, doc policyRolloutStateDocument, enabled bool, loadError string) {
@@ -8352,6 +8381,33 @@ func policyActionHistoryMetricCounts(history []policyActionHistoryEntry) (int, i
 		}
 	}
 	return len(history), success, len(history) - success, actions, reasons
+}
+
+func latestPolicyActionHistoryByEndpointAction(history []policyActionHistoryEntry) []policyActionHistoryEntry {
+	latest := make(map[string]policyActionHistoryEntry)
+	for _, entry := range history {
+		entry.EndpointID = strings.TrimSpace(entry.EndpointID)
+		entry.Action = strings.TrimSpace(entry.Action)
+		if entry.EndpointID == "" || entry.Action == "" {
+			continue
+		}
+		key := entry.EndpointID + "\x00" + entry.Action
+		current, ok := latest[key]
+		if !ok || current.CompletedAt.Before(entry.CompletedAt) || current.CompletedAt.Equal(entry.CompletedAt) {
+			latest[key] = entry
+		}
+	}
+	out := make([]policyActionHistoryEntry, 0, len(latest))
+	for _, entry := range latest {
+		out = append(out, entry)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].EndpointID != out[j].EndpointID {
+			return out[i].EndpointID < out[j].EndpointID
+		}
+		return out[i].Action < out[j].Action
+	})
+	return out
 }
 
 func sortedStringIntKeys(values map[string]int) []string {
