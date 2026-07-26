@@ -136,7 +136,7 @@ func (s *EBPFPolicyStore) ReplaceEndpoint(ctx context.Context, endpointID string
 	s.revisions[endpointID] = revision
 	s.lastStats[endpointID] = stats
 	s.lastSeen[endpointID] = now
-	s.events = append(s.events, PolicyUpdateEvent{
+	s.events = appendPolicyUpdateEvent(s.events, PolicyUpdateEvent{
 		EndpointID:       endpointID,
 		PreviousRevision: previousRevision,
 		Revision:         revision,
@@ -181,7 +181,7 @@ func (s *EBPFPolicyStore) clearEndpointPolicyAfterOverflowLocked(ctx context.Con
 	s.revisions[endpointID] = revision
 	s.lastStats[endpointID] = stats
 	s.lastSeen[endpointID] = now
-	s.events = append(s.events, PolicyUpdateEvent{
+	s.events = appendPolicyUpdateEvent(s.events, PolicyUpdateEvent{
 		EndpointID:       endpointID,
 		PreviousRevision: previousRevision,
 		Revision:         revision,
@@ -535,7 +535,7 @@ func (s *EBPFPolicyStore) ensurePinRoot() error {
 
 func (s *EBPFPolicyStore) recordPolicyUpdateFailure(endpointID string, previousRevision, revision uint64, stats PolicyUpdateStats, ruleCookies []uint32, ruleRefs []string, desiredEntries []PolicyMapEntry, err error) {
 	stats.Revision = revision
-	s.events = append(s.events, PolicyUpdateEvent{
+	s.events = appendPolicyUpdateEvent(s.events, PolicyUpdateEvent{
 		EndpointID:       endpointID,
 		PreviousRevision: previousRevision,
 		Revision:         revision,

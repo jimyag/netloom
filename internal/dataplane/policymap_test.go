@@ -1244,3 +1244,31 @@ func TestParsePolicyMapOverflowAction(t *testing.T) {
 		t.Fatalf("ParsePolicyMapOverflowAction() accepted unsupported action")
 	}
 }
+
+func TestInMemoryPolicyStoreBoundsPolicyUpdateEvents(t *testing.T) {
+	store := NewInMemoryPolicyStore()
+	endpointID := model.EndpointKey("prod", "pod-a")
+	for i := 0; i < DefaultPolicyUpdateEventLimit+3; i++ {
+		entry := PolicyMapEntry{
+			Key: PolicyKey{
+				PrefixLen:      StaticPrefixBits,
+				RemoteIdentity: uint32(i + 1),
+				Direction:      DirectionIngress,
+			},
+			Value: PolicyEntry{Precedence: uint32(i + 1)},
+		}
+		if err := store.ReplaceEndpoint(context.Background(), endpointID, []PolicyMapEntry{entry}); err != nil {
+			t.Fatalf("ReplaceEndpoint(%d): %v", i, err)
+		}
+	}
+	events := store.Events()
+	if len(events) != DefaultPolicyUpdateEventLimit {
+		t.Fatalf("events = %d, want bounded history %d", len(events), DefaultPolicyUpdateEventLimit)
+	}
+	if events[0].Revision != 4 {
+		t.Fatalf("oldest retained revision = %d, want 4 after trimming first three events", events[0].Revision)
+	}
+	if events[len(events)-1].Revision != uint64(DefaultPolicyUpdateEventLimit+3) {
+		t.Fatalf("newest retained revision = %d, want latest", events[len(events)-1].Revision)
+	}
+}

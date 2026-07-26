@@ -102,6 +102,8 @@ const (
 	PolicyMapPressureFull     = "full"
 )
 
+const DefaultPolicyUpdateEventLimit = 1024
+
 type PolicyMapDrift struct {
 	EndpointID string `json:"endpoint_id"`
 	Missing    int    `json:"missing"`
@@ -252,7 +254,7 @@ func (s *InMemoryPolicyStore) ReplaceEndpoint(_ context.Context, endpointID stri
 	s.revisions[endpointID] = revision
 	s.lastStats[endpointID] = stats
 	s.lastSeen[endpointID] = now
-	s.events = append(s.events, PolicyUpdateEvent{
+	s.events = appendPolicyUpdateEvent(s.events, PolicyUpdateEvent{
 		EndpointID:       endpointID,
 		PreviousRevision: previousRevision,
 		Revision:         revision,
@@ -267,7 +269,7 @@ func (s *InMemoryPolicyStore) ReplaceEndpoint(_ context.Context, endpointID stri
 
 func (s *InMemoryPolicyStore) recordPolicyUpdateFailure(endpointID string, previousRevision, revision uint64, stats PolicyUpdateStats, ruleCookies []uint32, ruleRefs []string, err error) {
 	stats.Revision = revision
-	s.events = append(s.events, PolicyUpdateEvent{
+	s.events = appendPolicyUpdateEvent(s.events, PolicyUpdateEvent{
 		EndpointID:       endpointID,
 		PreviousRevision: previousRevision,
 		Revision:         revision,
@@ -539,6 +541,14 @@ func policyEventOccurredAt(t time.Time) *time.Time {
 		return nil
 	}
 	return &t
+}
+
+func appendPolicyUpdateEvent(events []PolicyUpdateEvent, event PolicyUpdateEvent) []PolicyUpdateEvent {
+	events = append(events, event)
+	if len(events) <= DefaultPolicyUpdateEventLimit {
+		return events
+	}
+	return append([]PolicyUpdateEvent(nil), events[len(events)-DefaultPolicyUpdateEventLimit:]...)
 }
 
 func (s *InMemoryPolicyStore) policyEndpointIDsLocked() map[string]struct{} {
