@@ -3314,8 +3314,8 @@ func TestRolloutPolicyEndpointsPressureAwareShrinksBatchSize(t *testing.T) {
 		t.Fatalf("rollout recommended capacity = %d/%q, want 12 for pod-a", rollout.PressureRecommendedCapacity, rollout.PressureRecommendedEndpoint)
 	}
 	wantHotspots := []dataplane.PolicyMapPressureHotspot{
-		{EndpointID: model.EndpointKey("prod", "pod-a"), Entries: 9, Capacity: 10, PressurePercent: 90, Severity: dataplane.PolicyMapPressureCritical, RecommendedCapacity: 12},
-		{EndpointID: model.EndpointKey("prod", "pod-b"), Entries: 8, Capacity: 10, PressurePercent: 80, Severity: dataplane.PolicyMapPressureWarning, RecommendedCapacity: 11},
+		{EndpointID: model.EndpointKey("prod", "pod-a"), Entries: 9, Capacity: 10, AvailableEntries: 1, PressurePercent: 90, Severity: dataplane.PolicyMapPressureCritical, RecommendedCapacity: 12},
+		{EndpointID: model.EndpointKey("prod", "pod-b"), Entries: 8, Capacity: 10, AvailableEntries: 2, PressurePercent: 80, Severity: dataplane.PolicyMapPressureWarning, RecommendedCapacity: 11},
 	}
 	if !slices.EqualFunc(rollout.PressureHotspots, wantHotspots, func(a, b dataplane.PolicyMapPressureHotspot) bool {
 		return a == b

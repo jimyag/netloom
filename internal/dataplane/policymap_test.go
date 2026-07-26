@@ -1059,8 +1059,8 @@ func TestSummarizePolicyMapUsageTracksPressure(t *testing.T) {
 		t.Fatalf("recommended capacity = %d/%q, want 17 for b", summary.RecommendedCapacity, summary.RecommendedCapacityEndpoint)
 	}
 	wantHotspots := []PolicyMapPressureHotspot{
-		{EndpointID: "b", Entries: 13, Capacity: 16, PressurePercent: 81, Severity: PolicyMapPressureWarning, RecommendedCapacity: 17},
-		{EndpointID: "a", Entries: 12, Capacity: 16, PressurePercent: 75, Severity: PolicyMapPressureNormal},
+		{EndpointID: "b", Entries: 13, Capacity: 16, AvailableEntries: 3, PressurePercent: 81, Severity: PolicyMapPressureWarning, RecommendedCapacity: 17},
+		{EndpointID: "a", Entries: 12, Capacity: 16, AvailableEntries: 4, PressurePercent: 75, Severity: PolicyMapPressureNormal},
 	}
 	if !reflect.DeepEqual(summary.PressureHotspots, wantHotspots) {
 		t.Fatalf("pressure hotspots = %+v, want %+v", summary.PressureHotspots, wantHotspots)
@@ -1088,6 +1088,25 @@ func TestPolicyMapPressureSeverityClassifiesUsage(t *testing.T) {
 	}
 }
 
+func TestPolicyMapAvailableEntries(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		usage PolicyMapUsage
+		want  uint32
+	}{
+		{name: "unknown capacity", usage: PolicyMapUsage{Entries: 8}, want: 0},
+		{name: "has room", usage: PolicyMapUsage{Entries: 8, Capacity: 10}, want: 2},
+		{name: "full", usage: PolicyMapUsage{Entries: 10, Capacity: 10}, want: 0},
+		{name: "overfull", usage: PolicyMapUsage{Entries: 11, Capacity: 10}, want: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := PolicyMapAvailableEntries(tc.usage); got != tc.want {
+				t.Fatalf("PolicyMapAvailableEntries(%+v) = %d, want %d", tc.usage, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestSummarizePolicyMapUsageCapsPressureHotspots(t *testing.T) {
 	summary := SummarizePolicyMapUsage([]PolicyMapUsage{
 		{EndpointID: "pod-c", Entries: 9, Capacity: 10},
@@ -1098,11 +1117,11 @@ func TestSummarizePolicyMapUsageCapsPressureHotspots(t *testing.T) {
 		{EndpointID: "pod-f", Entries: 5, Capacity: 10},
 	})
 	want := []PolicyMapPressureHotspot{
-		{EndpointID: "pod-a", Entries: 9, Capacity: 10, PressurePercent: 90, Severity: PolicyMapPressureCritical, RecommendedCapacity: 12},
-		{EndpointID: "pod-c", Entries: 9, Capacity: 10, PressurePercent: 90, Severity: PolicyMapPressureCritical, RecommendedCapacity: 12},
-		{EndpointID: "pod-b", Entries: 8, Capacity: 10, PressurePercent: 80, Severity: PolicyMapPressureWarning, RecommendedCapacity: 11},
-		{EndpointID: "pod-d", Entries: 7, Capacity: 10, PressurePercent: 70, Severity: PolicyMapPressureNormal},
-		{EndpointID: "pod-e", Entries: 6, Capacity: 10, PressurePercent: 60, Severity: PolicyMapPressureNormal},
+		{EndpointID: "pod-a", Entries: 9, Capacity: 10, AvailableEntries: 1, PressurePercent: 90, Severity: PolicyMapPressureCritical, RecommendedCapacity: 12},
+		{EndpointID: "pod-c", Entries: 9, Capacity: 10, AvailableEntries: 1, PressurePercent: 90, Severity: PolicyMapPressureCritical, RecommendedCapacity: 12},
+		{EndpointID: "pod-b", Entries: 8, Capacity: 10, AvailableEntries: 2, PressurePercent: 80, Severity: PolicyMapPressureWarning, RecommendedCapacity: 11},
+		{EndpointID: "pod-d", Entries: 7, Capacity: 10, AvailableEntries: 3, PressurePercent: 70, Severity: PolicyMapPressureNormal},
+		{EndpointID: "pod-e", Entries: 6, Capacity: 10, AvailableEntries: 4, PressurePercent: 60, Severity: PolicyMapPressureNormal},
 	}
 	if !reflect.DeepEqual(summary.PressureHotspots, want) {
 		t.Fatalf("pressure hotspots = %+v, want %+v", summary.PressureHotspots, want)

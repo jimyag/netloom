@@ -7014,6 +7014,7 @@ func writeAgentMetrics(w ioStringWriter, snapshot agentMetricsSnapshot, totals a
 	writeMetricType(w, "netloom_agent_policy_map_pressure_hotspot_percent", "gauge")
 	writeMetricType(w, "netloom_agent_policy_map_pressure_hotspot_entries", "gauge")
 	writeMetricType(w, "netloom_agent_policy_map_pressure_hotspot_capacity", "gauge")
+	writeMetricType(w, "netloom_agent_policy_map_pressure_hotspot_available_entries", "gauge")
 	writeMetricType(w, "netloom_agent_policy_map_pressure_hotspot_recommended_capacity", "gauge")
 	writeMetricType(w, "netloom_agent_policy_map_pressure_hotspot_severity", "gauge")
 	for i, hotspot := range result.PolicyMapPressureHotspots {
@@ -7026,6 +7027,7 @@ func writeAgentMetrics(w ioStringWriter, snapshot agentMetricsSnapshot, totals a
 		fmt.Fprintf(w, "netloom_agent_policy_map_pressure_hotspot_percent%s %d\n", labels, hotspot.PressurePercent)
 		fmt.Fprintf(w, "netloom_agent_policy_map_pressure_hotspot_entries%s %d\n", labels, hotspot.Entries)
 		fmt.Fprintf(w, "netloom_agent_policy_map_pressure_hotspot_capacity%s %d\n", labels, hotspot.Capacity)
+		fmt.Fprintf(w, "netloom_agent_policy_map_pressure_hotspot_available_entries%s %d\n", labels, hotspot.AvailableEntries)
 		fmt.Fprintf(w, "netloom_agent_policy_map_pressure_hotspot_recommended_capacity%s %d\n", labels, hotspot.RecommendedCapacity)
 		severityLabels := prometheusLabels(map[string]string{
 			"node":     result.Node,

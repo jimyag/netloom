@@ -6178,8 +6178,8 @@ func TestPolicyEndpointAPIRolloutUsesPressureAwareBatchSize(t *testing.T) {
 		t.Fatalf("rollout recommended capacity = %d/%q, want 12 for pod-a", got.Rollout.PressureRecommendedCapacity, got.Rollout.PressureRecommendedEndpoint)
 	}
 	wantHotspots := []dataplane.PolicyMapPressureHotspot{
-		{EndpointID: model.EndpointKey("prod", "pod-a"), Entries: 9, Capacity: 10, PressurePercent: 90, Severity: dataplane.PolicyMapPressureCritical, RecommendedCapacity: 12},
-		{EndpointID: model.EndpointKey("prod", "pod-b"), Entries: 8, Capacity: 10, PressurePercent: 80, Severity: dataplane.PolicyMapPressureWarning, RecommendedCapacity: 11},
+		{EndpointID: model.EndpointKey("prod", "pod-a"), Entries: 9, Capacity: 10, AvailableEntries: 1, PressurePercent: 90, Severity: dataplane.PolicyMapPressureCritical, RecommendedCapacity: 12},
+		{EndpointID: model.EndpointKey("prod", "pod-b"), Entries: 8, Capacity: 10, AvailableEntries: 2, PressurePercent: 80, Severity: dataplane.PolicyMapPressureWarning, RecommendedCapacity: 11},
 	}
 	if !reflect.DeepEqual(got.Rollout.PressureHotspots, wantHotspots) {
 		t.Fatalf("rollout pressure hotspots = %+v, want %+v", got.Rollout.PressureHotspots, wantHotspots)
@@ -6239,6 +6239,7 @@ func TestAgentMetricsExportsLatestPolicyAndTCXCounters(t *testing.T) {
 			EndpointID:          "prod\x00pod-a",
 			Entries:             13,
 			Capacity:            16,
+			AvailableEntries:    3,
 			PressurePercent:     81,
 			Severity:            dataplane.PolicyMapPressureWarning,
 			RecommendedCapacity: 17,
@@ -6377,6 +6378,7 @@ func TestAgentMetricsExportsLatestPolicyAndTCXCounters(t *testing.T) {
 		`netloom_agent_policy_map_pressure_hotspot_percent{endpoint="prod\x00pod-a",node="node-a",rank="1",store="ebpf"} 81`,
 		`netloom_agent_policy_map_pressure_hotspot_entries{endpoint="prod\x00pod-a",node="node-a",rank="1",store="ebpf"} 13`,
 		`netloom_agent_policy_map_pressure_hotspot_capacity{endpoint="prod\x00pod-a",node="node-a",rank="1",store="ebpf"} 16`,
+		`netloom_agent_policy_map_pressure_hotspot_available_entries{endpoint="prod\x00pod-a",node="node-a",rank="1",store="ebpf"} 3`,
 		`netloom_agent_policy_map_pressure_hotspot_recommended_capacity{endpoint="prod\x00pod-a",node="node-a",rank="1",store="ebpf"} 17`,
 		`netloom_agent_policy_map_pressure_hotspot_severity{endpoint="prod\x00pod-a",node="node-a",rank="1",severity="warning",store="ebpf"} 1`,
 		`netloom_agent_policy_pressure_mitigated_endpoints{node="node-a",store="ebpf"} 2`,

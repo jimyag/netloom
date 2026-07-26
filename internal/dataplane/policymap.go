@@ -68,6 +68,7 @@ type PolicyMapPressureHotspot struct {
 	EndpointID          string `json:"endpoint_id"`
 	Entries             uint32 `json:"entries"`
 	Capacity            uint32 `json:"capacity"`
+	AvailableEntries    uint32 `json:"available_entries"`
 	PressurePercent     uint32 `json:"pressure_percent"`
 	Severity            string `json:"severity"`
 	RecommendedCapacity uint32 `json:"recommended_capacity,omitempty"`
@@ -678,6 +679,7 @@ func SummarizePolicyMapUsage(usages []PolicyMapUsage) PolicyMapUsageSummary {
 				EndpointID:          usage.EndpointID,
 				Entries:             usage.Entries,
 				Capacity:            usage.Capacity,
+				AvailableEntries:    PolicyMapAvailableEntries(usage),
 				PressurePercent:     pressure,
 				Severity:            severity,
 				RecommendedCapacity: recommendedCapacity,
@@ -715,6 +717,13 @@ func PolicyMapRecommendedCapacity(usage PolicyMapUsage) uint32 {
 	}
 	threshold := uint64(DefaultPolicyMapPressureThresholdPercent)
 	return uint32((uint64(usage.Entries)*100)/threshold + 1)
+}
+
+func PolicyMapAvailableEntries(usage PolicyMapUsage) uint32 {
+	if usage.Capacity <= usage.Entries {
+		return 0
+	}
+	return usage.Capacity - usage.Entries
 }
 
 func sortPolicyMapPressureHotspots(hotspots []PolicyMapPressureHotspot) {

@@ -494,7 +494,8 @@ agent metrics 会暴露最近 endpoint lifecycle action history 的聚合计数�
 regenerate 等动作失败做低基数告警。
 
 policy map pressure metrics 还会给出扩容建议：
-`netloom_agent_policy_map_recommended_capacity{endpoint=...}` 和
+`netloom_agent_policy_map_recommended_capacity{endpoint=...}`、
+`netloom_agent_policy_map_pressure_hotspot_available_entries{endpoint=...,rank=...}` 和
 `netloom_agent_policy_map_pressure_hotspot_recommended_capacity{endpoint=...,rank=...}`。
 当某个 endpoint map 达到 warning 阈值时，推荐值表示让当前 entries 回到 warning
 阈值以下所需的最小 capacity；未达到阈值时为 `0`。
