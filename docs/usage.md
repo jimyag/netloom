@@ -621,6 +621,10 @@ curl -s -X POST http://127.0.0.1:9092/policy/endpoints/rollout \
 rollout 响应里的每个 `items[].plan` 使用和单 endpoint `/plan` 相同的 diff
 结构。`dry_run:true` 只生成每个 endpoint 的 staged 变更计划，不写 live policy map；
 正式 rollout 时同一字段可用于确认每个 batch 实际应用前计划的 add/update/delete 明细。
+当请求设置 `pressure_aware:true` 时，响应会返回 `pressure_max_percent`、
+`pressure_endpoint`、`pressure_severity`、`pressure_recommended_capacity` 和
+`pressure_recommended_endpoint`；`pressure_hotspots[]` 也会包含每个热点 endpoint 的
+`recommended_capacity`，用于在正式 rollout 前判断是否应先扩 eBPF policy map 容量。
 顶层 `rollout.risk` 会聚合所有 endpoint plan 的阻断风险，便于 approval/ack/finalize
 检查点先看整次变更的风险面。
 API 响应顶层的 `rolled_out` 只表示整次 rollout 已完成并且没有 pending、paused、

@@ -3310,6 +3310,9 @@ func TestRolloutPolicyEndpointsPressureAwareShrinksBatchSize(t *testing.T) {
 	if rollout.PressureMaxPercent != 90 || rollout.PressureEndpoint != model.EndpointKey("prod", "pod-a") || rollout.PressureThresholdPercent != 80 || rollout.PressureSeverity != dataplane.PolicyMapPressureCritical {
 		t.Fatalf("rollout pressure fields = %+v, want max=90 endpoint pod-a threshold 80 severity critical", rollout)
 	}
+	if rollout.PressureRecommendedCapacity != 12 || rollout.PressureRecommendedEndpoint != model.EndpointKey("prod", "pod-a") {
+		t.Fatalf("rollout recommended capacity = %d/%q, want 12 for pod-a", rollout.PressureRecommendedCapacity, rollout.PressureRecommendedEndpoint)
+	}
 	wantHotspots := []dataplane.PolicyMapPressureHotspot{
 		{EndpointID: model.EndpointKey("prod", "pod-a"), Entries: 9, Capacity: 10, PressurePercent: 90, Severity: dataplane.PolicyMapPressureCritical, RecommendedCapacity: 12},
 		{EndpointID: model.EndpointKey("prod", "pod-b"), Entries: 8, Capacity: 10, PressurePercent: 80, Severity: dataplane.PolicyMapPressureWarning, RecommendedCapacity: 11},

@@ -248,80 +248,82 @@ type PolicyEndpointRolloutOptions struct {
 }
 
 type PolicyEndpointRollout struct {
-	Revision                  string                      `json:"revision,omitempty"`
-	DryRun                    bool                        `json:"dry_run"`
-	Cancelled                 bool                        `json:"cancelled,omitempty"`
-	BatchSize                 int                         `json:"batch_size"`
-	RequestedBatchSize        int                         `json:"requested_batch_size,omitempty"`
-	PressureAware             bool                        `json:"pressure_aware,omitempty"`
-	PressureAdjusted          bool                        `json:"pressure_adjusted,omitempty"`
-	PressureThresholdPercent  uint32                      `json:"pressure_threshold_percent,omitempty"`
-	PressureMaxPercent        uint32                      `json:"pressure_max_percent,omitempty"`
-	PressureEndpoint          string                      `json:"pressure_endpoint,omitempty"`
-	PressureSeverity          string                      `json:"pressure_severity,omitempty"`
-	PressureHotspots          []PolicyMapPressureHotspot  `json:"pressure_hotspots,omitempty"`
-	SLOGated                  bool                        `json:"slo_gated,omitempty"`
-	SLODropThresholdPercent   uint32                      `json:"slo_drop_threshold_percent,omitempty"`
-	SLOMinPackets             uint64                      `json:"slo_min_packets,omitempty"`
-	SLOWindowCount            int                         `json:"slo_window_count,omitempty"`
-	SLOWindowIntervalMS       uint32                      `json:"slo_window_interval_ms,omitempty"`
-	SLOPackets                uint64                      `json:"slo_packets,omitempty"`
-	SLODropPercent            uint32                      `json:"slo_drop_percent,omitempty"`
-	SLOFailed                 bool                        `json:"slo_failed,omitempty"`
-	SLOError                  string                      `json:"slo_error,omitempty"`
-	SLOWindows                []PolicyEndpointSLOWindow   `json:"slo_windows,omitempty"`
-	ProbeFailed               bool                        `json:"probe_failed,omitempty"`
-	ProbeError                string                      `json:"probe_error,omitempty"`
-	Probes                    []PolicyEndpointProbeResult `json:"probes,omitempty"`
-	ApprovalRequired          bool                        `json:"approval_required,omitempty"`
-	Approved                  bool                        `json:"approved,omitempty"`
-	ApprovalRef               string                      `json:"approval_ref,omitempty"`
-	ApprovalSignatureVerified bool                        `json:"approval_signature_verified,omitempty"`
-	ApprovalExpiresAt         string                      `json:"approval_expires_at,omitempty"`
-	ApprovalExpired           bool                        `json:"approval_expired,omitempty"`
-	ApprovalCallbackURL       string                      `json:"approval_callback_url,omitempty"`
-	ApprovalCallbackApproved  bool                        `json:"approval_callback_approved,omitempty"`
-	ApprovalCallbackError     string                      `json:"approval_callback_error,omitempty"`
-	AckRequired               bool                        `json:"ack_required,omitempty"`
-	Acknowledged              bool                        `json:"acknowledged,omitempty"`
-	AckRef                    string                      `json:"ack_ref,omitempty"`
-	AckExpiresAt              string                      `json:"ack_expires_at,omitempty"`
-	AckExpired                bool                        `json:"ack_expired,omitempty"`
-	AckPending                bool                        `json:"ack_pending,omitempty"`
-	RiskAckRequired           bool                        `json:"risk_ack_required,omitempty"`
-	RiskAcknowledged          bool                        `json:"risk_acknowledged,omitempty"`
-	RiskAckRef                string                      `json:"risk_ack_ref,omitempty"`
-	RiskAckPending            bool                        `json:"risk_ack_pending,omitempty"`
-	FinalizeRequired          bool                        `json:"finalize_required,omitempty"`
-	Finalized                 bool                        `json:"finalized,omitempty"`
-	FinalizeRef               string                      `json:"finalize_ref,omitempty"`
-	FinalizeExpiresAt         string                      `json:"finalize_expires_at,omitempty"`
-	FinalizeExpired           bool                        `json:"finalize_expired,omitempty"`
-	FinalizePending           bool                        `json:"finalize_pending,omitempty"`
-	ChangePollURL             string                      `json:"change_poll_url,omitempty"`
-	ChangePollAllowed         bool                        `json:"change_poll_allowed,omitempty"`
-	ChangePollStatus          string                      `json:"change_poll_status,omitempty"`
-	ChangePollError           string                      `json:"change_poll_error,omitempty"`
-	ChangeStatusURL           string                      `json:"change_status_url,omitempty"`
-	ChangeStatusSynced        bool                        `json:"change_status_synced,omitempty"`
-	ChangeStatusError         string                      `json:"change_status_error,omitempty"`
-	ExternalChangeStatus      string                      `json:"external_change_status,omitempty"`
-	ExternalChangeURL         string                      `json:"external_change_url,omitempty"`
-	ApprovalPending           bool                        `json:"approval_pending,omitempty"`
-	Paused                    bool                        `json:"paused,omitempty"`
-	PauseAfterBatches         int                         `json:"pause_after_batches,omitempty"`
-	PausedAfterBatch          int                         `json:"paused_after_batch,omitempty"`
-	PromotionPercent          uint32                      `json:"promotion_percent,omitempty"`
-	PromotionLimit            int                         `json:"promotion_limit,omitempty"`
-	ResumedApplied            int                         `json:"resumed_applied,omitempty"`
-	Planned                   int                         `json:"planned"`
-	Applied                   int                         `json:"applied"`
-	Skipped                   int                         `json:"skipped"`
-	Failed                    int                         `json:"failed"`
-	RolledBack                int                         `json:"rolled_back,omitempty"`
-	RollbackFailed            int                         `json:"rollback_failed,omitempty"`
-	Risk                      PolicyEndpointPlanRisk      `json:"risk,omitempty"`
-	Items                     []PolicyEndpointRolloutItem `json:"items"`
+	Revision                    string                      `json:"revision,omitempty"`
+	DryRun                      bool                        `json:"dry_run"`
+	Cancelled                   bool                        `json:"cancelled,omitempty"`
+	BatchSize                   int                         `json:"batch_size"`
+	RequestedBatchSize          int                         `json:"requested_batch_size,omitempty"`
+	PressureAware               bool                        `json:"pressure_aware,omitempty"`
+	PressureAdjusted            bool                        `json:"pressure_adjusted,omitempty"`
+	PressureThresholdPercent    uint32                      `json:"pressure_threshold_percent,omitempty"`
+	PressureMaxPercent          uint32                      `json:"pressure_max_percent,omitempty"`
+	PressureEndpoint            string                      `json:"pressure_endpoint,omitempty"`
+	PressureSeverity            string                      `json:"pressure_severity,omitempty"`
+	PressureRecommendedCapacity uint32                      `json:"pressure_recommended_capacity,omitempty"`
+	PressureRecommendedEndpoint string                      `json:"pressure_recommended_endpoint,omitempty"`
+	PressureHotspots            []PolicyMapPressureHotspot  `json:"pressure_hotspots,omitempty"`
+	SLOGated                    bool                        `json:"slo_gated,omitempty"`
+	SLODropThresholdPercent     uint32                      `json:"slo_drop_threshold_percent,omitempty"`
+	SLOMinPackets               uint64                      `json:"slo_min_packets,omitempty"`
+	SLOWindowCount              int                         `json:"slo_window_count,omitempty"`
+	SLOWindowIntervalMS         uint32                      `json:"slo_window_interval_ms,omitempty"`
+	SLOPackets                  uint64                      `json:"slo_packets,omitempty"`
+	SLODropPercent              uint32                      `json:"slo_drop_percent,omitempty"`
+	SLOFailed                   bool                        `json:"slo_failed,omitempty"`
+	SLOError                    string                      `json:"slo_error,omitempty"`
+	SLOWindows                  []PolicyEndpointSLOWindow   `json:"slo_windows,omitempty"`
+	ProbeFailed                 bool                        `json:"probe_failed,omitempty"`
+	ProbeError                  string                      `json:"probe_error,omitempty"`
+	Probes                      []PolicyEndpointProbeResult `json:"probes,omitempty"`
+	ApprovalRequired            bool                        `json:"approval_required,omitempty"`
+	Approved                    bool                        `json:"approved,omitempty"`
+	ApprovalRef                 string                      `json:"approval_ref,omitempty"`
+	ApprovalSignatureVerified   bool                        `json:"approval_signature_verified,omitempty"`
+	ApprovalExpiresAt           string                      `json:"approval_expires_at,omitempty"`
+	ApprovalExpired             bool                        `json:"approval_expired,omitempty"`
+	ApprovalCallbackURL         string                      `json:"approval_callback_url,omitempty"`
+	ApprovalCallbackApproved    bool                        `json:"approval_callback_approved,omitempty"`
+	ApprovalCallbackError       string                      `json:"approval_callback_error,omitempty"`
+	AckRequired                 bool                        `json:"ack_required,omitempty"`
+	Acknowledged                bool                        `json:"acknowledged,omitempty"`
+	AckRef                      string                      `json:"ack_ref,omitempty"`
+	AckExpiresAt                string                      `json:"ack_expires_at,omitempty"`
+	AckExpired                  bool                        `json:"ack_expired,omitempty"`
+	AckPending                  bool                        `json:"ack_pending,omitempty"`
+	RiskAckRequired             bool                        `json:"risk_ack_required,omitempty"`
+	RiskAcknowledged            bool                        `json:"risk_acknowledged,omitempty"`
+	RiskAckRef                  string                      `json:"risk_ack_ref,omitempty"`
+	RiskAckPending              bool                        `json:"risk_ack_pending,omitempty"`
+	FinalizeRequired            bool                        `json:"finalize_required,omitempty"`
+	Finalized                   bool                        `json:"finalized,omitempty"`
+	FinalizeRef                 string                      `json:"finalize_ref,omitempty"`
+	FinalizeExpiresAt           string                      `json:"finalize_expires_at,omitempty"`
+	FinalizeExpired             bool                        `json:"finalize_expired,omitempty"`
+	FinalizePending             bool                        `json:"finalize_pending,omitempty"`
+	ChangePollURL               string                      `json:"change_poll_url,omitempty"`
+	ChangePollAllowed           bool                        `json:"change_poll_allowed,omitempty"`
+	ChangePollStatus            string                      `json:"change_poll_status,omitempty"`
+	ChangePollError             string                      `json:"change_poll_error,omitempty"`
+	ChangeStatusURL             string                      `json:"change_status_url,omitempty"`
+	ChangeStatusSynced          bool                        `json:"change_status_synced,omitempty"`
+	ChangeStatusError           string                      `json:"change_status_error,omitempty"`
+	ExternalChangeStatus        string                      `json:"external_change_status,omitempty"`
+	ExternalChangeURL           string                      `json:"external_change_url,omitempty"`
+	ApprovalPending             bool                        `json:"approval_pending,omitempty"`
+	Paused                      bool                        `json:"paused,omitempty"`
+	PauseAfterBatches           int                         `json:"pause_after_batches,omitempty"`
+	PausedAfterBatch            int                         `json:"paused_after_batch,omitempty"`
+	PromotionPercent            uint32                      `json:"promotion_percent,omitempty"`
+	PromotionLimit              int                         `json:"promotion_limit,omitempty"`
+	ResumedApplied              int                         `json:"resumed_applied,omitempty"`
+	Planned                     int                         `json:"planned"`
+	Applied                     int                         `json:"applied"`
+	Skipped                     int                         `json:"skipped"`
+	Failed                      int                         `json:"failed"`
+	RolledBack                  int                         `json:"rolled_back,omitempty"`
+	RollbackFailed              int                         `json:"rollback_failed,omitempty"`
+	Risk                        PolicyEndpointPlanRisk      `json:"risk,omitempty"`
+	Items                       []PolicyEndpointRolloutItem `json:"items"`
 }
 
 type PolicyEndpointSLOWindow struct {
@@ -486,46 +488,48 @@ func RolloutPolicyEndpoints(ctx context.Context, state control.DesiredState, opt
 		return PolicyEndpointRollout{}, err
 	}
 	rollout := PolicyEndpointRollout{
-		Revision:                 rolloutOptions.Revision,
-		DryRun:                   rolloutOptions.DryRun,
-		Cancelled:                rolloutOptions.Cancelled,
-		BatchSize:                batchSize,
-		RequestedBatchSize:       requestedBatchSize,
-		PressureAware:            rolloutOptions.PressureAware,
-		PressureAdjusted:         batchSize != requestedBatchSize,
-		PressureThresholdPercent: pressure.threshold,
-		PressureMaxPercent:       pressure.maxPercent,
-		PressureEndpoint:         pressure.endpointID,
-		PressureSeverity:         pressure.severity,
-		PressureHotspots:         append([]PolicyMapPressureHotspot(nil), pressure.hotspots...),
-		SLOGated:                 rolloutOptions.SLOGated,
-		SLODropThresholdPercent:  rolloutOptions.SLODropThresholdPercent,
-		SLOMinPackets:            rolloutOptions.SLOMinPackets,
-		SLOWindowCount:           normalizedSLOWindowCount(rolloutOptions.SLOWindowCount),
-		SLOWindowIntervalMS:      uint32(rolloutOptions.SLOWindowInterval / time.Millisecond),
-		ApprovalRequired:         rolloutOptions.ApprovalRequired,
-		Approved:                 rolloutOptions.Approved,
-		ApprovalRef:              rolloutOptions.ApprovalRef,
-		ApprovalExpiresAt:        rolloutExpiryString(rolloutOptions.ApprovalExpiresAt),
-		ApprovalCallbackURL:      rolloutOptions.ApprovalCallbackURL,
-		AckRequired:              rolloutOptions.AckRequired,
-		Acknowledged:             rolloutOptions.Acknowledged,
-		AckRef:                   rolloutOptions.AckRef,
-		AckExpiresAt:             rolloutExpiryString(rolloutOptions.AckExpiresAt),
-		RiskAckRequired:          rolloutOptions.RiskAckRequired,
-		RiskAcknowledged:         rolloutOptions.RiskAcknowledged,
-		RiskAckRef:               rolloutOptions.RiskAckRef,
-		FinalizeRequired:         rolloutOptions.FinalizeRequired,
-		Finalized:                rolloutOptions.Finalized,
-		FinalizeRef:              rolloutOptions.FinalizeRef,
-		FinalizeExpiresAt:        rolloutExpiryString(rolloutOptions.FinalizeExpiresAt),
-		ChangePollURL:            rolloutOptions.ChangePollURL,
-		ChangeStatusURL:          rolloutOptions.ChangeStatusURL,
-		Paused:                   rolloutOptions.Paused,
-		PauseAfterBatches:        rolloutOptions.PauseAfterBatches,
-		PromotionPercent:         rolloutOptions.PromotionPercent,
-		PromotionLimit:           rolloutPromotionLimit(len(endpointIDs), rolloutOptions.PromotionPercent),
-		Items:                    make([]PolicyEndpointRolloutItem, 0, len(endpointIDs)),
+		Revision:                    rolloutOptions.Revision,
+		DryRun:                      rolloutOptions.DryRun,
+		Cancelled:                   rolloutOptions.Cancelled,
+		BatchSize:                   batchSize,
+		RequestedBatchSize:          requestedBatchSize,
+		PressureAware:               rolloutOptions.PressureAware,
+		PressureAdjusted:            batchSize != requestedBatchSize,
+		PressureThresholdPercent:    pressure.threshold,
+		PressureMaxPercent:          pressure.maxPercent,
+		PressureEndpoint:            pressure.endpointID,
+		PressureSeverity:            pressure.severity,
+		PressureRecommendedCapacity: pressure.recommendedCapacity,
+		PressureRecommendedEndpoint: pressure.recommendedEndpoint,
+		PressureHotspots:            append([]PolicyMapPressureHotspot(nil), pressure.hotspots...),
+		SLOGated:                    rolloutOptions.SLOGated,
+		SLODropThresholdPercent:     rolloutOptions.SLODropThresholdPercent,
+		SLOMinPackets:               rolloutOptions.SLOMinPackets,
+		SLOWindowCount:              normalizedSLOWindowCount(rolloutOptions.SLOWindowCount),
+		SLOWindowIntervalMS:         uint32(rolloutOptions.SLOWindowInterval / time.Millisecond),
+		ApprovalRequired:            rolloutOptions.ApprovalRequired,
+		Approved:                    rolloutOptions.Approved,
+		ApprovalRef:                 rolloutOptions.ApprovalRef,
+		ApprovalExpiresAt:           rolloutExpiryString(rolloutOptions.ApprovalExpiresAt),
+		ApprovalCallbackURL:         rolloutOptions.ApprovalCallbackURL,
+		AckRequired:                 rolloutOptions.AckRequired,
+		Acknowledged:                rolloutOptions.Acknowledged,
+		AckRef:                      rolloutOptions.AckRef,
+		AckExpiresAt:                rolloutExpiryString(rolloutOptions.AckExpiresAt),
+		RiskAckRequired:             rolloutOptions.RiskAckRequired,
+		RiskAcknowledged:            rolloutOptions.RiskAcknowledged,
+		RiskAckRef:                  rolloutOptions.RiskAckRef,
+		FinalizeRequired:            rolloutOptions.FinalizeRequired,
+		Finalized:                   rolloutOptions.Finalized,
+		FinalizeRef:                 rolloutOptions.FinalizeRef,
+		FinalizeExpiresAt:           rolloutExpiryString(rolloutOptions.FinalizeExpiresAt),
+		ChangePollURL:               rolloutOptions.ChangePollURL,
+		ChangeStatusURL:             rolloutOptions.ChangeStatusURL,
+		Paused:                      rolloutOptions.Paused,
+		PauseAfterBatches:           rolloutOptions.PauseAfterBatches,
+		PromotionPercent:            rolloutOptions.PromotionPercent,
+		PromotionLimit:              rolloutPromotionLimit(len(endpointIDs), rolloutOptions.PromotionPercent),
+		Items:                       make([]PolicyEndpointRolloutItem, 0, len(endpointIDs)),
 	}
 	type preparedEndpoint struct {
 		program policy.Program
@@ -1770,11 +1774,13 @@ func ApplyPolicyRolloutResults(result *ReconcileResult, rollouts []NamedPolicyEn
 }
 
 type rolloutPressureDecision struct {
-	threshold  uint32
-	maxPercent uint32
-	endpointID string
-	severity   string
-	hotspots   []PolicyMapPressureHotspot
+	threshold           uint32
+	maxPercent          uint32
+	endpointID          string
+	severity            string
+	recommendedCapacity uint32
+	recommendedEndpoint string
+	hotspots            []PolicyMapPressureHotspot
 }
 
 func pressureAwareRolloutBatchSize(ctx context.Context, store PolicyStore, requestedBatchSize int, options PolicyEndpointRolloutOptions) (int, rolloutPressureDecision, error) {
@@ -1803,6 +1809,8 @@ func pressureAwareRolloutBatchSize(ctx context.Context, store PolicyStore, reque
 	decision.maxPercent = summary.MaxPressurePercent
 	decision.endpointID = summary.MaxPressureEndpoint
 	decision.severity = summary.MaxPressureSeverity
+	decision.recommendedCapacity = summary.RecommendedCapacity
+	decision.recommendedEndpoint = summary.RecommendedCapacityEndpoint
 	decision.hotspots = append(decision.hotspots[:0], summary.PressureHotspots...)
 	if summary.MaxPressurePercent < threshold {
 		return requestedBatchSize, decision, nil
