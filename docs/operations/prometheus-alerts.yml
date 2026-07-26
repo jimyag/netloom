@@ -146,6 +146,72 @@ groups:
           description: "The latest endpoint policy update failed while applying eBPF policy state. Inspect policy events, bpffs, pinned maps, and TCX state."
           runbook_url: docs/operations/runbooks.md
 
+      - alert: NetloomPolicyRolloutFailed
+        expr: netloom_agent_policy_rollout_failed_endpoints > 0
+        for: 1m
+        labels:
+          severity: critical
+          component: rollout
+        annotations:
+          summary: Policy rollout has failed endpoints
+          description: "The latest policy rollout failed for one or more endpoints. Inspect rollout history, policy events, and failed endpoint phases before retrying."
+          runbook_url: docs/operations/runbooks.md
+
+      - alert: NetloomPolicyRolloutRollbackFailed
+        expr: netloom_agent_policy_rollout_rollback_failed_endpoints > 0
+        for: 1m
+        labels:
+          severity: critical
+          component: rollout
+        annotations:
+          summary: Policy rollout rollback failed
+          description: "A policy rollout rollback failed for at least one endpoint. Inspect live policy entries and restore the desired endpoint policy before continuing rollout."
+          runbook_url: docs/operations/runbooks.md
+
+      - alert: NetloomPolicyRolloutPaused
+        expr: netloom_agent_policy_rollout_paused > 0
+        for: 15m
+        labels:
+          severity: warning
+          component: rollout
+        annotations:
+          summary: Policy rollout is paused
+          description: "A rollout is paused due to operator control, approval, acknowledgement, risk gate, finalize gate, batch pause, or promotion limit."
+          runbook_url: docs/operations/runbooks.md
+
+      - alert: NetloomPolicyRolloutStateLoadFailing
+        expr: netloom_agent_policy_rollout_state_load_error == 1
+        for: 2m
+        labels:
+          severity: critical
+          component: rollout
+        annotations:
+          summary: Durable policy rollout state cannot be loaded
+          description: "The agent could not load durable rollout state from OVSDB. Reconcile may lose paused or failed rollout context until the store is readable."
+          runbook_url: docs/operations/runbooks.md
+
+      - alert: NetloomPolicyRolloutStateFailedEndpoints
+        expr: netloom_agent_policy_rollout_state_failed_endpoints > 0
+        for: 5m
+        labels:
+          severity: critical
+          component: rollout
+        annotations:
+          summary: Durable policy rollout state contains failed endpoints
+          description: "Persisted rollout state contains failed endpoints. Review rollout state and history before resuming or clearing the rollout."
+          runbook_url: docs/operations/runbooks.md
+
+      - alert: NetloomPolicyRolloutStatePaused
+        expr: netloom_agent_policy_rollout_state_paused_rollouts > 0
+        for: 15m
+        labels:
+          severity: warning
+          component: rollout
+        annotations:
+          summary: Durable policy rollout state has paused rollouts
+          description: "One or more persisted desired-state rollouts are paused. Confirm whether the pause is expected before making more policy changes."
+          runbook_url: docs/operations/runbooks.md
+
       - alert: NetloomProviderNetworkDegraded
         expr: netloom_agent_provider_network_ready == 0
         for: 2m
