@@ -3571,11 +3571,14 @@ func TestLibOVSDBTopologyWriterEnsuresLoadBalancerAndHealthChecks(t *testing.T) 
 		err := client.WhereCache(func(row *ovnnb.LoadBalancerHealthCheck) bool {
 			return row.ExternalIDs["netloom_vpc"] == "prod" && row.ExternalIDs["netloom_load_balancer"] == "api"
 		}).List(ctx, &checks)
-		return err == nil && len(checks) == 2
+		return err == nil && len(checks) == 1
 	})
 	for _, check := range checks {
 		if check.Options["interval"] != "7" || check.Options["timeout"] != "3" || check.Options["success_count"] != "2" || check.Options["failure_count"] != "4" {
 			t.Fatalf("health check = %+v, want configured options", check)
+		}
+		if check.Vip != "10.96.0.10:443" {
+			t.Fatalf("health check = %+v, want tcp frontend vip only", check)
 		}
 	}
 
@@ -3823,8 +3826,8 @@ func TestLibOVSDBTopologyWriterDeletesDuplicateHealthChecksFromAllParents(t *tes
 	lbByProtocol := loadBalancersByProtocol(lbs)
 	tcpLB := lbByProtocol["tcp"]
 	udpLB := lbByProtocol["udp"]
-	if len(tcpLB.HealthCheck) != 1 || len(udpLB.HealthCheck) != 1 {
-		t.Fatalf("load balancers = %+v, want one health check per protocol", lbByProtocol)
+	if len(tcpLB.HealthCheck) != 1 || len(udpLB.HealthCheck) != 0 {
+		t.Fatalf("load balancers = %+v, want health check only on tcp protocol", lbByProtocol)
 	}
 
 	tcpFrontend := loadBalancerFrontendsByProtocol(lb)[model.ProtocolTCP][0]
@@ -3864,7 +3867,7 @@ func TestLibOVSDBTopologyWriterDeletesDuplicateHealthChecksFromAllParents(t *tes
 		}
 		var rows []ovnnb.LoadBalancer
 		err = client.WhereCache(func(row *ovnnb.LoadBalancer) bool { return row.UUID == udpLB.UUID }).List(ctx, &rows)
-		return err == nil && len(rows) == 1 && len(rows[0].HealthCheck) == 2
+		return err == nil && len(rows) == 1 && len(rows[0].HealthCheck) == 1
 	})
 
 	if err := writer.EnsureLoadBalancer(ctx, lb); err != nil {
@@ -3891,8 +3894,7 @@ func TestLibOVSDBTopologyWriterDeletesDuplicateHealthChecksFromAllParents(t *tes
 		}
 		return len(refsByUUID[tcpLB.UUID]) == 1 &&
 			refsByUUID[tcpLB.UUID][0] == checks[0].UUID &&
-			len(refsByUUID[udpLB.UUID]) == 1 &&
-			refsByUUID[udpLB.UUID][0] != checks[0].UUID
+			len(refsByUUID[udpLB.UUID]) == 0
 	}
 	if !eventually(finalStateOK) {
 		var checks []ovnnb.LoadBalancerHealthCheck
@@ -5895,37 +5897,51 @@ func TestLibOVSDBTopologyWriterDeletesStaleProtocolReferencedHealthChecks(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !ok || len(udpLB.HealthCheck) != 1 {
-		t.Fatalf("udp load balancer row = %+v, want one health check", udpLB)
+	if !ok || len(udpLB.HealthCheck) != 0 {
+		t.Fatalf("udp load balancer row = %+v, want no health check", udpLB)
 	}
-	udpHCUUID := udpLB.HealthCheck[0]
-	var checks []ovnnb.LoadBalancerHealthCheck
-	requireEventually(t, func() bool {
-		checks = nil
-		err := client.WhereCache(func(row *ovnnb.LoadBalancerHealthCheck) bool { return row.UUID == udpHCUUID }).List(ctx, &checks)
-		return err == nil && len(checks) == 1
-	})
-	checks[0].ExternalIDs = map[string]string{
+
+	udpFrontend := loadBalancerFrontendsByProtocol(lb)[model.ProtocolUDP][0]
+	staleUDPCheck := desiredLoadBalancerHealthCheck(lb, udpFrontend)
+	staleUDPCheck.UUID = ovsdbNamedUUID("stale_udp_lbhc")
+	staleUDPCheck.ExternalIDs = map[string]string{
 		"netloom_owner":             "netloom",
 		"netloom_vpc":               "wrong",
 		"netloom_load_balancer":     "wrong",
 		"netloom_ovn_load_balancer": "wrong",
 	}
-	updateOps, err := client.Where(&checks[0]).Update(&checks[0], &checks[0].ExternalIDs)
+	createOps, err := client.Create(&staleUDPCheck)
 	if err != nil {
 		t.Fatal(err)
 	}
-	results, err := client.Transact(ctx, updateOps...)
+	udpRef := &ovnnb.LoadBalancer{UUID: udpLB.UUID}
+	attachOps, err := client.Where(udpRef).Mutate(udpRef, ovsmodel.Mutation{
+		Field:   &udpRef.HealthCheck,
+		Mutator: ovsdb.MutateOperationInsert,
+		Value:   []string{staleUDPCheck.UUID},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if opErrors, err := ovsdb.CheckOperationResults(results, updateOps); err != nil {
+	ops := append(createOps, attachOps...)
+	results, err := client.Transact(ctx, ops...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opErrors, err := ovsdb.CheckOperationResults(results, ops); err != nil {
 		t.Fatalf("seed stale protocol health check drift operation errors=%+v: %v", opErrors, err)
 	}
+	staleUUID := ""
 	requireEventually(t, func() bool {
-		checks = nil
-		err := client.WhereCache(func(row *ovnnb.LoadBalancerHealthCheck) bool { return row.UUID == udpHCUUID }).List(ctx, &checks)
-		return err == nil && len(checks) == 1 && checks[0].ExternalIDs["netloom_vpc"] == "wrong"
+		var checks []ovnnb.LoadBalancerHealthCheck
+		err := client.WhereCache(func(row *ovnnb.LoadBalancerHealthCheck) bool {
+			return row.Vip == "10.96.0.10:53" && row.ExternalIDs["netloom_vpc"] == "wrong"
+		}).List(ctx, &checks)
+		if err != nil || len(checks) != 1 {
+			return false
+		}
+		staleUUID = checks[0].UUID
+		return true
 	})
 
 	lb.Ports = lb.Ports[:1]
@@ -5939,16 +5955,16 @@ func TestLibOVSDBTopologyWriterDeletesStaleProtocolReferencedHealthChecks(t *tes
 		}).List(ctx, &lbs); err != nil || len(lbs) != 1 || lbs[0].ExternalIDs["netloom_protocol"] != "tcp" {
 			return false
 		}
-		checks = nil
+		var checks []ovnnb.LoadBalancerHealthCheck
 		if err := client.WhereCache(func(row *ovnnb.LoadBalancerHealthCheck) bool {
-			return row.UUID == udpHCUUID || (row.ExternalIDs["netloom_vpc"] == "prod" && row.ExternalIDs["netloom_load_balancer"] == "api")
+			return row.UUID == staleUUID || (row.ExternalIDs["netloom_vpc"] == "prod" && row.ExternalIDs["netloom_load_balancer"] == "api")
 		}).List(ctx, &checks); err != nil {
 			return false
 		}
 		if len(checks) != 1 {
 			return false
 		}
-		return checks[0].UUID != udpHCUUID && checks[0].Vip == "10.96.0.10:443"
+		return checks[0].UUID != staleUUID && checks[0].Vip == "10.96.0.10:443"
 	})
 }
 

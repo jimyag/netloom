@@ -1655,6 +1655,9 @@ func (w *LibOVSDBTopologyWriter) syncLoadBalancerHealthChecks(ctx context.Contex
 	lbRow := &ovnnb.LoadBalancer{UUID: lbUUID}
 	if lb.HealthCheck.Enabled {
 		for _, frontend := range frontends {
+			if frontend.Protocol != model.ProtocolTCP {
+				continue
+			}
 			desired := desiredLoadBalancerHealthCheck(lb, frontend)
 			desiredVIPs[desired.Vip] = struct{}{}
 			rows := existingByVIP[desired.Vip]

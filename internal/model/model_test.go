@@ -2679,6 +2679,21 @@ func TestLoadBalancerValidateServiceVIP(t *testing.T) {
 			},
 			wantErr: "success count must be at most",
 		},
+		{
+			name: "health check requires tcp frontend",
+			lb: LoadBalancer{
+				Name: "dns",
+				VPC:  "prod",
+				VIP:  netip.MustParseAddr("10.96.0.53"),
+				Ports: []LoadBalancerPort{{
+					Port:     53,
+					Protocol: ProtocolUDP,
+					Backends: backends,
+				}},
+				HealthCheck: LoadBalancerHealthCheck{Enabled: true},
+			},
+			wantErr: "health check requires at least one tcp frontend",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

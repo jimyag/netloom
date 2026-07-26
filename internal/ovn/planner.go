@@ -767,21 +767,24 @@ func (p *Planner) loadBalancerHealthCheckOperations(lb model.LoadBalancer, front
 		return nil
 	}
 	p.loadBalancerHealthChecks[key] = signature
-	ops := make([]Operation, 0, len(names)+1+len(lb.Frontends())*2)
+	healthCheckFrontends := loadBalancerHealthCheckFrontends(frontendsByProtocol)
+	ops := make([]Operation, 0, len(names)+1+len(healthCheckFrontends)*2)
 	for _, name := range names {
 		ops = append(ops, Operation{Command: "clear", Args: []string{"load_balancer", name, "health_check"}})
 	}
-	keepVIPs := make([]string, 0, len(lb.Frontends()))
-	for _, protocol := range sortedLoadBalancerProtocols(frontendsByProtocol) {
-		name := loadBalancerProtocolName(lb.VPC, lb.Name, protocol)
-		for _, frontend := range frontendsByProtocol[protocol] {
-			vip := loadBalancerFrontendVIP(frontend)
-			keepVIPs = append(keepVIPs, vip)
-			ops = append(ops, ensureLoadBalancerHealthCheckOperation(name, lb.Name, lb.VPC, loadBalancerHealthCheckArgs(lb, frontend)))
-		}
+	keepVIPs := make([]string, 0, len(healthCheckFrontends))
+	name := loadBalancerProtocolName(lb.VPC, lb.Name, model.ProtocolTCP)
+	for _, frontend := range healthCheckFrontends {
+		vip := loadBalancerFrontendVIP(frontend)
+		keepVIPs = append(keepVIPs, vip)
+		ops = append(ops, ensureLoadBalancerHealthCheckOperation(name, lb.Name, lb.VPC, loadBalancerHealthCheckArgs(lb, frontend)))
 	}
 	ops = append(ops, gcStaleLoadBalancerHealthChecksOperation(lb.Name, lb.VPC, keepVIPs))
 	return ops
+}
+
+func loadBalancerHealthCheckFrontends(frontendsByProtocol map[model.Protocol][]model.LoadBalancerFrontend) []model.LoadBalancerFrontend {
+	return append([]model.LoadBalancerFrontend(nil), frontendsByProtocol[model.ProtocolTCP]...)
 }
 
 func loadBalancerFrontendsByProtocol(lb model.LoadBalancer) map[model.Protocol][]model.LoadBalancerFrontend {
@@ -850,7 +853,7 @@ func loadBalancerHealthCheckSignature(lb model.LoadBalancer) string {
 		return "disabled"
 	}
 	var parts []string
-	for _, frontend := range lb.Frontends() {
+	for _, frontend := range loadBalancerHealthCheckFrontends(loadBalancerFrontendsByProtocol(lb)) {
 		parts = append(parts, strings.Join(loadBalancerHealthCheckArgs(lb, frontend), "|"))
 	}
 	sort.Strings(parts)

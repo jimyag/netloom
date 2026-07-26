@@ -33,8 +33,8 @@
 | DNAT | 已实现 | OVN `NAT` | Docker controller e2e |
 | Floating IP | 已实现 | OVN `dnat_and_snat` | `TestDockerControllerProgramsDistributedGatewayAndFloatingIPs` |
 | Port-mapped NAT | 已实现 | OVN NAT port columns with TCP/UDP/SCTP port mapping | `TestDockerControllerClearsStaleNATPortMetadata` |
-| Load Balancer | 已实现 | OVN `Load_Balancer` with protocol-specific TCP/UDP/SCTP VIPs, parent refs, managed options, health-check refs, and stale `ip_port_mappings` repair | `TestDockerControllerProgramsLoadBalancerSessionAffinity`、`TestLibOVSDBTopologyWriterCleanupRepairsLoadBalancerColumnDriftInSteadyState` |
-| LB Health Check | 已实现 | OVN `Load_Balancer_Health_Check` | `TestDockerControllerActiveLBHealthProbeConvergesOVNBackends` |
+| Load Balancer | 已实现 | OVN `Load_Balancer` with protocol-specific TCP/UDP/SCTP VIPs, parent refs, managed options, TCP health-check refs, and stale `ip_port_mappings` repair | `TestDockerControllerProgramsLoadBalancerSessionAffinity`、`TestLibOVSDBTopologyWriterCleanupRepairsLoadBalancerColumnDriftInSteadyState` |
+| LB Health Check | 已实现 | OVN `Load_Balancer_Health_Check` for TCP frontends; UDP/SCTP frontend rows are load-balanced without active health-check rows | `TestDockerControllerActiveLBHealthProbeConvergesOVNBackends` |
 | Session Affinity | 已实现 | OVN LB options and topology resolver | `TestDesiredStateLoadBalancerSelectionFieldsDriveStableBackendChoice` |
 
 ## Provider Network 和本机数据面

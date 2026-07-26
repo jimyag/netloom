@@ -814,12 +814,18 @@ func TestPlannerSplitsMultiProtocolLoadBalancerOperations(t *testing.T) {
 		"--may-exist ls-lb-add nl_ls_prod_apps nl_lb_prod_web_sctp",
 		"--may-exist ls-lb-add nl_ls_prod_apps nl_lb_prod_web_tcp",
 		"--may-exist ls-lb-add nl_ls_prod_apps nl_lb_prod_web_udp",
-		"ensure-load-balancer-health-check nl_lb_prod_web_sctp web prod vip=\"10.96.0.10:5000\"",
 		"ensure-load-balancer-health-check nl_lb_prod_web_tcp web prod vip=\"10.96.0.10:80\"",
-		"ensure-load-balancer-health-check nl_lb_prod_web_udp web prod vip=\"10.96.0.10:53\"",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("OVN operations missing %q:\n%s", expected, joined)
+		}
+	}
+	for _, unexpected := range []string{
+		"ensure-load-balancer-health-check nl_lb_prod_web_sctp",
+		"ensure-load-balancer-health-check nl_lb_prod_web_udp",
+	} {
+		if strings.Contains(joined, unexpected) {
+			t.Fatalf("non-tcp health check operation present %q:\n%s", unexpected, joined)
 		}
 	}
 	if strings.Contains(joined, "lb-add nl_lb_web ") {

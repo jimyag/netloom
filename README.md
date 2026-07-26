@@ -15,10 +15,10 @@ The main SDN path is implemented.
 Implemented control-plane features:
 
 - VPC, subnet, endpoint, IPAM, DHCP, DNS, gateway, route table, policy route,
-  NAT, load balancer, and health check reconciliation.
+  NAT, load balancer, and TCP frontend health check reconciliation.
 - OVN Northbound writes through libovsdb for logical routers, logical switches,
   logical switch ports, DHCP options, DNS records, static routes, BFD sessions,
-  logical router policies, NAT, load balancers, and health checks.
+  logical router policies, NAT, load balancers, and TCP frontend health checks.
 - OVN live audit and steady-state repair for managed topology drift, including
   stale subnet router-port DHCP relay and IPv6 prefix refs, endpoint port
   semantics, policy-route semantic columns and BFD refs, NAT stale columns,

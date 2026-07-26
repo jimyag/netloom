@@ -700,7 +700,7 @@ func expectedManagedAuditRows(desired topology.State) map[string]map[string]stri
 				"netloom_protocol", string(protocol),
 				"netloom_session_affinity", fmt.Sprintf("%t", lb.SessionAffinity),
 			)
-			if lb.HealthCheck.Enabled {
+			if lb.HealthCheck.Enabled && protocol == model.ProtocolTCP {
 				for _, frontend := range frontendsByProtocol[protocol] {
 					hc := desiredLoadBalancerHealthCheck(lb, frontend)
 					addAuditExpectedRowWithFields(out, "Load_Balancer_Health_Check", map[string]string{
@@ -972,7 +972,7 @@ func expectedManagedAuditColumns(desired topology.State) map[string]map[string]s
 				"vips":             mapField(row.Vips),
 				"selection_fields": selectionFieldsField(row.SelectionFields),
 			}
-			if lb.HealthCheck.Enabled {
+			if lb.HealthCheck.Enabled && protocol == model.ProtocolTCP {
 				fields["health_check_vips"] = loadBalancerHealthCheckVIPsField(frontendsByProtocol[protocol])
 			}
 			if row.Protocol != nil {
@@ -986,7 +986,7 @@ func expectedManagedAuditColumns(desired topology.State) map[string]map[string]s
 				"netloom_load_balancer", lb.Name,
 				"netloom_protocol", string(protocol),
 			)
-			if lb.HealthCheck.Enabled {
+			if lb.HealthCheck.Enabled && protocol == model.ProtocolTCP {
 				for _, frontend := range frontendsByProtocol[protocol] {
 					hc := desiredLoadBalancerHealthCheck(lb, frontend)
 					addAuditExpectedColumns(out, "Load_Balancer_Health_Check", map[string]string{

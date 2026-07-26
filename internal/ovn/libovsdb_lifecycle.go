@@ -941,6 +941,9 @@ func (w *LibOVSDBTopologyWriter) repairSteadyStateLoadBalancerHealthCheckRefs(ct
 	lbRef := &ovnnb.LoadBalancer{UUID: lbRow.UUID}
 	if lb.HealthCheck.Enabled {
 		for _, frontend := range frontends {
+			if frontend.Protocol != model.ProtocolTCP {
+				continue
+			}
 			desired := desiredLoadBalancerHealthCheck(lb, frontend)
 			rows := existingByVIP[desired.Vip]
 			if len(rows) == 0 {
@@ -1000,6 +1003,9 @@ func (w *LibOVSDBTopologyWriter) repairSteadyStateLoadBalancerHealthCheckRefs(ct
 	desiredVIPs := make(map[string]struct{}, len(frontends))
 	if lb.HealthCheck.Enabled {
 		for _, frontend := range frontends {
+			if frontend.Protocol != model.ProtocolTCP {
+				continue
+			}
 			desiredVIPs[loadBalancerFrontendVIP(frontend)] = struct{}{}
 		}
 	}

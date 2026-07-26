@@ -1323,6 +1323,7 @@ func (l LoadBalancer) Validate() error {
 	if err := l.HealthCheck.Validate(); err != nil {
 		return fmt.Errorf("load balancer health check: %w", err)
 	}
+	hasTCPFrontend := false
 	seenFrontends := make(map[string]struct{}, len(frontends))
 	for i, frontend := range frontends {
 		if frontend.Port == 0 {
@@ -1330,6 +1331,9 @@ func (l LoadBalancer) Validate() error {
 		}
 		if frontend.Protocol != ProtocolTCP && frontend.Protocol != ProtocolUDP && frontend.Protocol != ProtocolSCTP {
 			return fmt.Errorf("unsupported load balancer protocol %q", frontend.Protocol)
+		}
+		if frontend.Protocol == ProtocolTCP {
+			hasTCPFrontend = true
 		}
 		if len(frontend.Backends) == 0 {
 			return fmt.Errorf("load balancer frontend %d backends are required", i)
@@ -1360,6 +1364,9 @@ func (l LoadBalancer) Validate() error {
 		if healthyBackends == 0 {
 			return fmt.Errorf("load balancer frontend %d must have at least one healthy backend", i)
 		}
+	}
+	if l.HealthCheck.Enabled && !hasTCPFrontend {
+		return errors.New("load balancer health check requires at least one tcp frontend")
 	}
 	seenSubnets := make(map[string]struct{}, len(l.Subnets))
 	for i, subnet := range l.Subnets {
