@@ -305,7 +305,7 @@ NETLOOM_AGENT_METRICS_ADDR=:9092 \
 | Provider Network | `agent-status`、Open_vSwitch bridge/port/interface/qos/queue | 本机 provider bridge、VLAN、QoS/Queue 和 controller 连接状态正常。 |
 | Linux datapath | `agent-status`、`ip netns`、`ip rule`、`ip route` | 工作负载 netns/veth、地址、路由和 RPDB rule 被正确创建。 |
 | SecurityGroup / ACL | `policy-status`、`policy-entries`、`policy-explain` | endpoint policy map 已生成，TCX 规则判定与安全组规则一致。 |
-| Rollout / lifecycle | `policy-rollout-state`、`policy-action-history`、`policy-action-history-clear` | rollout、freeze、quarantine、rollback 等动作有明确状态和历史记录，并可按过滤条件清理已审计历史。 |
+| Rollout / lifecycle | `policy-rollout-state`、`policy-rollout-history`、`policy-rollout-history-clear`、`policy-action-history`、`policy-action-history-clear` | rollout、freeze、quarantine、rollback 等动作有明确状态和历史记录，并可按过滤条件清理已审计历史。 |
 | 观测和持久化 | `/metrics`、Open_vSwitch `external_ids` | controller/agent 状态、policy events、rules、entries 和 metrics 可查询。 |
 
 ## Desired State 存入 OVSDB
@@ -730,17 +730,26 @@ endpoint、success、remediated、rule cookie、rule ref、direction 和 action 
 
 ```bash
 curl -s http://127.0.0.1:9092/policy/endpoints/rollout/history
+curl -s 'http://127.0.0.1:9092/policy/endpoints/rollout/history?source=manual&name=web-canary&completed_before=2026-07-19T01:15:00Z'
+curl -X DELETE -s 'http://127.0.0.1:9092/policy/endpoints/rollout/history?source=manual&name=web-canary'
 netloom-agent policy-rollout-history \
   -ovsdb unix:/var/run/openvswitch/db.sock \
   -source manual \
   -limit 20
+netloom-agent policy-rollout-history-clear \
+  -ovsdb unix:/var/run/openvswitch/db.sock \
+  -source manual \
+  -name web-canary
 ovs-vsctl get Open_vSwitch . external_ids:netloom_policy_rollout_history
 ```
 
 如果 agent 配置了 `NETLOOM_OVSDB_ENDPOINT`，manual 和 desired-state rollout
 历史会写入 `Open_vSwitch.external_ids:netloom_policy_rollout_history`。
-`policy-rollout-history` CLI 支持按 `source`、`name` 和 `limit` 查询最近的 rollout，
-用于查看 approval、ack、finalize、SLO/probe、rollback 等 staged policy rollout 结果。
+`policy-rollout-history` CLI 支持按 `source`、`name`、完成时间窗口和 `limit`
+查询最近的 rollout，用于查看 approval、ack、finalize、SLO/probe、rollback 等
+staged policy rollout 结果。`DELETE /policy/endpoints/rollout/history` 和
+`policy-rollout-history-clear` 使用同一组过滤字段清理已审计的历史；为了避免误删，
+全量清理必须显式使用 `all=true` 或 CLI `-all`。
 
 查看 desired-state policy rollout 的恢复状态：
 

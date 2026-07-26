@@ -1763,6 +1763,58 @@ func TestRunPolicyRolloutHistoryWithStoreRejectsInvalidLimit(t *testing.T) {
 	}
 }
 
+func TestRunPolicyRolloutHistoryClearWithStoreReportsJSON(t *testing.T) {
+	firstCompleted := time.Date(2026, 7, 19, 1, 0, 0, 0, time.UTC)
+	secondCompleted := time.Date(2026, 7, 19, 1, 10, 0, 0, time.UTC)
+	thirdCompleted := time.Date(2026, 7, 19, 1, 20, 0, 0, time.UTC)
+	completedCutoff := time.Date(2026, 7, 19, 1, 15, 0, 0, time.UTC)
+	history := []policyRolloutHistoryEntry{
+		{ID: "1", Source: "manual", Name: "canary", Node: "node-a", Store: "ebpf", CompletedAt: firstCompleted, Rollout: agent.PolicyEndpointRollout{Planned: 1, Applied: 1}},
+		{ID: "2", Source: "desired-state", Name: "nightly", Node: "node-a", Store: "ebpf", CompletedAt: secondCompleted, Rollout: agent.PolicyEndpointRollout{Planned: 2, Applied: 1, Failed: 1}},
+		{ID: "3", Source: "manual", Name: "canary", Node: "node-b", Store: "ebpf", CompletedAt: thirdCompleted, Rollout: agent.PolicyEndpointRollout{Planned: 1, Applied: 1}},
+	}
+	raw, err := json.Marshal(history)
+	if err != nil {
+		t.Fatal(err)
+	}
+	syncer := &fakeOpenVSwitchExternalIDStore{values: map[string]string{
+		policyRolloutHistoryKey: string(raw),
+	}}
+	store := ovsdbPolicyRolloutHistoryStore{syncer: syncer}
+	var out bytes.Buffer
+	err = runPolicyRolloutHistoryClearWithStore(t.Context(), policyRolloutHistoryClearOptions{
+		source:          "manual",
+		name:            "canary",
+		completedBefore: completedCutoff.Format(time.RFC3339),
+	}, &out, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got policyRolloutHistoryClearOutput
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("decode policy-rollout-history-clear output: %v\n%s", err, out.String())
+	}
+	if !got.Ready || got.TotalEvents != 3 || got.ClearedEvents != 1 || got.RemainingEvents != 2 || got.FilterSource != "manual" || got.FilterName != "canary" || got.FilterCompletedBefore == nil || !got.FilterCompletedBefore.Equal(completedCutoff) {
+		t.Fatalf("output = %+v, want filtered rollout history clear metadata", got)
+	}
+	if len(got.Cleared) != 1 || got.Cleared[0].ID != "1" {
+		t.Fatalf("cleared = %+v, want rollout 1", got.Cleared)
+	}
+	var remaining []policyRolloutHistoryEntry
+	if err := json.Unmarshal([]byte(syncer.values[policyRolloutHistoryKey]), &remaining); err != nil {
+		t.Fatalf("decode remaining rollout history: %v", err)
+	}
+	if len(remaining) != 2 || remaining[0].ID != "2" || remaining[1].ID != "3" {
+		t.Fatalf("remaining = %+v, want rollouts 2 and 3", remaining)
+	}
+
+	out.Reset()
+	err = runPolicyRolloutHistoryClearWithStore(t.Context(), policyRolloutHistoryClearOptions{}, &out, store)
+	if err == nil || !strings.Contains(err.Error(), "requires -all or at least one filter") {
+		t.Fatalf("err = %v, want required selector", err)
+	}
+}
+
 func TestPolicyEndpointAPIRolloutHistoryFilters(t *testing.T) {
 	firstCompleted := time.Date(2026, 7, 19, 1, 0, 0, 0, time.UTC)
 	secondCompleted := time.Date(2026, 7, 19, 1, 10, 0, 0, time.UTC)
@@ -1837,6 +1889,66 @@ func TestPolicyEndpointAPIRolloutHistoryFilters(t *testing.T) {
 	}
 	if !strings.Contains(recorder.Body.String(), "invalid completed_before") {
 		t.Fatalf("body missing invalid completed_before error: %s", recorder.Body.String())
+	}
+}
+
+func TestPolicyEndpointAPIRolloutHistoryClearsFilteredHistory(t *testing.T) {
+	firstCompleted := time.Date(2026, 7, 19, 1, 0, 0, 0, time.UTC)
+	secondCompleted := time.Date(2026, 7, 19, 1, 10, 0, 0, time.UTC)
+	thirdCompleted := time.Date(2026, 7, 19, 1, 20, 0, 0, time.UTC)
+	completedCutoff := time.Date(2026, 7, 19, 1, 15, 0, 0, time.UTC)
+	history := []policyRolloutHistoryEntry{
+		{ID: "1", Source: "manual", Name: "canary", Node: "node-a", Store: "memory", CompletedAt: firstCompleted, Rollout: agent.PolicyEndpointRollout{Planned: 1, Applied: 1}},
+		{ID: "2", Source: "desired-state", Name: "nightly", Node: "node-a", Store: "memory", CompletedAt: secondCompleted, Rollout: agent.PolicyEndpointRollout{Planned: 2, Applied: 1, Failed: 1}},
+		{ID: "3", Source: "manual", Name: "canary", Node: "node-b", Store: "memory", CompletedAt: thirdCompleted, Rollout: agent.PolicyEndpointRollout{Planned: 1, Applied: 1}},
+	}
+	raw, err := json.Marshal(history)
+	if err != nil {
+		t.Fatal(err)
+	}
+	syncer := &fakeOpenVSwitchExternalIDStore{values: map[string]string{
+		policyRolloutHistoryKey: string(raw),
+	}}
+	metrics := newAgentMetrics(dataplane.NewInMemoryPolicyStore())
+	if err := configurePolicyRolloutHistory(t.Context(), metrics, ovsdbPolicyRolloutHistoryStore{syncer: syncer}); err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodDelete, "/policy/endpoints/rollout/history?source=manual&name=canary&completed_before="+url.QueryEscape(completedCutoff.Format(time.RFC3339)), nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("clear rollout history status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var output policyRolloutHistoryClearOutput
+	if err := json.Unmarshal(recorder.Body.Bytes(), &output); err != nil {
+		t.Fatalf("decode clear rollout history response: %v\n%s", err, recorder.Body.String())
+	}
+	if !output.Ready || output.TotalEvents != 3 || output.ClearedEvents != 1 || output.RemainingEvents != 2 || output.FilterSource != "manual" || output.FilterName != "canary" || output.FilterCompletedBefore == nil || !output.FilterCompletedBefore.Equal(completedCutoff) {
+		t.Fatalf("clear output = %+v, want filtered rollout history metadata", output)
+	}
+	if len(output.Cleared) != 1 || output.Cleared[0].ID != "1" {
+		t.Fatalf("cleared = %+v, want rollout 1", output.Cleared)
+	}
+	if history := metrics.policyRolloutHistory(); len(history) != 2 || history[0].ID != "2" || history[1].ID != "3" {
+		t.Fatalf("memory rollout history = %+v, want rollouts 2 and 3", history)
+	}
+	var persisted []policyRolloutHistoryEntry
+	if err := json.Unmarshal([]byte(syncer.values[policyRolloutHistoryKey]), &persisted); err != nil {
+		t.Fatalf("decode persisted rollout history: %v", err)
+	}
+	if len(persisted) != 2 || persisted[0].ID != "2" || persisted[1].ID != "3" {
+		t.Fatalf("persisted = %+v, want rollouts 2 and 3", persisted)
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodDelete, "/policy/endpoints/rollout/history", nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("clear without selector status = %d, want 400; body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "requires all=true or at least one filter") {
+		t.Fatalf("body missing selector error: %s", recorder.Body.String())
 	}
 }
 
