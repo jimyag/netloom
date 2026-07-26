@@ -1789,6 +1789,107 @@ func TestPolicyEndpointAPIRolloutHistoryFilters(t *testing.T) {
 	}
 }
 
+func TestPolicyEndpointAPIRolloutStateFilters(t *testing.T) {
+	firstUpdated := time.Date(2026, 7, 20, 1, 0, 0, 0, time.UTC)
+	secondUpdated := time.Date(2026, 7, 20, 1, 20, 0, 0, time.UTC)
+	updatedCutoff := time.Date(2026, 7, 20, 1, 10, 0, 0, time.UTC)
+	doc := policyRolloutStateDocument{Rollouts: []policyRolloutStateEntry{
+		{
+			Name:             "canary",
+			Node:             "node-a",
+			Revision:         "rev-a",
+			Store:            "ebpf",
+			UpdatedAt:        firstUpdated,
+			AppliedEndpoints: []string{model.EndpointKey("prod", "vm-a")},
+			Paused:           true,
+		},
+		{
+			Name:             "canary",
+			Node:             "node-b",
+			Revision:         "rev-b",
+			Store:            "ebpf",
+			UpdatedAt:        secondUpdated,
+			AppliedEndpoints: []string{model.EndpointKey("prod", "vm-b")},
+			Failed:           1,
+		},
+	}}
+	store := ovsdbPolicyRolloutStateStore{syncer: &fakeOpenVSwitchExternalIDStore{}}
+	if err := store.Save(t.Context(), doc); err != nil {
+		t.Fatal(err)
+	}
+	metrics := newAgentMetrics(dataplane.NewInMemoryPolicyStore())
+	configurePolicyRolloutStateStore(metrics, store)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/policy/endpoints/rollout/state?name=canary&node=node-b", nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("rollout state status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var output policyRolloutStateOutput
+	if err := json.Unmarshal(recorder.Body.Bytes(), &output); err != nil {
+		t.Fatalf("decode rollout state response: %v\n%s", err, recorder.Body.String())
+	}
+	if !output.Ready || output.TotalRollouts != 2 || output.RolloutCount != 1 || output.FilterName != "canary" || output.FilterNode != "node-b" {
+		t.Fatalf("rollout state output = %+v, want filtered canary node-b metadata", output)
+	}
+	if len(output.Rollouts) != 1 || output.Rollouts[0].Revision != "rev-b" || output.Rollouts[0].Failed != 1 || len(output.Rollouts[0].AppliedEndpoints) != 1 || output.Rollouts[0].AppliedEndpoints[0] != model.EndpointKey("prod", "vm-b") {
+		t.Fatalf("rollout state = %+v, want node-b failed rollout state", output.Rollouts)
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/policy/endpoints/rollout/state?updated_after="+url.QueryEscape(updatedCutoff.Format(time.RFC3339)), nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("updated-after rollout state status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	output = policyRolloutStateOutput{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &output); err != nil {
+		t.Fatalf("decode updated-after rollout state response: %v\n%s", err, recorder.Body.String())
+	}
+	if output.FilterUpdatedAfter == nil || !output.FilterUpdatedAfter.Equal(updatedCutoff) || output.RolloutCount != 1 || len(output.Rollouts) != 1 || output.Rollouts[0].Node != "node-b" {
+		t.Fatalf("updated-after rollout state = %+v, want node-b state after cutoff", output)
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/policy/endpoints/rollout/state?updated_before="+url.QueryEscape(updatedCutoff.Format(time.RFC3339)), nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("updated-before rollout state status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	output = policyRolloutStateOutput{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &output); err != nil {
+		t.Fatalf("decode updated-before rollout state response: %v\n%s", err, recorder.Body.String())
+	}
+	if output.FilterUpdatedBefore == nil || !output.FilterUpdatedBefore.Equal(updatedCutoff) || output.RolloutCount != 1 || len(output.Rollouts) != 1 || output.Rollouts[0].Node != "node-a" {
+		t.Fatalf("updated-before rollout state = %+v, want node-a state before cutoff", output)
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/policy/endpoints/rollout/state?updated_before=bad", nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("invalid updated-before status = %d, want 400; body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "invalid updated_before") {
+		t.Fatalf("body missing invalid updated_before error: %s", recorder.Body.String())
+	}
+}
+
+func TestPolicyEndpointAPIRolloutStateRequiresStore(t *testing.T) {
+	metrics := newAgentMetrics(dataplane.NewInMemoryPolicyStore())
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/policy/endpoints/rollout/state", nil)
+	metrics.handlePolicyEndpoints(recorder, request)
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("rollout state without store status = %d, want 503; body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "not enabled") {
+		t.Fatalf("body missing not enabled error: %s", recorder.Body.String())
+	}
+}
+
 func TestRunPolicyRolloutStateWithStoreReportsFilteredJSON(t *testing.T) {
 	firstUpdated := time.Date(2026, 7, 20, 1, 0, 0, 0, time.UTC)
 	secondUpdated := time.Date(2026, 7, 20, 1, 20, 0, 0, time.UTC)

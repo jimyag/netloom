@@ -3555,6 +3555,12 @@ func runStateFile(ctx context.Context, path string) error {
 	if err := configurePolicyActionHistory(ctx, metrics, actionHistoryStore); err != nil {
 		return err
 	}
+	rolloutStateStore, closeRolloutStateStore, err := policyRolloutStateStoreFromEnv(ctx)
+	if err != nil {
+		return err
+	}
+	defer closeRolloutStateStore()
+	configurePolicyRolloutStateStore(metrics, rolloutStateStore)
 	statusStore, closeStatusStore, err := policyStatusStoreFromEnv(ctx)
 	if err != nil {
 		return err
@@ -4431,6 +4437,7 @@ type agentMetrics struct {
 	totals              agentMetricsTotals
 	ready               bool
 	store               agent.PolicyStore
+	rolloutStateStore   policyRolloutStateStore
 	rolloutHistoryStore policyRolloutHistoryStore
 	rolloutHistory      []policyRolloutHistoryEntry
 	actionHistoryStore  policyActionHistoryStore
@@ -4518,6 +4525,15 @@ func newAgentMetrics(store ...agent.PolicyStore) *agentMetrics {
 		store:           policyStore,
 		frozenEndpoints: make(map[string]time.Time),
 	}
+}
+
+func configurePolicyRolloutStateStore(metrics *agentMetrics, store policyRolloutStateStore) {
+	if metrics == nil || store == nil {
+		return
+	}
+	metrics.mu.Lock()
+	defer metrics.mu.Unlock()
+	metrics.rolloutStateStore = store
 }
 
 func configurePolicyRolloutHistory(ctx context.Context, metrics *agentMetrics, store policyRolloutHistoryStore) error {
@@ -4757,6 +4773,15 @@ func (m *agentMetrics) policyRolloutHistory() []policyRolloutHistoryEntry {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return append([]policyRolloutHistoryEntry(nil), m.rolloutHistory...)
+}
+
+func (m *agentMetrics) policyRolloutStateStore() policyRolloutStateStore {
+	if m == nil {
+		return nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.rolloutStateStore
 }
 
 func (m *agentMetrics) policyActionHistory() []policyActionHistoryEntry {
@@ -6104,6 +6129,10 @@ func startAgentMetricsServer(ctx context.Context, addr string, metrics *agentMet
 
 func (m *agentMetrics) handlePolicyEndpoints(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+	if isPolicyRolloutStateRequest(r) {
+		m.handlePolicyRolloutState(w, r)
+		return
+	}
 	if isPolicyRolloutHistoryRequest(r) {
 		m.handlePolicyRolloutHistory(w, r)
 		return
@@ -6254,6 +6283,13 @@ func (m *agentMetrics) handlePolicyEndpoints(w http.ResponseWriter, r *http.Requ
 	_ = encoder.Encode(output)
 }
 
+func isPolicyRolloutStateRequest(r *http.Request) bool {
+	if r == nil || r.URL == nil {
+		return false
+	}
+	return strings.Trim(r.URL.Path, "/") == "policy/endpoints/rollout/state"
+}
+
 func isPolicyRolloutHistoryRequest(r *http.Request) bool {
 	if r == nil || r.URL == nil {
 		return false
@@ -6274,6 +6310,53 @@ func isPolicyEndpointRevisionRequest(r *http.Request) bool {
 	}
 	path := strings.Trim(r.URL.Path, "/")
 	return strings.HasPrefix(path, "policy/endpoints/") && strings.HasSuffix(path, "/revision")
+}
+
+func (m *agentMetrics) handlePolicyRolloutState(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "method not allowed"})
+		return
+	}
+	store := m.policyRolloutStateStore()
+	if store == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "policy rollout state is not enabled"})
+		return
+	}
+	name := strings.TrimSpace(r.URL.Query().Get("name"))
+	node := strings.TrimSpace(r.URL.Query().Get("node"))
+	updatedAfter, err := parseOptionalTimeFilter(r.URL.Query().Get("updated_after"), "updated_after")
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	updatedBefore, err := parseOptionalTimeFilter(r.URL.Query().Get("updated_before"), "updated_before")
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	doc, err := store.Load(r.Context())
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	rollouts := filterPolicyRolloutState(doc.Rollouts, name, node, updatedAfter, updatedBefore)
+	encoder := json.NewEncoder(w)
+	encoder.SetIndent("", "  ")
+	_ = encoder.Encode(policyRolloutStateOutput{
+		Ready:               true,
+		TotalRollouts:       len(doc.Rollouts),
+		RolloutCount:        len(rollouts),
+		FilterName:          name,
+		FilterNode:          node,
+		FilterUpdatedAfter:  updatedAfter,
+		FilterUpdatedBefore: updatedBefore,
+		Rollouts:            rollouts,
+	})
 }
 
 func (m *agentMetrics) handlePolicyRolloutHistory(w http.ResponseWriter, r *http.Request) {
@@ -8432,6 +8515,18 @@ func policyRolloutHistoryStoreFromEnv(ctx context.Context) (policyRolloutHistory
 		return nil, func() {}, err
 	}
 	return ovsdbPolicyRolloutHistoryStore{syncer: linuxdatapath.NewLibOVSDBProviderSyncer(client)}, closeFn, nil
+}
+
+func policyRolloutStateStoreFromEnv(ctx context.Context) (policyRolloutStateStore, func(), error) {
+	endpoint := strings.TrimSpace(os.Getenv("NETLOOM_OVSDB_ENDPOINT"))
+	if endpoint == "" {
+		return nil, func() {}, nil
+	}
+	client, closeFn, err := newOpenVSwitchClient(ctx, endpoint)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	return ovsdbPolicyRolloutStateStore{syncer: linuxdatapath.NewLibOVSDBProviderSyncer(client)}, closeFn, nil
 }
 
 func policyActionHistoryStoreFromEnv(ctx context.Context) (policyActionHistoryStore, func(), error) {

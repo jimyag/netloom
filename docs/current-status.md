@@ -76,6 +76,7 @@ NETLOOM_RUNTIME_PREFLIGHT_STRICT=1 NETLOOM_STATE_FILE=/etc/netloom/state.json NE
 ./netloom-agent policy-status-export -ovsdb unix:/var/run/openvswitch/db.sock -endpoint prod/vm-a
 ./netloom-agent policy-revision-wait -ovsdb unix:/var/run/openvswitch/db.sock -endpoint prod/vm-a -revision 3 -timeout 30s
 curl -s 'http://127.0.0.1:9092/policy/endpoints/prod/vm-a/revision?target_revision=3&timeout_ms=30000'
+curl -s 'http://127.0.0.1:9092/policy/endpoints/rollout/state?name=canary&node=node-a'
 ./netloom-agent agent-status -ovsdb unix:/var/run/openvswitch/db.sock
 ./netloom-agent policy-entries -state /etc/netloom/state.json -node node-a -endpoint prod/vm-a
 ./netloom-agent policy-entries-export -ovsdb unix:/var/run/openvswitch/db.sock -endpoint prod/vm-a
