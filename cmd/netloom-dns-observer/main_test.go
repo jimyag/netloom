@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -589,10 +590,13 @@ func TestRunRejectsEmptyInput(t *testing.T) {
 }
 
 type fakeOpenVSwitchExternalIDStore struct {
+	mu     sync.Mutex
 	values map[string]string
 }
 
 func (s *fakeOpenVSwitchExternalIDStore) OpenVSwitchExternalID(_ context.Context, key string) (string, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.values == nil {
 		return "", false, nil
 	}
@@ -601,6 +605,8 @@ func (s *fakeOpenVSwitchExternalIDStore) OpenVSwitchExternalID(_ context.Context
 }
 
 func (s *fakeOpenVSwitchExternalIDStore) SetOpenVSwitchExternalID(_ context.Context, key, value string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.values == nil {
 		s.values = map[string]string{}
 	}
