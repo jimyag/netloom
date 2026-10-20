@@ -59,9 +59,8 @@ task release-snapshot
 
 ## Code Style
 
-- Format with `gofmt` and `gofumpt`
-- Organize imports with `goimports`
+- Format with `golangci-lint fmt`
 - Pass `staticcheck` and `golint`
-- Pass `go vet`
+- Pass `golangci-lint run ./...` (new issues only)
 
 Run `task lint` before submitting — the CI enforces the same checks.
