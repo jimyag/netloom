@@ -6,7 +6,7 @@ toolchain go1.27.3
 
 require (
 	github.com/chifflier/nfqueue-go v0.0.0-20170228160439-61ca646babef
-	github.com/cilium/ebpf v0.21.0
+	github.com/cilium/ebpf v0.22.0
 	github.com/go-logr/logr v1.4.4
 	github.com/ovn-kubernetes/libovsdb v0.8.1
 	github.com/vishvananda/netlink v1.3.1
